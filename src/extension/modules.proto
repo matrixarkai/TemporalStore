@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package bcache2;
+
+enum Module {
+    RESERVERD = 0;
+    COMMON    = 10;
+    HASH      = 11;
+    SET       = 12;
+    FEATURE    = 13;
+    STRING    = 14;
+    IPS       = 15;
+    RISK      = 16;
+    TEMPORAL_AGGREGATE = 17;
+}

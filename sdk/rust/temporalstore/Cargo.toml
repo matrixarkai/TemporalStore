@@ -1,0 +1,17 @@
+[package]
+name = "temporalstore"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "temporalstore"
+path = "src/lib.rs"
+
+[features]
+default = ["direct"]
+direct = []
+proxy = ["dep:serde", "dep:serde_json"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }

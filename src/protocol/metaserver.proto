@@ -1,0 +1,579 @@
+syntax = "proto3";
+
+package bcache2.metaserver;
+
+option cc_generic_services = true;
+
+import "base.proto";
+import "info.proto";
+import "config.proto";
+
+enum MetaServerLogType {
+    MS_LOG_MANAGE_INFO_UPDATE = 0;
+
+    MS_LOG_SERVER_ADD = 1;
+    MS_LOG_SERVER_DECOMMISSION = 2;
+    MS_LOG_SERVER_FREEZE = 3; // freeze means soft remove
+    MS_LOG_SERVER_DROP = 4; // drop means physical remove
+    MS_LOG_PROXY_ADD = 5;
+    MS_LOG_PROXY_FREEZE = 6;
+    MS_LOG_PROXY_DROP = 7;
+    MS_LOG_SERVER_UPDATE = 8;
+
+    MS_LOG_NS_ADD = 10;
+    MS_LOG_NS_UPDATE = 11;
+    MS_LOG_NS_DROP = 12;
+
+    MS_LOG_TABLE_ADD = 20;
+    MS_LOG_TABLE_FREEZE = 21;
+    MS_LOG_TABLE_DROP = 22;
+    MS_LOG_TABLE_UPDATE = 23;
+
+    MS_LOG_PARTITION_CREATE_FINISH = 30;
+    MS_LOG_MEMBERSHIP_UPDATE_FINISH = 31;
+    MS_LOG_PARTITION_FREEZE = 32;
+    MS_LOG_PARTITION_DROP = 33;
+    MS_LOG_PARTITION_LOAD_FINISH = 34;
+
+    MS_LOG_PROXY_GROUP_PUT = 40;
+    MS_LOG_PROXY_GROUP_DROP = 41;
+    MS_LOG_PROXY_ATTACH = 42;
+    MS_LOG_PROXY_DETACH = 43;
+
+    MS_MUTE_META_CHANGE = 50;
+    MS_RESUME_META_CHANGE = 51;
+}
+
+message LogMeta {
+    MetaServerLogType type = 1;
+    string request_proto_type = 2;
+    uint64 ctx_id = 3;
+    uint64 log_id = 4;
+}
+
+message RequestId {
+    uint64 id = 1;
+    string cluster_name = 2;
+    int64 timestamp = 3;
+    string operator_name = 4; // secure trace
+    string client_endpoint = 5; // secure trace
+}
+
+message EmptyRequest {
+    RequestId id = 1;
+    bool read_stale = 2;
+}
+
+message QueryPagination {
+    int32 page = 1;
+    int32 per_page = 2;
+}
+
+message UpdateManageInfoRequest {
+    RequestId id = 1;
+    ManagementInfo info = 2;
+}
+
+message AddServerRequest {
+    RequestId id = 1;
+    Endpoint endpoint = 2;
+    Location location = 3;
+    repeated NUMANode numa_nodes = 4;
+}
+
+message UpdateServerRequest {
+    RequestId id = 1;
+    Endpoint endpoint = 2;
+    string location_tag_name = 3;
+}
+
+message FreezeServerRequest {
+    RequestId id = 1;
+    uint32 server_id = 2;
+    Endpoint endpoint = 3;
+    bool force = 4;
+    FreezeServerReason reason = 5;
+}
+
+message DropServerRequest {
+    RequestId id = 1;
+    uint32 server_id = 2;
+    Endpoint endpoint = 3;
+}
+
+message AddProxyRequest {
+    RequestId id = 1;
+    Endpoint endpoint = 2;
+    Location location = 3;
+}
+
+message FreezeProxyRequest {
+    RequestId id = 1;
+    uint32 proxy_id = 2;
+    Endpoint endpoint = 3;
+}
+
+message DropProxyRequest {
+    RequestId id = 1;
+    uint32 proxy_id = 2;
+    Endpoint endpoint = 3;
+}
+
+message AttachProxyRequest {
+    RequestId id = 1;
+    uint32 proxy_id = 2;
+    string namespace_name = 3;
+    Location placement = 4;
+}
+
+message DetachProxyRequest {
+    RequestId id = 1;
+    uint32 proxy_id = 2;
+}
+
+message QueryLeaderRequest {
+    RequestId id = 1;
+}
+
+message QueryLeaderResponse {
+    RpcStatus status = 1;
+    bool is_leader = 2;
+    Endpoint leader = 3;
+}
+
+message QueryManageInfoResponse {
+    RpcStatus status = 1;
+    ManagementInfo info = 2;
+}
+
+message QueryClusterStatusResponse {
+    RpcStatus status = 1;
+    message SafeMode {
+            string location_full_name = 1;
+            string damage_severity = 2;
+    }
+    repeated SafeMode server_in_safe_mode = 2;
+    repeated SafeMode proxy_in_safe_mode = 3;
+    repeated RaftNode raft_nodes = 4;
+    RaftNode raft_leader_info = 5;
+    string binary_version = 6;
+    uint64 raft_applied_index = 7;
+    string cluster_name = 8;
+}
+
+message ListServerRequest {
+    RequestId id = 1;
+    bool read_stale = 2;
+    Location location = 3;
+    string ip_substr = 4;
+    ServerState state = 5;
+    bool list_all_tag = 6;
+
+    QueryPagination pagination = 10;
+}
+
+message ListServerResponse {
+    RpcStatus status = 1;
+    message NodeBlock {
+        uint64 node_id = 1;
+        repeated uint64 partition_ids = 2;
+    }
+    message ServerBlock {
+        ServerInfo server_info = 1;
+        repeated NodeBlock node_info = 2;
+        string extra = 3;
+    }
+    repeated ServerBlock servers = 2;
+}
+
+message ListProxyRequest {
+    RequestId id = 1;
+    bool read_stale = 2;
+    Location location = 3;
+    string ip_substr = 4;
+    ProxyState state = 5;
+    string namespace_name = 6;
+
+    QueryPagination pagination = 10;
+}
+
+message ListProxyResponse {
+    message ProxyBlock {
+        ProxyInfo proxy_info = 1;
+        string namespace_name = 2;
+        ProxyConfig config = 3;
+        string extra = 4;
+    }
+    RpcStatus status = 1;
+    repeated ProxyBlock proxies = 2;
+}
+
+message ListProxyGroupRequest {
+    RequestId id = 1;
+    bool read_stale = 2;
+    string namespace_name = 3;
+    Location placement = 4;
+
+    QueryPagination pagination = 10;
+}
+
+message ListProxyGroupResponse {
+    RpcStatus status = 1;
+    repeated ProxyGroupInfo groups = 2;
+}
+
+message AddNamespaceRequest {
+    RequestId id = 1;
+    string name = 2;
+    repeated ConsulInfo consul_info = 3; // deprecated
+}
+
+message ListNamespaceRequest {
+    RequestId id = 1;
+    bool read_stale = 2;
+
+    QueryPagination pagination = 10;
+}
+
+message ListNamespaceResponse {
+    RpcStatus status = 1;
+    repeated NamespaceInfo namespaces = 2;
+}
+
+message AddTableRequest {
+    RequestId id = 1;
+    string namespace_name = 2;
+    string name = 3;
+    uint32 partition_set_num = 4;
+    repeated PartitionUnit partition_units = 5;
+    PartitionUnitRelation partition_unit_relation = 6;
+    QuotaInfo quota = 7;
+    ElectionPolicy election_policy = 8;
+    Config config = 9;
+}
+
+// V2 resolves UpdateTableRequest in master.proto
+message UpdateTableRequestV2 {
+    RequestId id = 1;
+    string namespace_name = 2;
+    string name = 3;
+    uint32 table_id = 4;
+    bool force = 5;
+
+    Config config = 6;
+
+    // Let's update only 1 unit at once to simplify
+    // our question
+    PartitionUnit update_partition_unit = 7;
+}
+
+message FreezeTableRequest {
+    RequestId id = 1;
+    // add namespace & table name double checking
+    // to against mishandling
+    string namespace_name = 2;
+    string name = 3;
+    uint32 table_id = 4;
+    bool force = 5;
+}
+
+message DropTableRequest {
+    RequestId id = 1;
+    uint32 table_id = 2;
+}
+
+message ListTableRequest {
+    RequestId id = 1;
+    bool read_stale = 2;
+    string namespace_name = 3;
+    string table_name = 4;
+}
+
+message ListTableResponse {
+    RpcStatus status = 1;
+    repeated TableInfo tables = 2;
+}
+
+message CreatePartitionFinishRequest {
+    RequestId id = 1;
+    uint64 partition_id = 2;
+    uint64 node_id = 3;
+    bool async_load = 4;
+}
+
+message LoadPartitionFinishRequest {
+    RequestId id = 1;
+    uint64 partition_id = 2;
+    RpcStatus load_result = 3; // res
+}
+
+message UpdateMembershipFinishRequest {
+    RequestId id = 1;
+    uint64 partition_id = 2;
+    uint64 partition_set_version = 3;
+    RpcStatus result = 4;
+}
+
+message FreezePartitionRequest {
+    RequestId id = 1;
+    uint64 partition_id = 2;
+    bool force = 3;
+}
+
+message DropPartitionRequest {
+    RequestId id = 1;
+    uint64 partition_id = 2;
+}
+
+message PutProxyGroupRequest {
+    RequestId id = 1;
+    ProxyGroupInfo info = 2;
+}
+
+message DropProxyGroupRequest {
+    RequestId id = 1;
+    string namespace_name = 2;
+    Location placement = 3;
+}
+
+message ListPartitionRequest {
+    RequestId id = 1;
+    bool read_stale = 2;
+    string namespace_name = 3;
+    string table_name = 4;
+    uint64 partition_id = 5;
+}
+
+message ListPartitionResponse {
+    RpcStatus status = 1;
+    message SetBlock {
+        PartitionSetInfo set_info = 1;
+        repeated PartitionInfo partition_info = 2;
+    }
+    repeated SetBlock info = 2;
+}
+
+message ListServerPartitionRequest {
+    RequestId id = 1;
+    bool read_stale = 2;
+
+    // endpoint or server_id
+    Endpoint endpoint = 3;
+    uint32 server_id = 4;
+}
+
+message ListServerPartitionResponse {
+    message Partition {
+        uint64 id = 1;
+        PartitionState state = 2;
+        MembershipInfo membership = 3;
+        Config config = 4;
+    }
+    message NodePartitions {
+        uint64 node_id = 1;
+        repeated Partition partitions = 2;
+    }
+
+    RpcStatus status = 1;
+    ServerInfo server_info = 2;
+    repeated NodePartitions node_partitions = 3;
+}
+
+message ServerHeartbeatRequest {
+    RequestId id = 1;
+    Endpoint endpoint = 2;
+    int64 boot_time_us = 3;
+    bool with_stats = 4;
+    repeated PartitionStats stats = 5;
+    string binary_version = 6;
+}
+
+message ServerHeartbeatResponse {
+    RpcStatus status = 1;
+    bool forbid_auto_register = 2;
+}
+
+message ServerNotifyStopRequest {
+    RequestId id = 1;
+    Endpoint endpoint = 2;
+}
+
+message ProxyHeartbeatRequest {
+    RequestId id = 1;
+    Endpoint endpoint = 2;
+    int64 boot_time_us = 3;
+    string binary_version = 4;
+    string namespace_name = 5;
+    uint64 config_version = 6;
+}
+
+message ProxyHeartbeatResponse {
+    RpcStatus status = 1;
+    bool config_changed = 2;
+    string namespace_name = 3;
+    ProxyConfig config = 4;
+}
+
+message ProxyNotifyStopRequest {
+    RequestId id = 1;
+    Endpoint endpoint = 2;
+}
+
+message RaftNode {
+    enum Role {
+        NORMAL = 0;
+        LEARNER = 1;
+        WITNESS = 2;
+    }
+    uint64 peer_id = 1;
+    string raft_addr = 2; // ip:port
+    string snapshot_addr = 3; // ip:port
+    Role role = 4;
+}
+
+message AddRaftNodeRequest {
+    RequestId id = 1;
+    RaftNode node = 2;
+}
+
+message RemoveRaftNodeRequest {
+    RequestId id = 1;
+    RaftNode node = 2;
+}
+
+message ListRaftMembershipRequest {
+    RequestId id = 1;
+}
+
+message ListRaftMembershipResponse {
+    RpcStatus status = 1;
+    repeated RaftNode nodes = 2;
+}
+
+message SnapshotManifest {
+    message NamespaceSpec {
+        // only primary key here
+        uint32 id = 1;
+        repeated uint32 table_ids = 2;
+        repeated Location proxy_groups = 3;
+    }
+    message ExtraProperty {
+        int32 created_at = 1;
+        int32 raft_node_id = 2;
+    }
+
+    uint64 raft_index = 1;
+    repeated NamespaceSpec namespace_list = 2;
+    uint64 namespace_id_cursor = 5;
+    uint64 table_id_cursor = 6;
+    uint64 server_count = 7;
+    uint64 server_id_cursor = 8;
+    uint64 proxy_count = 9;
+    uint64 proxy_id_cursor = 10;
+    ManagementInfo manage_info = 11;
+    bool mute_meta_change = 12;
+    ExtraProperty property = 100;
+}
+
+message SnapshotRecordInfo {
+    string type_name = 1;
+    uint32 size = 2;
+}
+
+message PartitionSetSnapshot {
+    message Lineage {
+        uint64 parent_id = 1;
+        uint64 child_id = 2;
+    }
+    PartitionSetInfo info = 1;
+    repeated uint64 partition_id_list = 2;
+    repeated Lineage lineages = 3;
+}
+
+message TopoAbstract {
+    message PartitionUnitSpec {
+        uint32 id = 1;
+        uint64 version = 2;
+    }
+    message TableSpec {
+        uint32 id = 1;
+        repeated PartitionUnitSpec unit_list = 2;
+    }
+    repeated TableSpec table_list = 1;
+}
+
+service ManageService {
+    rpc UpdateManageInfo(UpdateManageInfoRequest) returns (AckResponse);
+    // server
+    rpc AddServer(AddServerRequest) returns (AckResponse);
+    rpc FreezeServer(FreezeServerRequest) returns (AckResponse);
+    rpc DropServer(DropServerRequest) returns (AckResponse);
+    rpc UpdateServer(UpdateServerRequest) returns (AckResponse);
+
+    // proxy
+    rpc AddProxy(AddProxyRequest) returns (AckResponse);
+    rpc FreezeProxy(FreezeProxyRequest) returns (AckResponse);
+    rpc DropProxy(DropProxyRequest) returns (AckResponse);
+
+    // ns&table
+    rpc AddNamespace(AddNamespaceRequest) returns (AckResponse);
+
+    rpc AddTable(AddTableRequest) returns (AckResponse);
+    rpc UpdateTable(UpdateTableRequestV2) returns (AckResponse);
+    rpc FreezeTable(FreezeTableRequest) returns (AckResponse);
+    rpc DropTable(DropTableRequest) returns (AckResponse);
+    rpc FreezePartition(FreezePartitionRequest) returns (AckResponse);
+    rpc DropPartition(DropPartitionRequest) returns (AckResponse);
+    rpc FinishLoadPartition(LoadPartitionFinishRequest) returns (AckResponse);
+
+    // put -> add or update
+    rpc PutProxyGroup(PutProxyGroupRequest) returns (AckResponse);
+    rpc DropProxyGroup(DropProxyGroupRequest) returns (AckResponse);
+
+    rpc MuteMetaChange(EmptyRequest) returns (AckResponse);
+    rpc ResumeMetaChange(EmptyRequest) returns (AckResponse);
+}
+
+service QueryService {
+    rpc QueryLeader(QueryLeaderRequest) returns (QueryLeaderResponse);
+    rpc QueryManageInfo(EmptyRequest) returns (QueryManageInfoResponse);
+    rpc QueryClusterStatus(EmptyRequest) returns (QueryClusterStatusResponse);
+    // server
+    rpc ListServer(ListServerRequest) returns (ListServerResponse);
+
+    // proxy
+    rpc ListProxy(ListProxyRequest) returns (ListProxyResponse);
+    rpc ListProxyGroup(ListProxyGroupRequest) returns (ListProxyGroupResponse);
+
+    // ns&table
+    rpc ListNamespace(ListNamespaceRequest) returns (ListNamespaceResponse);
+    rpc ListTable(ListTableRequest) returns (ListTableResponse);
+    rpc ListPartition(ListPartitionRequest) returns (ListPartitionResponse);
+    rpc ListServerPartition(ListServerPartitionRequest) returns (ListServerPartitionResponse);
+}
+
+service HeartbeatService {
+    rpc ServerHeartbeat(ServerHeartbeatRequest) returns (ServerHeartbeatResponse);
+    rpc ServerNotifyStop(ServerNotifyStopRequest) returns (AckResponse);
+
+    rpc ProxyHeartbeat(ProxyHeartbeatRequest) returns (ProxyHeartbeatResponse);
+    rpc ProxyNotifyStop(ProxyNotifyStopRequest) returns (AckResponse);
+}
+
+service RaftControlService {
+    rpc AddNode(AddRaftNodeRequest) returns (AckResponse);
+    rpc RemoveNode(RemoveRaftNodeRequest) returns (AckResponse);
+    rpc ListMembership(EmptyRequest) returns (ListRaftMembershipResponse);
+
+    rpc TriggerSnapshot(EmptyRequest) returns (AckResponse);
+}
+
+//////
+
+message HttpRequest {}
+message HttpResponse {}
+service HttpApiService {
+    rpc AddCluster(HttpRequest) returns (HttpResponse);
+    rpc Query(HttpRequest) returns (HttpResponse);
+    rpc Manage(HttpRequest) returns (HttpResponse);
+}

@@ -1,0 +1,4 @@
+93M	/tmp/temporalstore-deploy/runtime/storage
+12M	/tmp/temporalstore-scale-/redis-always
+12M	/tmp/temporalstore-scale-/redis-everysec
+4.0K	/tmp/temporalstore-scale-/redis-none

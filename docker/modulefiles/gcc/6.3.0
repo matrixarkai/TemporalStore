@@ -1,0 +1,20 @@
+#%Module1.0
+##
+## GCC modulefile
+##
+proc ModulesHelp { } {
+    global version
+
+    puts stderr "\tSets up environment for GCC v$version"
+}
+
+module-whatis "sets up environment for GCC v6.3.0"
+
+set version 6.3.0
+
+# gcc630 is system-wide visible, there is no need to adjust PATH or LD_LIBRARY_PATH
+
+setenv CC  /usr/bin/gcc
+setenv CXX /usr/bin/g++
+
+conflict gcc

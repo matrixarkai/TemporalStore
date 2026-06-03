@@ -1,0 +1,90 @@
+syntax = "proto3";
+
+package bcache2;
+
+import "google/protobuf/wrappers.proto";
+
+message PolicyType {
+  enum PolicyTypeEnum {
+    LRU = 0;
+    LFU = 1;
+    TTL = 2;
+    RANDOM = 3;
+    NO_EVICTION = 4;
+  }
+  PolicyTypeEnum value = 1;
+}
+
+message StoreRepPolicy {
+  enum StoreRepPolicyEnum {
+    REP_FLAT = 0;
+    REP_G2 = 1;
+    REP_G3 = 2;
+    REP_G1 = 3;
+  }
+  StoreRepPolicyEnum value = 1;
+}
+
+message DatasetType {
+  enum DatasetTypeEnum {
+    ALL_KEYS = 0;
+    VOLATILE = 1;
+  }
+  DatasetTypeEnum value = 1;
+}
+
+message OperationType {
+  enum OperationTypeEnum {
+    DUMP = 0;
+    DELETE = 1;
+  }
+  OperationTypeEnum value = 1;
+}
+
+message IPSConfig {
+  string value = 1;
+}
+
+message CustomConfig {
+  oneof value {
+    IPSConfig ips_config = 1;
+  }
+}
+
+message Config {
+  map<string, string> extend_config = 1;
+  EvicterConfig evicter_config = 2;
+  LimitConfig limit_config = 4;
+  StreamConfig stream_config = 5;
+  uint64 version = 6;
+  IPSConfig not_used = 7;
+  map<uint64, CustomConfig> module_custom_config = 8;
+}
+
+message StreamConfig {
+  StoreRepPolicy store_rep_policy = 1;
+}
+
+message EvicterConfig {
+  google.protobuf.UInt64Value maxmemory = 1;
+  google.protobuf.UInt64Value pool_size = 2;
+  google.protobuf.UInt64Value samples = 3;
+  PolicyType policy_type = 4;
+  DatasetType dataset_type = 5;
+  OperationType operation_type = 6;
+}
+
+message ReplicatorConfig {
+  google.protobuf.Int64Value connect_timeout = 1;
+  google.protobuf.Int64Value rpc_timeout = 2;
+}
+
+message LimitConfig {
+  message QuotaConf {
+    google.protobuf.UInt64Value qps = 1;
+    google.protobuf.UInt64Value burst = 2;
+  }
+  QuotaConf write_limiter = 1;
+  QuotaConf read_limiter = 2;
+}
+

@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TemporalStore Monitoring</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">TemporalStore</p>
+          <h1>Cluster Monitoring</h1>
+        </div>
+        <div class="status-pill">
+          <span class="dot"></span>
+          AWS test cluster
+        </div>
+      </header>
+
+      <section class="summary-grid" aria-label="Cluster summary">
+        <article>
+          <span>Metaserver</span>
+          <strong id="meta-state">meta-01</strong>
+          <small>Proxy and client test host</small>
+        </article>
+        <article>
+          <span>Data Nodes</span>
+          <strong>2</strong>
+          <small>Primary / secondary workflow</small>
+        </article>
+        <article>
+          <span>Shared Store</span>
+          <strong>EFS</strong>
+          <small>page, index, oplog, snapshots</small>
+        </article>
+        <article>
+          <span>Block Cache</span>
+          <strong>DRAM + SSD</strong>
+          <small>EBS gp3 cache tier</small>
+        </article>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Service Health</h2>
+          <button id="refresh" type="button">Refresh</button>
+        </div>
+        <div class="health-grid">
+          <div class="health-row">
+            <span class="label">Metaserver</span>
+            <span class="value" id="metaserver-health">checking</span>
+          </div>
+          <div class="health-row">
+            <span class="label">Proxy</span>
+            <span class="value" id="proxy-health">checking</span>
+          </div>
+          <div class="health-row">
+            <span class="label">Metrics Exporter</span>
+            <span class="value" id="exporter-health">checking</span>
+          </div>
+          <div class="health-row">
+            <span class="label">Last Refresh</span>
+            <span class="value" id="last-refresh">-</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="two-col">
+        <article class="panel">
+          <h2>Diagnostic Links</h2>
+          <div class="links">
+            <a href="/health.json">health.json</a>
+            <a href="/metrics">local UI metrics</a>
+            <a href="/logs/">metaserver logs</a>
+          </div>
+        </article>
+        <article class="panel">
+          <h2>Test Focus</h2>
+          <ul>
+            <li>Release binary startup and proxy routing</li>
+            <li>Primary/secondary replication lag</li>
+            <li>SSD blockcache file creation and hit behavior</li>
+            <li>SDK direct path and proxy path smoke tests</li>
+          </ul>
+        </article>
+      </section>
+    </main>
+    <script src="./app.js"></script>
+  </body>
+</html>

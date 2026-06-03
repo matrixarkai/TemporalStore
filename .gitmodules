@@ -1,0 +1,42 @@
+[submodule "thirdparty/byte"]
+	path = thirdparty/byte
+	url = git@code.byted.org:storage/byte.git
+	branch = bcache2
+[submodule "thirdparty/brpc"]
+	path = thirdparty/brpc
+	url = git@code.byted.org:third_party/brpc.git
+	branch = brpc-bcache2
+	ignore = dirty
+[submodule "thirdparty/rapidjson"]
+	path = thirdparty/rapidjson
+	url = git@code.byted.org:cpp3rdlib/rapidjson.git
+	branch = 1.0.2
+[submodule "thirdparty/thrift"]
+	path = thirdparty/thrift
+	url = git@code.byted.org:bpt/thrift.git
+	branch = bcache2-0.11.0
+[submodule "thirdparty/boost"]
+	path = thirdparty/boost
+	url = git@code.byted.org:bpt/boost.git
+	ignore = dirty
+	branch = bcache2-1.72.0
+[submodule "thirdparty/openssl"]
+	path = thirdparty/openssl
+	url = git@code.byted.org:bpt/openssl.git
+	ignore = dirty
+	branch = 1.1.1s
+[submodule "thirdparty/byteraft"]
+	path = thirdparty/byteraft
+	url = git@code.byted.org:storage/byteraft.git
+    branch = bcache2-v2.3.5
+[submodule "thirdparty/mtcache"]
+	path = thirdparty/mtcache
+	url = git@code.byted.org:inf/mtcache.git
+	branch = bcache2
+[submodule "thirdparty/rocketmq"]
+	path = thirdparty/rocketmq
+	url = git@code.byted.org:storage/rmq_sdk_lib.git
+
+[submodule "dependencies/rocketmq-client-cpp-src"]
+	path = dependencies/rocketmq-client-cpp-src
+	url = https://github.com/apache/rocketmq-client-cpp.git

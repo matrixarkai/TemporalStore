@@ -1,0 +1,32 @@
+# Build outputs
+build/
+build-*/
+output-*/
+cmake-build-*/
+*.o
+*.obj
+*.a
+*.so
+*.dll
+*.exe
+*.lib
+*.pdb
+
+# Local dependency drops and vendored/private dependency sandboxes
+dependencies/
+thirdparty/
+local_build/
+
+# Terraform/runtime state
+.terraform/
+*.tfstate
+*.tfstate.backup
+terraform-output*.json
+last-*.txt
+ssm-*.json
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

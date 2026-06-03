@@ -1,0 +1,14 @@
+.git
+.local
+build
+build-*
+output
+**/CMakeFiles
+**/CMakeCache.txt
+**/cmake_install.cmake
+**/*.o
+**/*.a
+**/*.so
+**/*.dll
+**/*.exe
+**/*.pdb

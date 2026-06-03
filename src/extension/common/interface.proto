@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package bcache2.common2;
+
+enum Function {
+    DEL_OBJECT = 0;
+    EXPIRE = 1;
+    TTL = 2;
+}
+
+message DelObjectRequest {
+    string key = 1;
+}
+
+message DelObjectResponse {
+}
+
+message ExpireRequest {
+    string key = 1;
+    uint64 ttl_ms = 2;
+}
+
+message ExpireResponse {
+}
+
+message TtlRequest {
+    string key = 1;
+}
+
+message TtlResponse {
+    uint64 ttl_ms = 1;
+}

@@ -1,0 +1,73 @@
+syntax = "proto3";
+
+package bcache2;
+
+message RpcStatus {
+    // The status code, which should be an enum value of [google.rpc.Code][google.rpc.Code].
+    int32 code = 1;
+
+    // A developer-facing error message, which should be in English.
+    string message = 2;
+}
+
+enum PersistentType {
+    // Non-strongly consistent scenarios, the latest written data may be lost
+    PERSISTENT_ASYNC = 0;
+
+    // Strongly consistent scenarios
+    PERSISTENT_SYNC = 1;
+
+    // Cache scene, no need to persist
+    // PERSISTENT_NONE = 2;
+}
+
+message RequestOption {
+  uint64 trace_id = 1;
+  string version  = 2;
+  uint64 supported_features = 3;
+
+  // set to supported_features, 1UL<<FeatureBitPos
+  enum FeatureBitPos {
+      CLIENT_FAST_RETRY = 0;
+  }
+}
+
+message EmptyMessage { }
+
+message AckResponse {
+    RpcStatus status = 1;
+}
+
+message Endpoint {
+    enum AddressFamily { // NOTE avoid to corrupt namespace AF_INET
+        ADDR_V4 = 0;
+        ADDR_V6 = 1;
+        ADDR_DUAL_STACK = 2;
+    }
+    AddressFamily addr_family = 1;
+    string ip4 = 2;
+    string ip6 = 3;
+    uint32 port = 4;
+}
+
+message Endpoint2 {
+    Endpoint.AddressFamily addr_family = 1;
+    // in_addr => be32_addr[0]
+    // in6_addr => dual: be32_addr[1:] / v6: be32_addr[0:]
+    repeated uint32 be32_addr = 3;
+    int32 port = 4;
+}
+
+message Location {
+    string vregion = 1;
+    string vdc = 2;
+    string vau = 3;
+
+    string tag = 4;
+}
+
+message NUMANode {
+    uint64 id = 1;
+    string cpu_list = 2; // comma or space separated
+    uint64 memory_size_mb = 3;
+}

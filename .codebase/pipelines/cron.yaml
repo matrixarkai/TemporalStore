@@ -1,0 +1,98 @@
+name: cronjob
+trigger:
+  cron:
+jobs:
+  build_and_test:
+    name: build and test
+    image: hub.byted.org/compile/byteredis_dev:c5c924ea8375950f1b87ded47ccc4ed7
+    envs:
+      MY_HOST_IP : "127.0.0.1"        # For bytestore client init
+      BDC_PRIVATE_CLOUD : "True"      # Bytestore client requires private IP. Set $BDC_PRIVATE_CLOUD to ignore it 
+    steps:
+      - uses: actions/setup-consul
+      - uses: actions/setup-proxy
+      - name: Show Info
+        commands:
+          - whoami
+          - pwd
+          - ls
+          - date
+      - name: Build
+        commands: 
+          - ./build.sh Release
+      - name: PartitionMemoryWaterLevelTest
+        continue-on-error: true
+        commands:
+          - ./build/src/partition/test/partition_bench  --gtest_filter=WaterLevelPartitionBench.MemWaterLevelTest --time 600
+          - ./build/src/partition/test/partition_bench  --gtest_filter=WaterLevelPartitionBench.MemWaterLevelTest --time 600 --interval_water_level 250
+          - ./build/src/partition/test/partition_bench  --gtest_filter=WaterLevelPartitionBench.MemWaterLevelTest --time 600 --generated_key_mode true --generated_key_num 30000
+      - name: PartitionStorageWaterLevelTest
+        continue-on-error: true
+        commands:
+          - ./build/src/partition/test/partition_bench  --gtest_filter=WaterLevelPartitionBench.StorageWaterLevelTest --time 600 --generated_key_mode true --generated_key_num 30000 --only_string_model true --storage_dump_slots_per_round 100000 
+          - ./build/src/partition/test/partition_bench  --gtest_filter=WaterLevelPartitionBench.StorageWaterLevelTest --time 600 --interval_water_level 30 --generated_key_mode true --generated_key_num 30000 --only_string_model true --storage_dump_slots_per_round 100000 
+          - ./build/src/partition/test/partition_bench  --gtest_filter=WaterLevelPartitionBench.StorageWaterLevelTest --time 600 --generated_key_mode true --generated_key_num 30000 --storage_dump_slots_per_round 100000
+      - name: PartitionLongTimeWaterLevelTest
+        continue-on-error: true
+        commands:
+          - ./build/src/partition/test/partition_bench  --gtest_filter=WaterLevelPartitionBench.StorageWaterLevelTest --time 1200 --interval_water_level 50 --generated_key_mode true --generated_key_num 30000 --only_string_model true --storage_dump_slots_per_round 100000
+          - ./build/src/partition/test/partition_bench  --gtest_filter=WaterLevelPartitionBench.MemWaterLevelTest --time 1200 --interval_water_level 50 --generated_key_mode true --generated_key_num 30000 --storage_dump_slots_per_round 100000
+      - name: Clean
+        continue-on-error: true
+        commands:
+          - rm -rf build
+          - date
+  long_time_storage_test:
+    image: hub.byted.org/compile/byteredis_dev:c5c924ea8375950f1b87ded47ccc4ed7
+    timeout: 360
+    envs:
+      MY_HOST_IP : "127.0.0.1"        # For bytestore client init
+      BDC_PRIVATE_CLOUD : "True"      # Bytestore client requires private IP. Set $BDC_PRIVATE_CLOUD to ignore it 
+    steps:
+      - uses: actions/setup-consul
+      - uses: actions/setup-proxy
+      - name: Show Info
+        commands:
+          - whoami
+          - pwd
+          - ls
+          - date
+      - name: Build
+        commands: 
+          - ./build.sh Release 
+      - name: PartitionLongTimeWaterLevelTest
+        continue-on-error: true
+        commands:
+          - ./build/src/partition/test/partition_bench  --gtest_filter=WaterLevelPartitionBench.StorageWaterLevelTest --time 18000 --interval_water_level 50 --generated_key_mode true --generated_key_num 30000  --only_string_model true --storage_dump_slots_per_round 100000
+      - name: Clean
+        continue-on-error: true
+        commands:
+          - rm -rf build
+          - date
+  long_time_mem_test:
+    image: hub.byted.org/compile/byteredis_dev:c5c924ea8375950f1b87ded47ccc4ed7
+    timeout: 360
+    envs:
+      MY_HOST_IP : "127.0.0.1"        # For bytestore client init
+      BDC_PRIVATE_CLOUD : "True"      # Bytestore client requires private IP. Set $BDC_PRIVATE_CLOUD to ignore it 
+    steps:
+      - uses: actions/setup-consul
+      - uses: actions/setup-proxy
+      - name: Show Info
+        commands:
+          - whoami
+          - pwd
+          - ls
+          - date
+      - name: Build
+        commands: 
+          - ./build.sh Release 
+      - name: PartitionLongTimeWaterLevelTest
+        continue-on-error: true
+        commands:
+          - ./build/src/partition/test/partition_bench  --gtest_filter=WaterLevelPartitionBench.MemWaterLevelTest --time 9000 --interval_water_level 100 --generated_key_mode true --generated_key_num 100000
+      - name: Clean
+        continue-on-error: true
+        commands:
+          - rm -rf build
+          - date

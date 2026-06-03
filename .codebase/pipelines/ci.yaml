@@ -1,0 +1,108 @@
+name: byteredis_ci
+trigger: [change]
+jobs:
+  build:
+    name: build + unit test
+    runs-on:
+      spec: c1.8xlarge
+    image: hub.byted.org/compile/byteredis_dev_gcc830:76ecd565136262ac16f19b29a24b552f # with gcc830
+    envs: &common_envs
+      BYTED_HOST_IP: "127.0.0.1"
+      BYTED_HOST_IPV6: "::1"
+      MY_HOST_IP: "127.0.0.1" # For bytestore client init
+      BDC_PRIVATE_CLOUD: "True" # Bytestore client requires private IP. Set $BDC_PRIVATE_CLOUD to ignore it
+    steps:
+      - uses: actions/setup-consul
+      - uses: actions/setup-proxy
+      - name: Show Info
+        commands:
+          - whoami
+          - pwd
+          - ls
+          - date
+      - name: Build
+        commands:
+          - ./build.sh ci
+      - name: upload artifact for onebox test
+        uses: actions/upload-artifact
+        inputs:
+          name: output
+          path: output
+      - name: Unit Test
+        commands:
+          - ./tools/run_unittest.sh
+      - name: Code Coverage (Lcov)
+        commands:
+          - apt -y update && apt install -y lcov
+          - wget http://downloads.sourceforge.net/ltp/lcov-1.14.tar.gz
+          - tar -zxvf lcov-1.14.tar.gz
+          - cd lcov-1.14 && make install && cd ..
+          - /usr/local/bin/lcov -c -i -d build/src -o base_coverage.info --rc lcov_branch_coverage=1
+          - /usr/local/bin/lcov -c -d build/src -o test_coverage.info --rc lcov_branch_coverage=1
+          - /usr/local/bin/lcov -a base_coverage.info -a test_coverage.info -o total_coverage.info --rc lcov_branch_coverage=1 # Combine base and test coverage to include all sources files
+          - /usr/local/bin/lcov --extract total_coverage.info '*/src/*' --rc lcov_branch_coverage=1 -o total_coverage.info # Only target [src] directory
+          - /usr/local/bin/lcov --remove total_coverage.info '*/stream/store/bytestore_*' '*/stream/tools/*' '*/test/*' '*/thirdparty/*' '*.pb*' '*/example/*' '*/main.cc' --rc lcov_branch_coverage=1 -o total_coverage.info # Filter out [test]/[thirdparty]/[pb files]
+          - genhtml total_coverage.info --output-directory coverage_report --rc lcov_branch_coverage=1
+      - name: Code Coverage (Codecov)
+        uses: actions/codecov
+        inputs:
+          file: total_coverage.info
+          report: coverage_report
+  build_release:
+    name: test build Release
+    runs-on:
+      spec: c1.8xlarge
+    image: hub.byted.org/compile/byteredis_dev_gcc830:76ecd565136262ac16f19b29a24b552f # with gcc830
+    envs:
+      <<: *common_envs
+    steps:
+      - uses: actions/setup-consul
+      - uses: actions/setup-proxy
+      - name: Show Info
+        commands:
+          - whoami
+          - pwd
+          - ls
+          - date
+      - name: Build
+        commands:
+          - ./build.sh Release
+  onebox_feature_test: &onebox_test
+    image: hub.byted.org/compile/byteredis_dev_gcc830:76ecd565136262ac16f19b29a24b552f # with gcc830
+    depends: [build]
+    runs-on:
+      spec: c1.8xlarge
+    envs:
+      <<: *common_envs
+      ONEBOX_TEST_PARAM: "test_feature"
+    steps:
+      - name: setup_consul
+        uses: actions/setup-consul
+      - name: download artifact
+        uses: actions/download-artifact
+        inputs:
+          name: output
+          path: ./
+      - name: onebox
+        commands:
+          - ./test/run_onebox.sh local "$ONEBOX_TEST_PARAM"
+  onebox_test_string_linearizability:
+    <<: *onebox_test
+    envs:
+      <<: *common_envs
+      ONEBOX_TEST_PARAM: "test_consistency/test_consistency.py:test_string_linearizability"
+  onebox_test_hash_linearizability:
+    <<: *onebox_test
+    envs:
+      <<: *common_envs
+      ONEBOX_TEST_PARAM: "test_consistency/test_consistency.py:test_hash_linearizability"
+  onebox_test_string_eventual:
+    <<: *onebox_test
+    envs:
+      <<: *common_envs
+      ONEBOX_TEST_PARAM: "test_consistency/test_consistency.py:test_string_eventual"
+  onebox_test_hash_eventual:
+    <<: *onebox_test
+    envs:
+      <<: *common_envs
+      ONEBOX_TEST_PARAM: "test_consistency/test_consistency.py:test_hash_eventual"

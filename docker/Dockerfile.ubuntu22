@@ -1,0 +1,54 @@
+FROM ubuntu:22.04 AS build
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG BUILD_TYPE=Release
+ARG ENABLE_MTCACHE=OFF
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    autoconf \
+    automake \
+    bison \
+    build-essential \
+    bzip2 \
+    ca-certificates \
+    curl \
+    flex \
+    gawk \
+    git \
+    libapr1-dev \
+    libaprutil1-dev \
+    libboost-all-dev \
+    libbz2-dev \
+    libevent-dev \
+    libev-dev \
+    libgflags-dev \
+    libicu-dev \
+    libkrb5-dev \
+    libleveldb-dev \
+    liblz4-dev \
+    libnuma-dev \
+    libsasl2-dev \
+    libsnappy-dev \
+    libssl-dev \
+    libtool \
+    libunwind-dev \
+    make \
+    nasm \
+    pkg-config \
+    python3 \
+    python3-pip \
+    python3-venv \
+    rsync \
+    swig \
+    unzip \
+    yasm \
+    zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY . /src
+
+RUN BUILD_TYPE="${BUILD_TYPE}" ENABLE_MTCACHE="${ENABLE_MTCACHE}" \
+    JOBS="$(nproc)" bash tools/build_ubuntu22.sh
+
+CMD ["/bin/bash"]

@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package bcache2.hash;
+
+import "base.proto";
+
+option java_package = "com.bytedance.bcache2.proto";
+
+message HashModuleRequest {
+    oneof cmd {
+        SetRequest set_request = 1;
+        DelRequest del_request = 2;
+        GetRequest get_request = 3;
+    }
+}
+
+message HashModuleResponse {
+    oneof cmd {
+        SetResponse set_response = 1;
+        DelResponse del_response = 2;
+        GetResponse get_response = 3;
+    }
+}
+
+message SetRequest {
+    bytes key   = 1;
+    bytes field = 2;
+    bytes value = 3;
+}
+
+message SetResponse {
+}
+
+message DelRequest {
+    bytes key   = 1;
+    bytes field = 2;
+}
+
+message DelResponse {
+}
+
+message GetRequest {
+    bytes key   = 1;
+    bytes field = 2;
+}
+
+message GetResponse {
+    bytes value = 1;
+}
