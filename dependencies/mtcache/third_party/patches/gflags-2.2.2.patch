@@ -1,0 +1,27 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 657a1f4..4c6fe88 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -175,6 +175,7 @@ gflags_define (BOOL INSTALL_SHARED_LIBS        "Request installation of shared l
+ gflags_define (BOOL INSTALL_STATIC_LIBS        "Request installation of static libraries."                                ON  OFF)
+ gflags_define (BOOL REGISTER_BUILD_DIR         "Request entry of build directory in CMake's package registry."            OFF OFF)
+ gflags_define (BOOL REGISTER_INSTALL_PREFIX    "Request entry of installed package in CMake's package registry."          ON  OFF)
++gflags_define (BOOL WITH_ASAN                  "Request build with address sanitizer."                                    OFF ON)
+ 
+ gflags_property (BUILD_STATIC_LIBS   ADVANCED TRUE)
+ gflags_property (INSTALL_HEADERS     ADVANCED TRUE)
+@@ -334,6 +335,14 @@ else ()
+   set (HAVE_PTHREAD 0)
+ endif ()
+ 
++# ----------------------------------------------------------------------------
++# address sanitizer settings - enable or disable address sanitizer
++if (WITH_ASAN)
++  set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address")
++  set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fsanitize=address")
++  set (CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -fsanitize=address")
++endif ()
++
+ # ----------------------------------------------------------------------------
+ # source files - excluding root subdirectory and/or .in suffix
+ set (PUBLIC_HDRS

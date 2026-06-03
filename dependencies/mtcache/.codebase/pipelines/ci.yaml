@@ -1,0 +1,53 @@
+# Codebase CI doc: https://bytedance.feishu.cn/wiki/wikcnU4REAouZ7tlLb6n22bw4de
+# Basic Action Cache doc: https://bytedance.feishu.cn/wiki/wikcnt48A366W76acBoaCBREPed
+
+name: MTCACHE CI
+trigger:
+  change:
+    types:
+      - create
+      - push
+  manual:
+jobs:
+  build_mtcache_clang:
+    name: Build MTCache with clang++ & Run UT
+    image: hub.byted.org/compile/mtcache_compile_clang:f072cd4fdb5198556156d36781fa292e
+    steps:
+      - id: git_shallow_clone
+        uses: actions/checkout
+        inputs:
+          depth: 1
+      - id: get_home_dir
+        commands:
+          - echo "::set-output name=home::$(echo ~)"
+      - id: clang_format_lint
+        commands:
+          - cd ${{Envs["CI_REPO_WORKSPACE"]}}
+          - ./dev-support/clang_format_check.sh
+      - id: prepare_ccache
+        uses: actions/cache
+        inputs:
+          key: ccache
+          paths:
+            - ${{Steps.get_home_dir.Outputs.home}}/.ccache
+            - historian.db
+          restore_keys:
+            - ccache
+      - id: code_historian
+        uses: actions/historian
+        inputs:
+          db-file: historian.db
+      - id: build_and_test
+        name: build with clang++ and test
+        commands:
+          - cd ${{Envs["CI_REPO_WORKSPACE"]}}
+          - ./build.sh --clean-build --enable-asan --build-type Debug --compiler clang -j48 --thirdparty-root /opt/mtcache_thirdparty_asan
+          - cd build
+          - ctest --output-on-failure --timeout 300
+      - id: independent_ctest
+        commands:
+          - cd ${{Envs["CI_REPO_WORKSPACE"]}}
+          - cd build
+          # Data and meta engines use zonedstore by default, whose flag value is 1, here
+          # we switch to terarkdb to run unit tests again.
+          - env FLAGS_ssd_engine_type=0 ctest --output-on-failure --timeout 300 --tests-regex "(unified_cache|unified_cache_ssd_only)_test"
