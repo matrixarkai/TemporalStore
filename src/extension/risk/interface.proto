@@ -1,0 +1,231 @@
+syntax = "proto3";
+
+package bcache2.risk;
+
+
+enum Function {
+    HSET = 0;
+    HQUERY = 1;
+    CPCSET = 2;
+    CPCQUERY = 3;
+    FOLSET = 4;
+    FOLQUERY = 5;
+    HSETANDGET = 6;
+    FOLSETANDGET = 7;
+    CPCSETANDGET = 8;
+    MANAGER = 9;
+}
+
+message KvPair {
+    string field = 1;
+    string value =2;
+}
+
+enum HType {
+    COUNT = 0;
+    MIN = 1;
+    MAX = 2;
+    CHANGE = 3;
+}
+
+message HsetResponse {
+    int32 err_code = 1;
+    string err_msg = 2;
+}
+
+// 需要保证按照精度从小到大排序, 枚举值必须使用两位数字
+enum RiskPrecision {
+    DISABLE = 0; // 枚举值必须从 0 开始
+
+    OneSecond   = 10;
+    FiveSeconds = 14;
+    TenSeconds  = 19;
+    OneMinute   = 30;
+    FiveMinutes = 34;
+    TenMinutes  = 39;
+    OneHour     = 50;
+    OneDay      = 60;
+    OneMonth    = 80;
+}
+
+// 底层采用riskhashmodel，实现算子count/min/max/sum/change
+message HsetRequest {
+    string key = 1; 
+    string value = 2; // 对于change 传入对应的field；对于普通的计数，传入具体的数字，比如1，2等
+    uint64 ttl = 3; // 过期时间
+    HType htype = 4; // 写入的类型，区分DC，COUNT， MIN，MAX
+    uint64 occur_time = 5; // 发生时间
+    RiskPrecision precision = 6; // 写入的精度
+    string uuid = 7;
+}
+message CPCSetRequest {
+    string key = 1;
+    repeated string values = 2;
+    uint64 ttl = 3; // 过期时间
+    uint64 occur_time = 4; // 发生时间
+    RiskPrecision precision = 5; // 写入的精度
+    bool dont_upgrade_cpc = 6; // 强制使用hash，不提升到cpc实现,用于兼容老的接口，用于dc list的场景
+    string uuid = 7;
+}
+
+
+message CPCSetResponse {
+    int32 err_code = 1;
+    string err_msg = 2;
+}
+
+enum WindowUnit {
+    Second = 0;
+    Minute = 1;
+    Hour = 2;
+    Day = 3;
+}
+message Window {
+    int64 start = 1;
+    int64 end = 2;
+    WindowUnit unit = 3;
+}
+
+// 1-3d 的窗口, start 传 -3, end 传 -1
+message HqueryRequest {
+    string key = 1;
+    RiskPrecision precision = 2;// 精度，对于0-0d这种，不需要
+    HType htype = 3;
+    repeated Window windows = 4;
+}
+
+message CPCQueryRequest {
+    string key = 1;
+    RiskPrecision precision = 2;// 精度，对于0-0d这种，不需要
+    repeated Window windows = 3;
+    bool with_detail = 4; // 是否返回详情，默认为false
+}
+message ListDetail {
+    repeated string detail= 1;
+}
+
+message ResultDetail{
+    int64 result = 1;
+    bool  has_result = 2;
+}
+
+message HqueryResponse {
+    int32 err_code = 1;
+    string err_msg = 2;
+    repeated ResultDetail result_list = 3;
+}
+
+message CPCQueryResponse {
+    int32 err_code = 1;
+    string err_msg = 2;
+    repeated int64 count_list = 3;
+    repeated ListDetail detail_lists = 4;
+}
+
+// 用于实现同步指标,请求参数
+message HsetAndGetRequest {
+    string key = 1;
+    string value = 2;
+    uint64 ttl = 3; // 过期时间
+    HType htype = 4; // 写入的类型，区分DC，COUNT， MIN，MAX，LIST,如果是DC写入并且获取详情，需要传递LIST
+    RiskPrecision precision = 5;// 精度，对于0-0d这种，不需要
+    repeated Window windows = 6;
+    string uuid = 7;
+}
+
+message HsetAndGetResponse {
+    int32 err_code = 1;
+    string err_msg = 2;
+    repeated ResultDetail result_list = 3;
+}
+
+message CPCSetAndGetRequest {
+    string key = 1;
+    repeated string values = 2;
+    uint64 ttl = 3; // 过期时间
+    bool with_detail = 4; // 是否返回详情，默认为false
+    RiskPrecision precision = 5;// 精度，对于0-0d这种，不需要
+    repeated Window windows = 6;
+    string uuid = 7;
+}
+
+message CPCSetAndGetResponse {
+    int32 err_code = 1;
+    string err_msg = 2;
+    repeated int64 count_list = 3;
+    repeated ListDetail detail_lists = 4;
+}
+
+
+enum FolType {
+    FIRST = 0;
+    LAST = 1;
+}
+
+message FolSetRequest {
+    string key = 1;
+    string value = 2;
+    uint64 occur_time = 3; // 发生时间
+    uint64 ttl = 4; // 过期时间
+    FolType fol_type = 5;
+}
+
+
+message FolQueryRequest {
+    string key = 1;
+}
+
+message FolSetResponse {
+    int32 err_code = 1;
+    string err_msg = 2;
+}
+
+message FolQueryResponse {
+    int32 err_code = 1;
+    string err_msg = 2;
+    string result = 3;
+}
+
+message FolSetAndGetRequest {
+    string key = 1;
+    string value = 2;
+    uint64 occur_time = 3; // 发生时间
+    uint64 ttl = 4; // 过期时间
+    FolType fol_type = 5;
+}
+
+message FolSetAndGetResponse {
+    int32 err_code = 1;
+    string err_msg = 2;
+    string result = 3;
+}
+
+enum ManagerType {
+    FULLGC = 0;
+    SUBGC = 1;
+    QUERY = 2;
+    DEL = 3;
+    UPDATE = 4;
+    FIELD_LIST = 5;
+    FIELD_COUNT = 6;
+    ALL_DATA_VALUE = 7;
+    FORCE_CHANGE_CPC = 8;
+    GET_DC_TYPE = 9;
+    MEM_SIZE = 10;
+    REPEAT_CHECK_DATA = 11;
+}
+
+message ManagerRequest {
+    ManagerType op_type = 1;
+    string key = 2;
+    repeated KvPair field_list = 3;
+    string range_start = 4;
+    string range_end = 5;
+    bool is_cpc = 6;
+}
+
+message ManagerResponse {
+    int32 err_code = 1;
+    string err_msg = 2;
+    repeated KvPair result = 3;
+}

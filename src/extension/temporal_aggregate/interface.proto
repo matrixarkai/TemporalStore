@@ -1,0 +1,59 @@
+syntax = "proto3";
+
+package bcache2.temporal_aggregate;
+
+enum Function {
+    INCR = 0;
+    QUERY = 1;
+}
+
+enum AggregateOp {
+    COUNT = 0;
+    SUM = 1;
+    MIN = 2;
+    MAX = 3;
+}
+
+message Dimension {
+    string name = 1;
+    string value = 2;
+}
+
+message IncrRequest {
+    string key = 1;
+    string metric = 2;
+    repeated Dimension dimensions = 3;
+    uint64 timestamp_ms = 4;
+    uint64 bucket_width_ms = 5;
+    int64 value = 6;
+    uint64 ttl_ms = 7;
+    AggregateOp op = 8;
+}
+
+message IncrResponse {
+    int64 bucket_value = 1;
+    uint64 bucket_id = 2;
+}
+
+message QueryRequest {
+    string key = 1;
+    string metric = 2;
+    repeated Dimension dimensions = 3;
+    uint64 start_timestamp_ms = 4;
+    uint64 end_timestamp_ms = 5;
+    uint64 bucket_width_ms = 6;
+    AggregateOp op = 7;
+}
+
+message BucketValue {
+    uint64 bucket_id = 1;
+    uint64 bucket_start_ms = 2;
+    int64 value = 3;
+}
+
+message QueryResponse {
+    bool has_value = 1;
+    int64 value = 2;
+    repeated BucketValue buckets = 3;
+}
+

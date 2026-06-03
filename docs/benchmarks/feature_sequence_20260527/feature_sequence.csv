@@ -1,0 +1,10 @@
+prefix=seq_1779929202_1804289383
+keys=8
+rows_per_key=5000
+query_ops_per_case=100
+system,phase,ops,threads,keys,rows_per_key,window_rows,filters,errors,total_points,total_ms,qps,points_per_sec,avg_us,p50_us,p95_us,p99_us,min_us,max_us
+TemporalStore,ingest_add_sequence_rows,8,8,8,5000,0,0,0,40000,3515,2,11379,3324958,3405336,3438257,3438257,2998396,3438257
+TemporalStore,window_100_no_filter,100,8,8,5000,100,0,0,10000,547,182,18281,26881,24311,49666,57831,2414,58504
+TemporalStore,window_1000_action_eq_3,100,8,8,5000,1000,1,0,20000,1620,61,12345,121867,119131,182328,187139,56173,187876
+TemporalStore,window_1000_complex_filters,100,8,8,5000,1000,3,0,5552,1770,56,3136,134907,131772,172165,174515,60170,185138
+TemporalStore,full_window_complex_filters,100,8,8,5000,5000,3,0,313703,10018,9,31313,779650,741603,1176598,1194049,433698,1194605

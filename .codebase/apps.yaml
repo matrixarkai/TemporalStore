@@ -1,0 +1,12 @@
+codecov:
+  status:
+    project:          
+      # Lines coverage for entire project. Tolerates atmost 5% decreased for each change
+      lines:           
+        threshold: 5%
+        base: "change"
+    diff:  
+      # Lines coverage for incremental change. Requires atleast 50% coverage each time               
+      lines:         
+          minimum_coverage: 70%
+          line_limit: 20

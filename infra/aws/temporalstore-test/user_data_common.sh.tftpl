@@ -1,0 +1,65 @@
+#!/bin/bash
+set -euxo pipefail
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y \
+  nfs-common jq htop git tar gzip curl snapd nginx awscli \
+  libprotobuf23 libgflags2.2 libleveldb1d libev4
+
+snap install amazon-ssm-agent --classic || true
+systemctl enable --now snap.amazon-ssm-agent.amazon-ssm-agent.service || systemctl enable --now amazon-ssm-agent || true
+
+mkdir -p /mnt/temporalstore-shared
+if ! grep -q "/mnt/temporalstore-shared" /etc/fstab; then
+  echo "${efs_id}.efs.${region}.amazonaws.com:/ /mnt/temporalstore-shared nfs4 nfsvers=4.1,_netdev,noresvport,hard,timeo=600,retrans=2 0 0" >> /etc/fstab
+fi
+for _ in $(seq 1 60); do
+  mount /mnt/temporalstore-shared && break
+  sleep 2
+done
+
+mkdir -p \
+  /opt/temporalstore/bin \
+  /opt/temporalstore/conf \
+  /opt/temporalstore/monitoring-ui \
+  /var/log/temporalstore \
+  /mnt/temporalstore-shared/storage \
+  /mnt/temporalstore-shared/oplog \
+  /mnt/temporalstore-shared/page \
+  /mnt/temporalstore-shared/index \
+  /mnt/temporalstore-shared/snapshots
+
+cat >/opt/temporalstore/node.env <<EOF
+TEMPORALSTORE_SHARED_PATH=/mnt/temporalstore-shared
+TEMPORALSTORE_CACHE_PATH=
+EOF
+
+cat >/etc/nginx/sites-available/temporalstore-monitoring <<'EOF'
+server {
+  listen 8088 default_server;
+  listen [::]:8088 default_server;
+  server_name _;
+
+  root /opt/temporalstore/monitoring-ui;
+  index index.html;
+
+  location / {
+    try_files $uri $uri/ /index.html;
+  }
+
+  location /logs/ {
+    alias /var/log/temporalstore/;
+    autoindex on;
+  }
+
+  location = /metrics {
+    default_type text/plain;
+    return 200 "temporalstore_monitoring_ui_up 1\n";
+  }
+}
+EOF
+
+rm -f /etc/nginx/sites-enabled/default
+ln -sf /etc/nginx/sites-available/temporalstore-monitoring /etc/nginx/sites-enabled/temporalstore-monitoring
+systemctl enable --now nginx

@@ -1,0 +1,186 @@
+LOG_LEVEL: INFO  # FATAL, ERROR, WARN, INFO, DEBUG
+IDC: lf
+ONEBOX_DIR: onebox_env
+DEPLOYER_TYPE: remote  # local, remote
+SETUP_ONLY: false
+CASE_ROUNDS: 1
+WITHOUT_TEARDOWN: false
+AUTH_TOKEN: 58a70817003101f7a02f529049a04e49
+INJECT_FAULT: true
+PROC_TIMEOUT: 24h
+LARK_APP_ID: cli_a268df36bffa900d
+LARK_APP_TOKEN: Oh0xPFaHVdAcrQiUlHFHqcF3zSNRqAMI
+LARK_CHAT_ID: oc_b27038f34a270e36627b8730bb2c4ae1  # Bcache2-Dev
+LARK_TEMPLATE_ID: ctp_AAuL2af7gGrQ # chaos message template
+METRICS_QUERY_HOST: http://openapi-metrics-cn.byted.org
+METRICS_BOSUN_HOST: http://bosun-api-cn.byted.org
+METRICS_REGION: China-North
+METRICS_APP_NAME: bcache_metrics
+METRICS_APP_SECRET: 2feddb29b1da4fb4931bd64ac514accb
+
+METASERVER:
+  LOCAL_BIN: output/bcache2-metaserver
+  FLAGS:
+    metaserver_cluster_name: chaos_test
+    metaserver_placement_host_deduplicate: false
+    metaserver_convict_safe_mode_warning_ratio: 50
+    metaserver_convict_safe_mode_critical_ratio: 60
+    metaserver_announce_consul_name: bcache2.metaserver.chaos.service.lf,bcache2.metaserver.chaos.service.yg
+    metaserver_announce_consul_name_leader: bcache2.metaserver.chaos_leader
+  NUM: 3
+ETCD:
+  SCM_REPO: storage/etcd/binary
+  SCM_VERSION: 3.5.4.0
+
+SERVER:
+  LOCAL_BIN: output/bcache2-server
+  SCM_REPO: bytedance/storage/bcache2
+  SCM_VERSION: 1.0.0.52
+  NUM: 4
+  LOG_LEVEL: 2
+  BEGIN_PORT: 5000
+  BYTEBOX_ID: 2634291
+  BYTEBOX_NAME: bytedance.bcache2.chaos
+  TABLE_NAME: bytedance.bcache2.chaos
+  MASTER_CONSUL: bytedance.bcache2.configserver_chaos.service.lf
+  LOCATIONS:
+  - vregion: vregion
+    vdc: vdc1
+    vau: vau1
+  - vregion: vregion
+    vdc: vdc2
+    vau: vau2
+  FLAGS:
+
+PROXY:
+  LOCAL_BIN: output/bcache2-proxy
+  FLAGS:
+      log_level: 2
+
+BENCHMARK:
+  PORT: 0
+  FROM_SCM: true
+  SCM_REPO: bytedance/storage/bcache2_gcc830
+  SCM_VERSION: 1.0.0.506
+  LOCAL_BIN: output/bcache2-bench
+  ROUND: 10
+  REMOTE_PRODUCT_NAME: toutiao.redis.bcache2_chaos_test
+  FLAGS:
+    bench_log_level: 2
+    bench_job_num: 16
+    bench_depth: 100
+    bench_key_ttl_ms: 43200000
+    bench_checker_enable: true
+    bench_checker_worker_num: 32
+    bench_checker_max_operation_per_round: 50000000
+    bench_checker_max_ambiguous_time_ms: 10000
+    bench_checker_max_expire_ambiguous_time_ms: 2000
+    bench_checker_reuse_key_count: 100000
+    bench_checker_eventual_consistency_history_time_ms: 10000
+    bench_checker_timeout_ms: 300000
+    bench_client_type: bcache2
+    bench_bcache2_client_topo_error_retry_interval_ms: 2000 # fast retry to detect new loaded leader
+    bench_workload_key_dis: R
+    bench_workload_key_size: 16
+    bench_workload_key_count: 2000000
+    bench_workload_value_count: 100000
+    bench_workload_value_min_size: 512
+    bench_workload_value_max_size: 4096
+    bench_common_workload_freq_del: 1
+    bench_common_workload_freq_expire: 4
+    bench_common_workload_freq_ttl: 2
+    bench_common_workload_expire_min_ttl_ms: 1000
+    bench_common_workload_expire_max_ttl_ms: 30000
+    bench_string_workload_freq_set: 1
+    bench_string_workload_freq_setex: 1
+    bench_string_workload_freq_get: 2
+    bench_string_workload_setex_min_ttl_ms: 1000
+    bench_string_workload_setex_max_ttl_ms: 30000
+    bench_hash_workload_freq_hset: 4
+    bench_hash_workload_freq_hget: 2
+    bench_hash_workload_freq_hdel: 1
+    bench_hash_workload_freq_hgetall: 1
+    bench_hash_workload_field_count: 10
+
+FAULT_INJECTER:
+  FAULT_INTERVAL: 60
+  FAULT_MAX_DURATION: 300
+  FAULT_TYPES:
+      - SERVER_DOWN
+      - FREEZE_SERVER
+      - SERVER_HANG
+      - FREEZE_PARTITION
+      - NETWORK_DELAY
+      - NETWORK_DROP
+      - NETWORK_REJECT
+      - META_SERVER_DOWN
+
+CODE_FIU_CONFIG:
+  DEFAULT:
+    INJECTION_POINTS: ".+" # regex to match injection points
+    TYPES: ".+" # ditto
+    MIN_PROBABILITY: 5 # 5%
+    MAX_PROBABILITY: 50 # 50%
+    MIN_SERVERS: 1
+    MAX_SERVERS: 10
+    MIN_DURATION_S: 120
+    MAX_DURATION_S: 600
+  GROUPS:
+    - GROUP: page_gc
+    - GROUP: index_gc
+    - GROUP: oplog_gc
+    - GROUP: dump
+    - GROUP: bytestore
+    - GROUP: bytestore_data_distort
+
+SLA:
+  TOTAL:
+    QPS: 30000
+    AVAILABILITY: 0.95
+    AVG_LATENCY_MS: 50
+    P99_LATENCY_MS: 200
+  COMMAND:
+    -
+      NAME: string_request|get_request
+      QPS: 0
+      AVAILABILITY: 0.95
+      AVG_LATENCY_MS: 50
+      P99_LATENCY_MS: 200
+    -
+      NAME: string_request|set_request
+      QPS: 0
+      AVAILABILITY: 0.95
+      AVG_LATENCY_MS: 50
+      P99_LATENCY_MS: 200
+
+NAMESPACE:
+  name: chaos
+  consul_info:
+    - name: bcache2.chaos.chaos
+      vdc: lf
+    - name: bcache2.chaos.chaos
+      vdc: yg
+  tables:
+    - namespace_name: chaos
+      name: table
+      partition_set_num: 4
+      partition_units:
+        - partition_num: 2
+          placement_set:
+            - vregion: China-North
+              vdc: lf
+              vau: LF-Main
+            - vregion: China-North
+              vdc: lf
+              vau: LF-TJWQ
+            - vregion: China-North
+              vdc: yg
+              vau: YG-Main
+          storage_pool_uri: "blob://store-hl-test/bcache2_chaos_test/public"
+          primary_prefer:
+            vregion: China-North
+            vdc: lf
+            vau: LF-Main
+      replication_union_policy: ANTI_ENTROPY
+      quota:
+        ops_read: 1000

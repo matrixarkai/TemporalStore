@@ -1,0 +1,64 @@
+#!/bin/bash
+set -euxo pipefail
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y \
+  nfs-common jq htop git tar gzip curl xfsprogs snapd awscli \
+  libprotobuf23 libgflags2.2 libleveldb1d libev4
+
+snap install amazon-ssm-agent --classic || true
+systemctl enable --now snap.amazon-ssm-agent.amazon-ssm-agent.service || systemctl enable --now amazon-ssm-agent || true
+
+mkdir -p /mnt/temporalstore-shared
+if ! grep -q "/mnt/temporalstore-shared" /etc/fstab; then
+  echo "${efs_id}.efs.${region}.amazonaws.com:/ /mnt/temporalstore-shared nfs4 nfsvers=4.1,_netdev,noresvport,hard,timeo=600,retrans=2 0 0" >> /etc/fstab
+fi
+for _ in $(seq 1 60); do
+  mount /mnt/temporalstore-shared && break
+  sleep 2
+done
+
+mkdir -p \
+  /opt/temporalstore/bin \
+  /opt/temporalstore/conf \
+  /var/log/temporalstore \
+  /mnt/temporalstore-cache \
+  /mnt/temporalstore-shared/storage \
+  /mnt/temporalstore-shared/oplog \
+  /mnt/temporalstore-shared/page \
+  /mnt/temporalstore-shared/index \
+  /mnt/temporalstore-shared/snapshots
+
+ROOT_SOURCE="$(findmnt -no SOURCE /)"
+ROOT_PARENT="$(lsblk -no PKNAME "$ROOT_SOURCE" 2>/dev/null || true)"
+if [ -n "$ROOT_PARENT" ]; then
+  ROOT_DISK="/dev/$ROOT_PARENT"
+else
+  ROOT_DISK="$ROOT_SOURCE"
+fi
+
+for _ in $(seq 1 90); do
+  CACHE_DEV="$(lsblk -ndo PATH,TYPE,MOUNTPOINT | awk '$2=="disk" && $3=="" {print $1}' | grep -v "^$${ROOT_DISK}$" | head -n 1 || true)"
+  if [ -n "$CACHE_DEV" ]; then
+    break
+  fi
+  sleep 2
+done
+
+if [ -n "$CACHE_DEV" ]; then
+  if ! blkid "$CACHE_DEV"; then
+    mkfs.xfs -f "$CACHE_DEV"
+  fi
+  CACHE_UUID="$(blkid -s UUID -o value "$CACHE_DEV")"
+  if ! grep -q "$CACHE_UUID" /etc/fstab; then
+    echo "UUID=$CACHE_UUID /mnt/temporalstore-cache xfs defaults,nofail 0 2" >> /etc/fstab
+  fi
+  mount /mnt/temporalstore-cache
+  mkdir -p /mnt/temporalstore-cache/mtcache-ssd
+fi
+
+cat >/opt/temporalstore/node.env <<EOF
+TEMPORALSTORE_SHARED_PATH=/mnt/temporalstore-shared
+TEMPORALSTORE_CACHE_PATH=/mnt/temporalstore-cache/mtcache-ssd
+EOF

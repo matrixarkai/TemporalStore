@@ -1,0 +1,481 @@
+openapi: 3.0.3
+info:
+  title: TemporalStore Proxy API
+  version: 0.1.0
+paths:
+  /v1/string/put:
+    post:
+      summary: Put a string value with optional TTL.
+      requestBody:
+        $ref: '#/components/requestBodies/StringPut'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+  /v1/string/get:
+    post:
+      summary: Get a string value.
+      requestBody:
+        $ref: '#/components/requestBodies/Key'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+  /v1/common/delete:
+    post:
+      summary: Delete an object.
+      requestBody:
+        $ref: '#/components/requestBodies/Key'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+  /v1/common/expire:
+    post:
+      summary: Set object TTL.
+      requestBody:
+        $ref: '#/components/requestBodies/Expire'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+  /v1/common/ttl:
+    post:
+      summary: Read object TTL.
+      requestBody:
+        $ref: '#/components/requestBodies/Key'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+  /v1/hash/hset:
+    post:
+      summary: Set a hash field.
+      requestBody:
+        $ref: '#/components/requestBodies/HashSet'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+  /v1/hash/hget:
+    post:
+      summary: Get a hash field.
+      requestBody:
+        $ref: '#/components/requestBodies/HashGet'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+  /v1/hash/hdel:
+    post:
+      summary: Delete a hash field.
+      requestBody:
+        $ref: '#/components/requestBodies/HashGet'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+  /v1/set/sadd:
+    post:
+      summary: Add a set member.
+      requestBody:
+        $ref: '#/components/requestBodies/SetAdd'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+  /v1/set/smembers:
+    post:
+      summary: List set members.
+      requestBody:
+        $ref: '#/components/requestBodies/Key'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+  /v1/feature/add:
+    post:
+      summary: Add raw timestamped feature points.
+      requestBody:
+        $ref: '#/components/requestBodies/FeatureAdd'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+  /v1/feature/query:
+    post:
+      summary: Query raw timestamped feature points.
+      requestBody:
+        $ref: '#/components/requestBodies/FeatureQuery'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+  /v1/sequence/add:
+    post:
+      summary: Add typed long-sequence feature rows.
+      requestBody:
+        $ref: '#/components/requestBodies/SequenceAdd'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+  /v1/sequence/query:
+    post:
+      summary: Query typed long-sequence feature rows.
+      requestBody:
+        $ref: '#/components/requestBodies/FeatureQuery'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+  /v1/ips/add:
+    post:
+      summary: Add an IPS instance.
+      requestBody:
+        $ref: '#/components/requestBodies/IpsAdd'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+  /v1/ips/query_last:
+    post:
+      summary: Query recent IPS instances.
+      requestBody:
+        $ref: '#/components/requestBodies/IpsQueryLast'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+  /v1/risk/increment:
+    post:
+      summary: Increment a risk counter.
+      requestBody:
+        $ref: '#/components/requestBodies/RiskIncrement'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+  /v1/risk/count:
+    post:
+      summary: Query a risk counter window.
+      requestBody:
+        $ref: '#/components/requestBodies/RiskCount'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+components:
+  responses:
+    Envelope:
+      description: Proxy response envelope.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Envelope'
+  requestBodies:
+    Key:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/KeyRequest'
+    StringPut:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/StringPutRequest'
+    Expire:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ExpireRequest'
+    HashSet:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/HashSetRequest'
+    HashGet:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/HashFieldRequest'
+    SetAdd:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SetAddRequest'
+    FeatureAdd:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/FeatureAddRequest'
+    SequenceAdd:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SequenceAddRequest'
+    FeatureQuery:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/FeatureQueryRequest'
+    IpsAdd:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/IpsAddRequest'
+    IpsQueryLast:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/IpsQueryLastRequest'
+    RiskIncrement:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RiskIncrementRequest'
+    RiskCount:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RiskCountRequest'
+  schemas:
+    Envelope:
+      type: object
+      required: [ok, code, message]
+      properties:
+        ok:
+          type: boolean
+        code:
+          type: integer
+        message:
+          type: string
+        data:
+          type: object
+    KeyRequest:
+      type: object
+      required: [namespace, table, key]
+      properties:
+        namespace:
+          type: string
+        table:
+          type: string
+        key:
+          type: string
+    StringPutRequest:
+      allOf:
+        - $ref: '#/components/schemas/KeyRequest'
+        - type: object
+          required: [value]
+          properties:
+            value:
+              type: string
+            ttl_ms:
+              type: integer
+              format: int64
+    ExpireRequest:
+      allOf:
+        - $ref: '#/components/schemas/KeyRequest'
+        - type: object
+          required: [ttl_ms]
+          properties:
+            ttl_ms:
+              type: integer
+              format: int64
+    HashSetRequest:
+      allOf:
+        - $ref: '#/components/schemas/KeyRequest'
+        - type: object
+          required: [field, value]
+          properties:
+            field:
+              type: string
+            value:
+              type: string
+    HashFieldRequest:
+      allOf:
+        - $ref: '#/components/schemas/KeyRequest'
+        - type: object
+          required: [field]
+          properties:
+            field:
+              type: string
+    SetAddRequest:
+      allOf:
+        - $ref: '#/components/schemas/KeyRequest'
+        - type: object
+          required: [member]
+          properties:
+            member:
+              type: string
+    FeaturePoint:
+      type: object
+      required: [timestamp, value]
+      properties:
+        timestamp:
+          type: integer
+          format: int64
+        value:
+          type: string
+    FeatureFilter:
+      type: object
+      required: [field, op, value]
+      properties:
+        field:
+          type: string
+        op:
+          type: integer
+        value:
+          type: integer
+          format: int64
+    FeatureAddRequest:
+      allOf:
+        - $ref: '#/components/schemas/KeyRequest'
+        - type: object
+          required: [points]
+          properties:
+            points:
+              type: array
+              items:
+                $ref: '#/components/schemas/FeaturePoint'
+    SequenceFeatureRow:
+      type: object
+      required: [timestamp, gid, action_type, duration, author_id]
+      properties:
+        timestamp:
+          type: integer
+          format: int64
+        gid:
+          type: integer
+          format: int64
+        action_type:
+          type: integer
+        duration:
+          type: integer
+        author_id:
+          type: integer
+          format: int64
+    SequenceAddRequest:
+      allOf:
+        - $ref: '#/components/schemas/KeyRequest'
+        - type: object
+          required: [rows]
+          properties:
+            rows:
+              type: array
+              items:
+                $ref: '#/components/schemas/SequenceFeatureRow'
+    FeatureQueryRequest:
+      allOf:
+        - $ref: '#/components/schemas/KeyRequest'
+        - type: object
+          required: [start_ts, end_ts, count]
+          properties:
+            start_ts:
+              type: integer
+              format: int64
+            end_ts:
+              type: integer
+              format: int64
+            count:
+              type: integer
+              format: int64
+            filters:
+              type: array
+              items:
+                $ref: '#/components/schemas/FeatureFilter'
+    IpsFeatureStat:
+      type: object
+      required: [id, slot, has_slot, type, v1, v2]
+      properties:
+        id:
+          type: integer
+          format: int64
+        slot:
+          type: integer
+        has_slot:
+          type: boolean
+        type:
+          type: integer
+        v1:
+          type: integer
+        v2:
+          type: integer
+    IpsAddRequest:
+      type: object
+      required: [namespace, table, ips_table, uid, timestamp_us, action_type, logical_table, features]
+      properties:
+        namespace:
+          type: string
+        table:
+          type: string
+        ips_table:
+          type: string
+        uid:
+          type: integer
+          format: int64
+        timestamp_us:
+          type: integer
+          format: int64
+        action_type:
+          type: integer
+        logical_table:
+          type: integer
+        features:
+          type: array
+          items:
+            $ref: '#/components/schemas/IpsFeatureStat'
+    IpsQueryLastRequest:
+      type: object
+      required: [namespace, table, ips_table, uid, action_type, logical_table, slot]
+      properties:
+        namespace:
+          type: string
+        table:
+          type: string
+        ips_table:
+          type: string
+        uid:
+          type: integer
+          format: int64
+        action_type:
+          type: integer
+        logical_table:
+          type: integer
+        slot:
+          type: integer
+        top_k:
+          type: integer
+        last_instances:
+          type: integer
+          format: int64
+    RiskIncrementRequest:
+      allOf:
+        - $ref: '#/components/schemas/KeyRequest'
+        - type: object
+          required: [amount, ttl_seconds, precision]
+          properties:
+            amount:
+              type: integer
+              format: int64
+            ttl_seconds:
+              type: integer
+              format: int64
+            precision:
+              type: integer
+            uuid:
+              type: string
+            occur_time_seconds:
+              type: integer
+              format: int64
+    RiskCountRequest:
+      allOf:
+        - $ref: '#/components/schemas/KeyRequest'
+        - type: object
+          required: [precision, window_start, window_end, window_unit]
+          properties:
+            precision:
+              type: integer
+            window_start:
+              type: integer
+              format: int64
+            window_end:
+              type: integer
+              format: int64
+            window_unit:
+              type: integer

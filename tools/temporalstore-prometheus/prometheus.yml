@@ -1,0 +1,10 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+
+scrape_configs:
+  - job_name: temporalstore_node_exporter
+    static_configs:
+      - targets:
+          - node-exporter:9100

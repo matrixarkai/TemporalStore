@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package bcache2.set;
+
+enum Function {
+    SADD = 0;
+    SMEMBERS = 1;
+}
+
+message SAddRequest {
+    string key = 1;
+    string member = 2;
+}
+
+message SAddResponse {
+}
+
+message SMembersRequest {
+    string key = 1;
+}
+
+message SMembersResponse {
+    repeated string members = 1;
+}

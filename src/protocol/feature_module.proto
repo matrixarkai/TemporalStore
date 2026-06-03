@@ -1,0 +1,111 @@
+syntax = "proto3";
+
+package bcache2.feature;
+
+import "base.proto";
+
+option java_package = "com.bytedance.bcache2.proto";
+
+message FeatureModuleRequest {
+    oneof cmd {
+        AddRequest add_request = 1;
+        QueryRequest query_request = 2;
+        AggQueryRequest agg_query_request = 3;
+        ReplaceRequest replace_request = 4;
+        DelRequest del_request = 5;
+    }
+}
+
+message FeatureModuleResponse {
+    oneof cmd {
+        AddResponse add_response = 1;
+        QueryResponse query_response = 2;
+        AggQueryResponse agg_query_response = 3;
+        ReplaceResponse replace_response = 4;
+        DelResponse del_response = 5;
+    }
+}
+
+message Point {
+  uint64 ts = 1;
+  bytes value = 2; // json for request, pb for response
+}
+
+message TsRange {
+  uint64 start_ts = 1;
+  uint64 end_ts = 2;
+}
+
+message FeaturePoint {
+    uint64 gid = 1;
+    uint32 action_type = 2;
+    uint32 duration = 3;
+    uint64 author_id = 4;
+}
+
+enum WritePolicy {
+    UPSERT = 0;
+    BLOCK = 1;
+    FIRST = 2;
+    UPDATE = 3;
+}
+
+message AddRequest {
+  string key = 1;
+  string format = 2; // "json" or "protobuf"
+  repeated Point point_list = 3;
+  WritePolicy policy = 4;
+}
+
+message AddResponse {
+}
+
+message QueryRequest {
+    string key = 1;
+    uint64 start_ts = 2;
+    uint64 end_ts = 3; 
+    uint64 count = 4;
+    string format = 5;  // "json" or "protobuf"
+    repeated string filters = 6;
+    string fields = 7;
+}
+
+message QueryResponse {
+    string key = 1;
+    repeated Point point_list = 2;
+}
+
+message AggQueryRequest {
+    string key = 1;
+    uint64 start_ts = 2;
+    uint64 end_ts = 3; 
+    repeated string filters = 4;
+    uint64 count = 5;
+    string format = 6;  // "json" or "protobuf"
+    string field = 7;
+    uint64 groupby_time = 8;
+    string groupby_fields = 9;
+    string aggregator = 10;
+}
+
+message AggQueryResponse {
+    repeated Point point_list = 1;
+}
+
+message ReplaceRequest {
+  string key = 1;
+  uint64 start_ts = 2;
+  uint64 end_ts = 3; 
+  string format = 4; // "json" or "protobuf"
+  repeated Point point_list = 5;
+}
+
+message ReplaceResponse {
+}
+
+message DelRequest {
+    string key = 1;
+}
+
+message DelResponse {
+}

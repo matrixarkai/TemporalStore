@@ -1,0 +1,5 @@
+{
+  "metaserver": { "status": "pending" },
+  "proxy": { "status": "pending" },
+  "exporter": { "status": "pending" }
+}

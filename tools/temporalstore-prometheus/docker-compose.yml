@@ -1,0 +1,73 @@
+services:
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: temporalstore-node-exporter
+    ports:
+      - "9100:9100"
+    volumes:
+      - ./vars-exporter/metrics:/var/lib/node_exporter/textfile_collector
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/rootfs
+      - --collector.textfile.directory=/var/lib/node_exporter/textfile_collector
+      - --collector.processes
+    networks:
+      - temporalstore-monitor
+    restart: unless-stopped
+
+  vars-exporter:
+    image: python:3.12-slim
+    container_name: temporalstore-vars-exporter
+    environment:
+      - VARS_TARGETS=server=http://host.docker.internal:18001/vars,metaserver=http://host.docker.internal:18000/vars
+      - VARS_INTERVAL_SECONDS=5
+      - VARS_OUTPUT_DIR=/var/lib/node_exporter/textfile_collector
+      - VARS_OUTPUT_FILE=temporalstore-vars.prom
+    volumes:
+      - ./vars-exporter:/app
+      - ./vars-exporter/metrics:/var/lib/node_exporter/textfile_collector
+    command:
+      - /bin/sh
+      - -c
+      - >
+        python /app/vars_to_prom.py
+        --targets "$VARS_TARGETS"
+        --interval "$VARS_INTERVAL_SECONDS"
+        --output-dir "$VARS_OUTPUT_DIR"
+        --output-file "$VARS_OUTPUT_FILE"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - temporalstore-monitor
+    depends_on:
+      - node-exporter
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    container_name: temporalstore-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      - temporalstore-monitor
+    depends_on:
+      - node-exporter
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+
+networks:
+  temporalstore-monitor:
+    driver: bridge

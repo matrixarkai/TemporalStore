@@ -1,0 +1,87 @@
+syntax = "proto3";
+
+package bcache2.hash2;
+
+enum Function {
+    SET = 0;
+    GET = 1;
+    DEL = 2;
+    MGET = 3;
+    MSET = 4;
+    GETALL = 5;
+    LEN = 6;
+    INCRBY = 7;
+}
+
+message SetRequest {
+    bytes key   = 1;
+    bytes field = 2;
+    bytes value = 3;
+}
+
+message SetResponse {
+}
+
+message GetRequest {
+    bytes key   = 1;
+    bytes field = 2;
+}
+
+message GetResponse {
+    bytes value = 1;
+    bool exist = 2;
+}
+
+message DelRequest {
+    bytes key   = 1;
+    bytes field = 2;
+}
+
+message DelResponse {
+}
+
+message MGetRequest {
+    bytes key = 1;
+    repeated bytes fields = 2;
+}
+
+message MGetResponse {
+    repeated bool  exists = 1;
+    repeated bytes values = 2;
+}
+
+message MSetRequest {
+    bytes key = 1;
+    repeated bytes fields = 2;
+    repeated bytes values = 3;
+}
+
+message MSetResponse {
+}
+
+message IncrByRequest {
+    bytes key   = 1;
+    bytes field = 2;
+    int64 increment = 3;
+}
+
+message IncrByResponse {
+    int64 value = 1;
+}
+
+message GetAllRequest {
+    bytes key = 1;
+}
+
+message GetAllResponse {
+    repeated bytes fields = 1;
+    repeated bytes values = 2;
+}
+
+message LenRequest {
+    bytes key = 1;
+}
+
+message LenResponse {
+    uint64 len = 1;
+}

@@ -1,0 +1,214 @@
+syntax = "proto3";
+
+package bcache2;
+
+import "base.proto";
+import "common_module.proto";
+import "string_module.proto";
+import "hash_module.proto";
+import "set_module.proto";
+import "feature_module.proto";
+import "config.proto";
+import "info.proto";
+
+option cc_generic_services = true;
+option java_package = "com.bytedance.bcache2.proto";
+
+service ServerService {
+  rpc Load(LoadRequest) returns (LoadResponse);
+  rpc Unload(UnloadRequest) returns (UnloadResponse);
+  rpc ExecuteCmd(ExecuteCmdRequest) returns (ExecuteCmdResponse);
+  rpc BatchExecuteCmd(BatchExecuteCmdRequest) returns (BatchExecuteCmdResponse);
+  rpc SetConfig(SetConfigRequest) returns (SetConfigResponse);
+  rpc GetConfig(GetConfigRequest) returns (GetConfigResponse);
+  rpc GetInfo(GetInfoRequest) returns (GetInfoResponse);
+  rpc ReadPartitionStream(ReadPartitionStreamRequest) returns (ReadPartitionStreamResponse);
+  rpc ScanPartitionStream(ScanPartitionStreamRequest) returns (ScanPartitionStreamResponse);
+
+  // with metaserver
+  rpc UpdateMembership(UpdateMembershipRequest) returns (AckResponse);
+  rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
+
+  // for probe
+  rpc Ping(EmptyMessage) returns (EmptyMessage);
+}
+
+service DashboardService {
+  rpc GetInfo(EmptyMessage) returns (EmptyMessage);
+}
+
+message GetInfoRequest {
+    RequestOption opt = 1;
+    uint64 partition_id = 2;
+}
+
+message GetInfoResponse {
+    RpcStatus status = 1;
+    PartitionInfo partition_info = 3;
+
+    // deprecated fields
+    ServerInfo deprecated_server_info = 2;
+}
+
+enum PartitionStreamKind {
+  PARTITION_STREAM_INDEX = 0;
+  PARTITION_STREAM_OPLOG = 1;
+  PARTITION_STREAM_PAGE = 2;
+}
+
+message ReadPartitionStreamRequest {
+    RequestOption opt = 1;
+    uint64 partition_id = 2;
+    PartitionStreamKind stream_kind = 3;
+    uint32 zone_id = 4;
+    uint64 offset = 5;
+    uint64 size = 6;
+}
+
+message ReadPartitionStreamResponse {
+    RpcStatus status = 1;
+    bytes data = 2;
+}
+
+message ScanPartitionStreamRequest {
+    RequestOption opt = 1;
+    uint64 partition_id = 2;
+    PartitionStreamKind stream_kind = 3;
+    uint32 zone_id = 4;
+    uint64 start_offset = 5;
+    uint64 end_offset = 6;
+    uint32 max_records = 7;
+    uint64 max_bytes = 8;
+}
+
+message PartitionStreamRecord {
+    uint64 offset = 1;
+    bytes data = 2;
+}
+
+message ScanPartitionStreamResponse {
+    RpcStatus status = 1;
+    repeated PartitionStreamRecord records = 2;
+    bool end_of_stream = 3;
+}
+
+message LoadRequest {
+    RequestOption opt = 1;
+    uint64 partition_id = 2;
+    uint64 load_version = 3;
+    string partition_uri = 4;
+    uint32 start_slot = 5;
+    uint32 end_slot = 6;
+    Config config = 7;
+    bool sync = 8;
+    PersistentType persistent_type = 9;
+    bool readonly = 10;
+    MembershipInfo membership = 11;
+    string table_name = 12;
+}
+
+message LoadResponse {
+    RpcStatus status = 1;
+}
+
+message UnloadRequest {
+    RequestOption opt = 1;
+    uint64 partition_id = 2;
+}
+
+message UnloadResponse {
+    RpcStatus status = 1;
+}
+
+message ExecuteCmdRequest {
+  RequestOption opt = 1;
+  uint64 partition_id = 2;
+  uint64 load_version = 3;
+  CmdRequest request = 4;
+}
+
+message ExecuteCmdResponse {
+    CmdResponse response = 2;
+}
+
+message BatchExecuteCmdRequest {
+  RequestOption opt = 1;
+  uint64 partition_id = 2;
+  uint64 load_version = 3;
+  repeated CmdRequest request = 4;
+  bool pin_primary = 5;
+}
+
+message BatchExecuteCmdResponse {
+    RpcStatus status = 1;
+    repeated CmdResponse response = 2;
+}
+
+message SetConfigRequest {
+  RequestOption opt = 1;
+  uint64 partition_id = 2;
+  Config config = 3;
+}
+
+message SetConfigResponse {
+  RpcStatus status = 1;
+}
+
+message GetConfigRequest {
+  RequestOption opt = 1;
+  uint64 partition_id = 2;
+}
+
+message GetConfigResponse {
+  RpcStatus status = 1;
+  Config config = 2;
+}
+
+message CmdRequest {
+  uint32 module_id = 1;
+  uint32 function_id = 2;
+  bytes  request_bytes = 3;
+
+  oneof module {
+    CommonModuleRequest common_request = 10;
+    hash.HashModuleRequest hash_request = 11;
+    set.SetModuleRequest set_request = 12;
+    feature.FeatureModuleRequest feature_request = 13;
+    str.StringModuleRequest string_request = 14;
+  }
+}
+
+message CmdResponse {
+  // execution status
+  // if not ok it means the cmd is not executed
+  // such as(partition not found)
+  RpcStatus status = 1;
+  // result status
+  // if not ok it means cmd executed but response failed
+  // such as(key not found)
+  RpcStatus response_status = 2;
+  bytes     response_bytes = 3;
+
+  oneof module {
+    CommonModuleResponse common_response = 10;
+    hash.HashModuleResponse hash_response = 11;
+    set.SetModuleResponse set_response = 12;
+    feature.FeatureModuleResponse feature_response = 13;
+    str.StringModuleResponse string_response = 14;
+  }
+}
+
+message UpdateMembershipRequest {
+    RequestOption opt = 1;
+    uint64 partition_id = 2;
+    MembershipInfo membership = 3;
+}
+
+message GetStatsRequest {
+    RequestOption opt = 1;
+    uint64 partition_id = 2;
+}
+message GetStatsResponse {
+    RpcStatus status = 1;
+    PartitionStats stats = 2;
+}
