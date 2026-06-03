@@ -30,3 +30,13 @@ ssm-*.json
 Thumbs.db
 .vscode/
 .idea/
+
+# Language build outputs
+target/
+*.jar
+*.class
+__pycache__/
+*.pyc
+node_modules/
+dist/
+out/
