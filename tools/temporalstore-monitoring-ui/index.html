@@ -31,7 +31,7 @@
         <article>
           <span>Primary Write QPS</span>
           <strong id="summary-write-qps">-</strong>
-          <small>latest scale run</small>
+          <small id="summary-write-note">latest scale run</small>
         </article>
         <article>
           <span>Secondary Lag</span>
@@ -84,6 +84,7 @@
           <div class="panel-head compact">
             <h2>Runtime Config</h2>
           </div>
+          <div id="config-profile" class="config-profile"></div>
           <div id="config-list" class="metric-list"></div>
         </article>
       </section>
@@ -93,10 +94,28 @@
           <div class="panel-head">
             <div>
               <h2>Scale Testing</h2>
-              <p>Latest benchmark runs, including primary reads, replica-eligible reads, and TemporalAggregate tests.</p>
+              <p>Latest benchmark runs, concurrency envelope, and latency/throughput break-down.</p>
             </div>
           </div>
           <div id="scale-tests" class="test-grid"></div>
+          <div class="table-wrap section-gap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Workload</th>
+                  <th>Threads</th>
+                  <th>Features</th>
+                  <th>Writes</th>
+                  <th>Write QPS</th>
+                  <th>Write p99</th>
+                  <th>Read QPS</th>
+                  <th>Read p99</th>
+                  <th>Errors</th>
+                </tr>
+              </thead>
+              <tbody id="scale-matrix-body"></tbody>
+            </table>
+          </div>
         </article>
 
         <article class="panel">
@@ -104,6 +123,20 @@
             <h2>Replication</h2>
           </div>
           <div id="replication-list" class="metric-list"></div>
+          <div class="table-wrap section-gap compact-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Threads</th>
+                  <th>Visible</th>
+                  <th>Missing</th>
+                  <th>p99 Lag</th>
+                  <th>Max Lag</th>
+                </tr>
+              </thead>
+              <tbody id="replication-matrix-body"></tbody>
+            </table>
+          </div>
         </article>
 
         <article class="panel">
@@ -142,6 +175,16 @@
             <tbody id="modules-body"></tbody>
           </table>
         </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Data Models</h2>
+            <p>Serving model inventory, access pattern, persistence behavior, and current test coverage.</p>
+          </div>
+        </div>
+        <div id="data-models" class="model-grid"></div>
       </section>
     </main>
     <script src="./app.js"></script>
