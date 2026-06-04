@@ -11,8 +11,7 @@ mkdir -p \
   "$stage/bin" \
   "$stage/lib" \
   "$stage/sdk/lib" \
-  "$stage/sdk/include/bcache2" \
-  "$stage/monitoring-ui"
+  "$stage/sdk/include/bcache2"
 mkdir -p "$debug_stage/bin" "$debug_stage/sdk/lib"
 
 cp output-ubuntu22/release-mtcache-ssd/bcache2-server "$stage/bin/"
@@ -52,16 +51,22 @@ while IFS= read -r -d '' file; do
   split_or_strip "$file"
 done < <(find "$stage/bin" "$stage/sdk/lib" -type f -perm -111 -print0)
 
-cat >"$stage/monitoring-ui/index.html" <<'HTML'
+if [ -d tools/temporalstore-monitoring-ui ]; then
+  mkdir -p "$stage/monitoring-ui"
+  cp -a tools/temporalstore-monitoring-ui/. "$stage/monitoring-ui/"
+else
+  mkdir -p "$stage/monitoring-ui"
+  cat >"$stage/monitoring-ui/index.html" <<'HTML'
 <!doctype html>
 <html>
-  <head><meta charset="utf-8"><title>TemporalStore AWS Test</title></head>
+  <head><meta charset="utf-8"><title>TemporalStore Monitoring</title></head>
   <body>
-    <h1>TemporalStore AWS Test</h1>
-    <p>Monitoring placeholder deployed with runtime artifact.</p>
+    <h1>TemporalStore Monitoring</h1>
+    <p>Monitoring UI source was not present in this build tree.</p>
   </body>
 </html>
 HTML
+fi
 
 tar -C "$stage" -czf /tmp/temporalstore-runtime-release-mtcache-ssd.tar.gz .
 if find "$debug_stage" -type f | grep -q .; then

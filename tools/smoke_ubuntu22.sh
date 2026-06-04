@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${ROOT}/tools/temporalstore_runtime_env.sh"
 BUILD_TYPE="${BUILD_TYPE:-Debug}"
 BUILD_FLAVOR="$(printf '%s' "${BUILD_TYPE}" | tr '[:upper:]' '[:lower:]')"
 OUT_DIR="${OUT_DIR:-${ROOT}/output-ubuntu22/${BUILD_FLAVOR}}"
@@ -22,7 +23,7 @@ METASERVER_LOG_LEVEL="${METASERVER_LOG_LEVEL:-2}"
 SERVER_LOG_LEVEL="${SERVER_LOG_LEVEL:-2}"
 SERVER_EXTRA_FLAGS="${SERVER_EXTRA_FLAGS:-}"
 STORAGE_POOL_URI="${STORAGE_POOL_URI:-file://${SMOKE_DIR}/storage/}"
-REPLICATOR_OUT_OF_SYNC_S="${REPLICATOR_OUT_OF_SYNC_S:-10}"
+REPLICATOR_OUT_OF_SYNC_S="${TEMPORALSTORE_REPLICATOR_OUT_OF_SYNC_S}"
 
 if (( REPLICA_COUNT > SERVER_COUNT )); then
   echo "REPLICA_COUNT (${REPLICA_COUNT}) cannot exceed SERVER_COUNT (${SERVER_COUNT})" >&2
@@ -226,6 +227,11 @@ for i in $(seq 1 "${SERVER_COUNT}"); do
 }
 JSON
 
+  storage_flags=()
+  while IFS= read -r flag; do
+    storage_flags+=("${flag}")
+  done < <(temporalstore_storage_flags)
+
   "${OUT_DIR}/bcache2-server" \
     --cluster_name="${CLUSTER_NAME}" \
     --metaserver_uri="127.0.0.1:${leader_port}" \
@@ -236,10 +242,7 @@ JSON
     --server_log_level="${SERVER_LOG_LEVEL}" \
     --server_meta_tinker_interval_ms=1000 \
     --server_heartbeat_interval_ms=1000 \
-    --storage_zone_size=10485760 \
-    --stream_max_blob_size=10485760 \
-    --storage_async=false \
-    --storage_oplog_delay_dump_length=0 \
+    "${storage_flags[@]}" \
     --replicator_out_of_sync_s="${REPLICATOR_OUT_OF_SYNC_S}" \
     ${SERVER_EXTRA_FLAGS} \
     > "${server_dir}/stdout" \

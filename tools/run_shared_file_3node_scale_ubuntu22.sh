@@ -2,6 +2,10 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+: "${TEMPORALSTORE_STORAGE_ZONE_SIZE:=268435456}"
+: "${TEMPORALSTORE_STREAM_MAX_BLOB_SIZE:=268435456}"
+: "${TEMPORALSTORE_REPLICATOR_OUT_OF_SYNC_S:=120}"
+source "${ROOT}/tools/temporalstore_runtime_env.sh"
 BUILD_TYPE="${BUILD_TYPE:-Debug}"
 BUILD_FLAVOR="$(printf '%s' "${BUILD_TYPE}" | tr '[:upper:]' '[:lower:]')"
 OUT_DIR="${OUT_DIR:-${ROOT}/output-ubuntu22/${BUILD_FLAVOR}}"
@@ -101,12 +105,10 @@ run_proxy_smoke_with_retry() {
 }
 
 storage_uri="file://${SMOKE_DIR}/shared/"
-server_extra_flags=(
-  "--replicator_loop_interval_us=1000"
-  "--replicator_max_oplog_per_loop=20000"
-  "--replicator_max_indexlog_per_loop=20000"
-  "--replicator_update_remote_interval_ms=20"
-)
+server_extra_flags=()
+while IFS= read -r flag; do
+  server_extra_flags+=("${flag}")
+done < <(temporalstore_replicator_loop_flags)
 
 mkdir -p "${SMOKE_DIR}"
 bootstrap_pid_file="${RESULT_DIR}/bootstrap.pid"
@@ -127,7 +129,7 @@ bootstrap_pid_file="${RESULT_DIR}/bootstrap.pid"
     MS_PORT_STEP="${MS_PORT_STEP}" \
     SERVER_PORT="${SERVER_PORT}" \
     STORAGE_POOL_URI="${storage_uri}" \
-    REPLICATOR_OUT_OF_SYNC_S=120 \
+    TEMPORALSTORE_REPLICATOR_OUT_OF_SYNC_S="${TEMPORALSTORE_REPLICATOR_OUT_OF_SYNC_S}" \
     SERVER_EXTRA_FLAGS="${server_extra_flags[*]}" \
     KEEP_RUNNING=1 \
     bash tools/smoke_ubuntu22.sh
