@@ -17,6 +17,7 @@ const fallbackHealth = {
     blockcache: { status: "pending", detail: "DRAM + SSD cache" },
   },
   runtime_config: {
+    profile: "low-latency EFS replay",
     storage_zone_size: "256 MB",
     stream_max_blob_size: "256 MB",
     storage_oplog_delay_dump_length: "0",
@@ -25,6 +26,11 @@ const fallbackHealth = {
     replicator_update_remote_interval_ms: "20",
     blockcache_dram_capacity: "64 MB",
     blockcache_ssd_capacity: "2 GB",
+    modes: [
+      { name: "low-latency", oplog_batch: "1 ms / 256 KB", replay_loop: "1 ms", use: "secondary visibility" },
+      { name: "default", oplog_batch: "2 ms / 512 KB", replay_loop: "1-5 ms", use: "balanced serving" },
+      { name: "throughput", oplog_batch: "5 ms / 1 MB", replay_loop: "5 ms", use: "bulk ingest" },
+    ],
   },
   nodes: [
     {
@@ -63,6 +69,7 @@ const fallbackHealth = {
     secondary_lag_ms: "-",
     replay_source: "EFS or primary stream",
     visibility: "pending",
+    lag_matrix: [],
   },
   scale_tests: [
     {
@@ -93,6 +100,7 @@ const fallbackHealth = {
       workload: "long behavior sequence window scan",
     },
   ],
+  scale_matrix: [],
   module_tests: [
     {
       module: "TemporalAggregate",
@@ -129,6 +137,38 @@ const fallbackHealth = {
       read_path: "primary and replica-eligible",
       latency: "-",
       notes: "plain KV baseline",
+    },
+  ],
+  data_models: [
+    {
+      name: "TemporalAggregate",
+      status: "passed",
+      use_case: "high-cardinality counters, sums, and windowed feature serving",
+      write_shape: "INCR(key, metric, dimensions, timestamp, bucket_width, value)",
+      query_shape: "QUERY(key, metric, dimensions, start, end, bucket_width, op)",
+      storage_shape: "bucketed temporal state inside an object",
+      consistency: "primary write, secondary replay",
+      test_status: "10k features x 12 buckets passed",
+    },
+    {
+      name: "Sequence Feature",
+      status: "passed",
+      use_case: "long behavior history and filtered window scans",
+      write_shape: "append rows with timestamp and fields",
+      query_shape: "window query with optional filters",
+      storage_shape: "time-ordered rows per entity",
+      consistency: "primary write, secondary replay",
+      test_status: "100k rows smoke and latency test passed",
+    },
+    {
+      name: "STRING",
+      status: "passed",
+      use_case: "plain KV baseline and Redis-compatible simple values",
+      write_shape: "SET(key, value)",
+      query_shape: "GET(key)",
+      storage_shape: "single value object",
+      consistency: "primary write, replica-eligible read",
+      test_status: "smoke passed; scale rerun pending",
     },
   ],
   diagnostics: {
@@ -188,6 +228,9 @@ function escapeHtml(value) {
 
 function renderMetricList(id, rows) {
   const el = byId(id);
+  if (!el) {
+    return;
+  }
   el.innerHTML = rows
     .map(
       (row) => `
@@ -195,6 +238,22 @@ function renderMetricList(id, rows) {
           <span>${escapeHtml(row.label)}</span>
           <strong>${row.html || escapeHtml(row.value)}</strong>
         </div>
+      `,
+    )
+    .join("");
+}
+
+function renderTableRows(id, rows, columns) {
+  const el = byId(id);
+  if (!el) {
+    return;
+  }
+  el.innerHTML = asArray(rows)
+    .map(
+      (row) => `
+        <tr>
+          ${columns.map((col) => `<td>${escapeHtml(row[col] ?? "-")}</td>`).join("")}
+        </tr>
       `,
     )
     .join("");
@@ -235,6 +294,10 @@ function renderScaleTests(tests) {
             <span>Read p99<strong>${escapeHtml(test.read_p99_ms)}</strong></span>
             <span>Replica lag<strong>${escapeHtml(test.secondary_lag_ms)}</strong></span>
           </div>
+          <div class="test-meta">
+            <span>${escapeHtml(test.threads || "threads -")}</span>
+            <span>${escapeHtml(test.result_dir || "result dir -")}</span>
+          </div>
         </article>
       `,
     )
@@ -259,9 +322,42 @@ function renderModules(modules) {
     .join("");
 }
 
+function renderDataModels(models) {
+  const el = byId("data-models");
+  if (!el) {
+    return;
+  }
+  el.innerHTML = asArray(models)
+    .map(
+      (model) => `
+        <article class="model-card">
+          <div class="model-head">
+            <strong>${escapeHtml(model.name)}</strong>
+            ${badge(model.status)}
+          </div>
+          <p>${escapeHtml(model.use_case)}</p>
+          <dl>
+            <div><dt>Write</dt><dd>${escapeHtml(model.write_shape)}</dd></div>
+            <div><dt>Query</dt><dd>${escapeHtml(model.query_shape)}</dd></div>
+            <div><dt>Storage</dt><dd>${escapeHtml(model.storage_shape)}</dd></div>
+            <div><dt>Consistency</dt><dd>${escapeHtml(model.consistency)}</dd></div>
+          </dl>
+          <span class="model-test">${escapeHtml(model.test_status)}</span>
+        </article>
+      `,
+    )
+    .join("");
+}
+
 function normalizeHealth(payload) {
   if (payload.health || payload.cluster || payload.nodes) {
-    return { ...fallbackHealth, ...payload };
+    return {
+      ...fallbackHealth,
+      ...payload,
+      health: { ...fallbackHealth.health, ...(payload.health || {}) },
+      runtime_config: { ...fallbackHealth.runtime_config, ...(payload.runtime_config || {}) },
+      replication: { ...fallbackHealth.replication, ...(payload.replication || {}) },
+    };
   }
   return {
     ...fallbackHealth,
@@ -281,13 +377,18 @@ function render(data) {
   const replication = data.replication || {};
   const diagnostics = data.diagnostics || {};
   const healthyCount = healthIds.filter((id) => statusClass(health[id]?.status) === "ok").length;
+  const scaleMatrix = asArray(data.scale_matrix);
+  const bestScale = scaleMatrix.find((row) => row.workload?.includes("primary") && row.threads === "16") ||
+    scaleMatrix.find((row) => row.workload?.includes("primary")) ||
+    data.scale_tests?.[0];
 
   byId("cluster-status").className = `status-pill ${statusClass(cluster.status)}`;
   byId("cluster-status").innerHTML = `<span class="dot"></span>${escapeHtml(cluster.environment || cluster.name || "cluster")}`;
 
   setText("summary-topology", `${text(cluster.metaservers, 1)} meta / ${text(cluster.data_nodes, 2)} data`);
   setText("summary-topology-note", text(cluster.name, "cluster"));
-  setText("summary-write-qps", data.scale_tests?.[0]?.write_qps || "-");
+  setText("summary-write-qps", bestScale?.write_qps || data.scale_tests?.[0]?.write_qps || "-");
+  setText("summary-write-note", bestScale?.threads ? `${bestScale.threads} threads / ${bestScale.workload}` : "latest scale run");
   setText("summary-lag", text(replication.secondary_lag_ms));
   setText("summary-lag-note", text(replication.mode, "replication"));
   setText("summary-cache", text(config.blockcache_ssd_capacity || "configured"));
@@ -296,6 +397,34 @@ function render(data) {
   renderNodes(data.nodes);
   renderScaleTests(data.scale_tests);
   renderModules(data.module_tests);
+  renderDataModels(data.data_models);
+  renderTableRows("scale-matrix-body", scaleMatrix, [
+    "workload",
+    "threads",
+    "features",
+    "writes",
+    "write_qps",
+    "write_p99",
+    "read_qps",
+    "read_p99",
+    "errors",
+  ]);
+  renderTableRows("replication-matrix-body", replication.lag_matrix, [
+    "threads",
+    "visible",
+    "missing",
+    "p99_lag",
+    "max_lag",
+  ]);
+
+  const modeRows = asArray(config.modes).map((mode) => ({
+    label: mode.name,
+    html: `<span class="config-mode">${escapeHtml(mode.oplog_batch)} · ${escapeHtml(mode.replay_loop)}<small>${escapeHtml(mode.use)}</small></span>`,
+  }));
+  renderMetricList("config-profile", [
+    { label: "Active profile", value: config.profile },
+    ...modeRows,
+  ]);
 
   renderMetricList(
     "health-list",
@@ -307,7 +436,7 @@ function render(data) {
 
   renderMetricList(
     "config-list",
-    Object.entries(config).map(([key, value]) => ({
+    Object.entries(config).filter(([, value]) => !Array.isArray(value)).map(([key, value]) => ({
       label: key.replaceAll("_", " "),
       value,
     })),
