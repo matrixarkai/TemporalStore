@@ -14,6 +14,7 @@ option(ENABLE_COVERAGE "enable asan" OFF)
 option(ENABLE_MTCACHE "enable mtcache" OFF)
 option(ENABLE_MTCACHE_SSD_CACHE "enable MtCache SSD/TerarkDB backend" OFF)
 option(BCACHE2_BUILD_TESTS "build bcache2 unit and smoke tests" OFF)
+option(TEMPORALSTORE_RELEASE_DEBUG_INFO "build Release binaries with debug symbols" OFF)
 
 # Vars
 set(CMAKE_CXX_STANDARD 17)
@@ -40,8 +41,6 @@ endif()
 add_required_cxx_compiler_flag(-lpthread COMMON)
 # -lm: C math library
 add_required_cxx_compiler_flag(-lm COMMON)
-# -g: Enable symbols for profiler tools
-add_required_cxx_compiler_flag(-g COMMON)
 # -lunwind: Enable libunwind for unwinding frames
 # libunwind is required by several prebuilt dependencies
 add_required_cxx_compiler_flag(-lunwind COMMON)
@@ -77,6 +76,9 @@ add_required_cxx_compiler_flag(-O0 DEBUG)
 # For CMAKE_BUILD_TYPE=Release
 #  -O3: Enable all compiler optimizations
 add_required_cxx_compiler_flag(-O3 RELEASE)
+if (TEMPORALSTORE_RELEASE_DEBUG_INFO)
+    add_required_cxx_compiler_flag(-g RELEASE)
+endif()
 
 # Set build version
 EXECUTE_PROCESS(COMMAND git log -n 1 --format=%h
