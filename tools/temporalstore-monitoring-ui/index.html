@@ -11,80 +11,137 @@
       <header class="topbar">
         <div>
           <p class="eyebrow">TemporalStore</p>
-          <h1>Cluster Monitoring</h1>
+          <h1>Operations Console</h1>
         </div>
-        <div class="status-pill">
-          <span class="dot"></span>
-          AWS test cluster
+        <div class="toolbar">
+          <span id="cluster-status" class="status-pill">
+            <span class="dot"></span>
+            loading
+          </span>
+          <button id="refresh" type="button" aria-label="Refresh dashboard">Refresh</button>
         </div>
       </header>
 
       <section class="summary-grid" aria-label="Cluster summary">
         <article>
-          <span>Metaserver</span>
-          <strong id="meta-state">meta-01</strong>
-          <small>Proxy and client test host</small>
+          <span>Topology</span>
+          <strong id="summary-topology">-</strong>
+          <small id="summary-topology-note">metaserver / data nodes</small>
         </article>
         <article>
-          <span>Data Nodes</span>
-          <strong>2</strong>
-          <small>Primary / secondary workflow</small>
+          <span>Primary Write QPS</span>
+          <strong id="summary-write-qps">-</strong>
+          <small>latest scale run</small>
         </article>
         <article>
-          <span>Shared Store</span>
-          <strong>EFS</strong>
-          <small>page, index, oplog, snapshots</small>
+          <span>Secondary Lag</span>
+          <strong id="summary-lag">-</strong>
+          <small id="summary-lag-note">replay visibility</small>
         </article>
         <article>
-          <span>Block Cache</span>
-          <strong>DRAM + SSD</strong>
-          <small>EBS gp3 cache tier</small>
+          <span>Blockcache</span>
+          <strong id="summary-cache">-</strong>
+          <small id="summary-cache-note">DRAM / SSD</small>
+        </article>
+      </section>
+
+      <section class="layout">
+        <article class="panel panel-wide">
+          <div class="panel-head">
+            <div>
+              <h2>Node Level View</h2>
+              <p>Service state, role, cache, and recent replay position.</p>
+            </div>
+            <span id="last-refresh" class="timestamp">not refreshed</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Node</th>
+                  <th>Role</th>
+                  <th>Status</th>
+                  <th>Endpoint</th>
+                  <th>CPU</th>
+                  <th>Memory</th>
+                  <th>Storage</th>
+                  <th>Replay</th>
+                </tr>
+              </thead>
+              <tbody id="nodes-body"></tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head compact">
+            <h2>Service Health</h2>
+          </div>
+          <div id="health-list" class="metric-list"></div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head compact">
+            <h2>Runtime Config</h2>
+          </div>
+          <div id="config-list" class="metric-list"></div>
+        </article>
+      </section>
+
+      <section class="layout">
+        <article class="panel panel-wide">
+          <div class="panel-head">
+            <div>
+              <h2>Scale Testing</h2>
+              <p>Latest benchmark runs, including primary reads, replica-eligible reads, and TemporalAggregate tests.</p>
+            </div>
+          </div>
+          <div id="scale-tests" class="test-grid"></div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head compact">
+            <h2>Replication</h2>
+          </div>
+          <div id="replication-list" class="metric-list"></div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head compact">
+            <h2>Diagnostics</h2>
+          </div>
+          <div class="links">
+            <a href="/health.json">health.json</a>
+            <a href="/metrics">UI metrics</a>
+            <a href="/logs/">logs</a>
+          </div>
+          <div id="diagnostics-list" class="metric-list"></div>
         </article>
       </section>
 
       <section class="panel">
         <div class="panel-head">
-          <h2>Service Health</h2>
-          <button id="refresh" type="button">Refresh</button>
-        </div>
-        <div class="health-grid">
-          <div class="health-row">
-            <span class="label">Metaserver</span>
-            <span class="value" id="metaserver-health">checking</span>
-          </div>
-          <div class="health-row">
-            <span class="label">Proxy</span>
-            <span class="value" id="proxy-health">checking</span>
-          </div>
-          <div class="health-row">
-            <span class="label">Metrics Exporter</span>
-            <span class="value" id="exporter-health">checking</span>
-          </div>
-          <div class="health-row">
-            <span class="label">Last Refresh</span>
-            <span class="value" id="last-refresh">-</span>
+          <div>
+            <h2>Data Module Testing</h2>
+            <p>Coverage for direct SDK, proxy path, module ingest/query, and temporal feature workloads.</p>
           </div>
         </div>
-      </section>
-
-      <section class="two-col">
-        <article class="panel">
-          <h2>Diagnostic Links</h2>
-          <div class="links">
-            <a href="/health.json">health.json</a>
-            <a href="/metrics">local UI metrics</a>
-            <a href="/logs/">metaserver logs</a>
-          </div>
-        </article>
-        <article class="panel">
-          <h2>Test Focus</h2>
-          <ul>
-            <li>Release binary startup and proxy routing</li>
-            <li>Primary/secondary replication lag</li>
-            <li>SSD blockcache file creation and hit behavior</li>
-            <li>SDK direct path and proxy path smoke tests</li>
-          </ul>
-        </article>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Module</th>
+                <th>Test</th>
+                <th>Status</th>
+                <th>Write Path</th>
+                <th>Read Path</th>
+                <th>Latency</th>
+                <th>Notes</th>
+              </tr>
+            </thead>
+            <tbody id="modules-body"></tbody>
+          </table>
+        </div>
       </section>
     </main>
     <script src="./app.js"></script>

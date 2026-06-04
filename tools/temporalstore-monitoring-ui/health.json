@@ -1,5 +1,138 @@
 {
-  "metaserver": { "status": "pending" },
-  "proxy": { "status": "pending" },
-  "exporter": { "status": "pending" }
+  "cluster": {
+    "name": "aws-scale",
+    "status": "pending",
+    "environment": "AWS test cluster",
+    "metaservers": 1,
+    "data_nodes": 2
+  },
+  "health": {
+    "metaserver": { "status": "pending", "detail": "QueryLeader / ListPartition" },
+    "proxy": { "status": "pending", "detail": "proxy SDK smoke" },
+    "exporter": { "status": "pending", "detail": "metrics endpoint" },
+    "data_nodes": { "status": "pending", "detail": "primary and secondary" },
+    "efs": { "status": "pending", "detail": "shared file store mounted" },
+    "blockcache": { "status": "pending", "detail": "DRAM + SSD cache enabled" }
+  },
+  "runtime_config": {
+    "storage_zone_size": "256 MB",
+    "stream_max_blob_size": "256 MB",
+    "storage_oplog_delay_dump_length": "0",
+    "replicator_loop_interval_us": "1000",
+    "replicator_max_oplog_per_loop": "20000",
+    "replicator_update_remote_interval_ms": "20",
+    "blockcache_dram_capacity": "64 MB",
+    "blockcache_ssd_capacity": "2 GB"
+  },
+  "nodes": [
+    {
+      "name": "meta-01",
+      "role": "metaserver + proxy + UI",
+      "status": "pending",
+      "endpoint": "10.70.1.88:17000",
+      "cpu": "-",
+      "memory": "-",
+      "storage": "EFS mounted",
+      "replay": "n/a"
+    },
+    {
+      "name": "data-01",
+      "role": "primary",
+      "status": "pending",
+      "endpoint": "10.70.1.139:17001",
+      "cpu": "-",
+      "memory": "-",
+      "storage": "EFS + blockcache",
+      "replay": "writer"
+    },
+    {
+      "name": "data-02",
+      "role": "secondary",
+      "status": "pending",
+      "endpoint": "10.70.1.195:17001",
+      "cpu": "-",
+      "memory": "-",
+      "storage": "EFS + blockcache",
+      "replay": "waiting"
+    }
+  ],
+  "replication": {
+    "mode": "shared file store + primary-pull fallback",
+    "secondary_lag_ms": "-",
+    "replay_source": "EFS or primary stream",
+    "visibility": "pending"
+  },
+  "scale_tests": [
+    {
+      "name": "TemporalAggregate 10k features",
+      "status": "pending",
+      "write_qps": "-",
+      "read_p50_ms": "-",
+      "read_p99_ms": "-",
+      "secondary_lag_ms": "-",
+      "workload": "feature x bucket increments with window query"
+    },
+    {
+      "name": "STRING primary",
+      "status": "pending",
+      "write_qps": "-",
+      "read_p50_ms": "-",
+      "read_p99_ms": "-",
+      "secondary_lag_ms": "-",
+      "workload": "plain SET/GET baseline"
+    },
+    {
+      "name": "Sequence feature",
+      "status": "pending",
+      "write_qps": "-",
+      "read_p50_ms": "-",
+      "read_p99_ms": "-",
+      "secondary_lag_ms": "-",
+      "workload": "long behavior sequence window scan"
+    }
+  ],
+  "module_tests": [
+    {
+      "module": "TemporalAggregate",
+      "test": "high-cardinality window aggregate",
+      "status": "pending",
+      "write_path": "direct SDK",
+      "read_path": "primary and replica-eligible",
+      "latency": "-",
+      "notes": "count/sum over event buckets"
+    },
+    {
+      "module": "Feature",
+      "test": "module ingest/query",
+      "status": "pending",
+      "write_path": "direct SDK",
+      "read_path": "primary",
+      "latency": "-",
+      "notes": "profile-like feature object"
+    },
+    {
+      "module": "IPS",
+      "test": "risk/frequency cap sample",
+      "status": "pending",
+      "write_path": "direct SDK",
+      "read_path": "primary",
+      "latency": "-",
+      "notes": "slot/table/action dimensions"
+    },
+    {
+      "module": "STRING",
+      "test": "SET/GET baseline",
+      "status": "pending",
+      "write_path": "direct SDK and proxy",
+      "read_path": "primary and replica-eligible",
+      "latency": "-",
+      "notes": "plain KV baseline"
+    }
+  ],
+  "diagnostics": {
+    "last_result_dir": "-",
+    "release_build": "pending",
+    "proxy_sdk": "pending",
+    "direct_sdk": "pending"
+  }
 }

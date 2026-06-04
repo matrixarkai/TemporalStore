@@ -2,12 +2,13 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${ROOT}/tools/temporalstore_runtime_env.sh"
 BUILD_TYPE="${BUILD_TYPE:-Debug}"
 BUILD_FLAVOR="$(printf '%s' "${BUILD_TYPE}" | tr '[:upper:]' '[:lower:]')"
 BUILD_DIR="${BUILD_DIR:-${ROOT}/build-ubuntu22/${BUILD_FLAVOR}}"
 OUT_DIR="${OUT_DIR:-${ROOT}/output-ubuntu22/${BUILD_FLAVOR}}"
 SMOKE_DIR="${SMOKE_DIR:-/tmp/temporalstore-ssd-server-smoke}"
-SSD_PATH="${SSD_PATH:-/tmp/temporalstore-server-ssd-cache}"
+SSD_PATH="${SSD_PATH:-${TEMPORALSTORE_BLOCKCACHE_SSD_PATH}}"
 LAUNCHER_LOG="${LAUNCHER_LOG:-${SMOKE_DIR}.log}"
 LAUNCHER_PID="${LAUNCHER_PID:-${SMOKE_DIR}.pid}"
 CLUSTER_NAME="${CLUSTER_NAME:-ssdblocksmoke}"
@@ -40,13 +41,8 @@ pkill -f "bcache2-metaserver.*metaserver_cluster_name=${CLUSTER_NAME}" >/dev/nul
 rm -rf "${SMOKE_DIR}" "${SSD_PATH}" "${LAUNCHER_LOG}" "${LAUNCHER_PID}"
 mkdir -p "${SMOKE_DIR}"
 
-SERVER_EXTRA_FLAGS="--enable_blockcache=true \
---ssd_engine_type=0 \
---blockcache_dram_capacity=8388608 \
---blockcache_ssd_capacity=67108864 \
---blockcache_ssd_path=${SSD_PATH} \
---blockcache_ssd_instance_only=true \
---blockcache_clear_ssd_folder=false"
+TEMPORALSTORE_BLOCKCACHE_SSD_PATH="${SSD_PATH}"
+SERVER_EXTRA_FLAGS="$(temporalstore_blockcache_flags | tr '\n' ' ')"
 
 (
   cd "${ROOT}"
