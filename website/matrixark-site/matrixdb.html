@@ -131,7 +131,7 @@
           <article><h3>Compatible access</h3><p>Familiar client access for migration while the backend handles distributed placement and operations.</p></article>
           <article><h3>Profile serving</h3><p>User, item, campaign, merchant, and device profiles through hash and KV access patterns.</p></article>
           <article><h3>Cache plus storage</h3><p>Useful when plain cache workloads need more capacity or persistence options.</p></article>
-          <article><h3>Multi-engine future</h3><p>Can become the broader database layer under MatrixArk managed cloud.</p></article>
+          <article><h3>Platform database role</h3><p>Serves general online data while TemporalStore handles temporal logic and MatrixKV handles metadata consistency.</p></article>
           <article><h3>Operational UI</h3><p>Shared monitoring and diagnostics with the rest of the MatrixArk platform.</p></article>
           <article><h3>Cloud rollout</h3><p>Runs in the same AWS topology as TemporalStore and MatrixKV for testing.</p></article>
         </div>
@@ -158,8 +158,8 @@
         <h2>Current validation</h2>
         <p>
           AWS smoke has validated the migration-friendly listener path for basic KV and hash-family
-          access patterns. The next step is productizing rollout, observability, and
-          customer-facing operational controls.
+          access patterns. MatrixDB is positioned as the general online database engine inside the
+          MatrixArk product family.
         </p>
         <a class="button primary" href="./index.html#contact">Talk to MatrixArk</a>
       </section>
