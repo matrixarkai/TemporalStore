@@ -6,7 +6,7 @@
     <title>MatrixDB | MatrixArk</title>
     <meta
       name="description"
-      content="MatrixDB is MatrixArk's distributed database engine for Redis-compatible KV, profiles, hashes, and cache-plus-storage workloads."
+      content="MatrixDB is MatrixArk's distributed online database engine for profile serving, general KV, migration-friendly access, and cache-plus-storage workloads."
     />
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -17,9 +17,15 @@
         <span>MatrixArk</span>
       </a>
       <nav class="nav" aria-label="Product navigation">
-        <a href="./temporalstore.html">TemporalStore</a>
-        <a href="./matrixdb.html">MatrixDB</a>
-        <a href="./matrixkv.html">MatrixKV</a>
+        <div class="nav-product-menu">
+          <a class="nav-product-trigger" href="./index.html#products">Products</a>
+          <div class="nav-product-panel" aria-label="Product pages">
+            <a href="./temporalstore.html"><strong>TemporalStore</strong><span>Temporal features, risk, sequences, AI context</span></a>
+            <a href="./matrixdb.html"><strong>MatrixDB</strong><span>Distributed KV, profile serving, Redis-compatible access</span></a>
+            <a href="./matrixkv.html"><strong>MatrixKV</strong><span>Strong metadata, leases, routing, consistency</span></a>
+          </div>
+        </div>
+        <a href="./blogs.html">Blogs</a>
         <a href="./index.html#contact">Contact</a>
       </nav>
       <a class="header-action" href="./index.html">Platform</a>
@@ -28,11 +34,11 @@
     <main>
       <section class="product-hero matrixdb-detail">
         <p class="eyebrow">MatrixDB</p>
-        <h1>Redis-compatible distributed KV for profiles and online serving.</h1>
+        <h1>Distributed online database for profiles, KV, and cache-plus-storage serving.</h1>
         <p>
-          MatrixDB is the MatrixArk engine for plain KV, strings, hashes, profiles, and
-          cache-plus-storage workloads where teams need a migration-friendly protocol surface and a
-          distributed serving architecture.
+          MatrixDB is the MatrixArk engine for profile lookups, product state, entity attributes,
+          general KV, and cache-plus-storage workloads where teams need a migration-friendly access
+          path and a distributed serving architecture.
         </p>
       </section>
 
@@ -98,7 +104,7 @@
       <section class="section scenario-section">
         <div class="section-heading">
           <p class="eyebrow">Scenario Architecture</p>
-          <h2>Redis-compatible access with distributed serving control.</h2>
+          <h2>Migration-friendly access with distributed serving control.</h2>
         </div>
         <div class="scenario-board">
           <div>
@@ -122,7 +128,7 @@
           <h2>General online serving beside TemporalStore.</h2>
         </div>
         <div class="capability-grid">
-          <article><h3>Redis path</h3><p>Protocol-compatible path for migration and customer adoption.</p></article>
+          <article><h3>Compatible access</h3><p>Familiar client access for migration while the backend handles distributed placement and operations.</p></article>
           <article><h3>Profile serving</h3><p>User, item, campaign, merchant, and device profiles through hash and KV access patterns.</p></article>
           <article><h3>Cache plus storage</h3><p>Useful when plain cache workloads need more capacity or persistence options.</p></article>
           <article><h3>Multi-engine future</h3><p>Can become the broader database layer under MatrixArk managed cloud.</p></article>
@@ -151,8 +157,9 @@
       <section class="section product-cta">
         <h2>Current validation</h2>
         <p>
-          AWS smoke has validated the Redis listener path for PING, SET, GET, HSET, HGET, and DEL.
-          The next step is productizing rollout, observability, and customer-facing operational controls.
+          AWS smoke has validated the migration-friendly listener path for basic KV and hash-family
+          access patterns. The next step is productizing rollout, observability, and
+          customer-facing operational controls.
         </p>
         <a class="button primary" href="./index.html#contact">Talk to MatrixArk</a>
       </section>
