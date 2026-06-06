@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Blogs | MatrixArk</title>
+    <meta
+      name="description"
+      content="MatrixArk blogs on temporal serving, distributed KV, cloud-native operations, online features, and AI context infrastructure."
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="./index.html" aria-label="MatrixArk home">
+        <span class="brand-mark" aria-hidden="true">M</span>
+        <span>MatrixArk</span>
+      </a>
+      <nav class="nav" aria-label="Blog navigation">
+        <a href="./temporalstore.html">TemporalStore</a>
+        <a href="./matrixdb.html">MatrixDB</a>
+        <a href="./matrixkv.html">MatrixKV</a>
+        <a href="./blogs.html">Blogs</a>
+      </nav>
+      <a class="header-action" href="./index.html#contact">Contact</a>
+    </header>
+
+    <main>
+      <section class="product-hero blog-detail">
+        <p class="eyebrow">MatrixArk Blogs</p>
+        <h1>Deep dives on real-time serving infrastructure.</h1>
+        <p>
+          Product and architecture notes from building a matrix of online-state engines:
+          TemporalStore for temporal features, MatrixDB for distributed KV, and MatrixKV for
+          consistency-sensitive metadata.
+        </p>
+      </section>
+
+      <section class="section blog-index-section">
+        <div class="blog-list">
+          <article>
+            <div>
+              <span>Architecture</span>
+              <h2>Why temporal features need a serving engine, not just another cache</h2>
+              <p>
+                Fraud, ads, recommendation, and agent systems increasingly ask for fresh windows,
+                filters, distinct counts, and sequences at request time. A generic cache can hold
+                values, but it does not naturally explain how those values were computed, expired,
+                filtered, replayed, or kept consistent with event history.
+              </p>
+            </div>
+            <a class="text-link" href="./temporalstore.html">Read the TemporalStore architecture</a>
+          </article>
+
+          <article>
+            <div>
+              <span>Product</span>
+              <h2>The MatrixArk product matrix: TemporalStore, MatrixDB, MatrixKV</h2>
+              <p>
+                One engine should not pretend to be ideal for every workload. Temporal state,
+                Redis-compatible profile serving, and strongly consistent metadata need different
+                architectures. MatrixArk keeps the engines separate while sharing deployment,
+                observability, SDK conventions, and cloud operations.
+              </p>
+            </div>
+            <a class="text-link" href="./index.html#products">Explore the product matrix</a>
+          </article>
+
+          <article>
+            <div>
+              <span>Cloud</span>
+              <h2>Designing an AWS-ready rollout for online state systems</h2>
+              <p>
+                The product has to be easy to run before it can be easy to buy. That means clear
+                node roles, package boundaries, health checks, public metrics, cache volumes,
+                rollback plans, and a test topology that can be recreated without hand tuning.
+              </p>
+            </div>
+            <a class="text-link" href="./index.html#cloud">View the cloud roadmap</a>
+          </article>
+
+          <article>
+            <div>
+              <span>AI Context</span>
+              <h2>Where temporal storage fits in LLM and agent systems</h2>
+              <p>
+                Vector databases retrieve semantic neighbors. Temporal serving stores the structured
+                state around those interactions: session timelines, recent tool use, policy counters,
+                user preferences, and freshness-sensitive context that prompt builders need.
+              </p>
+            </div>
+            <a class="text-link" href="./temporalstore.html">See context-serving models</a>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>MatrixArk</span>
+      <span>Blogs on TemporalStore. MatrixDB. MatrixKV.</span>
+    </footer>
+    <script src="./app.js"></script>
+  </body>
+</html>
