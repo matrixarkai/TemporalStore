@@ -90,18 +90,42 @@
         <div class="thesis-grid">
           <article>
             <span class="number">01</span>
-            <h3>Serve temporal state directly</h3>
-            <p>Query windows, filters, distinct counts, sequences, and profile state without building a new batch-plus-cache pipeline for every product rule.</p>
+            <h3>TemporalStore</h3>
+            <p>
+              TemporalStore owns fast-changing entity state: rolling windows, filtered aggregates,
+              distinct counts, long sequences, frequency caps, and structured AI context.
+            </p>
+            <ul class="thesis-points">
+              <li>Serves online temporal questions without a new batch-plus-cache pipeline for every rule.</li>
+              <li>Keeps event-time logic close to hot serving state for risk, ads, recommendations, and agents.</li>
+              <li>Supports replayable, persistent online state instead of only latest-value lookup.</li>
+            </ul>
           </article>
           <article>
             <span class="number">02</span>
-            <h3>Keep plain KV simple</h3>
-            <p>Use a Redis-compatible path for strings, hashes, profiles, and migration-friendly cache-plus-storage workloads.</p>
+            <h3>MatrixDB</h3>
+            <p>
+              MatrixDB owns general online data serving: profiles, entity attributes, product state,
+              plain KV, and cache-plus-storage workloads.
+            </p>
+            <ul class="thesis-points">
+              <li>Gives teams a migration-friendly access path for existing cache and profile workloads.</li>
+              <li>Keeps non-temporal KV simple while TemporalStore handles temporal model logic.</li>
+              <li>Fits customer-facing online serving where capacity, operations, and rollout matter.</li>
+            </ul>
           </article>
           <article>
             <span class="number">03</span>
-            <h3>Separate consistency-sensitive metadata</h3>
-            <p>Put leases, routing, table state, and control-plane records on a strongly consistent KV foundation.</p>
+            <h3>MatrixKV</h3>
+            <p>
+              MatrixKV owns correctness-sensitive state: metadata, leases, routing records, table
+              state, timestamps, and control-plane coordination.
+            </p>
+            <ul class="thesis-points">
+              <li>Protects ownership and routing with committed metadata instead of eventual cache freshness.</li>
+              <li>Gives the platform a clear consistency boundary for failover and managed operations.</li>
+              <li>Supports TemporalStore and MatrixDB as the control-plane foundation, not another hot cache.</li>
+            </ul>
           </article>
         </div>
       </section>
