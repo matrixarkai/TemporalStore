@@ -6,7 +6,7 @@
     <title>MatrixArk | Matrix engines for temporal data, distributed KV, and consistency</title>
     <meta
       name="description"
-      content="MatrixArk builds a matrix of online-state engines: TemporalStore for temporal data, MatrixDB for distributed KV, and MatrixKV for strongly consistent metadata."
+      content="MatrixArk builds a matrix of online-state engines: TemporalStore for temporal data, MatrixDB for distributed KV, and MatrixKV for transactional KV with strong consistency."
     />
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -22,7 +22,7 @@
           <div class="nav-product-panel" aria-label="Product pages">
             <a href="./temporalstore.html"><strong>TemporalStore</strong><span>Temporal features, risk, sequences, AI context</span></a>
             <a href="./matrixdb.html"><strong>MatrixDB</strong><span>Multi-tenant scalable KV and profile serving</span></a>
-            <a href="./matrixkv.html"><strong>MatrixKV</strong><span>Strong metadata, leases, routing, consistency</span></a>
+            <a href="./matrixkv.html"><strong>MatrixKV</strong><span>Transactional KV with strong consistency</span></a>
           </div>
         </div>
         <a href="#architecture">Platform</a>
@@ -51,7 +51,7 @@
           </div>
           <div class="signal-card signal-c">
             <span>MatrixKV</span>
-            <strong>consistent metadata and lease foundation</strong>
+            <strong>transactional KV with strong consistency</strong>
           </div>
         </div>
 
@@ -60,8 +60,8 @@
           <h1>Real-time state engines for products that cannot wait for batch.</h1>
           <p class="hero-subcopy">
             MatrixArk gives product and infrastructure teams one platform for fresh temporal
-            features, profile serving, and consistent metadata, so online decisions stay fast,
-            explainable, and operationally simple.
+            features, profile serving, and strongly consistent transactional KV, so online
+            decisions stay fast, explainable, and operationally simple.
           </p>
           <div class="hero-actions">
             <a class="button primary" href="#products">Explore the engines</a>
@@ -71,7 +71,7 @@
             <span>Temporal windows</span>
             <span>High-cardinality entities</span>
             <span>Profile and KV serving</span>
-            <span>Consistent platform state</span>
+            <span>Strong transactional KV</span>
           </div>
         </div>
       </section>
@@ -119,11 +119,11 @@
             <span class="number">03</span>
             <h3>MatrixKV</h3>
             <p>
-              MatrixKV is for platform state that must be correct: metadata, leases, routing
-              records, table state, timestamps, and control-plane coordination.
+              MatrixKV is transactional KV for state that must be correct: metadata, leases,
+              routing records, table state, timestamps, and control-plane coordination.
             </p>
             <ul class="thesis-points">
-              <li>Protect ownership and routing with committed metadata rather than cache freshness assumptions.</li>
+              <li>Protect ownership and routing with strong consistency rather than cache freshness assumptions.</li>
               <li>Give failover, placement, and table operations a clear consistency boundary.</li>
               <li>Support TemporalStore and MatrixDB with a dedicated control-plane foundation.</li>
             </ul>
@@ -177,17 +177,17 @@
           <article class="product-card matrixkv-card">
             <div class="product-topline">
               <span class="product-mark">K</span>
-              <span class="status-pill">Control plane</span>
+              <span class="status-pill">Transactional KV</span>
             </div>
             <h3><a href="./matrixkv.html">MatrixKV</a></h3>
             <p>
-              Keep routing, placement, ownership, metadata, and transactional control-plane records
-              in a consistency-first KV layer built for platform correctness.
+              Keep routing, placement, ownership, metadata, and platform records in a transactional
+              KV layer built for strong consistency and correctness.
             </p>
             <dl>
-              <div><dt>Buyer pain</dt><dd>failover, routing, leases, and table state spread across fragile control code</dd></div>
-              <div><dt>Product edge</dt><dd>committed metadata for records that should not behave like cache entries</dd></div>
-              <div><dt>Business value</dt><dd>safer operations for distributed serving products and managed infrastructure</dd></div>
+              <div><dt>Buyer pain</dt><dd>critical state spread across fragile control code and cache-like stores</dd></div>
+              <div><dt>Product edge</dt><dd>transactional KV semantics and strong consistency for records that must be correct</dd></div>
+              <div><dt>Business value</dt><dd>safer operations for distributed serving products, metadata, and managed infrastructure</dd></div>
             </dl>
             <a class="text-link" href="./matrixkv.html">Open MatrixKV page</a>
           </article>
@@ -217,7 +217,7 @@
             <h3>Product engines</h3>
             <div class="engine-row temporal-row"><strong>TemporalStore</strong><small>fresh windows, filters, sequences, temporal aggregates, context</small></div>
             <div class="engine-row matrixdb-row"><strong>MatrixDB</strong><small>multi-tenant profiles, attributes, service state, general online KV</small></div>
-            <div class="engine-row matrixkv-row"><strong>MatrixKV</strong><small>leases, routes, table state, metadata, coordination</small></div>
+            <div class="engine-row matrixkv-row"><strong>MatrixKV</strong><small>transactional KV, strong consistency, leases, routes, metadata</small></div>
           </div>
           <div class="arch-lane">
             <h3>Operating surface</h3>
@@ -274,7 +274,7 @@
           </article>
           <article>
             <h3>Control-plane metadata</h3>
-            <p>Keep cluster state, table metadata, routing, leases, and ownership records in a foundation designed for correctness.</p>
+            <p>Keep cluster state, table metadata, routing, leases, and ownership records in a transactional KV foundation designed for strong consistency.</p>
             <code>MatrixKV</code>
           </article>
         </div>
@@ -316,11 +316,11 @@
           </article>
           <article>
             <h3>Versus Redis Enterprise</h3>
-            <p>Generic caches are excellent for simple values. MatrixArk adds product-specific engines for temporal features, profile serving, and consistency-sensitive metadata.</p>
+            <p>Generic caches are excellent for simple values. MatrixArk adds product-specific engines for temporal features, profile serving, and transactional KV with strong consistency.</p>
           </article>
           <article>
             <h3>Versus generic KV</h3>
-            <p>General KV systems store values. MatrixArk separates latest-value serving, temporal decision state, and control-plane correctness into purpose-built products.</p>
+            <p>General KV systems store values. MatrixArk separates latest-value serving, temporal decision state, and strongly consistent transactional KV into purpose-built products.</p>
           </article>
         </div>
       </section>
@@ -331,7 +331,7 @@
           <h2>Notes from building the MatrixArk engine matrix.</h2>
           <p>
             Product essays and practical guides for temporal serving, distributed online data,
-            and consistency-sensitive metadata.
+            and transactional KV with strong consistency.
           </p>
         </div>
         <div class="blog-grid">
@@ -362,7 +362,7 @@
           <h2>Build the online state layer for AI-era applications.</h2>
           <p>
             MatrixArk is for teams that need fresh decisions, reliable profile serving, and
-            consistent platform metadata without maintaining separate bespoke systems for each one.
+            strongly consistent transactional KV without maintaining separate bespoke systems for each one.
           </p>
         </div>
         <div class="contact-panel">
