@@ -36,6 +36,35 @@
         </p>
       </section>
 
+      <section class="section advantage-section">
+        <div class="section-heading">
+          <p class="eyebrow">Product Advantages</p>
+          <h2>Why MatrixKV over using a cache for metadata?</h2>
+        </div>
+        <div class="advantage-grid">
+          <article>
+            <span>01</span>
+            <h3>Correctness-first state</h3>
+            <p>Leases, epochs, routing, and table metadata need committed state, not eventual cache freshness.</p>
+          </article>
+          <article>
+            <span>02</span>
+            <h3>Control-plane fit</h3>
+            <p>MatrixKV is positioned for metadata and coordination that support MatrixArk engines and managed cloud operations.</p>
+          </article>
+          <article>
+            <span>03</span>
+            <h3>Consistency boundary</h3>
+            <p>It gives the platform a place to put strong state while TemporalStore and MatrixDB focus on serving performance.</p>
+          </article>
+          <article>
+            <span>04</span>
+            <h3>Operational clarity</h3>
+            <p>Separating metadata KV from hot serving data makes failure handling, ownership, and routing easier to reason about.</p>
+          </article>
+        </div>
+      </section>
+
       <section class="section detail-section">
         <div class="detail-grid">
           <article>
@@ -63,6 +92,27 @@
               <li>Consumers use the committed state for routing, leases, and table metadata.</li>
             </ol>
           </article>
+        </div>
+      </section>
+
+      <section class="section scenario-section">
+        <div class="section-heading">
+          <p class="eyebrow">Scenario Architecture</p>
+          <h2>Strong metadata for routing, leases, and table state.</h2>
+        </div>
+        <div class="scenario-board">
+          <div>
+            <h3>Commit</h3>
+            <p>Metadata writes pass through a consistency path before becoming platform-visible state.</p>
+          </div>
+          <div>
+            <h3>Coordinate</h3>
+            <p>Masters, timestamp service, and partition servers maintain ownership and table metadata.</p>
+          </div>
+          <div>
+            <h3>Protect</h3>
+            <p>Epochs and committed records help reject stale writers and support controlled failover workflows.</p>
+          </div>
         </div>
       </section>
 
