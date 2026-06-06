@@ -583,6 +583,69 @@ th {
   padding: 26px;
 }
 
+.blog-preview-section {
+  background: #eef3f7;
+}
+
+.blog-grid {
+  max-width: 1180px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 18px;
+}
+
+.blog-grid article,
+.blog-list article {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--white);
+}
+
+.blog-grid article {
+  padding: 26px;
+}
+
+.blog-grid span,
+.blog-list span {
+  display: inline-block;
+  margin-bottom: 12px;
+  color: var(--teal);
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.section-action {
+  margin-top: 28px;
+  text-align: center;
+}
+
+.blog-detail {
+  background:
+    linear-gradient(115deg, rgba(13, 19, 31, 0.98), rgba(13, 19, 31, 0.76)),
+    linear-gradient(45deg, rgba(116, 70, 184, 0.52), transparent 56%);
+}
+
+.blog-index-section {
+  background: var(--white);
+}
+
+.blog-list {
+  max-width: 980px;
+  margin: 0 auto;
+  display: grid;
+  gap: 18px;
+}
+
+.blog-list article {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 22px;
+  align-items: center;
+  padding: 28px;
+}
+
 .contact-section {
   max-width: 1180px;
   margin: 0 auto;
@@ -823,6 +886,7 @@ th {
   .architecture-board,
   .use-case-grid,
   .positioning-grid,
+  .blog-grid,
   .roadmap,
   .workflow-grid,
   .contact-section,
@@ -839,6 +903,10 @@ th {
 
   .footer {
     flex-direction: column;
+  }
+
+  .blog-list article {
+    grid-template-columns: 1fr;
   }
 }
 

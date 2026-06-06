@@ -21,6 +21,7 @@
         <a href="#architecture">Architecture</a>
         <a href="#use-cases">Use cases</a>
         <a href="#cloud">Cloud</a>
+        <a href="./blogs.html">Blogs</a>
       </nav>
       <a class="header-action" href="#contact">Contact</a>
     </header>
@@ -297,6 +298,37 @@
             <h3>Versus generic KV</h3>
             <p>MatrixDB and MatrixKV cover KV needs, while TemporalStore keeps model-aware computation close to online state.</p>
           </article>
+        </div>
+      </section>
+
+      <section id="blogs" class="section blog-preview-section">
+        <div class="section-heading">
+          <p class="eyebrow">Blogs</p>
+          <h2>Notes from building the MatrixArk engine matrix.</h2>
+          <p>
+            Architecture essays, product thinking, and practical guides for temporal serving,
+            Redis-compatible distributed KV, and consistency-sensitive metadata.
+          </p>
+        </div>
+        <div class="blog-grid">
+          <article>
+            <span>Architecture</span>
+            <h3>Why temporal features need a serving engine, not just another cache</h3>
+            <p>How high-cardinality windows, filtered state, and long sequences change the shape of the online store.</p>
+          </article>
+          <article>
+            <span>Product</span>
+            <h3>The MatrixArk product matrix: TemporalStore, MatrixDB, MatrixKV</h3>
+            <p>How the three engines separate workload fit while sharing one cloud-native operating surface.</p>
+          </article>
+          <article>
+            <span>Cloud</span>
+            <h3>Designing an AWS-ready rollout for online state systems</h3>
+            <p>Lessons from deploying meta services, data nodes, monitoring, cache volumes, and public product pages.</p>
+          </article>
+        </div>
+        <div class="section-action">
+          <a class="button primary" href="./blogs.html">Open blogs</a>
         </div>
       </section>
 
