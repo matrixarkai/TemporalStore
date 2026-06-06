@@ -597,11 +597,9 @@ dd {
   border-left: 4px solid var(--amber);
 }
 
-.workflow-grid {
-  grid-template-columns: repeat(2, 1fr);
-}
-
 .workflow-grid article {
+  max-width: 760px;
+  margin: 0 auto;
   padding: 24px;
   color: var(--ink);
 }

@@ -228,16 +228,7 @@
 
         <div class="workflow-grid">
           <article>
-            <h3>Temporal write and query flow</h3>
-            <ol>
-              <li>Route entity key to a partition and model.</li>
-              <li>Apply model-specific update to hot object state.</li>
-              <li>Append replayable mutation log with configurable durability policy.</li>
-              <li>Serve window/filter/sequence queries from memory, page cache, or persisted pages.</li>
-            </ol>
-          </article>
-          <article>
-            <h3>Operational control flow</h3>
+            <h3>Platform control flow</h3>
             <ol>
               <li>Metadata resolves table placement and active ownership.</li>
               <li>Clients route through SDK or proxy paths based on workload needs.</li>
