@@ -646,6 +646,114 @@ th {
   padding: 28px;
 }
 
+.article {
+  background: var(--white);
+}
+
+.article-hero {
+  padding: 120px 40px 72px;
+  color: #ffffff;
+  background:
+    linear-gradient(115deg, rgba(13, 19, 31, 0.98), rgba(13, 19, 31, 0.76)),
+    linear-gradient(45deg, rgba(15, 159, 143, 0.54), transparent 58%);
+}
+
+.article-hero h1,
+.article-hero p {
+  max-width: 980px;
+}
+
+.article-hero p:not(.eyebrow) {
+  color: rgba(255, 255, 255, 0.78);
+  font-size: 20px;
+}
+
+.article-section {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 44px 40px;
+  border-bottom: 1px solid var(--line);
+}
+
+.article-section h2 {
+  font-size: clamp(30px, 4vw, 48px);
+}
+
+.article-section p {
+  font-size: 17px;
+}
+
+.article-callout {
+  margin-top: 22px;
+  padding: 22px;
+  border-left: 4px solid var(--teal);
+  border-radius: var(--radius);
+  background: #eef9f7;
+  color: #233246;
+  line-height: 1.65;
+}
+
+.article-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+  margin-top: 24px;
+}
+
+.article-grid > div {
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #f7fafc;
+}
+
+.article-flow {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 8px;
+  margin: 24px 0;
+}
+
+.article-flow span {
+  min-height: 72px;
+  display: grid;
+  place-items: center;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #f7fafc;
+  color: #263449;
+  font-size: 12px;
+  font-weight: 850;
+  text-align: center;
+}
+
+.example-table {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.article-list {
+  color: var(--muted);
+  line-height: 1.75;
+}
+
+.article-footer {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 44px 40px 72px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.button.secondary.light {
+  color: var(--ink);
+  border-color: var(--line);
+  background: var(--white);
+}
+
 .contact-section {
   max-width: 1180px;
   margin: 0 auto;
@@ -908,6 +1016,11 @@ th {
   .blog-list article {
     grid-template-columns: 1fr;
   }
+
+  .article-grid,
+  .article-flow {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 640px) {
@@ -940,6 +1053,13 @@ th {
 
   .flow-diagram {
     grid-template-columns: 1fr;
+  }
+
+  .article-hero,
+  .article-section,
+  .article-footer {
+    padding-left: 24px;
+    padding-right: 24px;
   }
 }
 
