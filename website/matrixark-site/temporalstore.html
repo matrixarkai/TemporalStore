@@ -36,6 +36,35 @@
         </p>
       </section>
 
+      <section class="section advantage-section">
+        <div class="section-heading">
+          <p class="eyebrow">Product Advantages</p>
+          <h2>Why TemporalStore over a generic cache plus stream pipeline?</h2>
+        </div>
+        <div class="advantage-grid">
+          <article>
+            <span>01</span>
+            <h3>Temporal logic is native</h3>
+            <p>Windowed counts, filtered aggregates, distinct sets, and sequences live inside the serving engine instead of being scattered across jobs and application code.</p>
+          </article>
+          <article>
+            <span>02</span>
+            <h3>Lower pipeline complexity</h3>
+            <p>Teams can serve many risk and feature policies directly from online state rather than building a new stream job and cache layout for every window.</p>
+          </article>
+          <article>
+            <span>03</span>
+            <h3>High-cardinality friendly</h3>
+            <p>The architecture is shaped around entity keys, model-aware objects, in-memory indexes, logs, and persisted pages for large online state.</p>
+          </article>
+          <article>
+            <span>04</span>
+            <h3>Fresh online decisions</h3>
+            <p>Risk, ads, recommendation, and agent systems can query recent state at request time instead of waiting for offline materialization.</p>
+          </article>
+        </div>
+      </section>
+
       <section class="section detail-section">
         <div class="detail-grid">
           <article>
@@ -63,6 +92,27 @@
               <li>Answer arbitrary window, filter, aggregate, and sequence queries online.</li>
             </ol>
           </article>
+        </div>
+      </section>
+
+      <section class="section scenario-section">
+        <div class="section-heading">
+          <p class="eyebrow">Scenario Architecture</p>
+          <h2>One serving path for event ingestion and feature reads.</h2>
+        </div>
+        <div class="scenario-board">
+          <div>
+            <h3>Ingest</h3>
+            <p>Application events, Kafka consumers, and batch repair jobs write the same entity timeline or aggregate object.</p>
+          </div>
+          <div>
+            <h3>Store</h3>
+            <p>Partition workers update hot objects, append logs, and maintain page/index state for replay and persistence.</p>
+          </div>
+          <div>
+            <h3>Serve</h3>
+            <p>Online systems request windows, filters, distinct counts, sequences, and latest profile state through one serving API.</p>
+          </div>
         </div>
       </section>
 

@@ -716,8 +716,18 @@ th {
   background: #eef3f7;
 }
 
+.advantage-section {
+  background: var(--white);
+}
+
+.scenario-section {
+  background: #f3f7fb;
+}
+
 .detail-grid,
-.capability-grid {
+.capability-grid,
+.advantage-grid,
+.scenario-board {
   max-width: 1180px;
   margin: 0 auto;
   display: grid;
@@ -730,6 +740,8 @@ th {
 
 .detail-grid article,
 .capability-grid article,
+.advantage-grid article,
+.scenario-board > div,
 .comparison-table,
 .product-cta {
   border: 1px solid var(--line);
@@ -738,8 +750,29 @@ th {
 }
 
 .detail-grid article,
-.capability-grid article {
+.capability-grid article,
+.advantage-grid article,
+.scenario-board > div {
   padding: 26px;
+}
+
+.advantage-grid {
+  grid-template-columns: repeat(4, 1fr);
+}
+
+.advantage-grid span {
+  display: inline-block;
+  margin-bottom: 14px;
+  color: var(--teal);
+  font-weight: 900;
+}
+
+.scenario-board {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.scenario-board > div {
+  min-height: 190px;
 }
 
 .flow-diagram {
@@ -839,7 +872,9 @@ th {
   .workflow-grid,
   .contact-section,
   .detail-grid,
-  .capability-grid {
+  .capability-grid,
+  .advantage-grid,
+  .scenario-board {
     grid-template-columns: 1fr;
   }
 

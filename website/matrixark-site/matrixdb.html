@@ -36,6 +36,35 @@
         </p>
       </section>
 
+      <section class="section advantage-section">
+        <div class="section-heading">
+          <p class="eyebrow">Product Advantages</p>
+          <h2>Why MatrixDB over a standalone cache?</h2>
+        </div>
+        <div class="advantage-grid">
+          <article>
+            <span>01</span>
+            <h3>Migration-friendly protocol</h3>
+            <p>A Redis-compatible path lets teams start with familiar commands while moving toward a managed distributed serving platform.</p>
+          </article>
+          <article>
+            <span>02</span>
+            <h3>Profile and KV focus</h3>
+            <p>MatrixDB is tuned for strings, hashes, profiles, and lookup-heavy online paths rather than temporal aggregation semantics.</p>
+          </article>
+          <article>
+            <span>03</span>
+            <h3>Cloud operations as product</h3>
+            <p>Placement, routing, deployment, metrics, and diagnostics are part of the MatrixArk platform surface, not left as separate scripts.</p>
+          </article>
+          <article>
+            <span>04</span>
+            <h3>Works beside TemporalStore</h3>
+            <p>Plain KV stays simple in MatrixDB while temporal windows and sequences move to TemporalStore.</p>
+          </article>
+        </div>
+      </section>
+
       <section class="section detail-section">
         <div class="detail-grid">
           <article>
@@ -63,6 +92,27 @@
               <li>Operational metrics track latency, request mix, and storage health.</li>
             </ol>
           </article>
+        </div>
+      </section>
+
+      <section class="section scenario-section">
+        <div class="section-heading">
+          <p class="eyebrow">Scenario Architecture</p>
+          <h2>Redis-compatible access with distributed serving control.</h2>
+        </div>
+        <div class="scenario-board">
+          <div>
+            <h3>Access</h3>
+            <p>Applications use Redis-style clients, SDKs, or service-side proxies for KV and hash workloads.</p>
+          </div>
+          <div>
+            <h3>Route</h3>
+            <p>The proxy and metadata layer route requests to the right data-node placement.</p>
+          </div>
+          <div>
+            <h3>Operate</h3>
+            <p>Shared MatrixArk monitoring tracks protocol traffic, table readiness, data-node health, and scale tests.</p>
+          </div>
         </div>
       </section>
 
