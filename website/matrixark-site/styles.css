@@ -90,6 +90,12 @@ a {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
 }
 
 .nav-product-trigger::after {
@@ -129,7 +135,8 @@ a {
 }
 
 .nav-product-menu:hover .nav-product-panel,
-.nav-product-menu:focus-within .nav-product-panel {
+.nav-product-menu:focus-within .nav-product-panel,
+.nav-product-menu.is-open .nav-product-panel {
   opacity: 1;
   pointer-events: auto;
   transform: translateY(0);
