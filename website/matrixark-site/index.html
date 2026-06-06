@@ -20,7 +20,6 @@
         <a href="#products">Products</a>
         <a href="#architecture">Architecture</a>
         <a href="#use-cases">Use cases</a>
-        <a href="#benchmarks">Benchmarks</a>
         <a href="#cloud">Cloud</a>
       </nav>
       <a class="header-action" href="#contact">Contact</a>
@@ -36,7 +35,7 @@
           </div>
           <div class="signal-card signal-a">
             <span>TemporalStore</span>
-            <strong>window query: 3.8 ms p95</strong>
+            <strong>temporal windows, filters, sequences</strong>
           </div>
           <div class="signal-card signal-b">
             <span>MatrixDB</span>
@@ -256,87 +255,6 @@
         </div>
       </section>
 
-      <section id="benchmarks" class="section benchmark-section">
-        <div class="section-heading">
-          <p class="eyebrow">AWS Test Snapshot</p>
-          <h2>Small-cluster validation, not inflated marketing numbers.</h2>
-          <p>
-            Current public test node runs one meta/proxy/client instance and two data nodes. The
-            numbers below are early smoke and baseline measurements on small instances.
-          </p>
-        </div>
-        <div class="test-status-grid">
-          <article>
-            <span>TemporalStore</span>
-            <strong>Prometheus endpoint live</strong>
-            <p>Metrics are served from the AWS test node and ready for scraper integration.</p>
-          </article>
-          <article>
-            <span>MatrixDB</span>
-            <strong>Redis protocol smoke passed</strong>
-            <p>PING, SET, GET, HSET, HGET, and DEL validated through the Redis listener path.</p>
-          </article>
-          <article>
-            <span>MatrixKV</span>
-            <strong>Clean AWS smoke passed</strong>
-            <p>Namespace/table creation and write/read validated after cleaning stale cluster state.</p>
-          </article>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Engine</th>
-                <th>Workload</th>
-                <th>Threads</th>
-                <th>QPS / status</th>
-                <th>p50</th>
-                <th>p99</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>TemporalStore</td>
-                <td>TemporalAggregate query</td>
-                <td>2</td>
-                <td>2,336/s</td>
-                <td>0.486 ms</td>
-                <td>5.773 ms</td>
-              </tr>
-              <tr>
-                <td>TemporalStore</td>
-                <td>STRING read, primary</td>
-                <td>2</td>
-                <td>4,062/s</td>
-                <td>0.336 ms</td>
-                <td>3.566 ms</td>
-              </tr>
-              <tr>
-                <td>MatrixDB</td>
-                <td>Redis path smoke</td>
-                <td>single socket</td>
-                <td>validated</td>
-                <td>1-2 ms GET/HGET</td>
-                <td>smoke only</td>
-              </tr>
-              <tr>
-                <td>MatrixKV</td>
-                <td>Plain KV read baseline</td>
-                <td>1</td>
-                <td>1,200/s</td>
-                <td>0.689 ms</td>
-                <td>3.054 ms</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <p class="benchmark-note">
-          The product promise is not a single benchmark. It is workload fit: temporal logic in the
-          serving engine, Redis-compatible KV where that is enough, and strong metadata consistency
-          where correctness matters.
-        </p>
-      </section>
-
       <section id="cloud" class="section cloud-section">
         <div class="section-heading">
           <p class="eyebrow">Cloud Native</p>
@@ -346,7 +264,7 @@
           <article>
             <span>01</span>
             <h3>Open-source core</h3>
-            <p>Clean single-node TemporalStore, SDKs, data models, local persistence, benchmark harnesses, docs, Docker Compose, and Prometheus metrics.</p>
+            <p>Clean single-node TemporalStore, SDKs, data models, local persistence, docs, Docker Compose, and Prometheus metrics.</p>
           </article>
           <article>
             <span>02</span>

@@ -305,14 +305,9 @@ p {
 }
 
 .thesis-section,
-.benchmark-section {
-  background: var(--white);
-}
-
 .thesis-grid,
 .product-grid,
 .use-case-grid,
-.test-status-grid,
 .positioning-grid,
 .roadmap,
 .workflow-grid {
@@ -329,7 +324,6 @@ p {
 .thesis-grid article,
 .product-card,
 .use-case-grid article,
-.test-status-grid article,
 .positioning-grid article,
 .roadmap article,
 .workflow-grid article,
@@ -528,38 +522,6 @@ dd {
   white-space: normal;
 }
 
-.test-status-grid {
-  grid-template-columns: repeat(3, 1fr);
-  margin-bottom: 24px;
-}
-
-.test-status-grid article {
-  padding: 24px;
-}
-
-.test-status-grid span {
-  display: block;
-  margin-bottom: 10px;
-  color: var(--teal);
-  font-size: 12px;
-  font-weight: 900;
-  text-transform: uppercase;
-}
-
-.test-status-grid strong {
-  display: block;
-  margin-bottom: 10px;
-  font-size: 22px;
-}
-
-.table-wrap {
-  max-width: 1180px;
-  margin: 0 auto;
-  overflow-x: auto;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-}
-
 table {
   width: 100%;
   min-width: 760px;
@@ -578,12 +540,6 @@ th {
   color: #46566f;
   background: #f3f6fa;
   font-size: 13px;
-}
-
-.benchmark-note {
-  max-width: 930px;
-  margin: 24px auto 0;
-  text-align: center;
 }
 
 .cloud-section {
@@ -866,7 +822,6 @@ th {
   .product-grid,
   .architecture-board,
   .use-case-grid,
-  .test-status-grid,
   .positioning-grid,
   .roadmap,
   .workflow-grid,
