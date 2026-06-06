@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MatrixDB | MatrixArk</title>
+    <meta
+      name="description"
+      content="MatrixDB is MatrixArk's distributed database engine for Redis-compatible KV, profiles, hashes, and cache-plus-storage workloads."
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="./index.html" aria-label="MatrixArk home">
+        <span class="brand-mark" aria-hidden="true">M</span>
+        <span>MatrixArk</span>
+      </a>
+      <nav class="nav" aria-label="Product navigation">
+        <a href="./temporalstore.html">TemporalStore</a>
+        <a href="./matrixdb.html">MatrixDB</a>
+        <a href="./matrixkv.html">MatrixKV</a>
+        <a href="./index.html#contact">Contact</a>
+      </nav>
+      <a class="header-action" href="./index.html">Platform</a>
+    </header>
+
+    <main>
+      <section class="product-hero matrixdb-detail">
+        <p class="eyebrow">MatrixDB</p>
+        <h1>Redis-compatible distributed KV for profiles and online serving.</h1>
+        <p>
+          MatrixDB is the MatrixArk engine for plain KV, strings, hashes, profiles, and
+          cache-plus-storage workloads where teams need a migration-friendly protocol surface and a
+          distributed serving architecture.
+        </p>
+      </section>
+
+      <section class="section detail-section">
+        <div class="detail-grid">
+          <article>
+            <h2>System Architecture</h2>
+            <div class="flow-diagram">
+              <span>Redis / SDK client</span>
+              <span>Proxy</span>
+              <span>Router</span>
+              <span>Data node</span>
+              <span>Storage engine</span>
+              <span>Replication path</span>
+            </div>
+            <p>
+              MatrixDB separates client protocol handling from data placement. The proxy accepts
+              Redis-compatible or SDK traffic, routes requests to the right data nodes, and keeps
+              profile and KV serving in a single operational plane.
+            </p>
+          </article>
+          <article>
+            <h2>Serving Workflow</h2>
+            <ol class="detail-list">
+              <li>Client issues Redis-style commands or SDK calls.</li>
+              <li>Proxy resolves the table, route, and target data node.</li>
+              <li>Data node executes the KV or hash operation.</li>
+              <li>Operational metrics track latency, request mix, and storage health.</li>
+            </ol>
+          </article>
+        </div>
+      </section>
+
+      <section class="section alt-section">
+        <div class="section-heading">
+          <p class="eyebrow">Capabilities</p>
+          <h2>General online serving beside TemporalStore.</h2>
+        </div>
+        <div class="capability-grid">
+          <article><h3>Redis path</h3><p>Protocol-compatible path for migration and customer adoption.</p></article>
+          <article><h3>Profile serving</h3><p>User, item, campaign, merchant, and device profiles through hash and KV access patterns.</p></article>
+          <article><h3>Cache plus storage</h3><p>Useful when plain cache workloads need more capacity or persistence options.</p></article>
+          <article><h3>Multi-engine future</h3><p>Can become the broader database layer under MatrixArk managed cloud.</p></article>
+          <article><h3>Operational UI</h3><p>Shared monitoring and diagnostics with the rest of the MatrixArk platform.</p></article>
+          <article><h3>Cloud rollout</h3><p>Runs in the same AWS topology as TemporalStore and MatrixKV for testing.</p></article>
+        </div>
+      </section>
+
+      <section class="section detail-section">
+        <div class="comparison-table">
+          <h2>Comparison</h2>
+          <table>
+            <thead>
+              <tr><th>Alternative</th><th>Good at</th><th>MatrixDB difference</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Redis / Valkey</td><td>Fast single-node or clustered cache, mature ecosystem</td><td>Designed as a distributed serving database path for MatrixArk, not only a cache.</td></tr>
+              <tr><td>DynamoDB</td><td>Managed cloud KV and predictable operations</td><td>More control over serving topology, protocol choices, and product-specific online paths.</td></tr>
+              <tr><td>Bigtable / wide-column stores</td><td>Large sparse tables and ordered storage</td><td>MatrixDB focuses on online KV/profile serving and migration-friendly access.</td></tr>
+              <tr><td>TemporalStore</td><td>Temporal windows and online aggregation</td><td>MatrixDB is for plain KV/profile serving; TemporalStore is for temporal model-aware logic.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section product-cta">
+        <h2>Current validation</h2>
+        <p>
+          AWS smoke has validated the Redis listener path for PING, SET, GET, HSET, HGET, and DEL.
+          The next step is repeatable scale testing with CPU, memory, storage, and p99 metrics.
+        </p>
+        <a class="button primary" href="./index.html#contact">Talk to MatrixArk</a>
+      </section>
+    </main>
+    <script src="./app.js"></script>
+  </body>
+</html>

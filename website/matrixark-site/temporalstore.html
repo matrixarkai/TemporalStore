@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TemporalStore | MatrixArk</title>
+    <meta
+      name="description"
+      content="TemporalStore is MatrixArk's temporal serving engine for online features, risk, frequency caps, sequences, and structured AI context."
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="./index.html" aria-label="MatrixArk home">
+        <span class="brand-mark" aria-hidden="true">M</span>
+        <span>MatrixArk</span>
+      </a>
+      <nav class="nav" aria-label="Product navigation">
+        <a href="./temporalstore.html">TemporalStore</a>
+        <a href="./matrixdb.html">MatrixDB</a>
+        <a href="./matrixkv.html">MatrixKV</a>
+        <a href="./index.html#contact">Contact</a>
+      </nav>
+      <a class="header-action" href="./index.html">Platform</a>
+    </header>
+
+    <main>
+      <section class="product-hero temporal-detail">
+        <p class="eyebrow">TemporalStore</p>
+        <h1>Online temporal state for features, risk, and AI context.</h1>
+        <p>
+          TemporalStore is the MatrixArk engine for high-cardinality entity state that changes over
+          time: rolling aggregates, filtered windows, distinct sets, long behavior sequences,
+          frequency caps, and structured context.
+        </p>
+      </section>
+
+      <section class="section detail-section">
+        <div class="detail-grid">
+          <article>
+            <h2>System Architecture</h2>
+            <div class="flow-diagram">
+              <span>Client SDK / API</span>
+              <span>Router</span>
+              <span>Partition worker</span>
+              <span>Model engine</span>
+              <span>WAL / oplog</span>
+              <span>Page + index store</span>
+            </div>
+            <p>
+              The core design is share-nothing by partition. A key is routed to one worker, the
+              worker applies model-specific logic to hot object state, appends a replayable mutation
+              log, and serves queries from memory, cache, or persisted pages.
+            </p>
+          </article>
+          <article>
+            <h2>Serving Workflow</h2>
+            <ol class="detail-list">
+              <li>Ingest an event, counter update, profile change, or sequence append.</li>
+              <li>Resolve namespace, table, data model, partition, and entity key.</li>
+              <li>Apply updates inside the model instead of in a separate application layer.</li>
+              <li>Answer arbitrary window, filter, aggregate, and sequence queries online.</li>
+            </ol>
+          </article>
+        </div>
+      </section>
+
+      <section class="section alt-section">
+        <div class="section-heading">
+          <p class="eyebrow">Data Models</p>
+          <h2>Built for temporal online decisions.</h2>
+        </div>
+        <div class="capability-grid">
+          <article><h3>TemporalCounter</h3><p>Counts and sums over keyed time buckets for velocity, caps, and online policies.</p></article>
+          <article><h3>TemporalAggregate</h3><p>Filtered sum, min, max, count, and model-specific rollups over recent event state.</p></article>
+          <article><h3>TemporalDistinct</h3><p>Unique merchant, device, campaign, IP, or session counts inside time windows.</p></article>
+          <article><h3>Sequence</h3><p>Recent behavior history, sorted timelines, long user action sequences, and inference features.</p></article>
+          <article><h3>Hash/Profile</h3><p>Latest user, item, merchant, campaign, or device state beside temporal features.</p></article>
+          <article><h3>Context</h3><p>Structured LLM and agent context, tool events, session memory, and safety counters.</p></article>
+        </div>
+      </section>
+
+      <section class="section detail-section">
+        <div class="comparison-table">
+          <h2>Comparison</h2>
+          <table>
+            <thead>
+              <tr><th>Alternative</th><th>Good at</th><th>TemporalStore difference</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Redis / Redis Enterprise</td><td>General cache, strings, hashes, modules</td><td>Model-aware temporal windows, filters, sequences, and persistence-first online features.</td></tr>
+              <tr><td>Feast online store</td><td>Latest feature lookup and registry-driven materialization</td><td>Native online temporal APIs and storage-side aggregation logic.</td></tr>
+              <tr><td>Flink + cache</td><td>Streaming pre-aggregation</td><td>Less pipeline sprawl when business asks for ad hoc windows and entity-specific filters.</td></tr>
+              <tr><td>OpenMLDB / feature SQL</td><td>Feature computation through SQL and pre-aggregation</td><td>Serving-engine design for hot high-cardinality windows and sequence reads.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section product-cta">
+        <h2>First open-source target</h2>
+        <p>
+          Start with a clean single-node TemporalStore: gRPC and HTTP APIs, local WAL, snapshots,
+          temporal models, Prometheus metrics, Python and Go SDKs, and reproducible benchmarks.
+        </p>
+        <a class="button primary" href="./index.html#contact">Talk to MatrixArk</a>
+      </section>
+    </main>
+    <script src="./app.js"></script>
+  </body>
+</html>

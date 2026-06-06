@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MatrixKV | MatrixArk</title>
+    <meta
+      name="description"
+      content="MatrixKV is MatrixArk's strongly consistent KV foundation for metadata, leases, routing, transactions, and control-plane state."
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="./index.html" aria-label="MatrixArk home">
+        <span class="brand-mark" aria-hidden="true">M</span>
+        <span>MatrixArk</span>
+      </a>
+      <nav class="nav" aria-label="Product navigation">
+        <a href="./temporalstore.html">TemporalStore</a>
+        <a href="./matrixdb.html">MatrixDB</a>
+        <a href="./matrixkv.html">MatrixKV</a>
+        <a href="./index.html#contact">Contact</a>
+      </nav>
+      <a class="header-action" href="./index.html">Platform</a>
+    </header>
+
+    <main>
+      <section class="product-hero matrixkv-detail">
+        <p class="eyebrow">MatrixKV</p>
+        <h1>Strongly consistent KV for metadata and control-plane state.</h1>
+        <p>
+          MatrixKV is the MatrixArk consistency foundation: routing metadata, table state, leases,
+          transactions, timestamps, and other records where correctness matters more than raw cache
+          throughput.
+        </p>
+      </section>
+
+      <section class="section detail-section">
+        <div class="detail-grid">
+          <article>
+            <h2>System Architecture</h2>
+            <div class="flow-diagram">
+              <span>Client / proxy</span>
+              <span>Master</span>
+              <span>TSO</span>
+              <span>Partition server</span>
+              <span>Raft log</span>
+              <span>Storage engine</span>
+            </div>
+            <p>
+              MatrixKV is the consistency-oriented member of the MatrixArk family. It is not the
+              default engine for high-cardinality temporal serving; it is the place to put metadata,
+              leases, timestamps, and transactional coordination.
+            </p>
+          </article>
+          <article>
+            <h2>Serving Workflow</h2>
+            <ol class="detail-list">
+              <li>Client or platform component submits a metadata or KV operation.</li>
+              <li>Routing resolves the partition and current leader.</li>
+              <li>Writes commit through the consistency path before becoming visible.</li>
+              <li>Consumers use the committed state for routing, leases, and table metadata.</li>
+            </ol>
+          </article>
+        </div>
+      </section>
+
+      <section class="section alt-section">
+        <div class="section-heading">
+          <p class="eyebrow">Capabilities</p>
+          <h2>The consistency layer under the Matrix engines.</h2>
+        </div>
+        <div class="capability-grid">
+          <article><h3>Metadata state</h3><p>Namespaces, tables, partitions, placement, schema, and routing records.</p></article>
+          <article><h3>Leases and epochs</h3><p>Protect primary ownership, failover decisions, and stale-writer rejection.</p></article>
+          <article><h3>Timestamp service</h3><p>Useful for transactional paths and ordering-sensitive system records.</p></article>
+          <article><h3>Control-plane KV</h3><p>Good fit for platform state that needs stronger correctness than a cache.</p></article>
+          <article><h3>Transactional future</h3><p>Can support coordination for managed cloud operations and metadata workflows.</p></article>
+          <article><h3>Platform complement</h3><p>Works beside TemporalStore and MatrixDB instead of replacing their hot serving paths.</p></article>
+        </div>
+      </section>
+
+      <section class="section detail-section">
+        <div class="comparison-table">
+          <h2>Comparison</h2>
+          <table>
+            <thead>
+              <tr><th>Alternative</th><th>Good at</th><th>MatrixKV difference</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>etcd</td><td>Kubernetes-style metadata and watch APIs</td><td>MatrixKV is a product KV foundation that can align with MatrixArk table, partition, and serving semantics.</td></tr>
+              <tr><td>FoundationDB</td><td>Strong transactional storage substrate</td><td>MatrixKV is narrower and intended as MatrixArk's metadata/control-plane KV.</td></tr>
+              <tr><td>TiKV</td><td>Distributed transactional KV with MVCC</td><td>MatrixKV targets the platform consistency role, while TemporalStore handles temporal serving.</td></tr>
+              <tr><td>MatrixDB</td><td>Redis-compatible general online KV</td><td>MatrixKV is for correctness-sensitive records; MatrixDB is for serving profiles and cache-style KV.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section product-cta">
+        <h2>Current validation</h2>
+        <p>
+          The AWS test cluster runs master, TSO, proxy, and two partition servers. A clean smoke
+          validated namespace and table creation plus a write/read path.
+        </p>
+        <a class="button primary" href="./index.html#contact">Talk to MatrixArk</a>
+      </section>
+    </main>
+    <script src="./app.js"></script>
+  </body>
+</html>
