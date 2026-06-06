@@ -14,7 +14,7 @@ import urllib.request
 from pathlib import Path
 
 
-LINE_RE = re.compile(r"^\s*(\S+)\s*[:=]\s*(.+?)\s*$")
+LINE_RE = re.compile(r"^\s*(\S+)\s+(?::|=)\s*(.+?)\s*$")
 METRIC_RE = re.compile(r"^(?P<name>[^{}\s]+)(?:\{(?P<labels>[^}]*)\})?$")
 LABEL_RE = re.compile(r'^\s*([^=\s]+)\s*=\s*(.+?)\s*$')
 VALUE_RE = re.compile(r"^[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?$")
@@ -146,7 +146,9 @@ def parse_line(line: str, source_label: str):
 
 
 def scrape_target(source: str, url: str, timeout: float):
-    req = urllib.request.Request(url, headers={"Accept": "text/plain", "User-Agent": "temporalstore-vars-exporter/1.0"})
+    # brpc /vars returns HTML to Python's default urllib user-agent. A curl-like
+    # user-agent asks for the plain text bvar format this exporter parses.
+    req = urllib.request.Request(url, headers={"Accept": "text/plain", "User-Agent": "curl/7.81.0"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         payload = resp.read().decode("utf-8", errors="ignore")
     return payload.splitlines()
