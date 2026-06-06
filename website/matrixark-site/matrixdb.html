@@ -20,9 +20,9 @@
         <div class="nav-product-menu">
           <button class="nav-product-trigger" type="button" aria-expanded="false">Products</button>
           <div class="nav-product-panel" aria-label="Product pages">
-            <a href="./temporalstore.html"><strong>TemporalStore</strong><span>Temporal features, risk, sequences, AI context</span></a>
+            <a href="./temporalstore.html"><strong>TemporalStore</strong><span>Temporal feature serving for risk, sequences, AI context</span></a>
             <a href="./matrixdb.html"><strong>MatrixDB</strong><span>Multi-tenant scalable KV and profile serving</span></a>
-            <a href="./matrixkv.html"><strong>MatrixKV</strong><span>Strong metadata, leases, routing, consistency</span></a>
+            <a href="./matrixkv.html"><strong>MatrixKV</strong><span>Transactional KV with strong consistency</span></a>
           </div>
         </div>
         <a href="./blogs.html">Blogs</a>
@@ -34,11 +34,11 @@
     <main>
       <section class="product-hero matrixdb-detail">
         <p class="eyebrow">MatrixDB</p>
-        <h1>Multi-tenant scalable online database for profiles, KV, and cache-plus-storage serving.</h1>
+        <h1>Multi-tenant scalable online KV for profiles, attributes, and service state.</h1>
         <p>
           MatrixDB is the MatrixArk engine for profile lookups, product state, entity attributes,
-          general KV, and cache-plus-storage workloads where teams need tenant-aware operations,
-          a migration-friendly access path, and a highly scalable distributed serving architecture.
+          general KV, and cache-plus-storage workloads where many teams need tenant-aware
+          operations, migration-friendly access, and scalable distributed serving.
         </p>
       </section>
 
@@ -51,7 +51,7 @@
           <article>
             <span>01</span>
             <h3>Migration-friendly protocol</h3>
-            <p>A Redis-compatible path lets teams start with familiar commands while moving toward a managed distributed serving platform.</p>
+            <p>Familiar Redis-style and SDK access lets teams migrate profile and KV workloads while moving toward a managed distributed serving platform.</p>
           </article>
           <article>
             <span>02</span>
@@ -76,7 +76,7 @@
           <article>
             <h2>System Architecture</h2>
             <div class="flow-diagram">
-              <span>Redis / SDK client</span>
+              <span>Redis-style / SDK client</span>
               <span>Proxy</span>
               <span>Router</span>
               <span>Data node</span>
@@ -84,9 +84,9 @@
               <span>Replication path</span>
             </div>
             <p>
-              MatrixDB separates client protocol handling, tenant-aware routing, and data
-              placement. The proxy accepts Redis-compatible or SDK traffic, routes requests to the
-              right data nodes, and keeps profile and KV serving in a single operational plane.
+              MatrixDB separates client access, tenant-aware routing, and data placement. The proxy
+              accepts Redis-style or SDK traffic, routes requests to the right data nodes, and keeps
+              profile and KV serving in a single operational plane.
             </p>
           </article>
           <article>
@@ -125,14 +125,14 @@
       <section class="section alt-section">
         <div class="section-heading">
           <p class="eyebrow">Capabilities</p>
-          <h2>General online serving beside TemporalStore.</h2>
+          <h2>Multi-tenant online KV beside TemporalStore.</h2>
         </div>
         <div class="capability-grid">
           <article><h3>Compatible access</h3><p>Familiar client access for migration while the backend handles distributed placement and operations.</p></article>
           <article><h3>Multi-tenant profile serving</h3><p>User, item, campaign, merchant, and device profiles through hash and KV access patterns across many teams and tenants.</p></article>
           <article><h3>Cache plus storage</h3><p>Useful when plain cache workloads need more capacity or persistence options.</p></article>
           <article><h3>Scalable placement</h3><p>Distributes online data across serving nodes so capacity can grow with tenants, tables, and workload families.</p></article>
-          <article><h3>Platform database role</h3><p>Serves general online data while TemporalStore handles temporal logic and MatrixKV handles metadata consistency.</p></article>
+          <article><h3>Platform database role</h3><p>Serves general online data while TemporalStore handles temporal logic and MatrixKV handles transactional consistency.</p></article>
           <article><h3>Operational UI</h3><p>Shared monitoring and diagnostics with the rest of the MatrixArk platform.</p></article>
         </div>
       </section>
@@ -155,11 +155,11 @@
       </section>
 
       <section class="section product-cta">
-        <h2>Current validation</h2>
+        <h2>Where MatrixDB fits</h2>
         <p>
-          AWS smoke has validated the migration-friendly listener path for basic KV and hash-family
-          access patterns. MatrixDB is positioned as the general online database engine inside the
-          MatrixArk product family.
+          MatrixDB is the product engine for multi-tenant online KV and profile serving: strings,
+          hashes, entity attributes, service state, cache-plus-storage workloads, tenant-aware
+          routing, and migration-friendly client access.
         </p>
         <a class="button primary" href="./index.html#contact">Talk to MatrixArk</a>
       </section>

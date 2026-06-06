@@ -20,7 +20,7 @@
         <div class="nav-product-menu">
           <button class="nav-product-trigger" type="button" aria-expanded="false">Products</button>
           <div class="nav-product-panel" aria-label="Product pages">
-            <a href="./temporalstore.html"><strong>TemporalStore</strong><span>Temporal features, risk, sequences, AI context</span></a>
+            <a href="./temporalstore.html"><strong>TemporalStore</strong><span>Temporal feature serving for risk, sequences, AI context</span></a>
             <a href="./matrixdb.html"><strong>MatrixDB</strong><span>Multi-tenant scalable KV and profile serving</span></a>
             <a href="./matrixkv.html"><strong>MatrixKV</strong><span>Transactional KV with strong consistency</span></a>
           </div>
@@ -231,23 +231,22 @@
         </section>
 
         <section class="article-section">
-          <h2>The open-source path</h2>
+          <h2>The product shape</h2>
           <p>
-            The clean open-source version should start with a single-node engine. Distributed systems
-            become much easier to trust once the local model semantics, WAL, snapshots, page format,
-            metrics, and SDKs are correct.
+            TemporalStore is a serving product, not a generic database with a few temporal APIs.
+            Its job is to make fresh temporal features easy to ingest, query, persist, and observe
+            in the online path.
           </p>
           <ol class="article-list">
-            <li>Single-node TemporalStore with HTTP/gRPC APIs, local WAL, snapshots, and model-aware queries.</li>
-            <li>Python and Go SDKs for risk, feature serving, and AI context examples.</li>
-            <li>Local Docker Compose and Prometheus metrics so users can try it quickly.</li>
-            <li>Primary-replica log shipping for distributed mode.</li>
-            <li>Raft mode later for partitions that require stronger consistency guarantees.</li>
+            <li>Temporal feature serving APIs for windows, filters, sequences, distinct state, and context.</li>
+            <li>Model-aware data structures for risk, ads, recommendation, feature platform, and agent applications.</li>
+            <li>Persistence, replay, metrics, and SDK access as part of the product surface.</li>
+            <li>Clear integration boundaries with MatrixDB for profile KV and MatrixKV for transactional consistency.</li>
           </ol>
           <p>
-            The first version does not need to claim it replaces every cache, database, or feature
-            platform. It only needs to be very good at one painful thing: serving fresh temporal
-            state for high-cardinality online decisions.
+            That makes the product honest: TemporalStore is not trying to be every cache, database,
+            or feature platform. It is built to serve fresh temporal features for high-cardinality
+            online decisions.
           </p>
         </section>
 
@@ -255,8 +254,8 @@
           <h2>Where TemporalStore fits in MatrixArk</h2>
           <p>
             MatrixArk is a product matrix, not a single monolithic database. TemporalStore handles
-            temporal state. MatrixDB handles multi-tenant scalable KV and profile
-            serving. MatrixKV handles transactional KV and strong consistency for control-plane state.
+            temporal feature serving. MatrixDB handles multi-tenant scalable KV and profile serving.
+            MatrixKV handles transactional KV with strong consistency for control-plane state.
           </p>
           <p>
             That separation is the product strategy. It lets each engine be honest about what it is

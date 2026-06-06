@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>MatrixArk | Matrix engines for temporal data, distributed KV, and consistency</title>
+    <title>MatrixArk | Temporal serving, scalable online KV, and transactional KV</title>
     <meta
       name="description"
-      content="MatrixArk builds a matrix of online-state engines: TemporalStore for temporal data, MatrixDB for distributed KV, and MatrixKV for transactional KV with strong consistency."
+      content="MatrixArk builds a product family for online state: TemporalStore for temporal feature serving, MatrixDB for multi-tenant scalable KV/profile serving, and MatrixKV for transactional KV with strong consistency."
     />
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -20,7 +20,7 @@
         <div class="nav-product-menu">
           <button class="nav-product-trigger" type="button" aria-expanded="false">Products</button>
           <div class="nav-product-panel" aria-label="Product pages">
-            <a href="./temporalstore.html"><strong>TemporalStore</strong><span>Temporal features, risk, sequences, AI context</span></a>
+            <a href="./temporalstore.html"><strong>TemporalStore</strong><span>Temporal feature serving for risk, sequences, AI context</span></a>
             <a href="./matrixdb.html"><strong>MatrixDB</strong><span>Multi-tenant scalable KV and profile serving</span></a>
             <a href="./matrixkv.html"><strong>MatrixKV</strong><span>Transactional KV with strong consistency</span></a>
           </div>
@@ -43,7 +43,7 @@
           </div>
           <div class="signal-card signal-a">
             <span>TemporalStore</span>
-            <strong>fresh temporal state for online decisions</strong>
+            <strong>temporal feature serving for online decisions</strong>
           </div>
           <div class="signal-card signal-b">
             <span>MatrixDB</span>
@@ -68,7 +68,7 @@
             <a class="button secondary" href="#architecture">See the platform</a>
           </div>
           <div class="proof-strip" aria-label="Platform highlights">
-            <span>Temporal windows</span>
+            <span>Temporal feature serving</span>
             <span>High-cardinality entities</span>
             <span>Profile and KV serving</span>
             <span>Strong transactional KV</span>
@@ -91,9 +91,9 @@
             <span class="number">01</span>
             <h3>TemporalStore</h3>
             <p>
-              TemporalStore is for decisions that depend on what just happened: rolling windows,
-              filtered aggregates, distinct counts, long sequences, frequency caps, and structured
-              AI context.
+              TemporalStore is a temporal feature serving engine for decisions that depend on what
+              just happened: rolling windows, filtered aggregates, distinct counts, long sequences,
+              frequency caps, and structured AI context.
             </p>
             <ul class="thesis-points">
               <li>Launch new risk, ads, recommendation, and agent policies without a new stream job for every window.</li>
@@ -141,12 +141,12 @@
           <article class="product-card temporal-card">
             <div class="product-topline">
               <span class="product-mark">T</span>
-              <span class="status-pill">Temporal features</span>
+              <span class="status-pill">Temporal serving</span>
             </div>
             <h3><a href="./temporalstore.html">TemporalStore</a></h3>
             <p>
               Serve event-time features and recent behavior directly in the request path, with
-              storage models shaped for windows, filters, distinct state, and sequences.
+              storage models shaped for windows, filters, distinct state, sequences, and context.
             </p>
             <dl>
               <div><dt>Buyer pain</dt><dd>too many one-off stream jobs, cache keys, and stale feature paths</dd></div>

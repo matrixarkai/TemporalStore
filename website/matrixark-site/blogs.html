@@ -6,7 +6,7 @@
     <title>Blogs | MatrixArk</title>
     <meta
       name="description"
-      content="MatrixArk blogs on temporal serving, distributed KV, cloud-native operations, online features, and AI context infrastructure."
+      content="MatrixArk blogs on temporal feature serving, multi-tenant online KV, transactional KV, online features, and AI context infrastructure."
     />
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -20,7 +20,7 @@
         <div class="nav-product-menu">
           <button class="nav-product-trigger" type="button" aria-expanded="false">Products</button>
           <div class="nav-product-panel" aria-label="Product pages">
-            <a href="./temporalstore.html"><strong>TemporalStore</strong><span>Temporal features, risk, sequences, AI context</span></a>
+            <a href="./temporalstore.html"><strong>TemporalStore</strong><span>Temporal feature serving for risk, sequences, AI context</span></a>
             <a href="./matrixdb.html"><strong>MatrixDB</strong><span>Multi-tenant scalable KV and profile serving</span></a>
             <a href="./matrixkv.html"><strong>MatrixKV</strong><span>Transactional KV with strong consistency</span></a>
           </div>
@@ -36,8 +36,8 @@
         <h1>Deep dives on real-time serving infrastructure.</h1>
         <p>
           Product and architecture notes from building a matrix of online-state engines:
-          TemporalStore for temporal features, MatrixDB for multi-tenant scalable KV, and MatrixKV for
-          transactional KV with strong consistency.
+          TemporalStore for temporal feature serving, MatrixDB for multi-tenant scalable online KV,
+          and MatrixKV for transactional KV with strong consistency.
         </p>
       </section>
 
@@ -62,10 +62,10 @@
               <span>Product</span>
               <h2>The MatrixArk product matrix: TemporalStore, MatrixDB, MatrixKV</h2>
               <p>
-                One engine should not pretend to be ideal for every workload. Temporal state,
-                multi-tenant profile serving, and transactional KV with strong consistency need different
-                architectures. MatrixArk keeps the engines separate while sharing deployment,
-                observability, SDK conventions, and cloud operations.
+                One engine should not pretend to be ideal for every workload. Temporal feature
+                serving, multi-tenant profile/KV serving, and transactional KV with strong
+                consistency need different architectures. MatrixArk keeps the engines separate
+                while sharing deployment, observability, SDK conventions, and operations.
               </p>
             </div>
             <a class="text-link" href="./index.html#products">Explore the product matrix</a>
