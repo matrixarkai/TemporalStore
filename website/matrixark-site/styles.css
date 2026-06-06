@@ -1,4 +1,4 @@
-:root {
+﻿:root {
   --ink: #121826;
   --muted: #58657a;
   --soft: #eef3f7;
@@ -385,11 +385,11 @@ p {
   background: var(--teal);
 }
 
-.abase-card .product-mark {
+.matrixdb-card .product-mark {
   background: var(--blue);
 }
 
-.bytekv-card .product-mark {
+.matrixkv-card .product-mark {
   background: var(--amber);
 }
 
@@ -481,11 +481,11 @@ dd {
   border-left: 4px solid var(--teal);
 }
 
-.abase-row {
+.matrixdb-row {
   border-left: 4px solid var(--blue);
 }
 
-.bytekv-row {
+.matrixkv-row {
   border-left: 4px solid var(--amber);
 }
 
@@ -731,3 +731,5 @@ th {
     padding-right: 24px;
   }
 }
+
+

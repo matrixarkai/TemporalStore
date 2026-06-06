@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
@@ -6,7 +6,7 @@
     <title>MatrixArk | Real-time serving engines for temporal data, KV, and consistency</title>
     <meta
       name="description"
-      content="MatrixArk builds TemporalStore, ABase, and ByteKV: serving engines for temporal features, distributed KV, and strongly consistent metadata."
+      content="MatrixArk builds TemporalStore, MatrixDB, and MatrixKV: serving engines for temporal features, distributed KV, and strongly consistent metadata."
     />
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -39,11 +39,11 @@
             <strong>window query: 3.8 ms p95</strong>
           </div>
           <div class="signal-card signal-b">
-            <span>ABase</span>
+            <span>MatrixDB</span>
             <strong>Redis path: SET / GET / HASH</strong>
           </div>
           <div class="signal-card signal-c">
-            <span>ByteKV</span>
+            <span>MatrixKV</span>
             <strong>Raft-backed metadata core</strong>
           </div>
         </div>
@@ -122,12 +122,12 @@
             </dl>
           </article>
 
-          <article class="product-card abase-card">
+          <article class="product-card matrixdb-card">
             <div class="product-topline">
               <span class="product-mark">A</span>
               <span class="status-pill">Redis-compatible path</span>
             </div>
-            <h3>ABase</h3>
+            <h3>MatrixDB</h3>
             <p>
               A distributed KV and profile-serving engine for Redis migration, large hash/string
               workloads, cache-plus-storage patterns, and profile lookup services.
@@ -139,12 +139,12 @@
             </dl>
           </article>
 
-          <article class="product-card bytekv-card">
+          <article class="product-card matrixkv-card">
             <div class="product-topline">
               <span class="product-mark">K</span>
               <span class="status-pill">Consistency foundation</span>
             </div>
-            <h3>ByteKV</h3>
+            <h3>MatrixKV</h3>
             <p>
               A strongly consistent KV foundation for metadata, coordination, table state,
               routing, leases, and infrastructure control-plane records.
@@ -179,8 +179,8 @@
           <div class="arch-lane engine-lane">
             <h3>MatrixArk serving layer</h3>
             <div class="engine-row temporal-row"><strong>TemporalStore</strong><small>windows, filters, sequences, temporal aggregates</small></div>
-            <div class="engine-row abase-row"><strong>ABase</strong><small>Redis-compatible KV, profiles, hashes, cache-plus-storage</small></div>
-            <div class="engine-row bytekv-row"><strong>ByteKV</strong><small>leases, routes, table state, metadata, transactions</small></div>
+            <div class="engine-row matrixdb-row"><strong>MatrixDB</strong><small>Redis-compatible KV, profiles, hashes, cache-plus-storage</small></div>
+            <div class="engine-row matrixkv-row"><strong>MatrixKV</strong><small>leases, routes, table state, metadata, transactions</small></div>
           </div>
           <div class="arch-lane">
             <h3>Cloud substrate</h3>
@@ -242,12 +242,12 @@
           <article>
             <h3>Redis modernization</h3>
             <p>Move large KV and profile workloads into a distributed serving layer while keeping a familiar protocol surface.</p>
-            <code>ABase</code>
+            <code>MatrixDB</code>
           </article>
           <article>
             <h3>Control-plane metadata</h3>
             <p>Store cluster state, table metadata, routing, leases, and transactional records in a consistent KV foundation.</p>
-            <code>ByteKV</code>
+            <code>MatrixKV</code>
           </article>
         </div>
       </section>
@@ -268,12 +268,12 @@
             <p>Metrics are served from the AWS test node and ready for scraper integration.</p>
           </article>
           <article>
-            <span>ABase</span>
+            <span>MatrixDB</span>
             <strong>Redis protocol smoke passed</strong>
             <p>PING, SET, GET, HSET, HGET, and DEL validated through the Redis listener path.</p>
           </article>
           <article>
-            <span>ByteKV</span>
+            <span>MatrixKV</span>
             <strong>Clean AWS smoke passed</strong>
             <p>Namespace/table creation and write/read validated after cleaning stale cluster state.</p>
           </article>
@@ -308,7 +308,7 @@
                 <td>3.566 ms</td>
               </tr>
               <tr>
-                <td>ABase</td>
+                <td>MatrixDB</td>
                 <td>Redis path smoke</td>
                 <td>single socket</td>
                 <td>validated</td>
@@ -316,7 +316,7 @@
                 <td>smoke only</td>
               </tr>
               <tr>
-                <td>ByteKV</td>
+                <td>MatrixKV</td>
                 <td>Plain KV read baseline</td>
                 <td>1</td>
                 <td>1,200/s</td>
@@ -373,7 +373,7 @@
           </article>
           <article>
             <h3>Versus generic KV</h3>
-            <p>ABase and ByteKV cover KV needs, while TemporalStore keeps model-aware computation close to online state.</p>
+            <p>MatrixDB and MatrixKV cover KV needs, while TemporalStore keeps model-aware computation close to online state.</p>
           </article>
         </div>
       </section>
@@ -384,7 +384,7 @@
           <h2>Build the online state layer for AI-era applications.</h2>
           <p>
             MatrixArk starts with TemporalStore, grows into a managed cloud platform, and uses
-            ABase plus ByteKV as the wider KV and consistency foundation.
+            MatrixDB plus MatrixKV as the wider KV and consistency foundation.
           </p>
         </div>
         <div class="contact-panel">
@@ -397,9 +397,11 @@
 
     <footer class="footer">
       <span>MatrixArk</span>
-      <span>TemporalStore. ABase. ByteKV.</span>
+      <span>TemporalStore. MatrixDB. MatrixKV.</span>
     </footer>
 
     <script src="./app.js"></script>
   </body>
 </html>
+
+
