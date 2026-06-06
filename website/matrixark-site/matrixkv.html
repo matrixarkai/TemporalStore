@@ -132,7 +132,7 @@
           <article><h3>Leases and epochs</h3><p>Protect primary ownership, failover decisions, and stale-writer rejection.</p></article>
           <article><h3>Timestamp service</h3><p>Useful for transactional paths and ordering-sensitive system records.</p></article>
           <article><h3>Control-plane KV</h3><p>Good fit for platform state that needs stronger correctness than a cache.</p></article>
-          <article><h3>Transactional future</h3><p>Can support coordination for managed cloud operations and metadata workflows.</p></article>
+          <article><h3>Transactional metadata</h3><p>Supports coordination records for platform operations, metadata ownership, and routing workflows.</p></article>
           <article><h3>Platform complement</h3><p>Works beside TemporalStore and MatrixDB instead of replacing their hot serving paths.</p></article>
         </div>
       </section>
@@ -147,7 +147,7 @@
             <tbody>
               <tr><td>etcd</td><td>Kubernetes-style metadata and watch APIs</td><td>MatrixKV is a product KV foundation that can align with MatrixArk table, partition, and serving semantics.</td></tr>
               <tr><td>FoundationDB</td><td>Strong transactional storage substrate</td><td>MatrixKV is narrower and intended as MatrixArk's metadata/control-plane KV.</td></tr>
-              <tr><td>TiKV</td><td>Distributed transactional KV with MVCC</td><td>MatrixKV targets the platform consistency role, while TemporalStore handles temporal serving.</td></tr>
+              <tr><td>TiKV</td><td>Distributed transactional KV with MVCC</td><td>MatrixKV owns the platform consistency role, while TemporalStore handles temporal serving.</td></tr>
               <tr><td>MatrixDB</td><td>Redis-compatible general online KV</td><td>MatrixKV is for correctness-sensitive records; MatrixDB is for serving profiles and cache-style KV.</td></tr>
             </tbody>
           </table>

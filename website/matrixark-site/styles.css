@@ -393,7 +393,7 @@ p {
 .product-grid,
 .use-case-grid,
 .positioning-grid,
-.roadmap,
+.ops-grid,
 .workflow-grid {
   max-width: 1180px;
   margin: 0 auto;
@@ -409,7 +409,7 @@ p {
 .product-card,
 .use-case-grid article,
 .positioning-grid article,
-.roadmap article,
+.ops-grid article,
 .workflow-grid article,
 .contact-panel {
   border: 1px solid var(--line);
@@ -665,22 +665,22 @@ th {
   color: rgba(255, 255, 255, 0.72);
 }
 
-.roadmap {
+.ops-grid {
   grid-template-columns: repeat(3, 1fr);
 }
 
-.roadmap article {
+.ops-grid article {
   padding: 28px;
   border-color: rgba(255, 255, 255, 0.16);
   background: rgba(255, 255, 255, 0.06);
 }
 
-.roadmap span {
+.ops-grid span {
   color: var(--teal);
   font-weight: 900;
 }
 
-.roadmap h3 {
+.ops-grid h3 {
   color: #ffffff;
   margin-top: 12px;
 }
@@ -1109,7 +1109,7 @@ th {
   .use-case-grid,
   .positioning-grid,
   .blog-grid,
-  .roadmap,
+  .ops-grid,
   .workflow-grid,
   .contact-section,
   .detail-grid,

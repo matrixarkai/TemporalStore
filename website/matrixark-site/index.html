@@ -27,7 +27,7 @@
         </div>
         <a href="#architecture">Architecture</a>
         <a href="#use-cases">Use cases</a>
-        <a href="#cloud">Cloud</a>
+        <a href="#operations">Operations</a>
         <a href="./blogs.html">Blogs</a>
       </nav>
       <a class="header-action" href="#contact">Contact</a>
@@ -237,12 +237,12 @@
             </ol>
           </article>
           <article>
-            <h3>Distributed roadmap</h3>
+            <h3>Operational control flow</h3>
             <ol>
-              <li>Single-node open-source engine first.</li>
-              <li>Primary-replica log shipping with epoch guard next.</li>
-              <li>Raft mode for partitions that require stronger consistency.</li>
-              <li>Managed cloud with autoscaling, backups, and rolling upgrades.</li>
+              <li>Metadata resolves table placement and active ownership.</li>
+              <li>Clients route through SDK or proxy paths based on workload needs.</li>
+              <li>Data nodes expose health, storage, cache, and request metrics.</li>
+              <li>Operators use one UI surface for testing, diagnosis, and rollout checks.</li>
             </ol>
           </article>
         </div>
@@ -287,26 +287,26 @@
         </div>
       </section>
 
-      <section id="cloud" class="section cloud-section">
+      <section id="operations" class="section cloud-section">
         <div class="section-heading">
-          <p class="eyebrow">Cloud Native</p>
-          <h2>Product-ready rollout path.</h2>
+          <p class="eyebrow">Operations</p>
+          <h2>One operating surface for the three engines.</h2>
         </div>
-        <div class="roadmap">
+        <div class="ops-grid">
           <article>
             <span>01</span>
-            <h3>Open-source core</h3>
-            <p>Clean single-node TemporalStore, SDKs, data models, local persistence, docs, Docker Compose, and Prometheus metrics.</p>
+            <h3>Deployment</h3>
+            <p>Package boundaries, node roles, service configuration, and repeatable infrastructure scripts for running the engines together.</p>
           </article>
           <article>
             <span>02</span>
-            <h3>Managed cloud</h3>
-            <p>Terraform, Kubernetes, rolling upgrades, EBS/NVMe cache, optional shared storage, backup, restore, and observability.</p>
+            <h3>Observability</h3>
+            <p>Health checks, Prometheus metrics, product UI, request mix, storage status, cache behavior, and data-node visibility.</p>
           </article>
           <article>
             <span>03</span>
-            <h3>AI context layer</h3>
-            <p>Structured memory APIs, temporal retrieval, vector DB companion patterns, agent state, safety counters, and LLM context workflows.</p>
+            <h3>Reliability</h3>
+            <p>Ownership metadata, recovery workflows, durable logs, persistence policy, and operational checks for online serving systems.</p>
           </article>
         </div>
       </section>
@@ -323,7 +323,7 @@
           </article>
           <article>
             <h3>Versus Redis Enterprise</h3>
-            <p>Redis remains excellent for generic cache and mature modules. TemporalStore targets high-cardinality windows, filters, long sequences, and persisted temporal state.</p>
+            <p>Redis remains excellent for generic cache and mature modules. TemporalStore is built for high-cardinality windows, filters, long sequences, and persisted temporal state.</p>
           </article>
           <article>
             <h3>Versus generic KV</h3>
@@ -353,7 +353,7 @@
             <p>How the three engines separate workload fit while sharing one cloud-native operating surface.</p>
           </article>
           <article>
-            <span>Cloud</span>
+            <span>Operations</span>
             <h3>Designing an AWS-ready rollout for online state systems</h3>
             <p>Lessons from deploying meta services, data nodes, monitoring, cache volumes, and public product pages.</p>
           </article>
@@ -368,8 +368,8 @@
           <p class="eyebrow">MatrixArk.ai</p>
           <h2>Build the online state layer for AI-era applications.</h2>
           <p>
-            MatrixArk starts with TemporalStore, grows into a managed cloud platform, and uses
-            MatrixDB plus MatrixKV as the database and consistency foundation.
+            MatrixArk combines TemporalStore, MatrixDB, and MatrixKV into one online state layer
+            for feature, profile, context, and control-plane workloads.
           </p>
         </div>
         <div class="contact-panel">
