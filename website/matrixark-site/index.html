@@ -21,7 +21,7 @@
           <button class="nav-product-trigger" type="button" aria-expanded="false">Products</button>
           <div class="nav-product-panel" aria-label="Product pages">
             <a href="./temporalstore.html"><strong>TemporalStore</strong><span>Temporal features, risk, sequences, AI context</span></a>
-            <a href="./matrixdb.html"><strong>MatrixDB</strong><span>Distributed KV, profile serving, Redis-compatible access</span></a>
+            <a href="./matrixdb.html"><strong>MatrixDB</strong><span>Multi-tenant scalable KV and profile serving</span></a>
             <a href="./matrixkv.html"><strong>MatrixKV</strong><span>Strong metadata, leases, routing, consistency</span></a>
           </div>
         </div>
@@ -47,7 +47,7 @@
           </div>
           <div class="signal-card signal-b">
             <span>MatrixDB</span>
-            <strong>distributed profile and KV serving</strong>
+            <strong>multi-tenant scalable profile and KV serving</strong>
           </div>
           <div class="signal-card signal-c">
             <span>MatrixKV</span>
@@ -105,13 +105,14 @@
             <span class="number">02</span>
             <h3>MatrixDB</h3>
             <p>
-              MatrixDB is for high-volume online data that should stay simple: user profiles,
-              item attributes, product state, service state, and cache-plus-storage workloads.
+              MatrixDB is for multi-tenant, high-volume online data that should stay simple: user
+              profiles, item attributes, product state, service state, and cache-plus-storage
+              workloads.
             </p>
             <ul class="thesis-points">
-              <li>Give existing profile and cache workloads a familiar access path while gaining a managed serving plane.</li>
+              <li>Give many teams and tenants a familiar access path while gaining a managed serving plane.</li>
               <li>Keep plain KV and profile reads simple instead of forcing every workload into temporal semantics.</li>
-              <li>Handle customer-facing serving where capacity, rollout, and operational visibility matter.</li>
+              <li>Scale customer-facing serving where tenant isolation, capacity, rollout, and visibility matter.</li>
             </ul>
           </article>
           <article>
@@ -162,13 +163,13 @@
             </div>
             <h3><a href="./matrixdb.html">MatrixDB</a></h3>
             <p>
-              Serve profiles, attributes, and general product state through a distributed online
-              database layer that keeps adoption familiar and operations visible.
+              Serve profiles, attributes, and general product state through a multi-tenant,
+              scalable online database layer that keeps adoption familiar and operations visible.
             </p>
             <dl>
-              <div><dt>Buyer pain</dt><dd>profile stores and caches becoming capacity-heavy and hard to operate</dd></div>
-              <div><dt>Product edge</dt><dd>distributed serving for profiles, hashes, strings, and cache-plus-storage workloads</dd></div>
-              <div><dt>Business value</dt><dd>modernize online KV without rewriting every application at once</dd></div>
+              <div><dt>Buyer pain</dt><dd>many teams sharing profile stores and caches that become capacity-heavy and hard to isolate</dd></div>
+              <div><dt>Product edge</dt><dd>multi-tenant distributed serving for profiles, hashes, strings, and cache-plus-storage workloads</dd></div>
+              <div><dt>Business value</dt><dd>scale online KV across tenants without rewriting every application at once</dd></div>
             </dl>
             <a class="text-link" href="./matrixdb.html">Open MatrixDB page</a>
           </article>
@@ -215,7 +216,7 @@
           <div class="arch-lane engine-lane">
             <h3>Product engines</h3>
             <div class="engine-row temporal-row"><strong>TemporalStore</strong><small>fresh windows, filters, sequences, temporal aggregates, context</small></div>
-            <div class="engine-row matrixdb-row"><strong>MatrixDB</strong><small>profiles, attributes, service state, general online KV</small></div>
+            <div class="engine-row matrixdb-row"><strong>MatrixDB</strong><small>multi-tenant profiles, attributes, service state, general online KV</small></div>
             <div class="engine-row matrixkv-row"><strong>MatrixKV</strong><small>leases, routes, table state, metadata, coordination</small></div>
           </div>
           <div class="arch-lane">
@@ -268,7 +269,7 @@
           </article>
           <article>
             <h3>Redis modernization</h3>
-            <p>Move profile and service-state workloads into a distributed serving layer while keeping adoption familiar for application teams.</p>
+            <p>Move profile and service-state workloads into a scalable multi-tenant serving layer while keeping adoption familiar for application teams.</p>
             <code>MatrixDB</code>
           </article>
           <article>
