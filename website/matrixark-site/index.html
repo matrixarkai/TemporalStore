@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>MatrixArk | Real-time data serving for AI, risk, and large-scale applications</title>
+    <title>MatrixArk | Real-time serving engines for temporal data, KV, and consistency</title>
     <meta
       name="description"
-      content="MatrixArk builds real-time serving infrastructure for temporal features, Redis-compatible KV, and strongly consistent distributed state."
+      content="MatrixArk builds TemporalStore, ABase, and ByteKV: serving engines for temporal features, distributed KV, and strongly consistent metadata."
     />
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -17,134 +17,198 @@
         <span>MatrixArk</span>
       </a>
       <nav class="nav" aria-label="Primary navigation">
-        <a href="#platform">Platform</a>
         <a href="#products">Products</a>
-        <a href="#use-cases">Use cases</a>
         <a href="#architecture">Architecture</a>
+        <a href="#use-cases">Use cases</a>
         <a href="#benchmarks">Benchmarks</a>
         <a href="#cloud">Cloud</a>
       </nav>
-      <a class="header-action" href="#contact">Talk to us</a>
+      <a class="header-action" href="#contact">Contact</a>
     </header>
 
     <main id="top">
       <section class="hero">
-        <div class="hero-media" aria-hidden="true">
-          <div class="flow-lane lane-one"></div>
-          <div class="flow-lane lane-two"></div>
-          <div class="flow-lane lane-three"></div>
-          <div class="hero-stack">
-            <div class="stack-layer temporal">
-              <span class="layer-kicker">Temporal</span>
-              <strong>Windows, filters, sequences</strong>
-            </div>
-            <div class="stack-layer kv">
-              <span class="layer-kicker">KV</span>
-              <strong>Redis-compatible online serving</strong>
-            </div>
-            <div class="stack-layer core">
-              <span class="layer-kicker">Core</span>
-              <strong>Raft-backed consistency</strong>
-            </div>
+        <div class="hero-visual" aria-hidden="true">
+          <div class="mesh">
+            <span></span><span></span><span></span><span></span>
+            <span></span><span></span><span></span><span></span>
+            <span></span><span></span><span></span><span></span>
           </div>
-          <div class="server-grid">
-            <span></span><span></span><span></span><span></span>
-            <span></span><span></span><span></span><span></span>
+          <div class="signal-card signal-a">
+            <span>TemporalStore</span>
+            <strong>window query: 3.8 ms p95</strong>
+          </div>
+          <div class="signal-card signal-b">
+            <span>ABase</span>
+            <strong>Redis path: SET / GET / HASH</strong>
+          </div>
+          <div class="signal-card signal-c">
+            <span>ByteKV</span>
+            <strong>Raft-backed metadata core</strong>
           </div>
         </div>
+
         <div class="hero-copy">
           <p class="eyebrow">matrixark.ai</p>
-          <h1>Real-time data serving for AI, risk, and large-scale applications.</h1>
+          <h1>Real-time serving engines for temporal data, KV, and consistency.</h1>
           <p class="hero-subcopy">
-            MatrixArk unifies temporal feature serving, Redis-compatible distributed KV, and strongly
-            consistent system state in one cloud-native platform.
+            MatrixArk turns online state into a product surface: temporal feature serving,
+            Redis-compatible distributed KV, and strongly consistent metadata for AI, risk,
+            recommendation, ads, and cloud infrastructure teams.
           </p>
           <div class="hero-actions">
-            <a class="button primary" href="#products">Explore products</a>
-            <a class="button secondary" href="#architecture">View architecture</a>
+            <a class="button primary" href="#products">Explore the engines</a>
+            <a class="button secondary" href="#architecture">See the workflow</a>
           </div>
-          <div class="proof-strip" aria-label="Product highlights">
+          <div class="proof-strip" aria-label="Platform highlights">
             <span>Temporal windows</span>
-            <span>Persistent online state</span>
-            <span>Redis protocol path</span>
-            <span>Raft core</span>
+            <span>High-cardinality entities</span>
+            <span>Redis-compatible path</span>
+            <span>Strong metadata core</span>
           </div>
         </div>
       </section>
 
-      <section id="platform" class="section platform-band">
+      <section class="section thesis-section">
         <div class="section-heading">
           <p class="eyebrow">Platform Thesis</p>
-          <h2>Three serving engines. One real-time data platform.</h2>
+          <h2>One company, three focused engines.</h2>
           <p>
-            Most production teams stitch together stream jobs, caches, online stores, offline
-            materialization, custom serving services, and control-plane databases. MatrixArk narrows
-            that stack into purpose-built engines for the online path.
+            Modern online systems often combine stream processors, caches, online stores, custom
+            feature services, metadata databases, and hand-built failover tooling. MatrixArk keeps
+            the architecture modular, but makes the online serving layer deliberate.
           </p>
         </div>
-        <div class="platform-grid">
-          <div class="metric-panel">
-            <span>TemporalStore</span>
-            <strong>Fresh entity state</strong>
-            <p>Rolling windows, frequency caps, long sequences, structured context, and risk signals.</p>
-          </div>
-          <div class="metric-panel">
-            <span>ABase</span>
-            <strong>Large-scale KV</strong>
-            <p>Distributed key-value and profile serving with a Redis-compatible migration path.</p>
-          </div>
-          <div class="metric-panel">
-            <span>ByteKV</span>
-            <strong>Consistent core</strong>
-            <p>Strongly consistent KV for metadata, leases, routing state, and transactional control paths.</p>
-          </div>
+        <div class="thesis-grid">
+          <article>
+            <span class="number">01</span>
+            <h3>Serve temporal state directly</h3>
+            <p>Query windows, filters, distinct counts, sequences, and profile state without building a new batch-plus-cache pipeline for every product rule.</p>
+          </article>
+          <article>
+            <span class="number">02</span>
+            <h3>Keep plain KV simple</h3>
+            <p>Use a Redis-compatible path for strings, hashes, profiles, and migration-friendly cache-plus-storage workloads.</p>
+          </article>
+          <article>
+            <span class="number">03</span>
+            <h3>Separate consistency-sensitive metadata</h3>
+            <p>Put leases, routing, table state, and control-plane records on a strongly consistent KV foundation.</p>
+          </article>
         </div>
       </section>
 
-      <section id="products" class="section">
+      <section id="products" class="section products-section">
         <div class="section-heading compact">
-          <p class="eyebrow">Products</p>
-          <h2>Designed around workload fit, not one generic database claim.</h2>
+          <p class="eyebrow">The Three Projects</p>
+          <h2>Pick the engine by workload, then run them as one platform.</h2>
         </div>
+
         <div class="product-grid">
-          <article class="product-card accent-teal">
-            <div class="product-icon" aria-hidden="true">T</div>
+          <article class="product-card temporal-card">
+            <div class="product-topline">
+              <span class="product-mark">T</span>
+              <span class="status-pill">Primary startup wedge</span>
+            </div>
             <h3>TemporalStore</h3>
             <p>
-              Online temporal feature and context serving for high-cardinality entities, arbitrary
-              windows, filtered aggregates, long sequences, and persisted state.
+              A temporal serving engine for online features, risk signals, frequency caps, user
+              timelines, long sequences, and structured AI context.
             </p>
-            <ul>
-              <li>TemporalCounter, TemporalAggregate, TemporalDistinct, SequenceModel, Hash/KV</li>
-              <li>Storage-side filtering, aggregation, sorting, deduplication, and model logic</li>
-              <li>Hot in-memory objects with page/index/oplog persistence design</li>
-            </ul>
+            <dl>
+              <div><dt>Best for</dt><dd>high-cardinality temporal features and online aggregation</dd></div>
+              <div><dt>Data models</dt><dd>counter, aggregate, distinct, sequence, hash/profile, string</dd></div>
+              <div><dt>Why it exists</dt><dd>business logic belongs close to hot serving state</dd></div>
+            </dl>
           </article>
-          <article class="product-card accent-blue">
-            <div class="product-icon" aria-hidden="true">A</div>
+
+          <article class="product-card abase-card">
+            <div class="product-topline">
+              <span class="product-mark">A</span>
+              <span class="status-pill">Redis-compatible path</span>
+            </div>
             <h3>ABase</h3>
             <p>
-              Distributed KV and Redis-compatible online serving for profiles, hashes, strings,
-              high-QPS lookups, and cache-plus-storage workloads.
+              A distributed KV and profile-serving engine for Redis migration, large hash/string
+              workloads, cache-plus-storage patterns, and profile lookup services.
             </p>
-            <ul>
-              <li>Dual Redis and Thrift listener path validated in AWS smoke tests</li>
-              <li>Best current write/mixed plain-KV baseline among the measured services</li>
-              <li>Designed as the broader distributed KV expansion path</li>
-            </ul>
+            <dl>
+              <div><dt>Best for</dt><dd>plain KV, profiles, hashes, strings, and Redis protocol adoption</dd></div>
+              <div><dt>Validated</dt><dd>Redis PING, SET, GET, HSET, HGET, DEL smoke on AWS</dd></div>
+              <div><dt>Role</dt><dd>general serving store beside TemporalStore</dd></div>
+            </dl>
           </article>
-          <article class="product-card accent-amber">
-            <div class="product-icon" aria-hidden="true">K</div>
+
+          <article class="product-card bytekv-card">
+            <div class="product-topline">
+              <span class="product-mark">K</span>
+              <span class="status-pill">Consistency foundation</span>
+            </div>
             <h3>ByteKV</h3>
             <p>
-              Strongly consistent distributed KV foundation for metadata, configuration, leases,
-              coordination state, and infrastructure control planes.
+              A strongly consistent KV foundation for metadata, coordination, table state,
+              routing, leases, and infrastructure control-plane records.
             </p>
-            <ul>
-              <li>Raft-style consistency foundation for system state</li>
-              <li>Good fit for transactional metadata and routing/control-plane records</li>
-              <li>Complements TemporalStore and ABase rather than replacing them</li>
-            </ul>
+            <dl>
+              <div><dt>Best for</dt><dd>metadata, transactions, leases, routing, and control plane state</dd></div>
+              <div><dt>Deployed</dt><dd>master, TSO, proxy, and two partition servers on AWS</dd></div>
+              <div><dt>Role</dt><dd>the consistency layer under the platform</dd></div>
+            </dl>
+          </article>
+        </div>
+      </section>
+
+      <section id="architecture" class="section architecture-section">
+        <div class="section-heading">
+          <p class="eyebrow">Architecture</p>
+          <h2>A clean online-state stack.</h2>
+          <p>
+            The three engines should share cloud deployment, metrics, SDK conventions, and
+            operational UI, while keeping the storage engines specialized.
+          </p>
+        </div>
+
+        <div class="architecture-board">
+          <div class="arch-lane">
+            <h3>Application and ML systems</h3>
+            <span>risk service</span>
+            <span>ads auction</span>
+            <span>recommendation ranker</span>
+            <span>agent context composer</span>
+          </div>
+          <div class="arch-lane engine-lane">
+            <h3>MatrixArk serving layer</h3>
+            <div class="engine-row temporal-row"><strong>TemporalStore</strong><small>windows, filters, sequences, temporal aggregates</small></div>
+            <div class="engine-row abase-row"><strong>ABase</strong><small>Redis-compatible KV, profiles, hashes, cache-plus-storage</small></div>
+            <div class="engine-row bytekv-row"><strong>ByteKV</strong><small>leases, routes, table state, metadata, transactions</small></div>
+          </div>
+          <div class="arch-lane">
+            <h3>Cloud substrate</h3>
+            <span>EC2 / Kubernetes</span>
+            <span>EBS / NVMe cache</span>
+            <span>EFS / S3-compatible storage</span>
+            <span>Prometheus metrics</span>
+          </div>
+        </div>
+
+        <div class="workflow-grid">
+          <article>
+            <h3>Temporal write and query flow</h3>
+            <ol>
+              <li>Route entity key to a partition and model.</li>
+              <li>Apply model-specific update to hot object state.</li>
+              <li>Append replayable mutation log with configurable durability policy.</li>
+              <li>Serve window/filter/sequence queries from memory, page cache, or persisted pages.</li>
+            </ol>
+          </article>
+          <article>
+            <h3>Distributed roadmap</h3>
+            <ol>
+              <li>Single-node open-source engine first.</li>
+              <li>Primary-replica log shipping with epoch guard next.</li>
+              <li>Raft mode for partitions that require stronger consistency.</li>
+              <li>Managed cloud with autoscaling, backups, and rolling upgrades.</li>
+            </ol>
           </article>
         </div>
       </section>
@@ -152,116 +216,76 @@
       <section id="use-cases" class="section use-case-section">
         <div class="section-heading">
           <p class="eyebrow">Use Cases</p>
-          <h2>Where the platform wins first.</h2>
-          <p>
-            MatrixArk is strongest where the online state is fresh, high-cardinality, temporal, and
-            too business-specific for plain cache keys.
-          </p>
+          <h2>Strong first markets for MatrixArk.</h2>
         </div>
         <div class="use-case-grid">
-          <div class="use-case">
-            <h3>Fraud and risk velocity</h3>
-            <p>Count failed logins by country in 30 minutes, unique merchants per card in 24 hours, or signup attempts per IP and account in 10 minutes.</p>
+          <article>
+            <h3>Fraud and risk</h3>
+            <p>Failed logins by country, unique merchants by card, chargeback windows, device velocity, IP-account signup attempts.</p>
             <code>TemporalAggregate + TemporalDistinct</code>
-          </div>
-          <div class="use-case">
+          </article>
+          <article>
             <h3>Ads frequency cap</h3>
-            <p>Serve campaign-user impression windows without creating new Redis bucket layouts and stream jobs for every policy change.</p>
-            <code>TemporalCounter</code>
-          </div>
-          <div class="use-case">
+            <p>Campaign-user impression windows, conversion suppression, exposure history, and policy changes without rebuilding a stream job.</p>
+            <code>TemporalCounter + Sequence</code>
+          </article>
+          <article>
             <h3>Recommendation freshness</h3>
-            <p>Fetch long behavior sequences, recent positive actions, and per-category engagement at inference time.</p>
-            <code>SequenceModel + Hash/KV</code>
-          </div>
-          <div class="use-case">
-            <h3>AI and agent context</h3>
-            <p>Store session timelines, user state, recent tool actions, risk counters, and structured memory alongside vector retrieval systems.</p>
-            <code>Structured context store</code>
-          </div>
-          <div class="use-case">
+            <p>Recent behavior sequences, category engagement, profile attributes, and feature vectors served at inference time.</p>
+            <code>Sequence + Hash/Profile</code>
+          </article>
+          <article>
+            <h3>LLM and agent context</h3>
+            <p>Session state, tool events, user memory, safety counters, retrieval metadata, and structured context beside vector search.</p>
+            <code>Temporal context store</code>
+          </article>
+          <article>
             <h3>Redis modernization</h3>
-            <p>Move large profile and KV workloads toward a distributed serving layer while keeping a Redis-compatible path where it helps adoption.</p>
+            <p>Move large KV and profile workloads into a distributed serving layer while keeping a familiar protocol surface.</p>
             <code>ABase</code>
-          </div>
-          <div class="use-case">
-            <h3>Infrastructure metadata</h3>
-            <p>Keep routing metadata, feature registry state, cluster metadata, and leases in a strongly consistent KV core.</p>
+          </article>
+          <article>
+            <h3>Control-plane metadata</h3>
+            <p>Store cluster state, table metadata, routing, leases, and transactional records in a consistent KV foundation.</p>
             <code>ByteKV</code>
-          </div>
-        </div>
-      </section>
-
-      <section id="architecture" class="section architecture-section">
-        <div class="section-heading">
-          <p class="eyebrow">Architecture</p>
-          <h2>From events to online decisions.</h2>
-        </div>
-        <div class="architecture-board">
-          <div class="arch-column sources">
-            <h3>Sources</h3>
-            <span>Kafka events</span>
-            <span>Batch materialization</span>
-            <span>Application writes</span>
-            <span>Feature registry</span>
-          </div>
-          <div class="arch-arrow" aria-hidden="true"></div>
-          <div class="arch-column engines">
-            <h3>MatrixArk engines</h3>
-            <span>TemporalStore models</span>
-            <span>ABase KV/profile path</span>
-            <span>ByteKV metadata core</span>
-            <span>Metaserver routing</span>
-          </div>
-          <div class="arch-arrow" aria-hidden="true"></div>
-          <div class="arch-column decisions">
-            <h3>Online decisions</h3>
-            <span>Risk score</span>
-            <span>Ads auction</span>
-            <span>Recommendation ranker</span>
-            <span>LLM context composer</span>
-          </div>
-        </div>
-        <div class="workflow-grid">
-          <div>
-            <h3>TemporalStore write path</h3>
-            <ol>
-              <li>Route key to the primary partition.</li>
-              <li>Apply model-specific update to hot object state.</li>
-              <li>Append mutation log and mark dirty slot/page state.</li>
-              <li>Dump merged pages and replayable state in the background.</li>
-            </ol>
-          </div>
-          <div>
-            <h3>TemporalStore read path</h3>
-            <ol>
-              <li>Resolve table, partition, and model.</li>
-              <li>Use in-memory index to locate object or persisted page.</li>
-              <li>Serve hot state or load through block/page cache.</li>
-              <li>Run storage-side window, filter, sequence, or aggregate logic.</li>
-            </ol>
-          </div>
+          </article>
         </div>
       </section>
 
       <section id="benchmarks" class="section benchmark-section">
         <div class="section-heading">
-          <p class="eyebrow">Measured Baselines</p>
-          <h2>Early AWS numbers, with the caveats kept visible.</h2>
+          <p class="eyebrow">AWS Test Snapshot</p>
+          <h2>Small-cluster validation, not inflated marketing numbers.</h2>
           <p>
-            These are small-instance tests from a reused AWS cluster, not maximum-capacity claims.
-            TemporalStore used EFS/shared-file durable storage in these runs, which makes write
-            latency intentionally more durable and slower than an in-memory cache path.
+            Current public test node runs one meta/proxy/client instance and two data nodes. The
+            numbers below are early smoke and baseline measurements on small instances.
           </p>
+        </div>
+        <div class="test-status-grid">
+          <article>
+            <span>TemporalStore</span>
+            <strong>Prometheus endpoint live</strong>
+            <p>Metrics are served from the AWS test node and ready for scraper integration.</p>
+          </article>
+          <article>
+            <span>ABase</span>
+            <strong>Redis protocol smoke passed</strong>
+            <p>PING, SET, GET, HSET, HGET, and DEL validated through the Redis listener path.</p>
+          </article>
+          <article>
+            <span>ByteKV</span>
+            <strong>Clean AWS smoke passed</strong>
+            <p>Namespace/table creation and write/read validated after cleaning stale cluster state.</p>
+          </article>
         </div>
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
-                <th>System</th>
+                <th>Engine</th>
                 <th>Workload</th>
                 <th>Threads</th>
-                <th>QPS</th>
+                <th>QPS / status</th>
                 <th>p50</th>
                 <th>p99</th>
               </tr>
@@ -285,7 +309,7 @@
               </tr>
               <tr>
                 <td>ABase</td>
-                <td>Redis path SET/GET smoke</td>
+                <td>Redis path smoke</td>
                 <td>single socket</td>
                 <td>validated</td>
                 <td>1-2 ms GET/HGET</td>
@@ -293,7 +317,7 @@
               </tr>
               <tr>
                 <td>ByteKV</td>
-                <td>Plain KV read</td>
+                <td>Plain KV read baseline</td>
                 <td>1</td>
                 <td>1,200/s</td>
                 <td>0.689 ms</td>
@@ -303,74 +327,69 @@
           </table>
         </div>
         <p class="benchmark-note">
-          Public claim discipline matters: MatrixArk should publish reproducible benchmarks as each
-          product mode matures instead of claiming unvalidated microsecond, PB-scale, or RPO=0 targets.
+          The product promise is not a single benchmark. It is workload fit: temporal logic in the
+          serving engine, Redis-compatible KV where that is enough, and strong metadata consistency
+          where correctness matters.
         </p>
       </section>
 
       <section id="cloud" class="section cloud-section">
         <div class="section-heading">
           <p class="eyebrow">Cloud Native</p>
-          <h2>Open source first. Managed cloud after the core is proven.</h2>
+          <h2>Product-ready rollout path.</h2>
         </div>
         <div class="roadmap">
-          <div class="roadmap-step">
+          <article>
             <span>01</span>
-            <h3>Open-source functionality</h3>
-            <p>Buildable core, single-node and local-cluster demos, temporal models, SDKs, Prometheus metrics, and honest benchmark harnesses.</p>
-          </div>
-          <div class="roadmap-step">
+            <h3>Open-source core</h3>
+            <p>Clean single-node TemporalStore, SDKs, data models, local persistence, benchmark harnesses, docs, Docker Compose, and Prometheus metrics.</p>
+          </article>
+          <article>
             <span>02</span>
-            <h3>Managed cloud service</h3>
-            <p>AWS/GCP/Azure deployments with Terraform, Kubernetes, autoscaling, observability, backups, upgrades, and tenant controls.</p>
-          </div>
-          <div class="roadmap-step">
+            <h3>Managed cloud</h3>
+            <p>Terraform, Kubernetes, rolling upgrades, EBS/NVMe cache, optional shared storage, backup, restore, and observability.</p>
+          </article>
+          <article>
             <span>03</span>
-            <h3>AI context and agents</h3>
-            <p>Structured context APIs, LangGraph/LangChain integrations, vector DB companion patterns, and LLM inference-state exploration.</p>
-          </div>
+            <h3>AI context layer</h3>
+            <p>Structured memory APIs, temporal retrieval, vector DB companion patterns, agent state, safety counters, and LLM context workflows.</p>
+          </article>
         </div>
       </section>
 
-      <section class="section comparison-section">
+      <section class="section positioning-section">
         <div class="section-heading">
-          <p class="eyebrow">Market Position</p>
-          <h2>Feature platform feel, infrastructure-engine depth.</h2>
-          <p>
-            Chalk-style feature platforms emphasize defining features once, serving them at low
-            latency, and reducing training-serving drift. Redis-style enterprise offerings emphasize
-            compatibility, scale, and managed operations. MatrixArk should sit between them: a
-            storage-engine platform for the online state that those systems depend on.
-          </p>
+          <p class="eyebrow">Positioning</p>
+          <h2>Feature-platform feel, storage-engine depth.</h2>
         </div>
-        <div class="comparison-grid">
-          <div>
-            <h3>Compared with feature stores</h3>
-            <p>MatrixArk does not need to replace the registry or offline warehouse first. It becomes the online temporal serving engine under Feast, feature platforms, risk engines, and inference systems.</p>
-          </div>
-          <div>
-            <h3>Compared with Redis Enterprise</h3>
-            <p>Redis is excellent for mature general-purpose cache workloads. TemporalStore is specialized for high-cardinality temporal windows, long sequences, filtered state, and persisted online features.</p>
-          </div>
-          <div>
-            <h3>Compared with generic KV</h3>
-            <p>ABase and ByteKV cover broader KV paths, while TemporalStore keeps model-aware computation inside the serving engine for risk, ads, recommendations, and AI context.</p>
-          </div>
+        <div class="positioning-grid">
+          <article>
+            <h3>Versus feature stores</h3>
+            <p>MatrixArk can sit under Feast, Tecton-like systems, or custom feature platforms as the online temporal serving engine.</p>
+          </article>
+          <article>
+            <h3>Versus Redis Enterprise</h3>
+            <p>Redis remains excellent for generic cache and mature modules. TemporalStore targets high-cardinality windows, filters, long sequences, and persisted temporal state.</p>
+          </article>
+          <article>
+            <h3>Versus generic KV</h3>
+            <p>ABase and ByteKV cover KV needs, while TemporalStore keeps model-aware computation close to online state.</p>
+          </article>
         </div>
       </section>
 
       <section id="contact" class="section contact-section">
         <div>
           <p class="eyebrow">MatrixArk.ai</p>
-          <h2>Build the online state layer for the next generation of AI systems.</h2>
+          <h2>Build the online state layer for AI-era applications.</h2>
           <p>
-            Start with the open-source engines, then grow into managed cloud clusters for temporal
-            features, distributed KV, and strongly consistent metadata.
+            MatrixArk starts with TemporalStore, grows into a managed cloud platform, and uses
+            ABase plus ByteKV as the wider KV and consistency foundation.
           </p>
         </div>
         <div class="contact-panel">
-          <strong>Early design partners</strong>
-          <p>Fraud, ads, recommendation, feature platform, and AI agent teams are the best first users.</p>
+          <strong>Best first users</strong>
+          <p>Fraud, ads, recommendation, feature platform, infrastructure, and AI agent teams.</p>
           <a class="button primary" href="mailto:founders@matrixark.ai">founders@matrixark.ai</a>
         </div>
       </section>
@@ -378,7 +397,7 @@
 
     <footer class="footer">
       <span>MatrixArk</span>
-      <span>Real-time serving infrastructure for AI, risk, and large-scale applications.</span>
+      <span>TemporalStore. ABase. ByteKV.</span>
     </footer>
 
     <script src="./app.js"></script>
