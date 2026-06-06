@@ -18,6 +18,7 @@ LINE_RE = re.compile(r"^\s*(\S+)\s*[:=]\s*(.+?)\s*$")
 METRIC_RE = re.compile(r"^(?P<name>[^{}\s]+)(?:\{(?P<labels>[^}]*)\})?$")
 LABEL_RE = re.compile(r'^\s*([^=\s]+)\s*=\s*(.+?)\s*$')
 VALUE_RE = re.compile(r"^[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?$")
+LABEL_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
 def parse_args() -> argparse.Namespace:
@@ -60,6 +61,15 @@ def sanitize_metric_name(name: str) -> str:
     return sanitized
 
 
+def sanitize_label_name(name: str) -> str:
+    sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", name)
+    if not sanitized:
+        return "label"
+    if not LABEL_NAME_RE.match(sanitized):
+        sanitized = f"label_{sanitized}"
+    return sanitized
+
+
 def escape_label(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\r", "\\r")
 
@@ -76,7 +86,7 @@ def parse_label_text(raw: str):
         m = LABEL_RE.match(pair)
         if not m:
             continue
-        key = sanitize_metric_name(m.group(1))
+        key = sanitize_label_name(m.group(1))
         val = m.group(2).strip()
         if len(val) >= 2 and ((val[0] == '"' and val[-1] == '"') or (val[0] == "'" and val[-1] == "'")):
             val = val[1:-1]
@@ -147,12 +157,15 @@ def write_prom(output_dir: Path, output_file: str, samples):
     tmp_file = output_dir / f".{output_file}.tmp"
     target_file = output_dir / output_file
     lines = []
+    last_metric_name = None
     for metric_name, metric_value, metric_labels in sorted(samples):
+        if metric_name != last_metric_name:
+            lines.append(f"# HELP {metric_name} TemporalStore metric converted from /vars\n")
+            lines.append(f"# TYPE {metric_name} gauge\n")
+            last_metric_name = metric_name
         metric_series = metric_name
         if metric_labels:
             metric_series += f"{{{metric_labels}}}"
-        lines.append(f"# HELP {metric_name} TemporalStore metric converted from /vars\n")
-        lines.append(f"# TYPE {metric_name} gauge\n")
         lines.append(f"{metric_series} {metric_value}\n")
     with tmp_file.open("w", encoding="utf-8") as f:
         if lines:
