@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>MatrixArk | Real-time serving engines for temporal data, KV, and consistency</title>
+    <title>MatrixArk | Matrix engines for temporal data, distributed KV, and consistency</title>
     <meta
       name="description"
-      content="MatrixArk builds TemporalStore, MatrixDB, and MatrixKV: serving engines for temporal features, distributed KV, and strongly consistent metadata."
+      content="MatrixArk builds a matrix of online-state engines: TemporalStore for temporal data, MatrixDB for distributed KV, and MatrixKV for strongly consistent metadata."
     />
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -50,11 +50,11 @@
 
         <div class="hero-copy">
           <p class="eyebrow">matrixark.ai</p>
-          <h1>Real-time serving engines for temporal data, KV, and consistency.</h1>
+          <h1>A matrix of real-time serving engines for AI-era online state.</h1>
           <p class="hero-subcopy">
-            MatrixArk turns online state into a product surface: temporal feature serving,
-            Redis-compatible distributed KV, and strongly consistent metadata for AI, risk,
-            recommendation, ads, and cloud infrastructure teams.
+            MatrixArk turns online state into a product surface: TemporalStore for live
+            temporal data, MatrixDB for Redis-compatible distributed KV, and MatrixKV for
+            strongly consistent metadata.
           </p>
           <div class="hero-actions">
             <a class="button primary" href="#products">Explore the engines</a>
@@ -72,11 +72,12 @@
       <section class="section thesis-section">
         <div class="section-heading">
           <p class="eyebrow">Platform Thesis</p>
-          <h2>One company, three focused engines.</h2>
+          <h2>One MatrixArk platform, three focused engines.</h2>
           <p>
             Modern online systems often combine stream processors, caches, online stores, custom
-            feature services, metadata databases, and hand-built failover tooling. MatrixArk keeps
-            the architecture modular, but makes the online serving layer deliberate.
+            feature services, metadata databases, and hand-built failover tooling. MatrixArk
+            organizes that complexity into a clear matrix: temporal state, distributed KV, and
+            consistency-sensitive metadata.
           </p>
         </div>
         <div class="thesis-grid">
@@ -101,7 +102,7 @@
       <section id="products" class="section products-section">
         <div class="section-heading compact">
           <p class="eyebrow">The Three Projects</p>
-          <h2>Pick the engine by workload, then run them as one platform.</h2>
+          <h2>Pick the Matrix engine by workload, then run them as one platform.</h2>
         </div>
 
         <div class="product-grid">
@@ -124,7 +125,7 @@
 
           <article class="product-card matrixdb-card">
             <div class="product-topline">
-              <span class="product-mark">A</span>
+              <span class="product-mark">D</span>
               <span class="status-pill">Redis-compatible path</span>
             </div>
             <h3>MatrixDB</h3>
@@ -135,7 +136,7 @@
             <dl>
               <div><dt>Best for</dt><dd>plain KV, profiles, hashes, strings, and Redis protocol adoption</dd></div>
               <div><dt>Validated</dt><dd>Redis PING, SET, GET, HSET, HGET, DEL smoke on AWS</dd></div>
-              <div><dt>Role</dt><dd>general serving store beside TemporalStore</dd></div>
+              <div><dt>Role</dt><dd>the MatrixArk database engine for general online serving</dd></div>
             </dl>
           </article>
 
@@ -152,7 +153,7 @@
             <dl>
               <div><dt>Best for</dt><dd>metadata, transactions, leases, routing, and control plane state</dd></div>
               <div><dt>Deployed</dt><dd>master, TSO, proxy, and two partition servers on AWS</dd></div>
-              <div><dt>Role</dt><dd>the consistency layer under the platform</dd></div>
+              <div><dt>Role</dt><dd>the MatrixArk KV core for correctness-sensitive state</dd></div>
             </dl>
           </article>
         </div>
@@ -163,8 +164,8 @@
           <p class="eyebrow">Architecture</p>
           <h2>A clean online-state stack.</h2>
           <p>
-            The three engines should share cloud deployment, metrics, SDK conventions, and
-            operational UI, while keeping the storage engines specialized.
+            The Matrix engines share cloud deployment, metrics, SDK conventions, and operational
+            UI, while keeping each storage engine specialized.
           </p>
         </div>
 
@@ -177,7 +178,7 @@
             <span>agent context composer</span>
           </div>
           <div class="arch-lane engine-lane">
-            <h3>MatrixArk serving layer</h3>
+            <h3>MatrixArk engine matrix</h3>
             <div class="engine-row temporal-row"><strong>TemporalStore</strong><small>windows, filters, sequences, temporal aggregates</small></div>
             <div class="engine-row matrixdb-row"><strong>MatrixDB</strong><small>Redis-compatible KV, profiles, hashes, cache-plus-storage</small></div>
             <div class="engine-row matrixkv-row"><strong>MatrixKV</strong><small>leases, routes, table state, metadata, transactions</small></div>
@@ -384,7 +385,7 @@
           <h2>Build the online state layer for AI-era applications.</h2>
           <p>
             MatrixArk starts with TemporalStore, grows into a managed cloud platform, and uses
-            MatrixDB plus MatrixKV as the wider KV and consistency foundation.
+            MatrixDB plus MatrixKV as the database and consistency foundation.
           </p>
         </div>
         <div class="contact-panel">
