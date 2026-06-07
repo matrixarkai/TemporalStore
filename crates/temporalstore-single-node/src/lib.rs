@@ -4,6 +4,7 @@ pub mod control;
 pub mod e2e;
 pub mod engine;
 pub mod http;
+pub mod index_log;
 pub mod meta;
 pub mod oplog;
 pub mod page_store;
@@ -26,6 +27,7 @@ pub use e2e::{
     TemporalStoreClientOptions, WorkflowError, WorkflowProxy,
 };
 pub use engine::TemporalEngine;
+pub use index_log::{IndexLogRecord, IndexLogStats, LocalIndexLogStore};
 pub use meta::{ShardLocation, SingleNodeMeta};
 pub use oplog::{LocalOplogStore, OplogRecord, OplogStats};
 pub use page_store::{LocalPageStore, PageAddress, PageStoreStats};

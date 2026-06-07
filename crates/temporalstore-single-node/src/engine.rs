@@ -12,6 +12,7 @@ use crate::control::{
     SetConfigRequest, ShardInfo, ShardStats, StreamKind, StreamReadRequest, StreamReadResponse,
     StreamRecord, UnloadShardRequest, UnloadShardResponse,
 };
+use crate::index_log::LocalIndexLogStore;
 use crate::oplog::LocalOplogStore;
 use crate::page_store::{LocalPageStore, PageAddress};
 use crate::types::{
@@ -26,6 +27,7 @@ pub struct TemporalEngine {
     cache: MultiLayerCache,
     page_store: LocalPageStore,
     oplog_store: LocalOplogStore,
+    index_log_store: LocalIndexLogStore,
     index_dir: PathBuf,
     configs: Arc<RwLock<HashMap<ShardId, Config>>>,
     infos: Arc<RwLock<HashMap<ShardId, ShardInfo>>>,
@@ -70,11 +72,13 @@ impl TemporalEngine {
     ) -> Self {
         let index_dir = index_dir.into();
         let oplog_store = LocalOplogStore::new(index_dir.join("oplogs"));
+        let index_log_store = LocalIndexLogStore::new(index_dir.join("indexlogs"));
         Self {
             shards: Arc::default(),
             cache,
             page_store,
             oplog_store,
+            index_log_store,
             index_dir,
             configs: Arc::default(),
             infos: Arc::default(),
@@ -91,6 +95,10 @@ impl TemporalEngine {
 
     pub fn oplog_store(&self) -> LocalOplogStore {
         self.oplog_store.clone()
+    }
+
+    pub fn index_log_store(&self) -> LocalIndexLogStore {
+        self.index_log_store.clone()
     }
 
     pub fn with_local_dirs(
@@ -214,7 +222,11 @@ impl TemporalEngine {
             if is_write_command(&command) {
                 let _ = self.oplog_store.append(request.shard_id, command);
             }
-            let _ = self.persist_index(request.shard_id, shard);
+            let index_bytes = serialize_index(shard);
+            let _ = self
+                .index_log_store
+                .append_json(request.shard_id, &index_bytes);
+            let _ = self.persist_index_bytes(request.shard_id, &index_bytes);
         }
         ExecuteResponse {
             status: Status::ok(),
@@ -322,6 +334,10 @@ impl TemporalEngine {
                 .oplog_store
                 .read_range(request.shard_id, request.offset, request.size)
                 .map_err(|err| err.to_string()),
+            StreamKind::IndexLog => self
+                .index_log_store
+                .read_range(request.shard_id, request.offset, request.size)
+                .map_err(|err| err.to_string()),
         };
         match data {
             Ok(data) => StreamReadResponse {
@@ -340,13 +356,29 @@ impl TemporalEngine {
             .end_offset
             .saturating_sub(request.start_offset)
             .min(request.max_bytes);
-        if request.stream_kind == StreamKind::Oplog {
-            return match self.oplog_store.scan(
-                request.shard_id,
-                request.start_offset,
-                request.end_offset,
-                request.max_bytes,
-            ) {
+        if request.stream_kind == StreamKind::Oplog || request.stream_kind == StreamKind::IndexLog {
+            let records = match request.stream_kind {
+                StreamKind::Oplog => self
+                    .oplog_store
+                    .scan(
+                        request.shard_id,
+                        request.start_offset,
+                        request.end_offset,
+                        request.max_bytes,
+                    )
+                    .map_err(|err| err.to_string()),
+                StreamKind::IndexLog => self
+                    .index_log_store
+                    .scan(
+                        request.shard_id,
+                        request.start_offset,
+                        request.end_offset,
+                        request.max_bytes,
+                    )
+                    .map_err(|err| err.to_string()),
+                StreamKind::Index | StreamKind::Page => unreachable!(),
+            };
+            return match records {
                 Ok(records) => ScanStreamResponse {
                     status: Status::ok(),
                     records: records
@@ -422,11 +454,14 @@ impl TemporalEngine {
         serde_json::from_slice(&bytes).ok()
     }
 
-    fn persist_index(&self, shard_id: ShardId, shard: &ShardState) -> Result<(), std::io::Error> {
+    fn persist_index_bytes(&self, shard_id: ShardId, bytes: &[u8]) -> Result<(), std::io::Error> {
         fs::create_dir_all(&self.index_dir)?;
-        let bytes = serde_json::to_vec_pretty(shard).unwrap_or_default();
         fs::write(self.index_path(shard_id), bytes)
     }
+}
+
+fn serialize_index(shard: &ShardState) -> Vec<u8> {
+    serde_json::to_vec_pretty(shard).unwrap_or_default()
 }
 
 fn unique_temp_path(kind: &str) -> PathBuf {
@@ -2071,6 +2106,66 @@ mod tests {
         });
         assert_eq!(scan.records.len(), 2);
         assert_eq!(engine.get_stats(1).stats.unwrap().oplog.last_sequence, 2);
+    }
+
+    #[test]
+    fn control_api_reads_and_scans_index_log_stream() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "k1".to_string(),
+                value: b"v1".to_vec(),
+            },
+        });
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashSet {
+                key: "h".to_string(),
+                field: "f".to_string(),
+                value: b"hv".to_vec(),
+            },
+        });
+
+        let stream = engine.read_stream(StreamReadRequest {
+            shard_id: 1,
+            stream_kind: StreamKind::IndexLog,
+            page_segment_id: 0,
+            offset: 0,
+            size: 8192,
+        });
+        assert!(stream.status.ok);
+        let text = String::from_utf8(stream.data).unwrap();
+        assert!(text.contains("\"sequence\":1"));
+        assert!(text.contains("\"sequence\":2"));
+        assert!(text.contains("\"strings\""));
+        assert!(text.contains("\"hashes\""));
+
+        let scan = engine.scan_stream(ScanStreamRequest {
+            shard_id: 1,
+            stream_kind: StreamKind::IndexLog,
+            page_segment_id: 0,
+            start_offset: 0,
+            end_offset: 8192,
+            max_bytes: 8192,
+        });
+        assert_eq!(scan.records.len(), 2);
+
+        let last_record: crate::index_log::IndexLogRecord =
+            serde_json::from_slice(&scan.records[1].data).unwrap();
+        assert_eq!(last_record.sequence, 2);
+        assert_eq!(
+            last_record.index["hashes"]["h"]["f"]["page_segment_id"],
+            serde_json::json!(0)
+        );
+        assert_eq!(engine.index_log_store().stats(1).last_sequence, 2);
     }
 
     #[test]

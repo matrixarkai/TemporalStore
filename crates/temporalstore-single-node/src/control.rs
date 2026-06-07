@@ -118,6 +118,7 @@ pub struct GetStatsResponse {
 #[serde(rename_all = "snake_case")]
 pub enum StreamKind {
     Index,
+    IndexLog,
     Oplog,
     Page,
 }

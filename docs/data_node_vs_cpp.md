@@ -41,6 +41,7 @@ Rust now covers these data-node surfaces:
 - page stream read/scan
 - index stream read/scan
 - oplog stream read/scan
+- index-log stream read/scan
 - readonly shard rejects writes
 - local page file persistence
 - local index JSON persistence
@@ -60,6 +61,20 @@ Each mutating command appends a JSON-line `OplogRecord`:
 ```
 
 `StreamKind::Oplog` now reads or scans that file, so a secondary or test can consume mutation records through the same kind of stream API C++ exposes with `ReadPartitionStream` and `ScanPartitionStream`.
+
+Rust also has a JSONL index-log stream in:
+
+```text
+crates/temporalstore-single-node/src/index_log.rs
+```
+
+Each mutating command now follows this local durability order:
+
+```text
+append oplog -> write page bytes -> append index-log record -> persist whole index
+```
+
+The index-log record contains the current shard index metadata after the mutation. It is not yet C++'s compact binary `IndexLog`, but it gives replica/recovery tests a separate stream of committed page-address metadata instead of only a latest whole-index file.
 
 ## What Is Still Missing Vs C++
 
@@ -89,13 +104,13 @@ Still missing major data-node internals:
 
 ## Recommended Next Data-Node Chunk
 
-The next best implementation chunk is an `IndexLog` stream alongside the oplog:
+The next best implementation chunk is a replica replay loop that consumes checkpoint, page, index-log, and oplog streams:
 
 ```text
-write command -> append oplog -> write page bytes -> append index-log record -> persist index
+latest checkpoint -> page stream -> index-log replay -> oplog replay after checkpoint
 ```
 
-That would make Rust closer to C++ replay order:
+That would make Rust closer to C++ secondary catch-up order:
 
 ```text
 oplog replay rebuilds hot objects
@@ -103,4 +118,4 @@ index-log replay rebuilds page/object address metadata
 page stream supplies durable dumped bytes
 ```
 
-After that, the next large piece is a replica catch-up loop that reads checkpoint, oplog, index-log, and page streams and tracks persisted offsets.
+It should track persisted offsets and reject replay gaps before serving reads.
