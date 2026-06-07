@@ -7,6 +7,7 @@ pub mod http;
 pub mod meta;
 pub mod page_store;
 pub mod raft;
+pub mod rebalance;
 pub mod redis;
 pub mod shared_store;
 pub mod types;
@@ -28,6 +29,10 @@ pub use meta::{ShardLocation, SingleNodeMeta};
 pub use page_store::{LocalPageStore, PageAddress, PageStoreStats};
 pub use raft::{
     MetaCommand, MetaRaftCluster, MetaState, RaftCluster, RaftError, RaftNodeId, RaftRole,
+};
+pub use rebalance::{
+    RebalanceController, RebalanceError, RebalanceOptions, RebalanceStep, ShardMovePlan,
+    ShardReplica, ShardReplicaState, ShardRole,
 };
 pub use redis::{execute_redis_command, read_command, serve_redis_proxy, RespValue};
 pub use shared_store::{
