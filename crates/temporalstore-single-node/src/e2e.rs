@@ -30,6 +30,23 @@ impl Default for TemporalStoreClientOptions {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReplicationMode {
+    Raft,
+    SharedStore,
+}
+
+impl Default for ReplicationMode {
+    fn default() -> Self {
+        Self::Raft
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct EndToEndWorkflowOptions {
+    pub replication_mode: ReplicationMode,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KillSwitches {
     pub proxy_enabled: bool,
@@ -129,10 +146,24 @@ pub struct EndToEndWorkflow {
     data: RaftCluster,
     switches: Arc<RwLock<KillSwitches>>,
     async_storage: AsyncStorageJournal,
+    options: EndToEndWorkflowOptions,
 }
 
 impl EndToEndWorkflow {
     pub fn new(shard_id: ShardId, data_nodes: impl IntoIterator<Item = RaftNodeId>) -> Self {
+        Self::with_options(shard_id, data_nodes, EndToEndWorkflowOptions::default())
+    }
+
+    pub fn with_options(
+        shard_id: ShardId,
+        data_nodes: impl IntoIterator<Item = RaftNodeId>,
+        options: EndToEndWorkflowOptions,
+    ) -> Self {
+        assert_eq!(
+            options.replication_mode,
+            ReplicationMode::Raft,
+            "Raft is the default and only enabled write-replication path in this workflow"
+        );
         let data = RaftCluster::new_single_shard(shard_id, data_nodes);
         let meta = MetaRaftCluster::new([100, 101, 102]);
         meta.propose(MetaCommand::PutShardLocation(ShardLocation {
@@ -146,7 +177,12 @@ impl EndToEndWorkflow {
             data,
             switches: Arc::new(RwLock::new(KillSwitches::default())),
             async_storage: AsyncStorageJournal::default(),
+            options,
         }
+    }
+
+    pub fn replication_mode(&self) -> ReplicationMode {
+        self.options.replication_mode
     }
 
     pub fn proxy(&self) -> WorkflowProxy {
@@ -348,6 +384,24 @@ fn is_write(command: &Command) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn e2e_uses_raft_replication_by_default() {
+        let workflow = EndToEndWorkflow::new(1, [1, 2, 3]);
+        assert_eq!(workflow.replication_mode(), ReplicationMode::Raft);
+    }
+
+    #[test]
+    #[should_panic(expected = "Raft is the default and only enabled write-replication path")]
+    fn e2e_rejects_shared_store_as_write_replication_path_for_now() {
+        EndToEndWorkflow::with_options(
+            1,
+            [1, 2, 3],
+            EndToEndWorkflowOptions {
+                replication_mode: ReplicationMode::SharedStore,
+            },
+        );
+    }
 
     #[test]
     fn proxy_client_datanode_e2e_replicates_write_to_followers() {

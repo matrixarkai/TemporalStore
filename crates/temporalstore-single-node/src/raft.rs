@@ -24,6 +24,14 @@ pub struct RaftLogEntry {
     pub command: Command,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RaftSnapshot {
+    pub shard_id: ShardId,
+    pub last_included_term: u64,
+    pub last_included_index: u64,
+    pub entries: Vec<RaftLogEntry>,
+}
+
 #[derive(Debug)]
 struct RaftNode {
     id: RaftNodeId,
@@ -53,6 +61,16 @@ pub enum RaftError {
         replica_id: RaftNodeId,
         replica_commit_index: u64,
         leader_commit_index: u64,
+    },
+    #[error("snapshot shard mismatch: snapshot={snapshot_shard_id}, cluster={cluster_shard_id}")]
+    SnapshotShardMismatch {
+        snapshot_shard_id: ShardId,
+        cluster_shard_id: ShardId,
+    },
+    #[error("stale snapshot cannot overwrite newer local raft state: snapshot_index={snapshot_index}, local_commit_index={local_commit_index}")]
+    StaleSnapshot {
+        snapshot_index: u64,
+        local_commit_index: u64,
     },
 }
 
@@ -215,6 +233,75 @@ impl RaftCluster {
         node.log = leader_log;
         node.commit_index = leader_commit_index;
         apply_committed(node);
+        Ok(())
+    }
+
+    pub fn create_snapshot(&self) -> Result<RaftSnapshot, RaftError> {
+        let inner = self.inner.read().expect("raft cluster lock poisoned");
+        let leader = inner
+            .nodes
+            .get(&inner.leader_id)
+            .filter(|node| node.alive && node.role == RaftRole::Leader)
+            .ok_or(RaftError::LeaderUnavailable)?;
+        let entries = leader
+            .log
+            .iter()
+            .filter(|entry| entry.index <= leader.commit_index)
+            .cloned()
+            .collect::<Vec<_>>();
+        let last_included_term = entries
+            .last()
+            .map(|entry| entry.term)
+            .unwrap_or(leader.current_term);
+        Ok(RaftSnapshot {
+            shard_id: inner.shard_id,
+            last_included_term,
+            last_included_index: leader.commit_index,
+            entries,
+        })
+    }
+
+    pub fn install_snapshot(
+        &self,
+        node_id: RaftNodeId,
+        snapshot: RaftSnapshot,
+    ) -> Result<(), RaftError> {
+        let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+        if snapshot.shard_id != inner.shard_id {
+            return Err(RaftError::SnapshotShardMismatch {
+                snapshot_shard_id: snapshot.shard_id,
+                cluster_shard_id: inner.shard_id,
+            });
+        }
+        let shard_id = inner.shard_id;
+        let node = inner
+            .nodes
+            .get_mut(&node_id)
+            .ok_or(RaftError::NodeNotFound(node_id))?;
+        if snapshot.last_included_index < node.commit_index {
+            return Err(RaftError::StaleSnapshot {
+                snapshot_index: snapshot.last_included_index,
+                local_commit_index: node.commit_index,
+            });
+        }
+
+        let engine = TemporalEngine::default();
+        engine.load_shard(shard_id);
+        for entry in &snapshot.entries {
+            engine.execute(ExecuteRequest {
+                shard_id: entry.shard_id,
+                command: entry.command.clone(),
+            });
+        }
+
+        node.engine = engine;
+        node.current_term = node.current_term.max(snapshot.last_included_term);
+        node.commit_index = snapshot.last_included_index;
+        node.log
+            .retain(|entry| entry.index > snapshot.last_included_index);
+        node.applied.clear();
+        node.applied
+            .extend(snapshot.entries.iter().map(|entry| entry.index));
         Ok(())
     }
 
@@ -428,6 +515,13 @@ struct MetaLogEntry {
     command: MetaCommand,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MetaRaftSnapshot {
+    pub last_included_term: u64,
+    pub last_included_index: u64,
+    pub state: MetaState,
+}
+
 #[derive(Debug)]
 struct MetaRaftNode {
     id: RaftNodeId,
@@ -578,6 +672,53 @@ impl MetaRaftCluster {
         node.commit_index = leader.commit_index;
         apply_meta_committed(&mut node);
         inner.nodes.insert(node_id, node);
+        Ok(())
+    }
+
+    pub fn create_snapshot(&self) -> Result<MetaRaftSnapshot, RaftError> {
+        let inner = self.inner.read().expect("meta raft lock poisoned");
+        let leader = inner
+            .nodes
+            .get(&inner.leader_id)
+            .filter(|node| node.alive && node.role == RaftRole::Leader)
+            .ok_or(RaftError::LeaderUnavailable)?;
+        let last_included_term = leader
+            .log
+            .iter()
+            .rev()
+            .find(|entry| entry.index <= leader.commit_index)
+            .map(|entry| entry.term)
+            .unwrap_or(leader.current_term);
+        Ok(MetaRaftSnapshot {
+            last_included_term,
+            last_included_index: leader.commit_index,
+            state: leader.state.clone(),
+        })
+    }
+
+    pub fn install_snapshot(
+        &self,
+        node_id: RaftNodeId,
+        snapshot: MetaRaftSnapshot,
+    ) -> Result<(), RaftError> {
+        let mut inner = self.inner.write().expect("meta raft lock poisoned");
+        let node = inner
+            .nodes
+            .get_mut(&node_id)
+            .ok_or(RaftError::NodeNotFound(node_id))?;
+        if snapshot.last_included_index < node.commit_index {
+            return Err(RaftError::StaleSnapshot {
+                snapshot_index: snapshot.last_included_index,
+                local_commit_index: node.commit_index,
+            });
+        }
+        node.state = snapshot.state;
+        node.current_term = node.current_term.max(snapshot.last_included_term);
+        node.commit_index = snapshot.last_included_index;
+        node.log
+            .retain(|entry| entry.index > snapshot.last_included_index);
+        node.applied.clear();
+        node.applied.extend(1..=snapshot.last_included_index);
         Ok(())
     }
 
@@ -933,6 +1074,103 @@ mod tests {
     }
 
     #[test]
+    fn raft_snapshot_bootstraps_lagging_data_replica_then_catches_up_logs() {
+        let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+        cluster.set_alive(3, false).unwrap();
+        cluster
+            .propose(Command::StringSet {
+                key: "k1".to_string(),
+                value: b"snapshot-value".to_vec(),
+            })
+            .unwrap();
+        let snapshot = cluster.create_snapshot().unwrap();
+
+        cluster.set_alive(3, true).unwrap();
+        cluster.install_snapshot(3, snapshot).unwrap();
+        assert_eq!(cluster.commit_index(3).unwrap(), 1);
+        assert_eq!(
+            cluster
+                .read_local(
+                    3,
+                    Command::StringGet {
+                        key: "k1".to_string()
+                    },
+                )
+                .unwrap(),
+            CommandResponse::Bytes {
+                value: Some(b"snapshot-value".to_vec())
+            }
+        );
+
+        cluster
+            .propose(Command::StringSet {
+                key: "k2".to_string(),
+                value: b"post-snapshot-log".to_vec(),
+            })
+            .unwrap();
+        cluster.catch_up(3).unwrap();
+        assert_eq!(
+            cluster
+                .read_from_replica(
+                    3,
+                    Command::StringGet {
+                        key: "k2".to_string()
+                    },
+                )
+                .unwrap(),
+            CommandResponse::Bytes {
+                value: Some(b"post-snapshot-log".to_vec())
+            }
+        );
+    }
+
+    #[test]
+    fn raft_snapshot_cannot_overwrite_newer_data_state() {
+        let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+        cluster
+            .propose(Command::StringSet {
+                key: "k1".to_string(),
+                value: b"v1".to_vec(),
+            })
+            .unwrap();
+        let snapshot = cluster.create_snapshot().unwrap();
+        cluster
+            .propose(Command::StringSet {
+                key: "k2".to_string(),
+                value: b"v2".to_vec(),
+            })
+            .unwrap();
+
+        assert_eq!(
+            cluster.install_snapshot(2, snapshot).unwrap_err(),
+            RaftError::StaleSnapshot {
+                snapshot_index: 1,
+                local_commit_index: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn raft_election_does_not_depend_on_snapshot_availability() {
+        let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+        cluster
+            .propose(Command::StringSet {
+                key: "before".to_string(),
+                value: b"leader-local".to_vec(),
+            })
+            .unwrap();
+        cluster.set_alive(1, false).unwrap();
+        assert_eq!(cluster.promote_if_leader_down().unwrap(), 2);
+        cluster
+            .propose(Command::StringSet {
+                key: "after".to_string(),
+                value: b"new-leader".to_vec(),
+            })
+            .unwrap();
+        assert_eq!(cluster.commit_index(2).unwrap(), 2);
+    }
+
+    #[test]
     fn metaserver_raft_replicates_shard_location_metadata() {
         let meta = MetaRaftCluster::new([10, 11, 12]);
         let location = ShardLocation {
@@ -990,5 +1228,52 @@ mod tests {
         meta.propose(MetaCommand::RemoveShard(2)).unwrap();
         assert_eq!(meta.get_shard_location(11, 2).unwrap(), None);
         assert_eq!(meta.get_shard_location(13, 2).unwrap(), None);
+    }
+
+    #[test]
+    fn metaserver_snapshot_bootstraps_lagging_meta_replica() {
+        let meta = MetaRaftCluster::new([10, 11, 12]);
+        meta.set_alive(12, false).unwrap();
+        meta.propose(MetaCommand::PutShardLocation(ShardLocation {
+            shard_id: 9,
+            server_addr: "server-snapshot".to_string(),
+        }))
+        .unwrap();
+        let snapshot = meta.create_snapshot().unwrap();
+
+        meta.set_alive(12, true).unwrap();
+        meta.install_snapshot(12, snapshot).unwrap();
+        assert_eq!(
+            meta.get_shard_location(12, 9).unwrap(),
+            Some(ShardLocation {
+                shard_id: 9,
+                server_addr: "server-snapshot".to_string()
+            })
+        );
+        assert_eq!(meta.commit_index(12).unwrap(), 1);
+    }
+
+    #[test]
+    fn metaserver_snapshot_cannot_overwrite_newer_meta_state() {
+        let meta = MetaRaftCluster::new([10, 11, 12]);
+        meta.propose(MetaCommand::PutShardLocation(ShardLocation {
+            shard_id: 1,
+            server_addr: "server-a".to_string(),
+        }))
+        .unwrap();
+        let snapshot = meta.create_snapshot().unwrap();
+        meta.propose(MetaCommand::PutShardLocation(ShardLocation {
+            shard_id: 2,
+            server_addr: "server-b".to_string(),
+        }))
+        .unwrap();
+
+        assert_eq!(
+            meta.install_snapshot(11, snapshot).unwrap_err(),
+            RaftError::StaleSnapshot {
+                snapshot_index: 1,
+                local_commit_index: 2,
+            }
+        );
     }
 }
