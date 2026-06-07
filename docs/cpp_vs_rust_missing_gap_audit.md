@@ -19,6 +19,7 @@ The Rust code now covers the local correctness skeleton for TemporalStore-style 
 - table-aware Rust client with typed string/hash/common methods, pipeline batching, HTTP timeout/retry options, and optional direct route refresh
 - proxy route cache with TTL, stats/config endpoints, timeout/retry options, and backend-error route refresh
 - client key-to-shard routing, table open/close cache, stats, expanded typed methods, and multi-shard pipeline grouping
+- metaserver namespace/table topology, server/proxy register/list/heartbeat, topology versioning, and meta stats/info
 - Redis RESP adapter
 - S3-compatible snapshot store crate
 
@@ -48,6 +49,8 @@ The C++ proxy is still much richer, but Rust no longer blindly looks up the meta
 
 The Rust client also now has a small table router: `key -> stable hash -> shard_id`. Pipelines split queued commands by routed shard and reassemble responses in original order, matching the shape of the C++ client batch path at a simpler HTTP/shard level.
 
+The Rust metaserver now exposes a richer HTTP/JSON control-plane skeleton: server/proxy inventory, heartbeat liveness, namespace/table metadata, and table topology with slot ranges, shard ids, primary endpoint, replicas, and topology-version not-modified behavior.
+
 ## Detailed Gap Matrix
 
 | Area | C++ TemporalStore | Rust Today | Missing |
@@ -56,7 +59,7 @@ The Rust client also now has a small table router: `key -> stable hash -> shard_
 | Proxy | brpc/thrift server, C++ client wrapper, MetaSyncer, heartbeat/config, consul registration | HTTP proxy service with `/execute`, `/batch_execute`, `/shards`, `/proxy/info`, `/proxy/config`, route cache, stats, retries/timeouts, backend-error route refresh | thrift/brpc compatibility, background MetaSyncer, heartbeat/config from metaserver, consul/auto-register, namespace/table open path |
 | Client SDK | C++ `Client`, `Table`, `Pipeline`, `MetaSyncer`, router, backend pool | Rust `TemporalStoreClient`, `TemporalStoreTable`, `TemporalStorePipeline`, typed methods, open/close table cache, stats, retries/timeouts, direct route refresh | brpc/protobuf SDK, background topology sync, exact CRC64 slot router, VDC affinity, backend failure pool |
 | Routing | namespace/table/partition-set/slot routing | key-to-shard routing from table options, explicit `shard_id` request, simple metaserver route | namespace/table topology from metaserver, exact slot map, route versioning, partition-set placement |
-| Metaserver | full topology, heartbeat, placement, scheduling, Raft-backed metadata | simple route map, in-process meta Raft, rebalance model | real networked metaserver Raft, persistent metadata, heartbeat/load reports, placement policy, background scheduler |
+| Metaserver | full topology, heartbeat, placement, scheduling, Raft-backed metadata | shard route map, namespace/table topology, server/proxy register/list/heartbeat, meta stats, in-process meta Raft, rebalance model | networked metaserver Raft for HTTP mutations, persistent metabase, placement rule chain, background scheduler, failure detector |
 | Data node execution | partition workers, async callbacks, load-version guards | direct `TemporalEngine` execution under a lock | worker pools, request controllers, load-version validation, backpressure |
 | Hot object model | `ObjectManager`, model objects, dirty slots | per-type maps of key/field/timestamp to `PageAddress` | object ids, dirty slot tracking, object lifecycle, model-specific memory layout |
 | Oplog | binary mutation log with replay/reclaim semantics | JSONL command oplog | binary/protobuf compatibility, fsync policy, reclaim boundary, replay into hot object manager |
@@ -82,12 +85,12 @@ These cannot be honestly marked done yet:
 - replace in-process Raft with a real Rust Raft library
 - persist Raft WAL and hard state
 - implement real data-node RPC transport
-- implement real metaserver topology and slot routing
+- connect HTTP metaserver mutations to durable/networked metaserver Raft
 - make shard membership changes durable through metaserver Raft
 - add crash-safe WAL/index/page recovery tests
 - wire engine snapshots into Raft snapshot install
 - expose Prometheus metrics over HTTP
-- add heartbeat/load reporting from servers to metaserver
+- connect real servers/proxies to heartbeat/load-report endpoints
 
 ## P1 Still Missing Before C++ Feature Parity
 
@@ -109,5 +112,5 @@ The next best implementation chunks are:
 1. Add durable WAL/recovery tests around oplog + index-log + page stream.
 2. Add a replica replay loop that consumes checkpoint, page stream, index-log, and oplog.
 3. Replace the local Raft model with OpenRaft or raft-rs.
-4. Add metaserver table/slot topology and heartbeat/load reports.
+4. Connect metaserver table topology and heartbeat reports to real placement/rebalance workflows.
 5. Port IPS and Risk semantics from the C++ protos as separate modules.

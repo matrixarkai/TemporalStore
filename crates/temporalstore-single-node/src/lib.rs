@@ -32,7 +32,15 @@ pub use e2e::{
 };
 pub use engine::TemporalEngine;
 pub use index_log::{IndexLogRecord, IndexLogStats, LocalIndexLogStore};
-pub use meta::{ShardLocation, SingleNodeMeta};
+pub use meta::{
+    AckResponse, AddNamespaceRequest, AddTableRequest, GetShardResponse, GetTableTopologyRequest,
+    ListNamespacesResponse, ListProxiesResponse, ListServersResponse, ListTablesResponse,
+    MetaEntityState, MetaInfo, MetaStats, NamespaceMetaInfo, ProxyHeartbeatRequest,
+    ProxyHeartbeatResponse, ProxyMetaInfo, RegisterProxyRequest, RegisterServerRequest,
+    RegisterShardRequest, RegisterShardResponse, ServerHeartbeatRequest, ServerHeartbeatResponse,
+    ServerMetaInfo, ShardLoad, ShardLocation, SingleNodeMeta, StateChangeRequest, TableMetaInfo,
+    TablePartition, TableTopologyResponse,
+};
 pub use oplog::{LocalOplogStore, OplogRecord, OplogStats};
 pub use page_store::{LocalPageStore, PageAddress, PageStoreStats};
 pub use proxy::{ProxyInfo, ProxyOptions, ProxyService, ProxyStats};
