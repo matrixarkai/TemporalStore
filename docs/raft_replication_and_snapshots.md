@@ -28,6 +28,8 @@ The data-node model supports:
 - chunked snapshot create/install through `InstallSnapshotChunkRequest`
 - joint-consensus membership safety checks requiring old and new majorities
 - retry/backoff/backpressure wrapper for Raft transport calls
+- request id/deadline/auth metadata on Raft RPCs with an authenticated transport wrapper
+- randomized heartbeat/election scheduler model
 
 Data-node snapshots contain committed log entries up to the leader commit index.
 Installing a snapshot rebuilds the follower shard engine from those entries, sets
@@ -79,6 +81,8 @@ Covered locally:
 - data-node chunked snapshot bootstrap
 - joint-consensus old/new majority safety
 - Raft transport retry/backpressure wrapper
+- Raft RPC auth/deadline metadata
+- randomized scheduler behavior
 - local partition/heal chaos behavior
 - data-node stale snapshot rejection
 - election without snapshot availability
@@ -96,7 +100,7 @@ system, the Rust code still needs:
 
 - HTTP transport for AppendEntries/Vote/InstallSnapshot exists; production still needs pooled/authenticated RPC with full observability
 - data Raft WAL recovery is present locally; production still needs metaserver HTTP mutation recovery
-- local timeout tick election and pre-vote are present; production still needs randomized heartbeat/election scheduling
+- local timeout tick election, pre-vote, and randomized scheduler model are present; production still needs integration with an external Raft runtime
 - production streaming InstallSnapshot RPCs over long-lived streams
 - snapshot metadata stored in Raft state
 - S3 snapshot references attached to Raft snapshot metadata

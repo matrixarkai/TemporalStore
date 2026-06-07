@@ -144,6 +144,8 @@ impl LocalRaftWal {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AppendEntriesRequest {
+    #[serde(default)]
+    pub rpc: Option<RaftRpcMetadata>,
     pub shard_id: ShardId,
     pub term: u64,
     pub leader_id: RaftNodeId,
@@ -164,6 +166,8 @@ pub struct AppendEntriesResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct VoteRequest {
+    #[serde(default)]
+    pub rpc: Option<RaftRpcMetadata>,
     pub shard_id: ShardId,
     pub term: u64,
     pub candidate_id: RaftNodeId,
@@ -181,6 +185,8 @@ pub struct VoteResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct InstallSnapshotRequest {
+    #[serde(default)]
+    pub rpc: Option<RaftRpcMetadata>,
     pub shard_id: ShardId,
     pub term: u64,
     pub leader_id: RaftNodeId,
@@ -198,6 +204,8 @@ pub struct InstallSnapshotResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct InstallSnapshotChunkRequest {
+    #[serde(default)]
+    pub rpc: Option<RaftRpcMetadata>,
     pub shard_id: ShardId,
     pub term: u64,
     pub leader_id: RaftNodeId,
@@ -220,6 +228,13 @@ pub struct InstallSnapshotChunkResponse {
     pub reject_reason: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftRpcMetadata {
+    pub auth_token: Option<String>,
+    pub deadline_ms: Option<u64>,
+    pub request_id: String,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum RaftTickOutcome {
     LeaderAlive {
@@ -236,6 +251,104 @@ pub enum RaftTickOutcome {
         leader_id: RaftNodeId,
         term: u64,
     },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftSchedulerOptions {
+    pub heartbeat_interval_tick: u64,
+    pub election_timeout_min_tick: u64,
+    pub election_timeout_max_tick: u64,
+    pub random_seed: u64,
+}
+
+impl Default for RaftSchedulerOptions {
+    fn default() -> Self {
+        Self {
+            heartbeat_interval_tick: 1,
+            election_timeout_min_tick: 3,
+            election_timeout_max_tick: 6,
+            random_seed: 0x5eed,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftSchedulerTick {
+    pub heartbeat_due: bool,
+    pub election_due: bool,
+    pub elapsed_heartbeat_tick: u64,
+    pub elapsed_election_tick: u64,
+    pub election_timeout_tick: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftScheduler {
+    options: RaftSchedulerOptions,
+    elapsed_heartbeat_tick: u64,
+    elapsed_election_tick: u64,
+    election_timeout_tick: u64,
+    rng_state: u64,
+}
+
+impl RaftScheduler {
+    pub fn new(options: RaftSchedulerOptions) -> Self {
+        let mut scheduler = Self {
+            options: RaftSchedulerOptions {
+                heartbeat_interval_tick: options.heartbeat_interval_tick.max(1),
+                election_timeout_min_tick: options.election_timeout_min_tick.max(1),
+                election_timeout_max_tick: options
+                    .election_timeout_max_tick
+                    .max(options.election_timeout_min_tick.max(1)),
+                random_seed: options.random_seed,
+            },
+            elapsed_heartbeat_tick: 0,
+            elapsed_election_tick: 0,
+            election_timeout_tick: 0,
+            rng_state: options.random_seed,
+        };
+        scheduler.election_timeout_tick = scheduler.next_election_timeout();
+        scheduler
+    }
+
+    pub fn tick(&mut self, leader_alive: bool) -> RaftSchedulerTick {
+        self.elapsed_heartbeat_tick += 1;
+        if leader_alive {
+            self.elapsed_election_tick = 0;
+            self.election_timeout_tick = self.next_election_timeout();
+        } else {
+            self.elapsed_election_tick += 1;
+        }
+
+        let heartbeat_due =
+            self.elapsed_heartbeat_tick >= self.options.heartbeat_interval_tick && leader_alive;
+        if heartbeat_due {
+            self.elapsed_heartbeat_tick = 0;
+        }
+        let election_due =
+            !leader_alive && self.elapsed_election_tick >= self.election_timeout_tick;
+        if election_due {
+            self.elapsed_election_tick = 0;
+            self.election_timeout_tick = self.next_election_timeout();
+        }
+        RaftSchedulerTick {
+            heartbeat_due,
+            election_due,
+            elapsed_heartbeat_tick: self.elapsed_heartbeat_tick,
+            elapsed_election_tick: self.elapsed_election_tick,
+            election_timeout_tick: self.election_timeout_tick,
+        }
+    }
+
+    fn next_election_timeout(&mut self) -> u64 {
+        self.rng_state = self
+            .rng_state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1);
+        let min = self.options.election_timeout_min_tick;
+        let max = self.options.election_timeout_max_tick;
+        let span = max.saturating_sub(min).saturating_add(1);
+        min + (self.rng_state % span)
+    }
 }
 
 pub trait RaftTransport {
@@ -266,6 +379,8 @@ pub struct RaftRpcRuntimeOptions {
     pub max_inflight: usize,
     pub max_retries: usize,
     pub retry_backoff_ms: u64,
+    pub deadline_ms: u64,
+    pub auth_token_required: bool,
 }
 
 impl Default for RaftRpcRuntimeOptions {
@@ -274,6 +389,8 @@ impl Default for RaftRpcRuntimeOptions {
             max_inflight: 128,
             max_retries: 2,
             retry_backoff_ms: 10,
+            deadline_ms: 1_000,
+            auth_token_required: false,
         }
     }
 }
@@ -282,18 +399,31 @@ impl Default for RaftRpcRuntimeOptions {
 pub struct RaftRpcRuntime<T> {
     transport: T,
     options: RaftRpcRuntimeOptions,
+    auth_token: Option<String>,
     inflight: Arc<Mutex<usize>>,
+    request_counter: Arc<Mutex<u64>>,
 }
 
 impl<T> RaftRpcRuntime<T> {
     pub fn new(transport: T, options: RaftRpcRuntimeOptions) -> Self {
+        Self::with_auth_token(transport, options, None)
+    }
+
+    pub fn with_auth_token(
+        transport: T,
+        options: RaftRpcRuntimeOptions,
+        auth_token: Option<String>,
+    ) -> Self {
         Self {
             transport,
             options: RaftRpcRuntimeOptions {
                 max_inflight: options.max_inflight.max(1),
+                deadline_ms: options.deadline_ms.max(1),
                 ..options
             },
+            auth_token,
             inflight: Arc::default(),
+            request_counter: Arc::default(),
         }
     }
 
@@ -336,6 +466,19 @@ impl<T> RaftRpcRuntime<T> {
         }
         Err(last_error.unwrap_or_else(|| RaftError::Transport("raft rpc failed".to_string())))
     }
+
+    fn next_metadata(&self) -> RaftRpcMetadata {
+        let mut counter = self
+            .request_counter
+            .lock()
+            .expect("raft rpc request counter lock poisoned");
+        *counter += 1;
+        RaftRpcMetadata {
+            auth_token: self.auth_token.clone(),
+            deadline_ms: Some(self.options.deadline_ms),
+            request_id: format!("raft-rpc-{}", *counter),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -359,27 +502,97 @@ where
 {
     fn append_entries(
         &self,
-        request: AppendEntriesRequest,
+        mut request: AppendEntriesRequest,
     ) -> Result<AppendEntriesResponse, RaftError> {
+        request.rpc = Some(self.next_metadata());
         self.retry(|| self.transport.append_entries(request.clone()))
     }
 
-    fn request_vote(&self, request: VoteRequest) -> Result<VoteResponse, RaftError> {
+    fn request_vote(&self, mut request: VoteRequest) -> Result<VoteResponse, RaftError> {
+        request.rpc = Some(self.next_metadata());
         self.retry(|| self.transport.request_vote(request.clone()))
+    }
+
+    fn install_snapshot(
+        &self,
+        mut request: InstallSnapshotRequest,
+    ) -> Result<InstallSnapshotResponse, RaftError> {
+        request.rpc = Some(self.next_metadata());
+        self.retry(|| self.transport.install_snapshot(request.clone()))
+    }
+
+    fn install_snapshot_chunk(
+        &self,
+        mut request: InstallSnapshotChunkRequest,
+    ) -> Result<InstallSnapshotChunkResponse, RaftError> {
+        request.rpc = Some(self.next_metadata());
+        self.retry(|| self.transport.install_snapshot_chunk(request.clone()))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct AuthenticatedRaftTransport<T> {
+    inner: T,
+    required_token: String,
+}
+
+impl<T> AuthenticatedRaftTransport<T> {
+    pub fn new(inner: T, required_token: impl Into<String>) -> Self {
+        Self {
+            inner,
+            required_token: required_token.into(),
+        }
+    }
+
+    fn check(&self, rpc: &Option<RaftRpcMetadata>) -> Result<(), RaftError> {
+        let Some(rpc) = rpc else {
+            return Err(RaftError::Transport(
+                "missing raft rpc metadata".to_string(),
+            ));
+        };
+        if rpc.auth_token.as_deref() != Some(self.required_token.as_str()) {
+            return Err(RaftError::Transport("raft rpc auth failed".to_string()));
+        }
+        if rpc.deadline_ms.unwrap_or_default() == 0 {
+            return Err(RaftError::Transport(
+                "raft rpc deadline missing".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl<T> RaftTransport for AuthenticatedRaftTransport<T>
+where
+    T: RaftTransport,
+{
+    fn append_entries(
+        &self,
+        request: AppendEntriesRequest,
+    ) -> Result<AppendEntriesResponse, RaftError> {
+        self.check(&request.rpc)?;
+        self.inner.append_entries(request)
+    }
+
+    fn request_vote(&self, request: VoteRequest) -> Result<VoteResponse, RaftError> {
+        self.check(&request.rpc)?;
+        self.inner.request_vote(request)
     }
 
     fn install_snapshot(
         &self,
         request: InstallSnapshotRequest,
     ) -> Result<InstallSnapshotResponse, RaftError> {
-        self.retry(|| self.transport.install_snapshot(request.clone()))
+        self.check(&request.rpc)?;
+        self.inner.install_snapshot(request)
     }
 
     fn install_snapshot_chunk(
         &self,
         request: InstallSnapshotChunkRequest,
     ) -> Result<InstallSnapshotChunkResponse, RaftError> {
-        self.retry(|| self.transport.install_snapshot_chunk(request.clone()))
+        self.check(&request.rpc)?;
+        self.inner.install_snapshot_chunk(request)
     }
 }
 
@@ -1252,6 +1465,7 @@ impl RaftCluster {
             .cloned()
             .collect();
         Ok(AppendEntriesRequest {
+            rpc: None,
             shard_id: inner.shard_id,
             term: leader.current_term,
             leader_id: inner.leader_id,
@@ -1340,6 +1554,7 @@ impl RaftCluster {
             .map(|entry| entry.term)
             .unwrap_or_default();
         Ok(VoteRequest {
+            rpc: None,
             shard_id: inner.shard_id,
             term: candidate.current_term + 1,
             candidate_id,
@@ -1407,6 +1622,7 @@ impl RaftCluster {
             .get(&inner.leader_id)
             .ok_or(RaftError::LeaderUnavailable)?;
         Ok(InstallSnapshotRequest {
+            rpc: None,
             shard_id: inner.shard_id,
             term: leader.current_term,
             leader_id: inner.leader_id,
@@ -1460,6 +1676,7 @@ impl RaftCluster {
         let mut chunks = Vec::new();
         if snapshot.entries.is_empty() {
             chunks.push(InstallSnapshotChunkRequest {
+                rpc: None,
                 shard_id: snapshot.shard_id,
                 term: leader.current_term,
                 leader_id: inner.leader_id,
@@ -1475,6 +1692,7 @@ impl RaftCluster {
         }
         for (chunk_index, entries) in snapshot.entries.chunks(chunk_size).enumerate() {
             chunks.push(InstallSnapshotChunkRequest {
+                rpc: None,
                 shard_id: snapshot.shard_id,
                 term: leader.current_term,
                 leader_id: inner.leader_id,
@@ -2840,6 +3058,7 @@ mod tests {
             .unwrap();
         cluster.elect_leader(2).unwrap();
         let stale_append = AppendEntriesRequest {
+            rpc: None,
             shard_id: 1,
             term: 1,
             leader_id: 1,
@@ -2855,6 +3074,7 @@ mod tests {
 
         let vote_response = cluster
             .request_vote(VoteRequest {
+                rpc: None,
                 shard_id: 1,
                 term: cluster.hard_state(2).unwrap().current_term + 1,
                 candidate_id: 3,
@@ -3065,6 +3285,8 @@ mod tests {
                 max_inflight: 1,
                 max_retries: 2,
                 retry_backoff_ms: 0,
+                deadline_ms: 100,
+                auth_token_required: false,
             },
         );
         let response = runtime
@@ -3072,6 +3294,67 @@ mod tests {
             .unwrap();
         assert!(response.success);
         assert_eq!(runtime.inflight(), 0);
+    }
+
+    #[test]
+    fn raft_rpc_runtime_attaches_auth_and_deadline_metadata() {
+        let cluster = RaftCluster::new_single_shard(25, [1, 2, 3]);
+        let authenticated = AuthenticatedRaftTransport::new(cluster.clone(), "secret");
+        let unauthenticated_runtime = RaftRpcRuntime::new(
+            authenticated.clone(),
+            RaftRpcRuntimeOptions {
+                max_inflight: 1,
+                max_retries: 0,
+                retry_backoff_ms: 0,
+                deadline_ms: 250,
+                auth_token_required: true,
+            },
+        );
+        assert!(matches!(
+            unauthenticated_runtime
+                .append_entries(cluster.build_append_entries_request(2).unwrap())
+                .unwrap_err(),
+            RaftError::Transport(message) if message.contains("auth")
+        ));
+
+        let authenticated_runtime = RaftRpcRuntime::with_auth_token(
+            authenticated,
+            RaftRpcRuntimeOptions {
+                max_inflight: 1,
+                max_retries: 0,
+                retry_backoff_ms: 0,
+                deadline_ms: 250,
+                auth_token_required: true,
+            },
+            Some("secret".to_string()),
+        );
+        let response = authenticated_runtime
+            .append_entries(cluster.build_append_entries_request(2).unwrap())
+            .unwrap();
+        assert!(response.success);
+    }
+
+    #[test]
+    fn raft_scheduler_randomizes_election_timeout_and_emits_heartbeats() {
+        let mut scheduler = RaftScheduler::new(RaftSchedulerOptions {
+            heartbeat_interval_tick: 2,
+            election_timeout_min_tick: 3,
+            election_timeout_max_tick: 5,
+            random_seed: 7,
+        });
+        assert!(!scheduler.tick(true).heartbeat_due);
+        assert!(scheduler.tick(true).heartbeat_due);
+
+        let mut election_due_at = None;
+        for tick in 1..=8 {
+            let event = scheduler.tick(false);
+            assert!((3..=5).contains(&event.election_timeout_tick));
+            if event.election_due {
+                election_due_at = Some(tick);
+                break;
+            }
+        }
+        assert!((3..=5).contains(&election_due_at.expect("election should become due")));
     }
 
     #[test]
