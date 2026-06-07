@@ -1,0 +1,10 @@
+{
+    "commands":  [
+                     "set -euxo pipefail",
+                     "sudo mkdir -p /mnt/temporalstore-shared/artifacts/runtime",
+                     "sudo rm -rf /mnt/temporalstore-shared/artifacts/runtime/*",
+                     "aws s3 cp s3://temporalstore-test-artifacts-657817560042-us-west-2/temporalstore-runtime-release-mtcache-ssd.tar.gz /tmp/temporalstore-runtime-release-mtcache-ssd.tar.gz",
+                     "sudo tar -C /mnt/temporalstore-shared/artifacts/runtime -xzf /tmp/temporalstore-runtime-release-mtcache-ssd.tar.gz",
+                     "find /mnt/temporalstore-shared/artifacts/runtime -maxdepth 3 -type f | sort | head -80"
+                 ]
+}
