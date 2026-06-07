@@ -6,7 +6,7 @@
     <title>MatrixDB | MatrixArk</title>
     <meta
       name="description"
-      content="MatrixDB is MatrixArk's multi-tenant, highly scalable KV database for low-latency serving and offline or nearline query access over profiles, hashes, strings, attributes, and service state."
+      content="MatrixDB is MatrixArk's eventually consistent, multi-tenant, highly scalable KV database for low-latency serving and offline or nearline query access over profiles, hashes, strings, attributes, and service state."
     />
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -21,7 +21,7 @@
           <button class="nav-product-trigger" type="button" aria-expanded="false">Products</button>
           <div class="nav-product-panel" aria-label="Product pages">
             <a href="./temporalstore.html"><strong>TemporalStore</strong><span>Time-window features, sequences, risk and agent context</span></a>
-            <a href="./matrixdb.html"><strong>MatrixDB</strong><span>Performant KV for serving, profiles, and offline query</span></a>
+            <a href="./matrixdb.html"><strong>MatrixDB</strong><span>Eventually consistent KV for serving and offline query</span></a>
             <a href="./matrixkv.html"><strong>MatrixKV</strong><span>Strongly consistent transactional KV for metadata</span></a>
           </div>
         </div>
@@ -34,12 +34,13 @@
     <main>
       <section class="product-hero matrixdb-detail">
         <p class="eyebrow">MatrixDB</p>
-        <h1>Performant KV for online serving and offline query.</h1>
+        <h1>Eventually consistent KV for online serving and offline query.</h1>
         <p>
-          MatrixDB is the MatrixArk engine for high-throughput KV workloads that need both
-          low-latency online serving and persisted data access for offline or nearline query.
-          It serves profile lookups, product state, entity attributes, hashes, strings, general
-          KV, and cache-plus-storage workloads with tenant-aware operations and scalable placement.
+          MatrixDB is the MatrixArk engine for high-throughput, eventually consistent KV workloads
+          that need both low-latency online serving and persisted data access for offline or
+          nearline query. It serves profile lookups, product state, entity attributes, hashes,
+          strings, general KV, and cache-plus-storage workloads with tenant-aware operations and
+          scalable placement.
         </p>
       </section>
 
@@ -57,7 +58,7 @@
           <article>
             <span>02</span>
             <h3>Serving and query KV focus</h3>
-            <p>MatrixDB is tuned for strings, hashes, profiles, entity attributes, and persisted KV data that must serve online traffic while remaining available to offline or nearline query paths.</p>
+            <p>MatrixDB is tuned for strings, hashes, profiles, entity attributes, and persisted KV data that can use eventual consistency while serving online traffic and remaining available to offline or nearline query paths.</p>
           </article>
           <article>
             <span>03</span>
@@ -136,7 +137,7 @@
           <article><h3>Offline and nearline query</h3><p>Persisted KV state can be scanned, exported, repaired, or joined by offline jobs without treating the serving cache as disposable.</p></article>
           <article><h3>Cache plus storage</h3><p>Useful when plain cache workloads need more capacity, persistence options, offline access, and a managed serving plane.</p></article>
           <article><h3>Scalable placement</h3><p>Distributes online and persisted data across serving nodes so capacity can grow with tenants, tables, and workload families.</p></article>
-          <article><h3>Platform database role</h3><p>Serves general online and offline-queryable data while TemporalStore handles temporal logic and MatrixKV handles transactional consistency.</p></article>
+          <article><h3>Platform database role</h3><p>Serves general online and offline-queryable data with eventual consistency while TemporalStore handles temporal logic and MatrixKV handles transactional consistency.</p></article>
           <article><h3>Operational UI</h3><p>Shared monitoring and diagnostics with the rest of the MatrixArk platform.</p></article>
         </div>
       </section>
@@ -149,10 +150,10 @@
               <tr><th>Alternative</th><th>Good at</th><th>MatrixDB difference</th></tr>
             </thead>
             <tbody>
-              <tr><td>Redis / Valkey</td><td>Fast single-node or clustered cache, mature ecosystem</td><td>Designed as a multi-tenant distributed KV database path for serving plus persisted offline or nearline access, not only a cache.</td></tr>
+              <tr><td>Redis / Valkey</td><td>Fast single-node or clustered cache, mature ecosystem</td><td>Designed as an eventually consistent multi-tenant distributed KV database path for serving plus persisted offline or nearline access, not only a cache.</td></tr>
               <tr><td>DynamoDB</td><td>Managed cloud KV and predictable operations</td><td>More control over tenant-aware serving topology, protocol choices, and product-specific online paths.</td></tr>
               <tr><td>Bigtable / wide-column stores</td><td>Large sparse tables, scans, and ordered storage</td><td>MatrixDB focuses on high-performance KV/profile serving while keeping persisted data accessible for offline or nearline query paths.</td></tr>
-              <tr><td>TemporalStore</td><td>Temporal windows and online aggregation</td><td>MatrixDB is for plain KV/profile serving; TemporalStore is for temporal model-aware logic.</td></tr>
+              <tr><td>TemporalStore</td><td>Temporal windows and online aggregation</td><td>MatrixDB is for eventually consistent plain KV/profile serving; TemporalStore is for temporal model-aware logic.</td></tr>
             </tbody>
           </table>
         </div>
@@ -161,8 +162,8 @@
       <section class="section product-cta">
         <h2>Where MatrixDB fits</h2>
         <p>
-          MatrixDB is the product engine for multi-tenant KV across serving and offline access:
-          strings, hashes, entity attributes, service state, cache-plus-storage workloads,
+          MatrixDB is the product engine for eventually consistent multi-tenant KV across serving
+          and offline access: strings, hashes, entity attributes, service state, cache-plus-storage workloads,
           persisted query/export paths, tenant-aware routing, scalable placement, and
           migration-friendly client access.
         </p>

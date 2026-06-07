@@ -6,7 +6,7 @@
       <title>MatrixArk | Temporal decision state, serving-query KV, and transactional KV</title>
     <meta
       name="description"
-      content="MatrixArk builds focused online-state engines: TemporalStore for temporal decision features, MatrixDB for performant KV serving and offline query, and MatrixKV for strongly consistent transactional KV."
+      content="MatrixArk builds focused online-state engines: TemporalStore for temporal decision features, MatrixDB for eventually consistent high-throughput KV serving and offline query, and MatrixKV for strongly consistent transactional KV."
     />
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -21,7 +21,7 @@
           <button class="nav-product-trigger" type="button" aria-expanded="false">Products</button>
           <div class="nav-product-panel" aria-label="Product pages">
             <a href="./temporalstore.html"><strong>TemporalStore</strong><span>Time-window features, sequences, risk and agent context</span></a>
-            <a href="./matrixdb.html"><strong>MatrixDB</strong><span>Performant KV for serving, profiles, and offline query</span></a>
+            <a href="./matrixdb.html"><strong>MatrixDB</strong><span>Eventually consistent KV for serving and offline query</span></a>
             <a href="./matrixkv.html"><strong>MatrixKV</strong><span>Strongly consistent transactional KV for metadata</span></a>
           </div>
         </div>
@@ -47,7 +47,7 @@
           </div>
           <div class="signal-card signal-b">
             <span>MatrixDB</span>
-            <strong>performant KV for serving, profiles, and offline query</strong>
+            <strong>eventually consistent KV for serving, profiles, and offline query</strong>
           </div>
           <div class="signal-card signal-c">
             <span>MatrixKV</span>
@@ -60,7 +60,7 @@
           <h1>Real-time state engines for products that cannot wait for batch.</h1>
           <p class="hero-subcopy">
             MatrixArk gives product and infrastructure teams three focused engines for fresh
-            temporal decision state, performant KV serving and offline query, and strongly consistent
+            temporal decision state, eventually consistent KV serving and offline query, and strongly consistent
             metadata. Keep the hot path simple while the data model matches the job.
           </p>
           <div class="hero-actions">
@@ -106,13 +106,13 @@
             <span class="number">02</span>
             <h3>MatrixDB</h3>
             <p>
-              MatrixDB is the performant KV database for serving and offline access: user profiles,
-              item attributes, account state, hashes, strings, service state, cache-plus-storage
-              workloads, scans, exports, and nearline query paths that need familiar access and
-              managed capacity.
+              MatrixDB is the eventually consistent, high-throughput KV database for serving and
+              offline access: user profiles, item attributes, account state, hashes, strings,
+              service state, cache-plus-storage workloads, scans, exports, and nearline query paths
+              that need familiar access and managed capacity.
             </p>
             <ul class="thesis-points">
-              <li>Give many teams and tenants a familiar access path while gaining a managed serving and query plane.</li>
+              <li>Give many teams and tenants a familiar eventual-consistency access path while gaining a managed serving and query plane.</li>
               <li>Keep plain KV and profile reads simple while persisted data remains available for offline jobs.</li>
               <li>Scale customer-facing serving and offline-queryable state where tenant isolation, capacity, rollout, and visibility matter.</li>
             </ul>
@@ -221,7 +221,7 @@
           <div class="arch-lane engine-lane">
             <h3>Product engines</h3>
             <div class="engine-row temporal-row"><strong>TemporalStore</strong><small>windows, filters, aggregates, distinct sets, sequences, context</small></div>
-            <div class="engine-row matrixdb-row"><strong>MatrixDB</strong><small>performant KV for serving, profiles, hashes, strings, scans, and offline query</small></div>
+            <div class="engine-row matrixdb-row"><strong>MatrixDB</strong><small>eventually consistent KV for serving, profiles, hashes, strings, scans, and offline query</small></div>
             <div class="engine-row matrixkv-row"><strong>MatrixKV</strong><small>transactions, strong consistency, leases, routes, ownership, metadata</small></div>
           </div>
           <div class="arch-lane">
@@ -321,11 +321,11 @@
           </article>
           <article>
             <h3>Versus Redis Enterprise</h3>
-            <p>Generic caches are excellent for simple values. MatrixArk adds product-specific engines for temporal decision state, performant serving-query KV, and transactional KV with strong consistency.</p>
+            <p>Generic caches are excellent for simple values. MatrixArk adds product-specific engines for temporal decision state, eventually consistent serving-query KV, and transactional KV with strong consistency.</p>
           </article>
           <article>
             <h3>Versus generic KV</h3>
-            <p>General KV systems store values. MatrixArk separates serving-query KV, temporal decision state, and strongly consistent transactional KV into purpose-built products.</p>
+            <p>General KV systems store values. MatrixArk separates eventually consistent serving-query KV, temporal decision state, and strongly consistent transactional KV into purpose-built products.</p>
           </article>
         </div>
       </section>

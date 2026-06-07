@@ -21,7 +21,7 @@
           <button class="nav-product-trigger" type="button" aria-expanded="false">Products</button>
           <div class="nav-product-panel" aria-label="Product pages">
             <a href="./temporalstore.html"><strong>TemporalStore</strong><span>Time-window features, sequences, risk and agent context</span></a>
-            <a href="./matrixdb.html"><strong>MatrixDB</strong><span>Performant KV for serving, profiles, and offline query</span></a>
+            <a href="./matrixdb.html"><strong>MatrixDB</strong><span>Eventually consistent KV for serving and offline query</span></a>
             <a href="./matrixkv.html"><strong>MatrixKV</strong><span>Strongly consistent transactional KV for metadata</span></a>
           </div>
         </div>
@@ -61,7 +61,7 @@
           <article>
             <span>03</span>
             <h3>Transactional KV role</h3>
-            <p>It gives the platform a transactional KV layer while TemporalStore and MatrixDB focus on hot serving paths.</p>
+            <p>It gives the platform a transactional KV layer while TemporalStore focuses on temporal serving and MatrixDB focuses on eventually consistent high-throughput KV serving and offline query.</p>
           </article>
           <article>
             <span>04</span>
@@ -149,7 +149,7 @@
               <tr><td>etcd</td><td>Kubernetes-style metadata and watch APIs</td><td>MatrixKV is a transactional KV foundation aligned with MatrixArk table, partition, and serving semantics.</td></tr>
               <tr><td>FoundationDB</td><td>Strong transactional storage substrate</td><td>MatrixKV is narrower and intended as MatrixArk's transactional KV for metadata and control-plane records.</td></tr>
               <tr><td>TiKV</td><td>Distributed transactional KV with MVCC</td><td>MatrixKV owns the platform strong-consistency role, while TemporalStore handles temporal serving.</td></tr>
-              <tr><td>MatrixDB</td><td>Multi-tenant general online KV</td><td>MatrixKV is for transactional records with strong consistency; MatrixDB is for serving profiles and cache-style KV.</td></tr>
+              <tr><td>MatrixDB</td><td>Eventually consistent multi-tenant serving and offline-query KV</td><td>MatrixKV is for transactional records with strong consistency; MatrixDB is for high-throughput KV where eventual consistency is acceptable.</td></tr>
             </tbody>
           </table>
         </div>
