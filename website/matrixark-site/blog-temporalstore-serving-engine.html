@@ -20,9 +20,9 @@
         <div class="nav-product-menu">
           <button class="nav-product-trigger" type="button" aria-expanded="false">Products</button>
           <div class="nav-product-panel" aria-label="Product pages">
-            <a href="./temporalstore.html"><strong>TemporalStore</strong><span>Temporal feature serving for risk, sequences, AI context</span></a>
-            <a href="./matrixdb.html"><strong>MatrixDB</strong><span>Multi-tenant scalable KV and profile serving</span></a>
-            <a href="./matrixkv.html"><strong>MatrixKV</strong><span>Transactional KV with strong consistency</span></a>
+            <a href="./temporalstore.html"><strong>TemporalStore</strong><span>Time-window features, sequences, risk and agent context</span></a>
+            <a href="./matrixdb.html"><strong>MatrixDB</strong><span>Tenant-scale profiles, hashes, attributes and service state</span></a>
+            <a href="./matrixkv.html"><strong>MatrixKV</strong><span>Strongly consistent transactional KV for metadata</span></a>
           </div>
         </div>
         <a href="./blogs.html">Blogs</a>
@@ -58,8 +58,8 @@
           </p>
           <p>
             TemporalStore is MatrixArk's answer to that gap. It is designed as an online temporal
-            state engine: ingest events and profile updates, keep hot model-aware objects in memory,
-            persist replayable state, and serve temporal queries directly in the request path.
+            decision-state engine: ingest events and behavior updates, keep hot model-aware objects
+            in memory, persist replayable state, and serve temporal queries directly in the request path.
           </p>
         </section>
 
@@ -214,9 +214,9 @@
           <h2>How this compares with Redis, feature stores, and stream processors</h2>
           <p>
             Redis-style systems are excellent general-purpose caches and often the right choice for
-            plain strings, hashes, and latest-value serving. MatrixDB exists for that side of the
-            MatrixArk platform. TemporalStore is different: it is for temporal semantics, model-aware
-            operations, and high-cardinality windows.
+            plain strings, hashes, attributes, service state, and latest-value profile serving.
+            MatrixDB exists for that side of the MatrixArk platform. TemporalStore is different:
+            it is for temporal semantics, model-aware operations, and high-cardinality windows.
           </p>
           <p>
             Feature stores are excellent at registry, discovery, offline/online consistency, and
@@ -238,10 +238,10 @@
             in the online path.
           </p>
           <ol class="article-list">
-            <li>Temporal feature serving APIs for windows, filters, sequences, distinct state, and context.</li>
+            <li>Temporal decision-state APIs for windows, filters, sequences, distinct state, and context.</li>
             <li>Model-aware data structures for risk, ads, recommendation, feature platform, and agent applications.</li>
             <li>Persistence, replay, metrics, and SDK access as part of the product surface.</li>
-            <li>Clear integration boundaries with MatrixDB for profile KV and MatrixKV for transactional consistency.</li>
+            <li>Clear integration boundaries with MatrixDB for tenant-scale profile KV and MatrixKV for strongly consistent transactional metadata.</li>
           </ol>
           <p>
             That makes the product honest: TemporalStore is not trying to be every cache, database,
@@ -254,8 +254,8 @@
           <h2>Where TemporalStore fits in MatrixArk</h2>
           <p>
             MatrixArk is a product matrix, not a single monolithic database. TemporalStore handles
-            temporal feature serving. MatrixDB handles multi-tenant scalable KV and profile serving.
-            MatrixKV handles transactional KV with strong consistency for control-plane state.
+            temporal decision-state serving. MatrixDB handles tenant-scale profile and KV serving.
+            MatrixKV handles strongly consistent transactional KV for control-plane state.
           </p>
           <p>
             That separation is the product strategy. It lets each engine be honest about what it is

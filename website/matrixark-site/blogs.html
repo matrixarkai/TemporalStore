@@ -6,7 +6,7 @@
     <title>Blogs | MatrixArk</title>
     <meta
       name="description"
-      content="MatrixArk blogs on temporal feature serving, multi-tenant online KV, transactional KV, online features, and AI context infrastructure."
+      content="MatrixArk blogs on temporal decision features, tenant-scale profile KV, strongly consistent transactional KV, online features, and AI context infrastructure."
     />
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -20,9 +20,9 @@
         <div class="nav-product-menu">
           <button class="nav-product-trigger" type="button" aria-expanded="false">Products</button>
           <div class="nav-product-panel" aria-label="Product pages">
-            <a href="./temporalstore.html"><strong>TemporalStore</strong><span>Temporal feature serving for risk, sequences, AI context</span></a>
-            <a href="./matrixdb.html"><strong>MatrixDB</strong><span>Multi-tenant scalable KV and profile serving</span></a>
-            <a href="./matrixkv.html"><strong>MatrixKV</strong><span>Transactional KV with strong consistency</span></a>
+            <a href="./temporalstore.html"><strong>TemporalStore</strong><span>Time-window features, sequences, risk and agent context</span></a>
+            <a href="./matrixdb.html"><strong>MatrixDB</strong><span>Tenant-scale profiles, hashes, attributes and service state</span></a>
+            <a href="./matrixkv.html"><strong>MatrixKV</strong><span>Strongly consistent transactional KV for metadata</span></a>
           </div>
         </div>
         <a href="./blogs.html">Blogs</a>
@@ -36,8 +36,8 @@
         <h1>Deep dives on real-time serving infrastructure.</h1>
         <p>
           Product and architecture notes from building a matrix of online-state engines:
-          TemporalStore for temporal feature serving, MatrixDB for multi-tenant scalable online KV,
-          and MatrixKV for transactional KV with strong consistency.
+          TemporalStore for temporal decision features, MatrixDB for tenant-scale profile and KV
+          serving, and MatrixKV for strongly consistent transactional KV.
         </p>
       </section>
 
@@ -62,10 +62,10 @@
               <span>Product</span>
               <h2>The MatrixArk product matrix: TemporalStore, MatrixDB, MatrixKV</h2>
               <p>
-                One engine should not pretend to be ideal for every workload. Temporal feature
-                serving, multi-tenant profile/KV serving, and transactional KV with strong
-                consistency need different architectures. MatrixArk keeps the engines separate
-                while sharing deployment, observability, SDK conventions, and operations.
+                One engine should not pretend to be ideal for every workload. Temporal decision
+                features, tenant-scale profile/KV serving, and strongly consistent transactional
+                KV need different architectures. MatrixArk keeps the engines separate while
+                sharing deployment, observability, SDK conventions, and operations.
               </p>
             </div>
             <a class="text-link" href="./index.html#products">Explore the product matrix</a>

@@ -6,7 +6,7 @@
     <title>MatrixKV | MatrixArk</title>
     <meta
       name="description"
-      content="MatrixKV is MatrixArk's transactional KV engine with strong consistency for metadata, leases, routing, transactions, and control-plane state."
+      content="MatrixKV is MatrixArk's transactional KV engine with strong consistency for metadata, leases, routing, timestamps, ownership, and control-plane coordination."
     />
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -20,9 +20,9 @@
         <div class="nav-product-menu">
           <button class="nav-product-trigger" type="button" aria-expanded="false">Products</button>
           <div class="nav-product-panel" aria-label="Product pages">
-            <a href="./temporalstore.html"><strong>TemporalStore</strong><span>Temporal feature serving for risk, sequences, AI context</span></a>
-            <a href="./matrixdb.html"><strong>MatrixDB</strong><span>Multi-tenant scalable KV and profile serving</span></a>
-            <a href="./matrixkv.html"><strong>MatrixKV</strong><span>Transactional KV with strong consistency</span></a>
+            <a href="./temporalstore.html"><strong>TemporalStore</strong><span>Time-window features, sequences, risk and agent context</span></a>
+            <a href="./matrixdb.html"><strong>MatrixDB</strong><span>Tenant-scale profiles, hashes, attributes and service state</span></a>
+            <a href="./matrixkv.html"><strong>MatrixKV</strong><span>Strongly consistent transactional KV for metadata</span></a>
           </div>
         </div>
         <a href="./blogs.html">Blogs</a>
@@ -34,11 +34,11 @@
     <main>
       <section class="product-hero matrixkv-detail">
         <p class="eyebrow">MatrixKV</p>
-        <h1>Transactional KV with strong consistency for critical platform state.</h1>
+        <h1>Strongly consistent transactional KV for critical platform state.</h1>
         <p>
           MatrixKV is the MatrixArk transactional KV foundation for routing metadata, table state,
-          leases, transactions, timestamps, and ownership records where strong consistency matters
-          more than raw cache throughput.
+          leases, transactions, timestamps, and ownership records where correctness and committed
+          ordering matter more than cache-style freshness.
         </p>
       </section>
 
@@ -51,12 +51,12 @@
           <article>
             <span>01</span>
             <h3>Transactional correctness</h3>
-            <p>Leases, epochs, routing, and table metadata need committed transactional state, not eventual cache freshness.</p>
+            <p>Leases, epochs, routing, timestamps, and table metadata need committed transactional state, not eventual cache freshness.</p>
           </article>
           <article>
             <span>02</span>
             <h3>Strong consistency boundary</h3>
-            <p>MatrixKV gives metadata and coordination records a strong consistency boundary that supports MatrixArk engines and managed operations.</p>
+            <p>MatrixKV gives metadata, ownership, and coordination records a strong consistency boundary that supports MatrixArk engines and managed operations.</p>
           </article>
           <article>
             <span>03</span>
@@ -86,15 +86,16 @@
             <p>
               MatrixKV is the transactional, strong-consistency member of the MatrixArk family. It
               is not the default engine for high-cardinality temporal serving; it is the place to put
-              metadata, leases, timestamps, ownership records, and transactional coordination.
+              metadata, leases, timestamps, ownership records, routing records, and transactional
+              coordination.
             </p>
           </article>
           <article>
             <h2>Serving Workflow</h2>
             <ol class="detail-list">
-              <li>Client or platform component submits a metadata or KV operation.</li>
+              <li>Client or platform component submits a metadata, lease, timestamp, or KV operation.</li>
               <li>Routing resolves the partition and current leader.</li>
-              <li>Writes commit through the transactional consistency path before becoming visible.</li>
+              <li>Writes commit through the transactional consistency path before becoming platform-visible.</li>
               <li>Consumers use the committed state for routing, leases, and table metadata.</li>
             </ol>
           </article>
@@ -128,7 +129,7 @@
           <h2>The transactional KV layer under the Matrix engines.</h2>
         </div>
         <div class="capability-grid">
-          <article><h3>Transactional metadata</h3><p>Namespaces, tables, partitions, placement, schema, and routing records with strong consistency.</p></article>
+          <article><h3>Transactional metadata</h3><p>Namespaces, tables, partitions, placement, schema, ownership, and routing records with strong consistency.</p></article>
           <article><h3>Leases and epochs</h3><p>Protect primary ownership, failover decisions, and stale-writer rejection.</p></article>
           <article><h3>Timestamp service</h3><p>Useful for transactional paths, ordering-sensitive writes, and system records.</p></article>
           <article><h3>Control-plane KV</h3><p>Good fit for platform state that needs transactional correctness instead of cache semantics.</p></article>
@@ -158,8 +159,8 @@
         <h2>Where MatrixKV fits</h2>
         <p>
           MatrixKV is the product engine for transactional KV with strong consistency: metadata,
-          routing, ownership, leases, timestamps, and coordination records that should not behave
-          like cache entries.
+          routing, ownership, leases, timestamps, table state, and coordination records that should
+          not behave like cache entries.
         </p>
         <a class="button primary" href="./index.html#contact">Talk to MatrixArk</a>
       </section>
