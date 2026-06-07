@@ -35,6 +35,12 @@ Important C++ files checked:
 
 Rust now covers these data-node surfaces:
 
+- `DataNodeRuntime` worker pool with bounded queue
+- async execute / checked execute job submission
+- async job status tracking
+- request deadline handling at the queued task boundary
+- dirty object id tracking for mutating commands
+- dump/compaction/GC task hooks
 - `LoadShardRequest` / `UnloadShardRequest`
 - execute and batch execute
 - config set/get
@@ -47,6 +53,7 @@ Rust now covers these data-node surfaces:
 - readonly shard rejects writes
 - checked execute/batch execute validates loaded `load_version`
 - server register plus periodic heartbeat/load report to metaserver
+- metaserver load-finish callback endpoint
 - local page file persistence
 - local index JSON persistence
 - local read-through memory/disk cache
@@ -97,18 +104,37 @@ server_addr, binary_version, shard_id, key_count, cache memory bytes
 
 This is much smaller than the C++ heartbeat payload, but it gives the Rust metaserver real load signals for placement/rebalance tests.
 
+This pass also adds an explicit runtime layer:
+
+```text
+DataNodeRuntime -> bounded queue -> worker threads -> TemporalEngine
+```
+
+The runtime supports:
+
+- `/async_execute`
+- `/async_execute_checked`
+- `/jobs/<job_id>`
+- `/server/runtime_stats`
+- `/server/dirty_objects`
+- `/dump`
+- `/compact`
+- `/gc`
+
+Dump clears dirty objects for the shard. Compaction and GC are control-plane hooks today: they track task execution and dirty-object scope, but they do not yet rewrite page segments.
+
 ## What Is Still Missing Vs C++
 
 Still missing major data-node internals:
 
-- partition worker pools and async callback execution
-- request controller deadline/cancellation handling
+- full async callback API parity with brpc closures
+- in-flight cancellation after a worker has started executing
 - batch write/read splitting and pin-primary details at server layer
 - binary protobuf-compatible `OpLog`, `IndexLog`, and `PageHeader`
 - object manager with object ids/page ids
 - slot context manager
 - dirty slot tracking
-- async dump scheduler
+- background periodic dump scheduler
 - merged page dump to zones
 - index-log replay separate from oplog replay
 - page compaction

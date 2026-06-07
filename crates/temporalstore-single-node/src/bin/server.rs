@@ -8,8 +8,9 @@ use temporalstore_single_node::types::{
     BatchExecuteRequest, ExecuteRequest, ExecuteResponse, Status,
 };
 use temporalstore_single_node::{
-    CheckedBatchExecuteRequest, CheckedExecuteRequest, LoadShardRequest, MembershipUpdateRequest,
-    ScanStreamRequest, SetConfigRequest, StreamReadRequest, UnloadShardRequest,
+    CheckedBatchExecuteRequest, CheckedExecuteRequest, CompactionRequest, DataNodeRuntime,
+    DataNodeRuntimeOptions, DumpShardRequest, GcRequest, LoadShardRequest, MembershipUpdateRequest,
+    RequestController, ScanStreamRequest, SetConfigRequest, StreamReadRequest, UnloadShardRequest,
 };
 
 fn main() {
@@ -36,6 +37,13 @@ fn main() {
     let engine =
         TemporalEngine::with_local_dirs(cache_memory_bytes, cache_dir, page_store_dir, index_dir);
     engine.load_shard(shard_id);
+    let runtime = DataNodeRuntime::new(
+        engine.clone(),
+        DataNodeRuntimeOptions {
+            worker_threads: env_usize("TS_SERVER_WORKER_THREADS", 4),
+            max_queue_depth: env_usize("TS_SERVER_MAX_QUEUE_DEPTH", 1024),
+        },
+    );
 
     let node_id = std::env::var("TS_SERVER_NODE_ID")
         .ok()
@@ -101,10 +109,19 @@ fn main() {
         match (request.method.as_str(), request.path.as_str()) {
             ("GET", "/health") => json_response(200, &Status::ok()),
             ("GET", "/server/info") => json_response(200, &engine.loaded_shard_stats()),
+            ("GET", "/server/runtime_stats") => json_response(200, &runtime.stats()),
+            ("GET", "/server/dirty_objects") => json_response(200, &runtime.dirty_objects()),
             ("POST", "/heartbeat") => json_response(
                 200,
                 &send_heartbeat(&engine, &meta_addr, &advertised_addr, &binary_version),
             ),
+            ("GET", path) if path.starts_with("/jobs/") => {
+                let job_id = path
+                    .trim_start_matches("/jobs/")
+                    .parse()
+                    .unwrap_or_default();
+                json_response(200, &runtime.job_status(job_id))
+            }
             ("POST", "/load") => match parse_json::<LoadShardRequest>(&request.body) {
                 Ok(req) => json_response(200, &engine.load_shard_with(req)),
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
@@ -129,6 +146,22 @@ fn main() {
                     Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
                 }
             }
+            ("POST", "/async_execute") => match parse_json::<ExecuteRequest>(&request.body) {
+                Ok(req) => json_response(
+                    200,
+                    &runtime.submit_execute(req, RequestController::default()),
+                ),
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            },
+            ("POST", "/async_execute_checked") => {
+                match parse_json::<CheckedExecuteRequest>(&request.body) {
+                    Ok(req) => json_response(
+                        200,
+                        &runtime.submit_checked_execute(req, RequestController::default()),
+                    ),
+                    Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+                }
+            }
             ("POST", "/batch_execute") => match parse_json::<BatchExecuteRequest>(&request.body) {
                 Ok(req) => json_response(200, &engine.batch_execute(req)),
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
@@ -139,6 +172,25 @@ fn main() {
                     Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
                 }
             }
+            ("POST", "/dump") => match parse_json::<DumpShardRequest>(&request.body) {
+                Ok(req) => {
+                    json_response(200, &runtime.submit_dump(req, RequestController::default()))
+                }
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            },
+            ("POST", "/compact") => match parse_json::<CompactionRequest>(&request.body) {
+                Ok(req) => json_response(
+                    200,
+                    &runtime.submit_compaction(req, RequestController::default()),
+                ),
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            },
+            ("POST", "/gc") => match parse_json::<GcRequest>(&request.body) {
+                Ok(req) => {
+                    json_response(200, &runtime.submit_gc(req, RequestController::default()))
+                }
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            },
             ("POST", "/set_config") => match parse_json::<SetConfigRequest>(&request.body) {
                 Ok(req) => json_response(200, &engine.set_config(req)),
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
@@ -182,6 +234,13 @@ fn main() {
         }
     })
     .expect("server failed");
+}
+
+fn env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
 }
 
 fn start_heartbeat_loop(

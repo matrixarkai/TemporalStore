@@ -1,8 +1,8 @@
 use temporalstore_single_node::http::{json_response, parse_json, serve, HttpRequest};
 use temporalstore_single_node::meta::{
     AddNamespaceRequest, AddTableRequest, GetShardResponse, GetTableTopologyRequest,
-    ProxyHeartbeatRequest, RegisterProxyRequest, RegisterServerRequest, RegisterShardRequest,
-    ServerHeartbeatRequest, SingleNodeMeta, StateChangeRequest,
+    LoadFinishRequest, ProxyHeartbeatRequest, RegisterProxyRequest, RegisterServerRequest,
+    RegisterShardRequest, ServerHeartbeatRequest, SingleNodeMeta, StateChangeRequest,
 };
 use temporalstore_single_node::types::Status;
 
@@ -39,6 +39,11 @@ fn handle(meta: &SingleNodeMeta, request: HttpRequest) -> (u16, Vec<u8>) {
             })
         }
         ("GET", "/servers") => json_response(200, &meta.list_servers()),
+        ("POST", "/partitions/finish_load") | ("POST", "/finish_load") => {
+            parse_or(&request.body, |req: LoadFinishRequest| {
+                meta.finish_load(req)
+            })
+        }
         ("POST", "/servers/freeze") => parse_or(&request.body, |req: StateChangeRequest| {
             meta.freeze_server(req)
         }),

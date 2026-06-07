@@ -227,6 +227,14 @@ pub struct StateChangeRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LoadFinishRequest {
+    pub server_addr: String,
+    pub shard_id: ShardId,
+    pub load_version: u64,
+    pub status: Status,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MetaStats {
     pub register_shard_total: u64,
     pub get_shard_total: u64,
@@ -237,6 +245,7 @@ pub struct MetaStats {
     pub namespace_create_total: u64,
     pub table_create_total: u64,
     pub topology_query_total: u64,
+    pub load_finish_total: u64,
     pub topology_version: u64,
     pub server_count: usize,
     pub proxy_count: usize,
@@ -263,6 +272,7 @@ struct MetaCounters {
     namespace_create_total: u64,
     table_create_total: u64,
     topology_query_total: u64,
+    load_finish_total: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -585,6 +595,28 @@ impl SingleNodeMeta {
         self.set_proxy_state(&request.endpoint, MetaEntityState::Dropped)
     }
 
+    pub fn finish_load(&self, request: LoadFinishRequest) -> AckResponse {
+        let mut state = self.inner.write().expect("meta lock poisoned");
+        state.counters.load_finish_total += 1;
+        if !request.status.ok {
+            return AckResponse {
+                status: request.status,
+            };
+        }
+        ensure_server(&mut state, &request.server_addr);
+        state.shards.insert(
+            request.shard_id,
+            ShardLocation {
+                shard_id: request.shard_id,
+                server_addr: request.server_addr,
+            },
+        );
+        state.topology_version += 1;
+        AckResponse {
+            status: Status::ok(),
+        }
+    }
+
     pub fn info(&self) -> MetaInfo {
         MetaInfo {
             status: Status::ok(),
@@ -605,6 +637,7 @@ impl SingleNodeMeta {
             namespace_create_total: state.counters.namespace_create_total,
             table_create_total: state.counters.table_create_total,
             topology_query_total: state.counters.topology_query_total,
+            load_finish_total: state.counters.load_finish_total,
             topology_version: state.topology_version,
             server_count: state.servers.len(),
             proxy_count: state.proxies.len(),
@@ -832,5 +865,25 @@ mod tests {
         assert!(response.config_changed);
         assert_eq!(response.config_version, 3);
         assert_eq!(meta.list_proxies().proxies[0].binary_version, "v2");
+    }
+
+    #[test]
+    fn metaserver_finish_load_updates_shard_route() {
+        let meta = SingleNodeMeta::default();
+        meta.register_server(RegisterServerRequest {
+            server_addr: "s1".to_string(),
+            node_id: 1,
+            location: "z".to_string(),
+            binary_version: "v".to_string(),
+        });
+        let ack = meta.finish_load(LoadFinishRequest {
+            server_addr: "s1".to_string(),
+            shard_id: 42,
+            load_version: 9,
+            status: Status::ok(),
+        });
+        assert!(ack.status.ok);
+        assert_eq!(meta.get(42).location.unwrap().server_addr, "s1");
+        assert_eq!(meta.stats().load_finish_total, 1);
     }
 }

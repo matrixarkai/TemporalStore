@@ -21,6 +21,7 @@ The Rust code now covers the local correctness skeleton for TemporalStore-style 
 - client key-to-shard routing, table open/close cache, stats, expanded typed methods, and multi-shard pipeline grouping
 - metaserver namespace/table topology, server/proxy register/list/heartbeat, topology versioning, and meta stats/info
 - data-node checked execute/batch by load version, server registration, periodic heartbeat load reporting, and loaded-shard stats
+- data-node worker runtime with bounded async queue, job status, dirty-object ids, dump/compact/GC hooks, and load-finish callback endpoint
 - Redis RESP adapter
 - S3-compatible snapshot store crate
 
@@ -54,6 +55,8 @@ The Rust metaserver now exposes a richer HTTP/JSON control-plane skeleton: serve
 
 The Rust data node now exposes C++-style checked execution routes that reject stale `load_version` requests, and the server binary reports loaded shard stats to the metaserver heartbeat endpoint.
 
+The Rust data node also has a first runtime layer around `TemporalEngine`: worker threads, bounded queue/backpressure, async job handles, dirty-object ids for mutating commands, and explicit dump/compact/GC task hooks.
+
 ## Detailed Gap Matrix
 
 | Area | C++ TemporalStore | Rust Today | Missing |
@@ -63,11 +66,11 @@ The Rust data node now exposes C++-style checked execution routes that reject st
 | Client SDK | C++ `Client`, `Table`, `Pipeline`, `MetaSyncer`, router, backend pool | Rust `TemporalStoreClient`, `TemporalStoreTable`, `TemporalStorePipeline`, typed methods, open/close table cache, stats, retries/timeouts, direct route refresh | brpc/protobuf SDK, background topology sync, exact CRC64 slot router, VDC affinity, backend failure pool |
 | Routing | namespace/table/partition-set/slot routing | key-to-shard routing from table options, explicit `shard_id` request, simple metaserver route | namespace/table topology from metaserver, exact slot map, route versioning, partition-set placement |
 | Metaserver | full topology, heartbeat, placement, scheduling, Raft-backed metadata | shard route map, namespace/table topology, server/proxy register/list/heartbeat, meta stats, in-process meta Raft, rebalance model | networked metaserver Raft for HTTP mutations, persistent metabase, placement rule chain, background scheduler, failure detector |
-| Data node execution | partition workers, async callbacks, load-version guards | direct `TemporalEngine` execution under a lock, plus checked execute/batch routes for load-version validation | worker pools, request controllers, deadlines/cancellation, backpressure |
+| Data node execution | partition workers, async callbacks, load-version guards | `TemporalEngine` plus `DataNodeRuntime` worker queue, async jobs, dirty tracking, checked execute/batch routes | brpc callback parity, in-flight cancellation, production scheduling |
 | Hot object model | `ObjectManager`, model objects, dirty slots | per-type maps of key/field/timestamp to `PageAddress` | object ids, dirty slot tracking, object lifecycle, model-specific memory layout |
 | Oplog | binary mutation log with replay/reclaim semantics | JSONL command oplog | binary/protobuf compatibility, fsync policy, reclaim boundary, replay into hot object manager |
 | Index log | binary metadata/index log | JSONL index-log with current index metadata | compact incremental deltas, page/object ids, checksums, replay ordering with oplog and page dumps |
-| Page store | slot/page/zone layout, page headers, dump/merge/load | append-only local page segment files | zones, page headers, compaction, GC, checksums, atomic install |
+| Page store | slot/page/zone layout, page headers, dump/merge/load | append-only local page segment files plus dump/compact/GC task hooks | zones, page headers, real segment rewrite compaction, checksums, atomic install |
 | Shared store | local/ByteStore stream backends and replica replay | file-backed shared-store checkpoint and oplog replay model | ByteStore/S3 live object backend integration, production retry/resume, replay offsets |
 | Raft | ByteRaft-backed production groups | in-process behavior model plus snapshot semantics | OpenRaft/raft-rs integration, network transport, durable WAL, hard-state, real InstallSnapshot RPC |
 | Snapshots | integrated storage/load pipeline | S3-compatible snapshot crate plus local Raft snapshot model | engine freeze/flush, attach snapshot metadata to Raft, S3 restore into data-node FSM |

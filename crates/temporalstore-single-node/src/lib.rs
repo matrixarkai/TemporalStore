@@ -1,6 +1,7 @@
 pub mod cache;
 pub mod client;
 pub mod control;
+pub mod data_node;
 pub mod e2e;
 pub mod engine;
 pub mod http;
@@ -27,6 +28,11 @@ pub use control::{
     ScanStreamResponse, SetConfigRequest, StreamKind, StreamReadRequest, StreamReadResponse,
     UnloadShardRequest, UnloadShardResponse,
 };
+pub use data_node::{
+    CompactionRequest, CompactionResponse, DataNodeRuntime, DataNodeRuntimeOptions,
+    DataNodeRuntimeStats, DataNodeTaskKind, DataNodeTaskOutput, DataNodeTaskStatus,
+    DirtyObjectInfo, DumpShardRequest, DumpShardResponse, GcRequest, GcResponse, RequestController,
+};
 pub use e2e::{
     AsyncStorageJournal, EndToEndWorkflow, KillSwitches, ReplicaReadPolicy, RoutingClient,
     TemporalStoreClientOptions, WorkflowError, WorkflowProxy,
@@ -36,11 +42,11 @@ pub use index_log::{IndexLogRecord, IndexLogStats, LocalIndexLogStore};
 pub use meta::{
     AckResponse, AddNamespaceRequest, AddTableRequest, GetShardResponse, GetTableTopologyRequest,
     ListNamespacesResponse, ListProxiesResponse, ListServersResponse, ListTablesResponse,
-    MetaEntityState, MetaInfo, MetaStats, NamespaceMetaInfo, ProxyHeartbeatRequest,
-    ProxyHeartbeatResponse, ProxyMetaInfo, RegisterProxyRequest, RegisterServerRequest,
-    RegisterShardRequest, RegisterShardResponse, ServerHeartbeatRequest, ServerHeartbeatResponse,
-    ServerMetaInfo, ShardLoad, ShardLocation, SingleNodeMeta, StateChangeRequest, TableMetaInfo,
-    TablePartition, TableTopologyResponse,
+    LoadFinishRequest, MetaEntityState, MetaInfo, MetaStats, NamespaceMetaInfo,
+    ProxyHeartbeatRequest, ProxyHeartbeatResponse, ProxyMetaInfo, RegisterProxyRequest,
+    RegisterServerRequest, RegisterShardRequest, RegisterShardResponse, ServerHeartbeatRequest,
+    ServerHeartbeatResponse, ServerMetaInfo, ShardLoad, ShardLocation, SingleNodeMeta,
+    StateChangeRequest, TableMetaInfo, TablePartition, TableTopologyResponse,
 };
 pub use oplog::{LocalOplogStore, OplogRecord, OplogStats};
 pub use page_store::{LocalPageStore, PageAddress, PageStoreStats};
