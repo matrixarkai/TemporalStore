@@ -15,7 +15,10 @@ pub mod shared_store;
 pub mod types;
 
 pub use cache::{CacheKey, CacheStats, MultiLayerCache};
-pub use client::TemporalStoreClient;
+pub use client::{
+    ClientError, ClientOptions, RequestOptions, TableOptions, TemporalStoreClient,
+    TemporalStorePipeline, TemporalStoreTable,
+};
 pub use control::{
     Config, GetConfigResponse, GetInfoResponse, GetStatsResponse, LoadShardRequest,
     LoadShardResponse, MembershipUpdateRequest, ScanStreamRequest, ScanStreamResponse,

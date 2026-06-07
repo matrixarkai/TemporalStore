@@ -16,6 +16,7 @@ The Rust code now covers the local correctness skeleton for TemporalStore-style 
 - in-process Raft behavior for data nodes and metaserver
 - local Raft snapshot behavior
 - proxy/client/metaserver/server binaries
+- table-aware Rust client with typed string/hash/common methods, pipeline batching, HTTP timeout/retry options, and optional direct route refresh
 - Redis RESP adapter
 - S3-compatible snapshot store crate
 
@@ -43,6 +44,7 @@ This closes one data-node replay gap from the previous audit. C++ has binary ind
 | Area | C++ TemporalStore | Rust Today | Missing |
 | --- | --- | --- | --- |
 | Protocol | brpc/thrift/protobuf APIs and extension protos | JSON/HTTP command API plus RESP adapter | Exact wire compatibility, SDK compatibility, C++ protobuf request/response shapes |
+| Client SDK | C++ `Client`, `Table`, `Pipeline`, `MetaSyncer`, router, backend pool | Rust `TemporalStoreClient`, `TemporalStoreTable`, `TemporalStorePipeline`, typed methods, retries/timeouts, direct route refresh | brpc/protobuf SDK, background topology sync, CRC64 slot router, VDC affinity, backend failure pool |
 | Routing | namespace/table/partition-set/slot routing | explicit `shard_id` in request, simple metaserver route | namespace/table model, slot hashing, route versioning, table config, partition-set placement |
 | Metaserver | full topology, heartbeat, placement, scheduling, Raft-backed metadata | simple route map, in-process meta Raft, rebalance model | real networked metaserver Raft, persistent metadata, heartbeat/load reports, placement policy, background scheduler |
 | Data node execution | partition workers, async callbacks, load-version guards | direct `TemporalEngine` execution under a lock | worker pools, request controllers, load-version validation, backpressure |
@@ -99,4 +101,3 @@ The next best implementation chunks are:
 3. Replace the local Raft model with OpenRaft or raft-rs.
 4. Add metaserver table/slot topology and heartbeat/load reports.
 5. Port IPS and Risk semantics from the C++ protos as separate modules.
-

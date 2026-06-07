@@ -1,7 +1,8 @@
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -15,6 +16,23 @@ pub enum HttpError {
     Json(#[from] serde_json::Error),
     #[error("bad response: {0}")]
     BadResponse(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HttpRequestOptions {
+    pub connect_timeout_ms: u64,
+    pub io_timeout_ms: u64,
+    pub max_retries: usize,
+}
+
+impl Default for HttpRequestOptions {
+    fn default() -> Self {
+        Self {
+            connect_timeout_ms: 200,
+            io_timeout_ms: 200,
+            max_retries: 0,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -56,19 +74,37 @@ pub fn post_json<Req: Serialize, Res: DeserializeOwned>(
     path: &str,
     request: &Req,
 ) -> Result<Res, HttpError> {
+    post_json_with_options(addr, path, request, HttpRequestOptions::default())
+}
+
+pub fn post_json_with_options<Req: Serialize, Res: DeserializeOwned>(
+    addr: &str,
+    path: &str,
+    request: &Req,
+    options: HttpRequestOptions,
+) -> Result<Res, HttpError> {
     let body = serde_json::to_vec(request)?;
-    let raw = request_raw(
+    let raw = request_raw_with_options(
         addr,
         "POST",
         path,
         &body,
         "Content-Type: application/json\r\n",
+        options,
     )?;
     Ok(serde_json::from_slice(&raw)?)
 }
 
 pub fn get_json<Res: DeserializeOwned>(addr: &str, path: &str) -> Result<Res, HttpError> {
-    let raw = request_raw(addr, "GET", path, &[], "")?;
+    get_json_with_options(addr, path, HttpRequestOptions::default())
+}
+
+pub fn get_json_with_options<Res: DeserializeOwned>(
+    addr: &str,
+    path: &str,
+    options: HttpRequestOptions,
+) -> Result<Res, HttpError> {
+    let raw = request_raw_with_options(addr, "GET", path, &[], "", options)?;
     Ok(serde_json::from_slice(&raw)?)
 }
 
@@ -150,14 +186,41 @@ fn parse_request(bytes: &[u8]) -> Result<HttpRequest, HttpError> {
     })
 }
 
-fn request_raw(
+fn request_raw_with_options(
     addr: &str,
     method: &str,
     path: &str,
     body: &[u8],
     extra_headers: &str,
+    options: HttpRequestOptions,
 ) -> Result<Vec<u8>, HttpError> {
-    let mut stream = TcpStream::connect(addr)?;
+    let mut last_error = None;
+    for _attempt in 0..=options.max_retries {
+        match request_raw_once(addr, method, path, body, extra_headers, options) {
+            Ok(response) => return Ok(response),
+            Err(err) => last_error = Some(err),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| HttpError::BadResponse("request failed".to_string())))
+}
+
+fn request_raw_once(
+    addr: &str,
+    method: &str,
+    path: &str,
+    body: &[u8],
+    extra_headers: &str,
+    options: HttpRequestOptions,
+) -> Result<Vec<u8>, HttpError> {
+    let connect_timeout = Duration::from_millis(options.connect_timeout_ms);
+    let mut addrs = addr.to_socket_addrs()?;
+    let socket_addr = addrs
+        .next()
+        .ok_or_else(|| HttpError::BadResponse(format!("cannot resolve address {addr}")))?;
+    let mut stream = TcpStream::connect_timeout(&socket_addr, connect_timeout)?;
+    let io_timeout = Some(Duration::from_millis(options.io_timeout_ms));
+    stream.set_read_timeout(io_timeout)?;
+    stream.set_write_timeout(io_timeout)?;
     write!(
         stream,
         "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Length: {}\r\n{extra_headers}Connection: close\r\n\r\n",
