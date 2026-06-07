@@ -71,6 +71,9 @@ pub enum Command {
     CommonTtl {
         key: String,
     },
+    CommonExists {
+        key: String,
+    },
     StringSet {
         key: String,
         value: Vec<u8>,

@@ -409,6 +409,19 @@ fn execute_on_shard(
             mutated = expired;
             CommandResponse::Integer { value }
         }
+        Command::CommonExists { key } => {
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+                invalidate_record_all(cache, shard_id, &key);
+                return ExecuteOutcome {
+                    response: CommandResponse::Integer { value: 0 },
+                    mutated,
+                };
+            }
+            CommandResponse::Integer {
+                value: if record_exists(shard, &key) { 1 } else { 0 },
+            }
+        }
         Command::StringSet { key, value } => {
             remove_if_expired(shard, &key);
             if let Ok(address) = page_store.append(&value) {
@@ -877,6 +890,16 @@ fn delete_record(shard: &mut ShardState, key: &str) -> bool {
     removed |= shard.ips.remove(key).is_some();
     removed |= shard.risk.remove(key).is_some();
     removed
+}
+
+fn record_exists(shard: &ShardState, key: &str) -> bool {
+    shard.strings.contains_key(key)
+        || shard.hashes.contains_key(key)
+        || shard.sets.contains_key(key)
+        || shard.features.contains_key(key)
+        || shard.sequences.contains_key(key)
+        || shard.ips.contains_key(key)
+        || shard.risk.contains_key(key)
 }
 
 fn invalidate_record_all(cache: &MultiLayerCache, shard_id: ShardId, key: &str) {

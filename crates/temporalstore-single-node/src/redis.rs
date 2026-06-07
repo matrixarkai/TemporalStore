@@ -104,6 +104,34 @@ pub fn execute_redis_command(
         "GET" if args.len() == 2 => bytes_response(execute(Command::StringGet {
             key: string_arg(&args[1]),
         })),
+        "MGET" if args.len() >= 2 => {
+            let mut values = Vec::new();
+            for key in args.iter().skip(1) {
+                match execute(Command::StringGet {
+                    key: string_arg(key),
+                }) {
+                    Ok(CommandResponse::Bytes { value }) => values.push(RespValue::Bulk(value)),
+                    Ok(_) => return RespValue::Error("ERR invalid mget response".to_string()),
+                    Err(err) => return RespValue::Error(format!("ERR {err}")),
+                }
+            }
+            RespValue::Array(values)
+        }
+        "GETDEL" if args.len() == 2 => {
+            let key = string_arg(&args[1]);
+            match execute(Command::StringGet { key: key.clone() }) {
+                Ok(CommandResponse::Bytes { value }) => {
+                    if value.is_some() {
+                        if let Err(err) = execute(Command::CommonDelete { key }) {
+                            return RespValue::Error(format!("ERR {err}"));
+                        }
+                    }
+                    RespValue::Bulk(value)
+                }
+                Ok(_) => RespValue::Error("ERR invalid getdel response".to_string()),
+                Err(err) => RespValue::Error(format!("ERR {err}")),
+            }
+        }
         "SET" if args.len() == 3 || args.len() == 5 => {
             let key = string_arg(&args[1]);
             let value = args[2].clone();
@@ -113,6 +141,17 @@ pub fn execute_redis_command(
                 Err(err) => return RespValue::Error(err),
             };
             status_ok(execute(command))
+        }
+        "MSET" if args.len() >= 3 && args.len() % 2 == 1 => {
+            for pair in args[1..].chunks(2) {
+                if let Err(err) = execute(Command::StringSet {
+                    key: string_arg(&pair[0]),
+                    value: pair[1].clone(),
+                }) {
+                    return RespValue::Error(format!("ERR {err}"));
+                }
+            }
+            RespValue::SimpleString("OK".to_string())
         }
         "SETEX" if args.len() == 4 => match parse_u64(&args[2], "seconds") {
             Ok(seconds) => status_ok(execute(Command::StringSetEx {
@@ -130,15 +169,34 @@ pub fn execute_redis_command(
             })),
             Err(err) => RespValue::Error(err),
         },
+        "EXISTS" if args.len() >= 2 => {
+            let mut count = 0;
+            for key in args.iter().skip(1) {
+                match execute(Command::CommonExists {
+                    key: string_arg(key),
+                }) {
+                    Ok(CommandResponse::Integer { value }) => count += value,
+                    Ok(_) => return RespValue::Error("ERR invalid exists response".to_string()),
+                    Err(err) => return RespValue::Error(format!("ERR {err}")),
+                }
+            }
+            RespValue::Integer(count)
+        }
         "DEL" if args.len() >= 2 => {
             let mut removed = 0;
             for key in args.iter().skip(1) {
-                if execute(Command::CommonDelete {
-                    key: string_arg(key),
-                })
-                .is_ok()
-                {
-                    removed += 1;
+                let key = string_arg(key);
+                match execute(Command::CommonExists { key: key.clone() }) {
+                    Ok(CommandResponse::Integer { value }) => {
+                        if value > 0 {
+                            if let Err(err) = execute(Command::CommonDelete { key }) {
+                                return RespValue::Error(format!("ERR {err}"));
+                            }
+                            removed += 1;
+                        }
+                    }
+                    Ok(_) => return RespValue::Error("ERR invalid exists response".to_string()),
+                    Err(err) => return RespValue::Error(format!("ERR {err}")),
                 }
             }
             RespValue::Integer(removed)
@@ -525,6 +583,31 @@ mod tests {
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(run(vec!["GET", "k"]), RespValue::Bulk(Some(b"v".to_vec())));
+        assert_eq!(
+            run(vec!["MSET", "k1", "v1", "k2", "v2"]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(
+            run(vec!["MGET", "k1", "missing", "k2"]),
+            RespValue::Array(vec![
+                RespValue::Bulk(Some(b"v1".to_vec())),
+                RespValue::Bulk(None),
+                RespValue::Bulk(Some(b"v2".to_vec())),
+            ])
+        );
+        assert_eq!(
+            run(vec!["EXISTS", "k", "missing", "k1"]),
+            RespValue::Integer(2)
+        );
+        assert_eq!(
+            run(vec!["GETDEL", "k1"]),
+            RespValue::Bulk(Some(b"v1".to_vec()))
+        );
+        assert_eq!(run(vec!["GET", "k1"]), RespValue::Bulk(None));
+        assert_eq!(
+            run(vec!["DEL", "k", "missing", "k2"]),
+            RespValue::Integer(2)
+        );
         assert_eq!(run(vec!["HSET", "h", "f", "x"]), RespValue::Integer(1));
         assert_eq!(
             run(vec!["HGET", "h", "f"]),
