@@ -1766,6 +1766,85 @@ mod tests {
     }
 
     #[test]
+    fn long_sequence_query_keeps_timestamp_order_and_applies_random_filters() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let base_ts = 1_700_000_000_000_u64;
+        let row_count = 5_000_u64;
+        let key = "long-sequence".to_string();
+
+        let ordered_rows = (0..row_count)
+            .map(|offset| SequenceFeatureRow {
+                timestamp_ms: base_ts + offset,
+                gid: 10_000 + offset,
+                action_type: (offset % 7) as u32,
+                duration: (50 + (offset * 37) % 1_000) as u32,
+                author_id: 500 + (offset * 17) % 97,
+            })
+            .collect::<Vec<_>>();
+        let shuffled_rows = (0..row_count)
+            .map(|i| ordered_rows[((i * 2_919) % row_count) as usize].clone())
+            .collect::<Vec<_>>();
+
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::SequenceAdd {
+                key: key.clone(),
+                rows: shuffled_rows,
+            },
+        });
+
+        for seed in 0..20_u64 {
+            let start_offset = (seed * 313) % 4_400;
+            let end_offset = (start_offset + 250 + (seed * 97) % 700).min(row_count - 1);
+            let count = 25 + (seed as usize % 40);
+            let filters = vec![
+                FeatureFilter {
+                    field: "action_type".to_string(),
+                    op: FeatureFilterOp::NotEqual,
+                    value: seed % 7,
+                },
+                FeatureFilter {
+                    field: "duration".to_string(),
+                    op: FeatureFilterOp::GreaterThan,
+                    value: 100 + (seed * 29) % 500,
+                },
+                FeatureFilter {
+                    field: "author_id".to_string(),
+                    op: FeatureFilterOp::LessThan,
+                    value: 560 + (seed * 11) % 30,
+                },
+            ];
+
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::SequenceQuery {
+                    key: key.clone(),
+                    start_ms: base_ts + start_offset,
+                    end_ms: base_ts + end_offset,
+                    count,
+                    filters: filters.clone(),
+                },
+            });
+            let CommandResponse::SequenceRows { rows } = response.response else {
+                panic!("expected sequence rows");
+            };
+            let expected = ordered_rows
+                .iter()
+                .filter(|row| row.timestamp_ms >= base_ts + start_offset)
+                .filter(|row| row.timestamp_ms <= base_ts + end_offset)
+                .filter(|row| filters.iter().all(|filter| sequence_filter_matches(row, filter)))
+                .take(count)
+                .cloned()
+                .collect::<Vec<_>>();
+
+            assert_eq!(rows, expected, "seed {seed}");
+            assert!(rows.windows(2).all(|pair| pair[0].timestamp_ms < pair[1].timestamp_ms));
+            assert!(rows.len() <= count);
+        }
+    }
+
+    #[test]
     fn ips_query_last_returns_recent_instances() {
         let engine = TemporalEngine::default();
         engine.load_shard(1);
