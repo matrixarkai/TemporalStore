@@ -123,6 +123,45 @@
         </div>
       </section>
 
+      <section class="section detail-section">
+        <div class="section-heading">
+          <p class="eyebrow">Cloud-Native Operations</p>
+          <h2>Separate the public website, customer console, and private metrics plane.</h2>
+          <p>
+            A test deployment can host the marketing site and observability pages on one node and
+            one port. A production TemporalStore deployment should split those concerns: the
+            public website stays public, the console is authenticated, and metrics endpoints stay
+            private inside the customer or MatrixArk VPC.
+          </p>
+        </div>
+        <div class="capability-grid">
+          <article>
+            <h3>Public website</h3>
+            <p>Marketing, product pages, blogs, and documentation are served separately from runtime operations.</p>
+          </article>
+          <article>
+            <h3>Authenticated console</h3>
+            <p>Cluster health, node inventory, partition state, cache usage, scale tests, and deployment status live behind customer access control.</p>
+          </article>
+          <article>
+            <h3>Private metrics</h3>
+            <p>Prometheus-compatible metrics, logs, data-node variables, and storage signals stay on private networking or controlled observability integrations.</p>
+          </article>
+          <article>
+            <h3>ASG node registration</h3>
+            <p>New data nodes launched by autoscaling register capacity with the metaserver; the metaserver assigns partitions and replicas.</p>
+          </article>
+          <article>
+            <h3>Graceful scale-down</h3>
+            <p>Before an instance terminates, it should enter draining state so primaries move away and replicas catch up.</p>
+          </article>
+          <article>
+            <h3>Versioned runtime packages</h3>
+            <p>Release packages should include binaries, dynamic libraries, service files, health checks, registration scripts, and rollback metadata.</p>
+          </article>
+        </div>
+      </section>
+
       <section class="section alt-section">
         <div class="section-heading">
           <p class="eyebrow">Data Models</p>
