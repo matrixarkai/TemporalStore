@@ -840,6 +840,103 @@ th {
   text-align: center;
 }
 
+.architecture-diagram {
+  display: grid;
+  gap: 10px;
+  margin: 26px 0;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.architecture-diagram.two-column {
+  grid-template-columns: 1fr 1fr;
+}
+
+.diagram-panel {
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #ffffff;
+}
+
+.diagram-panel.strong {
+  border-color: rgba(17, 128, 111, 0.35);
+  background: #edf7f4;
+}
+
+.diagram-panel h3 {
+  margin-bottom: 14px;
+}
+
+.flow-stack,
+.sequence-diagram,
+.diagram-row {
+  display: grid;
+  gap: 10px;
+}
+
+.flow-stack span,
+.sequence-diagram span,
+.diagram-row span {
+  display: grid;
+  place-items: center;
+  min-height: 58px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  color: #263449;
+  font-weight: 850;
+  text-align: center;
+  line-height: 1.35;
+}
+
+.diagram-row {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.diagram-row.wide span {
+  background: #eef6f3;
+}
+
+.diagram-row small,
+.flow-stack small,
+.sequence-diagram small {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.sequence-diagram {
+  grid-template-columns: repeat(4, 1fr);
+  margin: 24px 0;
+}
+
+.code-slab {
+  margin: 22px 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: #111816;
+}
+
+.code-slab pre {
+  margin: 0;
+  padding: 20px;
+  overflow-x: auto;
+  color: #eef8f3;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.status-note {
+  margin-top: 16px;
+  padding: 18px;
+  border-left: 4px solid var(--teal);
+  background: #eef6f3;
+}
+
 .example-table {
   overflow-x: auto;
   border: 1px solid var(--line);
@@ -1130,7 +1227,10 @@ th {
   }
 
   .article-grid,
-  .article-flow {
+  .article-flow,
+  .architecture-diagram.two-column,
+  .sequence-diagram,
+  .diagram-row {
     grid-template-columns: 1fr;
   }
 }

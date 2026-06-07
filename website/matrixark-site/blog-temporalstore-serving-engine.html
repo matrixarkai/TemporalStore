@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Why Temporal Features Need a Serving Engine | MatrixArk</title>
+    <title>TemporalStore: A Serving Engine For Temporal Features | MatrixArk</title>
     <meta
       name="description"
-      content="A detailed MatrixArk blog on why high-cardinality temporal features need a dedicated online serving engine."
+      content="A deep MatrixArk technical essay on TemporalStore architecture, temporal feature serving, storage layout, replication, and online risk and recommendation use cases."
     />
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -33,235 +33,396 @@
     <main>
       <article class="article">
         <header class="article-hero">
-          <p class="eyebrow">TemporalStore Essay</p>
-          <h1>Why temporal features need a serving engine, not just another cache.</h1>
+          <p class="eyebrow">TemporalStore Deep Dive</p>
+          <h1>A serving engine for temporal features, risk state, and online context.</h1>
           <p>
-            The next generation of online decision systems needs fresh, explainable, replayable
-            temporal state. That is a different problem from storing a value under a key.
+            Modern online decisions need more than latest-value lookups. They need fresh windows,
+            filters, sequences, counters, distinct state, replay, and observability inside the
+            request path.
           </p>
         </header>
 
         <section class="article-section">
           <h2>The short version</h2>
           <p>
-            Fraud, ads, recommendation, personalization, and AI agent systems increasingly depend on
-            questions like: how many times did this device fail login in the last 30 minutes, which
-            merchants did this card touch in the last 24 hours, what did this user recently read,
-            and which policy counters should shape the next model call?
+            TemporalStore is MatrixArk's online temporal serving engine. Its target is not the
+            generic cache problem. Its target is the product gap between stream processing,
+            feature stores, wide-column databases, and online caches.
           </p>
           <p>
-            A cache can hold the answer after something else computes it. A stream processor can
-            precompute a few known windows. A feature store can materialize the latest value. But
-            fast-changing online products need a serving engine that understands the temporal shape
-            of the data itself: windows, filters, distinct counts, sequences, freshness, replay, and
-            persistence.
-          </p>
-          <p>
-            TemporalStore is MatrixArk's answer to that gap. It is designed as an online temporal
-            decision-state engine: ingest events and behavior updates, keep hot model-aware objects
-            in memory, persist replayable state, and serve temporal queries directly in the request path.
-          </p>
-        </section>
-
-        <section class="article-section">
-          <h2>The problem with cache-plus-pipeline architectures</h2>
-          <p>
-            Many teams start with a reasonable architecture: stream events into a processor, compute
-            aggregates, write the result into a cache or online store, and let the application read
-            the latest value. This works well when the feature set is stable and the query shape is
-            simple.
-          </p>
-          <p>
-            It becomes painful when product rules move faster than the pipelines. Risk teams add new
-            velocity checks. Ads teams change frequency windows. Recommendation teams want more
-            recent sequence slices. Agent systems need session context and policy state that changes
-            while a user is interacting. Every new temporal question turns into a new pipeline, a new
-            key layout, a new expiry policy, and another place where training and serving semantics
-            can drift.
+            Risk, fraud, ads, recommendation, marketplace trust, and LLM agent systems repeatedly
+            ask questions such as: how many times did this device fail login in the last 30
+            minutes, which merchants did this card touch in the last 24 hours, which campaign
+            impressions happened in the last hour, what did this user recently read, and what
+            context should be placed into the next model call?
           </p>
           <div class="article-callout">
-            <strong>The core issue:</strong>
-            plain KV systems store values, but temporal products need storage to understand how those
-            values were produced, when they are valid, and how to query the event state behind them.
+            <strong>The product thesis:</strong>
+            serve high-cardinality temporal features directly, without building a separate batch
+            job, streaming job, cache layout, repair path, and custom serving service for every
+            feature family.
           </div>
         </section>
 
         <section class="article-section">
-          <h2>What a temporal serving engine should own</h2>
+          <h2>Why cache plus pipelines breaks down</h2>
           <p>
-            TemporalStore puts the temporal data model inside the serving engine. Instead of treating
-            a value as an opaque blob, the engine understands the object type and the operations that
-            are valid for that object.
+            A common architecture starts cleanly: raw events go to a queue, a stream processor
+            computes aggregates, Redis or another online store serves latest values, and offline
+            jobs repair or backfill state. That is a strong architecture for stable feature sets.
+          </p>
+          <p>
+            It becomes expensive when temporal questions change every week. A risk team adds a new
+            velocity check. An ads team changes a frequency cap. A recommender wants a different
+            sequence slice. An agent product needs session state, tool-call history, policy
+            counters, and user preferences in one context bundle. Each new question creates new
+            stream logic, new keys, new TTL rules, and another place where serving behavior can
+            drift from training behavior.
+          </p>
+          <div class="architecture-diagram two-column">
+            <div class="diagram-panel">
+              <h3>Traditional per-feature stack</h3>
+              <div class="flow-stack">
+                <span>Raw events</span>
+                <span>Queue</span>
+                <span>Stream job per feature family</span>
+                <span>Online cache or KV</span>
+                <span>Batch repair and backfill</span>
+                <span>Custom serving logic</span>
+                <span>Model, rule, or product decision</span>
+              </div>
+            </div>
+            <div class="diagram-panel strong">
+              <h3>TemporalStore path</h3>
+              <div class="flow-stack">
+                <span>Raw or bucketed events</span>
+                <span>TemporalStore data models</span>
+                <span>Direct online query</span>
+                <span>Model, rule, or product decision</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="article-section">
+          <h2>What TemporalStore owns</h2>
+          <p>
+            The central design choice is to make the storage engine understand the online model.
+            Instead of storing an opaque blob and forcing every caller to implement window logic,
+            the engine exposes model-aware commands over entity-local state.
           </p>
           <div class="article-grid">
-            <div>
-              <h3>Temporal counters</h3>
-              <p>Increment and query event counts or sums over windows, such as purchases in five minutes or impressions in one hour.</p>
-            </div>
-            <div>
-              <h3>Filtered aggregates</h3>
-              <p>Aggregate only the subset that matches dimensions such as country, merchant category, campaign, device, or action type.</p>
-            </div>
-            <div>
-              <h3>Distinct state</h3>
-              <p>Answer questions such as unique merchants, unique IPs, unique devices, or unique campaigns in a recent time range.</p>
-            </div>
-            <div>
-              <h3>Long sequences</h3>
-              <p>Serve recent behavior history, ordered events, and model input sequences without scattering sequence logic across services.</p>
-            </div>
-            <div>
-              <h3>Profiles and latest state</h3>
-              <p>Keep latest profile fields near temporal state when the online decision needs both.</p>
-            </div>
-            <div>
-              <h3>Structured AI context</h3>
-              <p>Store session timelines, tool events, policy counters, user preferences, and context metadata beside vector retrieval systems.</p>
-            </div>
+            <div><h3>Temporal counters</h3><p>Increment and query counts or sums over request-time windows, such as purchases in five minutes or impressions in one hour.</p></div>
+            <div><h3>Filtered aggregates</h3><p>Apply dimensions such as country, merchant, campaign, action type, category, or device class inside the serving object.</p></div>
+            <div><h3>Distinct state</h3><p>Track unique merchants, devices, accounts, IPs, campaigns, or sessions over a retained time range.</p></div>
+            <div><h3>Sequence features</h3><p>Serve recent ordered behavior events with limits, filters, and timestamps for ranking and personalization models.</p></div>
+            <div><h3>Risk and frequency cap</h3><p>Keep high-cardinality counters close to the request path instead of scattering bucket logic through application code.</p></div>
+            <div><h3>Structured AI context</h3><p>Store session timelines, tool events, memory metadata, policy counters, and state used to assemble LLM prompts.</p></div>
           </div>
         </section>
 
         <section class="article-section">
-          <h2>The architecture pattern</h2>
+          <h2>Architecture</h2>
           <p>
-            The important architectural idea is not just "put data in memory." The important idea is
-            to combine hot state, model-aware updates, a replayable log, and page-oriented
-            persistence behind one serving API.
+            TemporalStore is organized as a metaserver plus data nodes. The metaserver owns
+            namespace, table, partition, placement, and routing metadata. Clients or proxies use
+            that metadata to route writes to primary partitions and route reads according to
+            consistency and freshness policy.
           </p>
-          <div class="article-flow">
-            <span>Client / stream writer</span>
-            <span>Router</span>
-            <span>Partition worker</span>
-            <span>Model engine</span>
-            <span>WAL / oplog</span>
-            <span>Page and index store</span>
-            <span>Window query</span>
+          <div class="architecture-diagram">
+            <div class="diagram-row">
+              <span>Applications<br /><small>risk, ads, recsys, agents</small></span>
+              <span>SDK or proxy<br /><small>routing and compatibility</small></span>
+              <span>Metaserver<br /><small>tables, partitions, placement</small></span>
+            </div>
+            <div class="diagram-row wide">
+              <span>Data node<br /><small>primary partitions</small></span>
+              <span>Data node<br /><small>secondary partitions</small></span>
+              <span>Data node<br /><small>secondary partitions</small></span>
+            </div>
+            <div class="diagram-row">
+              <span>Memory objects<br /><small>hot model state</small></span>
+              <span>Block cache<br /><small>DRAM and SSD pages</small></span>
+              <span>Shared durable store<br /><small>page, index, oplog streams</small></span>
+            </div>
           </div>
           <p>
-            A write is routed by namespace, table, model, and key. The owning partition worker
-            updates the in-memory object, records the mutation, and marks the relevant object state
-            dirty for persistence. A read resolves the same model and asks the engine for a window,
-            filter, sequence, distinct count, latest profile, or combined view.
-          </p>
-          <p>
-            This shape is intentionally different from a generic database query engine. The engine is
-            optimized for online decisions over entity-local temporal state. It does not try to be a
-            warehouse, and it does not try to replace vector search. It is the low-latency state body
-            around those systems.
+            A partition is the core serving unit. It owns a slot range and contains the in-memory
+            objects, model command executors, index, oplog, page store, block cache integration,
+            background dump logic, and replica replay logic. Keys are hashed into slots; slots map
+            to partition sets; partition sets contain a primary and optional secondaries.
           </p>
         </section>
 
         <section class="article-section">
-          <h2>Concrete examples</h2>
+          <h2>Write workflow</h2>
+          <p>
+            A write is routed to the partition owner, applied to the model object in memory, logged
+            as a replayable mutation, and later merged into persisted pages.
+          </p>
+          <div class="sequence-diagram">
+            <span>1. Client computes slot and resolves partition</span>
+            <span>2. Primary partition worker receives the command</span>
+            <span>3. Command executor selects the data model</span>
+            <span>4. Object manager loads or creates the object</span>
+            <span>5. Model mutates in-memory state</span>
+            <span>6. Oplog records the mutation</span>
+            <span>7. Dirty slot is marked for page dump</span>
+            <span>8. Background storage merges and dumps pages</span>
+          </div>
+          <p>
+            This is why repeated updates to a hot entity can be efficient. The hot object is updated
+            in memory while the storage layer can later dump merged object or slot state. In an LSM
+            design, every update enters the write path and later participates in compaction. In
+            TemporalStore's target design, the storage engine can reduce write amplification for
+            entity-local serving state by merging hot updates before page persistence.
+          </p>
+          <div class="code-slab">
+            <pre>write failed_login_count:
+  key = device_id
+  dimensions = { country: "US", method: "password" }
+  timestamp = now
+  bucket = 10 seconds
+  value += 1
+
+query:
+  key = device_id
+  metric = failed_login_count
+  filter country == "US"
+  window = last 30 minutes</pre>
+          </div>
+        </section>
+
+        <section class="article-section">
+          <h2>Read workflow</h2>
+          <p>
+            Hot reads are served from memory. Warm reads use an in-memory index to locate persisted
+            pages and can hit the block cache. Cold reads go to the shared durable store, decode
+            the page or object, refill cache, and then execute the model-specific query.
+          </p>
+          <div class="architecture-diagram">
+            <div class="diagram-row">
+              <span>Query<br /><small>window, filter, sequence, KV</small></span>
+              <span>In-memory index<br /><small>slot to object/page metadata</small></span>
+              <span>Hot object<br /><small>fast model compute</small></span>
+            </div>
+            <div class="diagram-row">
+              <span>Block cache hit<br /><small>DRAM or SSD page</small></span>
+              <span>Shared-store read<br /><small>cold page</small></span>
+              <span>Decode and compute<br /><small>return feature result</small></span>
+            </div>
+          </div>
+          <p>
+            The query is not a full-table scan. The routing layer sends the request to the entity's
+            partition, the index identifies slot and page metadata, and the model runs bounded logic
+            over retained entity state. This is the right shape for high-cardinality online
+            features, where there may be millions of sparse entity keys but each request usually
+            asks about one entity or a small set of entities.
+          </p>
+        </section>
+
+        <section class="article-section">
+          <h2>Storage layout: object, slot, page, zone, oplog</h2>
+          <p>
+            TemporalStore's storage vocabulary matters because it explains why the engine is
+            different from a plain cache.
+          </p>
           <div class="example-table">
             <table>
-              <thead>
-                <tr>
-                  <th>Question</th>
-                  <th>Natural TemporalStore model</th>
-                  <th>Why this matters online</th>
-                </tr>
-              </thead>
+              <thead><tr><th>Concept</th><th>Meaning</th><th>Why it matters</th></tr></thead>
               <tbody>
-                <tr>
-                  <td>Count purchases for a user in the last five minutes</td>
-                  <td>TemporalCounter</td>
-                  <td>Fresh velocity signal for risk or personalization.</td>
-                </tr>
-                <tr>
-                  <td>Failed logins by device and country in the last 30 minutes</td>
-                  <td>TemporalAggregate with dimensions</td>
-                  <td>Filtering belongs in the serving state, not in every caller.</td>
-                </tr>
-                <tr>
-                  <td>Unique merchants touched by a card in the last day</td>
-                  <td>TemporalDistinct</td>
-                  <td>Distinct temporal state is awkward to model as simple KV.</td>
-                </tr>
-                <tr>
-                  <td>Recent content sequence for a recommender</td>
-                  <td>Sequence</td>
-                  <td>Inference often needs order, recency, and filtering together.</td>
-                </tr>
-                <tr>
-                  <td>Recent tool calls and safety counters for an agent session</td>
-                  <td>Sequence plus TemporalCounter</td>
-                  <td>LLM context needs structured state, not only vector neighbors.</td>
-                </tr>
+                <tr><td>Object</td><td>The model-aware state for a key, such as a hash, sequence, risk counter, or aggregate object.</td><td>The engine can run domain operations against the object instead of returning an opaque blob.</td></tr>
+                <tr><td>Slot</td><td>A hash-space unit that groups keys for partition ownership and dump/load bookkeeping.</td><td>Dirty slots can be tracked and persisted without rewriting unrelated data.</td></tr>
+                <tr><td>Page</td><td>A persisted unit containing encoded object or slot state.</td><td>Cold or evicted state remains queryable through page reads and cache fills.</td></tr>
+                <tr><td>Zone</td><td>A stream/blob region used by page, index, or oplog storage.</td><td>Zones make append, freeze, reclaim, and garbage collection visible to the storage layer.</td></tr>
+                <tr><td>Oplog</td><td>The mutation stream used for recovery and replica replay.</td><td>A replica can reconstruct recent updates by replaying mutations after a page/index checkpoint.</td></tr>
+                <tr><td>Index</td><td>In-memory and persisted metadata mapping slots and objects to latest page locations.</td><td>Reads follow the index to the latest known state instead of hunting through storage.</td></tr>
               </tbody>
             </table>
           </div>
         </section>
 
         <section class="article-section">
-          <h2>Why not only offline aggregation?</h2>
+          <h2>Replication and recovery</h2>
           <p>
-            Offline aggregation is still essential for training, reporting, backfills, and long-term
-            analytics. TemporalStore is not trying to replace the warehouse. The point is that some
-            decisions cannot wait for the next offline job, and some product questions are too
-            dynamic to justify building a new batch or streaming pipeline first.
+            TemporalStore uses primary partitions and secondary replicas. A secondary reconstructs
+            queryable state from durable page/index state plus oplog replay. In a shared-store
+            deployment, secondaries can read persisted streams directly. In a primary-pull design,
+            secondaries can pull stream data from the current primary.
           </p>
+          <div class="article-callout">
+            <strong>Important engineering guardrail:</strong>
+            oplog alone is not enough forever. Once old updates have been merged into pages and the
+            oplog checkpoint advances, recovery needs page streams, index metadata, and oplog after
+            that checkpoint.
+          </div>
+          <div class="sequence-diagram">
+            <span>Primary writes mutation</span>
+            <span>Oplog append records the update</span>
+            <span>Dirty slot is dumped into pages</span>
+            <span>Index records latest page addresses</span>
+            <span>Secondary loads base pages</span>
+            <span>Secondary replays oplog after checkpoint</span>
+            <span>Secondary becomes queryable when replay catches up</span>
+          </div>
           <p>
-            A good production architecture can use both. Offline systems compute durable historical
-            truth. TemporalStore serves fresh online state and can export logs or snapshots back into
-            the training and analytics path. The product boundary is simple: if the question is
-            needed inside the request path and depends on recent entity-local state, it belongs close
-            to the online serving engine.
-          </p>
-        </section>
-
-        <section class="article-section">
-          <h2>How this compares with Redis, feature stores, and stream processors</h2>
-          <p>
-            Redis-style systems are excellent general-purpose caches and often the right choice for
-            plain strings, hashes, attributes, service state, and latest-value profile serving.
-            MatrixDB exists for that side of the MatrixArk platform. TemporalStore is different:
-            it is for temporal semantics, model-aware operations, and high-cardinality windows.
-          </p>
-          <p>
-            Feature stores are excellent at registry, discovery, offline/online consistency, and
-            materialization workflows. TemporalStore can sit underneath them as an online temporal
-            store. It does not need to own the whole feature platform to be useful.
-          </p>
-          <p>
-            Stream processors are excellent for known real-time transformations. TemporalStore
-            reduces the number of cases where every new temporal question requires a new streaming
-            topology before the product can ship.
+            The roadmap hardens this with explicit primary lease or epoch fencing, freshness gates
+            before promotion, secondary lag metrics, and recovery tests that include historical
+            pages. Split-brain writers and stale replicas must be rejected before a deployment can
+            be trusted for correctness-sensitive workloads.
           </p>
         </section>
 
         <section class="article-section">
-          <h2>The product shape</h2>
+          <h2>Data model examples</h2>
+          <p>The right model depends on the product question.</p>
+          <div class="example-table">
+            <table>
+              <thead><tr><th>Use case</th><th>Entity key</th><th>Model</th><th>Example query</th></tr></thead>
+              <tbody>
+                <tr><td>Purchase velocity</td><td><code>user_id</code></td><td>TemporalCounter</td><td>Count purchases in the last 5 minutes.</td></tr>
+                <tr><td>Failed login risk</td><td><code>device_id</code></td><td>TemporalAggregate with dimensions</td><td>Failed logins by country and method in the last 30 minutes.</td></tr>
+                <tr><td>Card testing</td><td><code>card_id</code></td><td>TemporalDistinct</td><td>Unique merchants touched in the last 24 hours.</td></tr>
+                <tr><td>Chargeback monitoring</td><td><code>merchant_id</code></td><td>TemporalAggregate</td><td>Chargebacks by channel in the last 7 days.</td></tr>
+                <tr><td>Frequency cap</td><td><code>campaign_id + user_id</code></td><td>Composite-key counter</td><td>Impressions in the last hour, day, or campaign window.</td></tr>
+                <tr><td>Ranking sequence</td><td><code>user_id</code></td><td>Sequence</td><td>Recent clicked items filtered by category and recency.</td></tr>
+                <tr><td>Agent context</td><td><code>session_id</code></td><td>Sequence plus counters</td><td>Recent tool calls, safety counters, and user preference deltas.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="article-section">
+          <h2>Why not just Redis or RocksDB?</h2>
           <p>
-            TemporalStore is a serving product, not a generic database with a few temporal APIs.
-            Its job is to make fresh temporal features easy to ingest, query, persist, and observe
-            in the online path.
+            Redis-style systems are excellent for simple strings, hashes, latest profiles, leader
+            boards, queues, and many cache workflows. MatrixDB is the MatrixArk product direction
+            for tenant-scale profile and cache workloads. TemporalStore is different: it tries to
+            put temporal semantics inside the serving engine.
+          </p>
+          <p>
+            RocksDB is a powerful embedded LSM engine and often the right local persistence layer.
+            The tradeoff is that repeated updates create LSM write-path work and later compaction.
+            For a hot entity receiving many small counter or sequence updates, TemporalStore's model
+            is to update in memory, append replayable mutations, then dump merged pages when the
+            storage manager decides to persist dirty state.
+          </p>
+          <div class="example-table">
+            <table>
+              <thead><tr><th>System</th><th>Good at</th><th>Where TemporalStore differs</th></tr></thead>
+              <tbody>
+                <tr><td>Redis-compatible cache</td><td>Fast general data structures and latest-value serving.</td><td>TemporalStore adds model-aware windows, filters, replayable feature state, and persisted pages.</td></tr>
+                <tr><td>RocksDB-backed KV</td><td>Durable ordered local storage with mature LSM behavior.</td><td>TemporalStore avoids treating every hot temporal update as a generic KV rewrite.</td></tr>
+                <tr><td>Feature store</td><td>Registry, training sets, materialization, lineage, offline/online consistency.</td><td>TemporalStore can act as the online serving engine underneath the registry.</td></tr>
+                <tr><td>Stream processor</td><td>Known transformations, joins, durable event-time processing.</td><td>TemporalStore serves request-time entity windows when precomputing every window is too rigid.</td></tr>
+                <tr><td>Time-series database</td><td>Metric series, analytics queries, monitoring workloads.</td><td>TemporalStore is entity-serving-first, not dashboard-query-first.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="article-section">
+          <h2>Where it fits with feature platforms</h2>
+          <p>
+            TemporalStore should not try to replace every feature platform capability on day one.
+            Systems such as Feast, Chronon, Fennel, and Featureform are strong at registry,
+            definitions, lineage, transformation orchestration, training sets, and offline/online
+            consistency. TemporalStore is strongest as the online temporal serving engine underneath
+            or beside those platforms.
+          </p>
+          <div class="architecture-diagram">
+            <div class="diagram-row">
+              <span>Feature registry<br /><small>definitions, owners, lineage</small></span>
+              <span>Offline store<br /><small>warehouse, lake, training data</small></span>
+              <span>Stream or batch compute<br /><small>durable transforms</small></span>
+            </div>
+            <div class="diagram-row">
+              <span>TemporalStore<br /><small>fresh temporal state</small></span>
+              <span>MatrixDB<br /><small>profiles and latest attributes</small></span>
+              <span>MatrixKV<br /><small>metadata and transactions</small></span>
+            </div>
+            <div class="diagram-row">
+              <span>Online model or rules engine<br /><small>low-latency decision</small></span>
+              <span>Monitoring<br /><small>lag, errors, cache, storage</small></span>
+              <span>Export path<br /><small>training and audit</small></span>
+            </div>
+          </div>
+        </section>
+
+        <section class="article-section">
+          <h2>LLM context is a related, not identical, problem</h2>
+          <p>
+            TemporalStore is not a GPU KV-cache manager. It does not replace the transformer KV
+            cache used by vLLM, SGLang, TensorRT-LLM, or LMCache-style systems. The LLM runtime
+            still needs tensor layout, prefix matching, GPU memory management, token-position
+            lifecycle, and attention-cache APIs.
+          </p>
+          <p>
+            The overlap is structured context and state. Agent systems need recent conversation
+            events, tool calls, retrieved-document metadata, memory freshness, safety counters,
+            user preferences, and policy state. Vector databases are good at similarity search.
+            TemporalStore is useful for temporal and structured context that should be filtered,
+            counted, ordered, replayed, or expired with serving semantics.
+          </p>
+        </section>
+
+        <section class="article-section">
+          <h2>Operational design</h2>
+          <p>
+            A serving engine is not a product until it is observable. The current MatrixArk
+            observability work exposes separate pages for TemporalStore, MatrixDB, MatrixKV, and a
+            Prometheus-compatible metrics endpoint. For TemporalStore, the most important signals
+            are partition health, primary placement, replica replay lag, oplog append latency, page
+            dump progress, block-cache hit ratio, storage errors, and client retry visibility.
+          </p>
+          <div class="article-grid">
+            <div><h3>Partition and placement</h3><p>Track primary owner, secondary owner, partition epoch, shard state, and table readiness.</p></div>
+            <div><h3>Replication freshness</h3><p>Report replay lag, missing reads, retry latency, oplog gap, and time-to-visible on secondaries.</p></div>
+            <div><h3>Storage and cache</h3><p>Track dirty slots, page dumps, old zone cleanup, SSD cache bytes, cache hit ratio, and cold reads.</p></div>
+            <div><h3>Model correctness</h3><p>Expose per-model request failures, encoding mismatches, query result shape, and guardrail tests.</p></div>
+          </div>
+        </section>
+
+        <section class="article-section">
+          <h2>Engineering snapshot</h2>
+          <p>
+            The current AWS test cluster used one metaserver/client/UI node and two data nodes. A
+            Prometheus bridge scraped the metaserver and both data nodes through their runtime
+            variables endpoint.
+          </p>
+          <div class="example-table">
+            <table>
+              <thead><tr><th>Signal</th><th>Latest observed value</th><th>Interpretation</th></tr></thead>
+              <tbody>
+                <tr><td>Prometheus sources</td><td>3 sources: metaserver, data01, data02</td><td>Live scrape path is wired for TemporalStore.</td></tr>
+                <tr><td>Service smoke</td><td>1,525 iterations over 30 minutes for core modules</td><td>STRING, COMMON, HASH, SET, FEATURE, IPS, and RISK stayed stable in that loop.</td></tr>
+                <tr><td>TemporalAggregate</td><td>Blocked by response-size check in the deployed artifact</td><td>This is not yet a clean aggregate scale pass. It is an explicit P0 follow-up.</td></tr>
+                <tr><td>Two-replica table path</td><td>Hit a condition-info load issue in the latest runtime</td><td>Secondary replication benchmarks should be rerun after table creation is fixed.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="status-note">
+            These numbers are engineering snapshots, not final product benchmarks. The useful signal
+            is the shape of the system: live metrics, module-level smoke coverage, and clear
+            correctness gaps to fix before stronger claims.
+          </p>
+        </section>
+
+        <section class="article-section">
+          <h2>The product boundary</h2>
+          <p>
+            TemporalStore should be honest about what it is. It is not a full warehouse, not a
+            full feature platform, not a vector database, and not a transformer KV-cache runtime.
+            It is an online state engine for temporal features and context. MatrixDB handles
+            tenant-scale profile and cache workloads. MatrixKV handles strongly consistent
+            transactional metadata. Together they form the MatrixArk platform.
           </p>
           <ol class="article-list">
-            <li>Temporal decision-state APIs for windows, filters, sequences, distinct state, and context.</li>
-            <li>Model-aware data structures for risk, ads, recommendation, feature platform, and agent applications.</li>
-            <li>Persistence, replay, metrics, and SDK access as part of the product surface.</li>
-            <li>Clear integration boundaries with MatrixDB for tenant-scale profile KV and MatrixKV for strongly consistent transactional metadata.</li>
+            <li>Use TemporalStore when the feature depends on recent events, windows, filters, distinct state, or sequences.</li>
+            <li>Use MatrixDB when the workload is latest profile, large hash/profile KV, hot-key cache, or tenant-scale service state.</li>
+            <li>Use MatrixKV when the workload needs transactional KV, timestamp coordination, metadata correctness, or strong consistency.</li>
+            <li>Use feature stores and warehouses for registry, training sets, lineage, offline truth, and backfills.</li>
           </ol>
-          <p>
-            That makes the product honest: TemporalStore is not trying to be every cache, database,
-            or feature platform. It is built to serve fresh temporal features for high-cardinality
-            online decisions.
-          </p>
-        </section>
-
-        <section class="article-section">
-          <h2>Where TemporalStore fits in MatrixArk</h2>
-          <p>
-            MatrixArk is a product matrix, not a single monolithic database. TemporalStore handles
-            temporal decision-state serving. MatrixDB handles tenant-scale profile and KV serving.
-            MatrixKV handles strongly consistent transactional KV for control-plane state.
-          </p>
-          <p>
-            That separation is the product strategy. It lets each engine be honest about what it is
-            good at while still giving customers one operating surface for deployment, observability,
-            SDKs, and cloud management.
-          </p>
         </section>
 
         <footer class="article-footer">
