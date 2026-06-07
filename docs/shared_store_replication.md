@@ -12,6 +12,13 @@ The Rust code now has a first shared-store replication path for oplog, index, an
     page_segment_<page_segment_id>.seg
   oplog/
     oplog_<oplog_index>.json
+  checkpoints/
+    <checkpoint_id>/
+      index/
+        shard.index.json
+      page_segments/
+        page_segment_<page_segment_id>.seg
+      manifest.json
 ```
 
 The replicated index is the engine's persisted shard index JSON. Page segments are copied as immutable segment files. Oplog entries are ordered JSON records:
@@ -44,10 +51,13 @@ For production, this should become stricter:
 The implemented restore flow is:
 
 ```text
-new replica -> restore_index_and_pages -> load_shard -> replay_oplog(after_index) -> serve reads
+new replica -> restore_latest_checkpoint -> load_shard -> replay_oplog(checkpoint_oplog_index) -> serve reads
 ```
 
-`restore_index_and_pages` downloads `shard.index.json` and every page segment object for the shard. The engine then loads the restored index from local disk. `replay_oplog` scans ordered oplog objects after the caller's checkpoint and applies each command to the local engine.
+`restore_latest_checkpoint` downloads the latest visible checkpoint manifest, verifies the index and
+page segment checksums, installs the index/page files locally, and returns the checkpoint's
+`checkpoint_oplog_index`. The engine then loads the restored index from local disk. `replay_oplog`
+scans ordered oplog objects after the checkpoint and applies each command to the local engine.
 
 This directly supports the desired path:
 
@@ -60,16 +70,19 @@ shared store oplog -> command replay -> catch up after checkpoint
 ## Current Guarantees
 
 - Object-store abstraction is shared with the snapshot crate.
+- Checkpoint manifest is written after index/page objects, so followers only restore visible checkpoints.
+- Checkpoint manifest records the durable oplog sequence covered by the index/page generation.
+- Index and page segment byte size plus SHA-256 are verified before install.
 - Follower restores page bytes and index bytes from shared store.
 - Follower can read restored data by following `PageAddress` into local page files.
 - Follower can replay oplog entries after the restored checkpoint.
-- A unit test validates index/page restore plus later oplog replay.
+- Unit tests validate checkpoint restore, later oplog replay, and corrupt page rejection.
+- A C++-style compatibility test validates shared-store bootstrap plus catch-up across string, hash,
+  and feature data.
 
 ## What Is Still Missing For Production
 
-- atomic manifest-last checkpoint for shared-store index/page generations
-- checksums for index/page/oplog objects
-- mapping between checkpoint log index and index/page generation
+- oplog object checksums
 - integration with real Raft commit index
 - idempotent oplog replay with persisted last-applied oplog index
 - compaction/garbage collection of old oplog and old page/index generations

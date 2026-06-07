@@ -31,7 +31,8 @@ pub use raft::{
 };
 pub use redis::{execute_redis_command, read_command, serve_redis_proxy, RespValue};
 pub use shared_store::{
-    ReplayReport, SharedStoreOplogEntry, SharedStoreReplicationError, SharedStoreReplicator,
+    ReplayReport, SharedStoreCheckpointManifest, SharedStoreOplogEntry, SharedStorePageSegment,
+    SharedStoreReplicationError, SharedStoreReplicator,
 };
 pub use types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,

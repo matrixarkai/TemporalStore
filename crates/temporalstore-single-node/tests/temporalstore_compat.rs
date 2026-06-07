@@ -425,14 +425,13 @@ async fn cxx_shared_store_replication_bootstrap_and_oplog_replay_matches_primary
         "cluster-a",
         Arc::new(FileObjectStore::new(dir.path().join("shared-store"))),
     );
-    replicator.publish_index(1, &primary).await.unwrap();
-    assert_eq!(
-        replicator
-            .publish_page_segments(1, &primary.page_store())
-            .await
-            .unwrap(),
-        vec![0]
-    );
+    let checkpoint = replicator
+        .publish_checkpoint(1, 3, &primary, &primary.page_store())
+        .await
+        .unwrap();
+    assert_eq!(checkpoint.checkpoint_oplog_index, 3);
+    assert_eq!(checkpoint.page_segments.len(), 1);
+    assert!(!checkpoint.index_sha256.is_empty());
 
     let later_commands = vec![
         Command::StringSet {
@@ -470,13 +469,11 @@ async fn cxx_shared_store_replication_bootstrap_and_oplog_replay_matches_primary
         dir.path().join("follower-pages"),
         dir.path().join("follower-index"),
     );
-    assert_eq!(
-        replicator
-            .restore_index_and_pages(1, &follower, &follower.page_store())
-            .await
-            .unwrap(),
-        vec![0]
-    );
+    let restored_checkpoint = replicator
+        .restore_latest_checkpoint(1, &follower, &follower.page_store())
+        .await
+        .unwrap();
+    assert_eq!(restored_checkpoint.checkpoint_id, checkpoint.checkpoint_id);
     follower.load_shard(1);
 
     assert_eq!(
@@ -500,7 +497,10 @@ async fn cxx_shared_store_replication_bootstrap_and_oplog_replay_matches_primary
         CommandResponse::Integer { value: 1 }
     );
 
-    let replay = replicator.replay_oplog(1, 3, &follower).await.unwrap();
+    let replay = replicator
+        .replay_oplog(1, restored_checkpoint.checkpoint_oplog_index, &follower)
+        .await
+        .unwrap();
     assert_eq!(replay.applied, 3);
     assert_eq!(replay.last_oplog_index, 6);
 

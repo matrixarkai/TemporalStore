@@ -491,12 +491,15 @@ name = "temporalstore-single-node"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "hex",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "temporalstore-snapshot",
  "thiserror",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
