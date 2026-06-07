@@ -498,6 +498,69 @@ fn execute_on_shard(
                 }
             })
         }
+        Command::HashMultiGet { key, fields } => {
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+                let _ = cache.invalidate_record(shard_id, "hash", &key);
+                return ExecuteOutcome {
+                    response: CommandResponse::Values {
+                        values: vec![None; fields.len()],
+                    },
+                    mutated,
+                };
+            }
+            let values = fields
+                .iter()
+                .map(|field| {
+                    shard
+                        .hashes
+                        .get(&key)
+                        .and_then(|entries| entries.get(field))
+                        .and_then(|address| page_store.read(address).ok())
+                })
+                .collect();
+            CommandResponse::Values { values }
+        }
+        Command::HashMultiSet { key, entries } => {
+            remove_if_expired(shard, &key);
+            for (field, value) in entries {
+                if let Ok(address) = page_store.append(&value) {
+                    shard
+                        .hashes
+                        .entry(key.clone())
+                        .or_default()
+                        .insert(field.clone(), address);
+                    let _ = cache.invalidate(&CacheKey::hash(shard_id, &key, &field));
+                    mutated = true;
+                }
+            }
+            CommandResponse::Empty
+        }
+        Command::HashIncrBy {
+            key,
+            field,
+            increment,
+        } => {
+            remove_if_expired(shard, &key);
+            let current = shard
+                .hashes
+                .get(&key)
+                .and_then(|entries| entries.get(&field))
+                .and_then(|address| page_store.read(address).ok())
+                .and_then(|bytes| parse_i64(&bytes))
+                .unwrap_or_default();
+            let value = current.saturating_add(increment);
+            if let Ok(address) = page_store.append(value.to_string().as_bytes()) {
+                shard
+                    .hashes
+                    .entry(key.clone())
+                    .or_default()
+                    .insert(field.clone(), address);
+                let _ = cache.invalidate(&CacheKey::hash(shard_id, &key, &field));
+                mutated = true;
+            }
+            CommandResponse::Integer { value }
+        }
         Command::HashGetAll { key } => {
             if remove_if_expired(shard, &key) {
                 mutated = true;
@@ -1298,6 +1361,54 @@ mod tests {
             CommandResponse::Members {
                 members: vec![b"alice".to_vec(), b"bob".to_vec()]
             }
+        );
+    }
+
+    #[test]
+    fn hash_multi_get_set_and_incrby_match_extension_api() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::HashMultiSet {
+                        key: "h".to_string(),
+                        entries: vec![
+                            ("f1".to_string(), b"v1".to_vec()),
+                            ("f2".to_string(), b"7".to_vec()),
+                        ],
+                    },
+                })
+                .response,
+            CommandResponse::Empty
+        );
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::HashMultiGet {
+                        key: "h".to_string(),
+                        fields: vec!["f1".to_string(), "missing".to_string(), "f2".to_string()],
+                    },
+                })
+                .response,
+            CommandResponse::Values {
+                values: vec![Some(b"v1".to_vec()), None, Some(b"7".to_vec())]
+            }
+        );
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::HashIncrBy {
+                        key: "h".to_string(),
+                        field: "f2".to_string(),
+                        increment: 5,
+                    },
+                })
+                .response,
+            CommandResponse::Integer { value: 12 }
         );
     }
 

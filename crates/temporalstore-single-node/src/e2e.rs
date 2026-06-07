@@ -277,6 +277,8 @@ fn is_write(command: &Command) -> bool {
             | Command::StringSetEx { .. }
             | Command::StringDelete { .. }
             | Command::HashSet { .. }
+            | Command::HashMultiSet { .. }
+            | Command::HashIncrBy { .. }
             | Command::HashDelete { .. }
             | Command::SetAdd { .. }
             | Command::SetRemove { .. }

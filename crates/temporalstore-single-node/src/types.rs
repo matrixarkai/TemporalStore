@@ -98,6 +98,19 @@ pub enum Command {
         key: String,
         field: String,
     },
+    HashMultiGet {
+        key: String,
+        fields: Vec<String>,
+    },
+    HashMultiSet {
+        key: String,
+        entries: Vec<(String, Vec<u8>)>,
+    },
+    HashIncrBy {
+        key: String,
+        field: String,
+        increment: i64,
+    },
     HashGetAll {
         key: String,
     },
@@ -187,6 +200,7 @@ pub enum CommandResponse {
     Bytes { value: Option<Vec<u8>> },
     Integer { value: i64 },
     Members { members: Vec<Vec<u8>> },
+    Values { values: Vec<Option<Vec<u8>>> },
     HashEntries { entries: Vec<(String, Vec<u8>)> },
     FeaturePoints { points: Vec<FeaturePoint> },
     Aggregate { value: i64 },

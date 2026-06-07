@@ -99,6 +99,8 @@ checks = [
     (("DEL", "redis:k", "redis:missing", "redis:m2"), b":2\r\n"),
     (("HSET", "redis:h", "f", "x"), b":1\r\n"),
     (("HGET", "redis:h", "f"), b"$1\r\nx\r\n"),
+    (("HINCRBY", "redis:h", "n", "3"), b":3\r\n"),
+    (("HINCRBY", "redis:h", "n", "-1"), b":2\r\n"),
     (("HMSET", "redis:hm", "field111", "value111", "field222", "value222"), b"+OK\r\n"),
     (("HMGET", "redis:hm", "field111", "field200"), b"*2\r\n$8\r\nvalue111\r\n$-1\r\n"),
     (("HLEN", "redis:hm"), b":2\r\n"),

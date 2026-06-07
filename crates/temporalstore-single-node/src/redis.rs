@@ -219,35 +219,39 @@ pub fn execute_redis_command(
             value: args[3].clone(),
         })),
         "HMSET" if args.len() >= 4 && args.len() % 2 == 0 => {
-            for pair in args[2..].chunks(2) {
-                if let Err(err) = execute(Command::HashSet {
-                    key: string_arg(&args[1]),
-                    field: string_arg(&pair[0]),
-                    value: pair[1].clone(),
-                }) {
-                    return RespValue::Error(format!("ERR {err}"));
-                }
-            }
-            RespValue::SimpleString("OK".to_string())
+            let entries = args[2..]
+                .chunks(2)
+                .map(|pair| (string_arg(&pair[0]), pair[1].clone()))
+                .collect();
+            status_ok(execute(Command::HashMultiSet {
+                key: string_arg(&args[1]),
+                entries,
+            }))
         }
         "HGET" if args.len() == 3 => bytes_response(execute(Command::HashGet {
             key: string_arg(&args[1]),
             field: string_arg(&args[2]),
         })),
         "HMGET" if args.len() >= 3 => {
-            let mut values = Vec::new();
-            for field in args.iter().skip(2) {
-                match execute(Command::HashGet {
-                    key: string_arg(&args[1]),
-                    field: string_arg(field),
-                }) {
-                    Ok(CommandResponse::Bytes { value }) => values.push(RespValue::Bulk(value)),
-                    Ok(_) => return RespValue::Error("ERR invalid hmget response".to_string()),
-                    Err(err) => return RespValue::Error(format!("ERR {err}")),
+            match execute(Command::HashMultiGet {
+                key: string_arg(&args[1]),
+                fields: args.iter().skip(2).map(|field| string_arg(field)).collect(),
+            }) {
+                Ok(CommandResponse::Values { values }) => {
+                    RespValue::Array(values.into_iter().map(RespValue::Bulk).collect())
                 }
+                Ok(_) => RespValue::Error("ERR invalid hmget response".to_string()),
+                Err(err) => RespValue::Error(format!("ERR {err}")),
             }
-            RespValue::Array(values)
         }
+        "HINCRBY" if args.len() == 4 => match parse_i64_arg(&args[3], "increment") {
+            Ok(increment) => integer_response(execute(Command::HashIncrBy {
+                key: string_arg(&args[1]),
+                field: string_arg(&args[2]),
+                increment,
+            })),
+            Err(err) => RespValue::Error(err),
+        },
         "HGETALL" if args.len() == 2 => match execute(Command::HashGetAll {
             key: string_arg(&args[1]),
         }) {
@@ -516,6 +520,13 @@ fn parse_usize(value: &[u8], name: &str) -> Result<usize, String> {
         .ok_or_else(|| format!("ERR {name} must be an unsigned integer"))
 }
 
+fn parse_i64_arg(value: &[u8], name: &str) -> Result<i64, String> {
+    std::str::from_utf8(value)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .ok_or_else(|| format!("ERR {name} must be an integer"))
+}
+
 fn split_inline(line: &[u8]) -> Vec<Vec<u8>> {
     String::from_utf8_lossy(line)
         .split_whitespace()
@@ -613,6 +624,8 @@ mod tests {
             run(vec!["HGET", "h", "f"]),
             RespValue::Bulk(Some(b"x".to_vec()))
         );
+        assert_eq!(run(vec!["HINCRBY", "h", "n", "3"]), RespValue::Integer(3));
+        assert_eq!(run(vec!["HINCRBY", "h", "n", "-1"]), RespValue::Integer(2));
         assert_eq!(run(vec!["SADD", "s", "m"]), RespValue::Integer(1));
         assert_eq!(
             run(vec!["SMEMBERS", "s"]),
