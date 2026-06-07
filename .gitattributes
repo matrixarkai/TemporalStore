@@ -1,0 +1,7 @@
+* text=auto
+*.rs text eol=lf
+*.toml text eol=lf
+*.tf text eol=lf
+*.sh text eol=lf
+*.md text eol=lf
+Dockerfile text eol=lf

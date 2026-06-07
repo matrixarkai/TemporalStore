@@ -1,0 +1,7 @@
+target
+.git
+*.log
+bytestorelab-master
+abase2_images
+bytestore_images
+.local

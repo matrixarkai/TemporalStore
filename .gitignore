@@ -1,0 +1,14 @@
+target/
+.local/
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+*.log
+*.err.log
+*.out.log
+abase2_images/
+bytestore_images/
+bytestorelab-master/
+*.png
+crates/*/shard-*.index.json
