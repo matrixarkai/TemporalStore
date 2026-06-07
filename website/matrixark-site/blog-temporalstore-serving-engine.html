@@ -375,11 +375,64 @@ query:
             are partition health, primary placement, replica replay lag, oplog append latency, page
             dump progress, block-cache hit ratio, storage errors, and client retry visibility.
           </p>
+          <p>
+            In a quick engineering environment, those pages can be served under the same HTTP port
+            as the company site. That is useful for fast iteration, but it is not the production
+            boundary. A production deployment should separate the public website from the
+            authenticated operations console and keep raw metrics endpoints private.
+          </p>
+          <div class="architecture-diagram">
+            <div class="diagram-row">
+              <span>matrixark.ai<br /><small>public product site, blogs, docs</small></span>
+              <span>console.matrixark.ai<br /><small>authenticated cluster console</small></span>
+              <span>private metrics plane<br /><small>Prometheus, logs, node variables</small></span>
+            </div>
+            <div class="diagram-row wide">
+              <span>Metaserver<br /><small>routing, placement, node state</small></span>
+              <span>Data nodes<br /><small>partitions, replicas, cache, storage</small></span>
+              <span>Cloud integrations<br /><small>ASG, lifecycle hooks, CloudWatch</small></span>
+            </div>
+          </div>
           <div class="article-grid">
             <div><h3>Partition and placement</h3><p>Track primary owner, secondary owner, partition epoch, shard state, and table readiness.</p></div>
             <div><h3>Replication freshness</h3><p>Report replay lag, missing reads, retry latency, oplog gap, and time-to-visible on secondaries.</p></div>
             <div><h3>Storage and cache</h3><p>Track dirty slots, page dumps, old zone cleanup, SSD cache bytes, cache hit ratio, and cold reads.</p></div>
             <div><h3>Model correctness</h3><p>Expose per-model request failures, encoding mismatches, query result shape, and guardrail tests.</p></div>
+          </div>
+        </section>
+
+        <section class="article-section">
+          <h2>Autoscale and rolling deployment design</h2>
+          <p>
+            Autoscaling should not mean that a new instance independently decides which partitions
+            it owns. A new TemporalStore data node should boot from a versioned runtime package,
+            discover its instance identity, register with the metaserver, and advertise capacity.
+            The metaserver then assigns secondary replicas first, waits for catch-up, and only then
+            moves read traffic or primary ownership.
+          </p>
+          <div class="sequence-diagram">
+            <span>ASG launches data node</span>
+            <span>Runtime package starts service</span>
+            <span>Node registers capacity with metaserver</span>
+            <span>Metaserver marks node active</span>
+            <span>Planner assigns replicas</span>
+            <span>Replica catches up</span>
+            <span>Routing table updates</span>
+            <span>Reads or primaries move gradually</span>
+          </div>
+          <p>
+            Scale-down needs the reverse workflow. The node should enter draining state, stop
+            receiving new primary assignments, move primary partitions away, wait for replacement
+            replicas to become healthy, and only then complete the cloud lifecycle termination.
+            This protects the serving path from raw instance termination and makes rolling
+            upgrades safer.
+          </p>
+          <div class="article-callout">
+            <strong>Runtime package requirement:</strong>
+            release artifacts should include data server, metaserver, proxy, client tools,
+            dynamic libraries, systemd units, health checks, registration scripts, drain scripts,
+            metrics configuration, and version metadata. Autoscale only works cleanly when a new
+            node can become useful without manual copying or shell repair.
           </div>
         </section>
 
