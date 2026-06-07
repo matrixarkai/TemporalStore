@@ -19,8 +19,8 @@ pub use control::{
     UnloadShardResponse,
 };
 pub use e2e::{
-    AsyncStorageJournal, EndToEndWorkflow, KillSwitches, RoutingClient, WorkflowError,
-    WorkflowProxy,
+    AsyncStorageJournal, EndToEndWorkflow, KillSwitches, ReplicaReadPolicy, RoutingClient,
+    TemporalStoreClientOptions, WorkflowError, WorkflowProxy,
 };
 pub use engine::TemporalEngine;
 pub use meta::{ShardLocation, SingleNodeMeta};

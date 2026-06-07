@@ -8,6 +8,28 @@ use crate::meta::ShardLocation;
 use crate::raft::{MetaCommand, MetaRaftCluster, RaftCluster, RaftError, RaftNodeId};
 use crate::types::{Command, CommandResponse, ExecuteRequest, ExecuteResponse, ShardId, Status};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReplicaReadPolicy {
+    PinPrimary,
+    AnyReplica,
+    Replica(RaftNodeId),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemporalStoreClientOptions {
+    pub pin_primary: bool,
+    pub replica_read_policy: ReplicaReadPolicy,
+}
+
+impl Default for TemporalStoreClientOptions {
+    fn default() -> Self {
+        Self {
+            pin_primary: true,
+            replica_read_policy: ReplicaReadPolicy::PinPrimary,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KillSwitches {
     pub proxy_enabled: bool,
@@ -135,12 +157,17 @@ impl EndToEndWorkflow {
     }
 
     pub fn client(&self) -> RoutingClient {
+        self.client_with_options(TemporalStoreClientOptions::default())
+    }
+
+    pub fn client_with_options(&self, options: TemporalStoreClientOptions) -> RoutingClient {
         RoutingClient {
             shard_id: self.shard_id,
             meta: self.meta.clone(),
             data: self.data.clone(),
             switches: Arc::clone(&self.switches),
             async_storage: self.async_storage.clone(),
+            options,
         }
     }
 
@@ -183,6 +210,10 @@ impl EndToEndWorkflow {
     ) -> Result<CommandResponse, WorkflowError> {
         Ok(self.data.read_local(node_id, command)?)
     }
+
+    pub fn meta(&self) -> MetaRaftCluster {
+        self.meta.clone()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -205,6 +236,7 @@ pub struct RoutingClient {
     data: RaftCluster,
     switches: Arc<RwLock<KillSwitches>>,
     async_storage: AsyncStorageJournal,
+    options: TemporalStoreClientOptions,
 }
 
 impl RoutingClient {
@@ -217,7 +249,7 @@ impl RoutingClient {
 
         let route = self
             .meta
-            .get_shard_location(100, request.shard_id)?
+            .get_shard_location_from_any_live(request.shard_id)?
             .ok_or(WorkflowError::MissingRoute(request.shard_id))?;
         if route.shard_id != self.shard_id {
             return Err(WorkflowError::MissingRoute(request.shard_id));
@@ -252,11 +284,33 @@ impl RoutingClient {
 
     fn execute_read(&self, request: ExecuteRequest) -> Result<ExecuteResponse, WorkflowError> {
         ensure(self.switches.read().unwrap().reads_enabled, "reads")?;
-        let response = self.data.read_local(1, request.command)?;
+        let node_id = self.read_node_id();
+        let response = self.data.read_from_replica(node_id, request.command)?;
         Ok(ExecuteResponse {
             status: Status::ok(),
             response,
         })
+    }
+
+    fn read_node_id(&self) -> RaftNodeId {
+        if self.options.pin_primary
+            || matches!(
+                self.options.replica_read_policy,
+                ReplicaReadPolicy::PinPrimary
+            )
+        {
+            return self.data.leader_id();
+        }
+        match self.options.replica_read_policy {
+            ReplicaReadPolicy::PinPrimary => self.data.leader_id(),
+            ReplicaReadPolicy::Replica(node_id) => node_id,
+            ReplicaReadPolicy::AnyReplica => self
+                .data
+                .live_replica_ids()
+                .into_iter()
+                .find(|node_id| *node_id != self.data.leader_id())
+                .unwrap_or_else(|| self.data.leader_id()),
+        }
     }
 }
 
@@ -352,6 +406,72 @@ mod tests {
                 .unwrap(),
             CommandResponse::Bytes {
                 value: Some(b"promoted".to_vec())
+            }
+        );
+    }
+
+    #[test]
+    fn e2e_reads_pin_primary_by_default() {
+        let workflow = EndToEndWorkflow::new(1, [1, 2, 3]);
+        workflow.set_data_node_alive(2, false).unwrap();
+        workflow
+            .proxy()
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "k".to_string(),
+                    value: b"primary".to_vec(),
+                },
+            })
+            .unwrap();
+
+        assert_eq!(
+            workflow
+                .client()
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "k".to_string()
+                    },
+                })
+                .unwrap()
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"primary".to_vec())
+            }
+        );
+    }
+
+    #[test]
+    fn e2e_can_read_from_secondary_replica_when_not_pinned() {
+        let workflow = EndToEndWorkflow::new(1, [1, 2, 3]);
+        workflow
+            .proxy()
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "k".to_string(),
+                    value: b"replica".to_vec(),
+                },
+            })
+            .unwrap();
+        let client = workflow.client_with_options(TemporalStoreClientOptions {
+            pin_primary: false,
+            replica_read_policy: ReplicaReadPolicy::Replica(2),
+        });
+
+        assert_eq!(
+            client
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "k".to_string()
+                    },
+                })
+                .unwrap()
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"replica".to_vec())
             }
         );
     }

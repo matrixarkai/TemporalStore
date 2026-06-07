@@ -48,6 +48,12 @@ pub enum RaftError {
     NodeAlreadyExists(RaftNodeId),
     #[error("cannot remove the last node")]
     CannotRemoveLastNode,
+    #[error("replica {replica_id} is behind leader commit index: replica={replica_commit_index}, leader={leader_commit_index}")]
+    ReplicaLagging {
+        replica_id: RaftNodeId,
+        replica_commit_index: u64,
+        leader_commit_index: u64,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -229,6 +235,58 @@ impl RaftCluster {
                 command,
             })
             .response)
+    }
+
+    pub fn read_from_replica(
+        &self,
+        node_id: RaftNodeId,
+        command: Command,
+    ) -> Result<CommandResponse, RaftError> {
+        let inner = self.inner.read().expect("raft cluster lock poisoned");
+        let leader_commit_index = inner
+            .nodes
+            .get(&inner.leader_id)
+            .ok_or(RaftError::LeaderUnavailable)?
+            .commit_index;
+        let node = inner
+            .nodes
+            .get(&node_id)
+            .ok_or(RaftError::NodeNotFound(node_id))?;
+        if !node.alive {
+            return Err(RaftError::NodeNotFound(node_id));
+        }
+        if node.commit_index < leader_commit_index {
+            return Err(RaftError::ReplicaLagging {
+                replica_id: node_id,
+                replica_commit_index: node.commit_index,
+                leader_commit_index,
+            });
+        }
+        Ok(node
+            .engine
+            .execute(ExecuteRequest {
+                shard_id: inner.shard_id,
+                command,
+            })
+            .response)
+    }
+
+    pub fn leader_id(&self) -> RaftNodeId {
+        self.inner
+            .read()
+            .expect("raft cluster lock poisoned")
+            .leader_id
+    }
+
+    pub fn live_replica_ids(&self) -> Vec<RaftNodeId> {
+        self.inner
+            .read()
+            .expect("raft cluster lock poisoned")
+            .nodes
+            .values()
+            .filter(|node| node.alive)
+            .map(|node| node.id)
+            .collect()
     }
 
     pub fn commit_index(&self, node_id: RaftNodeId) -> Result<u64, RaftError> {
@@ -457,6 +515,41 @@ impl MetaRaftCluster {
             .shards
             .get(&shard_id)
             .cloned())
+    }
+
+    pub fn get_shard_location_from_any_live(
+        &self,
+        shard_id: ShardId,
+    ) -> Result<Option<ShardLocation>, RaftError> {
+        let inner = self.inner.read().expect("meta raft lock poisoned");
+        let leader_commit_index = inner
+            .nodes
+            .get(&inner.leader_id)
+            .ok_or(RaftError::LeaderUnavailable)?
+            .commit_index;
+        let node = inner
+            .nodes
+            .values()
+            .filter(|node| node.alive && node.commit_index >= leader_commit_index)
+            .min_by_key(|node| node.id)
+            .ok_or(RaftError::LeaderUnavailable)?;
+        Ok(node.state.shards.get(&shard_id).cloned())
+    }
+
+    pub fn leader_id(&self) -> RaftNodeId {
+        self.inner
+            .read()
+            .expect("meta raft lock poisoned")
+            .leader_id
+    }
+
+    pub fn commit_index(&self, node_id: RaftNodeId) -> Result<u64, RaftError> {
+        let inner = self.inner.read().expect("meta raft lock poisoned");
+        Ok(inner
+            .nodes
+            .get(&node_id)
+            .ok_or(RaftError::NodeNotFound(node_id))?
+            .commit_index)
     }
 
     pub fn set_alive(&self, node_id: RaftNodeId, alive: bool) -> Result<(), RaftError> {
@@ -696,6 +789,50 @@ mod tests {
     }
 
     #[test]
+    fn raft_replica_read_rejects_lagging_follower_and_succeeds_after_catchup() {
+        let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+        cluster.set_alive(3, false).unwrap();
+        cluster
+            .propose(Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            })
+            .unwrap();
+        cluster.set_alive(3, true).unwrap();
+
+        assert_eq!(
+            cluster
+                .read_from_replica(
+                    3,
+                    Command::StringGet {
+                        key: "k".to_string()
+                    },
+                )
+                .unwrap_err(),
+            RaftError::ReplicaLagging {
+                replica_id: 3,
+                replica_commit_index: 0,
+                leader_commit_index: 1,
+            }
+        );
+
+        cluster.catch_up(3).unwrap();
+        assert_eq!(
+            cluster
+                .read_from_replica(
+                    3,
+                    Command::StringGet {
+                        key: "k".to_string()
+                    },
+                )
+                .unwrap(),
+            CommandResponse::Bytes {
+                value: Some(b"v".to_vec())
+            }
+        );
+    }
+
+    #[test]
     fn raft_can_elect_new_leader_and_continue() {
         let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
         cluster.set_alive(1, false).unwrap();
@@ -810,6 +947,26 @@ mod tests {
                 Some(location.clone())
             );
         }
+    }
+
+    #[test]
+    fn metaserver_raft_can_read_from_any_live_committed_replica() {
+        let meta = MetaRaftCluster::new([10, 11, 12]);
+        meta.propose(MetaCommand::PutShardLocation(ShardLocation {
+            shard_id: 7,
+            server_addr: "server-a".to_string(),
+        }))
+        .unwrap();
+        assert_eq!(meta.commit_index(11).unwrap(), 1);
+        meta.set_alive(10, false).unwrap();
+
+        assert_eq!(
+            meta.get_shard_location_from_any_live(7).unwrap(),
+            Some(ShardLocation {
+                shard_id: 7,
+                server_addr: "server-a".to_string(),
+            })
+        );
     }
 
     #[test]
