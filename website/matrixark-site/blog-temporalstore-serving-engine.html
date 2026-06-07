@@ -21,7 +21,7 @@
           <button class="nav-product-trigger" type="button" aria-expanded="false">Products</button>
           <div class="nav-product-panel" aria-label="Product pages">
             <a href="./temporalstore.html"><strong>TemporalStore</strong><span>Time-window features, sequences, risk and agent context</span></a>
-            <a href="./matrixdb.html"><strong>MatrixDB</strong><span>Performant KV for serving, profiles, and offline query</span></a>
+            <a href="./matrixdb.html"><strong>MatrixDB</strong><span>Eventually consistent KV for serving and offline query</span></a>
             <a href="./matrixkv.html"><strong>MatrixKV</strong><span>Strongly consistent transactional KV for metadata</span></a>
           </div>
         </div>
@@ -297,9 +297,9 @@ query:
           <p>
             Redis-style systems are excellent for simple strings, hashes, latest profiles, leader
             boards, queues, and many cache workflows. MatrixDB is the MatrixArk product direction
-            for performant KV workloads that need both low-latency serving and offline or nearline
-            query access. TemporalStore is different: it tries to put temporal semantics inside the
-            serving engine.
+            for eventually consistent KV workloads that need both low-latency serving and offline
+            or nearline query access. TemporalStore is different: it tries to put temporal
+            semantics inside the serving engine.
           </p>
           <p>
             RocksDB is a powerful embedded LSM engine and often the right local persistence layer.
@@ -339,8 +339,8 @@ query:
             </div>
             <div class="diagram-row">
               <span>TemporalStore<br /><small>fresh temporal state</small></span>
-              <span>MatrixDB<br /><small>serving KV, profiles, scans, exports</small></span>
-              <span>MatrixKV<br /><small>metadata and transactions</small></span>
+              <span>MatrixDB<br /><small>eventual KV, profiles, scans, exports</small></span>
+              <span>MatrixKV<br /><small>strong consistency, metadata, transactions</small></span>
             </div>
             <div class="diagram-row">
               <span>Online model or rules engine<br /><small>low-latency decision</small></span>
@@ -468,12 +468,13 @@ query:
             TemporalStore should be honest about what it is. It is not a full warehouse, not a
             full feature platform, not a vector database, and not a transformer KV-cache runtime.
             It is an online state engine for temporal features and context. MatrixDB handles
-            performant KV serving, profiles, and offline-queryable state. MatrixKV handles strongly consistent
-            transactional metadata. Together they form the MatrixArk platform.
+            eventually consistent KV serving, profiles, and offline-queryable state. MatrixKV
+            handles strongly consistent transactional metadata. Together they form the MatrixArk
+            platform.
           </p>
           <ol class="article-list">
             <li>Use TemporalStore when the feature depends on recent events, windows, filters, distinct state, or sequences.</li>
-            <li>Use MatrixDB when the workload is latest profile, large hash/profile KV, hot-key cache, tenant-scale service state, scans, exports, or offline/nearline query over persisted KV data.</li>
+            <li>Use MatrixDB when the workload is latest profile, large hash/profile KV, hot-key cache, tenant-scale service state, scans, exports, or offline/nearline query over persisted KV data and eventual consistency is acceptable.</li>
             <li>Use MatrixKV when the workload needs transactional KV, timestamp coordination, metadata correctness, or strong consistency.</li>
             <li>Use feature stores and warehouses for registry, training sets, lineage, offline truth, and backfills.</li>
           </ol>
