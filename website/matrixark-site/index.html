@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>MatrixArk | Temporal serving, scalable online KV, and transactional KV</title>
+      <title>MatrixArk | Temporal decision state, scalable profiles, and transactional KV</title>
     <meta
       name="description"
-      content="MatrixArk builds a product family for online state: TemporalStore for temporal feature serving, MatrixDB for multi-tenant scalable KV/profile serving, and MatrixKV for transactional KV with strong consistency."
+      content="MatrixArk builds focused online-state engines: TemporalStore for temporal decision features, MatrixDB for multi-tenant profile and KV serving, and MatrixKV for strongly consistent transactional KV."
     />
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -20,9 +20,9 @@
         <div class="nav-product-menu">
           <button class="nav-product-trigger" type="button" aria-expanded="false">Products</button>
           <div class="nav-product-panel" aria-label="Product pages">
-            <a href="./temporalstore.html"><strong>TemporalStore</strong><span>Temporal feature serving for risk, sequences, AI context</span></a>
-            <a href="./matrixdb.html"><strong>MatrixDB</strong><span>Multi-tenant scalable KV and profile serving</span></a>
-            <a href="./matrixkv.html"><strong>MatrixKV</strong><span>Transactional KV with strong consistency</span></a>
+            <a href="./temporalstore.html"><strong>TemporalStore</strong><span>Time-window features, sequences, risk and agent context</span></a>
+            <a href="./matrixdb.html"><strong>MatrixDB</strong><span>Tenant-scale profiles, hashes, attributes and service state</span></a>
+            <a href="./matrixkv.html"><strong>MatrixKV</strong><span>Strongly consistent transactional KV for metadata</span></a>
           </div>
         </div>
         <a href="#architecture">Platform</a>
@@ -43,15 +43,15 @@
           </div>
           <div class="signal-card signal-a">
             <span>TemporalStore</span>
-            <strong>temporal feature serving for online decisions</strong>
+            <strong>time-window features and event state for live decisions</strong>
           </div>
           <div class="signal-card signal-b">
             <span>MatrixDB</span>
-            <strong>multi-tenant scalable profile and KV serving</strong>
+            <strong>tenant-scale profiles, hashes, attributes, and service state</strong>
           </div>
           <div class="signal-card signal-c">
             <span>MatrixKV</span>
-            <strong>transactional KV with strong consistency</strong>
+            <strong>strongly consistent transactions for metadata and ownership</strong>
           </div>
         </div>
 
@@ -59,19 +59,19 @@
           <p class="eyebrow">matrixark.ai</p>
           <h1>Real-time state engines for products that cannot wait for batch.</h1>
           <p class="hero-subcopy">
-            MatrixArk gives product and infrastructure teams one platform for fresh temporal
-            features, profile serving, and strongly consistent transactional KV, so online
-            decisions stay fast, explainable, and operationally simple.
+            MatrixArk gives product and infrastructure teams three focused engines for fresh
+            temporal decision state, tenant-scale profile serving, and strongly consistent
+            metadata. Keep the hot path simple while the data model matches the job.
           </p>
           <div class="hero-actions">
             <a class="button primary" href="#products">Explore the engines</a>
             <a class="button secondary" href="#architecture">See the platform</a>
           </div>
           <div class="proof-strip" aria-label="Platform highlights">
-            <span>Temporal feature serving</span>
-            <span>High-cardinality entities</span>
-            <span>Profile and KV serving</span>
-            <span>Strong transactional KV</span>
+            <span>Temporal decision features</span>
+            <span>High-cardinality entity state</span>
+            <span>Tenant-scale profile KV</span>
+            <span>Committed metadata state</span>
           </div>
         </div>
       </section>
@@ -83,7 +83,8 @@
           <p>
             Real-time products usually stitch together streams, caches, online stores, feature
             services, and metadata databases. MatrixArk turns that sprawl into three focused
-            products that share deployment, observability, and operations.
+            products that share deployment, observability, and operations while staying honest
+            about which engine owns which state.
           </p>
         </div>
         <div class="thesis-grid">
@@ -91,9 +92,9 @@
             <span class="number">01</span>
             <h3>TemporalStore</h3>
             <p>
-              TemporalStore is a temporal feature serving engine for decisions that depend on what
-              just happened: rolling windows, filtered aggregates, distinct counts, long sequences,
-              frequency caps, and structured AI context.
+              TemporalStore is the temporal decision-state engine: rolling windows, filtered
+              aggregates, distinct counts, long behavior sequences, frequency caps, and structured
+              AI or agent context are stored and queried as first-class online models.
             </p>
             <ul class="thesis-points">
               <li>Launch new risk, ads, recommendation, and agent policies without a new stream job for every window.</li>
@@ -105,9 +106,9 @@
             <span class="number">02</span>
             <h3>MatrixDB</h3>
             <p>
-              MatrixDB is for multi-tenant, high-volume online data that should stay simple: user
-              profiles, item attributes, product state, service state, and cache-plus-storage
-              workloads.
+              MatrixDB is the tenant-scale online profile and KV engine: user profiles, item
+              attributes, account state, hashes, strings, service state, and cache-plus-storage
+              workloads that need familiar access and managed capacity.
             </p>
             <ul class="thesis-points">
               <li>Give many teams and tenants a familiar access path while gaining a managed serving plane.</li>
@@ -119,8 +120,9 @@
             <span class="number">03</span>
             <h3>MatrixKV</h3>
             <p>
-              MatrixKV is transactional KV for state that must be correct: metadata, leases,
-              routing records, table state, timestamps, and control-plane coordination.
+              MatrixKV is the strongly consistent transactional KV engine: metadata, leases,
+              routing records, table state, timestamps, ownership, and coordination records that
+              cannot be treated like ordinary cache entries.
             </p>
             <ul class="thesis-points">
               <li>Protect ownership and routing with strong consistency rather than cache freshness assumptions.</li>
@@ -141,17 +143,18 @@
           <article class="product-card temporal-card">
             <div class="product-topline">
               <span class="product-mark">T</span>
-              <span class="status-pill">Temporal serving</span>
+              <span class="status-pill">Decision state</span>
             </div>
             <h3><a href="./temporalstore.html">TemporalStore</a></h3>
             <p>
-              Serve event-time features and recent behavior directly in the request path, with
-              storage models shaped for windows, filters, distinct state, sequences, and context.
+              Serve event-time features, recent behavior, and structured context directly in the
+              request path, with storage models shaped for windows, filters, distinct state,
+              sequences, and risk policies.
             </p>
             <dl>
               <div><dt>Buyer pain</dt><dd>too many one-off stream jobs, cache keys, and stale feature paths</dd></div>
-              <div><dt>Product edge</dt><dd>online temporal models for windows, filters, unique counts, sequences, and context</dd></div>
-              <div><dt>Business value</dt><dd>faster policy iteration for risk, ads, recommendations, and agent experiences</dd></div>
+              <div><dt>Product edge</dt><dd>native temporal models for windows, filters, unique counts, long sequences, and context</dd></div>
+              <div><dt>Business value</dt><dd>faster policy iteration for risk, fraud, ads, recommendations, and agent experiences</dd></div>
             </dl>
             <a class="text-link" href="./temporalstore.html">Open TemporalStore page</a>
           </article>
@@ -159,17 +162,18 @@
           <article class="product-card matrixdb-card">
             <div class="product-topline">
               <span class="product-mark">D</span>
-              <span class="status-pill">Online database</span>
+              <span class="status-pill">Profile KV</span>
             </div>
             <h3><a href="./matrixdb.html">MatrixDB</a></h3>
             <p>
-              Serve profiles, attributes, and general product state through a multi-tenant,
-              scalable online database layer that keeps adoption familiar and operations visible.
+              Serve profiles, attributes, hashes, strings, and general product state through a
+              multi-tenant online database layer that keeps migration familiar and operations
+              visible.
             </p>
             <dl>
               <div><dt>Buyer pain</dt><dd>many teams sharing profile stores and caches that become capacity-heavy and hard to isolate</dd></div>
-              <div><dt>Product edge</dt><dd>multi-tenant distributed serving for profiles, hashes, strings, and cache-plus-storage workloads</dd></div>
-              <div><dt>Business value</dt><dd>scale online KV across tenants without rewriting every application at once</dd></div>
+              <div><dt>Product edge</dt><dd>tenant-aware distributed serving for profiles, entity attributes, hashes, strings, and cache-plus-storage workloads</dd></div>
+              <div><dt>Business value</dt><dd>scale online profile and KV serving across teams without rewriting every application at once</dd></div>
             </dl>
             <a class="text-link" href="./matrixdb.html">Open MatrixDB page</a>
           </article>
@@ -181,12 +185,12 @@
             </div>
             <h3><a href="./matrixkv.html">MatrixKV</a></h3>
             <p>
-              Keep routing, placement, ownership, metadata, and platform records in a transactional
-              KV layer built for strong consistency and correctness.
+              Keep routing, placement, ownership, leases, timestamps, metadata, and platform
+              records in a transactional KV layer built for strong consistency and correctness.
             </p>
             <dl>
               <div><dt>Buyer pain</dt><dd>critical state spread across fragile control code and cache-like stores</dd></div>
-              <div><dt>Product edge</dt><dd>transactional KV semantics and strong consistency for records that must be correct</dd></div>
+              <div><dt>Product edge</dt><dd>transactional KV semantics, leader ownership, and strong consistency for records that must be correct</dd></div>
               <div><dt>Business value</dt><dd>safer operations for distributed serving products, metadata, and managed infrastructure</dd></div>
             </dl>
             <a class="text-link" href="./matrixkv.html">Open MatrixKV page</a>
@@ -215,9 +219,9 @@
           </div>
           <div class="arch-lane engine-lane">
             <h3>Product engines</h3>
-            <div class="engine-row temporal-row"><strong>TemporalStore</strong><small>fresh windows, filters, sequences, temporal aggregates, context</small></div>
-            <div class="engine-row matrixdb-row"><strong>MatrixDB</strong><small>multi-tenant profiles, attributes, service state, general online KV</small></div>
-            <div class="engine-row matrixkv-row"><strong>MatrixKV</strong><small>transactional KV, strong consistency, leases, routes, metadata</small></div>
+            <div class="engine-row temporal-row"><strong>TemporalStore</strong><small>windows, filters, aggregates, distinct sets, sequences, context</small></div>
+            <div class="engine-row matrixdb-row"><strong>MatrixDB</strong><small>tenant-scale profiles, attributes, hashes, strings, service state</small></div>
+            <div class="engine-row matrixkv-row"><strong>MatrixKV</strong><small>transactions, strong consistency, leases, routes, ownership, metadata</small></div>
           </div>
           <div class="arch-lane">
             <h3>Operating surface</h3>
@@ -316,11 +320,11 @@
           </article>
           <article>
             <h3>Versus Redis Enterprise</h3>
-            <p>Generic caches are excellent for simple values. MatrixArk adds product-specific engines for temporal features, profile serving, and transactional KV with strong consistency.</p>
+            <p>Generic caches are excellent for simple values. MatrixArk adds product-specific engines for temporal decision state, tenant-scale profile serving, and transactional KV with strong consistency.</p>
           </article>
           <article>
             <h3>Versus generic KV</h3>
-            <p>General KV systems store values. MatrixArk separates latest-value serving, temporal decision state, and strongly consistent transactional KV into purpose-built products.</p>
+            <p>General KV systems store values. MatrixArk separates latest-value profiles, temporal decision state, and strongly consistent transactional KV into purpose-built products.</p>
           </article>
         </div>
       </section>

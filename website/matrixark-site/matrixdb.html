@@ -6,7 +6,7 @@
     <title>MatrixDB | MatrixArk</title>
     <meta
       name="description"
-      content="MatrixDB is MatrixArk's multi-tenant, highly scalable online database engine for profile serving, general KV, migration-friendly access, and cache-plus-storage workloads."
+      content="MatrixDB is MatrixArk's multi-tenant, highly scalable online profile and KV engine for hashes, strings, attributes, service state, migration-friendly access, and cache-plus-storage workloads."
     />
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -20,9 +20,9 @@
         <div class="nav-product-menu">
           <button class="nav-product-trigger" type="button" aria-expanded="false">Products</button>
           <div class="nav-product-panel" aria-label="Product pages">
-            <a href="./temporalstore.html"><strong>TemporalStore</strong><span>Temporal feature serving for risk, sequences, AI context</span></a>
-            <a href="./matrixdb.html"><strong>MatrixDB</strong><span>Multi-tenant scalable KV and profile serving</span></a>
-            <a href="./matrixkv.html"><strong>MatrixKV</strong><span>Transactional KV with strong consistency</span></a>
+            <a href="./temporalstore.html"><strong>TemporalStore</strong><span>Time-window features, sequences, risk and agent context</span></a>
+            <a href="./matrixdb.html"><strong>MatrixDB</strong><span>Tenant-scale profiles, hashes, attributes and service state</span></a>
+            <a href="./matrixkv.html"><strong>MatrixKV</strong><span>Strongly consistent transactional KV for metadata</span></a>
           </div>
         </div>
         <a href="./blogs.html">Blogs</a>
@@ -34,29 +34,29 @@
     <main>
       <section class="product-hero matrixdb-detail">
         <p class="eyebrow">MatrixDB</p>
-        <h1>Multi-tenant scalable online KV for profiles, attributes, and service state.</h1>
+        <h1>Tenant-scale online profiles, hashes, attributes, and service state.</h1>
         <p>
           MatrixDB is the MatrixArk engine for profile lookups, product state, entity attributes,
-          general KV, and cache-plus-storage workloads where many teams need tenant-aware
-          operations, migration-friendly access, and scalable distributed serving.
+          hashes, strings, general KV, and cache-plus-storage workloads where many teams need
+          tenant-aware operations, migration-friendly access, and scalable distributed serving.
         </p>
       </section>
 
       <section class="section advantage-section">
         <div class="section-heading">
           <p class="eyebrow">Product Advantages</p>
-          <h2>Why MatrixDB over a standalone cache?</h2>
+          <h2>Why MatrixDB over a standalone cache for profile and KV serving?</h2>
         </div>
         <div class="advantage-grid">
           <article>
             <span>01</span>
             <h3>Migration-friendly protocol</h3>
-            <p>Familiar Redis-style and SDK access lets teams migrate profile and KV workloads while moving toward a managed distributed serving platform.</p>
+            <p>Familiar Redis-style and SDK access lets teams migrate profile, hash, and KV workloads while moving toward a managed distributed serving platform.</p>
           </article>
           <article>
             <span>02</span>
             <h3>Multi-tenant profile and KV focus</h3>
-            <p>MatrixDB is tuned for strings, hashes, profiles, and lookup-heavy online paths across many teams, tenants, and applications.</p>
+            <p>MatrixDB is tuned for strings, hashes, profiles, entity attributes, and lookup-heavy online paths across many teams, tenants, and applications.</p>
           </article>
           <article>
             <span>03</span>
@@ -86,7 +86,7 @@
             <p>
               MatrixDB separates client access, tenant-aware routing, and data placement. The proxy
               accepts Redis-style or SDK traffic, routes requests to the right data nodes, and keeps
-              profile and KV serving in a single operational plane.
+              profile, hash, string, and KV serving in a single operational plane.
             </p>
           </article>
           <article>
@@ -128,9 +128,9 @@
           <h2>Multi-tenant online KV beside TemporalStore.</h2>
         </div>
         <div class="capability-grid">
-          <article><h3>Compatible access</h3><p>Familiar client access for migration while the backend handles distributed placement and operations.</p></article>
+          <article><h3>Compatible access</h3><p>Familiar client access for migration while the backend handles distributed placement, tenant isolation, and operations.</p></article>
           <article><h3>Multi-tenant profile serving</h3><p>User, item, campaign, merchant, and device profiles through hash and KV access patterns across many teams and tenants.</p></article>
-          <article><h3>Cache plus storage</h3><p>Useful when plain cache workloads need more capacity or persistence options.</p></article>
+          <article><h3>Cache plus storage</h3><p>Useful when plain cache workloads need more capacity, persistence options, and a managed serving plane.</p></article>
           <article><h3>Scalable placement</h3><p>Distributes online data across serving nodes so capacity can grow with tenants, tables, and workload families.</p></article>
           <article><h3>Platform database role</h3><p>Serves general online data while TemporalStore handles temporal logic and MatrixKV handles transactional consistency.</p></article>
           <article><h3>Operational UI</h3><p>Shared monitoring and diagnostics with the rest of the MatrixArk platform.</p></article>
@@ -157,9 +157,9 @@
       <section class="section product-cta">
         <h2>Where MatrixDB fits</h2>
         <p>
-          MatrixDB is the product engine for multi-tenant online KV and profile serving: strings,
+          MatrixDB is the product engine for multi-tenant online profile and KV serving: strings,
           hashes, entity attributes, service state, cache-plus-storage workloads, tenant-aware
-          routing, and migration-friendly client access.
+          routing, scalable placement, and migration-friendly client access.
         </p>
         <a class="button primary" href="./index.html#contact">Talk to MatrixArk</a>
       </section>

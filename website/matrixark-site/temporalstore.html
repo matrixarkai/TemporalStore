@@ -6,7 +6,7 @@
     <title>TemporalStore | MatrixArk</title>
     <meta
       name="description"
-      content="TemporalStore is MatrixArk's temporal feature serving engine for online risk, frequency caps, behavior sequences, and structured AI context."
+      content="TemporalStore is MatrixArk's temporal decision-state engine for online risk, frequency caps, behavior sequences, high-cardinality aggregates, and structured AI context."
     />
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -20,9 +20,9 @@
         <div class="nav-product-menu">
           <button class="nav-product-trigger" type="button" aria-expanded="false">Products</button>
           <div class="nav-product-panel" aria-label="Product pages">
-            <a href="./temporalstore.html"><strong>TemporalStore</strong><span>Temporal feature serving for risk, sequences, AI context</span></a>
-            <a href="./matrixdb.html"><strong>MatrixDB</strong><span>Multi-tenant scalable KV and profile serving</span></a>
-            <a href="./matrixkv.html"><strong>MatrixKV</strong><span>Transactional KV with strong consistency</span></a>
+            <a href="./temporalstore.html"><strong>TemporalStore</strong><span>Time-window features, sequences, risk and agent context</span></a>
+            <a href="./matrixdb.html"><strong>MatrixDB</strong><span>Tenant-scale profiles, hashes, attributes and service state</span></a>
+            <a href="./matrixkv.html"><strong>MatrixKV</strong><span>Strongly consistent transactional KV for metadata</span></a>
           </div>
         </div>
         <a href="./blogs.html">Blogs</a>
@@ -34,24 +34,24 @@
     <main>
       <section class="product-hero temporal-detail">
         <p class="eyebrow">TemporalStore</p>
-        <h1>Temporal feature serving for risk, recommendations, and AI context.</h1>
+        <h1>Temporal decision-state serving for risk, recommendations, and AI context.</h1>
         <p>
           TemporalStore is the MatrixArk engine for high-cardinality entity state that changes over
           time: rolling aggregates, filtered windows, distinct sets, behavior sequences, frequency
-          caps, and structured context for online decisions.
+          caps, and structured context that must be answered inside the online request path.
         </p>
       </section>
 
       <section class="section advantage-section">
         <div class="section-heading">
           <p class="eyebrow">Product Advantages</p>
-          <h2>Why TemporalStore over a generic cache plus stream pipeline?</h2>
+          <h2>Why TemporalStore over a generic cache plus precomputed streams?</h2>
         </div>
         <div class="advantage-grid">
           <article>
             <span>01</span>
             <h3>Temporal logic is native</h3>
-            <p>Windowed counts, filtered aggregates, distinct sets, and sequences live inside the serving engine instead of being scattered across jobs and application code.</p>
+            <p>Windowed counts, filtered aggregates, distinct sets, and sequences live inside the serving engine instead of being scattered across stream jobs, cache keys, and application code.</p>
           </article>
           <article>
             <span>02</span>
@@ -66,7 +66,7 @@
           <article>
             <span>04</span>
             <h3>Fresh online decisions</h3>
-            <p>Risk, ads, recommendation, and agent systems can query recent state at request time instead of waiting for offline materialization.</p>
+            <p>Risk, fraud, ads, recommendation, and agent systems can query recent state at request time instead of waiting for offline materialization.</p>
           </article>
         </div>
       </section>
@@ -86,17 +86,17 @@
             <p>
               TemporalStore keeps model-aware temporal state close to the serving path. Entity
               updates are routed to the right partition, applied through the configured data model,
-              persisted for replay, and queried through APIs built for windows, filters, distinct
-              state, sequences, and context.
+              persisted for replay, and queried through APIs built for time windows, filters,
+              distinct state, sequences, counters, and context assembly.
             </p>
           </article>
           <article>
             <h2>Serving Workflow</h2>
             <ol class="detail-list">
-              <li>Ingest an event, counter update, profile change, or sequence append.</li>
+              <li>Ingest an event, counter update, behavior append, or context record.</li>
               <li>Resolve namespace, table, data model, partition, and entity key.</li>
               <li>Apply updates inside the model instead of in a separate application layer.</li>
-              <li>Answer arbitrary window, filter, aggregate, and sequence queries online.</li>
+              <li>Answer window, filter, aggregate, distinct, context, and sequence queries online.</li>
             </ol>
           </article>
         </div>
@@ -118,7 +118,7 @@
           </div>
           <div>
             <h3>Serve</h3>
-            <p>Online systems request windows, filters, distinct counts, behavior sequences, context, and latest profile state through one serving API.</p>
+            <p>Online systems request windows, filters, distinct counts, behavior sequences, context, and recent entity state through one serving API.</p>
           </div>
         </div>
       </section>
@@ -130,11 +130,11 @@
         </div>
         <div class="capability-grid">
           <article><h3>TemporalCounter</h3><p>Counts and sums over keyed time buckets for velocity, caps, and online policies.</p></article>
-          <article><h3>TemporalAggregate</h3><p>Filtered sum, min, max, count, and model-specific rollups over recent event state.</p></article>
+          <article><h3>TemporalAggregate</h3><p>Filtered sum, min, max, count, and model-specific rollups over recent event state and bucketed dimensions.</p></article>
           <article><h3>TemporalDistinct</h3><p>Unique merchant, device, campaign, IP, or session counts inside time windows.</p></article>
           <article><h3>Sequence</h3><p>Recent behavior history, sorted timelines, long user action sequences, and inference features.</p></article>
           <article><h3>Hash/Profile</h3><p>Latest user, item, merchant, campaign, or device state beside temporal features.</p></article>
-          <article><h3>Context</h3><p>Structured LLM and agent context, tool events, session memory, retrieval metadata, and safety counters.</p></article>
+          <article><h3>Context</h3><p>Structured LLM and agent context, tool events, session memory, retrieval metadata, and safety/rate counters.</p></article>
         </div>
       </section>
 
@@ -159,8 +159,8 @@
         <h2>Where TemporalStore fits</h2>
         <p>
           TemporalStore is the product engine for temporal online state: event ingestion, rolling
-          windows, filtered aggregates, distinct counts, behavior sequences, persistence, metrics, and
-          customer-facing SDK access.
+          windows, filtered aggregates, distinct counts, behavior sequences, frequency caps,
+          persistence, metrics, and customer-facing SDK access.
         </p>
         <a class="button primary" href="./index.html#contact">Talk to MatrixArk</a>
       </section>
