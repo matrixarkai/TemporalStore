@@ -2,8 +2,9 @@ use std::sync::{Arc, Mutex};
 
 use temporalstore_single_node::{
     execute_redis_command, Command, CommandResponse, EndToEndWorkflow, ExecuteRequest,
-    FeaturePoint, RespValue, TemporalEngine,
+    FeaturePoint, RespValue, SharedStoreOplogEntry, SharedStoreReplicator, TemporalEngine,
 };
+use temporalstore_snapshot::object_store::FileObjectStore;
 
 fn execute(engine: &TemporalEngine, command: Command) -> CommandResponse {
     let response = engine.execute(ExecuteRequest {
@@ -380,6 +381,151 @@ fn feature_module_smoke_matches_temporal_feature_flow() {
         ),
         CommandResponse::Aggregate { value: 5 }
     );
+}
+
+#[tokio::test]
+async fn cxx_shared_store_replication_bootstrap_and_oplog_replay_matches_primary_pull_model() {
+    let dir = tempfile::tempdir().unwrap();
+    let primary = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("primary-cache"),
+        dir.path().join("primary-pages"),
+        dir.path().join("primary-index"),
+    );
+    primary.load_shard(1);
+
+    for command in [
+        Command::StringSet {
+            key: "shared-string".to_string(),
+            value: b"checkpoint-value".to_vec(),
+        },
+        Command::HashSet {
+            key: "shared-hash".to_string(),
+            field: "field111".to_string(),
+            value: b"value111".to_vec(),
+        },
+        Command::FeatureAppend {
+            key: "shared-feature".to_string(),
+            points: vec![
+                FeaturePoint {
+                    timestamp_ms: 100,
+                    value: b"2".to_vec(),
+                },
+                FeaturePoint {
+                    timestamp_ms: 200,
+                    value: b"3".to_vec(),
+                },
+            ],
+        },
+    ] {
+        execute(&primary, command);
+    }
+
+    let replicator = SharedStoreReplicator::new(
+        "cluster-a",
+        Arc::new(FileObjectStore::new(dir.path().join("shared-store"))),
+    );
+    replicator.publish_index(1, &primary).await.unwrap();
+    assert_eq!(
+        replicator
+            .publish_page_segments(1, &primary.page_store())
+            .await
+            .unwrap(),
+        vec![0]
+    );
+
+    let later_commands = vec![
+        Command::StringSet {
+            key: "shared-string".to_string(),
+            value: b"post-oplog-value".to_vec(),
+        },
+        Command::HashSet {
+            key: "shared-hash".to_string(),
+            field: "field222".to_string(),
+            value: b"value222".to_vec(),
+        },
+        Command::FeatureAppend {
+            key: "shared-feature".to_string(),
+            points: vec![FeaturePoint {
+                timestamp_ms: 300,
+                value: b"4".to_vec(),
+            }],
+        },
+    ];
+    for (idx, command) in later_commands.iter().cloned().enumerate() {
+        execute(&primary, command.clone());
+        replicator
+            .publish_oplog_entry(SharedStoreOplogEntry {
+                shard_id: 1,
+                oplog_index: 4 + idx as u64,
+                command,
+            })
+            .await
+            .unwrap();
+    }
+
+    let follower = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir.path().join("follower-cache"),
+        dir.path().join("follower-pages"),
+        dir.path().join("follower-index"),
+    );
+    assert_eq!(
+        replicator
+            .restore_index_and_pages(1, &follower, &follower.page_store())
+            .await
+            .unwrap(),
+        vec![0]
+    );
+    follower.load_shard(1);
+
+    assert_eq!(
+        execute(
+            &follower,
+            Command::StringGet {
+                key: "shared-string".to_string(),
+            },
+        ),
+        CommandResponse::Bytes {
+            value: Some(b"checkpoint-value".to_vec())
+        }
+    );
+    assert_eq!(
+        execute(
+            &follower,
+            Command::HashLen {
+                key: "shared-hash".to_string(),
+            },
+        ),
+        CommandResponse::Integer { value: 1 }
+    );
+
+    let replay = replicator.replay_oplog(1, 3, &follower).await.unwrap();
+    assert_eq!(replay.applied, 3);
+    assert_eq!(replay.last_oplog_index, 6);
+
+    for command in [
+        Command::StringGet {
+            key: "shared-string".to_string(),
+        },
+        Command::HashGetAll {
+            key: "shared-hash".to_string(),
+        },
+        Command::FeatureAggQuery {
+            key: "shared-feature".to_string(),
+            start_ms: 0,
+            end_ms: 400,
+            aggregator: "sum".to_string(),
+            count: None,
+        },
+    ] {
+        assert_eq!(
+            execute(&follower, command.clone()),
+            execute(&primary, command),
+        );
+    }
+
+    assert!(follower.page_store().stats().reads > 0);
 }
 
 #[derive(Default)]
