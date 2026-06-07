@@ -17,8 +17,8 @@ pub mod types;
 
 pub use cache::{CacheKey, CacheStats, MultiLayerCache};
 pub use client::{
-    ClientError, ClientOptions, RequestOptions, TableOptions, TemporalStoreClient,
-    TemporalStorePipeline, TemporalStoreTable,
+    shard_id_for_key, stable_key_hash, ClientError, ClientOptions, ClientStats, RequestOptions,
+    TableOptions, TemporalStoreClient, TemporalStorePipeline, TemporalStoreTable,
 };
 pub use control::{
     Config, GetConfigResponse, GetInfoResponse, GetStatsResponse, LoadShardRequest,

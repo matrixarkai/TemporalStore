@@ -18,6 +18,7 @@ The Rust code now covers the local correctness skeleton for TemporalStore-style 
 - proxy/client/metaserver/server binaries
 - table-aware Rust client with typed string/hash/common methods, pipeline batching, HTTP timeout/retry options, and optional direct route refresh
 - proxy route cache with TTL, stats/config endpoints, timeout/retry options, and backend-error route refresh
+- client key-to-shard routing, table open/close cache, stats, expanded typed methods, and multi-shard pipeline grouping
 - Redis RESP adapter
 - S3-compatible snapshot store crate
 
@@ -45,14 +46,16 @@ This closes one data-node replay gap from the previous audit. C++ has binary ind
 
 The C++ proxy is still much richer, but Rust no longer blindly looks up the metaserver on every forwarded request. The Rust proxy now owns a reusable `ProxyService` with route caching, forced refresh, backend retry/refresh behavior, basic runtime config, and observable request/cache/error counters.
 
+The Rust client also now has a small table router: `key -> stable hash -> shard_id`. Pipelines split queued commands by routed shard and reassemble responses in original order, matching the shape of the C++ client batch path at a simpler HTTP/shard level.
+
 ## Detailed Gap Matrix
 
 | Area | C++ TemporalStore | Rust Today | Missing |
 | --- | --- | --- | --- |
 | Protocol | brpc/thrift/protobuf APIs and extension protos | JSON/HTTP command API plus RESP adapter | Exact wire compatibility, SDK compatibility, C++ protobuf request/response shapes |
 | Proxy | brpc/thrift server, C++ client wrapper, MetaSyncer, heartbeat/config, consul registration | HTTP proxy service with `/execute`, `/batch_execute`, `/shards`, `/proxy/info`, `/proxy/config`, route cache, stats, retries/timeouts, backend-error route refresh | thrift/brpc compatibility, background MetaSyncer, heartbeat/config from metaserver, consul/auto-register, namespace/table open path |
-| Client SDK | C++ `Client`, `Table`, `Pipeline`, `MetaSyncer`, router, backend pool | Rust `TemporalStoreClient`, `TemporalStoreTable`, `TemporalStorePipeline`, typed methods, retries/timeouts, direct route refresh | brpc/protobuf SDK, background topology sync, CRC64 slot router, VDC affinity, backend failure pool |
-| Routing | namespace/table/partition-set/slot routing | explicit `shard_id` in request, simple metaserver route | namespace/table model, slot hashing, route versioning, table config, partition-set placement |
+| Client SDK | C++ `Client`, `Table`, `Pipeline`, `MetaSyncer`, router, backend pool | Rust `TemporalStoreClient`, `TemporalStoreTable`, `TemporalStorePipeline`, typed methods, open/close table cache, stats, retries/timeouts, direct route refresh | brpc/protobuf SDK, background topology sync, exact CRC64 slot router, VDC affinity, backend failure pool |
+| Routing | namespace/table/partition-set/slot routing | key-to-shard routing from table options, explicit `shard_id` request, simple metaserver route | namespace/table topology from metaserver, exact slot map, route versioning, partition-set placement |
 | Metaserver | full topology, heartbeat, placement, scheduling, Raft-backed metadata | simple route map, in-process meta Raft, rebalance model | real networked metaserver Raft, persistent metadata, heartbeat/load reports, placement policy, background scheduler |
 | Data node execution | partition workers, async callbacks, load-version guards | direct `TemporalEngine` execution under a lock | worker pools, request controllers, load-version validation, backpressure |
 | Hot object model | `ObjectManager`, model objects, dirty slots | per-type maps of key/field/timestamp to `PageAddress` | object ids, dirty slot tracking, object lifecycle, model-specific memory layout |

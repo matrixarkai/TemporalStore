@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -11,7 +11,7 @@ use crate::http::{
 use crate::meta::GetShardResponse;
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,
-    ExecuteResponse, ShardId, Status,
+    ExecuteResponse, FeatureFilter, FeaturePoint, SequenceFeatureRow, ShardId, Status,
 };
 
 #[derive(Debug, Error)]
@@ -89,6 +89,8 @@ pub struct TableOptions {
     pub io_timeout_ms: u64,
     pub connect_timeout_ms: u64,
     pub continuous_failed_time_ms: u64,
+    pub first_shard_id: ShardId,
+    pub shard_count: u64,
 }
 
 impl Default for TableOptions {
@@ -97,8 +99,22 @@ impl Default for TableOptions {
             io_timeout_ms: 200,
             connect_timeout_ms: 200,
             continuous_failed_time_ms: 10_000,
+            first_shard_id: 1,
+            shard_count: 1,
         }
     }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ClientStats {
+    pub open_table_calls: u64,
+    pub close_table_calls: u64,
+    pub execute_requests: u64,
+    pub batch_execute_requests: u64,
+    pub route_cache_hits: u64,
+    pub route_cache_misses: u64,
+    pub route_refreshes: u64,
+    pub backend_errors: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -110,6 +126,8 @@ pub struct TemporalStoreClient {
 struct ClientInner {
     options: ClientOptions,
     routes: Mutex<HashMap<ShardId, CachedRoute>>,
+    tables: Mutex<HashMap<String, TableOptions>>,
+    stats: Mutex<ClientStats>,
 }
 
 #[derive(Debug, Clone)]
@@ -128,6 +146,8 @@ impl TemporalStoreClient {
             inner: Arc::new(ClientInner {
                 options,
                 routes: Mutex::default(),
+                tables: Mutex::default(),
+                stats: Mutex::default(),
             }),
         }
     }
@@ -138,13 +158,51 @@ impl TemporalStoreClient {
         table_name: impl Into<String>,
         options: TableOptions,
     ) -> TemporalStoreTable {
+        let namespace = namespace.into();
+        let table_name = table_name.into();
+        let combine_name = table_combine_name(&namespace, &table_name);
+        self.inner
+            .tables
+            .lock()
+            .expect("client table cache lock poisoned")
+            .entry(combine_name)
+            .or_insert_with(|| options.clone());
+        self.inner
+            .stats
+            .lock()
+            .expect("client stats lock poisoned")
+            .open_table_calls += 1;
         TemporalStoreTable {
             client: self.clone(),
-            namespace: namespace.into(),
-            table_name: table_name.into(),
+            namespace,
+            table_name,
             shard_id: self.inner.options.default_shard_id,
             options,
         }
+    }
+
+    pub fn close_table(&self, table: &TemporalStoreTable) -> Result<(), ClientError> {
+        let removed = self
+            .inner
+            .tables
+            .lock()
+            .expect("client table cache lock poisoned")
+            .remove(&table_combine_name(table.namespace(), table.table_name()))
+            .is_some();
+        self.inner
+            .stats
+            .lock()
+            .expect("client stats lock poisoned")
+            .close_table_calls += 1;
+        if removed {
+            Ok(())
+        } else {
+            Err(ClientError::Status("table not found".to_string()))
+        }
+    }
+
+    pub fn stats(&self) -> ClientStats {
+        *self.inner.stats.lock().expect("client stats lock poisoned")
     }
 
     pub fn execute(&self, request: ExecuteRequest) -> Result<ExecuteResponse, HttpError> {
@@ -224,6 +282,11 @@ impl TemporalStoreClient {
             let server_addr = self.resolve_route(request.shard_id, false)?;
             return post_json_with_options(&server_addr, "/execute", &request, http_options)
                 .or_else(|_| {
+                    self.inner
+                        .stats
+                        .lock()
+                        .expect("client stats lock poisoned")
+                        .backend_errors += 1;
                     let refreshed = self.resolve_route(request.shard_id, true)?;
                     Ok(post_json_with_options(
                         &refreshed,
@@ -252,6 +315,11 @@ impl TemporalStoreClient {
             let server_addr = self.resolve_route(request.shard_id, false)?;
             return post_json_with_options(&server_addr, "/batch_execute", &request, http_options)
                 .or_else(|_| {
+                    self.inner
+                        .stats
+                        .lock()
+                        .expect("client stats lock poisoned")
+                        .backend_errors += 1;
                     let refreshed = self.resolve_route(request.shard_id, true)?;
                     Ok(post_json_with_options(
                         &refreshed,
@@ -281,10 +349,20 @@ impl TemporalStoreClient {
                 .cloned()
             {
                 if route.fetched_at.elapsed() <= ttl {
+                    self.inner
+                        .stats
+                        .lock()
+                        .expect("client stats lock poisoned")
+                        .route_cache_hits += 1;
                     return Ok(route.server_addr);
                 }
             }
         }
+        self.inner
+            .stats
+            .lock()
+            .expect("client stats lock poisoned")
+            .route_cache_misses += 1;
 
         let meta_addr = self
             .inner
@@ -315,6 +393,11 @@ impl TemporalStoreClient {
                     fetched_at: Instant::now(),
                 },
             );
+        self.inner
+            .stats
+            .lock()
+            .expect("client stats lock poisoned")
+            .route_refreshes += 1;
         Ok(server_addr)
     }
 }
@@ -341,6 +424,15 @@ impl TemporalStoreTable {
         self.shard_id
     }
 
+    pub fn shard_id_for_key(&self, key: &str) -> ShardId {
+        shard_id_for_key(
+            key,
+            self.options.first_shard_id,
+            self.options.shard_count,
+            self.shard_id,
+        )
+    }
+
     pub fn pipeline(&self) -> TemporalStorePipeline {
         TemporalStorePipeline {
             table: self.clone(),
@@ -357,6 +449,19 @@ impl TemporalStoreTable {
             key: key.into(),
             value: value.into(),
         })
+    }
+
+    pub fn exists(&self, key: impl Into<String>) -> Result<bool, ClientError> {
+        match self
+            .execute(Command::CommonExists { key: key.into() })?
+            .response
+        {
+            CommandResponse::Integer { value } => Ok(value != 0),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "exists",
+                response,
+            }),
+        }
     }
 
     pub fn setex(
@@ -429,6 +534,82 @@ impl TemporalStoreTable {
         })
     }
 
+    pub fn hmget(
+        &self,
+        key: impl Into<String>,
+        fields: Vec<String>,
+    ) -> Result<Vec<Option<Vec<u8>>>, ClientError> {
+        match self
+            .execute(Command::HashMultiGet {
+                key: key.into(),
+                fields,
+            })?
+            .response
+        {
+            CommandResponse::Values { values } => Ok(values),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "hmget",
+                response,
+            }),
+        }
+    }
+
+    pub fn hmset(
+        &self,
+        key: impl Into<String>,
+        entries: Vec<(String, Vec<u8>)>,
+    ) -> Result<(), ClientError> {
+        self.expect_empty(Command::HashMultiSet {
+            key: key.into(),
+            entries,
+        })
+    }
+
+    pub fn hincrby(
+        &self,
+        key: impl Into<String>,
+        field: impl Into<String>,
+        increment: i64,
+    ) -> Result<i64, ClientError> {
+        match self
+            .execute(Command::HashIncrBy {
+                key: key.into(),
+                field: field.into(),
+                increment,
+            })?
+            .response
+        {
+            CommandResponse::Integer { value } => Ok(value),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "hincrby",
+                response,
+            }),
+        }
+    }
+
+    pub fn hgetall(&self, key: impl Into<String>) -> Result<Vec<(String, Vec<u8>)>, ClientError> {
+        match self
+            .execute(Command::HashGetAll { key: key.into() })?
+            .response
+        {
+            CommandResponse::HashEntries { entries } => Ok(entries),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "hgetall",
+                response,
+            }),
+        }
+    }
+
+    pub fn hlen(&self, key: impl Into<String>) -> Result<i64, ClientError> {
+        match self.execute(Command::HashLen { key: key.into() })?.response {
+            CommandResponse::Integer { value } => Ok(value),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "hlen",
+                response,
+            }),
+        }
+    }
+
     pub fn del(&self, key: impl Into<String>) -> Result<(), ClientError> {
         self.expect_empty(Command::CommonDelete { key: key.into() })
     }
@@ -453,10 +634,192 @@ impl TemporalStoreTable {
         }
     }
 
+    pub fn sadd(
+        &self,
+        key: impl Into<String>,
+        member: impl Into<Vec<u8>>,
+    ) -> Result<(), ClientError> {
+        self.expect_empty(Command::SetAdd {
+            key: key.into(),
+            member: member.into(),
+        })
+    }
+
+    pub fn smembers(&self, key: impl Into<String>) -> Result<Vec<Vec<u8>>, ClientError> {
+        match self
+            .execute(Command::SetMembers { key: key.into() })?
+            .response
+        {
+            CommandResponse::Members { members } => Ok(members),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "smembers",
+                response,
+            }),
+        }
+    }
+
+    pub fn srem(
+        &self,
+        key: impl Into<String>,
+        member: impl Into<Vec<u8>>,
+    ) -> Result<(), ClientError> {
+        self.expect_empty(Command::SetRemove {
+            key: key.into(),
+            member: member.into(),
+        })
+    }
+
+    pub fn feature_append(
+        &self,
+        key: impl Into<String>,
+        points: Vec<FeaturePoint>,
+    ) -> Result<(), ClientError> {
+        self.expect_empty(Command::FeatureAppend {
+            key: key.into(),
+            points,
+        })
+    }
+
+    pub fn feature_query(
+        &self,
+        key: impl Into<String>,
+        start_ms: u64,
+        end_ms: u64,
+        count: Option<usize>,
+    ) -> Result<Vec<FeaturePoint>, ClientError> {
+        match self
+            .execute(Command::FeatureQuery {
+                key: key.into(),
+                start_ms,
+                end_ms,
+                count,
+            })?
+            .response
+        {
+            CommandResponse::FeaturePoints { points } => Ok(points),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "feature_query",
+                response,
+            }),
+        }
+    }
+
+    pub fn sequence_add(
+        &self,
+        key: impl Into<String>,
+        rows: Vec<SequenceFeatureRow>,
+    ) -> Result<(), ClientError> {
+        self.expect_empty(Command::SequenceAdd {
+            key: key.into(),
+            rows,
+        })
+    }
+
+    pub fn sequence_query(
+        &self,
+        key: impl Into<String>,
+        start_ms: u64,
+        end_ms: u64,
+        count: usize,
+        filters: Vec<FeatureFilter>,
+    ) -> Result<Vec<SequenceFeatureRow>, ClientError> {
+        match self
+            .execute(Command::SequenceQuery {
+                key: key.into(),
+                start_ms,
+                end_ms,
+                count,
+                filters,
+            })?
+            .response
+        {
+            CommandResponse::SequenceRows { rows } => Ok(rows),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "sequence_query",
+                response,
+            }),
+        }
+    }
+
+    pub fn ips_add(
+        &self,
+        key: impl Into<String>,
+        timestamp_ms: u64,
+        instance: impl Into<Vec<u8>>,
+    ) -> Result<(), ClientError> {
+        self.expect_empty(Command::IpsAdd {
+            key: key.into(),
+            timestamp_ms,
+            instance: instance.into(),
+        })
+    }
+
+    pub fn ips_query_last(
+        &self,
+        key: impl Into<String>,
+        count: usize,
+    ) -> Result<Vec<FeaturePoint>, ClientError> {
+        match self
+            .execute(Command::IpsQueryLast {
+                key: key.into(),
+                count,
+            })?
+            .response
+        {
+            CommandResponse::FeaturePoints { points } => Ok(points),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "ips_query_last",
+                response,
+            }),
+        }
+    }
+
+    pub fn risk_increment(
+        &self,
+        key: impl Into<String>,
+        timestamp_ms: u64,
+        amount: i64,
+    ) -> Result<(), ClientError> {
+        self.expect_empty(Command::RiskIncrement {
+            key: key.into(),
+            timestamp_ms,
+            amount,
+        })
+    }
+
+    pub fn risk_count(
+        &self,
+        key: impl Into<String>,
+        start_ms: u64,
+        end_ms: u64,
+    ) -> Result<i64, ClientError> {
+        match self
+            .execute(Command::RiskCount {
+                key: key.into(),
+                start_ms,
+                end_ms,
+            })?
+            .response
+        {
+            CommandResponse::Integer { value } => Ok(value),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "risk_count",
+                response,
+            }),
+        }
+    }
+
     pub fn execute(&self, command: Command) -> Result<ExecuteResponse, ClientError> {
+        self.client
+            .inner
+            .stats
+            .lock()
+            .expect("client stats lock poisoned")
+            .execute_requests += 1;
+        let shard_id = self.shard_id_for_command(&command);
         let response = self.client.execute_routed_with_http(
             ExecuteRequest {
-                shard_id: self.shard_id,
+                shard_id,
                 command: command.clone(),
             },
             is_write(&command),
@@ -472,12 +835,79 @@ impl TemporalStoreTable {
         &self,
         commands: Vec<Command>,
     ) -> Result<BatchExecuteResponse, ClientError> {
+        self.client
+            .inner
+            .stats
+            .lock()
+            .expect("client stats lock poisoned")
+            .batch_execute_requests += 1;
+        if self.options.shard_count > 1 {
+            return self.batch_execute_grouped_by_shard(commands);
+        }
         let request = BatchExecuteRequest {
             shard_id: self.shard_id,
             commands,
         };
         self.client
             .batch_execute_with_http(request, self.http_options())
+    }
+
+    fn batch_execute_grouped_by_shard(
+        &self,
+        commands: Vec<Command>,
+    ) -> Result<BatchExecuteResponse, ClientError> {
+        let mut groups: BTreeMap<ShardId, Vec<(usize, Command)>> = BTreeMap::new();
+        let total = commands.len();
+        for (index, command) in commands.into_iter().enumerate() {
+            groups
+                .entry(self.shard_id_for_command(&command))
+                .or_default()
+                .push((index, command));
+        }
+
+        let mut responses: Vec<Option<ExecuteResponse>> = vec![None; total];
+        for (shard_id, group) in groups {
+            let indexes: Vec<usize> = group.iter().map(|(index, _)| *index).collect();
+            let commands: Vec<Command> = group.into_iter().map(|(_, command)| command).collect();
+            let response = self.client.batch_execute_with_http(
+                BatchExecuteRequest { shard_id, commands },
+                self.http_options(),
+            )?;
+            if !response.status.ok {
+                return Ok(BatchExecuteResponse {
+                    status: response.status,
+                    responses: Vec::new(),
+                });
+            }
+            if response.responses.len() != indexes.len() {
+                return Ok(BatchExecuteResponse {
+                    status: Status::error("bad_response", "batch response length mismatch"),
+                    responses: Vec::new(),
+                });
+            }
+            for (index, response) in indexes.into_iter().zip(response.responses.into_iter()) {
+                responses[index] = Some(response);
+            }
+        }
+
+        Ok(BatchExecuteResponse {
+            status: Status::ok(),
+            responses: responses
+                .into_iter()
+                .map(|response| {
+                    response.unwrap_or_else(|| ExecuteResponse {
+                        status: Status::error("missing_response", "batch response missing"),
+                        response: CommandResponse::Empty,
+                    })
+                })
+                .collect(),
+        })
+    }
+
+    fn shard_id_for_command(&self, command: &Command) -> ShardId {
+        command_key(command)
+            .map(|key| self.shard_id_for_key(key))
+            .unwrap_or(self.shard_id)
     }
 
     fn expect_empty(&self, command: Command) -> Result<(), ClientError> {
@@ -517,6 +947,11 @@ impl TemporalStorePipeline {
         self.commands.push(Command::StringGet { key: key.into() });
     }
 
+    pub fn del(&mut self, key: impl Into<String>) {
+        self.commands
+            .push(Command::CommonDelete { key: key.into() });
+    }
+
     pub fn hset(
         &mut self,
         key: impl Into<String>,
@@ -541,6 +976,20 @@ impl TemporalStorePipeline {
         self.commands.push(Command::HashDelete {
             key: key.into(),
             field: field.into(),
+        });
+    }
+
+    pub fn hmset(&mut self, key: impl Into<String>, entries: Vec<(String, Vec<u8>)>) {
+        self.commands.push(Command::HashMultiSet {
+            key: key.into(),
+            entries,
+        });
+    }
+
+    pub fn hmget(&mut self, key: impl Into<String>, fields: Vec<String>) {
+        self.commands.push(Command::HashMultiGet {
+            key: key.into(),
+            fields,
         });
     }
 
@@ -577,6 +1026,66 @@ fn is_write(command: &Command) -> bool {
             | Command::IpsAdd { .. }
             | Command::RiskIncrement { .. }
     )
+}
+
+fn table_combine_name(namespace: &str, table_name: &str) -> String {
+    format!("{namespace}/{table_name}")
+}
+
+pub fn shard_id_for_key(
+    key: &str,
+    first_shard_id: ShardId,
+    shard_count: u64,
+    default_shard_id: ShardId,
+) -> ShardId {
+    if shard_count == 0 {
+        return default_shard_id;
+    }
+    first_shard_id + stable_key_hash(key) % shard_count
+}
+
+pub fn stable_key_hash(key: &str) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in key.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+fn command_key(command: &Command) -> Option<&str> {
+    match command {
+        Command::CommonDelete { key }
+        | Command::CommonExpire { key, .. }
+        | Command::CommonTtl { key }
+        | Command::CommonExists { key }
+        | Command::StringSet { key, .. }
+        | Command::StringSetEx { key, .. }
+        | Command::StringGet { key }
+        | Command::StringDelete { key }
+        | Command::HashSet { key, .. }
+        | Command::HashGet { key, .. }
+        | Command::HashMultiGet { key, .. }
+        | Command::HashMultiSet { key, .. }
+        | Command::HashIncrBy { key, .. }
+        | Command::HashGetAll { key }
+        | Command::HashLen { key }
+        | Command::HashDelete { key, .. }
+        | Command::SetAdd { key, .. }
+        | Command::SetMembers { key }
+        | Command::SetRemove { key, .. }
+        | Command::FeatureAppend { key, .. }
+        | Command::FeatureQuery { key, .. }
+        | Command::FeatureReplace { key, .. }
+        | Command::FeatureDelete { key }
+        | Command::FeatureAggQuery { key, .. }
+        | Command::SequenceAdd { key, .. }
+        | Command::SequenceQuery { key, .. }
+        | Command::IpsAdd { key, .. }
+        | Command::IpsQueryLast { key, .. }
+        | Command::RiskIncrement { key, .. }
+        | Command::RiskCount { key, .. } => Some(key),
+    }
 }
 
 #[cfg(test)]
@@ -742,6 +1251,133 @@ mod tests {
         let table = client.open_table("ns", "tbl", TableOptions::default());
         table.set("k", b"v".to_vec()).unwrap();
         assert_eq!(table.get("k").unwrap(), Some(b"v".to_vec()));
+    }
+
+    #[test]
+    fn table_routes_keys_to_shards_and_pipeline_splits_batches() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        engine.load_shard(2);
+        let server_addr = test_addr(18_220);
+        let meta_addr = test_addr(18_221);
+        let engine_for_server = engine.clone();
+        std::thread::spawn(move || {
+            serve(&server_addr, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    ("POST", "/execute") => {
+                        let req = parse_json::<ExecuteRequest>(&request.body).unwrap();
+                        json_response(200, &engine_for_server.execute(req))
+                    }
+                    ("POST", "/batch_execute") => {
+                        let req = parse_json::<BatchExecuteRequest>(&request.body).unwrap();
+                        json_response(200, &engine_for_server.batch_execute(req))
+                    }
+                    _ => json_response(404, &Status::error("not_found", "not found")),
+                }
+            })
+            .unwrap();
+        });
+        let server_addr_for_meta = test_addr(18_220);
+        std::thread::spawn(move || {
+            serve(&meta_addr, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    ("GET", "/shards/1") | ("GET", "/shards/2") => {
+                        let shard_id = request.path.trim_start_matches("/shards/").parse().unwrap();
+                        json_response(
+                            200,
+                            &GetShardResponse {
+                                status: Status::ok(),
+                                location: Some(ShardLocation {
+                                    shard_id,
+                                    server_addr: server_addr_for_meta.clone(),
+                                }),
+                            },
+                        )
+                    }
+                    _ => json_response(404, &Status::error("not_found", "not found")),
+                }
+            })
+            .unwrap();
+        });
+        wait_for_http(&test_addr(18_221));
+
+        let client = TemporalStoreClient::with_options(ClientOptions {
+            proxy_addr: "127.0.0.1:1".to_string(),
+            meta_addr: Some(test_addr(18_221)),
+            route_cache_ttl_ms: 60_000,
+            ..ClientOptions::default()
+        });
+        let table = client.open_table(
+            "ns",
+            "tbl",
+            TableOptions {
+                first_shard_id: 1,
+                shard_count: 2,
+                ..TableOptions::default()
+            },
+        );
+        let key_one = key_for_shard(&table, 1);
+        let key_two = key_for_shard(&table, 2);
+
+        table.set(&key_one, b"one".to_vec()).unwrap();
+        table.set(&key_two, b"two".to_vec()).unwrap();
+        assert_eq!(table.get(&key_one).unwrap(), Some(b"one".to_vec()));
+        assert_eq!(table.get(&key_two).unwrap(), Some(b"two".to_vec()));
+
+        table
+            .hmset(
+                &key_one,
+                vec![
+                    ("a".to_string(), b"1".to_vec()),
+                    ("b".to_string(), b"2".to_vec()),
+                ],
+            )
+            .unwrap();
+        assert_eq!(table.hlen(&key_one).unwrap(), 2);
+        assert_eq!(
+            table
+                .hmget(&key_one, vec!["a".to_string(), "z".to_string()])
+                .unwrap(),
+            vec![Some(b"1".to_vec()), None]
+        );
+
+        let mut pipeline = table.pipeline();
+        pipeline.set(&key_one, b"one-batch".to_vec());
+        pipeline.set(&key_two, b"two-batch".to_vec());
+        pipeline.get(&key_one);
+        pipeline.get(&key_two);
+        let response = pipeline.sync().unwrap();
+        assert_eq!(response.responses.len(), 4);
+        assert_eq!(
+            response.responses[2].response,
+            CommandResponse::Bytes {
+                value: Some(b"one-batch".to_vec())
+            }
+        );
+        assert_eq!(
+            response.responses[3].response,
+            CommandResponse::Bytes {
+                value: Some(b"two-batch".to_vec())
+            }
+        );
+
+        let stats = client.stats();
+        assert!(stats.route_cache_hits > 0);
+        assert_eq!(stats.route_refreshes, 2);
+        client.close_table(&table).unwrap();
+    }
+
+    fn key_for_shard(table: &TemporalStoreTable, shard_id: ShardId) -> String {
+        (0..10_000)
+            .map(|index| format!("key-{shard_id}-{index}"))
+            .find(|key| table.shard_id_for_key(key) == shard_id)
+            .unwrap()
     }
 
     fn test_addr(port: u16) -> String {
