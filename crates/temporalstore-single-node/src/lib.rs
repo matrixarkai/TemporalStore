@@ -8,6 +8,7 @@ pub mod index_log;
 pub mod meta;
 pub mod oplog;
 pub mod page_store;
+pub mod proxy;
 pub mod raft;
 pub mod rebalance;
 pub mod redis;
@@ -34,6 +35,7 @@ pub use index_log::{IndexLogRecord, IndexLogStats, LocalIndexLogStore};
 pub use meta::{ShardLocation, SingleNodeMeta};
 pub use oplog::{LocalOplogStore, OplogRecord, OplogStats};
 pub use page_store::{LocalPageStore, PageAddress, PageStoreStats};
+pub use proxy::{ProxyInfo, ProxyOptions, ProxyService, ProxyStats};
 pub use raft::{
     MetaCommand, MetaRaftCluster, MetaState, RaftCluster, RaftError, RaftNodeId, RaftRole,
 };

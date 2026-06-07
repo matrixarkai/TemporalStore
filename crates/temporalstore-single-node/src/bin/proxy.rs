@@ -1,75 +1,45 @@
-use temporalstore_single_node::http::{get_json, json_response, parse_json, post_json, serve};
-use temporalstore_single_node::meta::GetShardResponse;
-use temporalstore_single_node::types::{
-    BatchExecuteRequest, BatchExecuteResponse, CommandResponse, ExecuteRequest, ExecuteResponse,
-    Status,
-};
+use temporalstore_single_node::http::serve;
+use temporalstore_single_node::{ProxyOptions, ProxyService};
 
 fn main() {
     let addr = std::env::var("TS_PROXY_BIND_ADDR")
         .or_else(|_| std::env::var("TS_PROXY_ADDR"))
         .unwrap_or_else(|_| "127.0.0.1:17000".to_string());
     let meta_addr = std::env::var("TS_META_ADDR").unwrap_or_else(|_| "127.0.0.1:17001".to_string());
+    let options = ProxyOptions {
+        meta_addr,
+        route_cache_ttl_ms: env_u64("TS_PROXY_ROUTE_CACHE_TTL_MS", 1_000),
+        connect_timeout_ms: env_u64("TS_PROXY_CONNECT_TIMEOUT_MS", 200),
+        io_timeout_ms: env_u64("TS_PROXY_IO_TIMEOUT_MS", 200),
+        max_retries: env_usize("TS_PROXY_MAX_RETRIES", 0),
+        refresh_route_on_backend_error: env_bool("TS_PROXY_REFRESH_ROUTE_ON_BACKEND_ERROR", true),
+    };
+    let proxy = ProxyService::new(options);
     println!("temporalstore proxy listening on {addr}");
-    serve(&addr, move |request| {
-        match (request.method.as_str(), request.path.as_str()) {
-            ("GET", "/health") => json_response(200, &Status::ok()),
-            ("GET", path) if path.starts_with("/shards/") => {
-                match get_json::<GetShardResponse>(&meta_addr, path) {
-                    Ok(response) => json_response(200, &response),
-                    Err(err) => {
-                        json_response(502, &Status::error("metaserver_error", err.to_string()))
-                    }
-                }
-            }
-            ("POST", "/execute") => match parse_json::<ExecuteRequest>(&request.body) {
-                Ok(req) => match route(&meta_addr, req.shard_id) {
-                    Ok(server_addr) => {
-                        match post_json::<_, ExecuteResponse>(&server_addr, "/execute", &req) {
-                            Ok(response) => json_response(200, &response),
-                            Err(err) => {
-                                json_response(502, &execute_error("server_error", err.to_string()))
-                            }
-                        }
-                    }
-                    Err(status) => json_response(404, &execute_error(status.code, status.message)),
-                },
-                Err(err) => json_response(400, &execute_error("bad_request", err.to_string())),
-            },
-            ("POST", "/batch_execute") => match parse_json::<BatchExecuteRequest>(&request.body) {
-                Ok(req) => match route(&meta_addr, req.shard_id) {
-                    Ok(server_addr) => match post_json::<_, BatchExecuteResponse>(
-                        &server_addr,
-                        "/batch_execute",
-                        &req,
-                    ) {
-                        Ok(response) => json_response(200, &response),
-                        Err(err) => {
-                            json_response(502, &Status::error("server_error", err.to_string()))
-                        }
-                    },
-                    Err(status) => json_response(404, &status),
-                },
-                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
-            },
-            _ => json_response(404, &Status::error("not_found", "unknown proxy route")),
-        }
-    })
-    .expect("proxy failed");
+    serve(&addr, move |request| proxy.handle(request)).expect("proxy failed");
 }
 
-fn route(meta_addr: &str, shard_id: u64) -> Result<String, Status> {
-    let response = get_json::<GetShardResponse>(meta_addr, &format!("/shards/{shard_id}"))
-        .map_err(|err| Status::error("metaserver_error", err.to_string()))?;
-    response
-        .location
-        .map(|location| location.server_addr)
-        .ok_or(response.status)
+fn env_u64(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
 }
 
-fn execute_error(code: impl Into<String>, message: impl Into<String>) -> ExecuteResponse {
-    ExecuteResponse {
-        status: Status::error(code, message),
-        response: CommandResponse::Empty,
-    }
+fn env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
+}
+
+fn env_bool(name: &str, default: bool) -> bool {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| match value.to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        })
+        .unwrap_or(default)
 }

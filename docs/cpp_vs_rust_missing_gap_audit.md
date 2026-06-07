@@ -17,6 +17,7 @@ The Rust code now covers the local correctness skeleton for TemporalStore-style 
 - local Raft snapshot behavior
 - proxy/client/metaserver/server binaries
 - table-aware Rust client with typed string/hash/common methods, pipeline batching, HTTP timeout/retry options, and optional direct route refresh
+- proxy route cache with TTL, stats/config endpoints, timeout/retry options, and backend-error route refresh
 - Redis RESP adapter
 - S3-compatible snapshot store crate
 
@@ -24,10 +25,11 @@ It is still not production C++ TemporalStore parity. The largest missing areas a
 
 ## What Was Closed In This Pass
 
-Rust now has an `IndexLog` stream:
+Rust now has an `IndexLog` stream and a more production-shaped HTTP proxy:
 
 ```text
 write command -> append oplog -> write page bytes -> append index-log record -> persist whole index
+client -> proxy route cache -> metaserver route lookup on miss/stale -> data node -> refresh route after backend error
 ```
 
 Files:
@@ -35,15 +37,20 @@ Files:
 - `crates/temporalstore-single-node/src/index_log.rs`
 - `crates/temporalstore-single-node/src/control.rs`
 - `crates/temporalstore-single-node/src/engine.rs`
+- `crates/temporalstore-single-node/src/proxy.rs`
+- `crates/temporalstore-single-node/src/bin/proxy.rs`
 - `crates/temporalstore-single-node/src/lib.rs`
 
 This closes one data-node replay gap from the previous audit. C++ has binary index logs with page/object metadata. Rust now has a JSONL index-log record after every mutation. It is larger and simpler than C++, but gives replica/recovery code a separate stream of committed index metadata instead of relying only on the latest whole index file.
+
+The C++ proxy is still much richer, but Rust no longer blindly looks up the metaserver on every forwarded request. The Rust proxy now owns a reusable `ProxyService` with route caching, forced refresh, backend retry/refresh behavior, basic runtime config, and observable request/cache/error counters.
 
 ## Detailed Gap Matrix
 
 | Area | C++ TemporalStore | Rust Today | Missing |
 | --- | --- | --- | --- |
 | Protocol | brpc/thrift/protobuf APIs and extension protos | JSON/HTTP command API plus RESP adapter | Exact wire compatibility, SDK compatibility, C++ protobuf request/response shapes |
+| Proxy | brpc/thrift server, C++ client wrapper, MetaSyncer, heartbeat/config, consul registration | HTTP proxy service with `/execute`, `/batch_execute`, `/shards`, `/proxy/info`, `/proxy/config`, route cache, stats, retries/timeouts, backend-error route refresh | thrift/brpc compatibility, background MetaSyncer, heartbeat/config from metaserver, consul/auto-register, namespace/table open path |
 | Client SDK | C++ `Client`, `Table`, `Pipeline`, `MetaSyncer`, router, backend pool | Rust `TemporalStoreClient`, `TemporalStoreTable`, `TemporalStorePipeline`, typed methods, retries/timeouts, direct route refresh | brpc/protobuf SDK, background topology sync, CRC64 slot router, VDC affinity, backend failure pool |
 | Routing | namespace/table/partition-set/slot routing | explicit `shard_id` in request, simple metaserver route | namespace/table model, slot hashing, route versioning, table config, partition-set placement |
 | Metaserver | full topology, heartbeat, placement, scheduling, Raft-backed metadata | simple route map, in-process meta Raft, rebalance model | real networked metaserver Raft, persistent metadata, heartbeat/load reports, placement policy, background scheduler |
