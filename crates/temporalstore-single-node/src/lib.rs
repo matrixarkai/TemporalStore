@@ -5,6 +5,7 @@ pub mod e2e;
 pub mod engine;
 pub mod http;
 pub mod meta;
+pub mod oplog;
 pub mod page_store;
 pub mod raft;
 pub mod rebalance;
@@ -26,6 +27,7 @@ pub use e2e::{
 };
 pub use engine::TemporalEngine;
 pub use meta::{ShardLocation, SingleNodeMeta};
+pub use oplog::{LocalOplogStore, OplogRecord, OplogStats};
 pub use page_store::{LocalPageStore, PageAddress, PageStoreStats};
 pub use raft::{
     MetaCommand, MetaRaftCluster, MetaState, RaftCluster, RaftError, RaftNodeId, RaftRole,

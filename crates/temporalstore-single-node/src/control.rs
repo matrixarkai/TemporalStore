@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::cache::CacheStats;
+use crate::oplog::OplogStats;
 use crate::page_store::PageStoreStats;
 use crate::types::{ShardId, Status};
 
@@ -104,6 +105,7 @@ pub struct ShardStats {
     pub risk_records: usize,
     pub cache: CacheStats,
     pub page_store: PageStoreStats,
+    pub oplog: OplogStats,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

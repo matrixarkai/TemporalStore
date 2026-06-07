@@ -12,6 +12,7 @@ use crate::control::{
     SetConfigRequest, ShardInfo, ShardStats, StreamKind, StreamReadRequest, StreamReadResponse,
     StreamRecord, UnloadShardRequest, UnloadShardResponse,
 };
+use crate::oplog::LocalOplogStore;
 use crate::page_store::{LocalPageStore, PageAddress};
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,
@@ -24,6 +25,7 @@ pub struct TemporalEngine {
     shards: Arc<RwLock<HashMap<ShardId, ShardState>>>,
     cache: MultiLayerCache,
     page_store: LocalPageStore,
+    oplog_store: LocalOplogStore,
     index_dir: PathBuf,
     configs: Arc<RwLock<HashMap<ShardId, Config>>>,
     infos: Arc<RwLock<HashMap<ShardId, ShardInfo>>>,
@@ -66,11 +68,14 @@ impl TemporalEngine {
         page_store: LocalPageStore,
         index_dir: impl Into<PathBuf>,
     ) -> Self {
+        let index_dir = index_dir.into();
+        let oplog_store = LocalOplogStore::new(index_dir.join("oplogs"));
         Self {
             shards: Arc::default(),
             cache,
             page_store,
-            index_dir: index_dir.into(),
+            oplog_store,
+            index_dir,
             configs: Arc::default(),
             infos: Arc::default(),
         }
@@ -82,6 +87,10 @@ impl TemporalEngine {
 
     pub fn page_store(&self) -> LocalPageStore {
         self.page_store.clone()
+    }
+
+    pub fn oplog_store(&self) -> LocalOplogStore {
+        self.oplog_store.clone()
     }
 
     pub fn with_local_dirs(
@@ -171,6 +180,21 @@ impl TemporalEngine {
                 response: CommandResponse::Empty,
             };
         };
+        let command = request.command;
+        if self
+            .infos
+            .read()
+            .expect("info lock poisoned")
+            .get(&request.shard_id)
+            .map(|info| info.readonly)
+            .unwrap_or(false)
+            && is_write_command(&command)
+        {
+            return ExecuteResponse {
+                status: Status::error("readonly_shard", "readonly shard rejects write command"),
+                response: CommandResponse::Empty,
+            };
+        }
         let feature_max_size = self
             .configs
             .read()
@@ -184,9 +208,12 @@ impl TemporalEngine {
             feature_max_size,
             request.shard_id,
             shard,
-            request.command,
+            command.clone(),
         );
         if outcome.mutated {
+            if is_write_command(&command) {
+                let _ = self.oplog_store.append(request.shard_id, command);
+            }
             let _ = self.persist_index(request.shard_id, shard);
         }
         ExecuteResponse {
@@ -262,6 +289,7 @@ impl TemporalEngine {
             risk_records: state.risk.len(),
             cache: self.cache.stats(),
             page_store: self.page_store.stats(),
+            oplog: self.oplog_store.stats(shard_id),
         });
         GetStatsResponse {
             status: if stats.is_some() {
@@ -290,7 +318,10 @@ impl TemporalEngine {
                         bytes[start..end].to_vec()
                     }
                 }),
-            StreamKind::Oplog => Ok(Vec::new()),
+            StreamKind::Oplog => self
+                .oplog_store
+                .read_range(request.shard_id, request.offset, request.size)
+                .map_err(|err| err.to_string()),
         };
         match data {
             Ok(data) => StreamReadResponse {
@@ -309,6 +340,28 @@ impl TemporalEngine {
             .end_offset
             .saturating_sub(request.start_offset)
             .min(request.max_bytes);
+        if request.stream_kind == StreamKind::Oplog {
+            return match self.oplog_store.scan(
+                request.shard_id,
+                request.start_offset,
+                request.end_offset,
+                request.max_bytes,
+            ) {
+                Ok(records) => ScanStreamResponse {
+                    status: Status::ok(),
+                    records: records
+                        .into_iter()
+                        .map(|(offset, data)| StreamRecord { offset, data })
+                        .collect(),
+                    end_of_stream: true,
+                },
+                Err(err) => ScanStreamResponse {
+                    status: Status::error("stream_scan_failed", err.to_string()),
+                    records: Vec::new(),
+                    end_of_stream: true,
+                },
+            };
+        }
         let read = self.read_stream(StreamReadRequest {
             shard_id: request.shard_id,
             stream_kind: request.stream_kind,
@@ -1029,6 +1082,29 @@ fn aggregate_feature_values(values: &[Vec<u8>], aggregator: &str) -> i64 {
 
 fn parse_i64(bytes: &Vec<u8>) -> Option<i64> {
     std::str::from_utf8(bytes).ok()?.parse().ok()
+}
+
+fn is_write_command(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::CommonDelete { .. }
+            | Command::CommonExpire { .. }
+            | Command::StringSet { .. }
+            | Command::StringSetEx { .. }
+            | Command::StringDelete { .. }
+            | Command::HashSet { .. }
+            | Command::HashMultiSet { .. }
+            | Command::HashIncrBy { .. }
+            | Command::HashDelete { .. }
+            | Command::SetAdd { .. }
+            | Command::SetRemove { .. }
+            | Command::FeatureAppend { .. }
+            | Command::FeatureReplace { .. }
+            | Command::FeatureDelete { .. }
+            | Command::SequenceAdd { .. }
+            | Command::IpsAdd { .. }
+            | Command::RiskIncrement { .. }
+    )
 }
 
 fn cached_response(
@@ -1867,5 +1943,90 @@ mod tests {
         });
         assert_eq!(scan.records.len(), 1);
         assert_eq!(scan.records[0].data, b"stream-value".to_vec());
+    }
+
+    #[test]
+    fn control_api_reads_and_scans_oplog_stream() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "k1".to_string(),
+                value: b"v1".to_vec(),
+            },
+        });
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "k2".to_string(),
+                value: b"v2".to_vec(),
+            },
+        });
+
+        let stream = engine.read_stream(StreamReadRequest {
+            shard_id: 1,
+            stream_kind: StreamKind::Oplog,
+            page_segment_id: 0,
+            offset: 0,
+            size: 4096,
+        });
+        assert!(stream.status.ok);
+        let text = String::from_utf8(stream.data).unwrap();
+        assert!(text.contains("\"sequence\":1"));
+        assert!(text.contains("\"sequence\":2"));
+
+        let scan = engine.scan_stream(ScanStreamRequest {
+            shard_id: 1,
+            stream_kind: StreamKind::Oplog,
+            page_segment_id: 0,
+            start_offset: 0,
+            end_offset: 4096,
+            max_bytes: 4096,
+        });
+        assert_eq!(scan.records.len(), 2);
+        assert_eq!(engine.get_stats(1).stats.unwrap().oplog.last_sequence, 2);
+    }
+
+    #[test]
+    fn readonly_shard_rejects_writes_but_allows_reads() {
+        let engine = TemporalEngine::default();
+        assert!(engine
+            .load_shard_with(LoadShardRequest {
+                shard_id: 1,
+                load_version: 1,
+                shard_uri: "file:///tmp/readonly".to_string(),
+                start_routing_slot: 0,
+                end_routing_slot: 99,
+                readonly: true,
+                table_name: "table".to_string(),
+            })
+            .status
+            .ok);
+
+        let write = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            },
+        });
+        assert!(!write.status.ok);
+        assert_eq!(write.status.code, "readonly_shard");
+
+        let read = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: "k".to_string(),
+            },
+        });
+        assert!(read.status.ok);
+        assert_eq!(read.response, CommandResponse::Bytes { value: None });
     }
 }
