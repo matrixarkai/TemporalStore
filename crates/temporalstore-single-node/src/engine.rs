@@ -1147,7 +1147,7 @@ fn cached_response(
     key: CacheKey,
     source: impl FnOnce() -> CommandResponse,
 ) -> CommandResponse {
-    if let Some(bytes) = cache.get_memory(&key) {
+    if let Ok(Some(bytes)) = cache.get(&key) {
         if let Ok(response) = serde_json::from_slice::<CommandResponse>(&bytes) {
             return response;
         }
@@ -1330,11 +1330,12 @@ mod tests {
                 value: Some(b"v".to_vec())
             }
         );
-        assert_eq!(page_store.stats().reads, 2);
+        assert_eq!(page_store.stats().reads, 1);
+        assert_eq!(cache.stats().disk_hits, 1);
     }
 
     #[test]
-    fn local_file_read_pushes_response_into_multi_layer_cache() {
+    fn three_layer_cache_reads_memory_then_block_cache_then_local_file() {
         let dir = tempfile::tempdir().unwrap();
         let engine = TemporalEngine::with_local_dirs(
             1024,
@@ -1371,10 +1372,54 @@ mod tests {
         assert!(cache.stats().memory_bytes > 0);
         assert!(cache.stats().disk_bytes > 0);
 
+        let memory = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: "k".to_string(),
+            },
+        });
+        assert_eq!(
+            memory.response,
+            CommandResponse::Bytes {
+                value: Some(b"v".to_vec())
+            }
+        );
+        assert_eq!(cache.stats().memory_hits, 1);
+        assert_eq!(page_store.stats().reads, 1);
+
         cache.clear_memory_for_test();
-        let cached = cache.get(&CacheKey::string(1, "k")).unwrap();
-        assert!(cached.is_some());
+        let block_cache = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: "k".to_string(),
+            },
+        });
+        assert_eq!(
+            block_cache.response,
+            CommandResponse::Bytes {
+                value: Some(b"v".to_vec())
+            }
+        );
         assert_eq!(cache.stats().disk_hits, 1);
+        assert_eq!(page_store.stats().reads, 1);
+
+        cache.invalidate(&CacheKey::string(1, "k")).unwrap();
+        let local_file = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: "k".to_string(),
+            },
+        });
+        assert_eq!(
+            local_file.response,
+            CommandResponse::Bytes {
+                value: Some(b"v".to_vec())
+            }
+        );
+        assert_eq!(page_store.stats().reads, 2);
+        assert_eq!(cache.stats().puts, 2);
+        assert!(cache.stats().memory_bytes > 0);
+        assert!(cache.stats().disk_bytes > 0);
     }
 
     #[test]
