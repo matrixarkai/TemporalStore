@@ -1,255 +1,98 @@
 {
-  "cluster": {
-    "name": "aws-scale",
-    "status": "ok",
-    "environment": "AWS test cluster results",
-    "metaservers": 1,
-    "data_nodes": 2
-  },
-  "health": {
-    "metaserver": { "status": "ok", "detail": "1 metaserver used for tests" },
-    "proxy": { "status": "ok", "detail": "proxy process deployed with UI node" },
-    "exporter": { "status": "pending", "detail": "metrics endpoint pending production wiring" },
-    "data_nodes": { "status": "ok", "detail": "primary + secondary tested" },
-    "efs": { "status": "ok", "detail": "shared file store path tested" },
-    "blockcache": { "status": "ok", "detail": "DRAM + SSD cache enabled in runtime flags" }
-  },
-  "runtime_config": {
-    "profile": "low-latency EFS replay",
-    "storage_zone_size": "256 MB",
-    "stream_max_blob_size": "256 MB",
-    "storage_async": "false",
-    "storage_oplog_delay_dump_length": "0",
-    "replicator_out_of_sync_s": "120",
-    "replicator_loop_interval_us": "1000",
-    "replicator_max_oplog_per_loop": "20000",
-    "replicator_max_indexlog_per_loop": "20000",
-    "replicator_update_remote_interval_ms": "20",
-    "enable_blockcache": "true",
-    "blockcache_dram_capacity": "64 MB",
-    "blockcache_ssd_capacity": "2 GB",
-    "blockcache_ssd_instance_only": "true",
-    "modes": [
-      {
-        "name": "low-latency",
-        "oplog_batch": "1 ms / 256 KB",
-        "replay_loop": "1 ms",
-        "use": "secondary visibility and read-after-replay tests"
-      },
-      {
-        "name": "default",
-        "oplog_batch": "2 ms / 512 KB",
-        "replay_loop": "1-5 ms",
-        "use": "balanced online serving"
-      },
-      {
-        "name": "throughput",
-        "oplog_batch": "5 ms / 1 MB",
-        "replay_loop": "5 ms",
-        "use": "high-throughput ingest"
-      },
-      {
-        "name": "batch ingest",
-        "oplog_batch": "10-50 ms / 4 MB",
-        "replay_loop": "10 ms",
-        "use": "offline or backfill load"
-      }
+  "updatedAt": "2026-06-07T01:20:00Z",
+  "prometheusUrl": "../temporalstore-vars.prom",
+  "topology": [
+    {
+      "role": "Metaserver, proxy, UI",
+      "instance": "i-05f55360d92c43908",
+      "privateAddress": "10.70.1.161",
+      "purpose": "Control plane, client/test runner, static UI",
+      "status": "running"
+    },
+    {
+      "role": "TemporalStore data01",
+      "instance": "i-0cfbef56e86551535",
+      "privateAddress": "10.70.1.214",
+      "purpose": "Primary/replica data service on port 17001",
+      "status": "running"
+    },
+    {
+      "role": "TemporalStore data02",
+      "instance": "i-04c93ad8271e5b64a",
+      "privateAddress": "10.70.1.24",
+      "purpose": "Primary/replica data service on port 17002",
+      "status": "running"
+    }
+  ],
+  "products": [
+    {
+      "id": "temporalstore",
+      "name": "TemporalStore",
+      "href": "./temporalstore.html",
+      "status": "Live metrics wired",
+      "summary": "Online temporal feature engine for high-cardinality windows, filtered event state, long sequence features, and persisted serving.",
+      "tags": ["temporal windows", "risk features", "sequence state", "Prometheus live"]
+    },
+    {
+      "id": "matrixdb",
+      "name": "MatrixDB",
+      "href": "./matrixdb.html",
+      "status": "Observability page ready",
+      "summary": "Multi-tenant KV/profile engine for large online profile objects, hot-key serving, cache-plus-storage, and Redis-compatible access.",
+      "tags": ["multi-tenant", "profile KV", "Redis path", "cache storage"]
+    },
+    {
+      "id": "matrixkv",
+      "name": "MatrixKV",
+      "href": "./matrixkv.html",
+      "status": "Observability page ready",
+      "summary": "Transactional distributed KV service with timestamp coordination, partitioned storage, strong consistency, and release deployment paths.",
+      "tags": ["transaction KV", "TSO", "strong consistency", "partitioned"]
+    }
+  ],
+  "temporalStore": {
+    "latestRun": {
+      "name": "AWS 30-minute service smoke",
+      "runDir": "/var/lib/temporalstore/scale30_20260607T003847Z",
+      "iterations": 1525,
+      "duration": "30 minutes",
+      "table": "aws30m_primary/temporalagg",
+      "notes": "Core modules stayed stable; TemporalAggregate writes currently fail with a response-size check and need follow-up debugging."
+    },
+    "modules": [
+      { "name": "STRING", "result": "1525 pass", "state": "ok" },
+      { "name": "COMMON", "result": "1525 pass", "state": "ok" },
+      { "name": "HASH", "result": "1525 pass", "state": "ok" },
+      { "name": "SET", "result": "1525 pass", "state": "ok" },
+      { "name": "FEATURE", "result": "1525 pass", "state": "ok" },
+      { "name": "IPS", "result": "1525 pass", "state": "ok" },
+      { "name": "RISK", "result": "1525 pass", "state": "ok" },
+      { "name": "TEMPORAL_AGGREGATE", "result": "blocked by response-size check", "state": "bad" }
+    ],
+    "issues": [
+      "TemporalAggregate secondary replay/read visibility must be fixed before aggregate secondary reads are trusted.",
+      "Two-replica table creation currently hits Missing condition info in one path.",
+      "Prometheus scrape is live for TemporalStore; MatrixDB and MatrixKV need their own target registration."
+    ],
+    "kpis": [
+      { "label": "Topology", "value": "1 meta + 2 data", "hint": "Current AWS reuse cluster" },
+      { "label": "Stable modules", "value": "7 of 8", "hint": "Latest 30-minute service smoke" },
+      { "label": "Prometheus sources", "value": "3", "hint": "metaserver, data01, data02" },
+      { "label": "Exporter interval", "value": "5s", "hint": "vars-to-Prometheus bridge" }
     ]
   },
-  "nodes": [
-    {
-      "name": "meta-01",
-      "role": "metaserver + proxy + UI",
-      "status": "ok",
-      "endpoint": "10.70.1.88:17000",
-      "cpu": "t3.small / 2 vCPU",
-      "memory": "2 GB",
-      "storage": "root EBS",
-      "replay": "n/a"
-    },
-    {
-      "name": "data-01",
-      "role": "primary",
-      "status": "ok",
-      "endpoint": "10.70.1.139:17001",
-      "cpu": "c7i.large / 2 vCPU",
-      "memory": "4 GB",
-      "storage": "EFS + 10 GB gp3 SSD cache",
-      "replay": "writer"
-    },
-    {
-      "name": "data-02",
-      "role": "secondary",
-      "status": "ok",
-      "endpoint": "10.70.1.195:17002",
-      "cpu": "c7i.large / 2 vCPU",
-      "memory": "4 GB",
-      "storage": "EFS + 10 GB gp3 SSD cache",
-      "replay": "forced-secondary lag tested"
-    }
-  ],
-  "replication": {
-    "mode": "shared file store replay",
-    "secondary_lag_ms": "0 ms at first poll for 2-16 threads",
-    "replay_source": "EFS shared file store",
-    "visibility": "10k / 10k visible",
-    "lag_matrix": [
-      { "threads": "2", "visible": "10,000 / 10,000", "missing": "0", "p99_lag": "0 ms", "max_lag": "0 ms" },
-      { "threads": "4", "visible": "10,000 / 10,000", "missing": "0", "p99_lag": "0 ms", "max_lag": "0 ms" },
-      { "threads": "8", "visible": "10,000 / 10,000", "missing": "0", "p99_lag": "0 ms", "max_lag": "0 ms" },
-      { "threads": "16", "visible": "10,000 / 10,000", "missing": "0", "p99_lag": "0 ms", "max_lag": "0 ms" },
-      { "threads": "64 overload", "visible": "10,000 / 10,000", "missing": "0", "p99_lag": "4586 ms", "max_lag": "4932 ms" }
+  "productDetails": {
+    "matrixdb": [
+      { "title": "Multi-tenant control", "body": "Designed around tenant and namespace isolation so profile serving can scale without mixing ownership or quota signals." },
+      { "title": "Large online profiles", "body": "Targets profile objects, hot keys, and cache-plus-storage access patterns where simple in-memory-only caching becomes expensive." },
+      { "title": "Protocol flexibility", "body": "The observation page tracks Redis-compatible and direct service paths separately so migration issues are visible." },
+      { "title": "Placement health", "body": "Shard placement, rebalance state, failover, and storage movement are the first-class runtime signals to wire." }
+    ],
+    "matrixkv": [
+      { "title": "Strong consistency path", "body": "Tracks transaction commits, timestamp allocation, partition state, and leader health for correctness-first KV workloads." },
+      { "title": "Partitioned serving", "body": "Observability should separate master, timestamp service, proxy, and partition-server signals." },
+      { "title": "Release packaging", "body": "Client and server packages should expose dependency loading and direct SDK/proxy readiness." },
+      { "title": "Scale tests", "body": "Read/write latency, retry pressure, and CPU should be collected under fixed concurrency levels for each node type." }
     ]
-  },
-  "scale_tests": [
-    {
-      "name": "TemporalAggregate normal concurrency",
-      "status": "passed",
-      "write_qps": "1300",
-      "read_p50_ms": "0.659",
-      "read_p99_ms": "8.087",
-      "secondary_lag_ms": "0",
-      "threads": "16 threads",
-      "result_dir": "/tmp/temporalstore-less-thread-tests-20260604_083723",
-      "workload": "10k high-cardinality aggregate features, 12 buckets per feature"
-    },
-    {
-      "name": "Forced-secondary replay",
-      "status": "passed",
-      "write_qps": "n/a",
-      "read_p50_ms": "n/a",
-      "read_p99_ms": "n/a",
-      "secondary_lag_ms": "0 at first poll",
-      "threads": "2/4/8/16 threads",
-      "result_dir": "/tmp/temporalstore-less-thread-lag-rest-20260604_093949",
-      "workload": "all-feature visibility after EFS replay"
-    },
-    {
-      "name": "64-thread overload",
-      "status": "warning",
-      "write_qps": "4004",
-      "read_p50_ms": "1.911",
-      "read_p99_ms": "6.011",
-      "secondary_lag_ms": "4932 max",
-      "threads": "64 threads on 2-vCPU nodes",
-      "result_dir": "/tmp/temporalstore-debug-force-secondary-idc-20260604_083103",
-      "workload": "stress mode, useful for overload behavior rather than normal p99 claims"
-    }
-  ],
-  "scale_matrix": [
-    { "workload": "primary aggregate", "threads": "2", "features": "10,000", "writes": "120,000", "write_qps": "187", "write_p99": "21.0 ms", "read_qps": "3437", "read_p99": "4.0 ms", "errors": "0" },
-    { "workload": "default read aggregate", "threads": "2", "features": "10,000", "writes": "120,000", "write_qps": "186", "write_p99": "21.0 ms", "read_qps": "2901", "read_p99": "7.1 ms", "errors": "0" },
-    { "workload": "primary aggregate", "threads": "4", "features": "10,000", "writes": "120,000", "write_qps": "355", "write_p99": "22.1 ms", "read_qps": "9451", "read_p99": "1.0 ms", "errors": "0" },
-    { "workload": "default read aggregate", "threads": "4", "features": "10,000", "writes": "120,000", "write_qps": "346", "write_p99": "22.6 ms", "read_qps": "7656", "read_p99": "3.7 ms", "errors": "0" },
-    { "workload": "primary aggregate", "threads": "8", "features": "10,000", "writes": "120,000", "write_qps": "707", "write_p99": "21.4 ms", "read_qps": "12953", "read_p99": "3.4 ms", "errors": "0" },
-    { "workload": "default read aggregate", "threads": "8", "features": "10,000", "writes": "120,000", "write_qps": "723", "write_p99": "21.4 ms", "read_qps": "19120", "read_p99": "1.0 ms", "errors": "0" },
-    { "workload": "primary aggregate", "threads": "16", "features": "10,000", "writes": "120,000", "write_qps": "1300", "write_p99": "21.9 ms", "read_qps": "11494", "read_p99": "8.1 ms", "errors": "0" },
-    { "workload": "default read aggregate", "threads": "16", "features": "10,000", "writes": "120,000", "write_qps": "1308", "write_p99": "23.8 ms", "read_qps": "20833", "read_p99": "4.5 ms", "errors": "0" }
-  ],
-  "module_tests": [
-    {
-      "module": "TemporalAggregate",
-      "test": "high-cardinality window aggregate",
-      "status": "passed",
-      "write_path": "direct SDK",
-      "read_path": "primary + replica-eligible",
-      "latency": "primary p99 1.0-8.1 ms at 2-16 threads",
-      "notes": "count aggregation across 10k features x 12 buckets"
-    },
-    {
-      "module": "Feature",
-      "test": "module ingest/query",
-      "status": "pending",
-      "write_path": "direct SDK",
-      "read_path": "primary",
-      "latency": "-",
-      "notes": "profile-like feature object"
-    },
-    {
-      "module": "IPS",
-      "test": "risk/frequency cap sample",
-      "status": "pending",
-      "write_path": "direct SDK",
-      "read_path": "primary",
-      "latency": "-",
-      "notes": "slot/table/action dimensions"
-    },
-    {
-      "module": "STRING",
-      "test": "SET/GET baseline",
-      "status": "passed",
-      "write_path": "direct SDK and proxy",
-      "read_path": "primary and replica-eligible",
-      "latency": "smoke passed; scale needs clean rerun",
-      "notes": "plain KV baseline"
-    }
-  ],
-  "data_models": [
-    {
-      "name": "TemporalAggregate",
-      "status": "passed",
-      "use_case": "high-cardinality temporal counters, filtered risk features, frequency caps, and arbitrary window feature serving",
-      "write_shape": "INCR(key, metric, dimensions, timestamp_ms, bucket_width_ms, value, op)",
-      "query_shape": "QUERY(key, metric, dimensions, start_ms, end_ms, bucket_width_ms, op)",
-      "storage_shape": "bucketed aggregate state grouped inside an entity object",
-      "consistency": "primary writes; secondary replay via shared file store",
-      "test_status": "10k features x 12 buckets passed at 2/4/8/16 threads"
-    },
-    {
-      "name": "Sequence Feature",
-      "status": "passed",
-      "use_case": "long behavior history, recent actions, user journeys, and filtered event windows for inference features",
-      "write_shape": "APPEND(key, timestamp_ms, fields)",
-      "query_shape": "SCAN(key, start_ms, end_ms, filters, limit/order)",
-      "storage_shape": "time-ordered rows per entity with filterable fields",
-      "consistency": "primary writes; replica reads after replay",
-      "test_status": "100 keys x 1000 rows/key latency test passed"
-    },
-    {
-      "name": "Feature/Profile",
-      "status": "pending",
-      "use_case": "latest profile feature blobs, multi-field user/device profile, and model-serving feature bundles",
-      "write_shape": "UPSERT(key, feature_group, fields, timestamp/version)",
-      "query_shape": "GET(key, feature_group, selected_fields)",
-      "storage_shape": "structured feature object with multiple fields",
-      "consistency": "primary write path expected; secondary validation pending",
-      "test_status": "module coverage pending clean scale rerun"
-    },
-    {
-      "name": "IPS",
-      "status": "pending",
-      "use_case": "risk/frequency-cap style state keyed by uid, slot, table, and action type",
-      "write_shape": "UPSERT/INCR(uid, slot, table, action_type, timestamp/value)",
-      "query_shape": "GET/SCAN(uid, slot, table, action_type, window/filter)",
-      "storage_shape": "business-specific indexed state for risk and serving",
-      "consistency": "implementation details need deeper test coverage",
-      "test_status": "sample tests pending"
-    },
-    {
-      "name": "Hash / Wide KV",
-      "status": "pending",
-      "use_case": "many subkeys under one entity, reducing object count for profile-like serving",
-      "write_shape": "HMSET(key, subkey, value)",
-      "query_shape": "HMGET(key, subkeys)",
-      "storage_shape": "one object with many subkeys/fields",
-      "consistency": "primary write path expected; subkey TTL remains a known gap",
-      "test_status": "coverage pending"
-    },
-    {
-      "name": "STRING",
-      "status": "passed",
-      "use_case": "plain KV baseline, cache compatibility, and simple Redis-like SET/GET",
-      "write_shape": "SET(key, value)",
-      "query_shape": "GET(key)",
-      "storage_shape": "single serialized value per key",
-      "consistency": "primary write; replica-eligible read after replay",
-      "test_status": "smoke passed; full scale baseline pending clean rerun"
-    }
-  ],
-  "diagnostics": {
-    "last_result_dir": "/tmp/temporalstore-less-thread-tests-20260604_083723",
-    "release_build": "ready before AWS teardown",
-    "proxy_sdk": "deployed with metaserver node",
-    "direct_sdk": "used for aggregate scale tests"
   }
 }
