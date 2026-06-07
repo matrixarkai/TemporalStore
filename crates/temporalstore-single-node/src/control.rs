@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::cache::CacheStats;
 use crate::oplog::OplogStats;
 use crate::page_store::PageStoreStats;
+use crate::types::{BatchExecuteResponse, Command, ExecuteResponse};
 use crate::types::{ShardId, Status};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -112,6 +113,32 @@ pub struct ShardStats {
 pub struct GetStatsResponse {
     pub status: Status,
     pub stats: Option<ShardStats>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CheckedExecuteRequest {
+    pub shard_id: ShardId,
+    pub load_version: u64,
+    pub command: Command,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CheckedExecuteResponse {
+    pub status: Status,
+    pub response: ExecuteResponse,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CheckedBatchExecuteRequest {
+    pub shard_id: ShardId,
+    pub load_version: u64,
+    pub commands: Vec<Command>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CheckedBatchExecuteResponse {
+    pub status: Status,
+    pub response: BatchExecuteResponse,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

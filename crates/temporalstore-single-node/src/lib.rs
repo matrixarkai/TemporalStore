@@ -21,10 +21,11 @@ pub use client::{
     TableOptions, TemporalStoreClient, TemporalStorePipeline, TemporalStoreTable,
 };
 pub use control::{
-    Config, GetConfigResponse, GetInfoResponse, GetStatsResponse, LoadShardRequest,
-    LoadShardResponse, MembershipUpdateRequest, ScanStreamRequest, ScanStreamResponse,
-    SetConfigRequest, StreamKind, StreamReadRequest, StreamReadResponse, UnloadShardRequest,
-    UnloadShardResponse,
+    CheckedBatchExecuteRequest, CheckedBatchExecuteResponse, CheckedExecuteRequest,
+    CheckedExecuteResponse, Config, GetConfigResponse, GetInfoResponse, GetStatsResponse,
+    LoadShardRequest, LoadShardResponse, MembershipUpdateRequest, ScanStreamRequest,
+    ScanStreamResponse, SetConfigRequest, StreamKind, StreamReadRequest, StreamReadResponse,
+    UnloadShardRequest, UnloadShardResponse,
 };
 pub use e2e::{
     AsyncStorageJournal, EndToEndWorkflow, KillSwitches, ReplicaReadPolicy, RoutingClient,

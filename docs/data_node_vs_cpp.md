@@ -9,6 +9,8 @@ The C++ data node is centered on `PartitionManager` and partition storage compon
 - `ReadPartitionStream`, `ScanPartitionStream`
 - partition worker dispatch
 - readonly partition behavior
+- load-version guarded execution
+- heartbeat/load reporting to metaserver
 - `ObjectManager` for hot object state
 - `OpLogger` for mutation logs
 - `Index` / `IndexLog` for page/object metadata
@@ -43,6 +45,8 @@ Rust now covers these data-node surfaces:
 - oplog stream read/scan
 - index-log stream read/scan
 - readonly shard rejects writes
+- checked execute/batch execute validates loaded `load_version`
+- server register plus periodic heartbeat/load report to metaserver
 - local page file persistence
 - local index JSON persistence
 - local read-through memory/disk cache
@@ -76,12 +80,29 @@ append oplog -> write page bytes -> append index-log record -> persist whole ind
 
 The index-log record contains the current shard index metadata after the mutation. It is not yet C++'s compact binary `IndexLog`, but it gives replica/recovery tests a separate stream of committed page-address metadata instead of only a latest whole-index file.
 
+This pass also adds C++-style server-side load-version validation:
+
+```text
+/execute_checked
+/batch_execute_checked
+```
+
+These routes reject requests whose `load_version` does not match the currently loaded shard version. The original `/execute` and `/batch_execute` routes remain for compatibility with the current proxy/client path.
+
+The Rust `server` binary now registers itself with the metaserver and periodically sends:
+
+```text
+server_addr, binary_version, shard_id, key_count, cache memory bytes
+```
+
+This is much smaller than the C++ heartbeat payload, but it gives the Rust metaserver real load signals for placement/rebalance tests.
+
 ## What Is Still Missing Vs C++
 
 Still missing major data-node internals:
 
 - partition worker pools and async callback execution
-- request controller/load-version enforcement
+- request controller deadline/cancellation handling
 - batch write/read splitting and pin-primary details at server layer
 - binary protobuf-compatible `OpLog`, `IndexLog`, and `PageHeader`
 - object manager with object ids/page ids
@@ -96,7 +117,7 @@ Still missing major data-node internals:
 - primary-pull `RemotePartitionStream`
 - retry/refresh logic when primary changes
 - membership finish callbacks to metaserver
-- heartbeat/load reporting
+- full heartbeat/load reporting payload parity
 - storage quotas and admission control
 - per-partition metrics equivalent to C++ `PartitionInfo`
 - real readonly replicator loop

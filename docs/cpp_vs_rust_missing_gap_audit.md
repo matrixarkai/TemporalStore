@@ -20,6 +20,7 @@ The Rust code now covers the local correctness skeleton for TemporalStore-style 
 - proxy route cache with TTL, stats/config endpoints, timeout/retry options, and backend-error route refresh
 - client key-to-shard routing, table open/close cache, stats, expanded typed methods, and multi-shard pipeline grouping
 - metaserver namespace/table topology, server/proxy register/list/heartbeat, topology versioning, and meta stats/info
+- data-node checked execute/batch by load version, server registration, periodic heartbeat load reporting, and loaded-shard stats
 - Redis RESP adapter
 - S3-compatible snapshot store crate
 
@@ -51,6 +52,8 @@ The Rust client also now has a small table router: `key -> stable hash -> shard_
 
 The Rust metaserver now exposes a richer HTTP/JSON control-plane skeleton: server/proxy inventory, heartbeat liveness, namespace/table metadata, and table topology with slot ranges, shard ids, primary endpoint, replicas, and topology-version not-modified behavior.
 
+The Rust data node now exposes C++-style checked execution routes that reject stale `load_version` requests, and the server binary reports loaded shard stats to the metaserver heartbeat endpoint.
+
 ## Detailed Gap Matrix
 
 | Area | C++ TemporalStore | Rust Today | Missing |
@@ -60,7 +63,7 @@ The Rust metaserver now exposes a richer HTTP/JSON control-plane skeleton: serve
 | Client SDK | C++ `Client`, `Table`, `Pipeline`, `MetaSyncer`, router, backend pool | Rust `TemporalStoreClient`, `TemporalStoreTable`, `TemporalStorePipeline`, typed methods, open/close table cache, stats, retries/timeouts, direct route refresh | brpc/protobuf SDK, background topology sync, exact CRC64 slot router, VDC affinity, backend failure pool |
 | Routing | namespace/table/partition-set/slot routing | key-to-shard routing from table options, explicit `shard_id` request, simple metaserver route | namespace/table topology from metaserver, exact slot map, route versioning, partition-set placement |
 | Metaserver | full topology, heartbeat, placement, scheduling, Raft-backed metadata | shard route map, namespace/table topology, server/proxy register/list/heartbeat, meta stats, in-process meta Raft, rebalance model | networked metaserver Raft for HTTP mutations, persistent metabase, placement rule chain, background scheduler, failure detector |
-| Data node execution | partition workers, async callbacks, load-version guards | direct `TemporalEngine` execution under a lock | worker pools, request controllers, load-version validation, backpressure |
+| Data node execution | partition workers, async callbacks, load-version guards | direct `TemporalEngine` execution under a lock, plus checked execute/batch routes for load-version validation | worker pools, request controllers, deadlines/cancellation, backpressure |
 | Hot object model | `ObjectManager`, model objects, dirty slots | per-type maps of key/field/timestamp to `PageAddress` | object ids, dirty slot tracking, object lifecycle, model-specific memory layout |
 | Oplog | binary mutation log with replay/reclaim semantics | JSONL command oplog | binary/protobuf compatibility, fsync policy, reclaim boundary, replay into hot object manager |
 | Index log | binary metadata/index log | JSONL index-log with current index metadata | compact incremental deltas, page/object ids, checksums, replay ordering with oplog and page dumps |
@@ -90,7 +93,7 @@ These cannot be honestly marked done yet:
 - add crash-safe WAL/index/page recovery tests
 - wire engine snapshots into Raft snapshot install
 - expose Prometheus metrics over HTTP
-- connect real servers/proxies to heartbeat/load-report endpoints
+- expand heartbeat/load-report payloads and connect them to placement decisions
 
 ## P1 Still Missing Before C++ Feature Parity
 
@@ -112,5 +115,5 @@ The next best implementation chunks are:
 1. Add durable WAL/recovery tests around oplog + index-log + page stream.
 2. Add a replica replay loop that consumes checkpoint, page stream, index-log, and oplog.
 3. Replace the local Raft model with OpenRaft or raft-rs.
-4. Connect metaserver table topology and heartbeat reports to real placement/rebalance workflows.
+4. Connect metaserver table topology and data-node heartbeat reports to real placement/rebalance workflows.
 5. Port IPS and Risk semantics from the C++ protos as separate modules.

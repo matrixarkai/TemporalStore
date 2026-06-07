@@ -1,12 +1,15 @@
 use temporalstore_single_node::engine::TemporalEngine;
 use temporalstore_single_node::http::{json_response, parse_json, post_json, serve};
-use temporalstore_single_node::meta::{RegisterShardRequest, RegisterShardResponse};
+use temporalstore_single_node::meta::{
+    AckResponse, RegisterServerRequest, RegisterShardRequest, RegisterShardResponse,
+    ServerHeartbeatRequest, ServerHeartbeatResponse, ShardLoad,
+};
 use temporalstore_single_node::types::{
     BatchExecuteRequest, ExecuteRequest, ExecuteResponse, Status,
 };
 use temporalstore_single_node::{
-    LoadShardRequest, MembershipUpdateRequest, ScanStreamRequest, SetConfigRequest,
-    StreamReadRequest, UnloadShardRequest,
+    CheckedBatchExecuteRequest, CheckedExecuteRequest, LoadShardRequest, MembershipUpdateRequest,
+    ScanStreamRequest, SetConfigRequest, StreamReadRequest, UnloadShardRequest,
 };
 
 fn main() {
@@ -34,6 +37,38 @@ fn main() {
         TemporalEngine::with_local_dirs(cache_memory_bytes, cache_dir, page_store_dir, index_dir);
     engine.load_shard(shard_id);
 
+    let node_id = std::env::var("TS_SERVER_NODE_ID")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_default();
+    let location = std::env::var("TS_SERVER_LOCATION").unwrap_or_default();
+    let binary_version = env!("CARGO_PKG_VERSION").to_string();
+    let heartbeat_interval_ms = std::env::var("TS_SERVER_HEARTBEAT_INTERVAL_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3_000);
+
+    let server_registration = RegisterServerRequest {
+        server_addr: advertised_addr.clone(),
+        node_id,
+        location,
+        binary_version: binary_version.clone(),
+    };
+    match post_json::<_, AckResponse>(&meta_addr, "/servers/register", &server_registration) {
+        Ok(response) if response.status.ok => {
+            println!("registered server {advertised_addr} with metaserver {meta_addr}");
+        }
+        Ok(response) => {
+            eprintln!(
+                "metaserver rejected server registration: {}",
+                response.status.message
+            );
+        }
+        Err(err) => {
+            eprintln!("failed to register server {advertised_addr}: {err}");
+        }
+    }
+
     let registration = RegisterShardRequest {
         shard_id,
         server_addr: advertised_addr.clone(),
@@ -53,10 +88,23 @@ fn main() {
         }
     }
 
+    start_heartbeat_loop(
+        engine.clone(),
+        meta_addr.clone(),
+        advertised_addr.clone(),
+        binary_version.clone(),
+        heartbeat_interval_ms,
+    );
+
     println!("temporalstore server listening on {addr}");
     serve(&addr, move |request| {
         match (request.method.as_str(), request.path.as_str()) {
             ("GET", "/health") => json_response(200, &Status::ok()),
+            ("GET", "/server/info") => json_response(200, &engine.loaded_shard_stats()),
+            ("POST", "/heartbeat") => json_response(
+                200,
+                &send_heartbeat(&engine, &meta_addr, &advertised_addr, &binary_version),
+            ),
             ("POST", "/load") => match parse_json::<LoadShardRequest>(&request.body) {
                 Ok(req) => json_response(200, &engine.load_shard_with(req)),
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
@@ -75,10 +123,22 @@ fn main() {
                     },
                 ),
             },
+            ("POST", "/execute_checked") => {
+                match parse_json::<CheckedExecuteRequest>(&request.body) {
+                    Ok(req) => json_response(200, &engine.execute_checked(req)),
+                    Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+                }
+            }
             ("POST", "/batch_execute") => match parse_json::<BatchExecuteRequest>(&request.body) {
                 Ok(req) => json_response(200, &engine.batch_execute(req)),
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
             },
+            ("POST", "/batch_execute_checked") => {
+                match parse_json::<CheckedBatchExecuteRequest>(&request.body) {
+                    Ok(req) => json_response(200, &engine.batch_execute_checked(req)),
+                    Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+                }
+            }
             ("POST", "/set_config") => match parse_json::<SetConfigRequest>(&request.body) {
                 Ok(req) => json_response(200, &engine.set_config(req)),
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
@@ -122,4 +182,54 @@ fn main() {
         }
     })
     .expect("server failed");
+}
+
+fn start_heartbeat_loop(
+    engine: TemporalEngine,
+    meta_addr: String,
+    server_addr: String,
+    binary_version: String,
+    interval_ms: u64,
+) {
+    if interval_ms == 0 {
+        return;
+    }
+    std::thread::spawn(move || loop {
+        let _ = send_heartbeat(&engine, &meta_addr, &server_addr, &binary_version);
+        std::thread::sleep(std::time::Duration::from_millis(interval_ms));
+    });
+}
+
+fn send_heartbeat(
+    engine: &TemporalEngine,
+    meta_addr: &str,
+    server_addr: &str,
+    binary_version: &str,
+) -> ServerHeartbeatResponse {
+    let shard_loads = engine
+        .loaded_shard_stats()
+        .into_iter()
+        .map(|stats| ShardLoad {
+            shard_id: stats.shard_id,
+            key_count: (stats.string_records
+                + stats.hash_records
+                + stats.set_records
+                + stats.feature_records
+                + stats.sequence_records
+                + stats.ips_records
+                + stats.risk_records) as u64,
+            memory_bytes: stats.cache.memory_bytes as u64,
+        })
+        .collect();
+    let request = ServerHeartbeatRequest {
+        server_addr: server_addr.to_string(),
+        boot_time_ms: 0,
+        binary_version: binary_version.to_string(),
+        shard_loads,
+    };
+    post_json::<_, ServerHeartbeatResponse>(meta_addr, "/servers/heartbeat", &request)
+        .unwrap_or_else(|err| ServerHeartbeatResponse {
+            status: Status::error("heartbeat_failed", err.to_string()),
+            forbid_auto_register: false,
+        })
 }

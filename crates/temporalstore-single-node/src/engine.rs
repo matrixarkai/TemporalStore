@@ -7,10 +7,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::cache::{CacheKey, MultiLayerCache};
 use crate::control::{
-    Config, GetConfigResponse, GetInfoResponse, GetStatsResponse, LoadShardRequest,
-    LoadShardResponse, MembershipUpdateRequest, ScanStreamRequest, ScanStreamResponse,
-    SetConfigRequest, ShardInfo, ShardStats, StreamKind, StreamReadRequest, StreamReadResponse,
-    StreamRecord, UnloadShardRequest, UnloadShardResponse,
+    CheckedBatchExecuteRequest, CheckedBatchExecuteResponse, CheckedExecuteRequest,
+    CheckedExecuteResponse, Config, GetConfigResponse, GetInfoResponse, GetStatsResponse,
+    LoadShardRequest, LoadShardResponse, MembershipUpdateRequest, ScanStreamRequest,
+    ScanStreamResponse, SetConfigRequest, ShardInfo, ShardStats, StreamKind, StreamReadRequest,
+    StreamReadResponse, StreamRecord, UnloadShardRequest, UnloadShardResponse,
 };
 use crate::index_log::LocalIndexLogStore;
 use crate::oplog::LocalOplogStore;
@@ -234,6 +235,26 @@ impl TemporalEngine {
         }
     }
 
+    pub fn execute_checked(&self, request: CheckedExecuteRequest) -> CheckedExecuteResponse {
+        if let Err(status) = self.validate_load_version(request.shard_id, request.load_version) {
+            return CheckedExecuteResponse {
+                status: status.clone(),
+                response: ExecuteResponse {
+                    status,
+                    response: CommandResponse::Empty,
+                },
+            };
+        }
+        let response = self.execute(ExecuteRequest {
+            shard_id: request.shard_id,
+            command: request.command,
+        });
+        CheckedExecuteResponse {
+            status: response.status.clone(),
+            response,
+        }
+    }
+
     pub fn set_config(&self, request: SetConfigRequest) -> Status {
         self.configs
             .write()
@@ -289,20 +310,7 @@ impl TemporalEngine {
     }
 
     pub fn get_stats(&self, shard_id: ShardId) -> GetStatsResponse {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        let stats = shards.get(&shard_id).map(|state| ShardStats {
-            shard_id,
-            string_records: state.strings.len(),
-            hash_records: state.hashes.len(),
-            set_records: state.sets.len(),
-            feature_records: state.features.len(),
-            sequence_records: state.sequences.len(),
-            ips_records: state.ips.len(),
-            risk_records: state.risk.len(),
-            cache: self.cache.stats(),
-            page_store: self.page_store.stats(),
-            oplog: self.oplog_store.stats(shard_id),
-        });
+        let stats = self.shard_stats(shard_id);
         GetStatsResponse {
             status: if stats.is_some() {
                 Status::ok()
@@ -311,6 +319,20 @@ impl TemporalEngine {
             },
             stats,
         }
+    }
+
+    pub fn loaded_shard_stats(&self) -> Vec<ShardStats> {
+        let shard_ids = self
+            .shards
+            .read()
+            .expect("engine lock poisoned")
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        shard_ids
+            .into_iter()
+            .filter_map(|shard_id| self.shard_stats(shard_id))
+            .collect()
     }
 
     pub fn read_stream(&self, request: StreamReadRequest) -> StreamReadResponse {
@@ -432,6 +454,29 @@ impl TemporalEngine {
         }
     }
 
+    pub fn batch_execute_checked(
+        &self,
+        request: CheckedBatchExecuteRequest,
+    ) -> CheckedBatchExecuteResponse {
+        if let Err(status) = self.validate_load_version(request.shard_id, request.load_version) {
+            return CheckedBatchExecuteResponse {
+                status: status.clone(),
+                response: BatchExecuteResponse {
+                    status,
+                    responses: Vec::new(),
+                },
+            };
+        }
+        let response = self.batch_execute(BatchExecuteRequest {
+            shard_id: request.shard_id,
+            commands: request.commands,
+        });
+        CheckedBatchExecuteResponse {
+            status: response.status.clone(),
+            response,
+        }
+    }
+
     pub fn export_index_bytes(&self, shard_id: ShardId) -> Result<Vec<u8>, std::io::Error> {
         fs::read(self.index_path(shard_id))
     }
@@ -457,6 +502,49 @@ impl TemporalEngine {
     fn persist_index_bytes(&self, shard_id: ShardId, bytes: &[u8]) -> Result<(), std::io::Error> {
         fs::create_dir_all(&self.index_dir)?;
         fs::write(self.index_path(shard_id), bytes)
+    }
+
+    fn validate_load_version(&self, shard_id: ShardId, load_version: u64) -> Result<(), Status> {
+        let infos = self.infos.read().expect("info lock poisoned");
+        let Some(info) = infos.get(&shard_id) else {
+            return Err(Status::error(
+                "shard_not_loaded",
+                "shard is not loaded on this server",
+            ));
+        };
+        if !info.loaded {
+            return Err(Status::error(
+                "shard_not_loaded",
+                "shard is not loaded on this server",
+            ));
+        }
+        if info.load_version != load_version {
+            return Err(Status::error(
+                "load_version_mismatch",
+                format!(
+                    "request load_version {} does not match loaded version {}",
+                    load_version, info.load_version
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn shard_stats(&self, shard_id: ShardId) -> Option<ShardStats> {
+        let shards = self.shards.read().expect("engine lock poisoned");
+        shards.get(&shard_id).map(|state| ShardStats {
+            shard_id,
+            string_records: state.strings.len(),
+            hash_records: state.hashes.len(),
+            set_records: state.sets.len(),
+            feature_records: state.features.len(),
+            sequence_records: state.sequences.len(),
+            ips_records: state.ips.len(),
+            risk_records: state.risk.len(),
+            cache: self.cache.stats(),
+            page_store: self.page_store.stats(),
+            oplog: self.oplog_store.stats(shard_id),
+        })
     }
 }
 
@@ -1913,13 +2001,19 @@ mod tests {
                 .iter()
                 .filter(|row| row.timestamp_ms >= base_ts + start_offset)
                 .filter(|row| row.timestamp_ms <= base_ts + end_offset)
-                .filter(|row| filters.iter().all(|filter| sequence_filter_matches(row, filter)))
+                .filter(|row| {
+                    filters
+                        .iter()
+                        .all(|filter| sequence_filter_matches(row, filter))
+                })
                 .take(count)
                 .cloned()
                 .collect::<Vec<_>>();
 
             assert_eq!(rows, expected, "seed {seed}");
-            assert!(rows.windows(2).all(|pair| pair[0].timestamp_ms < pair[1].timestamp_ms));
+            assert!(rows
+                .windows(2)
+                .all(|pair| pair[0].timestamp_ms < pair[1].timestamp_ms));
             assert!(rows.len() <= count);
         }
     }
@@ -2216,18 +2310,20 @@ mod tests {
     #[test]
     fn readonly_shard_rejects_writes_but_allows_reads() {
         let engine = TemporalEngine::default();
-        assert!(engine
-            .load_shard_with(LoadShardRequest {
-                shard_id: 1,
-                load_version: 1,
-                shard_uri: "file:///tmp/readonly".to_string(),
-                start_routing_slot: 0,
-                end_routing_slot: 99,
-                readonly: true,
-                table_name: "table".to_string(),
-            })
-            .status
-            .ok);
+        assert!(
+            engine
+                .load_shard_with(LoadShardRequest {
+                    shard_id: 1,
+                    load_version: 1,
+                    shard_uri: "file:///tmp/readonly".to_string(),
+                    start_routing_slot: 0,
+                    end_routing_slot: 99,
+                    readonly: true,
+                    table_name: "table".to_string(),
+                })
+                .status
+                .ok
+        );
 
         let write = engine.execute(ExecuteRequest {
             shard_id: 1,
@@ -2247,5 +2343,75 @@ mod tests {
         });
         assert!(read.status.ok);
         assert_eq!(read.response, CommandResponse::Bytes { value: None });
+    }
+
+    #[test]
+    fn checked_execute_rejects_stale_load_version() {
+        let engine = TemporalEngine::default();
+        assert!(
+            engine
+                .load_shard_with(LoadShardRequest {
+                    shard_id: 1,
+                    load_version: 7,
+                    shard_uri: "file:///tmp/versioned".to_string(),
+                    start_routing_slot: 0,
+                    end_routing_slot: 99,
+                    readonly: false,
+                    table_name: "table".to_string(),
+                })
+                .status
+                .ok
+        );
+
+        let stale = engine.execute_checked(CheckedExecuteRequest {
+            shard_id: 1,
+            load_version: 6,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            },
+        });
+        assert_eq!(stale.status.code, "load_version_mismatch");
+
+        let current = engine.execute_checked(CheckedExecuteRequest {
+            shard_id: 1,
+            load_version: 7,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            },
+        });
+        assert!(current.status.ok);
+    }
+
+    #[test]
+    fn loaded_shard_stats_reports_per_shard_load() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        engine.load_shard(2);
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "a".to_string(),
+                value: b"1".to_vec(),
+            },
+        });
+        engine.execute(ExecuteRequest {
+            shard_id: 2,
+            command: Command::HashSet {
+                key: "h".to_string(),
+                field: "f".to_string(),
+                value: b"2".to_vec(),
+            },
+        });
+
+        let stats = engine.loaded_shard_stats();
+        assert_eq!(stats.len(), 2);
+        assert!(stats
+            .iter()
+            .any(|stat| stat.shard_id == 1 && stat.string_records == 1));
+        assert!(stats
+            .iter()
+            .any(|stat| stat.shard_id == 2 && stat.hash_records == 1));
     }
 }
