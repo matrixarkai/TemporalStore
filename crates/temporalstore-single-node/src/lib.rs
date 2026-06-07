@@ -52,7 +52,9 @@ pub use oplog::{LocalOplogStore, OplogRecord, OplogStats};
 pub use page_store::{LocalPageStore, PageAddress, PageStoreStats};
 pub use proxy::{ProxyInfo, ProxyOptions, ProxyService, ProxyStats};
 pub use raft::{
-    MetaCommand, MetaRaftCluster, MetaState, RaftCluster, RaftError, RaftNodeId, RaftRole,
+    MetaCommand, MetaRaftCluster, MetaState, RaftCluster, RaftClusterStatus, RaftConfig,
+    RaftConfigError, RaftError, RaftNodeId, RaftNodeStatus, RaftReadOptions, RaftReadStrategy,
+    RaftRole, ReadIndexResponse,
 };
 pub use rebalance::{
     RebalanceController, RebalanceError, RebalanceOptions, RebalanceStep, ShardMovePlan,

@@ -32,6 +32,163 @@ pub struct RaftSnapshot {
     pub entries: Vec<RaftLogEntry>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftNodeStatus {
+    pub node_id: RaftNodeId,
+    pub role: RaftRole,
+    pub current_term: u64,
+    pub commit_index: u64,
+    pub last_log_index: u64,
+    pub applied_index: u64,
+    pub alive: bool,
+    pub lag: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftClusterStatus {
+    pub leader_id: RaftNodeId,
+    pub current_term: u64,
+    pub commit_index: u64,
+    pub majority: usize,
+    pub live_voters: usize,
+    pub has_majority: bool,
+    pub leader_lease_valid: bool,
+    pub nodes: Vec<RaftNodeStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReadIndexResponse {
+    pub leader_id: RaftNodeId,
+    pub node_id: RaftNodeId,
+    pub term: u64,
+    pub read_index: u64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RaftReadStrategy {
+    RelaxRead,
+    LeaseRead,
+    ReadIndex,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftReadOptions {
+    pub strategy: RaftReadStrategy,
+    pub enable_read_from_follower: bool,
+    pub fill_cache: bool,
+    pub ignore_write_intent: bool,
+    pub wait_millis: u64,
+}
+
+impl Default for RaftReadOptions {
+    fn default() -> Self {
+        Self {
+            strategy: RaftReadStrategy::RelaxRead,
+            enable_read_from_follower: false,
+            fill_cache: true,
+            ignore_write_intent: false,
+            wait_millis: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftConfig {
+    pub election_cycle_tick: u32,
+    pub transfer_timeout_tick: u64,
+    pub offline_timeout_tick: u64,
+    pub lease_duration_ms: u64,
+    pub last_lease_duration_ms: u64,
+    pub assume_lease_when_start: bool,
+    pub max_memory_replicate_log_bytes: u64,
+    pub max_disk_replicate_log_num: u64,
+    pub max_cache_memory_bytes: u64,
+    pub max_apply_batch_bytes: u64,
+    pub enable_reorder_queue: bool,
+    pub reorder_timeout_us: u64,
+    pub reorder_window_size: u64,
+    pub max_inflights_apply_task: u64,
+    pub max_inflights_replicate: u64,
+    pub enable_pre_vote: bool,
+    pub prohibits_election: bool,
+    pub ignore_witness: bool,
+    pub send_snapshot_timeout_ms: u64,
+    pub raft_transport_timeout_ms: u64,
+    pub wal_sync: bool,
+    pub max_segment_bytes: u64,
+    pub min_keep_segment_num: u64,
+    pub can_trigger_snapshot: bool,
+    pub max_applied_log_bytes: u64,
+}
+
+impl Default for RaftConfig {
+    fn default() -> Self {
+        Self {
+            election_cycle_tick: 3,
+            transfer_timeout_tick: 3,
+            offline_timeout_tick: 10,
+            lease_duration_ms: 0,
+            last_lease_duration_ms: 0,
+            assume_lease_when_start: true,
+            max_memory_replicate_log_bytes: 32 * 1024,
+            max_disk_replicate_log_num: 64,
+            max_cache_memory_bytes: 32 * 1024 * 1024,
+            max_apply_batch_bytes: 64 * 1024,
+            enable_reorder_queue: true,
+            reorder_timeout_us: 3_000,
+            reorder_window_size: 128,
+            max_inflights_apply_task: 5,
+            max_inflights_replicate: 128,
+            enable_pre_vote: false,
+            prohibits_election: false,
+            ignore_witness: false,
+            send_snapshot_timeout_ms: 60_000,
+            raft_transport_timeout_ms: 1_000,
+            wal_sync: false,
+            max_segment_bytes: 64 * 1024 * 1024,
+            min_keep_segment_num: 2,
+            can_trigger_snapshot: true,
+            max_applied_log_bytes: 1024 * 1024 * 1024,
+        }
+    }
+}
+
+impl RaftConfig {
+    pub fn validate(&self) -> Result<(), RaftConfigError> {
+        if self.election_cycle_tick == 0 {
+            return Err(RaftConfigError::InvalidValue("election_cycle_tick"));
+        }
+        if self.max_memory_replicate_log_bytes == 0 {
+            return Err(RaftConfigError::InvalidValue(
+                "max_memory_replicate_log_bytes",
+            ));
+        }
+        if self.max_disk_replicate_log_num == 0 {
+            return Err(RaftConfigError::InvalidValue("max_disk_replicate_log_num"));
+        }
+        if self.max_apply_batch_bytes == 0 {
+            return Err(RaftConfigError::InvalidValue("max_apply_batch_bytes"));
+        }
+        if self.max_inflights_replicate == 0 {
+            return Err(RaftConfigError::InvalidValue("max_inflights_replicate"));
+        }
+        if self.max_segment_bytes == 0 {
+            return Err(RaftConfigError::InvalidValue("max_segment_bytes"));
+        }
+        if self.min_keep_segment_num == 0 {
+            return Err(RaftConfigError::InvalidValue("min_keep_segment_num"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum RaftConfigError {
+    #[error("invalid raft config value: {0}")]
+    InvalidValue(&'static str),
+}
+
 #[derive(Debug)]
 struct RaftNode {
     id: RaftNodeId,
@@ -46,6 +203,8 @@ struct RaftNode {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum RaftError {
+    #[error("invalid raft config: {0}")]
+    InvalidConfig(String),
     #[error("leader is not available")]
     LeaderUnavailable,
     #[error("not enough live replicas for majority: live={live}, required={required}")]
@@ -72,6 +231,12 @@ pub enum RaftError {
         snapshot_index: u64,
         local_commit_index: u64,
     },
+    #[error("raft log entry too large: bytes={bytes}, limit={limit}")]
+    LogEntryTooLarge { bytes: u64, limit: u64 },
+    #[error("node {node_id} is not leader")]
+    NotLeader { node_id: RaftNodeId },
+    #[error("election is prohibited by raft config")]
+    ElectionProhibited,
 }
 
 #[derive(Debug, Clone)]
@@ -84,6 +249,7 @@ struct RaftClusterInner {
     shard_id: ShardId,
     leader_id: RaftNodeId,
     nodes: BTreeMap<RaftNodeId, RaftNode>,
+    config: RaftConfig,
 }
 
 impl RaftCluster {
@@ -91,6 +257,18 @@ impl RaftCluster {
         shard_id: ShardId,
         node_ids: impl IntoIterator<Item = RaftNodeId>,
     ) -> Self {
+        Self::new_single_shard_with_config(shard_id, node_ids, RaftConfig::default())
+            .expect("default raft config must be valid")
+    }
+
+    pub fn new_single_shard_with_config(
+        shard_id: ShardId,
+        node_ids: impl IntoIterator<Item = RaftNodeId>,
+        config: RaftConfig,
+    ) -> Result<Self, RaftError> {
+        config
+            .validate()
+            .map_err(|err| RaftError::InvalidConfig(err.to_string()))?;
         let mut nodes = BTreeMap::new();
         let mut iter = node_ids.into_iter();
         let leader_id = iter.next().unwrap_or(1);
@@ -98,18 +276,28 @@ impl RaftCluster {
         for node_id in iter {
             nodes.insert(node_id, new_node(node_id, RaftRole::Follower, shard_id));
         }
-        Self {
+        Ok(Self {
             inner: Arc::new(RwLock::new(RaftClusterInner {
                 shard_id,
                 leader_id,
                 nodes,
+                config,
             })),
-        }
+        })
     }
 
     pub fn propose(&self, command: Command) -> Result<CommandResponse, RaftError> {
         let mut inner = self.inner.write().expect("raft cluster lock poisoned");
         inner.ensure_live_leader()?;
+        let entry_bytes = serde_json::to_vec(&command)
+            .map(|bytes| bytes.len() as u64)
+            .unwrap_or_default();
+        if entry_bytes > inner.config.max_memory_replicate_log_bytes {
+            return Err(RaftError::LogEntryTooLarge {
+                bytes: entry_bytes,
+                limit: inner.config.max_memory_replicate_log_bytes,
+            });
+        }
         let required = majority(inner.nodes.len());
         let live = inner.nodes.values().filter(|node| node.alive).count();
         if live < required {
@@ -156,6 +344,31 @@ impl RaftCluster {
 
     pub fn elect_leader(&self, node_id: RaftNodeId) -> Result<(), RaftError> {
         let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+        inner.elect_leader(node_id)
+    }
+
+    pub fn transfer_leader(&self, node_id: RaftNodeId) -> Result<(), RaftError> {
+        let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+        inner.ensure_live_leader()?;
+        let leader_commit_index = inner
+            .nodes
+            .get(&inner.leader_id)
+            .ok_or(RaftError::LeaderUnavailable)?
+            .commit_index;
+        let candidate = inner
+            .nodes
+            .get(&node_id)
+            .ok_or(RaftError::NodeNotFound(node_id))?;
+        if !candidate.alive {
+            return Err(RaftError::NodeNotFound(node_id));
+        }
+        if candidate.commit_index < leader_commit_index {
+            return Err(RaftError::ReplicaLagging {
+                replica_id: node_id,
+                replica_commit_index: candidate.commit_index,
+                leader_commit_index,
+            });
+        }
         inner.elect_leader(node_id)
     }
 
@@ -365,6 +578,94 @@ impl RaftCluster {
             .leader_id
     }
 
+    pub fn read_index(&self, node_id: RaftNodeId) -> Result<ReadIndexResponse, RaftError> {
+        let inner = self.inner.read().expect("raft cluster lock poisoned");
+        let status = inner.status();
+        if !status.leader_lease_valid {
+            return Err(RaftError::LeaderUnavailable);
+        }
+        let node = inner
+            .nodes
+            .get(&node_id)
+            .ok_or(RaftError::NodeNotFound(node_id))?;
+        if !node.alive {
+            return Err(RaftError::NodeNotFound(node_id));
+        }
+        if node.commit_index < status.commit_index {
+            return Err(RaftError::ReplicaLagging {
+                replica_id: node_id,
+                replica_commit_index: node.commit_index,
+                leader_commit_index: status.commit_index,
+            });
+        }
+        Ok(ReadIndexResponse {
+            leader_id: inner.leader_id,
+            node_id,
+            term: status.current_term,
+            read_index: status.commit_index,
+        })
+    }
+
+    pub fn check_read(
+        &self,
+        node_id: RaftNodeId,
+        options: RaftReadOptions,
+    ) -> Result<ReadIndexResponse, RaftError> {
+        let inner = self.inner.read().expect("raft cluster lock poisoned");
+        let node = inner
+            .nodes
+            .get(&node_id)
+            .ok_or(RaftError::NodeNotFound(node_id))?;
+        if !node.alive {
+            return Err(RaftError::NodeNotFound(node_id));
+        }
+        if !options.enable_read_from_follower && node_id != inner.leader_id {
+            return Err(RaftError::NotLeader { node_id });
+        }
+        drop(inner);
+        match options.strategy {
+            RaftReadStrategy::RelaxRead => {
+                let status = self.status();
+                Ok(ReadIndexResponse {
+                    leader_id: status.leader_id,
+                    node_id,
+                    term: status.current_term,
+                    read_index: self.commit_index(node_id)?,
+                })
+            }
+            RaftReadStrategy::LeaseRead | RaftReadStrategy::ReadIndex => self.read_index(node_id),
+        }
+    }
+
+    pub fn status(&self) -> RaftClusterStatus {
+        self.inner
+            .read()
+            .expect("raft cluster lock poisoned")
+            .status()
+    }
+
+    pub fn config(&self) -> RaftConfig {
+        self.inner
+            .read()
+            .expect("raft cluster lock poisoned")
+            .config
+            .clone()
+    }
+
+    pub fn local_status(&self, node_id: RaftNodeId) -> Result<RaftNodeStatus, RaftError> {
+        let inner = self.inner.read().expect("raft cluster lock poisoned");
+        let leader_commit_index = inner.leader_commit_index();
+        inner
+            .nodes
+            .get(&node_id)
+            .map(|node| node_status(node, leader_commit_index))
+            .ok_or(RaftError::NodeNotFound(node_id))
+    }
+
+    pub fn prometheus_metrics(&self) -> String {
+        raft_status_prometheus("data", self.status())
+    }
+
     pub fn live_replica_ids(&self) -> Vec<RaftNodeId> {
         self.inner
             .read()
@@ -417,6 +718,9 @@ impl RaftClusterInner {
     }
 
     fn elect_leader(&mut self, node_id: RaftNodeId) -> Result<(), RaftError> {
+        if self.config.prohibits_election {
+            return Err(RaftError::ElectionProhibited);
+        }
         let required = majority(self.nodes.len());
         let live = self.nodes.values().filter(|node| node.alive).count();
         if live < required {
@@ -447,6 +751,57 @@ impl RaftClusterInner {
             node.current_term = next_term;
         }
         Ok(())
+    }
+
+    fn leader_commit_index(&self) -> u64 {
+        self.nodes
+            .get(&self.leader_id)
+            .map(|node| node.commit_index)
+            .unwrap_or_default()
+    }
+
+    fn status(&self) -> RaftClusterStatus {
+        let commit_index = self.leader_commit_index();
+        let current_term = self
+            .nodes
+            .get(&self.leader_id)
+            .map(|node| node.current_term)
+            .unwrap_or_default();
+        let majority = majority(self.nodes.len());
+        let live_voters = self.nodes.values().filter(|node| node.alive).count();
+        let leader_lease_valid = self
+            .nodes
+            .get(&self.leader_id)
+            .map(|node| node.alive && node.role == RaftRole::Leader)
+            .unwrap_or(false)
+            && live_voters >= majority;
+        RaftClusterStatus {
+            leader_id: self.leader_id,
+            current_term,
+            commit_index,
+            majority,
+            live_voters,
+            has_majority: live_voters >= majority,
+            leader_lease_valid,
+            nodes: self
+                .nodes
+                .values()
+                .map(|node| node_status(node, commit_index))
+                .collect(),
+        }
+    }
+}
+
+fn node_status(node: &RaftNode, leader_commit_index: u64) -> RaftNodeStatus {
+    RaftNodeStatus {
+        node_id: node.id,
+        role: node.role,
+        current_term: node.current_term,
+        commit_index: node.commit_index,
+        last_log_index: node.log.last().map(|entry| entry.index).unwrap_or_default(),
+        applied_index: node.applied.iter().next_back().copied().unwrap_or_default(),
+        alive: node.alive,
+        lag: leader_commit_index.saturating_sub(node.commit_index),
     }
 }
 
@@ -497,6 +852,91 @@ fn majority(replica_count: usize) -> usize {
     replica_count / 2 + 1
 }
 
+fn raft_status_prometheus(kind: &str, status: RaftClusterStatus) -> String {
+    let mut out = String::new();
+    out.push_str("# HELP temporalstore_raft_cluster_commit_index Current committed raft index.\n");
+    out.push_str("# TYPE temporalstore_raft_cluster_commit_index gauge\n");
+    push_raft_metric(
+        &mut out,
+        "temporalstore_raft_cluster_commit_index",
+        &[("kind", kind.to_string())],
+        status.commit_index,
+    );
+    out.push_str("# HELP temporalstore_raft_cluster_live_voters Live raft voters.\n");
+    out.push_str("# TYPE temporalstore_raft_cluster_live_voters gauge\n");
+    push_raft_metric(
+        &mut out,
+        "temporalstore_raft_cluster_live_voters",
+        &[("kind", kind.to_string())],
+        status.live_voters as u64,
+    );
+    out.push_str(
+        "# HELP temporalstore_raft_cluster_has_majority Whether the raft group has majority.\n",
+    );
+    out.push_str("# TYPE temporalstore_raft_cluster_has_majority gauge\n");
+    push_raft_metric(
+        &mut out,
+        "temporalstore_raft_cluster_has_majority",
+        &[("kind", kind.to_string())],
+        u64::from(status.has_majority),
+    );
+    out.push_str("# HELP temporalstore_raft_leader_lease_valid Whether local model considers leader lease valid.\n");
+    out.push_str("# TYPE temporalstore_raft_leader_lease_valid gauge\n");
+    push_raft_metric(
+        &mut out,
+        "temporalstore_raft_leader_lease_valid",
+        &[("kind", kind.to_string())],
+        u64::from(status.leader_lease_valid),
+    );
+    out.push_str("# HELP temporalstore_raft_node_commit_index Per-node committed raft index.\n");
+    out.push_str("# TYPE temporalstore_raft_node_commit_index gauge\n");
+    out.push_str("# HELP temporalstore_raft_node_lag Per-node raft commit lag behind leader.\n");
+    out.push_str("# TYPE temporalstore_raft_node_lag gauge\n");
+    out.push_str("# HELP temporalstore_raft_node_alive Whether a raft node is alive.\n");
+    out.push_str("# TYPE temporalstore_raft_node_alive gauge\n");
+    for node in status.nodes {
+        let labels = &[
+            ("kind", kind.to_string()),
+            ("node_id", node.node_id.to_string()),
+            ("role", format!("{:?}", node.role).to_ascii_lowercase()),
+        ];
+        push_raft_metric(
+            &mut out,
+            "temporalstore_raft_node_commit_index",
+            labels,
+            node.commit_index,
+        );
+        push_raft_metric(&mut out, "temporalstore_raft_node_lag", labels, node.lag);
+        push_raft_metric(
+            &mut out,
+            "temporalstore_raft_node_alive",
+            labels,
+            u64::from(node.alive),
+        );
+    }
+    out
+}
+
+fn push_raft_metric(out: &mut String, name: &str, labels: &[(&str, String)], value: u64) {
+    out.push_str(name);
+    if !labels.is_empty() {
+        out.push('{');
+        for (index, (key, value)) in labels.iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            out.push_str(key);
+            out.push_str("=\"");
+            out.push_str(&value.replace('\\', "\\\\").replace('"', "\\\""));
+            out.push('"');
+        }
+        out.push('}');
+    }
+    out.push(' ');
+    out.push_str(&value.to_string());
+    out.push('\n');
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum MetaCommand {
     PutShardLocation(ShardLocation),
@@ -543,10 +983,22 @@ pub struct MetaRaftCluster {
 struct MetaRaftClusterInner {
     leader_id: RaftNodeId,
     nodes: BTreeMap<RaftNodeId, MetaRaftNode>,
+    config: RaftConfig,
 }
 
 impl MetaRaftCluster {
     pub fn new(node_ids: impl IntoIterator<Item = RaftNodeId>) -> Self {
+        Self::new_with_config(node_ids, RaftConfig::default())
+            .expect("default raft config must be valid")
+    }
+
+    pub fn new_with_config(
+        node_ids: impl IntoIterator<Item = RaftNodeId>,
+        config: RaftConfig,
+    ) -> Result<Self, RaftError> {
+        config
+            .validate()
+            .map_err(|err| RaftError::InvalidConfig(err.to_string()))?;
         let mut nodes = BTreeMap::new();
         let mut iter = node_ids.into_iter();
         let leader_id = iter.next().unwrap_or(1);
@@ -554,14 +1006,27 @@ impl MetaRaftCluster {
         for node_id in iter {
             nodes.insert(node_id, new_meta_node(node_id, RaftRole::Follower));
         }
-        Self {
-            inner: Arc::new(RwLock::new(MetaRaftClusterInner { leader_id, nodes })),
-        }
+        Ok(Self {
+            inner: Arc::new(RwLock::new(MetaRaftClusterInner {
+                leader_id,
+                nodes,
+                config,
+            })),
+        })
     }
 
     pub fn propose(&self, command: MetaCommand) -> Result<(), RaftError> {
         let mut inner = self.inner.write().expect("meta raft lock poisoned");
         inner.ensure_live_leader()?;
+        let entry_bytes = serde_json::to_vec(&command)
+            .map(|bytes| bytes.len() as u64)
+            .unwrap_or_default();
+        if entry_bytes > inner.config.max_memory_replicate_log_bytes {
+            return Err(RaftError::LogEntryTooLarge {
+                bytes: entry_bytes,
+                limit: inner.config.max_memory_replicate_log_bytes,
+            });
+        }
         let required = majority(inner.nodes.len());
         let live = inner.nodes.values().filter(|node| node.alive).count();
         if live < required {
@@ -635,6 +1100,112 @@ impl MetaRaftCluster {
             .read()
             .expect("meta raft lock poisoned")
             .leader_id
+    }
+
+    pub fn transfer_leader(&self, node_id: RaftNodeId) -> Result<(), RaftError> {
+        let mut inner = self.inner.write().expect("meta raft lock poisoned");
+        inner.ensure_live_leader()?;
+        let leader_commit_index = inner.leader_commit_index();
+        let candidate = inner
+            .nodes
+            .get(&node_id)
+            .ok_or(RaftError::NodeNotFound(node_id))?;
+        if !candidate.alive {
+            return Err(RaftError::NodeNotFound(node_id));
+        }
+        if candidate.commit_index < leader_commit_index {
+            return Err(RaftError::ReplicaLagging {
+                replica_id: node_id,
+                replica_commit_index: candidate.commit_index,
+                leader_commit_index,
+            });
+        }
+        inner.elect_leader(node_id)
+    }
+
+    pub fn read_index(&self, node_id: RaftNodeId) -> Result<ReadIndexResponse, RaftError> {
+        let inner = self.inner.read().expect("meta raft lock poisoned");
+        let status = inner.status();
+        if !status.leader_lease_valid {
+            return Err(RaftError::LeaderUnavailable);
+        }
+        let node = inner
+            .nodes
+            .get(&node_id)
+            .ok_or(RaftError::NodeNotFound(node_id))?;
+        if !node.alive {
+            return Err(RaftError::NodeNotFound(node_id));
+        }
+        if node.commit_index < status.commit_index {
+            return Err(RaftError::ReplicaLagging {
+                replica_id: node_id,
+                replica_commit_index: node.commit_index,
+                leader_commit_index: status.commit_index,
+            });
+        }
+        Ok(ReadIndexResponse {
+            leader_id: inner.leader_id,
+            node_id,
+            term: status.current_term,
+            read_index: status.commit_index,
+        })
+    }
+
+    pub fn check_read(
+        &self,
+        node_id: RaftNodeId,
+        options: RaftReadOptions,
+    ) -> Result<ReadIndexResponse, RaftError> {
+        let inner = self.inner.read().expect("meta raft lock poisoned");
+        let node = inner
+            .nodes
+            .get(&node_id)
+            .ok_or(RaftError::NodeNotFound(node_id))?;
+        if !node.alive {
+            return Err(RaftError::NodeNotFound(node_id));
+        }
+        if !options.enable_read_from_follower && node_id != inner.leader_id {
+            return Err(RaftError::NotLeader { node_id });
+        }
+        drop(inner);
+        match options.strategy {
+            RaftReadStrategy::RelaxRead => {
+                let status = self.status();
+                Ok(ReadIndexResponse {
+                    leader_id: status.leader_id,
+                    node_id,
+                    term: status.current_term,
+                    read_index: self.commit_index(node_id)?,
+                })
+            }
+            RaftReadStrategy::LeaseRead | RaftReadStrategy::ReadIndex => self.read_index(node_id),
+        }
+    }
+
+    pub fn status(&self) -> RaftClusterStatus {
+        self.inner.read().expect("meta raft lock poisoned").status()
+    }
+
+    pub fn config(&self) -> RaftConfig {
+        self.inner
+            .read()
+            .expect("meta raft lock poisoned")
+            .config
+            .clone()
+    }
+
+    pub fn local_status(&self, node_id: RaftNodeId) -> Result<RaftNodeStatus, RaftError> {
+        let inner = self.inner.read().expect("meta raft lock poisoned");
+        let leader_commit_index = inner.leader_commit_index();
+        inner
+            .nodes
+            .get(&node_id)
+            .map(|node| meta_node_status(node, leader_commit_index))
+            .ok_or(RaftError::NodeNotFound(node_id))
+    }
+
+    pub fn prometheus_metrics(&self) -> String {
+        raft_status_prometheus("meta", self.status())
     }
 
     pub fn commit_index(&self, node_id: RaftNodeId) -> Result<u64, RaftError> {
@@ -769,6 +1340,9 @@ impl MetaRaftClusterInner {
     }
 
     fn elect_leader(&mut self, node_id: RaftNodeId) -> Result<(), RaftError> {
+        if self.config.prohibits_election {
+            return Err(RaftError::ElectionProhibited);
+        }
         let required = majority(self.nodes.len());
         let live = self.nodes.values().filter(|node| node.alive).count();
         if live < required {
@@ -799,6 +1373,57 @@ impl MetaRaftClusterInner {
             node.current_term = next_term;
         }
         Ok(())
+    }
+
+    fn leader_commit_index(&self) -> u64 {
+        self.nodes
+            .get(&self.leader_id)
+            .map(|node| node.commit_index)
+            .unwrap_or_default()
+    }
+
+    fn status(&self) -> RaftClusterStatus {
+        let commit_index = self.leader_commit_index();
+        let current_term = self
+            .nodes
+            .get(&self.leader_id)
+            .map(|node| node.current_term)
+            .unwrap_or_default();
+        let majority = majority(self.nodes.len());
+        let live_voters = self.nodes.values().filter(|node| node.alive).count();
+        let leader_lease_valid = self
+            .nodes
+            .get(&self.leader_id)
+            .map(|node| node.alive && node.role == RaftRole::Leader)
+            .unwrap_or(false)
+            && live_voters >= majority;
+        RaftClusterStatus {
+            leader_id: self.leader_id,
+            current_term,
+            commit_index,
+            majority,
+            live_voters,
+            has_majority: live_voters >= majority,
+            leader_lease_valid,
+            nodes: self
+                .nodes
+                .values()
+                .map(|node| meta_node_status(node, commit_index))
+                .collect(),
+        }
+    }
+}
+
+fn meta_node_status(node: &MetaRaftNode, leader_commit_index: u64) -> RaftNodeStatus {
+    RaftNodeStatus {
+        node_id: node.id,
+        role: node.role,
+        current_term: node.current_term,
+        commit_index: node.commit_index,
+        last_log_index: node.log.last().map(|entry| entry.index).unwrap_or_default(),
+        applied_index: node.applied.iter().next_back().copied().unwrap_or_default(),
+        alive: node.alive,
+        lag: leader_commit_index.saturating_sub(node.commit_index),
     }
 }
 
@@ -1001,6 +1626,154 @@ mod tests {
         );
         assert_eq!(cluster.commit_index(2).unwrap(), 1);
         assert_eq!(cluster.commit_index(3).unwrap(), 1);
+    }
+
+    #[test]
+    fn raft_status_read_index_and_transfer_leader_match_engine_control_shape() {
+        let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+        cluster
+            .propose(Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            })
+            .unwrap();
+
+        let status = cluster.status();
+        assert_eq!(status.leader_id, 1);
+        assert_eq!(status.commit_index, 1);
+        assert_eq!(status.majority, 2);
+        assert!(status.has_majority);
+        assert!(status.leader_lease_valid);
+        assert_eq!(status.nodes.len(), 3);
+        assert!(status.nodes.iter().all(|node| node.lag == 0));
+
+        let read_index = cluster.read_index(2).unwrap();
+        assert_eq!(read_index.leader_id, 1);
+        assert_eq!(read_index.node_id, 2);
+        assert_eq!(read_index.read_index, 1);
+
+        cluster.transfer_leader(2).unwrap();
+        assert_eq!(cluster.leader_id(), 2);
+        let local = cluster.local_status(2).unwrap();
+        assert_eq!(local.role, RaftRole::Leader);
+        assert_eq!(local.commit_index, 1);
+
+        let metrics = cluster.prometheus_metrics();
+        assert!(metrics.contains("temporalstore_raft_cluster_commit_index{kind=\"data\"} 1"));
+        assert!(metrics.contains("temporalstore_raft_node_lag"));
+    }
+
+    #[test]
+    fn raft_config_matches_cpp_defaults_and_validates_required_limits() {
+        let config = RaftConfig::default();
+        assert_eq!(config.election_cycle_tick, 3);
+        assert_eq!(config.max_apply_batch_bytes, 64 * 1024);
+        assert_eq!(config.max_cache_memory_bytes, 32 * 1024 * 1024);
+        assert_eq!(config.raft_transport_timeout_ms, 1_000);
+        assert_eq!(config.max_segment_bytes, 64 * 1024 * 1024);
+        assert!(!config.wal_sync);
+        assert!(config.assume_lease_when_start);
+        assert!(config.can_trigger_snapshot);
+        assert!(config.validate().is_ok());
+
+        let mut invalid = config;
+        invalid.max_memory_replicate_log_bytes = 0;
+        assert_eq!(
+            invalid.validate(),
+            Err(RaftConfigError::InvalidValue(
+                "max_memory_replicate_log_bytes"
+            ))
+        );
+    }
+
+    #[test]
+    fn raft_config_rejects_oversized_log_entries_and_prohibited_elections() {
+        let mut config = RaftConfig {
+            max_memory_replicate_log_bytes: 16,
+            ..RaftConfig::default()
+        };
+        let cluster =
+            RaftCluster::new_single_shard_with_config(1, [1, 2, 3], config.clone()).unwrap();
+        let err = cluster
+            .propose(Command::StringSet {
+                key: "k".to_string(),
+                value: vec![b'x'; 128],
+            })
+            .unwrap_err();
+        assert!(matches!(err, RaftError::LogEntryTooLarge { .. }));
+
+        config.max_memory_replicate_log_bytes = 1024;
+        config.prohibits_election = true;
+        let cluster = RaftCluster::new_single_shard_with_config(1, [1, 2, 3], config).unwrap();
+        assert_eq!(cluster.elect_leader(2), Err(RaftError::ElectionProhibited));
+    }
+
+    #[test]
+    fn raft_read_options_enforce_leader_and_follower_read_paths() {
+        let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+        cluster
+            .propose(Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            })
+            .unwrap();
+
+        assert_eq!(
+            cluster.check_read(2, RaftReadOptions::default()),
+            Err(RaftError::NotLeader { node_id: 2 })
+        );
+        assert!(cluster
+            .check_read(
+                2,
+                RaftReadOptions {
+                    enable_read_from_follower: true,
+                    strategy: RaftReadStrategy::ReadIndex,
+                    ..RaftReadOptions::default()
+                },
+            )
+            .is_ok());
+        assert!(cluster
+            .check_read(
+                1,
+                RaftReadOptions {
+                    strategy: RaftReadStrategy::LeaseRead,
+                    ..RaftReadOptions::default()
+                },
+            )
+            .is_ok());
+    }
+
+    #[test]
+    fn raft_read_index_and_transfer_reject_lagging_replica() {
+        let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+        cluster.set_alive(3, false).unwrap();
+        cluster
+            .propose(Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            })
+            .unwrap();
+        cluster.set_alive(3, true).unwrap();
+
+        assert_eq!(
+            cluster.read_index(3).unwrap_err(),
+            RaftError::ReplicaLagging {
+                replica_id: 3,
+                replica_commit_index: 0,
+                leader_commit_index: 1,
+            }
+        );
+        assert_eq!(
+            cluster.transfer_leader(3).unwrap_err(),
+            RaftError::ReplicaLagging {
+                replica_id: 3,
+                replica_commit_index: 0,
+                leader_commit_index: 1,
+            }
+        );
+        cluster.catch_up(3).unwrap();
+        assert!(cluster.read_index(3).is_ok());
+        assert!(cluster.transfer_leader(3).is_ok());
     }
 
     #[test]
@@ -1228,6 +2001,34 @@ mod tests {
         meta.propose(MetaCommand::RemoveShard(2)).unwrap();
         assert_eq!(meta.get_shard_location(11, 2).unwrap(), None);
         assert_eq!(meta.get_shard_location(13, 2).unwrap(), None);
+    }
+
+    #[test]
+    fn metaserver_raft_status_read_index_and_transfer_leader_work() {
+        let meta = MetaRaftCluster::new([10, 11, 12]);
+        meta.propose(MetaCommand::PutShardLocation(ShardLocation {
+            shard_id: 7,
+            server_addr: "127.0.0.1:17002".to_string(),
+        }))
+        .unwrap();
+
+        let status = meta.status();
+        assert_eq!(status.leader_id, 10);
+        assert_eq!(status.commit_index, 1);
+        assert!(status.leader_lease_valid);
+        assert_eq!(status.nodes.len(), 3);
+
+        let read_index = meta.read_index(11).unwrap();
+        assert_eq!(read_index.leader_id, 10);
+        assert_eq!(read_index.node_id, 11);
+        assert_eq!(read_index.read_index, 1);
+
+        meta.transfer_leader(11).unwrap();
+        assert_eq!(meta.leader_id(), 11);
+        assert_eq!(meta.local_status(11).unwrap().role, RaftRole::Leader);
+        assert!(meta
+            .prometheus_metrics()
+            .contains("temporalstore_raft_cluster_commit_index{kind=\"meta\"} 1"));
     }
 
     #[test]

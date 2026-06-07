@@ -19,7 +19,7 @@ use crate::page_store::{LocalPageStore, PageAddress};
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,
     ExecuteResponse, FeatureFilter, FeatureFilterOp, FeaturePoint, SequenceFeatureRow, ShardId,
-    Status,
+    Status, StringSetCondition,
 };
 
 #[derive(Debug, Clone)]
@@ -335,6 +335,161 @@ impl TemporalEngine {
             .collect()
     }
 
+    pub fn prometheus_metrics(&self) -> String {
+        let mut out = String::new();
+        out.push_str("# HELP temporalstore_shard_records Number of records by shard and kind.\n");
+        out.push_str("# TYPE temporalstore_shard_records gauge\n");
+        out.push_str("# HELP temporalstore_cache_operations_total Cache operation counters by shard and kind.\n");
+        out.push_str("# TYPE temporalstore_cache_operations_total counter\n");
+        out.push_str("# HELP temporalstore_cache_bytes Cache bytes by shard and tier.\n");
+        out.push_str("# TYPE temporalstore_cache_bytes gauge\n");
+        out.push_str("# HELP temporalstore_page_store_operations_total Page store operation counters by shard and kind.\n");
+        out.push_str("# TYPE temporalstore_page_store_operations_total counter\n");
+        out.push_str("# HELP temporalstore_page_store_bytes_total Page store byte counters by shard and kind.\n");
+        out.push_str("# TYPE temporalstore_page_store_bytes_total counter\n");
+        out.push_str("# HELP temporalstore_oplog_records_total Oplog append records by shard.\n");
+        out.push_str("# TYPE temporalstore_oplog_records_total counter\n");
+        out.push_str("# HELP temporalstore_oplog_bytes_total Oplog appended bytes by shard.\n");
+        out.push_str("# TYPE temporalstore_oplog_bytes_total counter\n");
+        for stats in self.loaded_shard_stats() {
+            push_metric(
+                &mut out,
+                "temporalstore_shard_records",
+                &[
+                    ("shard_id", stats.shard_id.to_string()),
+                    ("kind", "string".into()),
+                ],
+                stats.string_records as u64,
+            );
+            push_metric(
+                &mut out,
+                "temporalstore_shard_records",
+                &[
+                    ("shard_id", stats.shard_id.to_string()),
+                    ("kind", "hash".into()),
+                ],
+                stats.hash_records as u64,
+            );
+            push_metric(
+                &mut out,
+                "temporalstore_shard_records",
+                &[
+                    ("shard_id", stats.shard_id.to_string()),
+                    ("kind", "set".into()),
+                ],
+                stats.set_records as u64,
+            );
+            push_metric(
+                &mut out,
+                "temporalstore_shard_records",
+                &[
+                    ("shard_id", stats.shard_id.to_string()),
+                    ("kind", "feature".into()),
+                ],
+                stats.feature_records as u64,
+            );
+            push_metric(
+                &mut out,
+                "temporalstore_shard_records",
+                &[
+                    ("shard_id", stats.shard_id.to_string()),
+                    ("kind", "sequence".into()),
+                ],
+                stats.sequence_records as u64,
+            );
+            push_metric(
+                &mut out,
+                "temporalstore_shard_records",
+                &[
+                    ("shard_id", stats.shard_id.to_string()),
+                    ("kind", "ips".into()),
+                ],
+                stats.ips_records as u64,
+            );
+            push_metric(
+                &mut out,
+                "temporalstore_shard_records",
+                &[
+                    ("shard_id", stats.shard_id.to_string()),
+                    ("kind", "risk".into()),
+                ],
+                stats.risk_records as u64,
+            );
+            for (kind, value) in [
+                ("memory_hits", stats.cache.memory_hits),
+                ("disk_hits", stats.cache.disk_hits),
+                ("misses", stats.cache.misses),
+                ("puts", stats.cache.puts),
+                ("invalidations", stats.cache.invalidations),
+            ] {
+                push_metric(
+                    &mut out,
+                    "temporalstore_cache_operations_total",
+                    &[
+                        ("shard_id", stats.shard_id.to_string()),
+                        ("kind", kind.into()),
+                    ],
+                    value,
+                );
+            }
+            for (tier, value) in [
+                ("memory", stats.cache.memory_bytes),
+                ("disk", stats.cache.disk_bytes),
+            ] {
+                push_metric(
+                    &mut out,
+                    "temporalstore_cache_bytes",
+                    &[
+                        ("shard_id", stats.shard_id.to_string()),
+                        ("tier", tier.into()),
+                    ],
+                    value,
+                );
+            }
+            for (kind, value) in [
+                ("writes", stats.page_store.writes),
+                ("reads", stats.page_store.reads),
+            ] {
+                push_metric(
+                    &mut out,
+                    "temporalstore_page_store_operations_total",
+                    &[
+                        ("shard_id", stats.shard_id.to_string()),
+                        ("kind", kind.into()),
+                    ],
+                    value,
+                );
+            }
+            for (kind, value) in [
+                ("written", stats.page_store.bytes_written),
+                ("read", stats.page_store.bytes_read),
+            ] {
+                push_metric(
+                    &mut out,
+                    "temporalstore_page_store_bytes_total",
+                    &[
+                        ("shard_id", stats.shard_id.to_string()),
+                        ("kind", kind.into()),
+                    ],
+                    value,
+                );
+            }
+            push_metric(
+                &mut out,
+                "temporalstore_oplog_records_total",
+                &[("shard_id", stats.shard_id.to_string())],
+                stats.oplog.writes,
+            );
+            push_metric(
+                &mut out,
+                "temporalstore_oplog_bytes_total",
+                &[("shard_id", stats.shard_id.to_string())],
+                stats.oplog.bytes_written,
+            );
+        }
+        out
+    }
+
     pub fn read_stream(&self, request: StreamReadRequest) -> StreamReadResponse {
         let data: Result<Vec<u8>, String> = match request.stream_kind {
             StreamKind::Page => self
@@ -552,6 +707,33 @@ fn serialize_index(shard: &ShardState) -> Vec<u8> {
     serde_json::to_vec_pretty(shard).unwrap_or_default()
 }
 
+fn push_metric(out: &mut String, name: &str, labels: &[(&str, String)], value: u64) {
+    out.push_str(name);
+    if !labels.is_empty() {
+        out.push('{');
+        for (index, (key, value)) in labels.iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            out.push_str(key);
+            out.push_str("=\"");
+            out.push_str(&escape_metric_label(value));
+            out.push('"');
+        }
+        out.push('}');
+    }
+    out.push(' ');
+    out.push_str(&value.to_string());
+    out.push('\n');
+}
+
+fn escape_metric_label(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('\n', "\\n")
+        .replace('"', "\\\"")
+}
+
 fn unique_temp_path(kind: &str) -> PathBuf {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -631,6 +813,46 @@ fn execute_on_shard(
             }
             let _ = cache.invalidate(&CacheKey::string(shard_id, &key));
             CommandResponse::Empty
+        }
+        Command::StringSetConditional {
+            key,
+            value,
+            ttl_ms,
+            condition,
+            return_old,
+        } => {
+            remove_if_expired(shard, &key);
+            let old_value = shard
+                .strings
+                .get(&key)
+                .and_then(|address| page_store.read(address).ok());
+            let exists = old_value.is_some();
+            let should_set = match condition {
+                StringSetCondition::Always => true,
+                StringSetCondition::IfExists => exists,
+                StringSetCondition::IfNotExists => !exists,
+            };
+            if should_set {
+                if let Ok(address) = page_store.append(&value) {
+                    shard.strings.insert(key.clone(), address);
+                    if let Some(ttl_ms) = ttl_ms {
+                        shard
+                            .expires_at_ms
+                            .insert(key.clone(), now_ms().saturating_add(ttl_ms));
+                    } else {
+                        shard.expires_at_ms.remove(&key);
+                    }
+                    mutated = true;
+                }
+                let _ = cache.invalidate(&CacheKey::string(shard_id, &key));
+            }
+            if return_old {
+                CommandResponse::Bytes { value: old_value }
+            } else {
+                CommandResponse::Integer {
+                    value: if mutated { 1 } else { 0 },
+                }
+            }
         }
         Command::StringGet { key } => {
             if remove_if_expired(shard, &key) {
@@ -1058,6 +1280,42 @@ fn execute_on_shard(
                 .unwrap_or_default();
             CommandResponse::FeaturePoints { points }
         }
+        Command::IpsRemove { key, timestamp_ms } => {
+            if let Some(series) = shard.ips.get_mut(&key) {
+                mutated = series.remove(&timestamp_ms).is_some();
+                if series.is_empty() {
+                    shard.ips.remove(&key);
+                }
+            }
+            CommandResponse::Integer {
+                value: if mutated { 1 } else { 0 },
+            }
+        }
+        Command::IpsDelete { key } => {
+            mutated = shard.ips.remove(&key).is_some();
+            CommandResponse::Integer {
+                value: if mutated { 1 } else { 0 },
+            }
+        }
+        Command::IpsCount {
+            key,
+            start_ms,
+            end_ms,
+        } => {
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+                return ExecuteOutcome {
+                    response: CommandResponse::Integer { value: 0 },
+                    mutated,
+                };
+            }
+            let value = shard
+                .ips
+                .get(&key)
+                .map(|series| series.range(start_ms..=end_ms).count() as i64)
+                .unwrap_or_default();
+            CommandResponse::Integer { value }
+        }
         Command::RiskIncrement {
             key,
             timestamp_ms,
@@ -1096,6 +1354,33 @@ fn execute_on_shard(
                 })
                 .unwrap_or_default();
             CommandResponse::Integer { value }
+        }
+        Command::RiskQuery {
+            key,
+            start_ms,
+            end_ms,
+            aggregator,
+        } => {
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+                return ExecuteOutcome {
+                    response: CommandResponse::Integer { value: 0 },
+                    mutated,
+                };
+            }
+            let values = shard
+                .risk
+                .get(&key)
+                .map(|series| {
+                    series
+                        .range(start_ms..=end_ms)
+                        .map(|(_, value)| *value)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            CommandResponse::Integer {
+                value: aggregate_risk_values(&values, &aggregator),
+            }
         }
     };
     ExecuteOutcome { response, mutated }
@@ -1203,6 +1488,16 @@ fn aggregate_feature_values(values: &[Vec<u8>], aggregator: &str) -> i64 {
     }
 }
 
+fn aggregate_risk_values(values: &[i64], aggregator: &str) -> i64 {
+    match aggregator.to_ascii_lowercase().as_str() {
+        "sum" | "count" | "" => values.iter().sum(),
+        "events" | "len" => values.len() as i64,
+        "min" => values.iter().copied().min().unwrap_or_default(),
+        "max" => values.iter().copied().max().unwrap_or_default(),
+        _ => values.iter().sum(),
+    }
+}
+
 fn parse_i64(bytes: &Vec<u8>) -> Option<i64> {
     std::str::from_utf8(bytes).ok()?.parse().ok()
 }
@@ -1214,6 +1509,7 @@ fn is_write_command(command: &Command) -> bool {
             | Command::CommonExpire { .. }
             | Command::StringSet { .. }
             | Command::StringSetEx { .. }
+            | Command::StringSetConditional { .. }
             | Command::StringDelete { .. }
             | Command::HashSet { .. }
             | Command::HashMultiSet { .. }
@@ -1226,6 +1522,8 @@ fn is_write_command(command: &Command) -> bool {
             | Command::FeatureDelete { .. }
             | Command::SequenceAdd { .. }
             | Command::IpsAdd { .. }
+            | Command::IpsRemove { .. }
+            | Command::IpsDelete { .. }
             | Command::RiskIncrement { .. }
     )
 }
@@ -2413,5 +2711,174 @@ mod tests {
         assert!(stats
             .iter()
             .any(|stat| stat.shard_id == 2 && stat.hash_records == 1));
+    }
+
+    #[test]
+    fn string_set_conditional_supports_nx_xx_and_get() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+
+        let first = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSetConditional {
+                key: "k".to_string(),
+                value: b"v1".to_vec(),
+                ttl_ms: None,
+                condition: StringSetCondition::IfNotExists,
+                return_old: false,
+            },
+        });
+        assert_eq!(first.response, CommandResponse::Integer { value: 1 });
+
+        let rejected = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSetConditional {
+                key: "k".to_string(),
+                value: b"v2".to_vec(),
+                ttl_ms: None,
+                condition: StringSetCondition::IfNotExists,
+                return_old: false,
+            },
+        });
+        assert_eq!(rejected.response, CommandResponse::Integer { value: 0 });
+
+        let old = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSetConditional {
+                key: "k".to_string(),
+                value: b"v3".to_vec(),
+                ttl_ms: None,
+                condition: StringSetCondition::IfExists,
+                return_old: true,
+            },
+        });
+        assert_eq!(
+            old.response,
+            CommandResponse::Bytes {
+                value: Some(b"v1".to_vec())
+            }
+        );
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "k".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"v3".to_vec())
+            }
+        );
+    }
+
+    #[test]
+    fn ips_remove_delete_and_count_are_supported() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        for timestamp_ms in [10, 20, 30] {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::IpsAdd {
+                    key: "ips".to_string(),
+                    timestamp_ms,
+                    instance: timestamp_ms.to_string().into_bytes(),
+                },
+            });
+        }
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::IpsCount {
+                        key: "ips".to_string(),
+                        start_ms: 0,
+                        end_ms: 25,
+                    },
+                })
+                .response,
+            CommandResponse::Integer { value: 2 }
+        );
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::IpsRemove {
+                        key: "ips".to_string(),
+                        timestamp_ms: 20,
+                    },
+                })
+                .response,
+            CommandResponse::Integer { value: 1 }
+        );
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::IpsDelete {
+                        key: "ips".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Integer { value: 1 }
+        );
+    }
+
+    #[test]
+    fn risk_query_supports_sum_min_max_and_event_count() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        for (timestamp_ms, amount) in [(10, 5), (20, -2), (30, 7)] {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::RiskIncrement {
+                    key: "risk".to_string(),
+                    timestamp_ms,
+                    amount,
+                },
+            });
+        }
+        for (aggregator, expected) in [("sum", 10), ("min", -2), ("max", 7), ("events", 3)] {
+            assert_eq!(
+                engine
+                    .execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::RiskQuery {
+                            key: "risk".to_string(),
+                            start_ms: 0,
+                            end_ms: 40,
+                            aggregator: aggregator.to_string(),
+                        },
+                    })
+                    .response,
+                CommandResponse::Integer { value: expected }
+            );
+        }
+    }
+
+    #[test]
+    fn prometheus_metrics_include_records_cache_page_and_oplog() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            },
+        });
+        let _ = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: "k".to_string(),
+            },
+        });
+
+        let metrics = engine.prometheus_metrics();
+        assert!(metrics.contains("temporalstore_shard_records{shard_id=\"1\",kind=\"string\"} 1"));
+        assert!(metrics.contains("temporalstore_cache_operations_total"));
+        assert!(metrics.contains("temporalstore_page_store_operations_total"));
+        assert!(metrics.contains("temporalstore_oplog_records_total{shard_id=\"1\"} 1"));
     }
 }

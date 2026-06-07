@@ -108,7 +108,12 @@ impl LocalPageStore {
     }
 
     pub fn read_segment(&self, page_segment_id: u64) -> Result<Vec<u8>, PageStoreError> {
-        let root = self.inner.lock().expect("page store lock poisoned").root.clone();
+        let root = self
+            .inner
+            .lock()
+            .expect("page store lock poisoned")
+            .root
+            .clone();
         Ok(fs::read(segment_path(&root, page_segment_id))?)
     }
 
@@ -127,7 +132,12 @@ impl LocalPageStore {
     }
 
     pub fn segment_ids(&self) -> Result<Vec<u64>, PageStoreError> {
-        let root = self.inner.lock().expect("page store lock poisoned").root.clone();
+        let root = self
+            .inner
+            .lock()
+            .expect("page store lock poisoned")
+            .root
+            .clone();
         let mut ids = Vec::new();
         if !root.exists() {
             return Ok(ids);

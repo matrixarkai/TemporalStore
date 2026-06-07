@@ -108,6 +108,11 @@ fn main() {
     serve(&addr, move |request| {
         match (request.method.as_str(), request.path.as_str()) {
             ("GET", "/health") => json_response(200, &Status::ok()),
+            ("GET", "/metrics") => {
+                let mut metrics = engine.prometheus_metrics();
+                append_runtime_metrics(&mut metrics, &runtime);
+                (200, metrics.into_bytes())
+            }
             ("GET", "/server/info") => json_response(200, &engine.loaded_shard_stats()),
             ("GET", "/server/runtime_stats") => json_response(200, &runtime.stats()),
             ("GET", "/server/dirty_objects") => json_response(200, &runtime.dirty_objects()),
@@ -241,6 +246,42 @@ fn env_usize(name: &str, default: usize) -> usize {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(default)
+}
+
+fn append_runtime_metrics(out: &mut String, runtime: &DataNodeRuntime) {
+    let stats = runtime.stats();
+    out.push_str("# HELP temporalstore_data_node_runtime_jobs_total Data node runtime job counters by kind.\n");
+    out.push_str("# TYPE temporalstore_data_node_runtime_jobs_total counter\n");
+    for (kind, value) in [
+        ("submitted", stats.submitted_total),
+        ("completed", stats.completed_total),
+        ("rejected", stats.rejected_total),
+        ("timed_out", stats.timed_out_total),
+        ("dump", stats.dump_runs),
+        ("compaction", stats.compaction_runs),
+        ("gc", stats.gc_runs),
+    ] {
+        out.push_str("temporalstore_data_node_runtime_jobs_total{kind=\"");
+        out.push_str(kind);
+        out.push_str("\"} ");
+        out.push_str(&value.to_string());
+        out.push('\n');
+    }
+    out.push_str("# HELP temporalstore_data_node_runtime_queue_depth Current data node runtime queue depth.\n");
+    out.push_str("# TYPE temporalstore_data_node_runtime_queue_depth gauge\n");
+    out.push_str("temporalstore_data_node_runtime_queue_depth ");
+    out.push_str(&stats.queue_depth.to_string());
+    out.push('\n');
+    out.push_str("# HELP temporalstore_data_node_dirty_objects Dirty object count.\n");
+    out.push_str("# TYPE temporalstore_data_node_dirty_objects gauge\n");
+    out.push_str("temporalstore_data_node_dirty_objects ");
+    out.push_str(&stats.dirty_object_count.to_string());
+    out.push('\n');
+    out.push_str("# HELP temporalstore_data_node_dirty_shards Dirty shard count.\n");
+    out.push_str("# TYPE temporalstore_data_node_dirty_shards gauge\n");
+    out.push_str("temporalstore_data_node_dirty_shards ");
+    out.push_str(&stats.dirty_shard_count.to_string());
+    out.push('\n');
 }
 
 fn start_heartbeat_loop(

@@ -1061,6 +1061,7 @@ fn command_key(command: &Command) -> Option<&str> {
         | Command::CommonExists { key }
         | Command::StringSet { key, .. }
         | Command::StringSetEx { key, .. }
+        | Command::StringSetConditional { key, .. }
         | Command::StringGet { key }
         | Command::StringDelete { key }
         | Command::HashSet { key, .. }
@@ -1083,8 +1084,12 @@ fn command_key(command: &Command) -> Option<&str> {
         | Command::SequenceQuery { key, .. }
         | Command::IpsAdd { key, .. }
         | Command::IpsQueryLast { key, .. }
+        | Command::IpsRemove { key, .. }
+        | Command::IpsDelete { key }
+        | Command::IpsCount { key, .. }
         | Command::RiskIncrement { key, .. }
-        | Command::RiskCount { key, .. } => Some(key),
+        | Command::RiskCount { key, .. }
+        | Command::RiskQuery { key, .. } => Some(key),
     }
 }
 

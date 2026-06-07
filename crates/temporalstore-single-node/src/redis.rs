@@ -3,7 +3,9 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::thread;
 
-use crate::types::{Command, CommandResponse, ExecuteRequest, FeaturePoint, ShardId};
+use crate::types::{
+    Command, CommandResponse, ExecuteRequest, FeaturePoint, ShardId, StringSetCondition,
+};
 use crate::TemporalStoreClient;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -132,15 +134,28 @@ pub fn execute_redis_command(
                 Err(err) => RespValue::Error(format!("ERR {err}")),
             }
         }
-        "SET" if args.len() == 3 || args.len() == 5 => {
+        "SET" if args.len() >= 3 => {
             let key = string_arg(&args[1]);
             let value = args[2].clone();
-            let command = match parse_set_ttl_ms(&args[3..]) {
-                Ok(Some(ttl_ms)) => Command::StringSetEx { key, value, ttl_ms },
-                Ok(None) => Command::StringSet { key, value },
+            let options = match parse_set_options(&args[3..]) {
+                Ok(options) => options,
                 Err(err) => return RespValue::Error(err),
             };
-            status_ok(execute(command))
+            match execute(Command::StringSetConditional {
+                key,
+                value,
+                ttl_ms: options.ttl_ms,
+                condition: options.condition,
+                return_old: options.return_old,
+            }) {
+                Ok(CommandResponse::Bytes { value }) => RespValue::Bulk(value),
+                Ok(CommandResponse::Integer { value: 1 }) => {
+                    RespValue::SimpleString("OK".to_string())
+                }
+                Ok(CommandResponse::Integer { value: 0 }) => RespValue::Bulk(None),
+                Ok(_) => RespValue::Error("ERR invalid set response".to_string()),
+                Err(err) => RespValue::Error(format!("ERR {err}")),
+            }
         }
         "MSET" if args.len() >= 3 && args.len() % 2 == 1 => {
             for pair in args[1..].chunks(2) {
@@ -435,18 +450,73 @@ pub fn read_command(reader: &mut impl BufRead) -> io::Result<Option<Vec<Vec<u8>>
     Ok(Some(args))
 }
 
-fn parse_set_ttl_ms(args: &[Vec<u8>]) -> Result<Option<u64>, String> {
-    if args.is_empty() {
-        return Ok(None);
+#[derive(Debug, Clone, Copy)]
+struct SetOptions {
+    ttl_ms: Option<u64>,
+    condition: StringSetCondition,
+    return_old: bool,
+}
+
+fn parse_set_options(args: &[Vec<u8>]) -> Result<SetOptions, String> {
+    let mut options = SetOptions {
+        ttl_ms: None,
+        condition: StringSetCondition::Always,
+        return_old: false,
+    };
+    let mut index = 0;
+    while index < args.len() {
+        match upper(&args[index]).as_str() {
+            "EX" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("ERR syntax error".to_string());
+                };
+                if options
+                    .ttl_ms
+                    .replace(parse_u64(value, "seconds")?.saturating_mul(1000))
+                    .is_some()
+                {
+                    return Err("ERR syntax error".to_string());
+                }
+                index += 2;
+            }
+            "PX" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("ERR syntax error".to_string());
+                };
+                if options
+                    .ttl_ms
+                    .replace(parse_u64(value, "milliseconds")?)
+                    .is_some()
+                {
+                    return Err("ERR syntax error".to_string());
+                }
+                index += 2;
+            }
+            "NX" => {
+                if options.condition != StringSetCondition::Always {
+                    return Err("ERR syntax error".to_string());
+                }
+                options.condition = StringSetCondition::IfNotExists;
+                index += 1;
+            }
+            "XX" => {
+                if options.condition != StringSetCondition::Always {
+                    return Err("ERR syntax error".to_string());
+                }
+                options.condition = StringSetCondition::IfExists;
+                index += 1;
+            }
+            "GET" => {
+                if options.return_old {
+                    return Err("ERR syntax error".to_string());
+                }
+                options.return_old = true;
+                index += 1;
+            }
+            _ => return Err("ERR syntax error".to_string()),
+        }
     }
-    if args.len() != 2 {
-        return Err("ERR syntax error".to_string());
-    }
-    match upper(&args[0]).as_str() {
-        "EX" => parse_u64(&args[1], "seconds").map(|seconds| Some(seconds.saturating_mul(1000))),
-        "PX" => parse_u64(&args[1], "milliseconds").map(Some),
-        _ => Err("ERR syntax error".to_string()),
-    }
+    Ok(options)
 }
 
 fn expire_response(
@@ -593,7 +663,19 @@ mod tests {
             run(vec!["SET", "k", "v"]),
             RespValue::SimpleString("OK".to_string())
         );
-        assert_eq!(run(vec!["GET", "k"]), RespValue::Bulk(Some(b"v".to_vec())));
+        assert_eq!(
+            run(vec!["SET", "k", "ignored", "NX"]),
+            RespValue::Bulk(None)
+        );
+        assert_eq!(
+            run(vec!["SET", "k", "v2", "XX", "GET"]),
+            RespValue::Bulk(Some(b"v".to_vec()))
+        );
+        assert_eq!(
+            run(vec!["SET", "new", "v", "NX", "PX", "1000"]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(run(vec!["GET", "k"]), RespValue::Bulk(Some(b"v2".to_vec())));
         assert_eq!(
             run(vec!["MSET", "k1", "v1", "k2", "v2"]),
             RespValue::SimpleString("OK".to_string())

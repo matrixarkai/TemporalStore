@@ -116,9 +116,14 @@ fn handle_stream(
     let request = parse_request(&buffer)?;
     let (status, body) = handler(request);
     let status_text = if status == 200 { "OK" } else { "ERROR" };
+    let content_type = if body.starts_with(b"# HELP ") || body.starts_with(b"# TYPE ") {
+        "text/plain; version=0.0.4"
+    } else {
+        "application/json"
+    };
     write!(
         stream,
-        "HTTP/1.1 {status} {status_text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status} {status_text}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     )?;
     stream.write_all(&body)?;

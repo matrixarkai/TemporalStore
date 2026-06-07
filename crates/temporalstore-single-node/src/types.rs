@@ -51,6 +51,14 @@ pub enum FeatureFilterOp {
     LessThan,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StringSetCondition {
+    Always,
+    IfExists,
+    IfNotExists,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FeatureFilter {
     pub field: String,
@@ -82,6 +90,14 @@ pub enum Command {
         key: String,
         value: Vec<u8>,
         ttl_ms: u64,
+    },
+    StringSetConditional {
+        key: String,
+        value: Vec<u8>,
+        #[serde(default)]
+        ttl_ms: Option<u64>,
+        condition: StringSetCondition,
+        return_old: bool,
     },
     StringGet {
         key: String,
@@ -181,6 +197,18 @@ pub enum Command {
         key: String,
         count: usize,
     },
+    IpsRemove {
+        key: String,
+        timestamp_ms: u64,
+    },
+    IpsDelete {
+        key: String,
+    },
+    IpsCount {
+        key: String,
+        start_ms: u64,
+        end_ms: u64,
+    },
     RiskIncrement {
         key: String,
         timestamp_ms: u64,
@@ -190,6 +218,12 @@ pub enum Command {
         key: String,
         start_ms: u64,
         end_ms: u64,
+    },
+    RiskQuery {
+        key: String,
+        start_ms: u64,
+        end_ms: u64,
+        aggregator: String,
     },
 }
 

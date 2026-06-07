@@ -174,15 +174,23 @@ impl RebalanceController {
             if plans.len() >= options.max_moves_per_round {
                 break;
             }
-            if simulated_loads.get(&source.node_id).copied().unwrap_or_default() <= safe_line {
+            if simulated_loads
+                .get(&source.node_id)
+                .copied()
+                .unwrap_or_default()
+                <= safe_line
+            {
                 continue;
             }
             if source.role == ShardRole::Primary && !self.has_normal_secondary(source.shard_id) {
                 continue;
             }
-            let Some(target_node_id) =
-                least_loaded_target(&simulated_loads, &all_nodes, source.shard_id, &self.replicas)
-            else {
+            let Some(target_node_id) = least_loaded_target(
+                &simulated_loads,
+                &all_nodes,
+                source.shard_id,
+                &self.replicas,
+            ) else {
                 continue;
             };
             if target_node_id == source.node_id {

@@ -205,7 +205,11 @@ where
         shard_id: ShardId,
     ) -> Result<Vec<SharedStoreCheckpointManifest>, SharedStoreReplicationError> {
         let mut manifests = Vec::new();
-        for key in self.object_store.list(&self.checkpoints_prefix(shard_id)).await? {
+        for key in self
+            .object_store
+            .list(&self.checkpoints_prefix(shard_id))
+            .await?
+        {
             if !key.ends_with("/manifest.json") {
                 continue;
             }
@@ -251,7 +255,8 @@ where
             .await?
             .pop()
             .ok_or(SharedStoreReplicationError::CheckpointNotFound(shard_id))?;
-        self.restore_checkpoint(&manifest, engine, page_store).await?;
+        self.restore_checkpoint(&manifest, engine, page_store)
+            .await?;
         Ok(manifest)
     }
 
@@ -317,7 +322,10 @@ where
     }
 
     fn oplog_key(&self, shard_id: ShardId, oplog_index: u64) -> String {
-        format!("{}oplog_{oplog_index:020}.json", self.oplog_prefix(shard_id))
+        format!(
+            "{}oplog_{oplog_index:020}.json",
+            self.oplog_prefix(shard_id)
+        )
     }
 
     fn checkpoints_prefix(&self, shard_id: ShardId) -> String {
@@ -329,7 +337,10 @@ where
     }
 
     fn checkpoint_manifest_key(&self, shard_id: ShardId, checkpoint_id: &str) -> String {
-        format!("{}manifest.json", self.checkpoint_prefix(shard_id, checkpoint_id))
+        format!(
+            "{}manifest.json",
+            self.checkpoint_prefix(shard_id, checkpoint_id)
+        )
     }
 }
 
@@ -386,8 +397,8 @@ mod tests {
     use std::sync::Arc;
 
     use bytes::Bytes;
-    use temporalstore_snapshot::object_store::ObjectStore;
     use temporalstore_snapshot::object_store::FileObjectStore;
+    use temporalstore_snapshot::object_store::ObjectStore;
 
     use super::*;
     use crate::types::CommandResponse;
@@ -504,7 +515,10 @@ mod tests {
             .await
             .unwrap();
         store
-            .put(&manifest.page_segments[0].key, Bytes::from_static(b"corrupt"))
+            .put(
+                &manifest.page_segments[0].key,
+                Bytes::from_static(b"corrupt"),
+            )
             .await
             .unwrap();
 
