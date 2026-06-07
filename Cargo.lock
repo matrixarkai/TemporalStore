@@ -490,10 +490,13 @@ dependencies = [
 name = "temporalstore-single-node"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "serde",
  "serde_json",
  "tempfile",
+ "temporalstore-snapshot",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]

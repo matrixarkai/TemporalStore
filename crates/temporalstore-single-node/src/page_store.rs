@@ -107,6 +107,48 @@ impl LocalPageStore {
         Ok(bytes)
     }
 
+    pub fn read_segment(&self, page_segment_id: u64) -> Result<Vec<u8>, PageStoreError> {
+        let root = self.inner.lock().expect("page store lock poisoned").root.clone();
+        Ok(fs::read(segment_path(&root, page_segment_id))?)
+    }
+
+    pub fn install_segment(
+        &self,
+        page_segment_id: u64,
+        bytes: &[u8],
+    ) -> Result<(), PageStoreError> {
+        let mut inner = self.inner.lock().expect("page store lock poisoned");
+        fs::create_dir_all(&inner.root)?;
+        fs::write(segment_path(&inner.root, page_segment_id), bytes)?;
+        if page_segment_id == inner.page_segment_id {
+            inner.write_offset = bytes.len() as u64;
+        }
+        Ok(())
+    }
+
+    pub fn segment_ids(&self) -> Result<Vec<u64>, PageStoreError> {
+        let root = self.inner.lock().expect("page store lock poisoned").root.clone();
+        let mut ids = Vec::new();
+        if !root.exists() {
+            return Ok(ids);
+        }
+        for entry in fs::read_dir(root)? {
+            let entry = entry?;
+            let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            if let Some(id) = name
+                .strip_prefix("page_segment_")
+                .and_then(|name| name.strip_suffix(".seg"))
+                .and_then(|id| id.parse::<u64>().ok())
+            {
+                ids.push(id);
+            }
+        }
+        ids.sort_unstable();
+        Ok(ids)
+    }
+
     pub fn stats(&self) -> PageStoreStats {
         self.inner.lock().expect("page store lock poisoned").stats
     }

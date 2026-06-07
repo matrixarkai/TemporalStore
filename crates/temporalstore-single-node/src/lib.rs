@@ -8,6 +8,7 @@ pub mod meta;
 pub mod page_store;
 pub mod raft;
 pub mod redis;
+pub mod shared_store;
 pub mod types;
 
 pub use cache::{CacheKey, CacheStats, MultiLayerCache};
@@ -29,6 +30,9 @@ pub use raft::{
     MetaCommand, MetaRaftCluster, MetaState, RaftCluster, RaftError, RaftNodeId, RaftRole,
 };
 pub use redis::{execute_redis_command, read_command, serve_redis_proxy, RespValue};
+pub use shared_store::{
+    ReplayReport, SharedStoreOplogEntry, SharedStoreReplicationError, SharedStoreReplicator,
+};
 pub use types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,
     ExecuteResponse, FeaturePoint, ShardId, Status,

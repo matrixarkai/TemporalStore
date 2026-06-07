@@ -347,6 +347,19 @@ impl TemporalEngine {
         }
     }
 
+    pub fn export_index_bytes(&self, shard_id: ShardId) -> Result<Vec<u8>, std::io::Error> {
+        fs::read(self.index_path(shard_id))
+    }
+
+    pub fn install_index_bytes(
+        &self,
+        shard_id: ShardId,
+        bytes: &[u8],
+    ) -> Result<(), std::io::Error> {
+        fs::create_dir_all(&self.index_dir)?;
+        fs::write(self.index_path(shard_id), bytes)
+    }
+
     fn index_path(&self, shard_id: ShardId) -> PathBuf {
         self.index_dir.join(format!("shard-{shard_id}.index.json"))
     }
