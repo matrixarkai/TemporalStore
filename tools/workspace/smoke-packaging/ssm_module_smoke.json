@@ -1,0 +1,1 @@
+{"commands":["bash \u003c\u003c\u0027BASH\u0027\nset -euo pipefail\nexport LD_PRELOAD=/opt/temporalstore/runtime/lib/libthrift_conv_shim.so\nexport LD_LIBRARY_PATH=/opt/temporalstore/client-tools/sdk/lib:/opt/temporalstore/runtime/lib:/opt/temporalstore/lib\n/opt/temporalstore/client-tools/bin/module_ingest_query_example 10.70.1.161:18000 vdc1 aws30m_primary temporalagg\nBASH"]}

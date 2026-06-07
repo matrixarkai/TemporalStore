@@ -1,0 +1,16 @@
+{
+    "commands":  [
+                     "set -eux",
+                     "sudo mkdir -p /opt/temporalstore/bin /opt/temporalstore/lib /opt/temporalstore/sdk/lib /opt/temporalstore/sdk/include/bcache2 /opt/temporalstore/monitoring-ui",
+                     "sudo cp /mnt/temporalstore-shared/artifacts/runtime/bin/* /opt/temporalstore/bin/",
+                     "sudo cp /mnt/temporalstore-shared/artifacts/runtime/lib/* /opt/temporalstore/lib/",
+                     "cd /opt/temporalstore/lib \u0026\u0026 sudo ln -sf libthrift.so.0.11.0 libthrift.so \u0026\u0026 sudo ln -sf librocksdb.so.6.11 librocksdb.so",
+                     "echo /opt/temporalstore/lib | sudo tee /etc/ld.so.conf.d/temporalstore.conf",
+                     "sudo ldconfig",
+                     "sudo cp /mnt/temporalstore-shared/artifacts/runtime/sdk/lib/* /opt/temporalstore/sdk/lib/ 2\u003e/dev/null || true",
+                     "sudo cp /mnt/temporalstore-shared/artifacts/runtime/sdk/include/bcache2/bcache2.h /opt/temporalstore/sdk/include/bcache2/ 2\u003e/dev/null || true",
+                     "sudo chmod +x /opt/temporalstore/bin/*",
+                     "ls -lh /opt/temporalstore/bin",
+                     "ldd /opt/temporalstore/bin/bcache2-server | grep \"not found\" || true"
+                 ]
+}
