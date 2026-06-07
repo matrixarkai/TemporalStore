@@ -216,7 +216,7 @@ resource "kubernetes_deployment_v1" "proxy" {
   }
 
   spec {
-    replicas = 1
+    replicas = var.proxy_replicas
     selector {
       match_labels = { app = local.proxy_service_name }
     }
@@ -285,7 +285,7 @@ resource "kubernetes_deployment_v1" "redis_proxy" {
   }
 
   spec {
-    replicas = 1
+    replicas = var.redis_proxy_replicas
     selector {
       match_labels = { app = local.redis_service_name }
     }

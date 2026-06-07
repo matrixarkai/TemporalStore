@@ -55,6 +55,18 @@ variable "cache_memory_bytes" {
   default     = 16777216
 }
 
+variable "proxy_replicas" {
+  description = "Replica count for the stateless HTTP proxy."
+  type        = number
+  default     = 1
+}
+
+variable "redis_proxy_replicas" {
+  description = "Replica count for the stateless Redis-compatible proxy."
+  type        = number
+  default     = 1
+}
+
 variable "proxy_service_type" {
   description = "Service type for the HTTP proxy."
   type        = string

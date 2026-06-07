@@ -59,6 +59,29 @@ redis-cli -p 16379 SET aws:key value
 redis-cli -p 16379 GET aws:key
 ```
 
+Scale testing the stateless layers:
+
+```bash
+export AWS_REGION=<region>
+export TS_EKS_CLUSTER_NAME=<cluster-name>
+export TS_NAMESPACE=temporalstore
+export TS_PROXY_REPLICAS=3
+export TS_REDIS_PROXY_REPLICAS=3
+export TS_LOAD_CONCURRENCY=32
+export TS_LOAD_SECONDS=60
+
+tools/scale_test_aws_existing_eks.sh
+```
+
+The scale script:
+
+- reuses the existing EKS cluster
+- scales only `temporalstore-proxy` and `temporalstore-redis`
+- waits for rollout
+- port-forwards the Redis service
+- runs `tools/redis_scale_load.py` with concurrent `SET`/`GET` traffic
+- prints QPS and p50/p95/p99 latency
+
 Notes:
 
 - The current Rust server is still a single-shard/single-server runtime. The Terraform deploys one

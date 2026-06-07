@@ -12,3 +12,4 @@ bytestore_images/
 bytestorelab-master/
 *.png
 crates/*/shard-*.index.json
+__pycache__/
