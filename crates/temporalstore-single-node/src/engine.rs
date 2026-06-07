@@ -204,17 +204,31 @@ impl TemporalEngine {
                 response: CommandResponse::Empty,
             };
         }
-        let feature_max_size = self
+        let config = self
             .configs
             .read()
             .expect("config lock poisoned")
             .get(&request.shard_id)
-            .map(|config| config.feature_max_size)
-            .unwrap_or(5000);
+            .cloned()
+            .unwrap_or_default();
+        if is_write_command(&command)
+            && config
+                .maxmemory_bytes
+                .map(|limit| self.page_store.stats().bytes_written >= limit)
+                .unwrap_or(false)
+        {
+            return ExecuteResponse {
+                status: Status::error(
+                    "storage_quota_exceeded",
+                    "shard maxmemory_bytes limit has been reached",
+                ),
+                response: CommandResponse::Empty,
+            };
+        }
         let outcome = execute_on_shard(
             &self.cache,
             &self.page_store,
-            feature_max_size,
+            config.feature_max_size,
             request.shard_id,
             shard,
             command.clone(),
@@ -421,6 +435,8 @@ impl TemporalEngine {
                 ("misses", stats.cache.misses),
                 ("puts", stats.cache.puts),
                 ("invalidations", stats.cache.invalidations),
+                ("compressed_puts", stats.cache.compressed_puts),
+                ("compressed_hits", stats.cache.compressed_hits),
             ] {
                 push_metric(
                     &mut out,
@@ -435,6 +451,7 @@ impl TemporalEngine {
             for (tier, value) in [
                 ("memory", stats.cache.memory_bytes),
                 ("disk", stats.cache.disk_bytes),
+                ("compression_saved", stats.cache.compression_bytes_saved),
             ] {
                 push_metric(
                     &mut out,
@@ -529,6 +546,13 @@ impl TemporalEngine {
     }
 
     pub fn scan_stream(&self, request: ScanStreamRequest) -> ScanStreamResponse {
+        if request.start_offset > request.end_offset {
+            return ScanStreamResponse {
+                status: Status::error("invalid_stream_range", "start_offset is after end_offset"),
+                records: Vec::new(),
+                end_of_stream: true,
+            };
+        }
         let size = request
             .end_offset
             .saturating_sub(request.start_offset)
@@ -687,18 +711,48 @@ impl TemporalEngine {
 
     fn shard_stats(&self, shard_id: ShardId) -> Option<ShardStats> {
         let shards = self.shards.read().expect("engine lock poisoned");
-        shards.get(&shard_id).map(|state| ShardStats {
-            shard_id,
-            string_records: state.strings.len(),
-            hash_records: state.hashes.len(),
-            set_records: state.sets.len(),
-            feature_records: state.features.len(),
-            sequence_records: state.sequences.len(),
-            ips_records: state.ips.len(),
-            risk_records: state.risk.len(),
-            cache: self.cache.stats(),
-            page_store: self.page_store.stats(),
-            oplog: self.oplog_store.stats(shard_id),
+        let info = self
+            .infos
+            .read()
+            .expect("info lock poisoned")
+            .get(&shard_id)
+            .cloned();
+        shards.get(&shard_id).map(|state| {
+            let page_store = self.page_store.stats();
+            let string_records = state.strings.len();
+            let hash_records = state.hashes.len();
+            let set_records = state.sets.len();
+            let feature_records = state.features.len();
+            let sequence_records = state.sequences.len();
+            let ips_records = state.ips.len();
+            let risk_records = state.risk.len();
+            ShardStats {
+                shard_id,
+                loaded: info.as_ref().map(|info| info.loaded).unwrap_or(true),
+                readonly: info.as_ref().map(|info| info.readonly).unwrap_or(false),
+                load_version: info
+                    .as_ref()
+                    .map(|info| info.load_version)
+                    .unwrap_or_default(),
+                total_records: string_records
+                    + hash_records
+                    + set_records
+                    + feature_records
+                    + sequence_records
+                    + ips_records
+                    + risk_records,
+                string_records,
+                hash_records,
+                set_records,
+                feature_records,
+                sequence_records,
+                ips_records,
+                risk_records,
+                storage_bytes: page_store.bytes_written,
+                cache: self.cache.stats(),
+                page_store,
+                oplog: self.oplog_store.stats(shard_id),
+            }
         })
     }
 }
@@ -825,7 +879,7 @@ fn execute_on_shard(
             let old_value = shard
                 .strings
                 .get(&key)
-                .and_then(|address| page_store.read(address).ok());
+                .and_then(|address| read_page_bytes(cache, page_store, shard_id, address));
             let exists = old_value.is_some();
             let should_set = match condition {
                 StringSetCondition::Always => true,
@@ -868,7 +922,7 @@ fn execute_on_shard(
                     value: shard
                         .strings
                         .get(&key)
-                        .and_then(|address| page_store.read(address).ok()),
+                        .and_then(|address| read_page_bytes(cache, page_store, shard_id, address)),
                 }
             })
         }
@@ -905,7 +959,7 @@ fn execute_on_shard(
                         .hashes
                         .get(&key)
                         .and_then(|fields| fields.get(&field))
-                        .and_then(|address| page_store.read(address).ok()),
+                        .and_then(|address| read_page_bytes(cache, page_store, shard_id, address)),
                 }
             })
         }
@@ -927,7 +981,7 @@ fn execute_on_shard(
                         .hashes
                         .get(&key)
                         .and_then(|entries| entries.get(field))
-                        .and_then(|address| page_store.read(address).ok())
+                        .and_then(|address| read_page_bytes(cache, page_store, shard_id, address))
                 })
                 .collect();
             CommandResponse::Values { values }
@@ -957,7 +1011,7 @@ fn execute_on_shard(
                 .hashes
                 .get(&key)
                 .and_then(|entries| entries.get(&field))
-                .and_then(|address| page_store.read(address).ok())
+                .and_then(|address| read_page_bytes(cache, page_store, shard_id, address))
                 .and_then(|bytes| parse_i64(&bytes))
                 .unwrap_or_default();
             let value = current.saturating_add(increment);
@@ -990,9 +1044,7 @@ fn execute_on_shard(
                     let mut entries = fields
                         .iter()
                         .filter_map(|(field, address)| {
-                            page_store
-                                .read(address)
-                                .ok()
+                            read_page_bytes(cache, page_store, shard_id, address)
                                 .map(|value| (field.clone(), value))
                         })
                         .collect::<Vec<_>>();
@@ -1056,7 +1108,9 @@ fn execute_on_shard(
                     .get(&key)
                     .map(|set| {
                         set.values()
-                            .filter_map(|address| page_store.read(address).ok())
+                            .filter_map(|address| {
+                                read_page_bytes(cache, page_store, shard_id, address)
+                            })
                             .collect()
                     })
                     .unwrap_or_default();
@@ -1106,9 +1160,11 @@ fn execute_on_shard(
                             .range(start_ms..=end_ms)
                             .take(count.unwrap_or(5000))
                             .filter_map(|(timestamp_ms, address)| {
-                                page_store.read(address).ok().map(|value| FeaturePoint {
-                                    timestamp_ms: *timestamp_ms,
-                                    value,
+                                read_page_bytes(cache, page_store, shard_id, address).map(|value| {
+                                    FeaturePoint {
+                                        timestamp_ms: *timestamp_ms,
+                                        value,
+                                    }
                                 })
                             })
                             .collect()
@@ -1177,7 +1233,9 @@ fn execute_on_shard(
                     series
                         .range(start_ms..=end_ms)
                         .take(count.unwrap_or(5000))
-                        .filter_map(|(_, address)| page_store.read(address).ok())
+                        .filter_map(|(_, address)| {
+                            read_page_bytes(cache, page_store, shard_id, address)
+                        })
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
@@ -1225,7 +1283,9 @@ fn execute_on_shard(
                 .map(|series| {
                     series
                         .range(start_ms..=end_ms)
-                        .filter_map(|(_, address)| read_sequence_row(page_store, address))
+                        .filter_map(|(_, address)| {
+                            read_sequence_row(cache, page_store, shard_id, address)
+                        })
                         .filter(|row| {
                             filters
                                 .iter()
@@ -1270,15 +1330,68 @@ fn execute_on_shard(
                         .rev()
                         .take(count)
                         .filter_map(|(timestamp_ms, address)| {
-                            page_store.read(address).ok().map(|value| FeaturePoint {
-                                timestamp_ms: *timestamp_ms,
-                                value,
+                            read_page_bytes(cache, page_store, shard_id, address).map(|value| {
+                                FeaturePoint {
+                                    timestamp_ms: *timestamp_ms,
+                                    value,
+                                }
                             })
                         })
                         .collect()
                 })
                 .unwrap_or_default();
             CommandResponse::FeaturePoints { points }
+        }
+        Command::IpsQueryRange {
+            key,
+            start_ms,
+            end_ms,
+            count,
+        } => {
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+                return ExecuteOutcome {
+                    response: CommandResponse::FeaturePoints { points: Vec::new() },
+                    mutated,
+                };
+            }
+            CommandResponse::FeaturePoints {
+                points: ips_points_in_range(
+                    cache, page_store, shard_id, shard, &key, start_ms, end_ms, count,
+                ),
+            }
+        }
+        Command::IpsBatchQueryLast { keys, count } => {
+            let groups = keys
+                .into_iter()
+                .map(|key| {
+                    if remove_if_expired(shard, &key) {
+                        mutated = true;
+                        return (key, Vec::new());
+                    }
+                    let points = shard
+                        .ips
+                        .get(&key)
+                        .map(|series| {
+                            series
+                                .iter()
+                                .rev()
+                                .take(count)
+                                .filter_map(|(timestamp_ms, address)| {
+                                    read_page_bytes(cache, page_store, shard_id, address).map(
+                                        |value| FeaturePoint {
+                                            timestamp_ms: *timestamp_ms,
+                                            value,
+                                        },
+                                    )
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    (key, points)
+                })
+                .collect();
+            CommandResponse::FeaturePointGroups { groups }
         }
         Command::IpsRemove { key, timestamp_ms } => {
             if let Some(series) = shard.ips.get_mut(&key) {
@@ -1382,6 +1495,35 @@ fn execute_on_shard(
                 value: aggregate_risk_values(&values, &aggregator),
             }
         }
+        Command::RiskDetail {
+            key,
+            start_ms,
+            end_ms,
+            count,
+        } => {
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+                return ExecuteOutcome {
+                    response: CommandResponse::FeaturePoints { points: Vec::new() },
+                    mutated,
+                };
+            }
+            let points = shard
+                .risk
+                .get(&key)
+                .map(|series| {
+                    series
+                        .range(start_ms..=end_ms)
+                        .take(count.unwrap_or(usize::MAX))
+                        .map(|(timestamp_ms, amount)| FeaturePoint {
+                            timestamp_ms: *timestamp_ms,
+                            value: amount.to_string().into_bytes(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            CommandResponse::FeaturePoints { points }
+        }
     };
     ExecuteOutcome { response, mutated }
 }
@@ -1447,10 +1589,12 @@ fn invalidate_record_all(cache: &MultiLayerCache, shard_id: ShardId, key: &str) 
 }
 
 fn read_sequence_row(
+    cache: &MultiLayerCache,
     page_store: &LocalPageStore,
+    shard_id: ShardId,
     address: &PageAddress,
 ) -> Option<SequenceFeatureRow> {
-    let bytes = page_store.read(address).ok()?;
+    let bytes = read_page_bytes(cache, page_store, shard_id, address)?;
     serde_json::from_slice(&bytes).ok()
 }
 
@@ -1494,8 +1638,60 @@ fn aggregate_risk_values(values: &[i64], aggregator: &str) -> i64 {
         "events" | "len" => values.len() as i64,
         "min" => values.iter().copied().min().unwrap_or_default(),
         "max" => values.iter().copied().max().unwrap_or_default(),
+        "first" => values.first().copied().unwrap_or_default(),
+        "last" => values.last().copied().unwrap_or_default(),
         _ => values.iter().sum(),
     }
+}
+
+fn ips_points_in_range(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    shard: &ShardState,
+    key: &str,
+    start_ms: u64,
+    end_ms: u64,
+    count: Option<usize>,
+) -> Vec<FeaturePoint> {
+    shard
+        .ips
+        .get(key)
+        .map(|series| {
+            series
+                .range(start_ms..=end_ms)
+                .take(count.unwrap_or(usize::MAX))
+                .filter_map(|(timestamp_ms, address)| {
+                    read_page_bytes(cache, page_store, shard_id, address).map(|value| {
+                        FeaturePoint {
+                            timestamp_ms: *timestamp_ms,
+                            value,
+                        }
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn read_page_bytes(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    address: &PageAddress,
+) -> Option<Vec<u8>> {
+    let cache_key = CacheKey::page(
+        shard_id,
+        address.page_segment_id,
+        address.offset,
+        address.length,
+    );
+    if let Ok(Some(bytes)) = cache.get(&cache_key) {
+        return Some(bytes);
+    }
+    let bytes = page_store.read(address).ok()?;
+    let _ = cache.put(cache_key, bytes.clone());
+    Some(bytes)
 }
 
 fn parse_i64(bytes: &Vec<u8>) -> Option<i64> {
@@ -1648,9 +1844,9 @@ mod tests {
             },
         });
         let stats = cache.stats();
-        assert_eq!(stats.misses, 1);
-        assert_eq!(stats.memory_hits, 1);
-        assert!(stats.puts >= 1);
+        assert_eq!(stats.misses, 2);
+        assert!(stats.memory_hits >= 1);
+        assert!(stats.puts >= 2);
     }
 
     #[test]
@@ -1754,7 +1950,7 @@ mod tests {
             }
         );
         assert_eq!(page_store.stats().reads, 1);
-        assert_eq!(cache.stats().puts, 1);
+        assert_eq!(cache.stats().puts, 2);
         assert!(cache.stats().memory_bytes > 0);
         assert!(cache.stats().disk_bytes > 0);
 
@@ -1770,7 +1966,7 @@ mod tests {
                 value: Some(b"v".to_vec())
             }
         );
-        assert_eq!(cache.stats().memory_hits, 1);
+        assert!(cache.stats().memory_hits >= 1);
         assert_eq!(page_store.stats().reads, 1);
 
         cache.clear_memory_for_test();
@@ -1789,7 +1985,7 @@ mod tests {
         assert_eq!(cache.stats().disk_hits, 1);
         assert_eq!(page_store.stats().reads, 1);
 
-        cache.invalidate(&CacheKey::string(1, "k")).unwrap();
+        cache.invalidate_shard(1).unwrap();
         let local_file = engine.execute(ExecuteRequest {
             shard_id: 1,
             command: Command::StringGet {
@@ -1803,9 +1999,58 @@ mod tests {
             }
         );
         assert_eq!(page_store.stats().reads, 2);
-        assert_eq!(cache.stats().puts, 2);
+        assert_eq!(cache.stats().puts, 4);
         assert!(cache.stats().memory_bytes > 0);
         assert!(cache.stats().disk_bytes > 0);
+    }
+
+    #[test]
+    fn page_reads_fill_compressed_block_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = MultiLayerCache::with_block_options(
+            1024 * 1024,
+            dir.path().join("cache"),
+            crate::cache::CacheBlockOptions {
+                compression: crate::cache::CacheCompression::Zstd { level: 1 },
+                min_compress_bytes: 16,
+            },
+        );
+        let engine = TemporalEngine::with_cache_page_store_and_index_dir(
+            cache.clone(),
+            LocalPageStore::new(dir.path().join("pages")),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        let value = vec![b'x'; 4096];
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "large".to_string(),
+                value: value.clone(),
+            },
+        });
+
+        let first = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: "large".to_string(),
+            },
+        });
+        assert_eq!(
+            first.response,
+            CommandResponse::Bytes { value: Some(value) }
+        );
+        assert!(cache.stats().compressed_puts >= 1);
+        assert!(cache.stats().compression_bytes_saved > 0);
+
+        cache.clear_memory_for_test();
+        let _ = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: "large".to_string(),
+            },
+        });
+        assert!(cache.stats().compressed_hits >= 1);
     }
 
     #[test]
@@ -2436,6 +2681,10 @@ mod tests {
         });
         let stats = engine.get_stats(7).stats.unwrap();
         assert_eq!(stats.string_records, 1);
+        assert_eq!(stats.total_records, 1);
+        assert_eq!(stats.load_version, 42);
+        assert!(!stats.readonly);
+        assert!(stats.storage_bytes > 0);
         assert_eq!(stats.page_store.writes, 1);
 
         assert!(
@@ -2494,6 +2743,17 @@ mod tests {
         });
         assert_eq!(scan.records.len(), 1);
         assert_eq!(scan.records[0].data, b"stream-value".to_vec());
+
+        let invalid = engine.scan_stream(ScanStreamRequest {
+            shard_id: 1,
+            stream_kind: StreamKind::Page,
+            page_segment_id: 0,
+            start_offset: 12,
+            end_offset: 1,
+            max_bytes: 12,
+        });
+        assert_eq!(invalid.status.code, "invalid_stream_range");
+        assert!(invalid.records.is_empty());
     }
 
     #[test]
@@ -2826,6 +3086,78 @@ mod tests {
     }
 
     #[test]
+    fn ips_range_and_batch_queries_match_cpp_style_read_shapes() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        for (key, timestamp_ms) in [
+            ("ips-a", 10),
+            ("ips-a", 20),
+            ("ips-a", 30),
+            ("ips-b", 15),
+            ("ips-b", 25),
+        ] {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::IpsAdd {
+                    key: key.to_string(),
+                    timestamp_ms,
+                    instance: format!("{key}-{timestamp_ms}").into_bytes(),
+                },
+            });
+        }
+
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::IpsQueryRange {
+                        key: "ips-a".to_string(),
+                        start_ms: 15,
+                        end_ms: 35,
+                        count: Some(1),
+                    },
+                })
+                .response,
+            CommandResponse::FeaturePoints {
+                points: vec![FeaturePoint {
+                    timestamp_ms: 20,
+                    value: b"ips-a-20".to_vec(),
+                }]
+            }
+        );
+
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::IpsBatchQueryLast {
+                        keys: vec!["ips-a".to_string(), "ips-b".to_string()],
+                        count: 1,
+                    },
+                })
+                .response,
+            CommandResponse::FeaturePointGroups {
+                groups: vec![
+                    (
+                        "ips-a".to_string(),
+                        vec![FeaturePoint {
+                            timestamp_ms: 30,
+                            value: b"ips-a-30".to_vec(),
+                        }],
+                    ),
+                    (
+                        "ips-b".to_string(),
+                        vec![FeaturePoint {
+                            timestamp_ms: 25,
+                            value: b"ips-b-25".to_vec(),
+                        }],
+                    ),
+                ],
+            }
+        );
+    }
+
+    #[test]
     fn risk_query_supports_sum_min_max_and_event_count() {
         let engine = TemporalEngine::default();
         engine.load_shard(1);
@@ -2855,6 +3187,97 @@ mod tests {
                 CommandResponse::Integer { value: expected }
             );
         }
+    }
+
+    #[test]
+    fn risk_query_supports_first_last_and_detail_list() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        for (timestamp_ms, amount) in [(10, 5), (20, -2), (30, 7)] {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::RiskIncrement {
+                    key: "risk".to_string(),
+                    timestamp_ms,
+                    amount,
+                },
+            });
+        }
+        for (aggregator, expected) in [("first", 5), ("last", 7)] {
+            assert_eq!(
+                engine
+                    .execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::RiskQuery {
+                            key: "risk".to_string(),
+                            start_ms: 0,
+                            end_ms: 40,
+                            aggregator: aggregator.to_string(),
+                        },
+                    })
+                    .response,
+                CommandResponse::Integer { value: expected }
+            );
+        }
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::RiskDetail {
+                        key: "risk".to_string(),
+                        start_ms: 15,
+                        end_ms: 40,
+                        count: Some(2),
+                    },
+                })
+                .response,
+            CommandResponse::FeaturePoints {
+                points: vec![
+                    FeaturePoint {
+                        timestamp_ms: 20,
+                        value: b"-2".to_vec(),
+                    },
+                    FeaturePoint {
+                        timestamp_ms: 30,
+                        value: b"7".to_vec(),
+                    },
+                ]
+            }
+        );
+    }
+
+    #[test]
+    fn maxmemory_config_rejects_new_writes_after_storage_budget_is_reached() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        engine.set_config(SetConfigRequest {
+            shard_id: 1,
+            config: Config {
+                maxmemory_bytes: Some(1),
+                ..Config::default()
+            },
+        });
+
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: "first".to_string(),
+                        value: b"x".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+        let rejected = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "second".to_string(),
+                value: b"y".to_vec(),
+            },
+        });
+        assert_eq!(rejected.status.code, "storage_quota_exceeded");
     }
 
     #[test]

@@ -1,5 +1,7 @@
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
@@ -31,6 +33,8 @@ pub enum SharedStoreReplicationError {
     CheckpointNotFound(ShardId),
     #[error("replicated command failed at oplog index {oplog_index}: {status:?}")]
     ApplyFailed { oplog_index: u64, status: Status },
+    #[error("oplog replay gap: expected index {expected}, got {actual}")]
+    ReplayGap { expected: u64, actual: u64 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -38,6 +42,13 @@ pub struct SharedStoreOplogEntry {
     pub shard_id: ShardId,
     pub oplog_index: u64,
     pub command: Command,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SharedStoreOplogObject {
+    pub entry: SharedStoreOplogEntry,
+    pub entry_byte_size: u64,
+    pub entry_sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -61,10 +72,80 @@ pub struct SharedStoreCheckpointManifest {
     pub page_segments: Vec<SharedStorePageSegment>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SharedStoreReplayCursor {
+    pub shard_id: ShardId,
+    pub last_oplog_index: u64,
+    pub last_replay_time_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum SharedStoreStorageMode {
+    Sync,
+    Async,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SharedStoreWriteReport {
+    pub oplog_index: u64,
+    pub published: bool,
+    pub queued: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SharedStoreFlushReport {
+    pub flushed: usize,
+    pub remaining: usize,
+    pub last_oplog_index: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SharedStoreGcReport {
+    pub shard_id: ShardId,
+    pub deleted_oplog_objects: usize,
+    pub deleted_checkpoints: usize,
+    pub deleted_checkpoint_objects: usize,
+    pub retained_checkpoint_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SharedStoreRetryPolicy {
+    pub max_attempts: usize,
+    pub backoff_ms: u64,
+}
+
+impl Default for SharedStoreRetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: 1,
+            backoff_ms: 0,
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct SharedStoreReplicator<O> {
     cluster_id: String,
     object_store: Arc<O>,
+    retry_policy: SharedStoreRetryPolicy,
+}
+
+impl<O> Clone for SharedStoreReplicator<O> {
+    fn clone(&self) -> Self {
+        Self {
+            cluster_id: self.cluster_id.clone(),
+            object_store: Arc::clone(&self.object_store),
+            retry_policy: self.retry_policy,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct SharedStoreStorageWriter<O> {
+    replicator: SharedStoreReplicator<O>,
+    mode: SharedStoreStorageMode,
+    next_oplog_index: AtomicU64,
+    pending: Mutex<VecDeque<SharedStoreOplogEntry>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,6 +162,22 @@ where
         Self {
             cluster_id: cluster_id.into(),
             object_store,
+            retry_policy: SharedStoreRetryPolicy::default(),
+        }
+    }
+
+    pub fn with_retry_policy(
+        cluster_id: impl Into<String>,
+        object_store: Arc<O>,
+        retry_policy: SharedStoreRetryPolicy,
+    ) -> Self {
+        Self {
+            cluster_id: cluster_id.into(),
+            object_store,
+            retry_policy: SharedStoreRetryPolicy {
+                max_attempts: retry_policy.max_attempts.max(1),
+                backoff_ms: retry_policy.backoff_ms,
+            },
         }
     }
 
@@ -89,10 +186,28 @@ where
         entry: SharedStoreOplogEntry,
     ) -> Result<(), SharedStoreReplicationError> {
         let key = self.oplog_key(entry.shard_id, entry.oplog_index);
-        self.object_store
-            .put(&key, Bytes::from(serde_json::to_vec_pretty(&entry)?))
+        let entry_bytes = serde_json::to_vec_pretty(&entry)?;
+        let object = SharedStoreOplogObject {
+            entry,
+            entry_byte_size: entry_bytes.len() as u64,
+            entry_sha256: sha256_hex(&entry_bytes),
+        };
+        self.put_with_retry(&key, Bytes::from(serde_json::to_vec_pretty(&object)?))
             .await?;
         Ok(())
+    }
+
+    pub fn storage_writer(
+        &self,
+        mode: SharedStoreStorageMode,
+        next_oplog_index: u64,
+    ) -> SharedStoreStorageWriter<O> {
+        SharedStoreStorageWriter {
+            replicator: self.clone(),
+            mode,
+            next_oplog_index: AtomicU64::new(next_oplog_index.max(1)),
+            pending: Mutex::default(),
+        }
     }
 
     pub async fn publish_index(
@@ -280,8 +395,7 @@ where
             if oplog_index <= after_oplog_index {
                 continue;
             }
-            let entry: SharedStoreOplogEntry =
-                serde_json::from_slice(&self.object_store.get(&key).await?)?;
+            let entry = self.read_oplog_entry(&key).await?;
             let response = engine.execute(ExecuteRequest {
                 shard_id,
                 command: entry.command,
@@ -296,6 +410,149 @@ where
             report.last_oplog_index = oplog_index;
         }
         Ok(report)
+    }
+
+    pub async fn replay_oplog_strict(
+        &self,
+        shard_id: ShardId,
+        after_oplog_index: u64,
+        engine: &TemporalEngine,
+    ) -> Result<ReplayReport, SharedStoreReplicationError> {
+        let mut keys = self.object_store.list(&self.oplog_prefix(shard_id)).await?;
+        keys.sort();
+
+        let mut expected = after_oplog_index + 1;
+        let mut report = ReplayReport {
+            applied: 0,
+            last_oplog_index: after_oplog_index,
+        };
+        for key in keys {
+            let Some(oplog_index) = parse_oplog_index(&key) else {
+                continue;
+            };
+            if oplog_index <= after_oplog_index {
+                continue;
+            }
+            if oplog_index != expected {
+                return Err(SharedStoreReplicationError::ReplayGap {
+                    expected,
+                    actual: oplog_index,
+                });
+            }
+            let entry = self.read_oplog_entry(&key).await?;
+            let response = engine.execute(ExecuteRequest {
+                shard_id,
+                command: entry.command,
+            });
+            if !response.status.ok {
+                return Err(SharedStoreReplicationError::ApplyFailed {
+                    oplog_index,
+                    status: response.status,
+                });
+            }
+            report.applied += 1;
+            report.last_oplog_index = oplog_index;
+            expected += 1;
+        }
+        Ok(report)
+    }
+
+    pub async fn load_replay_cursor(
+        &self,
+        shard_id: ShardId,
+    ) -> Result<SharedStoreReplayCursor, SharedStoreReplicationError> {
+        match self
+            .object_store
+            .get(&self.replay_cursor_key(shard_id))
+            .await
+        {
+            Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
+            Err(ObjectStoreError::NotFound(_)) => Ok(SharedStoreReplayCursor {
+                shard_id,
+                last_oplog_index: 0,
+                last_replay_time_ms: 0,
+            }),
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    pub async fn save_replay_cursor(
+        &self,
+        cursor: &SharedStoreReplayCursor,
+    ) -> Result<(), SharedStoreReplicationError> {
+        self.object_store
+            .put(
+                &self.replay_cursor_key(cursor.shard_id),
+                Bytes::from(serde_json::to_vec_pretty(cursor)?),
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn replay_oplog_strict_with_cursor(
+        &self,
+        shard_id: ShardId,
+        engine: &TemporalEngine,
+    ) -> Result<ReplayReport, SharedStoreReplicationError> {
+        let mut cursor = self.load_replay_cursor(shard_id).await?;
+        let report = self
+            .replay_oplog_strict(shard_id, cursor.last_oplog_index, engine)
+            .await?;
+        if report.last_oplog_index > cursor.last_oplog_index {
+            cursor.last_oplog_index = report.last_oplog_index;
+            cursor.last_replay_time_ms = now_ms();
+            self.save_replay_cursor(&cursor).await?;
+        }
+        Ok(report)
+    }
+
+    pub async fn gc_oplog_before(
+        &self,
+        shard_id: ShardId,
+        retain_from_oplog_index: u64,
+    ) -> Result<SharedStoreGcReport, SharedStoreReplicationError> {
+        let mut deleted_oplog_objects = 0usize;
+        for key in self.object_store.list(&self.oplog_prefix(shard_id)).await? {
+            let Some(oplog_index) = parse_oplog_index(&key) else {
+                continue;
+            };
+            if oplog_index < retain_from_oplog_index {
+                self.object_store.delete(&key).await?;
+                deleted_oplog_objects += 1;
+            }
+        }
+        Ok(SharedStoreGcReport {
+            shard_id,
+            deleted_oplog_objects,
+            ..SharedStoreGcReport::default()
+        })
+    }
+
+    pub async fn gc_checkpoints(
+        &self,
+        shard_id: ShardId,
+        keep_last: usize,
+    ) -> Result<SharedStoreGcReport, SharedStoreReplicationError> {
+        let keep_last = keep_last.max(1);
+        let manifests = self.list_checkpoints(shard_id).await?;
+        let delete_count = manifests.len().saturating_sub(keep_last);
+        let retained_checkpoint_ids = manifests[delete_count..]
+            .iter()
+            .map(|manifest| manifest.checkpoint_id.clone())
+            .collect::<Vec<_>>();
+        let mut deleted_checkpoint_objects = 0usize;
+        for manifest in manifests.iter().take(delete_count) {
+            deleted_checkpoint_objects += self
+                .delete_prefix(&self.checkpoint_prefix(shard_id, &manifest.checkpoint_id))
+                .await?;
+        }
+        Ok(SharedStoreGcReport {
+            shard_id,
+            deleted_checkpoints: delete_count,
+            deleted_checkpoint_objects,
+            retained_checkpoint_ids,
+            ..SharedStoreGcReport::default()
+        })
     }
 
     fn shard_prefix(&self, shard_id: ShardId) -> String {
@@ -328,6 +585,10 @@ where
         )
     }
 
+    fn replay_cursor_key(&self, shard_id: ShardId) -> String {
+        format!("{}replay_cursor.json", self.shard_prefix(shard_id))
+    }
+
     fn checkpoints_prefix(&self, shard_id: ShardId) -> String {
         format!("{}checkpoints/", self.shard_prefix(shard_id))
     }
@@ -341,6 +602,144 @@ where
             "{}manifest.json",
             self.checkpoint_prefix(shard_id, checkpoint_id)
         )
+    }
+
+    async fn read_oplog_entry(
+        &self,
+        key: &str,
+    ) -> Result<SharedStoreOplogEntry, SharedStoreReplicationError> {
+        let bytes = self.object_store.get(key).await?;
+        if let Ok(object) = serde_json::from_slice::<SharedStoreOplogObject>(&bytes) {
+            let entry_bytes = serde_json::to_vec_pretty(&object.entry)?;
+            verify_checksum(
+                key,
+                &entry_bytes,
+                object.entry_byte_size,
+                &object.entry_sha256,
+            )?;
+            return Ok(object.entry);
+        }
+        Ok(serde_json::from_slice(&bytes)?)
+    }
+
+    async fn put_with_retry(
+        &self,
+        key: &str,
+        bytes: Bytes,
+    ) -> Result<(), SharedStoreReplicationError> {
+        let attempts = self.retry_policy.max_attempts.max(1);
+        let mut last_error = None;
+        for attempt in 0..attempts {
+            match self.object_store.put(key, bytes.clone()).await {
+                Ok(()) => return Ok(()),
+                Err(err) => {
+                    last_error = Some(err);
+                    if attempt + 1 < attempts && self.retry_policy.backoff_ms > 0 {
+                        tokio::time::sleep(Duration::from_millis(self.retry_policy.backoff_ms))
+                            .await;
+                    }
+                }
+            }
+        }
+        Err(last_error
+            .expect("retry loop must record failed object-store error")
+            .into())
+    }
+
+    async fn delete_prefix(&self, prefix: &str) -> Result<usize, SharedStoreReplicationError> {
+        let keys = self.object_store.list(prefix).await?;
+        let deleted = keys.len();
+        for key in keys {
+            self.object_store.delete(&key).await?;
+        }
+        Ok(deleted)
+    }
+}
+
+impl<O> SharedStoreStorageWriter<O>
+where
+    O: ObjectStore + 'static,
+{
+    pub async fn write(
+        &self,
+        shard_id: ShardId,
+        command: Command,
+    ) -> Result<SharedStoreWriteReport, SharedStoreReplicationError> {
+        let oplog_index = self.next_oplog_index.fetch_add(1, Ordering::Relaxed);
+        let entry = SharedStoreOplogEntry {
+            shard_id,
+            oplog_index,
+            command,
+        };
+        match self.mode {
+            SharedStoreStorageMode::Sync => {
+                self.replicator.publish_oplog_entry(entry).await?;
+                Ok(SharedStoreWriteReport {
+                    oplog_index,
+                    published: true,
+                    queued: false,
+                })
+            }
+            SharedStoreStorageMode::Async => {
+                self.pending
+                    .lock()
+                    .expect("shared-store async queue lock poisoned")
+                    .push_back(entry);
+                Ok(SharedStoreWriteReport {
+                    oplog_index,
+                    published: false,
+                    queued: true,
+                })
+            }
+        }
+    }
+
+    pub fn queued_len(&self) -> usize {
+        self.pending
+            .lock()
+            .expect("shared-store async queue lock poisoned")
+            .len()
+    }
+
+    pub async fn flush_pending(
+        &self,
+        max_entries: usize,
+    ) -> Result<SharedStoreFlushReport, SharedStoreReplicationError> {
+        let limit = max_entries.max(1);
+        let mut drained = Vec::new();
+        {
+            let mut pending = self
+                .pending
+                .lock()
+                .expect("shared-store async queue lock poisoned");
+            for _ in 0..limit {
+                let Some(entry) = pending.pop_front() else {
+                    break;
+                };
+                drained.push(entry);
+            }
+        }
+
+        let mut last_oplog_index = 0;
+        for (index, entry) in drained.iter().cloned().enumerate() {
+            last_oplog_index = entry.oplog_index;
+            if let Err(err) = self.replicator.publish_oplog_entry(entry).await {
+                let mut pending = self
+                    .pending
+                    .lock()
+                    .expect("shared-store async queue lock poisoned");
+                for entry in drained[index..].iter().rev().cloned() {
+                    pending.push_front(entry);
+                }
+                return Err(err);
+            }
+        }
+        let remaining = self.queued_len();
+        Ok(SharedStoreFlushReport {
+            flushed: drained.len(),
+            remaining,
+            last_oplog_index,
+        })
     }
 }
 
@@ -396,9 +795,9 @@ fn now_ms() -> u64 {
 mod tests {
     use std::sync::Arc;
 
+    use async_trait::async_trait;
     use bytes::Bytes;
-    use temporalstore_snapshot::object_store::FileObjectStore;
-    use temporalstore_snapshot::object_store::ObjectStore;
+    use temporalstore_snapshot::object_store::{FileObjectStore, ObjectStore, ObjectStoreError};
 
     use super::*;
     use crate::types::CommandResponse;
@@ -535,5 +934,406 @@ mod tests {
                 .unwrap_err(),
             SharedStoreReplicationError::ChecksumMismatch { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn shared_store_strict_replay_rejects_oplog_gaps() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
+        let replicator = SharedStoreReplicator::new("cluster-a", store);
+        replicator
+            .publish_oplog_entry(SharedStoreOplogEntry {
+                shard_id: 1,
+                oplog_index: 2,
+                command: Command::StringSet {
+                    key: "gap".to_string(),
+                    value: b"v".to_vec(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let follower = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("follower-cache"),
+            dir.path().join("follower-pages"),
+            dir.path().join("follower-index"),
+        );
+        follower.load_shard(1);
+        assert!(matches!(
+            replicator
+                .replay_oplog_strict(1, 0, &follower)
+                .await
+                .unwrap_err(),
+            SharedStoreReplicationError::ReplayGap {
+                expected: 1,
+                actual: 2
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn shared_store_sync_storage_publishes_and_cursor_replay_resumes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
+        let replicator = SharedStoreReplicator::new("cluster-a", store);
+        let writer = replicator.storage_writer(SharedStoreStorageMode::Sync, 1);
+
+        let report = writer
+            .write(
+                1,
+                Command::StringSet {
+                    key: "sync".to_string(),
+                    value: b"published".to_vec(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            report,
+            SharedStoreWriteReport {
+                oplog_index: 1,
+                published: true,
+                queued: false,
+            }
+        );
+
+        let follower = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("follower-cache"),
+            dir.path().join("follower-pages"),
+            dir.path().join("follower-index"),
+        );
+        follower.load_shard(1);
+        let replay = replicator
+            .replay_oplog_strict_with_cursor(1, &follower)
+            .await
+            .unwrap();
+        assert_eq!(
+            replay,
+            ReplayReport {
+                applied: 1,
+                last_oplog_index: 1,
+            }
+        );
+        assert_eq!(
+            replicator
+                .load_replay_cursor(1)
+                .await
+                .unwrap()
+                .last_oplog_index,
+            1
+        );
+        assert_eq!(
+            replicator
+                .replay_oplog_strict_with_cursor(1, &follower)
+                .await
+                .unwrap(),
+            ReplayReport {
+                applied: 0,
+                last_oplog_index: 1,
+            }
+        );
+        assert_eq!(
+            follower
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "sync".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"published".to_vec())
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn shared_store_async_storage_flushes_in_order_with_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
+        let replicator = SharedStoreReplicator::new("cluster-a", store);
+        let writer = replicator.storage_writer(SharedStoreStorageMode::Async, 1);
+
+        for (key, value) in [("a", b"1".to_vec()), ("b", b"2".to_vec())] {
+            let report = writer
+                .write(
+                    1,
+                    Command::StringSet {
+                        key: key.to_string(),
+                        value,
+                    },
+                )
+                .await
+                .unwrap();
+            assert!(report.queued);
+            assert!(!report.published);
+        }
+        assert_eq!(writer.queued_len(), 2);
+
+        let follower = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("follower-cache"),
+            dir.path().join("follower-pages"),
+            dir.path().join("follower-index"),
+        );
+        follower.load_shard(1);
+        assert_eq!(
+            replicator
+                .replay_oplog_strict(1, 0, &follower)
+                .await
+                .unwrap(),
+            ReplayReport {
+                applied: 0,
+                last_oplog_index: 0,
+            }
+        );
+
+        assert_eq!(
+            writer.flush_pending(1).await.unwrap(),
+            SharedStoreFlushReport {
+                flushed: 1,
+                remaining: 1,
+                last_oplog_index: 1,
+            }
+        );
+        assert_eq!(
+            replicator
+                .replay_oplog_strict_with_cursor(1, &follower)
+                .await
+                .unwrap(),
+            ReplayReport {
+                applied: 1,
+                last_oplog_index: 1,
+            }
+        );
+
+        assert_eq!(
+            writer.flush_pending(8).await.unwrap(),
+            SharedStoreFlushReport {
+                flushed: 1,
+                remaining: 0,
+                last_oplog_index: 2,
+            }
+        );
+        assert_eq!(
+            replicator
+                .replay_oplog_strict_with_cursor(1, &follower)
+                .await
+                .unwrap(),
+            ReplayReport {
+                applied: 1,
+                last_oplog_index: 2,
+            }
+        );
+        assert_eq!(
+            follower
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "b".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"2".to_vec())
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn shared_store_rejects_corrupt_oplog_checksum() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
+        let replicator = SharedStoreReplicator::new("cluster-a", store.clone());
+        replicator
+            .publish_oplog_entry(SharedStoreOplogEntry {
+                shard_id: 1,
+                oplog_index: 1,
+                command: Command::StringSet {
+                    key: "k".to_string(),
+                    value: b"v".to_vec(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let key = "cluster-a/shards/1/shared/oplog/oplog_00000000000000000001.json";
+        let mut object: SharedStoreOplogObject =
+            serde_json::from_slice(&store.get(key).await.unwrap()).unwrap();
+        object.entry_sha256 = "bad".to_string();
+        store
+            .put(
+                key,
+                Bytes::from(serde_json::to_vec_pretty(&object).unwrap()),
+            )
+            .await
+            .unwrap();
+
+        let follower = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("follower-cache"),
+            dir.path().join("follower-pages"),
+            dir.path().join("follower-index"),
+        );
+        follower.load_shard(1);
+        assert!(matches!(
+            replicator
+                .replay_oplog_strict(1, 0, &follower)
+                .await
+                .unwrap_err(),
+            SharedStoreReplicationError::ChecksumMismatch { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn shared_store_retry_policy_retries_transient_put_failures() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(FlakyObjectStore {
+            inner: FileObjectStore::new(dir.path().join("objects")),
+            fail_puts: Mutex::new(1),
+        });
+        let replicator = SharedStoreReplicator::with_retry_policy(
+            "cluster-a",
+            store,
+            SharedStoreRetryPolicy {
+                max_attempts: 2,
+                backoff_ms: 0,
+            },
+        );
+        replicator
+            .publish_oplog_entry(SharedStoreOplogEntry {
+                shard_id: 1,
+                oplog_index: 1,
+                command: Command::StringSet {
+                    key: "retry".to_string(),
+                    value: b"ok".to_vec(),
+                },
+            })
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn shared_store_async_flush_requeues_after_publish_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(FlakyObjectStore {
+            inner: FileObjectStore::new(dir.path().join("objects")),
+            fail_puts: Mutex::new(1),
+        });
+        let replicator = SharedStoreReplicator::new("cluster-a", store);
+        let writer = replicator.storage_writer(SharedStoreStorageMode::Async, 1);
+        writer
+            .write(
+                1,
+                Command::StringSet {
+                    key: "retry-queue".to_string(),
+                    value: b"ok".to_vec(),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(writer.flush_pending(1).await.is_err());
+        assert_eq!(writer.queued_len(), 1);
+        assert_eq!(
+            writer.flush_pending(1).await.unwrap(),
+            SharedStoreFlushReport {
+                flushed: 1,
+                remaining: 0,
+                last_oplog_index: 1,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn shared_store_gc_removes_old_oplog_and_checkpoint_generations() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("primary-cache"),
+            dir.path().join("primary-pages"),
+            dir.path().join("primary-index"),
+        );
+        primary.load_shard(1);
+        let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
+        let replicator = SharedStoreReplicator::new("cluster-a", store.clone());
+
+        for oplog_index in 1..=3 {
+            replicator
+                .publish_oplog_entry(SharedStoreOplogEntry {
+                    shard_id: 1,
+                    oplog_index,
+                    command: Command::StringSet {
+                        key: format!("k{oplog_index}"),
+                        value: vec![oplog_index as u8],
+                    },
+                })
+                .await
+                .unwrap();
+        }
+        let oplog_gc = replicator.gc_oplog_before(1, 3).await.unwrap();
+        assert_eq!(oplog_gc.deleted_oplog_objects, 2);
+        let oplog_keys = store
+            .list("cluster-a/shards/1/shared/oplog/")
+            .await
+            .unwrap();
+        assert_eq!(oplog_keys.len(), 1);
+        assert!(oplog_keys[0].ends_with("oplog_00000000000000000003.json"));
+
+        for checkpoint_oplog_index in 1..=3 {
+            primary.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("checkpoint-{checkpoint_oplog_index}"),
+                    value: vec![checkpoint_oplog_index as u8],
+                },
+            });
+            replicator
+                .publish_checkpoint(1, checkpoint_oplog_index, &primary, &primary.page_store())
+                .await
+                .unwrap();
+        }
+        let checkpoint_gc = replicator.gc_checkpoints(1, 1).await.unwrap();
+        assert_eq!(checkpoint_gc.deleted_checkpoints, 2);
+        assert_eq!(checkpoint_gc.retained_checkpoint_ids.len(), 1);
+        assert_eq!(replicator.list_checkpoints(1).await.unwrap().len(), 1);
+    }
+
+    #[derive(Debug)]
+    struct FlakyObjectStore {
+        inner: FileObjectStore,
+        fail_puts: Mutex<usize>,
+    }
+
+    #[async_trait]
+    impl ObjectStore for FlakyObjectStore {
+        async fn put(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
+            {
+                let mut fail_puts = self.fail_puts.lock().expect("flaky store lock poisoned");
+                if *fail_puts > 0 {
+                    *fail_puts -= 1;
+                    return Err(ObjectStoreError::InvalidKey("injected failure".to_string()));
+                }
+            }
+            self.inner.put(key, bytes).await
+        }
+
+        async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
+            self.inner.get(key).await
+        }
+
+        async fn list(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError> {
+            self.inner.list(prefix).await
+        }
+
+        async fn delete(&self, key: &str) -> Result<(), ObjectStoreError> {
+            self.inner.delete(key).await
+        }
+
+        fn uri(&self, key: &str) -> String {
+            self.inner.uri(key)
+        }
     }
 }

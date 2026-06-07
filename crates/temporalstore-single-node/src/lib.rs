@@ -18,8 +18,9 @@ pub mod types;
 
 pub use cache::{CacheKey, CacheStats, MultiLayerCache};
 pub use client::{
-    shard_id_for_key, stable_key_hash, ClientError, ClientOptions, ClientStats, RequestOptions,
-    TableOptions, TemporalStoreClient, TemporalStorePipeline, TemporalStoreTable,
+    crc64_jones, shard_id_for_key, slot_id_for_key, stable_key_hash, ClientError, ClientOptions,
+    ClientStats, RequestOptions, TableOptions, TemporalStoreClient, TemporalStorePipeline,
+    TemporalStoreTable,
 };
 pub use control::{
     CheckedBatchExecuteRequest, CheckedBatchExecuteResponse, CheckedExecuteRequest,
@@ -40,21 +41,25 @@ pub use e2e::{
 pub use engine::TemporalEngine;
 pub use index_log::{IndexLogRecord, IndexLogStats, LocalIndexLogStore};
 pub use meta::{
-    AckResponse, AddNamespaceRequest, AddTableRequest, GetShardResponse, GetTableTopologyRequest,
-    ListNamespacesResponse, ListProxiesResponse, ListServersResponse, ListTablesResponse,
-    LoadFinishRequest, MetaEntityState, MetaInfo, MetaStats, NamespaceMetaInfo,
+    AckResponse, AddNamespaceRequest, AddTableRequest, FreezeStaleServersRequest, GetShardResponse,
+    GetTableTopologyRequest, ListNamespacesResponse, ListProxiesResponse, ListServersResponse,
+    ListTablesResponse, LoadFinishRequest, MetaEntityState, MetaInfo, MetaStats, NamespaceMetaInfo,
     ProxyHeartbeatRequest, ProxyHeartbeatResponse, ProxyMetaInfo, RegisterProxyRequest,
     RegisterServerRequest, RegisterShardRequest, RegisterShardResponse, ServerHeartbeatRequest,
     ServerHeartbeatResponse, ServerMetaInfo, ShardLoad, ShardLocation, SingleNodeMeta,
-    StateChangeRequest, TableMetaInfo, TablePartition, TableTopologyResponse,
+    StaleResourceReport, StaleServerReport, StateChangeRequest, TableMetaInfo, TablePartition,
+    TableTopologyResponse,
 };
 pub use oplog::{LocalOplogStore, OplogRecord, OplogStats};
 pub use page_store::{LocalPageStore, PageAddress, PageStoreStats};
 pub use proxy::{ProxyInfo, ProxyOptions, ProxyService, ProxyStats};
 pub use raft::{
-    MetaCommand, MetaRaftCluster, MetaState, RaftCluster, RaftClusterStatus, RaftConfig,
-    RaftConfigError, RaftError, RaftNodeId, RaftNodeStatus, RaftReadOptions, RaftReadStrategy,
-    RaftRole, ReadIndexResponse,
+    distributed_raft_readiness, handle_raft_http, AppendEntriesRequest, AppendEntriesResponse,
+    HttpRaftTransport, InstallSnapshotRequest, InstallSnapshotResponse, LocalRaftWal, MetaCommand,
+    MetaRaftCluster, MetaState, RaftCluster, RaftClusterStatus, RaftConfig, RaftConfigError,
+    RaftDistributedReadiness, RaftError, RaftHardState, RaftMembership, RaftNodeId, RaftNodeStatus,
+    RaftReadOptions, RaftReadStrategy, RaftRole, RaftTickOutcome, RaftTransport, RaftWalRecord,
+    ReadIndexResponse, VoteRequest, VoteResponse,
 };
 pub use rebalance::{
     RebalanceController, RebalanceError, RebalanceOptions, RebalanceStep, ShardMovePlan,
@@ -62,8 +67,10 @@ pub use rebalance::{
 };
 pub use redis::{execute_redis_command, read_command, serve_redis_proxy, RespValue};
 pub use shared_store::{
-    ReplayReport, SharedStoreCheckpointManifest, SharedStoreOplogEntry, SharedStorePageSegment,
-    SharedStoreReplicationError, SharedStoreReplicator,
+    ReplayReport, SharedStoreCheckpointManifest, SharedStoreFlushReport, SharedStoreOplogEntry,
+    SharedStoreOplogObject, SharedStorePageSegment, SharedStoreReplayCursor,
+    SharedStoreReplicationError, SharedStoreReplicator, SharedStoreRetryPolicy,
+    SharedStoreStorageMode, SharedStoreStorageWriter,
 };
 pub use types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,

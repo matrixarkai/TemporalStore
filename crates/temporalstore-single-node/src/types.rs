@@ -197,6 +197,17 @@ pub enum Command {
         key: String,
         count: usize,
     },
+    IpsQueryRange {
+        key: String,
+        start_ms: u64,
+        end_ms: u64,
+        #[serde(default)]
+        count: Option<usize>,
+    },
+    IpsBatchQueryLast {
+        keys: Vec<String>,
+        count: usize,
+    },
     IpsRemove {
         key: String,
         timestamp_ms: u64,
@@ -225,20 +236,46 @@ pub enum Command {
         end_ms: u64,
         aggregator: String,
     },
+    RiskDetail {
+        key: String,
+        start_ms: u64,
+        end_ms: u64,
+        #[serde(default)]
+        count: Option<usize>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CommandResponse {
     Empty,
-    Bytes { value: Option<Vec<u8>> },
-    Integer { value: i64 },
-    Members { members: Vec<Vec<u8>> },
-    Values { values: Vec<Option<Vec<u8>>> },
-    HashEntries { entries: Vec<(String, Vec<u8>)> },
-    FeaturePoints { points: Vec<FeaturePoint> },
-    Aggregate { value: i64 },
-    SequenceRows { rows: Vec<SequenceFeatureRow> },
+    Bytes {
+        value: Option<Vec<u8>>,
+    },
+    Integer {
+        value: i64,
+    },
+    Members {
+        members: Vec<Vec<u8>>,
+    },
+    Values {
+        values: Vec<Option<Vec<u8>>>,
+    },
+    HashEntries {
+        entries: Vec<(String, Vec<u8>)>,
+    },
+    FeaturePoints {
+        points: Vec<FeaturePoint>,
+    },
+    FeaturePointGroups {
+        groups: Vec<(String, Vec<FeaturePoint>)>,
+    },
+    Aggregate {
+        value: i64,
+    },
+    SequenceRows {
+        rows: Vec<SequenceFeatureRow>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

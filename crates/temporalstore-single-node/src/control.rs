@@ -97,6 +97,10 @@ pub struct GetInfoResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ShardStats {
     pub shard_id: ShardId,
+    pub loaded: bool,
+    pub readonly: bool,
+    pub load_version: u64,
+    pub total_records: usize,
     pub string_records: usize,
     pub hash_records: usize,
     pub set_records: usize,
@@ -104,6 +108,7 @@ pub struct ShardStats {
     pub sequence_records: usize,
     pub ips_records: usize,
     pub risk_records: usize,
+    pub storage_bytes: u64,
     pub cache: CacheStats,
     pub page_store: PageStoreStats,
     pub oplog: OplogStats,

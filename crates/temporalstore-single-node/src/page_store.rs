@@ -27,6 +27,13 @@ pub struct PageStoreStats {
     pub bytes_read: u64,
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PageStoreGcReport {
+    pub retain_from_page_segment_id: u64,
+    pub removed_page_segment_ids: Vec<u64>,
+    pub retained_page_segment_ids: Vec<u64>,
+}
+
 #[derive(Debug, Clone)]
 pub struct LocalPageStore {
     inner: Arc<Mutex<PageStoreInner>>,
@@ -159,6 +166,32 @@ impl LocalPageStore {
         Ok(ids)
     }
 
+    pub fn gc_segments_before(
+        &self,
+        retain_from_page_segment_id: u64,
+    ) -> Result<PageStoreGcReport, PageStoreError> {
+        let inner = self.inner.lock().expect("page store lock poisoned");
+        fs::create_dir_all(&inner.root)?;
+        let current_page_segment_id = inner.page_segment_id;
+        let mut removed = Vec::new();
+        let mut retained = Vec::new();
+        for page_segment_id in segment_ids_at(&inner.root)? {
+            if page_segment_id < retain_from_page_segment_id
+                && page_segment_id != current_page_segment_id
+            {
+                fs::remove_file(segment_path(&inner.root, page_segment_id))?;
+                removed.push(page_segment_id);
+            } else {
+                retained.push(page_segment_id);
+            }
+        }
+        Ok(PageStoreGcReport {
+            retain_from_page_segment_id,
+            removed_page_segment_ids: removed,
+            retained_page_segment_ids: retained,
+        })
+    }
+
     pub fn stats(&self) -> PageStoreStats {
         self.inner.lock().expect("page store lock poisoned").stats
     }
@@ -174,6 +207,28 @@ fn segment_path(root: &std::path::Path, page_segment_id: u64) -> PathBuf {
     root.join(format!("page_segment_{page_segment_id:020}.seg"))
 }
 
+fn segment_ids_at(root: &std::path::Path) -> Result<Vec<u64>, PageStoreError> {
+    let mut ids = Vec::new();
+    if !root.exists() {
+        return Ok(ids);
+    }
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if let Some(id) = name
+            .strip_prefix("page_segment_")
+            .and_then(|name| name.strip_suffix(".seg"))
+            .and_then(|id| id.parse::<u64>().ok())
+        {
+            ids.push(id);
+        }
+    }
+    ids.sort_unstable();
+    Ok(ids)
+}
+
 fn unique_temp_path(kind: &str) -> PathBuf {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -185,4 +240,23 @@ fn unique_temp_path(kind: &str) -> PathBuf {
         "temporalstore-single-node-{kind}-{}-{nanos}-{counter}",
         std::process::id()
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gc_segments_removes_old_non_current_segments() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalPageStore::new(dir.path());
+        store.install_segment(0, b"current").unwrap();
+        store.install_segment(1, b"old").unwrap();
+        store.install_segment(2, b"keep").unwrap();
+
+        let report = store.gc_segments_before(2).unwrap();
+        assert_eq!(report.removed_page_segment_ids, vec![1]);
+        assert_eq!(report.retained_page_segment_ids, vec![0, 2]);
+        assert_eq!(store.segment_ids().unwrap(), vec![0, 2]);
+    }
 }

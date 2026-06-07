@@ -31,7 +31,7 @@ So the right framing is: the Rust code is a good open-source v1 skeleton and loc
 | Public API model | `crates/temporalstore-single-node/src/types.rs` | Defines `Command`, `CommandResponse`, request/response structs, shard id, feature/risk/sequence shapes. |
 | Engine | `crates/temporalstore-single-node/src/engine.rs` | Owns loaded shard state, executes commands, appends values to page files, updates indexes, persists index JSON, reads through cache/page store. |
 | Page storage | `crates/temporalstore-single-node/src/page_store.rs` | Appends raw bytes to local `page_segment_*.seg` files and returns `PageAddress { page_segment_id, offset, length }`. |
-| Multi-layer cache | `crates/temporalstore-single-node/src/cache.rs` | L1 in-memory cache plus L2 local disk cache. Disk hits are promoted back to memory. Writes invalidate affected keys. |
+| Multi-layer cache | `crates/temporalstore-single-node/src/cache.rs` | L1 in-memory cache plus L2 local disk block cache. Disk blocks use a versioned envelope with optional zstd compression. Disk hits are decoded and promoted back to memory. Writes invalidate affected keys. |
 | Control API | `crates/temporalstore-single-node/src/control.rs` | Load/unload shard, config, info/stats, membership update, stream read/scan structs. |
 | HTTP transport | `crates/temporalstore-single-node/src/http.rs`, `meta.rs`, `client.rs` | Small synchronous JSON-over-HTTP surface for local server/proxy/metaserver/client workflows. |
 | Redis interface | `crates/temporalstore-single-node/src/redis.rs` | RESP parser/server and mapper from Redis-like commands to `Command`. |
@@ -75,13 +75,13 @@ key -> crc64 slot -> partition set -> primary/secondary server -> worker -> obje
 - `risk: key -> timestamp -> i64`
 - `expires_at_ms: key -> expire timestamp`
 
-For most data types, Rust stores bytes in the local page store and keeps only the page address in the index. On mutation, the engine appends a new value, updates the per-shard index, invalidates related cache entries, and persists the full shard index as JSON. On read miss, it follows the stored `PageAddress` into the page segment file, reads the bytes, builds the response, and puts that response into the cache.
+For most data types, Rust stores bytes in the local page store and keeps only the page address in the index. On mutation, the engine appends a new value, updates the per-shard index, invalidates related cache entries, and persists the full shard index as JSON. On read miss, it follows the stored `PageAddress` into the page segment file, reads the bytes, caches the page bytes under a page-address block key, builds the response, and caches the serialized response.
 
 Important current behavior:
 
 - local file persistence works for page bytes plus JSON index
 - read miss falls back to local page file using the address in the index
-- cache fill happens after page-file read
+- page-block and response-cache fill happens after page-file read
 - expired keys are lazily removed
 - `feature_max_size` defaults to `5000`
 - `StreamKind::Page` and `StreamKind::Index` can read local page/index bytes
@@ -99,12 +99,12 @@ The Rust `MultiLayerCache` has two local layers:
 Read behavior:
 
 ```text
-cache memory hit -> return
-cache disk hit -> promote to memory -> return
-cache miss -> engine reads page file -> cache put memory + disk -> return
+response/page memory hit -> return
+response/page disk hit -> decode block envelope -> promote to memory -> return
+cache miss -> engine reads page file by PageAddress -> cache page bytes and response -> return
 ```
 
-This proves the desired memory -> local cache -> local page file path, but it is not CacheLib, mtcache, blockcache, or a production SSD cache. Missing production cache pieces include admission policy, compression, shard-aware eviction, write amplification control, observability, warmup, pinning, and integration with a page/block cache API.
+This proves the desired memory -> local block cache -> local page file path. The L2 cache now has page-address keys, a serialized `TSBCACHE` block envelope, zstd compression for compressible blocks, and legacy raw-block decode. It is still not CacheLib, mtcache, blockcache, or a production SSD cache. Missing production cache pieces include admission policy, advanced eviction policy, write amplification control, warmup, pinning, and integration with a production page/block cache API.
 
 ## Page Store Deep Dive
 

@@ -1,8 +1,9 @@
 use temporalstore_single_node::http::{json_response, parse_json, serve, HttpRequest};
 use temporalstore_single_node::meta::{
-    AddNamespaceRequest, AddTableRequest, GetShardResponse, GetTableTopologyRequest,
-    LoadFinishRequest, ProxyHeartbeatRequest, RegisterProxyRequest, RegisterServerRequest,
-    RegisterShardRequest, ServerHeartbeatRequest, SingleNodeMeta, StateChangeRequest,
+    AddNamespaceRequest, AddTableRequest, FreezeStaleServersRequest, GetShardResponse,
+    GetTableTopologyRequest, LoadFinishRequest, ProxyHeartbeatRequest, RegisterProxyRequest,
+    RegisterServerRequest, RegisterShardRequest, ServerHeartbeatRequest, SingleNodeMeta,
+    StateChangeRequest,
 };
 use temporalstore_single_node::types::Status;
 
@@ -11,6 +12,9 @@ fn main() {
         .or_else(|_| std::env::var("TS_META_ADDR"))
         .unwrap_or_else(|_| "127.0.0.1:17001".to_string());
     let meta = SingleNodeMeta::default();
+    let stale_after_ms = env_u64("TS_META_STALE_AFTER_MS", 30_000);
+    let detector_interval_ms = env_u64("TS_META_FAILURE_DETECTOR_INTERVAL_MS", 10_000);
+    let _failure_detector = meta.start_failure_detector_loop(stale_after_ms, detector_interval_ms);
     println!("temporalstore metaserver listening on {addr}");
     serve(&addr, move |request| handle(&meta, request)).expect("metaserver failed");
 }
@@ -39,6 +43,11 @@ fn handle(meta: &SingleNodeMeta, request: HttpRequest) -> (u16, Vec<u8>) {
             })
         }
         ("GET", "/servers") => json_response(200, &meta.list_servers()),
+        ("POST", "/servers/freeze_stale") => {
+            parse_or(&request.body, |req: FreezeStaleServersRequest| {
+                meta.freeze_stale_servers(req.stale_after_ms)
+            })
+        }
         ("POST", "/partitions/finish_load") | ("POST", "/finish_load") => {
             parse_or(&request.body, |req: LoadFinishRequest| {
                 meta.finish_load(req)
@@ -84,6 +93,13 @@ fn handle(meta: &SingleNodeMeta, request: HttpRequest) -> (u16, Vec<u8>) {
             },
         ),
     }
+}
+
+fn env_u64(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
 }
 
 fn parse_or<T, R>(body: &[u8], f: impl FnOnce(T) -> R) -> (u16, Vec<u8>)

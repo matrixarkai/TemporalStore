@@ -79,13 +79,19 @@ shared store oplog -> command replay -> catch up after checkpoint
 - Unit tests validate checkpoint restore, later oplog replay, and corrupt page rejection.
 - A C++-style compatibility test validates shared-store bootstrap plus catch-up across string, hash,
   and feature data.
+- Shared-store storage supports sync publish, async queued publish, bounded flush, and persisted
+  replay cursor resume.
+- Oplog objects are checksum-enveloped and replay rejects corrupt entries.
+- Object-store writes support a bounded retry policy; async flush requeues entries after publish
+  failure.
+- Shared-store GC can delete oplog objects before a replay-safe index and checkpoint GC keeps the
+  newest N checkpoints while deleting old checkpoint index/page payloads by prefix.
 
 ## What Is Still Missing For Production
 
-- oplog object checksums
 - integration with real Raft commit index
-- idempotent oplog replay with persisted last-applied oplog index
-- compaction/garbage collection of old oplog and old page/index generations
+- lifecycle scheduling around oplog/checkpoint GC, including safety checks against follower replay
+  cursors and Raft snapshot/install state
 - S3 multipart upload and range-read optimization for large page segment sets
 - concurrency control so followers do not install a partially uploaded generation
 

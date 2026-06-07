@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -8,6 +9,9 @@ use crate::http::{
     get_json_with_options, post_json_with_options, HttpError, HttpRequest, HttpRequestOptions,
 };
 use crate::meta::GetShardResponse;
+use crate::meta::{
+    AckResponse, ProxyHeartbeatRequest, ProxyHeartbeatResponse, RegisterProxyRequest,
+};
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, CommandResponse, ExecuteRequest, ExecuteResponse,
     ShardId, Status,
@@ -16,6 +20,14 @@ use crate::types::{
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyOptions {
     pub meta_addr: String,
+    #[serde(default = "default_proxy_addr")]
+    pub proxy_addr: String,
+    #[serde(default)]
+    pub namespace: String,
+    #[serde(default)]
+    pub location: String,
+    #[serde(default)]
+    pub binary_version: String,
     pub route_cache_ttl_ms: u64,
     pub connect_timeout_ms: u64,
     pub io_timeout_ms: u64,
@@ -44,6 +56,10 @@ impl Default for ProxyOptions {
     fn default() -> Self {
         Self {
             meta_addr: "127.0.0.1:17001".to_string(),
+            proxy_addr: "127.0.0.1:17000".to_string(),
+            namespace: String::new(),
+            location: String::new(),
+            binary_version: String::new(),
             route_cache_ttl_ms: 1_000,
             connect_timeout_ms: 200,
             io_timeout_ms: 200,
@@ -63,6 +79,8 @@ pub struct ProxyStats {
     pub backend_errors: u64,
     pub metaserver_errors: u64,
     pub bad_requests: u64,
+    pub heartbeat_total: u64,
+    pub auto_register_total: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -72,6 +90,16 @@ pub struct ProxyInfo {
     pub route_cache_size: usize,
     pub stats: ProxyStats,
     pub boot_time_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyHeartbeatReport {
+    pub status: Status,
+    pub boot_time_ms: u64,
+    pub meta_addr: String,
+    pub config_version: u64,
+    pub route_cache_size: usize,
+    pub stats: ProxyStats,
 }
 
 #[derive(Debug, Clone)]
@@ -110,6 +138,7 @@ impl ProxyService {
         match (request.method.as_str(), request.path.as_str()) {
             ("GET", "/health") => json_response(200, &Status::ok()),
             ("GET", "/proxy/info") => json_response(200, &self.info()),
+            ("GET", "/proxy/heartbeat") => json_response(200, &self.heartbeat_report()),
             ("GET", "/proxy/config") => {
                 let options = self
                     .inner
@@ -262,6 +291,103 @@ impl ProxyService {
         }
     }
 
+    pub fn heartbeat_report(&self) -> ProxyHeartbeatReport {
+        let options = self.options();
+        ProxyHeartbeatReport {
+            status: Status::ok(),
+            boot_time_ms: self.inner.boot_time_ms,
+            meta_addr: options.meta_addr.clone(),
+            config_version: proxy_config_version(&options),
+            route_cache_size: self
+                .inner
+                .routes
+                .read()
+                .expect("proxy routes lock poisoned")
+                .len(),
+            stats: *self.inner.stats.read().expect("proxy stats lock poisoned"),
+        }
+    }
+
+    pub fn heartbeat_to_meta(&self) -> ProxyHeartbeatResponse {
+        let options = self.options();
+        self.inner
+            .stats
+            .write()
+            .expect("proxy stats lock poisoned")
+            .heartbeat_total += 1;
+        let request = ProxyHeartbeatRequest {
+            proxy_addr: options.proxy_addr.clone(),
+            namespace: options.namespace.clone(),
+            config_version: proxy_config_version(&options),
+            binary_version: options.binary_version.clone(),
+        };
+        match post_json_with_options::<_, ProxyHeartbeatResponse>(
+            &options.meta_addr,
+            "/proxies/heartbeat",
+            &request,
+            options.http_options(),
+        ) {
+            Ok(response) if response.status.ok => response,
+            Ok(response) if response.status.code == "not_found" => {
+                if self.auto_register_proxy(&options).status.ok {
+                    post_json_with_options::<_, ProxyHeartbeatResponse>(
+                        &options.meta_addr,
+                        "/proxies/heartbeat",
+                        &request,
+                        options.http_options(),
+                    )
+                    .unwrap_or_else(|err| ProxyHeartbeatResponse {
+                        status: Status::error("metaserver_error", err.to_string()),
+                        config_changed: false,
+                        namespace: String::new(),
+                        config_version: 0,
+                    })
+                } else {
+                    response
+                }
+            }
+            Ok(response) => response,
+            Err(err) => ProxyHeartbeatResponse {
+                status: Status::error("metaserver_error", err.to_string()),
+                config_changed: false,
+                namespace: String::new(),
+                config_version: 0,
+            },
+        }
+    }
+
+    pub fn start_heartbeat_loop(&self, interval_ms: u64) -> thread::JoinHandle<()> {
+        let service = self.clone();
+        let interval = Duration::from_millis(interval_ms.max(1));
+        thread::spawn(move || loop {
+            let _ = service.heartbeat_to_meta();
+            thread::sleep(interval);
+        })
+    }
+
+    fn auto_register_proxy(&self, options: &ProxyOptions) -> AckResponse {
+        self.inner
+            .stats
+            .write()
+            .expect("proxy stats lock poisoned")
+            .auto_register_total += 1;
+        post_json_with_options::<_, AckResponse>(
+            &options.meta_addr,
+            "/proxies/register",
+            &RegisterProxyRequest {
+                proxy_addr: options.proxy_addr.clone(),
+                namespace: options.namespace.clone(),
+                location: options.location.clone(),
+                config_version: proxy_config_version(options),
+                binary_version: options.binary_version.clone(),
+            },
+            options.http_options(),
+        )
+        .unwrap_or_else(|err| AckResponse {
+            status: Status::error("metaserver_error", err.to_string()),
+        })
+    }
+
     fn resolve_route(&self, shard_id: ShardId, force_refresh: bool) -> Result<String, Status> {
         let options = self.options();
         let ttl = Duration::from_millis(options.route_cache_ttl_ms);
@@ -386,11 +512,24 @@ fn execute_error(code: impl Into<String>, message: impl Into<String>) -> Execute
     }
 }
 
+fn default_proxy_addr() -> String {
+    "127.0.0.1:17000".to_string()
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or_default()
+}
+
+fn proxy_config_version(options: &ProxyOptions) -> u64 {
+    let mut version = 1469598103934665603u64;
+    for byte in serde_json::to_vec(options).unwrap_or_default() {
+        version ^= byte as u64;
+        version = version.wrapping_mul(1099511628211);
+    }
+    version
 }
 
 #[cfg(test)]
@@ -450,6 +589,10 @@ mod tests {
         assert_eq!(info.route_cache_size, 1);
         assert_eq!(info.stats.route_refreshes, 1);
         assert!(info.stats.route_cache_hits >= 1);
+        let heartbeat = proxy.heartbeat_report();
+        assert_eq!(heartbeat.route_cache_size, 1);
+        assert_eq!(heartbeat.stats.execute_requests, 2);
+        assert_ne!(heartbeat.config_version, 0);
     }
 
     #[test]
@@ -493,6 +636,89 @@ mod tests {
         let info = proxy.info();
         assert_eq!(info.stats.backend_errors, 1);
         assert_eq!(info.stats.route_refreshes, 1);
+    }
+
+    #[test]
+    fn proxy_heartbeat_auto_registers_when_metaserver_returns_not_found() {
+        let meta = crate::meta::SingleNodeMeta::default();
+        let meta_addr = test_addr(18_314);
+        std::thread::spawn({
+            let meta = meta.clone();
+            move || {
+                serve(&meta_addr, move |request| {
+                    match (request.method.as_str(), request.path.as_str()) {
+                        ("POST", "/proxies/heartbeat") => {
+                            let req = parse_json::<ProxyHeartbeatRequest>(&request.body).unwrap();
+                            json_response(200, &meta.proxy_heartbeat(req))
+                        }
+                        ("POST", "/proxies/register") => {
+                            let req = parse_json::<RegisterProxyRequest>(&request.body).unwrap();
+                            json_response(200, &meta.register_proxy(req))
+                        }
+                        _ => json_response(404, &Status::error("not_found", "not found")),
+                    }
+                })
+                .unwrap();
+            }
+        });
+        wait_for_http(&test_addr(18_314));
+
+        let proxy = ProxyService::new(ProxyOptions {
+            meta_addr: test_addr(18_314),
+            proxy_addr: "proxy-a".to_string(),
+            namespace: "ns".to_string(),
+            location: "zone-a".to_string(),
+            binary_version: "v1".to_string(),
+            ..ProxyOptions::default()
+        });
+        let response = proxy.heartbeat_to_meta();
+        assert!(response.status.ok);
+        let info = proxy.info();
+        assert_eq!(info.stats.heartbeat_total, 1);
+        assert_eq!(info.stats.auto_register_total, 1);
+    }
+
+    #[test]
+    fn proxy_background_heartbeat_loop_auto_registers() {
+        let meta = crate::meta::SingleNodeMeta::default();
+        let meta_addr = test_addr(18_315);
+        std::thread::spawn({
+            let meta = meta.clone();
+            move || {
+                serve(&meta_addr, move |request| {
+                    match (request.method.as_str(), request.path.as_str()) {
+                        ("POST", "/proxies/heartbeat") => {
+                            let req = parse_json::<ProxyHeartbeatRequest>(&request.body).unwrap();
+                            json_response(200, &meta.proxy_heartbeat(req))
+                        }
+                        ("POST", "/proxies/register") => {
+                            let req = parse_json::<RegisterProxyRequest>(&request.body).unwrap();
+                            json_response(200, &meta.register_proxy(req))
+                        }
+                        _ => json_response(404, &Status::error("not_found", "not found")),
+                    }
+                })
+                .unwrap();
+            }
+        });
+        wait_for_http(&test_addr(18_315));
+
+        let proxy = ProxyService::new(ProxyOptions {
+            meta_addr: test_addr(18_315),
+            proxy_addr: "proxy-loop".to_string(),
+            namespace: "ns".to_string(),
+            ..ProxyOptions::default()
+        });
+        let _loop = proxy.start_heartbeat_loop(10);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            let stats = proxy.info().stats;
+            if stats.heartbeat_total > 0 && stats.auto_register_total > 0 {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("proxy heartbeat loop did not register and heartbeat");
     }
 
     fn start_server(addr: String, engine: TemporalEngine) {

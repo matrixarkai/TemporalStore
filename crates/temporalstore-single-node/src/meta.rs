@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -93,6 +94,24 @@ pub struct ServerMetaInfo {
     pub boot_time_ms: u64,
     pub binary_version: String,
     pub shard_loads: Vec<ShardLoad>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StaleServerReport {
+    pub status: Status,
+    pub frozen_servers: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StaleResourceReport {
+    pub status: Status,
+    pub frozen_servers: Vec<String>,
+    pub frozen_proxies: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FreezeStaleServersRequest {
+    pub stale_after_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -571,6 +590,58 @@ impl SingleNodeMeta {
         }
     }
 
+    pub fn freeze_stale_servers(&self, stale_after_ms: u64) -> StaleServerReport {
+        let report = self.freeze_stale_resources(stale_after_ms);
+        StaleServerReport {
+            status: report.status,
+            frozen_servers: report.frozen_servers,
+        }
+    }
+
+    pub fn freeze_stale_resources(&self, stale_after_ms: u64) -> StaleResourceReport {
+        let mut state = self.inner.write().expect("meta lock poisoned");
+        let now = now_ms();
+        let mut frozen_servers = Vec::new();
+        let mut frozen_proxies = Vec::new();
+        for server in state.servers.values_mut() {
+            if server.state == MetaEntityState::Normal
+                && now.saturating_sub(server.last_heartbeat_ms) > stale_after_ms
+            {
+                server.state = MetaEntityState::Frozen;
+                frozen_servers.push(server.server_addr.clone());
+            }
+        }
+        for proxy in state.proxies.values_mut() {
+            if proxy.state == MetaEntityState::Normal
+                && now.saturating_sub(proxy.last_heartbeat_ms) > stale_after_ms
+            {
+                proxy.state = MetaEntityState::Frozen;
+                frozen_proxies.push(proxy.proxy_addr.clone());
+            }
+        }
+        if !frozen_servers.is_empty() || !frozen_proxies.is_empty() {
+            state.topology_version += 1;
+        }
+        StaleResourceReport {
+            status: Status::ok(),
+            frozen_servers,
+            frozen_proxies,
+        }
+    }
+
+    pub fn start_failure_detector_loop(
+        &self,
+        stale_after_ms: u64,
+        interval_ms: u64,
+    ) -> thread::JoinHandle<()> {
+        let meta = self.clone();
+        let interval = Duration::from_millis(interval_ms.max(1));
+        thread::spawn(move || loop {
+            let _ = meta.freeze_stale_resources(stale_after_ms);
+            thread::sleep(interval);
+        })
+    }
+
     pub fn list_proxies(&self) -> ListProxiesResponse {
         let state = self.inner.read().expect("meta lock poisoned");
         ListProxiesResponse {
@@ -676,12 +747,26 @@ impl SingleNodeMeta {
 }
 
 fn build_partitions(state: &MetaState, table: &TableMetaInfo) -> Vec<TablePartition> {
-    let normal_servers = state
+    let mut normal_servers = state
         .servers
         .values()
         .filter(|server| server.state == MetaEntityState::Normal)
-        .map(|server| server.server_addr.clone())
+        .map(|server| {
+            let key_count = server
+                .shard_loads
+                .iter()
+                .map(|load| load.key_count)
+                .sum::<u64>();
+            let memory_bytes = server
+                .shard_loads
+                .iter()
+                .map(|load| load.memory_bytes)
+                .sum::<u64>();
+            (server.server_addr.clone(), key_count, memory_bytes)
+        })
         .collect::<Vec<_>>();
+    normal_servers
+        .sort_by(|left, right| (left.1, left.2, &left.0).cmp(&(right.1, right.2, &right.0)));
     let slot_count = 1_u64 << 30;
     let mut partitions = Vec::new();
     for offset in 0..table.shard_count {
@@ -692,7 +777,7 @@ fn build_partitions(state: &MetaState, table: &TableMetaInfo) -> Vec<TablePartit
         if let Some(location) = state.shards.get(&shard_id) {
             replicas.insert(location.server_addr.clone());
         }
-        for server in &normal_servers {
+        for (server, _, _) in &normal_servers {
             if replicas.len() >= table.replica_count as usize {
                 break;
             }
@@ -792,6 +877,56 @@ mod tests {
     }
 
     #[test]
+    fn metaserver_freezes_stale_servers_from_heartbeat_age() {
+        let meta = SingleNodeMeta::default();
+        meta.register_server(RegisterServerRequest {
+            server_addr: "stale".to_string(),
+            node_id: 1,
+            location: "z".to_string(),
+            binary_version: "v".to_string(),
+        });
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let report = meta.freeze_stale_servers(0);
+        assert!(report.status.ok);
+        assert_eq!(report.frozen_servers, vec!["stale".to_string()]);
+        assert_eq!(
+            meta.list_servers().servers[0].state,
+            MetaEntityState::Frozen
+        );
+    }
+
+    #[test]
+    fn metaserver_failure_detector_loop_freezes_stale_servers_and_proxies() {
+        let meta = SingleNodeMeta::default();
+        meta.register_server(RegisterServerRequest {
+            server_addr: "stale-server".to_string(),
+            node_id: 1,
+            location: "z".to_string(),
+            binary_version: "v".to_string(),
+        });
+        meta.register_proxy(RegisterProxyRequest {
+            proxy_addr: "stale-proxy".to_string(),
+            namespace: "ns".to_string(),
+            location: "z".to_string(),
+            config_version: 1,
+            binary_version: "v".to_string(),
+        });
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let _detector = meta.start_failure_detector_loop(0, 10);
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            if meta.list_servers().servers[0].state == MetaEntityState::Frozen
+                && meta.list_proxies().proxies[0].state == MetaEntityState::Frozen
+            {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("failure detector loop did not freeze stale resources");
+    }
+
+    #[test]
     fn metaserver_serves_table_topology_and_version_not_modified() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
@@ -843,6 +978,50 @@ mod tests {
         assert!(unchanged.status.ok);
         assert!(unchanged.unchanged);
         assert!(unchanged.partitions.is_empty());
+    }
+
+    #[test]
+    fn metaserver_topology_prefers_lower_load_replicas() {
+        let meta = SingleNodeMeta::default();
+        for (server_addr, key_count, memory_bytes) in [
+            ("hot", 10_000, 10_000),
+            ("cool", 10, 10),
+            ("warm", 100, 100),
+        ] {
+            meta.register_server(RegisterServerRequest {
+                server_addr: server_addr.to_string(),
+                node_id: 0,
+                location: "z".to_string(),
+                binary_version: String::new(),
+            });
+            meta.server_heartbeat(ServerHeartbeatRequest {
+                server_addr: server_addr.to_string(),
+                boot_time_ms: 1,
+                binary_version: String::new(),
+                shard_loads: vec![ShardLoad {
+                    shard_id: 1,
+                    key_count,
+                    memory_bytes,
+                }],
+            });
+        }
+        meta.add_table(AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+            first_shard_id: 100,
+            shard_count: 1,
+            replica_count: 2,
+        });
+
+        let topo = meta.get_table_topology(GetTableTopologyRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+            old_topology_version: 0,
+        });
+        assert_eq!(
+            topo.partitions[0].replicas,
+            vec!["cool".to_string(), "warm".to_string()]
+        );
     }
 
     #[test]

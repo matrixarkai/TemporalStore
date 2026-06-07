@@ -121,7 +121,10 @@ The runtime supports:
 - `/compact`
 - `/gc`
 
-Dump clears dirty objects for the shard. Compaction and GC are control-plane hooks today: they track task execution and dirty-object scope, but they do not yet rewrite page segments.
+Dump clears dirty objects for the shard. GC now clears the shard's memory/disk cache and accepts
+explicit retention boundaries for the local oplog, index log, and page segments; it rewrites JSONL
+log tails and deletes old non-current page segment files below the requested generation. Compaction
+is still a control-plane hook and does not yet rewrite live page data into compacted zones.
 
 ## What Is Still Missing Vs C++
 
@@ -138,7 +141,7 @@ Still missing major data-node internals:
 - merged page dump to zones
 - index-log replay separate from oplog replay
 - page compaction
-- page garbage collection
+- C++-style page rewrite garbage collection with page headers and zone ownership
 - expirer/evicter background tasks
 - primary-pull `RemotePartitionStream`
 - retry/refresh logic when primary changes

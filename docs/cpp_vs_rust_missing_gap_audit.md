@@ -34,6 +34,39 @@ brpc and Thrift are intentionally not part of the Rust target. The Rust open-sou
 
 ## What Was Closed In The Latest Pass
 
+This pass compared proxy, client, data-node, and metaserver surfaces again and closed four more test-backed control-plane gaps:
+
+1. Proxy heartbeat auto-register: `ProxyService::heartbeat_to_meta()` sends heartbeat, registers the proxy on `not_found`, then retries heartbeat.
+2. Client table topology sync: `TemporalStoreClient::open_table_from_meta()` fetches table topology from metaserver and derives `TableOptions`.
+3. Data-node cancellation surface: `DataNodeRuntime::cancel_job()` reports queued cancellation, in-flight, already-finished, and not-found job states.
+4. Metaserver stale heartbeat detection: `SingleNodeMeta::freeze_stale_servers()` freezes normal servers whose heartbeat age exceeds a threshold, with an HTTP route at `/servers/freeze_stale`.
+
+This pass repeated the C++ vs Rust comparison again, focusing on the bigger distributed gaps. It closed eight more test-backed surfaces:
+
+1. Raft transport contracts: added `AppendEntriesRequest/Response`, `VoteRequest/Response`, `InstallSnapshotRequest/Response`, and a `RaftTransport` trait.
+2. Raft hard state: exposed `RaftHardState` with term, voted-for, and commit index.
+3. Raft membership state: exposed `RaftMembership` with shard id, voters, and leader id.
+4. AppendEntries local receive path: rejects stale terms and log mismatches, applies committed entries to lagging replicas.
+5. RequestVote local receive path: rejects stale terms, already-voted conflicts, and candidates with behind logs.
+6. InstallSnapshot transport envelope: builds and handles snapshot transfer requests through the transport trait.
+7. Shared-store replay safety: `replay_oplog_strict` rejects oplog gaps instead of silently skipping them.
+8. Load-aware metaserver placement: topology replica selection now prefers lower key/memory load normal servers.
+
+This is still not full production Raft. The Rust code now has the message/API contracts and local safety behavior that a real OpenRaft/raft-rs transport can plug into, but it still lacks durable Raft WAL/hard-state files, real network RPC, timers, pre-vote, snapshots over the wire, and multi-process chaos coverage. This is pinned in code by `distributed_raft_readiness()`, and documented in `docs/distributed_raft_readiness.md`.
+
+This pass repeated the C++ vs Rust audit and closed eight smaller, test-backed parity gaps:
+
+1. IPS range query: `IpsQueryRange` returns timestamp-ordered instances within a time window.
+2. IPS batch query: `IpsBatchQueryLast` returns last-N instance groups for multiple keys.
+3. Risk first/last aggregation: `RiskQuery` now accepts `first` and `last`.
+4. Risk detail list: `RiskDetail` returns timestamped risk events for a time window.
+5. Storage admission control: shard `maxmemory_bytes` now rejects new writes after the local storage budget is reached.
+6. C++-style partition stats shape: `ShardStats` now includes loaded state, readonly flag, load version, total records, and storage bytes.
+7. Client backend failure pool shape: `ClientStats` now tracks backend error streaks and successful retry recovery.
+8. Proxy heartbeat/report shape plus stream safety: `ProxyHeartbeatReport` exposes config/stats/boot data, and invalid stream ranges now return `invalid_stream_range`.
+
+These are open-source Rust API and behavior increments. They are not brpc/thrift wire compatibility.
+
 This pass closed another ByteRaft/ByteKV `RaftEngine` API/configuration gap:
 
 - `RaftConfig` exposes the ByteKV/ByteRaft-style knobs used by the local C++ codebase: election cycle ticks, leader-transfer timeout, offline timeout, lease settings, startup lease assumption, max memory replicate-log bytes, max disk replicate-log count, max cache memory bytes, max apply batch bytes, reorder queue controls, in-flight apply/replication limits, pre-vote/election prohibition, snapshot send timeout, transport timeout, WAL sync, segment sizing, retained segment count, snapshot trigger switch, and max applied-log bytes.
@@ -108,23 +141,23 @@ The Rust data node also has a first runtime layer around `TemporalEngine`: worke
 | Area | C++ TemporalStore | Rust Today | Missing |
 | --- | --- | --- | --- |
 | Protocol | brpc/thrift/protobuf APIs and extension protos | JSON/HTTP command API plus RESP adapter; brpc/thrift intentionally excluded | tonic/gRPC service definitions, prost message schema, SDK compatibility for the new API |
-| Proxy | brpc/thrift server, C++ client wrapper, MetaSyncer, heartbeat/config, consul registration | HTTP proxy service with `/execute`, `/batch_execute`, `/shards`, `/proxy/info`, `/proxy/config`, route cache, stats, retries/timeouts, backend-error route refresh | tonic proxy service, background MetaSyncer, heartbeat/config from metaserver, service discovery/auto-register, namespace/table open path |
-| Client SDK | C++ `Client`, `Table`, `Pipeline`, `MetaSyncer`, router, backend pool | Rust `TemporalStoreClient`, `TemporalStoreTable`, `TemporalStorePipeline`, typed methods, open/close table cache, stats, retries/timeouts, direct route refresh | tonic SDK, background topology sync, exact CRC64 slot router, VDC affinity, backend failure pool |
-| Routing | namespace/table/partition-set/slot routing | key-to-shard routing from table options, explicit `shard_id` request, simple metaserver route | namespace/table topology from metaserver, exact slot map, route versioning, partition-set placement |
-| Metaserver | full topology, heartbeat, placement, scheduling, Raft-backed metadata | shard route map, namespace/table topology, server/proxy register/list/heartbeat, meta stats, in-process meta Raft, rebalance model | networked metaserver Raft for HTTP mutations, persistent metabase, placement rule chain, background scheduler, failure detector |
-| Data node execution | partition workers, async callbacks, load-version guards | `TemporalEngine` plus `DataNodeRuntime` worker queue, async jobs, dirty tracking, checked execute/batch routes | tonic streaming/callback shape, in-flight cancellation, production scheduling |
+| Proxy | brpc/thrift server, C++ client wrapper, MetaSyncer, heartbeat/config, consul registration | HTTP proxy service with `/execute`, `/batch_execute`, `/shards`, `/proxy/info`, `/proxy/config`, `/proxy/heartbeat`, route cache, stats, retries/timeouts, backend-error route refresh, background heartbeat loop, heartbeat auto-register helper | tonic proxy service, service discovery/consul, namespace/table open path |
+| Client SDK | C++ `Client`, `Table`, `Pipeline`, `MetaSyncer`, router, backend pool | Rust `TemporalStoreClient`, `TemporalStoreTable`, `TemporalStorePipeline`, typed methods, open/close table cache, stats, retries/timeouts, direct route refresh, backend error streak tracking, open table from metaserver topology, background topology sync, C++ `crc64 >> 34` slot router | tonic SDK, VDC affinity, full backend pool with continuous-failure timers |
+| Routing | namespace/table/partition-set/slot routing | key-to-shard routing from table options using C++ CRC64 slot formula, explicit `shard_id` request, simple metaserver route | full partition-set endpoint picking, route versioning, placement hierarchy |
+| Metaserver | full topology, heartbeat, placement, scheduling, Raft-backed metadata | shard route map, namespace/table topology, load-aware replica fill, server/proxy register/list/heartbeat, stale resource failure-detector loop, meta stats, in-process meta Raft, rebalance model | networked metaserver Raft for HTTP mutations, persistent metabase, full placement rule chain, full background scheduler loop |
+| Data node execution | partition workers, async callbacks, load-version guards | `TemporalEngine` plus `DataNodeRuntime` worker queue, async jobs, cancel status surface, dirty tracking, checked execute/batch routes, invalid stream range rejection | tonic streaming/callback shape, hard in-flight cancellation, production scheduling |
 | Hot object model | `ObjectManager`, model objects, dirty slots | per-type maps of key/field/timestamp to `PageAddress` | object ids, dirty slot tracking, object lifecycle, model-specific memory layout |
-| Oplog | binary mutation log with replay/reclaim semantics | JSONL command oplog | binary/protobuf compatibility, fsync policy, reclaim boundary, replay into hot object manager |
-| Index log | binary metadata/index log | JSONL index-log with current index metadata | compact incremental deltas, page/object ids, checksums, replay ordering with oplog and page dumps |
-| Page store | slot/page/zone layout, page headers, dump/merge/load | append-only local page segment files plus dump/compact/GC task hooks | zones, page headers, real segment rewrite compaction, checksums, atomic install |
-| Shared store | local/ByteStore stream backends and replica replay | file-backed shared-store checkpoint and oplog replay model | ByteStore/S3 live object backend integration, production retry/resume, replay offsets |
-| Raft | ByteRaft-backed production groups | in-process behavior model plus snapshot semantics, ByteKV/ByteRaft-style config/read options, oversized log guard, election prohibition, status/local-status, read-index guard, leader transfer, raft metrics | OpenRaft/raft-rs integration, network transport, durable WAL, hard-state, real InstallSnapshot RPC, real reorder queue/inflight/WAL segment/pre-vote behavior |
+| Oplog | binary mutation log with replay/reclaim semantics | JSONL command oplog with explicit retain-from-sequence GC rewrite | binary/protobuf compatibility, fsync policy, replay into hot object manager |
+| Index log | binary metadata/index log | JSONL index-log with current index metadata and explicit retain-from-sequence GC rewrite | compact incremental deltas, page/object ids, checksums, replay ordering with oplog and page dumps |
+| Page store | slot/page/zone layout, page headers, dump/merge/load | append-only local page segment files plus dump/compact/GC task hooks and conservative old segment deletion | zones, page headers, real segment rewrite compaction, checksums, atomic install |
+| Shared store | local/ByteStore stream backends and replica replay | file-backed shared-store checkpoint, sync/async oplog publish, bounded async flush, checksum-enveloped oplog objects, strict gap-rejecting replay, persisted replay cursor, bounded object-store retry and async requeue-on-failure, oplog/checkpoint GC | ByteStore/S3 live object backend integration, automatic lifecycle safety tied to follower cursors/Raft snapshots |
+| Raft | ByteRaft-backed production groups | in-process behavior model plus snapshot semantics, HTTP Raft transport for AppendEntries/Vote/InstallSnapshot/chunked InstallSnapshot, timeout tick election with pre-vote, hard-state/membership inspection, local durable WAL record export/load/recovery, AppendEntries/Vote/InstallSnapshot local receive behavior, joint-consensus old/new majority safety model, Raft RPC retry/backpressure wrapper, local partition/heal chaos coverage, ByteKV/ByteRaft-style config/read options, oversized log guard, election prohibition, status/local-status, read-index guard, leader transfer, raft metrics | OpenRaft/raft-rs consensus-engine swap, production RPC pooling/auth, randomized heartbeat/election scheduler, real reorder queue/inflight/WAL segment behavior, external multi-process chaos |
 | Snapshots | integrated storage/load pipeline | S3-compatible snapshot crate plus local Raft snapshot model | engine freeze/flush, attach snapshot metadata to Raft, S3 restore into data-node FSM |
-| Cache | mtcache/blockcache production cache | simple memory plus disk cache | CacheLib/SSD cache parity, admission, eviction policy, compression, metrics, warmup |
+| Cache | mtcache/blockcache production cache | memory plus local disk block cache with page-address keys, versioned block envelope, zstd compression, metrics, and shard-level GC eviction | CacheLib/SSD cache parity, admission, advanced eviction policy, warmup, pinning |
 | Feature | richer feature proto semantics | append/query/replace/delete/agg, 5k long-sequence coverage | nested point arrays, exact write policies, exact aggregate semantics |
 | Sequence | C++ feature/data-module behavior | typed rows, timestamp ordering, filters, count | exact C++ filters/options, batch semantics, edge-case policy |
-| IPS | rich IPS add/query/remove/load/delete/stat/filter/snap | add, query-last, remove timestamp, delete key, count range | batch query, load/snapshot/stat/filter, action/table dimensions, idempotence |
-| Risk | H/CPC/FOL query/update/manager semantics | increment/count plus sum/min/max/event aggregation | precision buckets, first/last, detail lists, manager APIs |
+| IPS | rich IPS add/query/remove/load/delete/stat/filter/snap | add, query-last, query range, batch query-last, remove timestamp, delete key, count range | load/snapshot/stat/filter, action/table dimensions, idempotence |
+| Risk | H/CPC/FOL query/update/manager semantics | increment/count plus sum/min/max/first/last/event aggregation and detail list | precision buckets, manager APIs |
 | Redis | not the main C++ wire API | useful RESP compatibility, including `SET NX/XX GET EX/PX` | sorted sets/lists if needed |
 | Metrics | production metrics/logging | Prometheus `/metrics` for shard/cache/page/oplog/runtime plus snapshot metric names; local raft metrics renderer | dashboards and alerts |
 | Deployment | internal production environment | Docker and existing-EKS Terraform skeleton | service discovery, autoscale controller, rolling upgrade, runbooks, auth/TLS |
@@ -135,7 +168,7 @@ The Rust data node also has a first runtime layer around `TemporalEngine`: worke
 These cannot be honestly marked done yet:
 
 - replace in-process Raft with a real Rust Raft library
-- persist Raft WAL and hard state
+- productionize Raft WAL segments and hard-state sync policy
 - implement real data-node tonic/gRPC transport
 - connect HTTP metaserver mutations to durable/networked metaserver Raft
 - make shard membership changes durable through metaserver Raft
@@ -149,7 +182,7 @@ These cannot be honestly marked done yet:
 - remaining IPS module details: batch query, load/snapshot/stat/filter, action/table dimensions, idempotence
 - remaining Risk module details: precision buckets, first/last, detail lists, manager APIs
 - binary/protobuf oplog and index-log formats
-- page compaction and garbage collection
+- page compaction and C++-style page rewrite garbage collection
 - production cache backend
 - shared-store replay offsets and retry/resume
 - Rust/tonic SDK compatibility and a documented migration API

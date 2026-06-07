@@ -66,10 +66,8 @@ Rust metaserver is still not a production C++ metaserver replacement:
 - no networked Raft-backed mutation path in the HTTP metaserver
 - no durable metabase snapshot/load in the HTTP metaserver
 - no exact C++ partition id encoding or partition-set hierarchy
-- no exact CRC64 slot map used by the C++ client
 - no placement rule chain for host/location/load deduplication
 - no task scheduler for create/load/freeze/drop membership workflows
-- no failure detector/convict routine
 - no proxy group placement/config model beyond simple config version
 - no safe-mode checks or frozen-resource cooldown policy
 

@@ -1,4 +1,4 @@
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::thread;
@@ -235,7 +235,7 @@ fn request_raw_once(
     stream.flush()?;
 
     let mut response = Vec::new();
-    stream.read_to_end(&mut response)?;
+    read_to_end_with_would_block_retry(&mut stream, &mut response, options.io_timeout_ms)?;
     let marker = b"\r\n\r\n";
     let Some(header_end) = response.windows(marker.len()).position(|w| w == marker) else {
         return Err(HttpError::BadResponse(
@@ -251,4 +251,26 @@ fn request_raw_once(
         return Err(HttpError::BadResponse(status_line));
     }
     Ok(response[header_end + marker.len()..].to_vec())
+}
+
+fn read_to_end_with_would_block_retry(
+    stream: &mut TcpStream,
+    response: &mut Vec<u8>,
+    timeout_ms: u64,
+) -> Result<(), std::io::Error> {
+    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms.max(1));
+    let mut chunk = [0; 4096];
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) => return Ok(()),
+            Ok(read) => response.extend_from_slice(&chunk[..read]),
+            Err(err)
+                if matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
+                    && std::time::Instant::now() < deadline =>
+            {
+                thread::sleep(Duration::from_millis(2));
+            }
+            Err(err) => return Err(err),
+        }
+    }
 }

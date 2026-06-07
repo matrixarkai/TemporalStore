@@ -25,6 +25,9 @@ The data-node model supports:
 - scale-up by adding a caught-up follower
 - scale-down by removing a replica
 - local Raft snapshot create/install
+- chunked snapshot create/install through `InstallSnapshotChunkRequest`
+- joint-consensus membership safety checks requiring old and new majorities
+- retry/backoff/backpressure wrapper for Raft transport calls
 
 Data-node snapshots contain committed log entries up to the leader commit index.
 Installing a snapshot rebuilds the follower shard engine from those entries, sets
@@ -59,8 +62,9 @@ The expected production path remains:
 
 The `temporalstore-snapshot` crate already models the S3-compatible snapshot
 store. The current `temporalstore-single-node` Raft snapshot support proves the
-state transition and safety behavior locally, but does not yet wire S3 snapshot
-references into a production `InstallSnapshot` RPC.
+state transition and safety behavior locally. Chunked JSON snapshot install is
+present for local/HTTP tests, but S3 snapshot references are not yet attached to
+a production `InstallSnapshot` RPC.
 
 ## Tests
 
@@ -72,6 +76,10 @@ Covered locally:
 - data-node leader promotion
 - data-node scale-up and scale-down
 - data-node snapshot bootstrap and log catch-up
+- data-node chunked snapshot bootstrap
+- joint-consensus old/new majority safety
+- Raft transport retry/backpressure wrapper
+- local partition/heal chaos behavior
 - data-node stale snapshot rejection
 - election without snapshot availability
 - metaserver metadata replication
@@ -86,14 +94,13 @@ Covered locally:
 Before claiming production parity with Byteraft or a real OpenRaft/raft-rs based
 system, the Rust code still needs:
 
-- real network transport between nodes
-- persistent Raft WAL and hard-state storage
-- actual leader election protocol, vote handling, and term persistence
-- AppendEntries and InstallSnapshot RPCs
+- HTTP transport for AppendEntries/Vote/InstallSnapshot exists; production still needs pooled/authenticated RPC with full observability
+- data Raft WAL recovery is present locally; production still needs metaserver HTTP mutation recovery
+- local timeout tick election and pre-vote are present; production still needs randomized heartbeat/election scheduling
+- production streaming InstallSnapshot RPCs over long-lived streams
 - snapshot metadata stored in Raft state
 - S3 snapshot references attached to Raft snapshot metadata
 - log compaction after snapshot finalization
-- membership-change safety through a real Raft joint-consensus or equivalent path
+- membership-change safety through the actual OpenRaft/raft-rs joint-consensus log path
 - crash/restart tests using persisted WAL and snapshots
-- chaos tests across processes and hosts
-
+- chaos tests across separate OS processes and hosts

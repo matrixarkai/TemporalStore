@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use thiserror::Error;
@@ -9,6 +10,7 @@ use crate::http::{
     HttpRequestOptions,
 };
 use crate::meta::GetShardResponse;
+use crate::meta::{GetTableTopologyRequest, TableTopologyResponse};
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,
     ExecuteResponse, FeatureFilter, FeaturePoint, SequenceFeatureRow, ShardId, Status,
@@ -115,6 +117,24 @@ pub struct ClientStats {
     pub route_cache_misses: u64,
     pub route_refreshes: u64,
     pub backend_errors: u64,
+    pub backend_error_streak: u64,
+    pub backend_successes_after_error: u64,
+    pub meta_sync_total: u64,
+    pub meta_sync_errors: u64,
+}
+
+impl ClientStats {
+    fn record_backend_error(&mut self) {
+        self.backend_errors += 1;
+        self.backend_error_streak += 1;
+    }
+
+    fn record_backend_success(&mut self) {
+        if self.backend_error_streak > 0 {
+            self.backend_successes_after_error += 1;
+        }
+        self.backend_error_streak = 0;
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -179,6 +199,106 @@ impl TemporalStoreClient {
             shard_id: self.inner.options.default_shard_id,
             options,
         }
+    }
+
+    pub fn open_table_from_meta(
+        &self,
+        namespace: impl Into<String>,
+        table_name: impl Into<String>,
+    ) -> Result<TemporalStoreTable, ClientError> {
+        let namespace = namespace.into();
+        let table_name = table_name.into();
+        let options = self.sync_table_topology(namespace.clone(), table_name.clone())?;
+        Ok(self.open_table(namespace, table_name, options))
+    }
+
+    pub fn sync_table_topology(
+        &self,
+        namespace: impl Into<String>,
+        table_name: impl Into<String>,
+    ) -> Result<TableOptions, ClientError> {
+        let namespace = namespace.into();
+        let table_name = table_name.into();
+        self.inner
+            .stats
+            .lock()
+            .expect("client stats lock poisoned")
+            .meta_sync_total += 1;
+        let meta_addr = self
+            .inner
+            .options
+            .meta_addr
+            .as_ref()
+            .ok_or_else(|| ClientError::Status("meta_addr is required".to_string()))?;
+        let topology: TableTopologyResponse = match post_json_with_options(
+            meta_addr,
+            "/tables/topology",
+            &GetTableTopologyRequest {
+                namespace: namespace.clone(),
+                table_name: table_name.clone(),
+                old_topology_version: 0,
+            },
+            self.inner.options.http_options(),
+        ) {
+            Ok(topology) => topology,
+            Err(err) => {
+                self.inner
+                    .stats
+                    .lock()
+                    .expect("client stats lock poisoned")
+                    .meta_sync_errors += 1;
+                return Err(err.into());
+            }
+        };
+        if !topology.status.ok {
+            self.inner
+                .stats
+                .lock()
+                .expect("client stats lock poisoned")
+                .meta_sync_errors += 1;
+            return Err(ClientError::Status(topology.status.message));
+        }
+        let table = topology
+            .table
+            .ok_or_else(|| ClientError::Status("table topology missing".to_string()))?;
+        let options = TableOptions {
+            first_shard_id: table.first_shard_id,
+            shard_count: table.shard_count,
+            ..TableOptions::default()
+        };
+        self.inner
+            .tables
+            .lock()
+            .expect("client table cache lock poisoned")
+            .insert(table_combine_name(&namespace, &table_name), options.clone());
+        self.inner
+            .routes
+            .lock()
+            .expect("client route cache lock poisoned")
+            .clear();
+        Ok(options)
+    }
+
+    pub fn start_meta_sync_loop(&self, interval_ms: u64) -> thread::JoinHandle<()> {
+        let client = self.clone();
+        let interval = Duration::from_millis(interval_ms.max(1));
+        thread::spawn(move || loop {
+            let tables = client
+                .inner
+                .tables
+                .lock()
+                .expect("client table cache lock poisoned")
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>();
+            for table in tables {
+                if let Some((namespace, table_name)) = table.split_once('/') {
+                    let _ =
+                        client.sync_table_topology(namespace.to_string(), table_name.to_string());
+                }
+            }
+            thread::sleep(interval);
+        })
     }
 
     pub fn close_table(&self, table: &TemporalStoreTable) -> Result<(), ClientError> {
@@ -286,14 +406,16 @@ impl TemporalStoreClient {
                         .stats
                         .lock()
                         .expect("client stats lock poisoned")
-                        .backend_errors += 1;
+                        .record_backend_error();
                     let refreshed = self.resolve_route(request.shard_id, true)?;
-                    Ok(post_json_with_options(
-                        &refreshed,
-                        "/execute",
-                        &request,
-                        http_options,
-                    )?)
+                    let response =
+                        post_json_with_options(&refreshed, "/execute", &request, http_options)?;
+                    self.inner
+                        .stats
+                        .lock()
+                        .expect("client stats lock poisoned")
+                        .record_backend_success();
+                    Ok(response)
                 });
         }
 
@@ -319,14 +441,20 @@ impl TemporalStoreClient {
                         .stats
                         .lock()
                         .expect("client stats lock poisoned")
-                        .backend_errors += 1;
+                        .record_backend_error();
                     let refreshed = self.resolve_route(request.shard_id, true)?;
-                    Ok(post_json_with_options(
+                    let response = post_json_with_options(
                         &refreshed,
                         "/batch_execute",
                         &request,
                         http_options,
-                    )?)
+                    )?;
+                    self.inner
+                        .stats
+                        .lock()
+                        .expect("client stats lock poisoned")
+                        .record_backend_success();
+                    Ok(response)
                 });
         }
         Ok(post_json_with_options(
@@ -425,12 +553,24 @@ impl TemporalStoreTable {
     }
 
     pub fn shard_id_for_key(&self, key: &str) -> ShardId {
+        let options = self.table_options();
         shard_id_for_key(
             key,
-            self.options.first_shard_id,
-            self.options.shard_count,
+            options.first_shard_id,
+            options.shard_count,
             self.shard_id,
         )
+    }
+
+    fn table_options(&self) -> TableOptions {
+        self.client
+            .inner
+            .tables
+            .lock()
+            .expect("client table cache lock poisoned")
+            .get(&table_combine_name(&self.namespace, &self.table_name))
+            .cloned()
+            .unwrap_or_else(|| self.options.clone())
     }
 
     pub fn pipeline(&self) -> TemporalStorePipeline {
@@ -1041,16 +1181,31 @@ pub fn shard_id_for_key(
     if shard_count == 0 {
         return default_shard_id;
     }
-    first_shard_id + stable_key_hash(key) % shard_count
+    first_shard_id + slot_id_for_key(key) % shard_count
+}
+
+pub fn slot_id_for_key(key: &str) -> u64 {
+    crc64_jones(key.as_bytes()) >> 34
+}
+
+pub fn crc64_jones(bytes: &[u8]) -> u64 {
+    let mut crc = 0_u64;
+    for byte in bytes {
+        let mut entry = (crc ^ u64::from(*byte)) & 0xff;
+        for _ in 0..8 {
+            if entry & 1 == 1 {
+                entry = (entry >> 1) ^ 0x95ac9329ac4bc9b5;
+            } else {
+                entry >>= 1;
+            }
+        }
+        crc = entry ^ (crc >> 8);
+    }
+    crc
 }
 
 pub fn stable_key_hash(key: &str) -> u64 {
-    let mut hash = 0xcbf29ce484222325u64;
-    for byte in key.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
+    crc64_jones(key.as_bytes())
 }
 
 fn command_key(command: &Command) -> Option<&str> {
@@ -1084,12 +1239,15 @@ fn command_key(command: &Command) -> Option<&str> {
         | Command::SequenceQuery { key, .. }
         | Command::IpsAdd { key, .. }
         | Command::IpsQueryLast { key, .. }
+        | Command::IpsQueryRange { key, .. }
         | Command::IpsRemove { key, .. }
         | Command::IpsDelete { key }
         | Command::IpsCount { key, .. }
         | Command::RiskIncrement { key, .. }
         | Command::RiskCount { key, .. }
-        | Command::RiskQuery { key, .. } => Some(key),
+        | Command::RiskQuery { key, .. }
+        | Command::RiskDetail { key, .. } => Some(key),
+        Command::IpsBatchQueryLast { .. } => None,
     }
 }
 
@@ -1256,6 +1414,123 @@ mod tests {
         let table = client.open_table("ns", "tbl", TableOptions::default());
         table.set("k", b"v".to_vec()).unwrap();
         assert_eq!(table.get("k").unwrap(), Some(b"v".to_vec()));
+        let stats = client.stats();
+        assert_eq!(stats.backend_errors, 1);
+        assert_eq!(stats.backend_error_streak, 0);
+        assert_eq!(stats.backend_successes_after_error, 1);
+    }
+
+    #[test]
+    fn client_opens_table_from_metaserver_topology() {
+        let meta_addr = test_addr(18_214);
+        std::thread::spawn(move || {
+            serve(&meta_addr, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    ("POST", "/tables/topology") => json_response(
+                        200,
+                        &TableTopologyResponse {
+                            status: Status::ok(),
+                            table: Some(crate::meta::TableMetaInfo {
+                                table_id: 1,
+                                namespace: "ns".to_string(),
+                                table_name: "tbl".to_string(),
+                                state: crate::meta::MetaEntityState::Normal,
+                                topology_version: 7,
+                                first_shard_id: 10,
+                                shard_count: 4,
+                                replica_count: 1,
+                            }),
+                            partitions: Vec::new(),
+                            unchanged: false,
+                        },
+                    ),
+                    _ => json_response(404, &Status::error("not_found", "not found")),
+                }
+            })
+            .unwrap();
+        });
+        wait_for_http(&test_addr(18_214));
+
+        let client = TemporalStoreClient::with_options(ClientOptions {
+            meta_addr: Some(test_addr(18_214)),
+            ..ClientOptions::default()
+        });
+        let table = client.open_table_from_meta("ns", "tbl").unwrap();
+        assert_eq!(table.namespace(), "ns");
+        assert_eq!(table.table_name(), "tbl");
+        let routed = table.shard_id_for_key("routing-key");
+        assert!((10..14).contains(&routed));
+    }
+
+    #[test]
+    fn client_router_matches_cpp_crc64_slot_formula() {
+        assert_eq!(crc64_jones(b"123456789"), 0xe9c6d914c4b8d9ca);
+        assert_eq!(slot_id_for_key("123456789"), 0x3a71_b645);
+        assert_eq!(
+            shard_id_for_key("123456789", 10, 4, 1),
+            10 + (0x3a71_b645 % 4)
+        );
+        assert_eq!(stable_key_hash("123456789"), crc64_jones(b"123456789"));
+    }
+
+    #[test]
+    fn client_background_meta_sync_updates_existing_table_handle() {
+        let meta_addr = test_addr(18_215);
+        let first_shard = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(10));
+        std::thread::spawn({
+            let first_shard = std::sync::Arc::clone(&first_shard);
+            move || {
+                serve(&meta_addr, move |request| {
+                    match (request.method.as_str(), request.path.as_str()) {
+                        ("POST", "/tables/topology") => {
+                            let first_shard_id =
+                                first_shard.load(std::sync::atomic::Ordering::Relaxed);
+                            json_response(
+                                200,
+                                &TableTopologyResponse {
+                                    status: Status::ok(),
+                                    table: Some(crate::meta::TableMetaInfo {
+                                        table_id: 1,
+                                        namespace: "ns".to_string(),
+                                        table_name: "tbl".to_string(),
+                                        state: crate::meta::MetaEntityState::Normal,
+                                        topology_version: first_shard_id,
+                                        first_shard_id,
+                                        shard_count: 2,
+                                        replica_count: 1,
+                                    }),
+                                    partitions: Vec::new(),
+                                    unchanged: false,
+                                },
+                            )
+                        }
+                        _ => json_response(404, &Status::error("not_found", "not found")),
+                    }
+                })
+                .unwrap();
+            }
+        });
+        wait_for_http(&test_addr(18_215));
+
+        let client = TemporalStoreClient::with_options(ClientOptions {
+            meta_addr: Some(test_addr(18_215)),
+            ..ClientOptions::default()
+        });
+        let table = client.open_table_from_meta("ns", "tbl").unwrap();
+        assert!((10..12).contains(&table.shard_id_for_key("k")));
+        first_shard.store(20, std::sync::atomic::Ordering::Relaxed);
+        let _syncer = client.start_meta_sync_loop(10);
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            let shard = table.shard_id_for_key("k");
+            if (20..22).contains(&shard) {
+                assert!(client.stats().meta_sync_total >= 2);
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("client meta sync loop did not refresh table options");
     }
 
     #[test]

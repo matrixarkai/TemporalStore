@@ -70,11 +70,9 @@ Rust still does not have C++ client wire parity:
 
 - no brpc/protobuf client
 - no exact C++ `CmdRequest`/`CmdResponse` command encoding
-- no namespace/table topology from metaserver
-- no exact C++ CRC64 slot router; Rust currently uses a stable FNV-1a key hash for open-source shard routing
+- no brpc/protobuf wire-compatible backend pool; Rust now uses the C++ slot formula `crc64_signed(0, key) >> 34` for table shard routing
 - no partition-set primary/secondary endpoint selection
 - no VDC-affinity routing
-- no periodic background `MetaSyncer`
 - no backend server pool with continuous failure counters
 - no Neptune/drop-percent routing behavior
 - no async callback API

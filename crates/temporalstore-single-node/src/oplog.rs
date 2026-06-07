@@ -33,6 +33,17 @@ pub struct OplogStats {
     pub last_sequence: u64,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OplogGcReport {
+    pub shard_id: ShardId,
+    pub retain_from_sequence: u64,
+    pub records_before: usize,
+    pub records_after: usize,
+    pub records_removed: usize,
+    pub bytes_before: u64,
+    pub bytes_after: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct LocalOplogStore {
     inner: Arc<Mutex<OplogInner>>,
@@ -131,6 +142,61 @@ impl LocalOplogStore {
         Ok(records)
     }
 
+    pub fn gc_before_sequence(
+        &self,
+        shard_id: ShardId,
+        retain_from_sequence: u64,
+    ) -> Result<OplogGcReport, OplogError> {
+        let inner = self.inner.lock().expect("oplog lock poisoned");
+        fs::create_dir_all(&inner.root)?;
+        let path = oplog_path(&inner.root, shard_id);
+        if !path.exists() {
+            return Ok(OplogGcReport {
+                shard_id,
+                retain_from_sequence,
+                ..OplogGcReport::default()
+            });
+        }
+
+        let bytes_before = path.metadata()?.len();
+        let file = File::open(&path)?;
+        let reader = BufReader::new(file);
+        let mut records_before = 0usize;
+        let mut retained = Vec::new();
+        for line in reader.lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            records_before += 1;
+            let record: OplogRecord = serde_json::from_str(&line)?;
+            if record.sequence >= retain_from_sequence {
+                retained.push(record);
+            }
+        }
+
+        let temp_path = path.with_extension("jsonl.tmp");
+        {
+            let mut temp = File::create(&temp_path)?;
+            for record in &retained {
+                serde_json::to_writer(&mut temp, record)?;
+                temp.write_all(b"\n")?;
+            }
+            temp.flush()?;
+        }
+        fs::rename(&temp_path, &path)?;
+        let bytes_after = path.metadata()?.len();
+        Ok(OplogGcReport {
+            shard_id,
+            retain_from_sequence,
+            records_before,
+            records_after: retained.len(),
+            records_removed: records_before.saturating_sub(retained.len()),
+            bytes_before,
+            bytes_after,
+        })
+    }
+
     pub fn stats(&self, shard_id: ShardId) -> OplogStats {
         let inner = self.inner.lock().expect("oplog lock poisoned");
         OplogStats {
@@ -180,4 +246,43 @@ fn unique_temp_path(kind: &str) -> PathBuf {
         "temporalstore-single-node-{kind}-{}-{nanos}-{counter}",
         std::process::id()
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::Command;
+
+    #[test]
+    fn gc_before_sequence_rewrites_oplog_with_retained_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalOplogStore::new(dir.path());
+        for key in ["a", "b", "c"] {
+            store
+                .append(
+                    7,
+                    Command::StringSet {
+                        key: key.to_string(),
+                        value: key.as_bytes().to_vec(),
+                    },
+                )
+                .unwrap();
+        }
+
+        let report = store.gc_before_sequence(7, 3).unwrap();
+        assert_eq!(report.records_before, 3);
+        assert_eq!(report.records_after, 1);
+        assert_eq!(report.records_removed, 2);
+        assert_eq!(store.stats(7).last_sequence, 3);
+        store
+            .append(
+                7,
+                Command::StringSet {
+                    key: "d".to_string(),
+                    value: b"d".to_vec(),
+                },
+            )
+            .unwrap();
+        assert_eq!(store.stats(7).last_sequence, 4);
+    }
 }

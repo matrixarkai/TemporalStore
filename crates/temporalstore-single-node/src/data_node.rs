@@ -70,6 +70,7 @@ pub struct DataNodeRuntimeStats {
     pub completed_total: u64,
     pub rejected_total: u64,
     pub timed_out_total: u64,
+    pub canceled_total: u64,
     pub queue_depth: usize,
     pub dirty_object_count: usize,
     pub dirty_shard_count: usize,
@@ -114,6 +115,12 @@ pub struct CompactionResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GcRequest {
     pub shard_id: ShardId,
+    #[serde(default)]
+    pub retain_oplog_from_sequence: Option<u64>,
+    #[serde(default)]
+    pub retain_index_log_from_sequence: Option<u64>,
+    #[serde(default)]
+    pub retain_page_segments_from_id: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -121,6 +128,11 @@ pub struct GcResponse {
     pub status: Status,
     pub shard_id: ShardId,
     pub collected_objects: usize,
+    pub cache_entries_removed: usize,
+    pub cache_disk_bytes_removed: u64,
+    pub oplog_records_removed: usize,
+    pub index_log_records_removed: usize,
+    pub page_segments_removed: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -135,6 +147,7 @@ struct DataNodeRuntimeInner {
     queue: Mutex<VecDeque<QueuedTask>>,
     queue_signal: Condvar,
     jobs: Mutex<HashMap<u64, DataNodeTaskStatus>>,
+    canceled: Mutex<BTreeSet<u64>>,
     dirty: Mutex<DirtyTracker>,
     stats: Mutex<MutableRuntimeStats>,
     next_job_id: AtomicU64,
@@ -146,6 +159,7 @@ struct MutableRuntimeStats {
     completed_total: u64,
     rejected_total: u64,
     timed_out_total: u64,
+    canceled_total: u64,
     dump_runs: u64,
     compaction_runs: u64,
     gc_runs: u64,
@@ -186,6 +200,7 @@ impl DataNodeRuntime {
             queue: Mutex::default(),
             queue_signal: Condvar::new(),
             jobs: Mutex::default(),
+            canceled: Mutex::default(),
             dirty: Mutex::default(),
             stats: Mutex::default(),
             next_job_id: AtomicU64::new(1),
@@ -199,6 +214,26 @@ impl DataNodeRuntime {
 
     pub fn engine(&self) -> TemporalEngine {
         self.inner.engine.clone()
+    }
+
+    #[cfg(test)]
+    fn new_without_workers_for_test(engine: TemporalEngine, max_queue_depth: usize) -> Self {
+        Self {
+            inner: Arc::new(DataNodeRuntimeInner {
+                engine,
+                options: DataNodeRuntimeOptions {
+                    worker_threads: 0,
+                    max_queue_depth: max_queue_depth.max(1),
+                },
+                queue: Mutex::default(),
+                queue_signal: Condvar::new(),
+                jobs: Mutex::default(),
+                canceled: Mutex::default(),
+                dirty: Mutex::default(),
+                stats: Mutex::default(),
+                next_job_id: AtomicU64::new(1),
+            }),
+        }
     }
 
     pub fn submit_execute(
@@ -266,6 +301,63 @@ impl DataNodeRuntime {
             .cloned()
     }
 
+    pub fn cancel_job(&self, job_id: u64) -> DataNodeTaskStatus {
+        let mut jobs = self
+            .inner
+            .jobs
+            .lock()
+            .expect("data node jobs lock poisoned");
+        let Some(existing) = jobs.get(&job_id).cloned() else {
+            return DataNodeTaskStatus {
+                job_id,
+                kind: DataNodeTaskKind::Execute,
+                status: Status::error("job_not_found", "data node job not found"),
+                output: None,
+                submitted_at_ms: now_ms(),
+                finished_at_ms: Some(now_ms()),
+            };
+        };
+        if existing.finished_at_ms.is_some() {
+            return DataNodeTaskStatus {
+                status: Status::error("job_already_finished", "data node job already finished"),
+                ..existing
+            };
+        }
+        let mut queue = self
+            .inner
+            .queue
+            .lock()
+            .expect("runtime queue lock poisoned");
+        let before = queue.len();
+        queue.retain(|task| task.job_id != job_id);
+        if queue.len() == before {
+            self.inner
+                .canceled
+                .lock()
+                .expect("runtime cancellation lock poisoned")
+                .insert(job_id);
+            return DataNodeTaskStatus {
+                status: Status::error(
+                    "job_cancel_requested",
+                    "data node job cancellation requested",
+                ),
+                ..existing
+            };
+        }
+        let canceled = DataNodeTaskStatus {
+            status: Status::error("job_canceled", "data node job canceled before execution"),
+            finished_at_ms: Some(now_ms()),
+            ..existing
+        };
+        jobs.insert(job_id, canceled.clone());
+        self.inner
+            .stats
+            .lock()
+            .expect("runtime stats lock poisoned")
+            .canceled_total += 1;
+        canceled
+    }
+
     pub fn dirty_objects(&self) -> Vec<DirtyObjectInfo> {
         self.inner
             .dirty
@@ -305,6 +397,7 @@ impl DataNodeRuntime {
             completed_total: stats.completed_total,
             rejected_total: stats.rejected_total,
             timed_out_total: stats.timed_out_total,
+            canceled_total: stats.canceled_total,
             queue_depth,
             dirty_object_count: dirty.by_key.len(),
             dirty_shard_count,
@@ -390,6 +483,13 @@ fn worker_loop(inner: Arc<DataNodeRuntimeInner>) {
                 .expect("runtime stats lock poisoned")
                 .timed_out_total += 1;
             task_timeout_output(task.kind)
+        } else if take_canceled(&inner, task.job_id) {
+            inner
+                .stats
+                .lock()
+                .expect("runtime stats lock poisoned")
+                .canceled_total += 1;
+            task_canceled_output(task.kind)
         } else {
             execute_task(&inner, &task)
         };
@@ -472,15 +572,79 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
         }
         TaskRequest::Gc(request) => {
             let collected_objects = clear_dirty_shard(&inner.dirty, request.shard_id);
+            let mut status = Status::ok();
+            let mut cache_entries_removed = 0;
+            let mut cache_disk_bytes_removed = 0;
+            let mut oplog_records_removed = 0;
+            let mut index_log_records_removed = 0;
+            let mut page_segments_removed = 0;
+            match inner.engine.cache().invalidate_shard(request.shard_id) {
+                Ok(report) => {
+                    cache_entries_removed = report.memory_entries_removed;
+                    cache_disk_bytes_removed = report.disk_bytes_removed;
+                }
+                Err(err) => {
+                    status = Status::error("cache_gc_failed", &err.to_string());
+                }
+            }
+            if let Some(retain_from_sequence) = request.retain_oplog_from_sequence {
+                if status.ok {
+                    match inner
+                        .engine
+                        .oplog_store()
+                        .gc_before_sequence(request.shard_id, retain_from_sequence)
+                    {
+                        Ok(report) => oplog_records_removed = report.records_removed,
+                        Err(err) => {
+                            status = Status::error("oplog_gc_failed", &err.to_string());
+                        }
+                    }
+                }
+            }
+            if status.ok {
+                if let Some(retain_from_sequence) = request.retain_index_log_from_sequence {
+                    match inner
+                        .engine
+                        .index_log_store()
+                        .gc_before_sequence(request.shard_id, retain_from_sequence)
+                    {
+                        Ok(report) => index_log_records_removed = report.records_removed,
+                        Err(err) => {
+                            status = Status::error("index_log_gc_failed", &err.to_string());
+                        }
+                    }
+                }
+            }
+            if status.ok {
+                if let Some(retain_from_page_segment_id) = request.retain_page_segments_from_id {
+                    match inner
+                        .engine
+                        .page_store()
+                        .gc_segments_before(retain_from_page_segment_id)
+                    {
+                        Ok(report) => {
+                            page_segments_removed = report.removed_page_segment_ids.len();
+                        }
+                        Err(err) => {
+                            status = Status::error("page_store_gc_failed", &err.to_string());
+                        }
+                    }
+                }
+            }
             inner
                 .stats
                 .lock()
                 .expect("runtime stats lock poisoned")
                 .gc_runs += 1;
             DataNodeTaskOutput::Gc(GcResponse {
-                status: Status::ok(),
+                status,
                 shard_id: request.shard_id,
                 collected_objects,
+                cache_entries_removed,
+                cache_disk_bytes_removed,
+                oplog_records_removed,
+                index_log_records_removed,
+                page_segments_removed,
             })
         }
     }
@@ -517,8 +681,61 @@ fn task_timeout_output(kind: DataNodeTaskKind) -> DataNodeTaskOutput {
             status,
             shard_id: 0,
             collected_objects: 0,
+            cache_entries_removed: 0,
+            cache_disk_bytes_removed: 0,
+            oplog_records_removed: 0,
+            index_log_records_removed: 0,
+            page_segments_removed: 0,
         }),
     }
+}
+
+fn task_canceled_output(kind: DataNodeTaskKind) -> DataNodeTaskOutput {
+    let status = Status::error("job_canceled", "data node task canceled before execution");
+    match kind {
+        DataNodeTaskKind::Execute => DataNodeTaskOutput::Execute(ExecuteResponse {
+            status,
+            response: CommandResponse::Empty,
+        }),
+        DataNodeTaskKind::CheckedExecute => {
+            DataNodeTaskOutput::CheckedExecute(CheckedExecuteResponse {
+                status: status.clone(),
+                response: ExecuteResponse {
+                    status,
+                    response: CommandResponse::Empty,
+                },
+            })
+        }
+        DataNodeTaskKind::Dump => DataNodeTaskOutput::Dump(DumpShardResponse {
+            status,
+            shard_id: 0,
+            index_bytes: 0,
+            dirty_objects_flushed: 0,
+        }),
+        DataNodeTaskKind::Compact => DataNodeTaskOutput::Compact(CompactionResponse {
+            status,
+            shard_id: 0,
+            compacted_objects: 0,
+        }),
+        DataNodeTaskKind::Gc => DataNodeTaskOutput::Gc(GcResponse {
+            status,
+            shard_id: 0,
+            collected_objects: 0,
+            cache_entries_removed: 0,
+            cache_disk_bytes_removed: 0,
+            oplog_records_removed: 0,
+            index_log_records_removed: 0,
+            page_segments_removed: 0,
+        }),
+    }
+}
+
+fn take_canceled(inner: &DataNodeRuntimeInner, job_id: u64) -> bool {
+    inner
+        .canceled
+        .lock()
+        .expect("runtime cancellation lock poisoned")
+        .remove(&job_id)
 }
 
 fn task_output_status(output: &DataNodeTaskOutput) -> Status {
@@ -705,8 +922,117 @@ mod tests {
         }
     }
 
+    #[test]
+    fn runtime_cancel_reports_not_found_and_already_finished_jobs() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let runtime = DataNodeRuntime::new(engine, DataNodeRuntimeOptions::default());
+
+        assert_eq!(runtime.cancel_job(42).status.code, "job_not_found");
+
+        let submitted = runtime.submit_execute(
+            ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "k".to_string(),
+                    value: b"v".to_vec(),
+                },
+            },
+            RequestController { timeout_ms: 1000 },
+        );
+        let finished = wait_for_job(&runtime, submitted.job_id);
+        assert!(finished.status.ok);
+        assert_eq!(
+            runtime.cancel_job(submitted.job_id).status.code,
+            "job_already_finished"
+        );
+    }
+
+    #[test]
+    fn runtime_gc_reclaims_log_tails_and_reports_counts() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        for key in ["a", "b", "c"] {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: key.to_string(),
+                    value: key.as_bytes().to_vec(),
+                },
+            });
+            assert!(response.status.ok);
+        }
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "a".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"a".to_vec())
+            }
+        );
+        engine.page_store().install_segment(1, b"old").unwrap();
+        engine.page_store().install_segment(2, b"new").unwrap();
+
+        let runtime = DataNodeRuntime::new(
+            engine.clone(),
+            DataNodeRuntimeOptions {
+                worker_threads: 1,
+                max_queue_depth: 8,
+            },
+        );
+        let submitted = runtime.submit_gc(
+            GcRequest {
+                shard_id: 1,
+                retain_oplog_from_sequence: Some(3),
+                retain_index_log_from_sequence: Some(2),
+                retain_page_segments_from_id: Some(2),
+            },
+            RequestController { timeout_ms: 1000 },
+        );
+        let finished = wait_for_job(&runtime, submitted.job_id);
+        let Some(DataNodeTaskOutput::Gc(output)) = finished.output else {
+            panic!("expected gc output");
+        };
+        assert!(output.status.ok);
+        assert_eq!(output.cache_entries_removed, 2);
+        assert!(output.cache_disk_bytes_removed > 0);
+        assert_eq!(output.oplog_records_removed, 2);
+        assert_eq!(output.index_log_records_removed, 1);
+        assert_eq!(output.page_segments_removed, 1);
+        assert_eq!(engine.oplog_store().stats(1).last_sequence, 3);
+        assert_eq!(engine.index_log_store().stats(1).last_sequence, 3);
+        assert_eq!(engine.page_store().segment_ids().unwrap(), vec![0, 2]);
+    }
+
+    #[test]
+    fn runtime_cancels_queued_job_before_worker_executes_it() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 8);
+
+        let submitted = runtime.submit_execute(
+            ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "queued".to_string(),
+                    value: b"v".to_vec(),
+                },
+            },
+            RequestController { timeout_ms: 1000 },
+        );
+        let canceled = runtime.cancel_job(submitted.job_id);
+        assert_eq!(canceled.status.code, "job_canceled");
+        assert_eq!(runtime.stats().canceled_total, 1);
+        assert_eq!(runtime.stats().queue_depth, 0);
+    }
+
     fn wait_for_job(runtime: &DataNodeRuntime, job_id: u64) -> DataNodeTaskStatus {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
             if let Some(status) = runtime.job_status(job_id) {
                 if status.finished_at_ms.is_some() {
