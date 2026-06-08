@@ -1870,6 +1870,32 @@ impl RaftCluster {
         &self,
         request: InstallSnapshotRequest,
     ) -> Result<InstallSnapshotResponse, RaftError> {
+        {
+            let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+            if request.shard_id != inner.shard_id {
+                return Ok(InstallSnapshotResponse {
+                    term: 0,
+                    success: false,
+                    last_included_index: 0,
+                    reject_reason: Some("shard_mismatch".to_string()),
+                });
+            }
+            let node = inner
+                .nodes
+                .get_mut(&request.target_id)
+                .ok_or(RaftError::NodeNotFound(request.target_id))?;
+            if request.term < node.current_term {
+                return Ok(InstallSnapshotResponse {
+                    term: node.current_term,
+                    success: false,
+                    last_included_index: 0,
+                    reject_reason: Some("stale_term".to_string()),
+                });
+            }
+            node.current_term = request.term;
+            node.role = RaftRole::Follower;
+            node.voted_for = None;
+        }
         let result = self.install_snapshot(request.target_id, request.snapshot.clone());
         let term = self
             .hard_state(request.target_id)
@@ -1949,9 +1975,13 @@ impl RaftCluster {
     ) -> Result<InstallSnapshotChunkResponse, RaftError> {
         let mut inner = self.inner.write().expect("raft cluster lock poisoned");
         if request.shard_id != inner.shard_id {
-            return Err(RaftError::SnapshotShardMismatch {
-                snapshot_shard_id: request.shard_id,
-                cluster_shard_id: inner.shard_id,
+            return Ok(InstallSnapshotChunkResponse {
+                term: 0,
+                success: false,
+                snapshot_complete: false,
+                received_chunks: 0,
+                last_included_index: 0,
+                reject_reason: Some("shard_mismatch".to_string()),
             });
         }
         if request.chunk_count == 0 || request.chunk_index >= request.chunk_count {
@@ -1959,6 +1989,23 @@ impl RaftCluster {
                 "chunk index is outside chunk count".to_string(),
             ));
         }
+        let node = inner
+            .nodes
+            .get_mut(&request.target_id)
+            .ok_or(RaftError::NodeNotFound(request.target_id))?;
+        if request.term < node.current_term {
+            return Ok(InstallSnapshotChunkResponse {
+                term: node.current_term,
+                success: false,
+                snapshot_complete: false,
+                received_chunks: 0,
+                last_included_index: 0,
+                reject_reason: Some("stale_term".to_string()),
+            });
+        }
+        node.current_term = request.term;
+        node.role = RaftRole::Follower;
+        node.voted_for = None;
         let key = (request.target_id, request.snapshot_id.clone());
         let pending = inner
             .pending_snapshots
@@ -3978,6 +4025,7 @@ mod tests {
         let vote_response = transport.request_vote(vote).unwrap();
         assert!(vote_response.vote_granted);
 
+        cluster.elect_leader(2).unwrap();
         cluster
             .propose(Command::StringSet {
                 key: "snapshot".to_string(),
@@ -4039,6 +4087,58 @@ mod tests {
                 value: Some(vec![4])
             }
         );
+    }
+
+    #[test]
+    fn raft_snapshot_transport_rejects_stale_term_before_install() {
+        let cluster = RaftCluster::new_single_shard(211, [1, 2, 3]);
+        cluster
+            .propose(Command::StringSet {
+                key: "snapshot-term".to_string(),
+                value: b"leader-value".to_vec(),
+            })
+            .unwrap();
+        cluster.elect_leader(2).unwrap();
+        let mut request = cluster.build_install_snapshot_request(3).unwrap();
+        request.term = 1;
+
+        let response = cluster.receive_install_snapshot(request).unwrap();
+        assert!(!response.success);
+        assert_eq!(response.reject_reason.as_deref(), Some("stale_term"));
+        assert_eq!(cluster.commit_index(3).unwrap(), 1);
+        assert_eq!(cluster.hard_state(3).unwrap().current_term, 2);
+    }
+
+    #[test]
+    fn raft_snapshot_chunk_transport_rejects_stale_term_before_buffering() {
+        let cluster = RaftCluster::new_single_shard(212, [1, 2, 3]);
+        for index in 0..3 {
+            cluster
+                .propose(Command::StringSet {
+                    key: format!("snapshot-chunk-term-{index}"),
+                    value: vec![index as u8],
+                })
+                .unwrap();
+        }
+        cluster.elect_leader(2).unwrap();
+        let mut chunks = cluster.build_install_snapshot_chunks(3, 1).unwrap();
+        chunks[0].term = 1;
+
+        let response = cluster
+            .receive_install_snapshot_chunk(chunks[0].clone())
+            .unwrap();
+        assert!(!response.success);
+        assert!(!response.snapshot_complete);
+        assert_eq!(response.reject_reason.as_deref(), Some("stale_term"));
+        assert_eq!(cluster.hard_state(3).unwrap().current_term, 2);
+
+        chunks[0].term = 2;
+        let response = cluster
+            .receive_install_snapshot_chunk(chunks[0].clone())
+            .unwrap();
+        assert!(response.success);
+        assert!(!response.snapshot_complete);
+        assert_eq!(response.received_chunks, 1);
     }
 
     #[test]

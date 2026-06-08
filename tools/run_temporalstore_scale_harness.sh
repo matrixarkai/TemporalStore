@@ -6,7 +6,7 @@ TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/temporalstore-rust-target}"
 
 cd "$ROOT"
 
-CARGO_TARGET_DIR="$TARGET_DIR" cargo run -p temporalstore-single-node --bin scale_harness -- \
+CARGO_TARGET_DIR="$TARGET_DIR" cargo run -p temporalstore-rust --bin scale_harness -- \
   --nodes "${TS_SCALE_NODES:-3}" \
   --string-ops "${TS_SCALE_STRING_OPS:-1000}" \
   --hash-ops "${TS_SCALE_HASH_OPS:-250}" \

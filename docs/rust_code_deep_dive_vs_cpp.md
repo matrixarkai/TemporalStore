@@ -7,7 +7,7 @@ The Rust repo is a clean open-source TemporalStore-shaped implementation, but it
 What exists today:
 
 - a typed command API for common, string, hash, set, feature, sequence, simplified IPS, and simplified risk data
-- a single-node engine with shard-local indexes, local append-only page segment files, and read-through memory/disk cache
+- a TemporalStore Rust engine with shard-local indexes, local append-only page segment files, and read-through memory/disk cache
 - HTTP binaries for metaserver, server, proxy, and client
 - a Redis RESP proxy covering common string/hash/set commands plus feature extensions
 - an in-process Raft behavior model for data replication, metaserver replication, promotion, scale up/down, and replica read policy tests
@@ -28,23 +28,23 @@ So the right framing is: the Rust code is a good open-source v1 skeleton and loc
 
 | Area | Main files | What it does |
 | --- | --- | --- |
-| Public API model | `crates/temporalstore-single-node/src/types.rs` | Defines `Command`, `CommandResponse`, request/response structs, shard id, feature/risk/sequence shapes. |
-| Engine | `crates/temporalstore-single-node/src/engine.rs` | Owns loaded shard state, executes commands, appends values to page files, updates indexes, persists index JSON, reads through cache/page store. |
-| Page storage | `crates/temporalstore-single-node/src/page_store.rs` | Appends raw bytes to local `page_segment_*.seg` files and returns `PageAddress { page_segment_id, offset, length }`. |
-| Multi-layer cache | `crates/temporalstore-single-node/src/cache.rs` | L1 in-memory cache plus L2 local disk block cache. Disk blocks use a versioned envelope with optional zstd compression. Disk hits are decoded and promoted back to memory. Writes invalidate affected keys. |
-| Control API | `crates/temporalstore-single-node/src/control.rs` | Load/unload shard, config, info/stats, membership update, stream read/scan structs. |
-| HTTP transport | `crates/temporalstore-single-node/src/http.rs`, `meta.rs`, `client.rs` | Small synchronous JSON-over-HTTP surface for local server/proxy/metaserver/client workflows. |
-| Redis interface | `crates/temporalstore-single-node/src/redis.rs` | RESP parser/server and mapper from Redis-like commands to `Command`. |
-| Raft model | `crates/temporalstore-single-node/src/raft.rs` | In-process data Raft and metaserver Raft behavior model: majority commit, promotion, catch-up, scale up/down, safe replica reads. |
-| End-to-end workflow | `crates/temporalstore-single-node/src/e2e.rs` | Simulates proxy -> client -> metaserver raft -> data raft -> engine, kill switches, async storage queue, read policies. |
-| Binaries | `crates/temporalstore-single-node/src/bin/*.rs` | `metaserver`, `server`, `proxy`, `redis_proxy`, `client`. |
+| Public API model | `crates/temporalstore-rust/src/types.rs` | Defines `Command`, `CommandResponse`, request/response structs, shard id, feature/risk/sequence shapes. |
+| Engine | `crates/temporalstore-rust/src/engine.rs` | Owns loaded shard state, executes commands, appends values to page files, updates indexes, persists index JSON, reads through cache/page store. |
+| Page storage | `crates/temporalstore-rust/src/page_store.rs` | Appends raw bytes to local `page_segment_*.seg` files and returns `PageAddress { page_segment_id, offset, length }`. |
+| Multi-layer cache | `crates/temporalstore-rust/src/cache.rs` | L1 in-memory cache plus L2 local disk block cache. Disk blocks use a versioned envelope with optional zstd compression. Disk hits are decoded and promoted back to memory. Writes invalidate affected keys. |
+| Control API | `crates/temporalstore-rust/src/control.rs` | Load/unload shard, config, info/stats, membership update, stream read/scan structs. |
+| HTTP transport | `crates/temporalstore-rust/src/http.rs`, `meta.rs`, `client.rs` | Small synchronous JSON-over-HTTP surface for local server/proxy/metaserver/client workflows. |
+| Redis interface | `crates/temporalstore-rust/src/redis.rs` | RESP parser/server and mapper from Redis-like commands to `Command`. |
+| Raft model | `crates/temporalstore-rust/src/raft.rs` | In-process data Raft and metaserver Raft behavior model: majority commit, promotion, catch-up, scale up/down, safe replica reads. |
+| End-to-end workflow | `crates/temporalstore-rust/src/e2e.rs` | Simulates proxy -> client -> metaserver raft -> data raft -> engine, kill switches, async storage queue, read policies. |
+| Binaries | `crates/temporalstore-rust/src/bin/*.rs` | `metaserver`, `server`, `proxy`, `redis_proxy`, `client`. |
 | S3 snapshots | `crates/temporalstore-snapshot/src/*.rs` | Snapshot trait/store, S3-compatible object abstraction, manifest/checksum types, Prometheus metrics. |
 | Tests | `crates/*/tests`, module unit tests | Compatibility, cache/page persistence, Redis, Raft behavior, snapshot semantics, AWS ignored smoke. |
 | Deployment | `Dockerfile`, `infra/aws-existing-eks`, `tools/*.sh` | Docker build, existing-EKS Terraform, local/AWS validation scripts. |
 
 ## Exact Rust Data Path
 
-Single-node read/write path:
+TemporalStore Rust read/write path:
 
 ```text
 HTTP/Redis/client request -> proxy/client -> shard_id -> TemporalEngine -> ShardState index -> PageAddress { segment, offset, length } -> LocalPageStore page_segment file -> MultiLayerCache -> response
@@ -262,7 +262,7 @@ That is why "rewrite C++ TemporalStore in Rust" is not just translating syntax. 
 - **Open-source friendly:** avoids direct dependence on internal non-open-source `byte`, `byteraft`, `mtcache`, ByteStore, and related infrastructure.
 - **Safer implementation base:** Rust reduces memory safety and lifetime bugs common in large C++ storage engines.
 - **Clear API model:** one central `Command` enum makes behavior easy to inspect, serialize, test, and wrap with Redis/HTTP/proxy layers.
-- **Fast local iteration:** single-node engine and in-process workflow tests run without a full internal deployment.
+- **Fast local iteration:** TemporalStore Rust engine and in-process workflow tests run without a full internal deployment.
 - **Cleaner naming:** uses `shard`, `page_segment`, `PageAddress`, and typed APIs instead of carrying every historical C++ name forward.
 - **S3 snapshot design is explicit:** snapshot code has immutable object layout, checksum verification, retention, and metrics from the start.
 - **Good migration harness:** compatibility-style tests can be expanded from C++ behavior into Rust without booting a whole production stack.
@@ -336,7 +336,7 @@ Use the Rust repo as a clean open-source v1 and avoid trying to clone every C++ 
 
 Recommended sequence:
 
-1. Keep the current single-node API and Redis compatibility tests stable.
+1. Keep the current TemporalStore Rust API and Redis compatibility tests stable.
 2. Add a real durable WAL/oplog underneath `TemporalEngine`.
 3. Replace the in-process Raft model with OpenRaft or raft-rs.
 4. Wire S3 snapshots into Raft install/restore.

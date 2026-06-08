@@ -30,7 +30,7 @@ Important C++ files checked:
 Rust now has a first metaserver-side rebalance model in:
 
 ```text
-crates/temporalstore-single-node/src/rebalance.rs
+crates/temporalstore-rust/src/rebalance.rs
 ```
 
 It implements:

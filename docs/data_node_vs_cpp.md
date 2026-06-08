@@ -62,7 +62,7 @@ Rust now covers these data-node surfaces:
 The new oplog stream is implemented in:
 
 ```text
-crates/temporalstore-single-node/src/oplog.rs
+crates/temporalstore-rust/src/oplog.rs
 ```
 
 Each mutating command appends a JSON-line `OplogRecord`:
@@ -76,7 +76,7 @@ Each mutating command appends a JSON-line `OplogRecord`:
 Rust also has a JSONL index-log stream in:
 
 ```text
-crates/temporalstore-single-node/src/index_log.rs
+crates/temporalstore-rust/src/index_log.rs
 ```
 
 Each mutating command now follows this local durability order:

@@ -1,5 +1,5 @@
-use temporalstore_single_node::http::serve;
-use temporalstore_single_node::{ProxyOptions, ProxyService};
+use temporalstore_rust::http::serve;
+use temporalstore_rust::{ProxyOptions, ProxyService};
 
 fn main() {
     let addr = std::env::var("TS_PROXY_BIND_ADDR")

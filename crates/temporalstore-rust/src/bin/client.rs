@@ -1,7 +1,7 @@
-use temporalstore_single_node::types::{
+use temporalstore_rust::types::{
     Command, ExecuteRequest, FeatureFilter, FeatureFilterOp, FeaturePoint, SequenceFeatureRow,
 };
-use temporalstore_single_node::TemporalStoreClient;
+use temporalstore_rust::TemporalStoreClient;
 
 fn main() {
     let args = std::env::args().collect::<Vec<_>>();

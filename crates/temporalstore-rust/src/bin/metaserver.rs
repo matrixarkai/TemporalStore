@@ -1,11 +1,11 @@
-use temporalstore_single_node::http::{json_response, parse_json, serve, HttpRequest};
-use temporalstore_single_node::meta::{
+use temporalstore_rust::http::{json_response, parse_json, serve, HttpRequest};
+use temporalstore_rust::meta::{
     AddNamespaceRequest, AddTableRequest, FreezeStaleServersRequest, GetShardResponse,
     GetTableTopologyRequest, LoadFinishRequest, ProxyHeartbeatRequest, RegisterProxyRequest,
     RegisterServerRequest, RegisterShardRequest, ServerHeartbeatRequest, SingleNodeMeta,
     StateChangeRequest,
 };
-use temporalstore_single_node::types::Status;
+use temporalstore_rust::types::Status;
 
 fn main() {
     let addr = std::env::var("TS_META_BIND_ADDR")

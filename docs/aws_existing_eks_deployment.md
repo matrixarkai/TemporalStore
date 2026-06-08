@@ -1,6 +1,6 @@
 # AWS Existing EKS Deployment
 
-This path deploys the Rust TemporalStore single-node stack onto an existing EKS cluster. It reuses
+This path deploys the Rust TemporalStore TemporalStore Rust stack onto an existing EKS cluster. It reuses
 the cluster; it does not create VPC, EKS, node groups, or ECR.
 
 Components:

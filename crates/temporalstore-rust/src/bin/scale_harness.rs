@@ -1,8 +1,8 @@
 use std::time::Instant;
 
 use serde::Serialize;
-use temporalstore_single_node::raft::{RaftCluster, RaftConfig};
-use temporalstore_single_node::types::{
+use temporalstore_rust::raft::{RaftCluster, RaftConfig};
+use temporalstore_rust::types::{
     Command, CommandResponse, FeatureFilter, FeatureFilterOp, SequenceFeatureRow,
 };
 

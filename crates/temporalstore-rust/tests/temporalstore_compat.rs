@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use temporalstore_single_node::{
+use temporalstore_rust::{
     execute_redis_command, Command, CommandResponse, EndToEndWorkflow, ExecuteRequest,
     FeaturePoint, RespValue, SharedStoreOplogEntry, SharedStoreReplicator, TemporalEngine,
 };

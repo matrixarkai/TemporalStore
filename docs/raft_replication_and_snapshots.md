@@ -4,7 +4,7 @@
 
 Raft is the default write-replication path in the Rust TemporalStore workflow.
 
-The single-node crate currently models this with in-process clusters:
+The distributed TemporalStore Rust crate currently models this with in-process clusters:
 
 - `RaftCluster` for data-node shard replication.
 - `MetaRaftCluster` for metaserver metadata replication.
@@ -63,7 +63,7 @@ The expected production path remains:
 5. The replica catches up by applying Raft logs after the snapshot index.
 
 The `temporalstore-snapshot` crate already models the S3-compatible snapshot
-store. The current `temporalstore-single-node` Raft snapshot support proves the
+store. The current `temporalstore-rust` Raft snapshot support proves the
 state transition and safety behavior locally. Chunked JSON snapshot install is
 present for local/HTTP tests, but S3 snapshot references are not yet attached to
 a production `InstallSnapshot` RPC.

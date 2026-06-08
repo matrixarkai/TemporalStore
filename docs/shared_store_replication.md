@@ -1,6 +1,6 @@
 # Shared Store Replication
 
-The Rust code now has a first shared-store replication path for oplog, index, and page segment replication. It is implemented in `crates/temporalstore-single-node/src/shared_store.rs` and uses the existing `ObjectStore` abstraction from `temporalstore-snapshot`, so the same path can be backed by local files in tests and S3-compatible storage later.
+The Rust code now has a first shared-store replication path for oplog, index, and page segment replication. It is implemented in `crates/temporalstore-rust/src/shared_store.rs` and uses the existing `ObjectStore` abstraction from `temporalstore-snapshot`, so the same path can be backed by local files in tests and S3-compatible storage later.
 
 ## Object Layout
 

@@ -156,12 +156,12 @@ client -> proxy route cache -> metaserver route lookup on miss/stale -> data nod
 
 Files:
 
-- `crates/temporalstore-single-node/src/index_log.rs`
-- `crates/temporalstore-single-node/src/control.rs`
-- `crates/temporalstore-single-node/src/engine.rs`
-- `crates/temporalstore-single-node/src/proxy.rs`
-- `crates/temporalstore-single-node/src/bin/proxy.rs`
-- `crates/temporalstore-single-node/src/lib.rs`
+- `crates/temporalstore-rust/src/index_log.rs`
+- `crates/temporalstore-rust/src/control.rs`
+- `crates/temporalstore-rust/src/engine.rs`
+- `crates/temporalstore-rust/src/proxy.rs`
+- `crates/temporalstore-rust/src/bin/proxy.rs`
+- `crates/temporalstore-rust/src/lib.rs`
 
 This closes one data-node replay gap from the previous audit. C++ has binary index logs with page/object metadata. Rust now has a JSONL index-log record after every mutation. It is larger and simpler than C++, but gives replica/recovery code a separate stream of committed index metadata instead of relying only on the latest whole index file.
 

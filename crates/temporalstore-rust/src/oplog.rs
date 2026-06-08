@@ -6,10 +6,10 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::types::ShardId;
+use crate::types::{Command, ShardId};
 
 #[derive(Debug, Error)]
-pub enum IndexLogError {
+pub enum OplogError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("json error: {0}")]
@@ -17,14 +17,14 @@ pub enum IndexLogError {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct IndexLogRecord {
+pub struct OplogRecord {
     pub shard_id: ShardId,
     pub sequence: u64,
-    pub index: serde_json::Value,
+    pub command: Command,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IndexLogStats {
+pub struct OplogStats {
     pub writes: u64,
     pub reads: u64,
     pub scans: u64,
@@ -34,7 +34,7 @@ pub struct IndexLogStats {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IndexLogGcReport {
+pub struct OplogGcReport {
     pub shard_id: ShardId,
     pub retain_from_sequence: u64,
     pub records_before: usize,
@@ -45,47 +45,43 @@ pub struct IndexLogGcReport {
 }
 
 #[derive(Debug, Clone)]
-pub struct LocalIndexLogStore {
-    inner: Arc<Mutex<IndexLogInner>>,
+pub struct LocalOplogStore {
+    inner: Arc<Mutex<OplogInner>>,
 }
 
 #[derive(Debug)]
-struct IndexLogInner {
+struct OplogInner {
     root: PathBuf,
-    stats: IndexLogStats,
+    stats: OplogStats,
 }
 
-impl LocalIndexLogStore {
+impl LocalOplogStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         let root = root.into();
         let _ = fs::create_dir_all(&root);
         Self {
-            inner: Arc::new(Mutex::new(IndexLogInner {
+            inner: Arc::new(Mutex::new(OplogInner {
                 root,
-                stats: IndexLogStats::default(),
+                stats: OplogStats::default(),
             })),
         }
     }
 
-    pub fn append_json(
-        &self,
-        shard_id: ShardId,
-        index_bytes: &[u8],
-    ) -> Result<IndexLogRecord, IndexLogError> {
-        let mut inner = self.inner.lock().expect("index log lock poisoned");
+    pub fn append(&self, shard_id: ShardId, command: Command) -> Result<OplogRecord, OplogError> {
+        let mut inner = self.inner.lock().expect("oplog lock poisoned");
         fs::create_dir_all(&inner.root)?;
         let next_sequence = last_sequence_at(&inner.root, shard_id)?.saturating_add(1);
-        let record = IndexLogRecord {
+        let record = OplogRecord {
             shard_id,
             sequence: next_sequence,
-            index: serde_json::from_slice(index_bytes)?,
+            command,
         };
         let mut bytes = serde_json::to_vec(&record)?;
         bytes.push(b'\n');
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
-            .open(index_log_path(&inner.root, shard_id))?;
+            .open(oplog_path(&inner.root, shard_id))?;
         file.write_all(&bytes)?;
         file.flush()?;
         inner.stats.writes += 1;
@@ -99,9 +95,9 @@ impl LocalIndexLogStore {
         shard_id: ShardId,
         offset: u64,
         size: u64,
-    ) -> Result<Vec<u8>, IndexLogError> {
-        let mut inner = self.inner.lock().expect("index log lock poisoned");
-        let path = index_log_path(&inner.root, shard_id);
+    ) -> Result<Vec<u8>, OplogError> {
+        let mut inner = self.inner.lock().expect("oplog lock poisoned");
+        let path = oplog_path(&inner.root, shard_id);
         let mut file = File::open(path)?;
         file.seek(SeekFrom::Start(offset))?;
         let mut bytes = vec![0; size as usize];
@@ -118,9 +114,9 @@ impl LocalIndexLogStore {
         start_offset: u64,
         end_offset: u64,
         max_bytes: u64,
-    ) -> Result<Vec<(u64, Vec<u8>)>, IndexLogError> {
-        let mut inner = self.inner.lock().expect("index log lock poisoned");
-        let path = index_log_path(&inner.root, shard_id);
+    ) -> Result<Vec<(u64, Vec<u8>)>, OplogError> {
+        let mut inner = self.inner.lock().expect("oplog lock poisoned");
+        let path = oplog_path(&inner.root, shard_id);
         let mut file = File::open(path)?;
         file.seek(SeekFrom::Start(start_offset))?;
         let mut reader = BufReader::new(file);
@@ -150,15 +146,15 @@ impl LocalIndexLogStore {
         &self,
         shard_id: ShardId,
         retain_from_sequence: u64,
-    ) -> Result<IndexLogGcReport, IndexLogError> {
-        let inner = self.inner.lock().expect("index log lock poisoned");
+    ) -> Result<OplogGcReport, OplogError> {
+        let inner = self.inner.lock().expect("oplog lock poisoned");
         fs::create_dir_all(&inner.root)?;
-        let path = index_log_path(&inner.root, shard_id);
+        let path = oplog_path(&inner.root, shard_id);
         if !path.exists() {
-            return Ok(IndexLogGcReport {
+            return Ok(OplogGcReport {
                 shard_id,
                 retain_from_sequence,
-                ..IndexLogGcReport::default()
+                ..OplogGcReport::default()
             });
         }
 
@@ -173,7 +169,7 @@ impl LocalIndexLogStore {
                 continue;
             }
             records_before += 1;
-            let record: IndexLogRecord = serde_json::from_str(&line)?;
+            let record: OplogRecord = serde_json::from_str(&line)?;
             if record.sequence >= retain_from_sequence {
                 retained.push(record);
             }
@@ -190,7 +186,7 @@ impl LocalIndexLogStore {
         }
         fs::rename(&temp_path, &path)?;
         let bytes_after = path.metadata()?.len();
-        Ok(IndexLogGcReport {
+        Ok(OplogGcReport {
             shard_id,
             retain_from_sequence,
             records_before,
@@ -201,27 +197,27 @@ impl LocalIndexLogStore {
         })
     }
 
-    pub fn stats(&self, shard_id: ShardId) -> IndexLogStats {
-        let inner = self.inner.lock().expect("index log lock poisoned");
-        IndexLogStats {
+    pub fn stats(&self, shard_id: ShardId) -> OplogStats {
+        let inner = self.inner.lock().expect("oplog lock poisoned");
+        OplogStats {
             last_sequence: last_sequence_at(&inner.root, shard_id).unwrap_or_default(),
             ..inner.stats
         }
     }
 }
 
-impl Default for LocalIndexLogStore {
+impl Default for LocalOplogStore {
     fn default() -> Self {
-        Self::new(unique_temp_path("index-logs"))
+        Self::new(unique_temp_path("oplogs"))
     }
 }
 
-fn index_log_path(root: &std::path::Path, shard_id: ShardId) -> PathBuf {
-    root.join(format!("shard-{shard_id}.indexlog.jsonl"))
+fn oplog_path(root: &std::path::Path, shard_id: ShardId) -> PathBuf {
+    root.join(format!("shard-{shard_id}.oplog.jsonl"))
 }
 
-fn last_sequence_at(root: &std::path::Path, shard_id: ShardId) -> Result<u64, IndexLogError> {
-    let path = index_log_path(root, shard_id);
+fn last_sequence_at(root: &std::path::Path, shard_id: ShardId) -> Result<u64, OplogError> {
+    let path = oplog_path(root, shard_id);
     if !path.exists() {
         return Ok(0);
     }
@@ -233,7 +229,7 @@ fn last_sequence_at(root: &std::path::Path, shard_id: ShardId) -> Result<u64, In
         if line.trim().is_empty() {
             continue;
         }
-        let record: IndexLogRecord = serde_json::from_str(&line)?;
+        let record: OplogRecord = serde_json::from_str(&line)?;
         last = last.max(record.sequence);
     }
     Ok(last)
@@ -247,7 +243,7 @@ fn unique_temp_path(kind: &str) -> PathBuf {
         .map(|duration| duration.as_nanos())
         .unwrap_or_default();
     std::env::temp_dir().join(format!(
-        "temporalstore-single-node-{kind}-{}-{nanos}-{counter}",
+        "temporalstore-rust-{kind}-{}-{nanos}-{counter}",
         std::process::id()
     ))
 }
@@ -255,23 +251,38 @@ fn unique_temp_path(kind: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::Command;
 
     #[test]
-    fn gc_before_sequence_rewrites_index_log_with_retained_tail() {
+    fn gc_before_sequence_rewrites_oplog_with_retained_tail() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalIndexLogStore::new(dir.path());
-        for value in [1, 2, 3] {
+        let store = LocalOplogStore::new(dir.path());
+        for key in ["a", "b", "c"] {
             store
-                .append_json(5, format!("{{\"value\":{value}}}").as_bytes())
+                .append(
+                    7,
+                    Command::StringSet {
+                        key: key.to_string(),
+                        value: key.as_bytes().to_vec(),
+                    },
+                )
                 .unwrap();
         }
 
-        let report = store.gc_before_sequence(5, 2).unwrap();
+        let report = store.gc_before_sequence(7, 3).unwrap();
         assert_eq!(report.records_before, 3);
-        assert_eq!(report.records_after, 2);
-        assert_eq!(report.records_removed, 1);
-        assert_eq!(store.stats(5).last_sequence, 3);
-        store.append_json(5, b"{\"value\":4}").unwrap();
-        assert_eq!(store.stats(5).last_sequence, 4);
+        assert_eq!(report.records_after, 1);
+        assert_eq!(report.records_removed, 2);
+        assert_eq!(store.stats(7).last_sequence, 3);
+        store
+            .append(
+                7,
+                Command::StringSet {
+                    key: "d".to_string(),
+                    value: b"d".to_vec(),
+                },
+            )
+            .unwrap();
+        assert_eq!(store.stats(7).last_sequence, 4);
     }
 }

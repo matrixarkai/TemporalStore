@@ -1,5 +1,5 @@
 [package]
-name = "temporalstore-single-node"
+name = "temporalstore-rust"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

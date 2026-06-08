@@ -1,13 +1,11 @@
-use temporalstore_single_node::engine::TemporalEngine;
-use temporalstore_single_node::http::{json_response, parse_json, post_json, serve};
-use temporalstore_single_node::meta::{
+use temporalstore_rust::engine::TemporalEngine;
+use temporalstore_rust::http::{json_response, parse_json, post_json, serve};
+use temporalstore_rust::meta::{
     AckResponse, RegisterServerRequest, RegisterShardRequest, RegisterShardResponse,
     ServerHeartbeatRequest, ServerHeartbeatResponse, ShardLoad,
 };
-use temporalstore_single_node::types::{
-    BatchExecuteRequest, ExecuteRequest, ExecuteResponse, Status,
-};
-use temporalstore_single_node::{
+use temporalstore_rust::types::{BatchExecuteRequest, ExecuteRequest, ExecuteResponse, Status};
+use temporalstore_rust::{
     CheckedBatchExecuteRequest, CheckedExecuteRequest, CompactionRequest, DataNodeRuntime,
     DataNodeRuntimeOptions, DumpShardRequest, GcRequest, LoadShardRequest, MembershipUpdateRequest,
     RequestController, ScanStreamRequest, SetConfigRequest, StreamReadRequest, UnloadShardRequest,
@@ -141,7 +139,7 @@ fn main() {
                     400,
                     &ExecuteResponse {
                         status: Status::error("bad_request", err.to_string()),
-                        response: temporalstore_single_node::CommandResponse::Empty,
+                        response: temporalstore_rust::CommandResponse::Empty,
                     },
                 ),
             },

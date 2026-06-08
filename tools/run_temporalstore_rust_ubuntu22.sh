@@ -9,13 +9,13 @@ export TS_REDIS_ADDR="${TS_REDIS_ADDR:-127.0.0.1:16379}"
 export TS_META_ADDR="${TS_META_ADDR:-127.0.0.1:17001}"
 export TS_SERVER_ADDR="${TS_SERVER_ADDR:-127.0.0.1:17002}"
 export TS_SHARD_ID="${TS_SHARD_ID:-1}"
-export TS_CACHE_DIR="${TS_CACHE_DIR:-${ROOT}/target/single-node-smoke/cache}"
-export TS_PAGE_STORE_DIR="${TS_PAGE_STORE_DIR:-${ROOT}/target/single-node-smoke/pages}"
-export TS_INDEX_DIR="${TS_INDEX_DIR:-${ROOT}/target/single-node-smoke/indexes}"
+export TS_CACHE_DIR="${TS_CACHE_DIR:-${ROOT}/target/temporalstore-rust-smoke/cache}"
+export TS_PAGE_STORE_DIR="${TS_PAGE_STORE_DIR:-${ROOT}/target/temporalstore-rust-smoke/pages}"
+export TS_INDEX_DIR="${TS_INDEX_DIR:-${ROOT}/target/temporalstore-rust-smoke/indexes}"
 
-rm -rf "${ROOT}/target/single-node-smoke"
+rm -rf "${ROOT}/target/temporalstore-rust-smoke"
 
-cargo build -p temporalstore-single-node --bins
+cargo build -p temporalstore-rust --bins
 
 cleanup() {
   for pid in ${META_PID:-} ${SERVER_PID:-} ${PROXY_PID:-} ${REDIS_PID:-}; do

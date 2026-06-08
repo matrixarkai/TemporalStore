@@ -1,4 +1,4 @@
-use temporalstore_single_node::serve_redis_proxy;
+use temporalstore_rust::serve_redis_proxy;
 
 fn main() {
     let addr = std::env::var("TS_REDIS_BIND_ADDR")

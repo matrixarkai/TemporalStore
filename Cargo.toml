@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/temporalstore-snapshot", "crates/temporalstore-single-node"]
+members = ["crates/temporalstore-snapshot", "crates/temporalstore-rust"]
 resolver = "2"
 
 [workspace.package]

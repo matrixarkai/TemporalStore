@@ -808,7 +808,7 @@ fn unique_temp_path(kind: &str) -> PathBuf {
         .map(|duration| duration.as_nanos())
         .unwrap_or_default();
     std::env::temp_dir().join(format!(
-        "temporalstore-single-node-{kind}-{}-{nanos}-{counter}",
+        "temporalstore-rust-{kind}-{}-{nanos}-{counter}",
         std::process::id()
     ))
 }

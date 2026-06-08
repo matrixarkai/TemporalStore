@@ -48,7 +48,7 @@ The Rust code currently has:
 The readiness API is:
 
 ```rust
-temporalstore_single_node::distributed_raft_readiness()
+temporalstore_rust::distributed_raft_readiness()
 ```
 
 It intentionally returns `complete = false` and `production_ready = false` until production
@@ -57,14 +57,14 @@ requirements are implemented.
 Production callers should use the hard guard:
 
 ```rust
-temporalstore_single_node::require_production_raft_ready()
+temporalstore_rust::require_production_raft_ready()
 ```
 
 or validate an explicit deployment mode:
 
 ```rust
-temporalstore_single_node::validate_raft_deployment_mode(
-    temporalstore_single_node::RaftDeploymentMode::ProductionDistributed,
+temporalstore_rust::validate_raft_deployment_mode(
+    temporalstore_rust::RaftDeploymentMode::ProductionDistributed,
 )
 ```
 

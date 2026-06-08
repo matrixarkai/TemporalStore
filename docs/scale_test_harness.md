@@ -42,7 +42,7 @@ Direct binary usage:
 
 ```bash
 CARGO_TARGET_DIR=/tmp/temporalstore-rust-target \
-cargo run -p temporalstore-single-node --bin scale_harness -- \
+cargo run -p temporalstore-rust --bin scale_harness -- \
   --nodes 3 \
   --string-ops 1000 \
   --hash-ops 250 \
