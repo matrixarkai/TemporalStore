@@ -28,12 +28,29 @@ impl Default for MetaEntityState {
 pub struct ShardLocation {
     pub shard_id: ShardId,
     pub server_addr: String,
+    #[serde(default)]
+    pub latest_snapshot: Option<ShardSnapshotRef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RegisterShardRequest {
     pub shard_id: ShardId,
     pub server_addr: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShardSnapshotRef {
+    pub uri: String,
+    pub checksum: String,
+    pub byte_size: u64,
+    pub last_log_index: u64,
+    pub created_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PublishShardSnapshotRequest {
+    pub shard_id: ShardId,
+    pub snapshot: ShardSnapshotRef,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -288,6 +305,7 @@ pub struct MetaInfo {
 #[serde(tag = "kind", content = "request", rename_all = "snake_case")]
 pub enum MetaMutation {
     RegisterShard(RegisterShardRequest),
+    PublishShardSnapshot(PublishShardSnapshotRequest),
     RegisterServer(RegisterServerRequest),
     RegisterProxy(RegisterProxyRequest),
     AddNamespace(AddNamespaceRequest),
@@ -426,11 +444,16 @@ impl SingleNodeMeta {
     fn apply_register(&self, request: RegisterShardRequest) -> RegisterShardResponse {
         let mut state = self.inner.write().expect("meta lock poisoned");
         state.counters.register_shard_total += 1;
+        let latest_snapshot = state
+            .shards
+            .get(&request.shard_id)
+            .and_then(|location| location.latest_snapshot.clone());
         state.shards.insert(
             request.shard_id,
             ShardLocation {
                 shard_id: request.shard_id,
                 server_addr: request.server_addr.clone(),
+                latest_snapshot,
             },
         );
         ensure_server(&mut state, &request.server_addr);
@@ -451,6 +474,35 @@ impl SingleNodeMeta {
                 Status::error("shard_not_found", "shard is not registered")
             },
             location,
+        }
+    }
+
+    pub fn publish_shard_snapshot(&self, request: PublishShardSnapshotRequest) -> AckResponse {
+        self.record_mutation(MetaMutation::PublishShardSnapshot(request.clone()));
+        self.apply_publish_shard_snapshot(request)
+    }
+
+    fn apply_publish_shard_snapshot(&self, request: PublishShardSnapshotRequest) -> AckResponse {
+        let mut state = self.inner.write().expect("meta lock poisoned");
+        let Some(location) = state.shards.get_mut(&request.shard_id) else {
+            return AckResponse {
+                status: Status::error("shard_not_found", "shard is not registered"),
+            };
+        };
+        if location.latest_snapshot.as_ref().map_or(false, |existing| {
+            existing.last_log_index > request.snapshot.last_log_index
+        }) {
+            return AckResponse {
+                status: Status::error(
+                    "stale_snapshot",
+                    "snapshot is older than the latest metaserver record",
+                ),
+            };
+        }
+        location.latest_snapshot = Some(request.snapshot);
+        state.topology_version += 1;
+        AckResponse {
+            status: Status::ok(),
         }
     }
 
@@ -793,11 +845,16 @@ impl SingleNodeMeta {
             };
         }
         ensure_server(&mut state, &request.server_addr);
+        let latest_snapshot = state
+            .shards
+            .get(&request.shard_id)
+            .and_then(|location| location.latest_snapshot.clone());
         state.shards.insert(
             request.shard_id,
             ShardLocation {
                 shard_id: request.shard_id,
                 server_addr: request.server_addr,
+                latest_snapshot,
             },
         );
         state.topology_version += 1;
@@ -928,6 +985,9 @@ impl SingleNodeMeta {
     pub(crate) fn apply_mutation(&self, mutation: MetaMutation) -> Status {
         match mutation {
             MetaMutation::RegisterShard(request) => self.apply_register(request).status,
+            MetaMutation::PublishShardSnapshot(request) => {
+                self.apply_publish_shard_snapshot(request).status
+            }
             MetaMutation::RegisterServer(request) => self.apply_register_server(request).status,
             MetaMutation::RegisterProxy(request) => self.apply_register_proxy(request).status,
             MetaMutation::AddNamespace(request) => self.apply_add_namespace(request).status,
@@ -1442,6 +1502,7 @@ mod tests {
             ShardLocation {
                 shard_id: 10,
                 server_addr: "server-a".to_string(),
+                latest_snapshot: None,
             }
         );
         assert_eq!(recovered.list_tables().tables.len(), 1);
@@ -1460,6 +1521,54 @@ mod tests {
         assert_eq!(
             recovered.list_proxies().proxies[0].state,
             MetaEntityState::Frozen
+        );
+    }
+
+    #[test]
+    fn metaserver_records_latest_shard_snapshot_and_rejects_stale_ref() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("snapshot-meta.jsonl");
+        let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        meta.register(RegisterShardRequest {
+            shard_id: 44,
+            server_addr: "server-a".to_string(),
+        });
+        let first = ShardSnapshotRef {
+            uri: "s3://cluster-a/shards/44/snapshots/1-10-a/manifest.json".to_string(),
+            checksum: "sha256:first".to_string(),
+            byte_size: 1024,
+            last_log_index: 10,
+            created_at_ms: 100,
+        };
+        assert!(
+            meta.publish_shard_snapshot(PublishShardSnapshotRequest {
+                shard_id: 44,
+                snapshot: first.clone(),
+            })
+            .status
+            .ok
+        );
+        let stale = ShardSnapshotRef {
+            uri: "s3://cluster-a/shards/44/snapshots/1-9-stale/manifest.json".to_string(),
+            checksum: "sha256:stale".to_string(),
+            byte_size: 512,
+            last_log_index: 9,
+            created_at_ms: 90,
+        };
+        assert_eq!(
+            meta.publish_shard_snapshot(PublishShardSnapshotRequest {
+                shard_id: 44,
+                snapshot: stale,
+            })
+            .status
+            .code,
+            "stale_snapshot"
+        );
+
+        let recovered = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        assert_eq!(
+            recovered.get(44).location.unwrap().latest_snapshot,
+            Some(first)
         );
     }
 

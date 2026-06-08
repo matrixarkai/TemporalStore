@@ -1915,6 +1915,7 @@ mod tests {
                             location: Some(ShardLocation {
                                 shard_id: 1,
                                 server_addr: server_addr_for_proxy.clone(),
+                                latest_snapshot: None,
                             }),
                         },
                     ),
@@ -2173,6 +2174,7 @@ mod tests {
                             location: Some(ShardLocation {
                                 shard_id: 1,
                                 server_addr: live_server.clone(),
+                                latest_snapshot: None,
                             }),
                         },
                     ),
@@ -2244,6 +2246,7 @@ mod tests {
                             location: Some(ShardLocation {
                                 shard_id: 1,
                                 server_addr: live_server.clone(),
+                                latest_snapshot: None,
                             }),
                         },
                     ),
@@ -2583,6 +2586,7 @@ mod tests {
                                 location: Some(ShardLocation {
                                     shard_id,
                                     server_addr: server_addr_for_meta.clone(),
+                                    latest_snapshot: None,
                                 }),
                             },
                         )

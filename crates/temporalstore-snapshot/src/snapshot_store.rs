@@ -155,6 +155,63 @@ where
         snapshot
     }
 
+    pub async fn download_snapshot_by_uri(
+        &self,
+        manifest_uri: &str,
+        destination: PathBuf,
+    ) -> Result<LocalSnapshot, SnapshotStoreError> {
+        let manifest_key = key_from_uri(manifest_uri)
+            .trim_end_matches(MANIFEST)
+            .to_string();
+        let manifest_bytes = self
+            .object_store
+            .get(&format!("{manifest_key}{MANIFEST}"))
+            .await?;
+        let manifest: SnapshotManifest = serde_json::from_slice(&manifest_bytes)?;
+        let snapshot_ref =
+            snapshot_ref_from_manifest(self.object_store.as_ref(), &manifest).await?;
+        self.download_snapshot(&snapshot_ref, destination).await
+    }
+
+    pub async fn create_local_snapshot_with_index_bytes(
+        &self,
+        shard_id: ShardId,
+        last_log_id: String,
+        index_bytes: Bytes,
+    ) -> Result<LocalSnapshot, SnapshotStoreError> {
+        let root = self.local_root.join(format!("shard-{shard_id}"));
+        tokio::fs::create_dir_all(root.join("page_segments")).await?;
+        let index_path = root.join(INDEX);
+        tokio::fs::write(&index_path, index_bytes).await?;
+        let checksums_path = root.join(CHECKSUMS);
+        if !checksums_path.exists() {
+            tokio::fs::write(&checksums_path, b"[]").await?;
+        }
+
+        let page_segments = list_local_page_segments(&root.join("page_segments")).await?;
+        let mut snapshot = LocalSnapshot::new(
+            self.cluster_id.clone(),
+            shard_id,
+            0,
+            parse_log_index(&last_log_id),
+            last_log_id,
+            root,
+            index_path,
+            checksums_path,
+            page_segments,
+        );
+        snapshot.manifest.engine_version = self.engine_version.clone();
+        snapshot.manifest.page_segments = page_segment_manifests(&snapshot).await?;
+        snapshot.manifest.checksums = checksum_entries(&snapshot).await?;
+        snapshot.manifest.record_count = snapshot.manifest.checksums.len() as u64;
+        snapshot.manifest.object_count = snapshot.manifest.page_segments.len() as u64;
+
+        if let Some(metrics) = &self.metrics {
+            metrics.observe_create(shard_id, SnapshotStatus::Success);
+        }
+        Ok(snapshot)
+    }
+
     fn snapshot_prefix(&self, shard_id: ShardId) -> String {
         format!("{}/shards/{}/snapshots/", self.cluster_id, shard_id)
     }
@@ -548,6 +605,13 @@ fn prefix_from_ref(snapshot_ref: &SnapshotRef) -> String {
     )
 }
 
+fn key_from_uri(uri: &str) -> String {
+    uri.split_once("://")
+        .map(|(_, key)| key)
+        .unwrap_or(uri)
+        .to_string()
+}
+
 fn parse_log_index(last_log_id: &str) -> u64 {
     last_log_id
         .rsplit([':', '-'])
@@ -639,6 +703,35 @@ mod tests {
                 .await
                 .unwrap(),
             b"page-segment-bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_with_index_bytes_and_download_by_uri_restore_payload() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(FileObjectStore::with_uri_scheme(
+            tmp.path().join("objects"),
+            "s3",
+        ));
+        let snapshots = S3SnapshotStore::new("cluster-a", "test", tmp.path().join("local"), store);
+        let local = snapshots
+            .create_local_snapshot_with_index_bytes(
+                9,
+                "term:4:index:44".to_string(),
+                Bytes::from_static(b"raft-snapshot-payload"),
+            )
+            .await
+            .unwrap();
+        let uploaded = snapshots.upload_snapshot(local).await.unwrap();
+        let restored = snapshots
+            .download_snapshot_by_uri(&uploaded.uri, tmp.path().join("restore-by-uri"))
+            .await
+            .unwrap();
+
+        assert_eq!(restored.manifest.last_log_index, 44);
+        assert_eq!(
+            tokio::fs::read(restored.index_path).await.unwrap(),
+            b"raft-snapshot-payload"
         );
     }
 

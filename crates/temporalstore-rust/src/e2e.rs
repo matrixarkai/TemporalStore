@@ -169,6 +169,7 @@ impl EndToEndWorkflow {
         meta.propose(MetaCommand::PutShardLocation(ShardLocation {
             shard_id,
             server_addr: "raft://shard-leader".to_string(),
+            latest_snapshot: None,
         }))
         .expect("initial shard route must replicate");
         Self {

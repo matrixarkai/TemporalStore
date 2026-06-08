@@ -910,6 +910,7 @@ mod tests {
                             location: Some(ShardLocation {
                                 shard_id: 1,
                                 server_addr: server_addr.clone(),
+                                latest_snapshot: None,
                             }),
                         },
                     ),

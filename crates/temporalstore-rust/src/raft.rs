@@ -21,11 +21,14 @@ use crate::meta::{
     AckResponse, AddNamespaceRequest, AddTableRequest, GetShardResponse, GetTableTopologyRequest,
     ListNamespacesResponse, ListProxiesResponse, ListServersResponse, ListTablesResponse,
     LoadFinishRequest, MetaEntityState, MetaInfo, MetaMutation, MetaStats, ProxyHeartbeatRequest,
-    ProxyHeartbeatResponse, RegisterProxyRequest, RegisterServerRequest, RegisterShardRequest,
-    RegisterShardResponse, ServerHeartbeatRequest, ServerHeartbeatResponse, ShardLocation,
-    SingleNodeMeta, StaleServerReport, StateChangeRequest, TableTopologyResponse,
+    ProxyHeartbeatResponse, PublishShardSnapshotRequest, RegisterProxyRequest,
+    RegisterServerRequest, RegisterShardRequest, RegisterShardResponse, ServerHeartbeatRequest,
+    ServerHeartbeatResponse, ShardLocation, ShardSnapshotRef, SingleNodeMeta, StaleServerReport,
+    StateChangeRequest, TableTopologyResponse,
 };
 use crate::types::{Command, CommandResponse, ExecuteRequest, ShardId, Status};
+use bytes::Bytes;
+use temporalstore_snapshot::{ObjectStore, S3SnapshotStore, SnapshotRef, SnapshotStore};
 
 pub type RaftNodeId = u64;
 
@@ -98,6 +101,14 @@ pub struct RaftReplicaBootstrapPlan {
     pub transfer: RaftSnapshotTransferDecision,
     pub last_included_index: u64,
     pub catch_up_from_index: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftSnapshotPublishReport {
+    pub shard_id: ShardId,
+    pub last_log_index: u64,
+    pub raft_ref: RaftExternalSnapshotRef,
+    pub meta_ref: ShardSnapshotRef,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1925,6 +1936,8 @@ pub enum RaftError {
     },
     #[error("snapshot serialization failed: {0}")]
     SnapshotEncoding(String),
+    #[error("snapshot store error: {0}")]
+    SnapshotStore(String),
 }
 
 pub fn estimate_snapshot_bytes(snapshot: &RaftSnapshot) -> Result<u64, RaftError> {
@@ -1966,6 +1979,24 @@ pub fn decide_snapshot_transfer(
         snapshot_bytes,
         threshold_bytes: threshold,
     })
+}
+
+pub fn raft_external_ref_from_snapshot_ref(snapshot_ref: &SnapshotRef) -> RaftExternalSnapshotRef {
+    RaftExternalSnapshotRef {
+        uri: snapshot_ref.uri.clone(),
+        checksum: snapshot_ref.checksum.clone(),
+        byte_size: snapshot_ref.byte_size,
+    }
+}
+
+pub fn shard_snapshot_ref_from_snapshot_ref(snapshot_ref: &SnapshotRef) -> ShardSnapshotRef {
+    ShardSnapshotRef {
+        uri: snapshot_ref.uri.clone(),
+        checksum: snapshot_ref.checksum.clone(),
+        byte_size: snapshot_ref.byte_size,
+        last_log_index: snapshot_ref.last_log_index,
+        created_at_ms: snapshot_ref.created_at.timestamp_millis().max(0) as u64,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -3207,6 +3238,104 @@ impl RaftCluster {
             last_included_term,
             last_included_index: leader.commit_index,
             entries,
+        })
+    }
+
+    pub async fn publish_leader_snapshot_to_store<O>(
+        &self,
+        snapshot_store: &S3SnapshotStore<O>,
+    ) -> Result<RaftSnapshotPublishReport, RaftError>
+    where
+        O: ObjectStore + 'static,
+    {
+        let snapshot = self.create_snapshot()?;
+        let snapshot_bytes = serde_json::to_vec(&snapshot)
+            .map_err(|err| RaftError::SnapshotEncoding(err.to_string()))?;
+        let last_log_id = format!(
+            "term:{}:index:{}",
+            snapshot.last_included_term, snapshot.last_included_index
+        );
+        let local_snapshot = snapshot_store
+            .create_local_snapshot_with_index_bytes(
+                snapshot.shard_id,
+                last_log_id,
+                Bytes::from(snapshot_bytes),
+            )
+            .await
+            .map_err(|err| RaftError::SnapshotStore(err.to_string()))?;
+        let snapshot_ref = snapshot_store
+            .upload_snapshot(local_snapshot)
+            .await
+            .map_err(|err| RaftError::SnapshotStore(err.to_string()))?;
+        Ok(RaftSnapshotPublishReport {
+            shard_id: snapshot_ref.shard_id,
+            last_log_index: snapshot_ref.last_log_index,
+            raft_ref: raft_external_ref_from_snapshot_ref(&snapshot_ref),
+            meta_ref: shard_snapshot_ref_from_snapshot_ref(&snapshot_ref),
+        })
+    }
+
+    pub async fn publish_leader_snapshot_and_record_meta<O>(
+        &self,
+        snapshot_store: &S3SnapshotStore<O>,
+        meta: &SingleNodeMeta,
+    ) -> Result<RaftSnapshotPublishReport, RaftError>
+    where
+        O: ObjectStore + 'static,
+    {
+        let report = self
+            .publish_leader_snapshot_to_store(snapshot_store)
+            .await?;
+        let ack = meta.publish_shard_snapshot(PublishShardSnapshotRequest {
+            shard_id: report.shard_id,
+            snapshot: report.meta_ref.clone(),
+        });
+        if ack.status.ok {
+            Ok(report)
+        } else {
+            Err(RaftError::SnapshotStore(format!(
+                "metaserver rejected snapshot ref: {}",
+                ack.status.code
+            )))
+        }
+    }
+
+    pub async fn bootstrap_replica_from_external_snapshot<O>(
+        &self,
+        target_id: RaftNodeId,
+        snapshot_store: &S3SnapshotStore<O>,
+        snapshot_ref: &ShardSnapshotRef,
+        destination: PathBuf,
+    ) -> Result<RaftReplicaBootstrapPlan, RaftError>
+    where
+        O: ObjectStore + 'static,
+    {
+        let local_snapshot = snapshot_store
+            .download_snapshot_by_uri(&snapshot_ref.uri, destination)
+            .await
+            .map_err(|err| RaftError::SnapshotStore(err.to_string()))?;
+        let snapshot_bytes = tokio::fs::read(&local_snapshot.index_path)
+            .await
+            .map_err(|err| RaftError::SnapshotStore(err.to_string()))?;
+        let snapshot = serde_json::from_slice::<RaftSnapshot>(&snapshot_bytes)
+            .map_err(|err| RaftError::SnapshotEncoding(err.to_string()))?;
+        self.install_snapshot(target_id, snapshot.clone())?;
+        self.catch_up(target_id)?;
+        Ok(RaftReplicaBootstrapPlan {
+            shard_id: snapshot.shard_id,
+            target_id,
+            transfer: RaftSnapshotTransferDecision {
+                mode: RaftSnapshotTransferMode::ExternalStore,
+                snapshot_bytes: snapshot_ref.byte_size,
+                threshold_bytes: DEFAULT_EXTERNAL_SNAPSHOT_THRESHOLD_BYTES,
+                external_snapshot_ref: Some(RaftExternalSnapshotRef {
+                    uri: snapshot_ref.uri.clone(),
+                    checksum: snapshot_ref.checksum.clone(),
+                    byte_size: snapshot_ref.byte_size,
+                }),
+            },
+            last_included_index: snapshot.last_included_index,
+            catch_up_from_index: snapshot.last_included_index.saturating_add(1),
         })
     }
 
@@ -5286,6 +5415,7 @@ fn apply_meta_committed(node: &mut MetaRaftNode) -> Option<Status> {
                                 ShardLocation {
                                     shard_id: request.shard_id,
                                     server_addr: request.server_addr.clone(),
+                                    latest_snapshot: None,
                                 },
                             );
                         }
@@ -5295,8 +5425,18 @@ fn apply_meta_committed(node: &mut MetaRaftNode) -> Option<Status> {
                                 ShardLocation {
                                     shard_id: request.shard_id,
                                     server_addr: request.server_addr.clone(),
+                                    latest_snapshot: None,
                                 },
                             );
+                        }
+                        MetaMutation::PublishShardSnapshot(request) => {
+                            if let Some(location) = node.state.shards.get_mut(&request.shard_id) {
+                                if location.latest_snapshot.as_ref().map_or(true, |existing| {
+                                    existing.last_log_index <= request.snapshot.last_log_index
+                                }) {
+                                    location.latest_snapshot = Some(request.snapshot.clone());
+                                }
+                            }
                         }
                         _ => {}
                     }
@@ -5691,6 +5831,79 @@ mod tests {
             .build_install_snapshot_request_with_policy(3, policy, Some(snapshot_ref.clone()))
             .unwrap();
         assert_eq!(request.external_snapshot_ref, Some(snapshot_ref));
+    }
+
+    #[tokio::test]
+    async fn leader_snapshot_upload_records_meta_and_bootstraps_replica_from_uri() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(temporalstore_snapshot::FileObjectStore::with_uri_scheme(
+            tmp.path().join("objects"),
+            "s3",
+        ));
+        let snapshots = S3SnapshotStore::new("cluster-a", "test", tmp.path().join("local"), store);
+        let meta = SingleNodeMeta::default();
+        meta.register(RegisterShardRequest {
+            shard_id: 22,
+            server_addr: "raft://node-1".to_string(),
+        });
+        let cluster = RaftCluster::new_single_shard(22, [1, 2, 3]);
+        cluster.set_alive(3, false).unwrap();
+        cluster
+            .propose(Command::StringSet {
+                key: "before-snapshot".to_string(),
+                value: b"snapshot-value".to_vec(),
+            })
+            .unwrap();
+
+        let report = cluster
+            .publish_leader_snapshot_and_record_meta(&snapshots, &meta)
+            .await
+            .unwrap();
+        let recorded = meta.get(22).location.unwrap().latest_snapshot.unwrap();
+        assert_eq!(recorded.uri, report.meta_ref.uri);
+        assert_eq!(recorded.last_log_index, 1);
+
+        cluster
+            .propose(Command::StringSet {
+                key: "after-snapshot".to_string(),
+                value: b"log-value".to_vec(),
+            })
+            .unwrap();
+        cluster.set_alive(3, true).unwrap();
+        let plan = cluster
+            .bootstrap_replica_from_external_snapshot(
+                3,
+                &snapshots,
+                &recorded,
+                tmp.path().join("restore-node-3"),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(plan.transfer.mode, RaftSnapshotTransferMode::ExternalStore);
+        assert_eq!(plan.last_included_index, 1);
+        assert_eq!(
+            cluster.read_local(
+                3,
+                Command::StringGet {
+                    key: "before-snapshot".to_string()
+                },
+            ),
+            Ok(CommandResponse::Bytes {
+                value: Some(b"snapshot-value".to_vec())
+            })
+        );
+        assert_eq!(
+            cluster.read_local(
+                3,
+                Command::StringGet {
+                    key: "after-snapshot".to_string()
+                },
+            ),
+            Ok(CommandResponse::Bytes {
+                value: Some(b"log-value".to_vec())
+            })
+        );
     }
 
     #[test]
@@ -7231,6 +7444,7 @@ mod tests {
         let location = ShardLocation {
             shard_id: 1,
             server_addr: "127.0.0.1:17002".to_string(),
+            latest_snapshot: None,
         };
         meta.propose(MetaCommand::PutShardLocation(location.clone()))
             .unwrap();
@@ -7351,6 +7565,7 @@ mod tests {
         meta.propose(MetaCommand::PutShardLocation(ShardLocation {
             shard_id: 7,
             server_addr: "server-a".to_string(),
+            latest_snapshot: None,
         }))
         .unwrap();
         assert_eq!(meta.commit_index(11).unwrap(), 1);
@@ -7361,6 +7576,7 @@ mod tests {
             Some(ShardLocation {
                 shard_id: 7,
                 server_addr: "server-a".to_string(),
+                latest_snapshot: None,
             })
         );
     }
@@ -7372,6 +7588,7 @@ mod tests {
         meta.propose(MetaCommand::PutShardLocation(ShardLocation {
             shard_id: 2,
             server_addr: "server-b".to_string(),
+            latest_snapshot: None,
         }))
         .unwrap();
         meta.add_node(13).unwrap();
@@ -7379,7 +7596,8 @@ mod tests {
             meta.get_shard_location(13, 2).unwrap(),
             Some(ShardLocation {
                 shard_id: 2,
-                server_addr: "server-b".to_string()
+                server_addr: "server-b".to_string(),
+                latest_snapshot: None,
             })
         );
         meta.remove_node(12).unwrap();
@@ -7395,6 +7613,7 @@ mod tests {
         meta.propose(MetaCommand::PutShardLocation(ShardLocation {
             shard_id: 42,
             server_addr: "server-before-meta-lag".to_string(),
+            latest_snapshot: None,
         }))
         .unwrap();
         meta.set_alive(12, true).unwrap();
@@ -7436,13 +7655,15 @@ mod tests {
         meta.propose(MetaCommand::PutShardLocation(ShardLocation {
             shard_id: 43,
             server_addr: "server-after-meta-failover".to_string(),
+            latest_snapshot: None,
         }))
         .unwrap();
         assert_eq!(
             meta.get_shard_location(failover.new_leader_id, 43).unwrap(),
             Some(ShardLocation {
                 shard_id: 43,
-                server_addr: "server-after-meta-failover".to_string()
+                server_addr: "server-after-meta-failover".to_string(),
+                latest_snapshot: None,
             })
         );
     }
@@ -7453,6 +7674,7 @@ mod tests {
         meta.propose(MetaCommand::PutShardLocation(ShardLocation {
             shard_id: 7,
             server_addr: "127.0.0.1:17002".to_string(),
+            latest_snapshot: None,
         }))
         .unwrap();
 
@@ -7481,6 +7703,7 @@ mod tests {
         meta.propose(MetaCommand::PutShardLocation(ShardLocation {
             shard_id: 7,
             server_addr: "server-before-failover".to_string(),
+            latest_snapshot: None,
         }))
         .unwrap();
 
@@ -7488,6 +7711,7 @@ mod tests {
         meta.propose(MetaCommand::PutShardLocation(ShardLocation {
             shard_id: 8,
             server_addr: "server-after-failover".to_string(),
+            latest_snapshot: None,
         }))
         .unwrap();
 
@@ -7498,14 +7722,16 @@ mod tests {
             meta.get_shard_location(status.leader_id, 7).unwrap(),
             Some(ShardLocation {
                 shard_id: 7,
-                server_addr: "server-before-failover".to_string()
+                server_addr: "server-before-failover".to_string(),
+                latest_snapshot: None,
             })
         );
         assert_eq!(
             meta.get_shard_location(status.leader_id, 8).unwrap(),
             Some(ShardLocation {
                 shard_id: 8,
-                server_addr: "server-after-failover".to_string()
+                server_addr: "server-after-failover".to_string(),
+                latest_snapshot: None,
             })
         );
     }
@@ -7516,6 +7742,7 @@ mod tests {
         meta.propose(MetaCommand::PutShardLocation(ShardLocation {
             shard_id: 7,
             server_addr: "server-before-quorum-loss".to_string(),
+            latest_snapshot: None,
         }))
         .unwrap();
 
@@ -7530,6 +7757,7 @@ mod tests {
             meta.propose(MetaCommand::PutShardLocation(ShardLocation {
                 shard_id: 8,
                 server_addr: "server-without-quorum".to_string(),
+                latest_snapshot: None,
             })),
             Err(RaftError::NoMajority {
                 live: 1,
@@ -7545,6 +7773,7 @@ mod tests {
         meta.propose(MetaCommand::PutShardLocation(ShardLocation {
             shard_id: 9,
             server_addr: "server-snapshot".to_string(),
+            latest_snapshot: None,
         }))
         .unwrap();
         let snapshot = meta.create_snapshot().unwrap();
@@ -7555,7 +7784,8 @@ mod tests {
             meta.get_shard_location(12, 9).unwrap(),
             Some(ShardLocation {
                 shard_id: 9,
-                server_addr: "server-snapshot".to_string()
+                server_addr: "server-snapshot".to_string(),
+                latest_snapshot: None,
             })
         );
         assert_eq!(meta.commit_index(12).unwrap(), 1);
@@ -7567,12 +7797,14 @@ mod tests {
         meta.propose(MetaCommand::PutShardLocation(ShardLocation {
             shard_id: 1,
             server_addr: "server-a".to_string(),
+            latest_snapshot: None,
         }))
         .unwrap();
         let snapshot = meta.create_snapshot().unwrap();
         meta.propose(MetaCommand::PutShardLocation(ShardLocation {
             shard_id: 2,
             server_addr: "server-b".to_string(),
+            latest_snapshot: None,
         }))
         .unwrap();
 
