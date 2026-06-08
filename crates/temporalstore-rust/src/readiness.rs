@@ -138,12 +138,13 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "config get/set follows C++ partition-map not-found semantics".to_string(),
                 "data-node membership update rejects stale global/unit versions and reports whether local replica remains active"
                     .to_string(),
+                "data-node runtime uses shard-affine worker lanes so one partition has FIFO single-lane execution while different partitions run in parallel"
+                    .to_string(),
             ],
             missing: vec![
                 "tonic/gRPC data-node service and streaming callbacks".to_string(),
                 "hard cancellation of in-flight worker execution".to_string(),
-                "production partition workers, schedulers, quotas, and admission policy"
-                    .to_string(),
+                "production quotas, admission policy, and scheduler priority classes".to_string(),
                 "crash-safe recovery tests for oplog + index-log + page stream".to_string(),
             ],
         },

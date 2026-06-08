@@ -270,6 +270,16 @@ fn append_runtime_metrics(out: &mut String, runtime: &DataNodeRuntime) {
     out.push_str("temporalstore_data_node_runtime_queue_depth ");
     out.push_str(&stats.queue_depth.to_string());
     out.push('\n');
+    out.push_str("# HELP temporalstore_data_node_runtime_queued_shards Current shard queues with pending work.\n");
+    out.push_str("# TYPE temporalstore_data_node_runtime_queued_shards gauge\n");
+    out.push_str("temporalstore_data_node_runtime_queued_shards ");
+    out.push_str(&stats.queued_shard_count.to_string());
+    out.push('\n');
+    out.push_str("# HELP temporalstore_data_node_runtime_running_shards Current shard lanes executing work.\n");
+    out.push_str("# TYPE temporalstore_data_node_runtime_running_shards gauge\n");
+    out.push_str("temporalstore_data_node_runtime_running_shards ");
+    out.push_str(&stats.running_shard_count.to_string());
+    out.push('\n');
     out.push_str("# HELP temporalstore_data_node_dirty_objects Dirty object count.\n");
     out.push_str("# TYPE temporalstore_data_node_dirty_objects gauge\n");
     out.push_str("temporalstore_data_node_dirty_objects ");

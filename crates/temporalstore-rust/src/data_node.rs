@@ -72,6 +72,8 @@ pub struct DataNodeRuntimeStats {
     pub timed_out_total: u64,
     pub canceled_total: u64,
     pub queue_depth: usize,
+    pub queued_shard_count: usize,
+    pub running_shard_count: usize,
     pub dirty_object_count: usize,
     pub dirty_shard_count: usize,
     pub dump_runs: u64,
@@ -144,7 +146,7 @@ pub struct DataNodeRuntime {
 struct DataNodeRuntimeInner {
     engine: TemporalEngine,
     options: DataNodeRuntimeOptions,
-    queue: Mutex<VecDeque<QueuedTask>>,
+    queue: Mutex<RuntimeQueues>,
     queue_signal: Condvar,
     jobs: Mutex<HashMap<u64, DataNodeTaskStatus>>,
     canceled: Mutex<BTreeSet<u64>>,
@@ -174,6 +176,14 @@ struct QueuedTask {
     request: TaskRequest,
 }
 
+#[derive(Debug, Default)]
+struct RuntimeQueues {
+    by_shard: HashMap<ShardId, VecDeque<QueuedTask>>,
+    ready_shards: VecDeque<ShardId>,
+    running_shards: BTreeSet<ShardId>,
+    queued_total: usize,
+}
+
 #[derive(Debug)]
 enum TaskRequest {
     Execute(ExecuteRequest),
@@ -181,6 +191,79 @@ enum TaskRequest {
     Dump(DumpShardRequest),
     Compact(CompactionRequest),
     Gc(GcRequest),
+}
+
+impl TaskRequest {
+    fn shard_id(&self) -> ShardId {
+        match self {
+            TaskRequest::Execute(request) => request.shard_id,
+            TaskRequest::CheckedExecute(request) => request.shard_id,
+            TaskRequest::Dump(request) => request.shard_id,
+            TaskRequest::Compact(request) => request.shard_id,
+            TaskRequest::Gc(request) => request.shard_id,
+        }
+    }
+}
+
+impl RuntimeQueues {
+    fn push(&mut self, task: QueuedTask) {
+        let shard_id = task.request.shard_id();
+        let queue = self.by_shard.entry(shard_id).or_default();
+        let was_empty = queue.is_empty();
+        queue.push_back(task);
+        self.queued_total += 1;
+        if was_empty && !self.running_shards.contains(&shard_id) {
+            self.ready_shards.push_back(shard_id);
+        }
+    }
+
+    fn pop_ready(&mut self) -> Option<QueuedTask> {
+        while let Some(shard_id) = self.ready_shards.pop_front() {
+            if self.running_shards.contains(&shard_id) {
+                continue;
+            }
+            let Some(queue) = self.by_shard.get_mut(&shard_id) else {
+                continue;
+            };
+            let Some(task) = queue.pop_front() else {
+                continue;
+            };
+            self.queued_total = self.queued_total.saturating_sub(1);
+            self.running_shards.insert(shard_id);
+            return Some(task);
+        }
+        None
+    }
+
+    fn finish_shard(&mut self, shard_id: ShardId) {
+        self.running_shards.remove(&shard_id);
+        let has_more = self
+            .by_shard
+            .get(&shard_id)
+            .map(|queue| !queue.is_empty())
+            .unwrap_or(false);
+        if has_more {
+            self.ready_shards.push_back(shard_id);
+        } else {
+            self.by_shard.remove(&shard_id);
+        }
+    }
+
+    fn remove_job(&mut self, job_id: u64) -> bool {
+        for (shard_id, queue) in self.by_shard.iter_mut() {
+            let before = queue.len();
+            queue.retain(|task| task.job_id != job_id);
+            if queue.len() != before {
+                self.queued_total = self.queued_total.saturating_sub(before - queue.len());
+                if queue.is_empty() && !self.running_shards.contains(shard_id) {
+                    self.ready_shards
+                        .retain(|ready_shard_id| ready_shard_id != shard_id);
+                }
+                return true;
+            }
+        }
+        false
+    }
 }
 
 #[derive(Debug, Default)]
@@ -328,9 +411,7 @@ impl DataNodeRuntime {
             .queue
             .lock()
             .expect("runtime queue lock poisoned");
-        let before = queue.len();
-        queue.retain(|task| task.job_id != job_id);
-        if queue.len() == before {
+        if !queue.remove_job(job_id) {
             self.inner
                 .canceled
                 .lock()
@@ -380,12 +461,14 @@ impl DataNodeRuntime {
             .dirty
             .lock()
             .expect("dirty tracker lock poisoned");
-        let queue_depth = self
+        let queue = self
             .inner
             .queue
             .lock()
-            .expect("runtime queue lock poisoned")
-            .len();
+            .expect("runtime queue lock poisoned");
+        let queue_depth = queue.queued_total;
+        let queued_shard_count = queue.by_shard.len();
+        let running_shard_count = queue.running_shards.len();
         let dirty_shard_count = dirty
             .by_key
             .values()
@@ -399,6 +482,8 @@ impl DataNodeRuntime {
             timed_out_total: stats.timed_out_total,
             canceled_total: stats.canceled_total,
             queue_depth,
+            queued_shard_count,
+            running_shard_count,
             dirty_object_count: dirty.by_key.len(),
             dirty_shard_count,
             dump_runs: stats.dump_runs,
@@ -429,7 +514,7 @@ impl DataNodeRuntime {
                 .queue
                 .lock()
                 .expect("runtime queue lock poisoned");
-            if queue.len() >= self.inner.options.max_queue_depth {
+            if queue.queued_total >= self.inner.options.max_queue_depth {
                 self.inner
                     .stats
                     .lock()
@@ -441,7 +526,7 @@ impl DataNodeRuntime {
                     ..status
                 };
             }
-            queue.push_back(QueuedTask {
+            queue.push(QueuedTask {
                 job_id,
                 kind,
                 deadline: Instant::now() + Duration::from_millis(controller.timeout_ms),
@@ -468,14 +553,17 @@ fn worker_loop(inner: Arc<DataNodeRuntimeInner>) {
     loop {
         let task = {
             let mut queue = inner.queue.lock().expect("runtime queue lock poisoned");
-            while queue.is_empty() {
+            loop {
+                if let Some(task) = queue.pop_ready() {
+                    break task;
+                }
                 queue = inner
                     .queue_signal
                     .wait(queue)
                     .expect("runtime queue lock poisoned");
             }
-            queue.pop_front().expect("queue was non-empty")
         };
+        let shard_id = task.request.shard_id();
         let output = if Instant::now() > task.deadline {
             inner
                 .stats
@@ -493,6 +581,11 @@ fn worker_loop(inner: Arc<DataNodeRuntimeInner>) {
         } else {
             execute_task(&inner, &task)
         };
+        {
+            let mut queue = inner.queue.lock().expect("runtime queue lock poisoned");
+            queue.finish_shard(shard_id);
+            inner.queue_signal.notify_all();
+        }
         let finished = DataNodeTaskStatus {
             job_id: task.job_id,
             kind: task.kind,
@@ -1035,6 +1128,53 @@ mod tests {
         assert_eq!(canceled.status.code, "job_canceled");
         assert_eq!(runtime.stats().canceled_total, 1);
         assert_eq!(runtime.stats().queue_depth, 0);
+    }
+
+    #[test]
+    fn runtime_queues_are_shard_affine_and_parallel_across_shards() {
+        let mut queues = RuntimeQueues::default();
+        queues.push(queued_string_set(1, 1, "a"));
+        queues.push(queued_string_set(2, 1, "b"));
+        queues.push(queued_string_set(3, 2, "c"));
+
+        let first = queues.pop_ready().expect("shard 1 should be ready");
+        assert_eq!(first.job_id, 1);
+        assert_eq!(queues.queued_total, 2);
+        assert!(queues.running_shards.contains(&1));
+
+        let second = queues
+            .pop_ready()
+            .expect("shard 2 should run while shard 1 is busy");
+        assert_eq!(second.job_id, 3);
+        assert_eq!(second.request.shard_id(), 2);
+        assert!(queues.pop_ready().is_none());
+
+        queues.finish_shard(1);
+        let third = queues
+            .pop_ready()
+            .expect("next shard 1 task should run after lane release");
+        assert_eq!(third.job_id, 2);
+        queues.finish_shard(2);
+        queues.finish_shard(1);
+        assert_eq!(queues.queued_total, 0);
+        assert!(queues.by_shard.is_empty());
+        assert!(queues.running_shards.is_empty());
+    }
+
+    fn queued_string_set(job_id: u64, shard_id: ShardId, key: &str) -> QueuedTask {
+        QueuedTask {
+            job_id,
+            kind: DataNodeTaskKind::Execute,
+            deadline: Instant::now() + Duration::from_secs(60),
+            submitted_at_ms: now_ms(),
+            request: TaskRequest::Execute(ExecuteRequest {
+                shard_id,
+                command: Command::StringSet {
+                    key: key.to_string(),
+                    value: b"v".to_vec(),
+                },
+            }),
+        }
     }
 
     fn wait_for_job(runtime: &DataNodeRuntime, job_id: u64) -> DataNodeTaskStatus {
