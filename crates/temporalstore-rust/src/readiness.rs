@@ -129,6 +129,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "async jobs, cancellation status surface, dirty-object reporting".to_string(),
                 "page-address persistence and Prometheus metrics endpoint".to_string(),
+                "data-node membership update rejects stale global/unit versions and reports whether local replica remains active"
+                    .to_string(),
             ],
             missing: vec![
                 "tonic/gRPC data-node service and streaming callbacks".to_string(),

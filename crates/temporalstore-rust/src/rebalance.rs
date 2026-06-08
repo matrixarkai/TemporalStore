@@ -464,6 +464,8 @@ impl RebalanceController {
                 node_id: replica.node_id,
                 request: MembershipUpdateRequest {
                     shard_id: self_replica.shard_id,
+                    membership_version,
+                    replica_membership_version: membership_version,
                     replica_node_ids: replica_node_ids.clone(),
                     leader_node_id: Some(leader_node_id),
                 },

@@ -33,6 +33,8 @@ impl Default for Config {
 pub struct LoadShardRequest {
     pub shard_id: ShardId,
     pub load_version: u64,
+    #[serde(default)]
+    pub local_node_id: Option<u64>,
     pub shard_uri: String,
     pub start_routing_slot: u32,
     pub end_routing_slot: u32,
@@ -70,6 +72,10 @@ pub struct GetConfigResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MembershipUpdateRequest {
     pub shard_id: ShardId,
+    #[serde(default)]
+    pub membership_version: u64,
+    #[serde(default)]
+    pub replica_membership_version: u64,
     pub replica_node_ids: Vec<u64>,
     pub leader_node_id: Option<u64>,
 }
@@ -84,8 +90,20 @@ pub struct ShardInfo {
     pub end_routing_slot: u32,
     pub readonly: bool,
     pub load_version: u64,
+    #[serde(default)]
+    pub local_node_id: Option<u64>,
+    #[serde(default)]
+    pub membership_version: u64,
+    #[serde(default)]
+    pub replica_membership_version: u64,
+    #[serde(default = "default_membership_valid")]
+    pub membership_valid: bool,
     pub replica_node_ids: Vec<u64>,
     pub leader_node_id: Option<u64>,
+}
+
+fn default_membership_valid() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

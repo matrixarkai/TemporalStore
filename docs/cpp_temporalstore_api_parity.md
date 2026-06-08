@@ -99,7 +99,7 @@ Runtime/control surface:
 - load/unload shard
 - config get/set
 - stats/info
-- membership update
+- membership update with C++-style stale global/unit version rejection and local active-membership reporting
 - page/index stream read and scan
 - in-process Raft behavior model
 - S3-compatible snapshot store abstraction

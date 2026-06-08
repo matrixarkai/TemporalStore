@@ -131,6 +131,7 @@ impl TemporalEngine {
         let request = LoadShardRequest {
             shard_id,
             load_version: 0,
+            local_node_id: None,
             shard_uri: String::new(),
             start_routing_slot: 0,
             end_routing_slot: u32::MAX,
@@ -162,6 +163,10 @@ impl TemporalEngine {
                 end_routing_slot: request.end_routing_slot,
                 readonly: request.readonly,
                 load_version: request.load_version,
+                local_node_id: request.local_node_id,
+                membership_version: 0,
+                replica_membership_version: 0,
+                membership_valid: true,
                 replica_node_ids: Vec::new(),
                 leader_node_id: None,
             },
@@ -339,8 +344,26 @@ impl TemporalEngine {
             .expect("info lock poisoned")
             .get_mut(&request.shard_id)
         {
+            if request.membership_version < info.membership_version {
+                return Status::error("failed_precondition", "legacy membership info");
+            }
+            let global_update = request.membership_version > info.membership_version;
+            if !global_update
+                && request.replica_membership_version == info.replica_membership_version
+            {
+                return Status::ok();
+            }
+            if request.replica_membership_version < info.replica_membership_version {
+                return Status::error("failed_precondition", "legacy membership unit info");
+            }
             info.replica_node_ids = request.replica_node_ids;
             info.leader_node_id = request.leader_node_id;
+            info.membership_version = request.membership_version;
+            info.replica_membership_version = request.replica_membership_version;
+            info.membership_valid = info
+                .local_node_id
+                .map(|node_id| info.replica_node_ids.contains(&node_id))
+                .unwrap_or(true);
             Status::ok()
         } else {
             Status::error("shard_not_found", "shard is not loaded")
@@ -3144,6 +3167,7 @@ mod tests {
                 .load_shard_with(LoadShardRequest {
                     shard_id: 7,
                     load_version: 42,
+                    local_node_id: Some(2),
                     shard_uri: "file:///tmp/shard-7".to_string(),
                     start_routing_slot: 10,
                     end_routing_slot: 20,
@@ -3170,6 +3194,8 @@ mod tests {
             engine
                 .update_membership(MembershipUpdateRequest {
                     shard_id: 7,
+                    membership_version: 3,
+                    replica_membership_version: 4,
                     replica_node_ids: vec![1, 2, 3],
                     leader_node_id: Some(1),
                 })
@@ -3178,6 +3204,43 @@ mod tests {
         let info = engine.get_info(7).info.unwrap();
         assert_eq!(info.load_version, 42);
         assert_eq!(info.replica_node_ids, vec![1, 2, 3]);
+        assert_eq!(info.membership_version, 3);
+        assert_eq!(info.replica_membership_version, 4);
+        assert!(info.membership_valid);
+        assert_eq!(
+            engine.update_membership(MembershipUpdateRequest {
+                shard_id: 7,
+                membership_version: 2,
+                replica_membership_version: 5,
+                replica_node_ids: vec![1, 3],
+                leader_node_id: Some(1),
+            }),
+            Status::error("failed_precondition", "legacy membership info")
+        );
+        assert_eq!(
+            engine.update_membership(MembershipUpdateRequest {
+                shard_id: 7,
+                membership_version: 3,
+                replica_membership_version: 3,
+                replica_node_ids: vec![1, 3],
+                leader_node_id: Some(1),
+            }),
+            Status::error("failed_precondition", "legacy membership unit info")
+        );
+        assert!(
+            engine
+                .update_membership(MembershipUpdateRequest {
+                    shard_id: 7,
+                    membership_version: 4,
+                    replica_membership_version: 5,
+                    replica_node_ids: vec![1, 3],
+                    leader_node_id: Some(1),
+                })
+                .ok
+        );
+        let info = engine.get_info(7).info.unwrap();
+        assert_eq!(info.replica_node_ids, vec![1, 3]);
+        assert!(!info.membership_valid);
 
         engine.execute(ExecuteRequest {
             shard_id: 7,
@@ -3380,6 +3443,7 @@ mod tests {
                 .load_shard_with(LoadShardRequest {
                     shard_id: 1,
                     load_version: 1,
+                    local_node_id: None,
                     shard_uri: "file:///tmp/readonly".to_string(),
                     start_routing_slot: 0,
                     end_routing_slot: 99,
@@ -3418,6 +3482,7 @@ mod tests {
                 .load_shard_with(LoadShardRequest {
                     shard_id: 1,
                     load_version: 7,
+                    local_node_id: None,
                     shard_uri: "file:///tmp/versioned".to_string(),
                     start_routing_slot: 0,
                     end_routing_slot: 99,
