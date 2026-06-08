@@ -57,6 +57,8 @@ The Rust code currently has:
   to remember a manual `persist_wal()` call
 - bounded local WAL retention for WAL-backed clusters, using `RaftConfig.max_disk_replicate_log_num`
   to compact old durable records while preserving latest recovery state
+- installed Raft snapshot payload and snapshot-index floor persisted into WAL-backed data-node records,
+  so restart can recover state even after pre-snapshot log entries are trimmed
 - leader election rejects stale candidates unless their log is up-to-date with a voting majority
 - RequestVote receive path updates higher terms and clears prior votes before grant/reject decisions
 - strict shared-store oplog gap rejection
@@ -130,7 +132,7 @@ Covered today:
 Still missing:
 
 - real OpenRaft or raft-rs data-node FSM/storage implementation
-- production durable Raft log store with segment, fsync, truncate, purge, and snapshot-index policy
+- production OpenRaft/raft-rs durable log-store adapter beyond the local segmented WAL model
 - metaserver-driven networked Raft membership changes for each shard
 - snapshot install wired to `TemporalEngine` freeze, flush, download, verify, and install
 - external chaos tests that kill/restart real OS processes and inject network partitions/slow followers

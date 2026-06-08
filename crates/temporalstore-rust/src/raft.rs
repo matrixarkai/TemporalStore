@@ -185,6 +185,8 @@ pub struct RaftWalRecord {
     pub membership: RaftMembership,
     #[serde(default)]
     pub joint_membership: Option<JointConsensusMembership>,
+    #[serde(default)]
+    pub installed_snapshot: Option<RaftSnapshot>,
     pub entries: Vec<RaftLogEntry>,
 }
 
@@ -1808,6 +1810,7 @@ struct RaftNode {
     commit_index: u64,
     alive: bool,
     log: Vec<RaftLogEntry>,
+    installed_snapshot: Option<RaftSnapshot>,
     applied_index: u64,
     applied: BTreeSet<u64>,
     engine: TemporalEngine,
@@ -1975,6 +1978,9 @@ impl RaftCluster {
                 node.current_term = record.hard_state.current_term;
                 node.voted_for = record.hard_state.voted_for;
                 node.commit_index = record.hard_state.commit_index;
+                if let Some(snapshot) = record.installed_snapshot.clone() {
+                    install_snapshot_state(&mut node, snapshot);
+                }
                 node.log = record.entries;
                 apply_committed(&mut node);
                 leader_id.get_or_insert(record.membership.leader_id);
@@ -2602,6 +2608,7 @@ impl RaftCluster {
                         },
                         membership: membership.clone(),
                         joint_membership: inner.joint_membership.clone(),
+                        installed_snapshot: node.installed_snapshot.clone(),
                         entries: node.log.clone(),
                     },
                 )
@@ -3118,6 +3125,7 @@ impl RaftCluster {
         node.applied
             .extend(snapshot.entries.iter().map(|entry| entry.index));
         node.applied_index = snapshot.last_included_index;
+        node.installed_snapshot = Some(snapshot);
         inner.persist_configured_wal()?;
         Ok(())
     }
@@ -3733,6 +3741,7 @@ impl RaftClusterInner {
                         },
                         membership: membership.clone(),
                         joint_membership: self.joint_membership.clone(),
+                        installed_snapshot: node.installed_snapshot.clone(),
                         entries: node.log.clone(),
                     },
                 )
@@ -3906,6 +3915,7 @@ fn new_node(id: RaftNodeId, role: RaftRole, shard_id: ShardId) -> RaftNode {
         commit_index: 0,
         alive: true,
         log: Vec::new(),
+        installed_snapshot: None,
         applied_index: 0,
         applied: BTreeSet::new(),
         engine,
@@ -4006,6 +4016,27 @@ fn apply_committed(node: &mut RaftNode) -> Option<CommandResponse> {
         }
     }
     last_response
+}
+
+fn install_snapshot_state(node: &mut RaftNode, snapshot: RaftSnapshot) {
+    let engine = TemporalEngine::default();
+    engine.load_shard(snapshot.shard_id);
+    for entry in &snapshot.entries {
+        engine.execute(ExecuteRequest {
+            shard_id: entry.shard_id,
+            command: entry.command.clone(),
+        });
+    }
+    node.engine = engine;
+    node.current_term = node.current_term.max(snapshot.last_included_term);
+    node.commit_index = node.commit_index.max(snapshot.last_included_index);
+    node.log
+        .retain(|entry| entry.index > snapshot.last_included_index);
+    node.applied.clear();
+    node.applied
+        .extend(snapshot.entries.iter().map(|entry| entry.index));
+    node.applied_index = snapshot.last_included_index;
+    node.installed_snapshot = Some(snapshot);
 }
 
 fn raft_wal_checksum(record: &RaftWalRecord) -> io::Result<String> {
@@ -7613,6 +7644,66 @@ mod tests {
             ),
             Ok(CommandResponse::Bytes {
                 value: Some(b"v7".to_vec())
+            })
+        );
+    }
+
+    #[test]
+    fn wal_backed_installed_snapshot_survives_restart_without_old_log_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let cluster = RaftCluster::new_single_shard_with_wal(
+            dir.path(),
+            79,
+            [1, 2, 3],
+            RaftConfig::default(),
+        )
+        .unwrap();
+        cluster
+            .propose(Command::StringSet {
+                key: "snapshot-wal-a".to_string(),
+                value: b"a".to_vec(),
+            })
+            .unwrap();
+        cluster
+            .propose(Command::StringSet {
+                key: "snapshot-wal-b".to_string(),
+                value: b"b".to_vec(),
+            })
+            .unwrap();
+
+        let snapshot = cluster.create_snapshot().unwrap();
+        assert_eq!(snapshot.last_included_index, 2);
+        cluster.install_snapshot(3, snapshot).unwrap();
+
+        let wal = LocalRaftWal::new(dir.path());
+        let record = wal.load_node(79, 3).unwrap().unwrap();
+        assert_eq!(record.hard_state.commit_index, 2);
+        assert_eq!(
+            record
+                .installed_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.last_included_index),
+            Some(2)
+        );
+        assert!(record.entries.is_empty());
+
+        let restored = RaftCluster::restore_single_shard_from_wal(
+            dir.path(),
+            79,
+            [1, 2, 3],
+            RaftConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(restored.commit_index(3).unwrap(), 2);
+        assert_eq!(
+            restored.read_local(
+                3,
+                Command::StringGet {
+                    key: "snapshot-wal-b".to_string()
+                },
+            ),
+            Ok(CommandResponse::Bytes {
+                value: Some(b"b".to_vec())
             })
         );
     }

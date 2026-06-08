@@ -110,6 +110,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "local Raft WAL supports segmented append, sync, segment retention, ordered recovery, and corrupt-tail truncation"
                     .to_string(),
+                "WAL-backed data Raft persists installed snapshot payload/floor so restart can recover trimmed pre-snapshot state"
+                    .to_string(),
                 "data-node Raft exposes planned add/remove/replace membership changes with joint-consensus, catch-up, quorum checks, and reports"
                     .to_string(),
                 "chunked snapshot message assembly and stale snapshot rejection are tested"
