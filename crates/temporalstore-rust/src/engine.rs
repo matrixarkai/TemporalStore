@@ -142,6 +142,18 @@ impl TemporalEngine {
     }
 
     pub fn load_shard_with(&self, request: LoadShardRequest) -> LoadShardResponse {
+        if self
+            .infos
+            .read()
+            .expect("info lock poisoned")
+            .get(&request.shard_id)
+            .map(|info| info.loaded)
+            .unwrap_or(false)
+        {
+            return LoadShardResponse {
+                status: Status::error("already_exists", "shard already exists"),
+            };
+        }
         let state = self.load_index(request.shard_id).unwrap_or_default();
         self.shards
             .write()
@@ -181,18 +193,30 @@ impl TemporalEngine {
     }
 
     pub fn unload_shard_with(&self, request: UnloadShardRequest) -> UnloadShardResponse {
+        if !self
+            .infos
+            .read()
+            .expect("info lock poisoned")
+            .get(&request.shard_id)
+            .map(|info| info.loaded)
+            .unwrap_or(false)
+        {
+            return UnloadShardResponse {
+                status: Status::error("shard_not_found", "shard is not loaded"),
+            };
+        }
         self.shards
             .write()
             .expect("engine lock poisoned")
             .remove(&request.shard_id);
-        if let Some(info) = self
-            .infos
+        self.infos
             .write()
             .expect("info lock poisoned")
-            .get_mut(&request.shard_id)
-        {
-            info.loaded = false;
-        }
+            .remove(&request.shard_id);
+        self.configs
+            .write()
+            .expect("config lock poisoned")
+            .remove(&request.shard_id);
         UnloadShardResponse {
             status: Status::ok(),
         }
@@ -3177,6 +3201,18 @@ mod tests {
                 .status
                 .ok
         );
+        let duplicate_load = engine.load_shard_with(LoadShardRequest {
+            shard_id: 7,
+            load_version: 43,
+            local_node_id: Some(2),
+            shard_uri: "file:///tmp/shard-7-duplicate".to_string(),
+            start_routing_slot: 10,
+            end_routing_slot: 20,
+            readonly: false,
+            table_name: "table".to_string(),
+        });
+        assert!(!duplicate_load.status.ok);
+        assert_eq!(duplicate_load.status.code, "already_exists");
         assert!(
             engine
                 .set_config(SetConfigRequest {
@@ -3263,7 +3299,12 @@ mod tests {
                 .status
                 .ok
         );
-        assert!(!engine.get_info(7).info.unwrap().loaded);
+        let after_unload = engine.get_info(7);
+        assert!(!after_unload.status.ok);
+        assert_eq!(after_unload.status.code, "shard_not_found");
+        let second_unload = engine.unload_shard_with(UnloadShardRequest { shard_id: 7 });
+        assert!(!second_unload.status.ok);
+        assert_eq!(second_unload.status.code, "shard_not_found");
     }
 
     #[test]
