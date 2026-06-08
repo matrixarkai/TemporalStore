@@ -708,9 +708,21 @@ fn worker_loop(inner: Arc<DataNodeRuntimeInner>) {
                 .lock()
                 .expect("runtime stats lock poisoned")
                 .canceled_total += 1;
-            task_canceled_output(task.kind)
+            task_canceled_output(&task, "data node task canceled before execution")
         } else {
-            execute_task(&inner, &task)
+            let output = execute_task(&inner, &task);
+            if task_output_status(&output).code == "job_canceled"
+                && take_canceled(&inner, task.job_id)
+            {
+                inner
+                    .stats
+                    .lock()
+                    .expect("runtime stats lock poisoned")
+                    .canceled_total += 1;
+            } else {
+                let _ = take_canceled(&inner, task.job_id);
+            }
+            output
         };
         {
             let mut queue = inner.queue.lock().expect("runtime queue lock poisoned");
@@ -739,6 +751,10 @@ fn worker_loop(inner: Arc<DataNodeRuntimeInner>) {
 }
 
 fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTaskOutput {
+    let cancellation = TaskCancellation {
+        inner,
+        job_id: task.job_id,
+    };
     match &task.request {
         TaskRequest::Execute(request) => {
             let response = inner.engine.execute(request.clone());
@@ -763,11 +779,17 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
             DataNodeTaskOutput::CheckedExecute(response)
         }
         TaskRequest::Dump(request) => {
+            if cancellation.is_requested() {
+                return task_canceled_output(task, "data node dump canceled before index export");
+            }
             let index_bytes = inner
                 .engine
                 .export_index_bytes(request.shard_id)
                 .map(|bytes| bytes.len())
                 .unwrap_or_default();
+            if cancellation.is_requested() {
+                return task_canceled_output(task, "data node dump canceled before dirty flush");
+            }
             let dirty_objects_flushed = clear_dirty_shard(&inner.dirty, request.shard_id);
             inner
                 .stats
@@ -782,6 +804,9 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
             })
         }
         TaskRequest::Compact(request) => {
+            if cancellation.is_requested() {
+                return task_canceled_output(task, "data node compaction canceled before scan");
+            }
             let compacted_objects = dirty_count(&inner.dirty, request.shard_id);
             inner
                 .stats
@@ -795,6 +820,9 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
             })
         }
         TaskRequest::Gc(request) => {
+            if cancellation.is_requested() {
+                return task_canceled_output(task, "data node gc canceled before dirty cleanup");
+            }
             let collected_objects = clear_dirty_shard(&inner.dirty, request.shard_id);
             let mut status = Status::ok();
             let mut cache_entries_removed = 0;
@@ -802,6 +830,21 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
             let mut oplog_records_removed = 0;
             let mut index_log_records_removed = 0;
             let mut page_segments_removed = 0;
+            if cancellation.is_requested() {
+                return DataNodeTaskOutput::Gc(GcResponse {
+                    status: Status::error(
+                        "job_canceled",
+                        "data node gc canceled before cache cleanup",
+                    ),
+                    shard_id: request.shard_id,
+                    collected_objects,
+                    cache_entries_removed,
+                    cache_disk_bytes_removed,
+                    oplog_records_removed,
+                    index_log_records_removed,
+                    page_segments_removed,
+                });
+            }
             match inner.engine.cache().invalidate_shard(request.shard_id) {
                 Ok(report) => {
                     cache_entries_removed = report.memory_entries_removed;
@@ -810,6 +853,21 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
                 Err(err) => {
                     status = Status::error("cache_gc_failed", &err.to_string());
                 }
+            }
+            if cancellation.is_requested() {
+                return DataNodeTaskOutput::Gc(GcResponse {
+                    status: Status::error(
+                        "job_canceled",
+                        "data node gc canceled before oplog cleanup",
+                    ),
+                    shard_id: request.shard_id,
+                    collected_objects,
+                    cache_entries_removed,
+                    cache_disk_bytes_removed,
+                    oplog_records_removed,
+                    index_log_records_removed,
+                    page_segments_removed,
+                });
             }
             if let Some(retain_from_sequence) = request.retain_oplog_from_sequence {
                 if status.ok {
@@ -825,6 +883,21 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
                     }
                 }
             }
+            if cancellation.is_requested() {
+                return DataNodeTaskOutput::Gc(GcResponse {
+                    status: Status::error(
+                        "job_canceled",
+                        "data node gc canceled before index-log cleanup",
+                    ),
+                    shard_id: request.shard_id,
+                    collected_objects,
+                    cache_entries_removed,
+                    cache_disk_bytes_removed,
+                    oplog_records_removed,
+                    index_log_records_removed,
+                    page_segments_removed,
+                });
+            }
             if status.ok {
                 if let Some(retain_from_sequence) = request.retain_index_log_from_sequence {
                     match inner
@@ -838,6 +911,21 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
                         }
                     }
                 }
+            }
+            if cancellation.is_requested() {
+                return DataNodeTaskOutput::Gc(GcResponse {
+                    status: Status::error(
+                        "job_canceled",
+                        "data node gc canceled before page-segment cleanup",
+                    ),
+                    shard_id: request.shard_id,
+                    collected_objects,
+                    cache_entries_removed,
+                    cache_disk_bytes_removed,
+                    oplog_records_removed,
+                    index_log_records_removed,
+                    page_segments_removed,
+                });
             }
             if status.ok {
                 if let Some(retain_from_page_segment_id) = request.retain_page_segments_from_id {
@@ -871,6 +959,17 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
                 page_segments_removed,
             })
         }
+    }
+}
+
+struct TaskCancellation<'a> {
+    inner: &'a DataNodeRuntimeInner,
+    job_id: u64,
+}
+
+impl TaskCancellation<'_> {
+    fn is_requested(&self) -> bool {
+        is_cancel_requested(self.inner, self.job_id)
     }
 }
 
@@ -914,9 +1013,10 @@ fn task_timeout_output(kind: DataNodeTaskKind) -> DataNodeTaskOutput {
     }
 }
 
-fn task_canceled_output(kind: DataNodeTaskKind) -> DataNodeTaskOutput {
-    let status = Status::error("job_canceled", "data node task canceled before execution");
-    match kind {
+fn task_canceled_output(task: &QueuedTask, message: &str) -> DataNodeTaskOutput {
+    let status = Status::error("job_canceled", message);
+    let shard_id = task.request.shard_id();
+    match task.kind {
         DataNodeTaskKind::Execute => DataNodeTaskOutput::Execute(ExecuteResponse {
             status,
             response: CommandResponse::Empty,
@@ -932,18 +1032,18 @@ fn task_canceled_output(kind: DataNodeTaskKind) -> DataNodeTaskOutput {
         }
         DataNodeTaskKind::Dump => DataNodeTaskOutput::Dump(DumpShardResponse {
             status,
-            shard_id: 0,
+            shard_id,
             index_bytes: 0,
             dirty_objects_flushed: 0,
         }),
         DataNodeTaskKind::Compact => DataNodeTaskOutput::Compact(CompactionResponse {
             status,
-            shard_id: 0,
+            shard_id,
             compacted_objects: 0,
         }),
         DataNodeTaskKind::Gc => DataNodeTaskOutput::Gc(GcResponse {
             status,
-            shard_id: 0,
+            shard_id,
             collected_objects: 0,
             cache_entries_removed: 0,
             cache_disk_bytes_removed: 0,
@@ -952,6 +1052,14 @@ fn task_canceled_output(kind: DataNodeTaskKind) -> DataNodeTaskOutput {
             page_segments_removed: 0,
         }),
     }
+}
+
+fn is_cancel_requested(inner: &DataNodeRuntimeInner, job_id: u64) -> bool {
+    inner
+        .canceled
+        .lock()
+        .expect("runtime cancellation lock poisoned")
+        .contains(&job_id)
 }
 
 fn take_canceled(inner: &DataNodeRuntimeInner, job_id: u64) -> bool {
@@ -1262,6 +1370,105 @@ mod tests {
         assert_eq!(canceled.status.code, "job_canceled");
         assert_eq!(runtime.stats().canceled_total, 1);
         assert_eq!(runtime.stats().queue_depth, 0);
+    }
+
+    #[test]
+    fn runtime_honors_inflight_cancellation_before_dump_side_effects() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "dirty".to_string(),
+                value: b"v".to_vec(),
+            },
+        });
+        assert!(response.status.ok);
+        let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 8);
+        mark_dirty(&runtime.inner.dirty, 1, Some("dirty"));
+        let task = QueuedTask {
+            job_id: 99,
+            kind: DataNodeTaskKind::Dump,
+            deadline: Instant::now() + Duration::from_secs(60),
+            submitted_at_ms: now_ms(),
+            request: TaskRequest::Dump(DumpShardRequest { shard_id: 1 }),
+        };
+        runtime
+            .inner
+            .canceled
+            .lock()
+            .expect("runtime cancellation lock poisoned")
+            .insert(task.job_id);
+
+        let output = execute_task(&runtime.inner, &task);
+        let DataNodeTaskOutput::Dump(response) = output else {
+            panic!("expected dump output");
+        };
+        assert_eq!(response.status.code, "job_canceled");
+        assert_eq!(response.shard_id, 1);
+        assert_eq!(runtime.dirty_objects().len(), 1);
+    }
+
+    #[test]
+    fn runtime_honors_inflight_cancellation_before_gc_side_effects() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        for key in ["a", "b"] {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: key.to_string(),
+                    value: key.as_bytes().to_vec(),
+                },
+            });
+            assert!(response.status.ok);
+        }
+        let runtime = DataNodeRuntime::new_without_workers_for_test(engine.clone(), 8);
+        mark_dirty(&runtime.inner.dirty, 1, Some("a"));
+        let task = QueuedTask {
+            job_id: 100,
+            kind: DataNodeTaskKind::Gc,
+            deadline: Instant::now() + Duration::from_secs(60),
+            submitted_at_ms: now_ms(),
+            request: TaskRequest::Gc(GcRequest {
+                shard_id: 1,
+                retain_oplog_from_sequence: Some(2),
+                retain_index_log_from_sequence: Some(2),
+                retain_page_segments_from_id: None,
+            }),
+        };
+        runtime
+            .inner
+            .canceled
+            .lock()
+            .expect("runtime cancellation lock poisoned")
+            .insert(task.job_id);
+
+        let output = execute_task(&runtime.inner, &task);
+        let DataNodeTaskOutput::Gc(response) = output else {
+            panic!("expected gc output");
+        };
+        assert_eq!(response.status.code, "job_canceled");
+        assert_eq!(response.shard_id, 1);
+        assert_eq!(runtime.dirty_objects().len(), 1);
+        assert_eq!(engine.oplog_store().stats(1).last_sequence, 2);
+        assert_eq!(engine.index_log_store().stats(1).last_sequence, 2);
+        assert_eq!(
+            engine
+                .oplog_store()
+                .scan(1, 0, u64::MAX, u64::MAX)
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            engine
+                .index_log_store()
+                .scan(1, 0, u64::MAX, u64::MAX)
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
     #[test]
