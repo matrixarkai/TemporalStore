@@ -13,7 +13,7 @@ use crate::meta::GetShardResponse;
 use crate::meta::{GetTableTopologyRequest, TableTopologyResponse};
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,
-    ExecuteResponse, FeatureFilter, FeaturePoint, FeatureWritePolicy, SequenceFeatureRow,
+    ExecuteResponse, FeatureFilter, FeaturePoint, FeatureWritePolicy, IpsStats, SequenceFeatureRow,
     SequenceQuerySpec, ShardId, Status,
 };
 
@@ -1238,6 +1238,100 @@ impl TemporalStoreTable {
         }
     }
 
+    pub fn ips_load(
+        &self,
+        key: impl Into<String>,
+        points: Vec<FeaturePoint>,
+    ) -> Result<i64, ClientError> {
+        match self
+            .execute(Command::IpsLoad {
+                key: key.into(),
+                points,
+            })?
+            .response
+        {
+            CommandResponse::Integer { value } => Ok(value),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "ips_load",
+                response,
+            }),
+        }
+    }
+
+    pub fn ips_snapshot(
+        &self,
+        key: impl Into<String>,
+        start_ms: u64,
+        end_ms: u64,
+        count: Option<usize>,
+    ) -> Result<Vec<FeaturePoint>, ClientError> {
+        match self
+            .execute(Command::IpsSnapshot {
+                key: key.into(),
+                start_ms,
+                end_ms,
+                count,
+            })?
+            .response
+        {
+            CommandResponse::FeaturePoints { points } => Ok(points),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "ips_snapshot",
+                response,
+            }),
+        }
+    }
+
+    pub fn ips_stat(
+        &self,
+        key: impl Into<String>,
+        start_ms: u64,
+        end_ms: u64,
+    ) -> Result<IpsStats, ClientError> {
+        match self
+            .execute(Command::IpsStat {
+                key: key.into(),
+                start_ms,
+                end_ms,
+            })?
+            .response
+        {
+            CommandResponse::IpsStats { stats } => Ok(stats),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "ips_stat",
+                response,
+            }),
+        }
+    }
+
+    pub fn ips_filter(
+        &self,
+        key: impl Into<String>,
+        start_ms: u64,
+        end_ms: u64,
+        count: Option<usize>,
+        action_type: Option<u32>,
+        table_id: Option<u64>,
+    ) -> Result<Vec<FeaturePoint>, ClientError> {
+        match self
+            .execute(Command::IpsFilter {
+                key: key.into(),
+                start_ms,
+                end_ms,
+                count,
+                action_type,
+                table_id,
+            })?
+            .response
+        {
+            CommandResponse::FeaturePoints { points } => Ok(points),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "ips_filter",
+                response,
+            }),
+        }
+    }
+
     pub fn ips_batch_query_last(
         &self,
         keys: Vec<String>,
@@ -1660,6 +1754,7 @@ fn is_write(command: &Command) -> bool {
             | Command::CommonExpire { .. }
             | Command::StringSet { .. }
             | Command::StringSetEx { .. }
+            | Command::StringSetConditional { .. }
             | Command::StringDelete { .. }
             | Command::HashSet { .. }
             | Command::HashMultiSet { .. }
@@ -1674,6 +1769,9 @@ fn is_write(command: &Command) -> bool {
             | Command::SequenceAdd { .. }
             | Command::IpsAdd { .. }
             | Command::IpsAddWithOptions { .. }
+            | Command::IpsLoad { .. }
+            | Command::IpsRemove { .. }
+            | Command::IpsDelete { .. }
             | Command::RiskIncrement { .. }
             | Command::RiskIncrementWithOptions { .. }
     )
@@ -1751,9 +1849,13 @@ fn command_key(command: &Command) -> Option<&str> {
         | Command::SequenceQuery { key, .. }
         | Command::IpsAdd { key, .. }
         | Command::IpsAddWithOptions { key, .. }
+        | Command::IpsLoad { key, .. }
         | Command::IpsQueryLast { key, .. }
         | Command::IpsQueryRange { key, .. }
         | Command::IpsQueryRangeWithOptions { key, .. }
+        | Command::IpsSnapshot { key, .. }
+        | Command::IpsStat { key, .. }
+        | Command::IpsFilter { key, .. }
         | Command::IpsRemove { key, .. }
         | Command::IpsDelete { key }
         | Command::IpsCount { key, .. }
@@ -1941,6 +2043,66 @@ mod tests {
         assert!(table.ips_remove("ips-a", 10).unwrap());
         assert_eq!(table.ips_count("ips-a", 0, 30).unwrap(), 1);
         assert!(table.ips_delete("ips-a").unwrap());
+        assert_eq!(
+            table
+                .ips_load(
+                    "ips-load",
+                    vec![
+                        FeaturePoint {
+                            timestamp_ms: 10,
+                            value: b"l10".to_vec(),
+                        },
+                        FeaturePoint {
+                            timestamp_ms: 20,
+                            value: b"l20".to_vec(),
+                        },
+                    ],
+                )
+                .unwrap(),
+            2
+        );
+        assert!(table
+            .ips_add_with_options(
+                "ips-load",
+                30,
+                b"opt30".to_vec(),
+                Some(7),
+                Some(42),
+                Some("typed-req".to_string()),
+            )
+            .unwrap());
+        assert_eq!(
+            table.ips_snapshot("ips-load", 0, 25, None).unwrap(),
+            vec![
+                FeaturePoint {
+                    timestamp_ms: 10,
+                    value: b"l10".to_vec(),
+                },
+                FeaturePoint {
+                    timestamp_ms: 20,
+                    value: b"l20".to_vec(),
+                },
+            ]
+        );
+        assert_eq!(
+            table
+                .ips_filter("ips-load", 0, 40, Some(10), Some(7), Some(42))
+                .unwrap(),
+            vec![FeaturePoint {
+                timestamp_ms: 30,
+                value: b"opt30".to_vec(),
+            }]
+        );
+        assert_eq!(
+            table.ips_stat("ips-load", 0, 40).unwrap(),
+            IpsStats {
+                total: 3,
+                first_timestamp_ms: Some(10),
+                last_timestamp_ms: Some(30),
+                action_type_counts: vec![(7, 1)],
+                table_id_counts: vec![(42, 1)],
+            }
+        );
 
         table.risk_increment("risk", 10, 5).unwrap();
         table.risk_increment("risk", 20, -2).unwrap();

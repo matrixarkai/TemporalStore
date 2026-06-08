@@ -104,6 +104,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "WAL-backed local Raft state persists commits, leadership, and membership"
                     .to_string(),
+                "data-node Raft exposes planned add/remove/replace membership changes with joint-consensus, catch-up, quorum checks, and reports"
+                    .to_string(),
                 "chunked snapshot message assembly and stale snapshot rejection are tested"
                     .to_string(),
             ],
@@ -111,7 +113,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "real OpenRaft or raft-rs data-node FSM/storage implementation".to_string(),
                 "durable per-node Raft log store with production segment, sync, and truncation policy"
                     .to_string(),
-                "networked Raft membership changes driven by metaserver shard topology".to_string(),
+                "metaserver scheduler integration that drives networked data-node Raft membership plans from shard topology"
+                    .to_string(),
                 "Raft snapshot install wired to TemporalEngine freeze/flush/download/install"
                     .to_string(),
                 "multi-process crash/restart/partition/slow-follower tests that kill real OS processes"
@@ -179,12 +182,13 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
             covered: vec![
                 "common/string/hash/set plus Redis compatibility subset".to_string(),
                 "feature append/query/replace/delete/agg and 5k sequence test".to_string(),
-                "implemented IPS/Risk subset with typed client and RESP coverage".to_string(),
+                "IPS load/snapshot/stat/filter subset and Risk subset with typed client and RESP coverage"
+                    .to_string(),
             ],
             missing: vec![
                 "exact C++ Feature nested point/proto semantics and aggregate edge cases"
                     .to_string(),
-                "IPS load/snapshot/stat/filter/server aggregation behavior".to_string(),
+                "IPS production snap metadata and server aggregation behavior".to_string(),
                 "Risk CPC/list-specific behavior and manager APIs".to_string(),
                 "C++ golden corpus compatibility suite".to_string(),
             ],

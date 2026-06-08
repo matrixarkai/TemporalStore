@@ -112,6 +112,33 @@ pub struct RaftScaleChangeReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum RaftMembershipChangeKind {
+    AddVoter,
+    RemoveVoter,
+    ReplaceVoter,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftMembershipChangePlan {
+    pub shard_id: ShardId,
+    pub kind: RaftMembershipChangeKind,
+    pub old_voters: Vec<RaftNodeId>,
+    pub new_voters: Vec<RaftNodeId>,
+    pub add_voters: Vec<RaftNodeId>,
+    pub remove_voters: Vec<RaftNodeId>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftMembershipChangeReport {
+    pub plan: RaftMembershipChangePlan,
+    pub joint_membership: JointConsensusMembership,
+    pub committed_membership: RaftMembership,
+    pub caught_up_voters: Vec<RaftNodeId>,
+    pub leader_id: RaftNodeId,
+    pub commit_index: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RaftFailoverReport {
     pub old_leader_id: RaftNodeId,
     pub new_leader_id: RaftNodeId,
@@ -1269,6 +1296,13 @@ impl ProductionRaftRuntime {
         self.cluster.propose_distributed(command, &transport)
     }
 
+    pub fn apply_membership_change_safely(
+        &self,
+        new_voters: impl IntoIterator<Item = RaftNodeId>,
+    ) -> Result<RaftMembershipChangeReport, RaftError> {
+        self.cluster.apply_membership_change_safely(new_voters)
+    }
+
     pub fn read_local(
         &self,
         node_id: RaftNodeId,
@@ -2088,6 +2122,45 @@ impl RaftCluster {
         inner.remove_node_safely(node_id)?;
         inner.persist_configured_wal()?;
         Ok(inner.scale_change_report())
+    }
+
+    pub fn plan_membership_change(
+        &self,
+        new_voters: impl IntoIterator<Item = RaftNodeId>,
+    ) -> Result<RaftMembershipChangePlan, RaftError> {
+        let inner = self.inner.read().expect("raft cluster lock poisoned");
+        inner.plan_membership_change(new_voters)
+    }
+
+    pub fn apply_membership_change_safely(
+        &self,
+        new_voters: impl IntoIterator<Item = RaftNodeId>,
+    ) -> Result<RaftMembershipChangeReport, RaftError> {
+        let plan = self.plan_membership_change(new_voters)?;
+        let joint_membership = self.begin_joint_consensus(plan.new_voters.clone())?;
+        let caught_up_voters = match self.catch_up_live_followers() {
+            Ok(caught_up_voters) => caught_up_voters,
+            Err(err) => {
+                let _ = self.abort_joint_consensus();
+                return Err(err);
+            }
+        };
+        let committed_membership = match self.commit_joint_consensus() {
+            Ok(membership) => membership,
+            Err(err) => {
+                let _ = self.abort_joint_consensus();
+                return Err(err);
+            }
+        };
+        let status = self.status();
+        Ok(RaftMembershipChangeReport {
+            plan,
+            joint_membership,
+            committed_membership,
+            caught_up_voters,
+            leader_id: status.leader_id,
+            commit_index: status.commit_index,
+        })
     }
 
     pub fn begin_joint_consensus(
@@ -3103,6 +3176,74 @@ impl RaftClusterInner {
             self.nodes.remove(&node_id);
         }
         Ok(())
+    }
+
+    fn plan_membership_change(
+        &self,
+        new_voters: impl IntoIterator<Item = RaftNodeId>,
+    ) -> Result<RaftMembershipChangePlan, RaftError> {
+        if self.joint_membership.is_some() {
+            return Err(RaftError::JointConsensusInProgress);
+        }
+        if !self
+            .nodes
+            .get(&self.leader_id)
+            .map(|node| node.alive && node.role == RaftRole::Leader)
+            .unwrap_or(false)
+        {
+            return Err(RaftError::LeaderUnavailable);
+        }
+        let old_voters = self.nodes.keys().copied().collect::<BTreeSet<_>>();
+        let new_voters = new_voters.into_iter().collect::<BTreeSet<_>>();
+        if new_voters.is_empty() {
+            return Err(RaftError::CannotRemoveLastNode);
+        }
+        if old_voters == new_voters {
+            return Err(RaftError::InvalidConfig(
+                "membership change must add or remove at least one voter".to_string(),
+            ));
+        }
+
+        let add_voters = new_voters
+            .difference(&old_voters)
+            .copied()
+            .collect::<Vec<_>>();
+        let remove_voters = old_voters
+            .difference(&new_voters)
+            .copied()
+            .collect::<Vec<_>>();
+        let kind = match (add_voters.is_empty(), remove_voters.is_empty()) {
+            (false, true) => RaftMembershipChangeKind::AddVoter,
+            (true, false) => RaftMembershipChangeKind::RemoveVoter,
+            (false, false) => RaftMembershipChangeKind::ReplaceVoter,
+            (true, true) => unreachable!("old_voters != new_voters was checked"),
+        };
+
+        let live_new_voters = new_voters
+            .iter()
+            .filter(|node_id| {
+                self.nodes
+                    .get(node_id)
+                    .map(|node| node.alive)
+                    .unwrap_or(true)
+            })
+            .count();
+        let required_new_majority = majority(new_voters.len());
+        if live_new_voters < required_new_majority {
+            return Err(RaftError::NoMajority {
+                live: live_new_voters,
+                required: required_new_majority,
+            });
+        }
+
+        Ok(RaftMembershipChangePlan {
+            shard_id: self.shard_id,
+            kind,
+            old_voters: old_voters.into_iter().collect(),
+            new_voters: new_voters.into_iter().collect(),
+            add_voters,
+            remove_voters,
+        })
     }
 
     fn scale_change_report(&self) -> RaftScaleChangeReport {
@@ -6213,6 +6354,100 @@ mod tests {
             cluster.commit_index(4).unwrap(),
             cluster.status().commit_index
         );
+        assert!(cluster.read_index(4).is_ok());
+    }
+
+    #[test]
+    fn safe_membership_change_adds_voter_through_joint_consensus() {
+        let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+        cluster
+            .propose(Command::StringSet {
+                key: "membership-add".to_string(),
+                value: b"before".to_vec(),
+            })
+            .unwrap();
+
+        let plan = cluster.plan_membership_change([1, 2, 3, 4]).unwrap();
+        assert_eq!(plan.kind, RaftMembershipChangeKind::AddVoter);
+        assert_eq!(plan.old_voters, vec![1, 2, 3]);
+        assert_eq!(plan.new_voters, vec![1, 2, 3, 4]);
+        assert_eq!(plan.add_voters, vec![4]);
+        assert!(plan.remove_voters.is_empty());
+
+        let report = cluster
+            .apply_membership_change_safely([1, 2, 3, 4])
+            .unwrap();
+        assert_eq!(report.plan, plan);
+        assert_eq!(report.joint_membership.old_voters, vec![1, 2, 3]);
+        assert_eq!(report.joint_membership.new_voters, vec![1, 2, 3, 4]);
+        assert_eq!(report.committed_membership.voters, vec![1, 2, 3, 4]);
+        assert_eq!(report.caught_up_voters, vec![2, 3, 4]);
+        assert_eq!(
+            cluster.read_from_replica(
+                4,
+                Command::StringGet {
+                    key: "membership-add".to_string()
+                }
+            ),
+            Ok(CommandResponse::Bytes {
+                value: Some(b"before".to_vec())
+            })
+        );
+    }
+
+    #[test]
+    fn safe_membership_change_removes_leader_after_caught_up_successor_exists() {
+        let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+        cluster
+            .propose(Command::StringSet {
+                key: "membership-remove-leader".to_string(),
+                value: b"before".to_vec(),
+            })
+            .unwrap();
+
+        let report = cluster.apply_membership_change_safely([2, 3]).unwrap();
+        assert_eq!(report.plan.kind, RaftMembershipChangeKind::RemoveVoter);
+        assert_eq!(report.plan.remove_voters, vec![1]);
+        assert_eq!(report.committed_membership.voters, vec![2, 3]);
+        assert_ne!(report.leader_id, 1);
+        assert_eq!(cluster.commit_index(1), Err(RaftError::NodeNotFound(1)));
+        cluster
+            .propose(Command::StringSet {
+                key: "membership-after-leader-remove".to_string(),
+                value: b"after".to_vec(),
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn safe_membership_change_replaces_voter_and_rejects_invalid_targets() {
+        let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+
+        assert!(matches!(
+            cluster.plan_membership_change([1, 2, 3]).unwrap_err(),
+            RaftError::InvalidConfig(_)
+        ));
+        assert_eq!(
+            cluster.plan_membership_change([]).unwrap_err(),
+            RaftError::CannotRemoveLastNode
+        );
+
+        cluster.set_alive(2, false).unwrap();
+        assert_eq!(
+            cluster.apply_membership_change_safely([2, 3]).unwrap_err(),
+            RaftError::NoMajority {
+                live: 1,
+                required: 2
+            }
+        );
+        cluster.set_alive(2, true).unwrap();
+
+        let report = cluster.apply_membership_change_safely([1, 2, 4]).unwrap();
+        assert_eq!(report.plan.kind, RaftMembershipChangeKind::ReplaceVoter);
+        assert_eq!(report.plan.add_voters, vec![4]);
+        assert_eq!(report.plan.remove_voters, vec![3]);
+        assert_eq!(report.committed_membership.voters, vec![1, 2, 4]);
+        assert_eq!(cluster.commit_index(3), Err(RaftError::NodeNotFound(3)));
         assert!(cluster.read_index(4).is_ok());
     }
 

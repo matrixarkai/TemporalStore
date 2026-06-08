@@ -543,6 +543,21 @@ pub fn execute_redis_command_with_state(
                 request_id: Some(string_arg(&args[6])),
             }))
         }
+        "IPSLOAD" if args.len() >= 4 && args.len() % 2 == 0 => {
+            let key = string_arg(&args[1]);
+            let mut points = Vec::new();
+            for pair in args[2..].chunks(2) {
+                let timestamp_ms = match parse_u64(&pair[0], "timestamp_ms") {
+                    Ok(value) => value,
+                    Err(err) => return RespValue::Error(err),
+                };
+                points.push(FeaturePoint {
+                    timestamp_ms,
+                    value: pair[1].clone(),
+                });
+            }
+            integer_response(execute(Command::IpsLoad { key, points }))
+        }
         "IPSQUERYLAST" if args.len() == 3 => match parse_usize(&args[2], "count") {
             Ok(count) => feature_points_response(execute(Command::IpsQueryLast {
                 key: string_arg(&args[1]),
@@ -595,6 +610,74 @@ pub fn execute_redis_command_with_state(
                 Err(err) => return RespValue::Error(err),
             };
             feature_points_response(execute(Command::IpsQueryRangeWithOptions {
+                key: string_arg(&args[1]),
+                start_ms,
+                end_ms,
+                count: Some(count),
+                action_type: Some(action_type),
+                table_id: Some(table_id),
+            }))
+        }
+        "IPSSNAPSHOT" if args.len() == 4 || args.len() == 5 => {
+            let start_ms = match parse_u64(&args[2], "start_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let end_ms = match parse_u64(&args[3], "end_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let count = match args.get(4) {
+                Some(value) => match parse_usize(value, "count") {
+                    Ok(value) => Some(value),
+                    Err(err) => return RespValue::Error(err),
+                },
+                None => None,
+            };
+            feature_points_response(execute(Command::IpsSnapshot {
+                key: string_arg(&args[1]),
+                start_ms,
+                end_ms,
+                count,
+            }))
+        }
+        "IPSSTAT" if args.len() == 4 => {
+            let start_ms = match parse_u64(&args[2], "start_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let end_ms = match parse_u64(&args[3], "end_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            ips_stats_response(execute(Command::IpsStat {
+                key: string_arg(&args[1]),
+                start_ms,
+                end_ms,
+            }))
+        }
+        "IPSFILTER" if args.len() == 7 => {
+            let start_ms = match parse_u64(&args[2], "start_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let end_ms = match parse_u64(&args[3], "end_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let count = match parse_usize(&args[4], "count") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let action_type = match parse_u32(&args[5], "action_type") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let table_id = match parse_u64(&args[6], "table_id") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            feature_points_response(execute(Command::IpsFilter {
                 key: string_arg(&args[1]),
                 start_ms,
                 end_ms,
@@ -1020,6 +1103,55 @@ fn feature_points_response(result: Result<CommandResponse, String>) -> RespValue
     }
 }
 
+fn ips_stats_response(result: Result<CommandResponse, String>) -> RespValue {
+    match result {
+        Ok(CommandResponse::IpsStats { stats }) => RespValue::Array(vec![
+            RespValue::Integer(stats.total as i64),
+            optional_u64_value(stats.first_timestamp_ms),
+            optional_u64_value(stats.last_timestamp_ms),
+            count_pairs_u32_value(stats.action_type_counts),
+            count_pairs_u64_value(stats.table_id_counts),
+        ]),
+        Ok(_) => RespValue::Error("ERR invalid ips stats response".to_string()),
+        Err(err) => RespValue::Error(format!("ERR {err}")),
+    }
+}
+
+fn optional_u64_value(value: Option<u64>) -> RespValue {
+    match value {
+        Some(value) => RespValue::Integer(value as i64),
+        None => RespValue::Bulk(None),
+    }
+}
+
+fn count_pairs_u32_value(counts: Vec<(u32, u64)>) -> RespValue {
+    RespValue::Array(
+        counts
+            .into_iter()
+            .map(|(key, count)| {
+                RespValue::Array(vec![
+                    RespValue::Integer(key as i64),
+                    RespValue::Integer(count as i64),
+                ])
+            })
+            .collect(),
+    )
+}
+
+fn count_pairs_u64_value(counts: Vec<(u64, u64)>) -> RespValue {
+    RespValue::Array(
+        counts
+            .into_iter()
+            .map(|(key, count)| {
+                RespValue::Array(vec![
+                    RespValue::Integer(key as i64),
+                    RespValue::Integer(count as i64),
+                ])
+            })
+            .collect(),
+    )
+}
+
 fn feature_points_value(points: Vec<FeaturePoint>) -> RespValue {
     RespValue::Array(
         points
@@ -1330,6 +1462,46 @@ mod tests {
                 RespValue::Integer(10),
                 RespValue::Bulk(Some(b"x10".to_vec())),
             ])])
+        );
+        assert_eq!(
+            run(vec!["IPSLOAD", "ips-load", "10", "l10", "20", "l20"]),
+            RespValue::Integer(2)
+        );
+        assert_eq!(
+            run(vec!["IPSSNAPSHOT", "ips-load", "0", "30"]),
+            RespValue::Array(vec![
+                RespValue::Array(vec![
+                    RespValue::Integer(10),
+                    RespValue::Bulk(Some(b"l10".to_vec())),
+                ]),
+                RespValue::Array(vec![
+                    RespValue::Integer(20),
+                    RespValue::Bulk(Some(b"l20".to_vec())),
+                ]),
+            ])
+        );
+        assert_eq!(
+            run(vec!["IPSFILTER", "ips-opt", "0", "40", "10", "7", "99"]),
+            RespValue::Array(vec![RespValue::Array(vec![
+                RespValue::Integer(10),
+                RespValue::Bulk(Some(b"x10".to_vec())),
+            ])])
+        );
+        assert_eq!(
+            run(vec!["IPSSTAT", "ips-opt", "0", "40"]),
+            RespValue::Array(vec![
+                RespValue::Integer(2),
+                RespValue::Integer(10),
+                RespValue::Integer(20),
+                RespValue::Array(vec![
+                    RespValue::Array(vec![RespValue::Integer(7), RespValue::Integer(1)]),
+                    RespValue::Array(vec![RespValue::Integer(8), RespValue::Integer(1)]),
+                ]),
+                RespValue::Array(vec![RespValue::Array(vec![
+                    RespValue::Integer(99),
+                    RespValue::Integer(2),
+                ])]),
+            ])
         );
 
         assert_eq!(

@@ -379,6 +379,9 @@ fn is_write(command: &Command) -> bool {
             | Command::SequenceAdd { .. }
             | Command::IpsAdd { .. }
             | Command::IpsAddWithOptions { .. }
+            | Command::IpsLoad { .. }
+            | Command::IpsRemove { .. }
+            | Command::IpsDelete { .. }
             | Command::RiskIncrement { .. }
             | Command::RiskIncrementWithOptions { .. }
     )

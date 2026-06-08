@@ -18,7 +18,7 @@ use crate::oplog::LocalOplogStore;
 use crate::page_store::{LocalPageStore, PageAddress};
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,
-    ExecuteResponse, FeatureFilter, FeatureFilterOp, FeaturePoint, FeatureWritePolicy,
+    ExecuteResponse, FeatureFilter, FeatureFilterOp, FeaturePoint, FeatureWritePolicy, IpsStats,
     SequenceFeatureRow, SequenceQuerySpec, ShardId, Status, StringSetCondition,
 };
 
@@ -1454,6 +1454,31 @@ fn execute_on_shard(
                 value: if mutated { 1 } else { 0 },
             }
         }
+        Command::IpsLoad { key, points } => {
+            remove_if_expired(shard, &key);
+            let mut loaded = 0i64;
+            for point in points {
+                if let Ok(address) = page_store.append(&point.value) {
+                    shard
+                        .ips
+                        .entry(key.clone())
+                        .or_default()
+                        .insert(point.timestamp_ms, address.clone());
+                    shard.ips_meta.entry(key.clone()).or_default().insert(
+                        point.timestamp_ms,
+                        IpsPointMeta {
+                            address,
+                            action_type: None,
+                            table_id: None,
+                            request_id: None,
+                        },
+                    );
+                    loaded += 1;
+                    mutated = true;
+                }
+            }
+            CommandResponse::Integer { value: loaded }
+        }
         Command::IpsQueryLast { key, count } => {
             if remove_if_expired(shard, &key) {
                 mutated = true;
@@ -1585,6 +1610,79 @@ fn execute_on_shard(
             CommandResponse::Integer { value }
         }
         Command::IpsQueryRangeWithOptions {
+            key,
+            start_ms,
+            end_ms,
+            count,
+            action_type,
+            table_id,
+        } => {
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+                return ExecuteOutcome {
+                    response: CommandResponse::FeaturePoints { points: Vec::new() },
+                    mutated,
+                };
+            }
+            CommandResponse::FeaturePoints {
+                points: ips_points_in_range_with_options(
+                    cache,
+                    page_store,
+                    shard_id,
+                    shard,
+                    &key,
+                    start_ms,
+                    end_ms,
+                    count,
+                    action_type,
+                    table_id,
+                ),
+            }
+        }
+        Command::IpsSnapshot {
+            key,
+            start_ms,
+            end_ms,
+            count,
+        } => {
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+                return ExecuteOutcome {
+                    response: CommandResponse::FeaturePoints { points: Vec::new() },
+                    mutated,
+                };
+            }
+            CommandResponse::FeaturePoints {
+                points: ips_points_in_range(
+                    cache, page_store, shard_id, shard, &key, start_ms, end_ms, count,
+                ),
+            }
+        }
+        Command::IpsStat {
+            key,
+            start_ms,
+            end_ms,
+        } => {
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+                return ExecuteOutcome {
+                    response: CommandResponse::IpsStats {
+                        stats: IpsStats {
+                            total: 0,
+                            first_timestamp_ms: None,
+                            last_timestamp_ms: None,
+                            action_type_counts: Vec::new(),
+                            table_id_counts: Vec::new(),
+                        },
+                    },
+                    mutated,
+                };
+            }
+            CommandResponse::IpsStats {
+                stats: ips_stats_in_range(shard, &key, start_ms, end_ms),
+            }
+        }
+        Command::IpsFilter {
             key,
             start_ms,
             end_ms,
@@ -1953,6 +2051,40 @@ fn ips_points_in_range_with_options(
         .collect()
 }
 
+fn ips_stats_in_range(shard: &ShardState, key: &str, start_ms: u64, end_ms: u64) -> IpsStats {
+    let mut total = 0u64;
+    let mut first_timestamp_ms = None;
+    let mut last_timestamp_ms = None;
+    let mut action_type_counts = BTreeMap::<u32, u64>::new();
+    let mut table_id_counts = BTreeMap::<u64, u64>::new();
+
+    if let Some(series) = shard.ips.get(key) {
+        for (timestamp_ms, _) in series.range(start_ms..=end_ms) {
+            total += 1;
+            first_timestamp_ms.get_or_insert(*timestamp_ms);
+            last_timestamp_ms = Some(*timestamp_ms);
+        }
+    }
+    if let Some(series) = shard.ips_meta.get(key) {
+        for (_, meta) in series.range(start_ms..=end_ms) {
+            if let Some(action_type) = meta.action_type {
+                *action_type_counts.entry(action_type).or_default() += 1;
+            }
+            if let Some(table_id) = meta.table_id {
+                *table_id_counts.entry(table_id).or_default() += 1;
+            }
+        }
+    }
+
+    IpsStats {
+        total,
+        first_timestamp_ms,
+        last_timestamp_ms,
+        action_type_counts: action_type_counts.into_iter().collect(),
+        table_id_counts: table_id_counts.into_iter().collect(),
+    }
+}
+
 fn read_page_bytes(
     cache: &MultiLayerCache,
     page_store: &LocalPageStore,
@@ -1999,6 +2131,7 @@ fn is_write_command(command: &Command) -> bool {
             | Command::SequenceAdd { .. }
             | Command::IpsAdd { .. }
             | Command::IpsAddWithOptions { .. }
+            | Command::IpsLoad { .. }
             | Command::IpsRemove { .. }
             | Command::IpsDelete { .. }
             | Command::RiskIncrement { .. }
@@ -3527,6 +3660,128 @@ mod tests {
                         }],
                     ),
                 ],
+            }
+        );
+    }
+
+    #[test]
+    fn ips_load_snapshot_stat_and_filter_match_cpp_style_module_shape() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::IpsLoad {
+                        key: "ips-load".to_string(),
+                        points: vec![
+                            FeaturePoint {
+                                timestamp_ms: 10,
+                                value: b"loaded-10".to_vec(),
+                            },
+                            FeaturePoint {
+                                timestamp_ms: 20,
+                                value: b"loaded-20".to_vec(),
+                            },
+                        ],
+                    },
+                })
+                .response,
+            CommandResponse::Integer { value: 2 }
+        );
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::IpsAddWithOptions {
+                key: "ips-load".to_string(),
+                timestamp_ms: 30,
+                instance: b"opt-30".to_vec(),
+                action_type: Some(7),
+                table_id: Some(42),
+                request_id: Some("req-30".to_string()),
+            },
+        });
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::IpsAddWithOptions {
+                key: "ips-load".to_string(),
+                timestamp_ms: 40,
+                instance: b"opt-40".to_vec(),
+                action_type: Some(7),
+                table_id: Some(43),
+                request_id: Some("req-40".to_string()),
+            },
+        });
+
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::IpsSnapshot {
+                        key: "ips-load".to_string(),
+                        start_ms: 0,
+                        end_ms: 35,
+                        count: None,
+                    },
+                })
+                .response,
+            CommandResponse::FeaturePoints {
+                points: vec![
+                    FeaturePoint {
+                        timestamp_ms: 10,
+                        value: b"loaded-10".to_vec(),
+                    },
+                    FeaturePoint {
+                        timestamp_ms: 20,
+                        value: b"loaded-20".to_vec(),
+                    },
+                    FeaturePoint {
+                        timestamp_ms: 30,
+                        value: b"opt-30".to_vec(),
+                    },
+                ]
+            }
+        );
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::IpsFilter {
+                        key: "ips-load".to_string(),
+                        start_ms: 0,
+                        end_ms: 100,
+                        count: Some(10),
+                        action_type: Some(7),
+                        table_id: Some(42),
+                    },
+                })
+                .response,
+            CommandResponse::FeaturePoints {
+                points: vec![FeaturePoint {
+                    timestamp_ms: 30,
+                    value: b"opt-30".to_vec(),
+                }]
+            }
+        );
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::IpsStat {
+                        key: "ips-load".to_string(),
+                        start_ms: 0,
+                        end_ms: 100,
+                    },
+                })
+                .response,
+            CommandResponse::IpsStats {
+                stats: IpsStats {
+                    total: 4,
+                    first_timestamp_ms: Some(10),
+                    last_timestamp_ms: Some(40),
+                    action_type_counts: vec![(7, 2)],
+                    table_id_counts: vec![(42, 1), (43, 1)],
+                }
             }
         );
     }

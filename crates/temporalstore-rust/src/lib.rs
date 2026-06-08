@@ -64,9 +64,10 @@ pub use raft::{
     ProductionRaftRuntimeOptions, ProductionRaftSecurity, ProductionRaftSecurityMode,
     ProductionRaftTimerHandle, RaftCluster, RaftClusterStatus, RaftConfig, RaftConfigError,
     RaftDeploymentMode, RaftDistributedReadiness, RaftError, RaftHardState, RaftMembership,
-    RaftNodeId, RaftNodeStatus, RaftProductionReadinessError, RaftReadOptions, RaftReadStrategy,
-    RaftRole, RaftRpcRuntimeOptions, RaftTickOutcome, RaftTransport, RaftWalRecord,
-    ReadIndexResponse, VoteRequest, VoteResponse,
+    RaftMembershipChangeKind, RaftMembershipChangePlan, RaftMembershipChangeReport, RaftNodeId,
+    RaftNodeStatus, RaftProductionReadinessError, RaftReadOptions, RaftReadStrategy, RaftRole,
+    RaftRpcRuntimeOptions, RaftTickOutcome, RaftTransport, RaftWalRecord, ReadIndexResponse,
+    VoteRequest, VoteResponse,
 };
 pub use readiness::{production_readiness_report, ProductionReadinessReport, ReadinessArea};
 pub use rebalance::{
@@ -82,5 +83,5 @@ pub use shared_store::{
 };
 pub use types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,
-    ExecuteResponse, FeaturePoint, ShardId, Status,
+    ExecuteResponse, FeaturePoint, IpsStats, ShardId, Status,
 };

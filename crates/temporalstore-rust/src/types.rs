@@ -84,6 +84,15 @@ pub struct SequenceQuerySpec {
     pub filters: Vec<FeatureFilter>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IpsStats {
+    pub total: u64,
+    pub first_timestamp_ms: Option<u64>,
+    pub last_timestamp_ms: Option<u64>,
+    pub action_type_counts: Vec<(u32, u64)>,
+    pub table_id_counts: Vec<(u64, u64)>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Command {
@@ -230,6 +239,10 @@ pub enum Command {
         #[serde(default)]
         request_id: Option<String>,
     },
+    IpsLoad {
+        key: String,
+        points: Vec<FeaturePoint>,
+    },
     IpsQueryLast {
         key: String,
         count: usize,
@@ -258,6 +271,29 @@ pub enum Command {
         end_ms: u64,
     },
     IpsQueryRangeWithOptions {
+        key: String,
+        start_ms: u64,
+        end_ms: u64,
+        #[serde(default)]
+        count: Option<usize>,
+        #[serde(default)]
+        action_type: Option<u32>,
+        #[serde(default)]
+        table_id: Option<u64>,
+    },
+    IpsSnapshot {
+        key: String,
+        start_ms: u64,
+        end_ms: u64,
+        #[serde(default)]
+        count: Option<usize>,
+    },
+    IpsStat {
+        key: String,
+        start_ms: u64,
+        end_ms: u64,
+    },
+    IpsFilter {
         key: String,
         start_ms: u64,
         end_ms: u64,
@@ -335,6 +371,9 @@ pub enum CommandResponse {
     },
     SequenceRowGroups {
         groups: Vec<(String, Vec<SequenceFeatureRow>)>,
+    },
+    IpsStats {
+        stats: IpsStats,
     },
 }
 

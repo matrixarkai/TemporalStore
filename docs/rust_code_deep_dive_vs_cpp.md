@@ -156,6 +156,7 @@ Implemented behavior:
 - manual and automatic leader promotion
 - scale up with caught-up replica
 - scale down and continue if majority remains
+- add/remove/replace membership-change plans with joint consensus, follower catch-up, quorum checks, commit/abort, and reports
 - read policies:
   - default `pin_primary = true`
   - explicit replica read
@@ -169,7 +170,7 @@ Missing production pieces:
 - real network transport
 - persistent Raft log
 - snapshots wired into Raft install-snapshot
-- joint consensus/member change protocol
+- metaserver-driven networked member-change orchestration
 - leader leases/read-index
 - backpressure
 - compaction
@@ -245,7 +246,7 @@ That is why "rewrite C++ TemporalStore in Rust" is not just translating syntax. 
 | Common/string/hash/set APIs | Mostly present, including Redis `SET NX/XX GET EX/PX` | Mature | Missing exact internal wire compatibility. |
 | Feature API | Append/query/replace/delete/agg plus write-policy append with typed client and RESP coverage | Rich feature point/range/write policy support | Need C++ proto-compatible nested feature shape and exact aggregate semantics. |
 | Sequence API | Typed rows, filters, and batch query | Part of richer feature/data modules | Need exact C++ sequence edge-case policy if required by callers. |
-| IPS | Add/query-last/range/batch/remove/delete/count plus idempotent/dimensional add and dimension-filtered range with typed client and RESP coverage | Rich add/batch query/remove/load/delete/stat/filter/snap behavior | Missing load/snapshot/stat/filter and server aggregation. |
+| IPS | Add/query-last/range/batch/remove/delete/count plus idempotent/dimensional add, dimension-filtered range, local load, range snapshot, stats, and named filter with typed client and RESP coverage | Rich add/batch query/remove/load/delete/stat/filter/snap behavior | Missing production snap metadata and server aggregation. |
 | Risk | Increment/count plus precision/TTL increment, sum/min/max/first/last/events/detail with typed client and RESP coverage | Rich H/CPC/FOL/query/manager/window/precision semantics | Missing CPC/list-specific behavior and manager APIs. |
 | Local storage | Local page segments + JSON index | Oplog + page/slot store + dump/recover | Need WAL/oplog, dump scheduler, recovery boundaries, compaction. |
 | Cache | Simple memory + disk cache | mtcache/blockcache-like production cache | Need production SSD cache engine or Rust equivalent. |

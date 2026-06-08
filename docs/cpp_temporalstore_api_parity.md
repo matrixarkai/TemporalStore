@@ -71,11 +71,17 @@ IPS:
 - remove timestamp -> `IpsRemove`
 - delete key -> `IpsDelete`
 - count range -> `IpsCount`
+- load point snapshot -> `IpsLoad`
+- snapshot range -> `IpsSnapshot`
+- range stats -> `IpsStat`
+- named dimension filter -> `IpsFilter`
 - Typed client coverage: `ips_add`, `ips_add_with_options`, `ips_query_last`,
   `ips_query_range`, `ips_query_range_with_options`, `ips_batch_query_last`,
-  `ips_remove`, `ips_delete`, `ips_count`
+  `ips_remove`, `ips_delete`, `ips_count`, `ips_load`, `ips_snapshot`, `ips_stat`,
+  `ips_filter`
 - RESP coverage: `IPSADD`, `IPSADDOPT`, `IPSQUERYLAST`, `IPSQUERYRANGE`,
-  `IPSQUERYRANGEOPT`, `IPSBATCHQUERYLAST`, `IPSREMOVE`, `IPSDEL`, `IPSCOUNT`
+  `IPSQUERYRANGEOPT`, `IPSBATCHQUERYLAST`, `IPSREMOVE`, `IPSDEL`, `IPSCOUNT`,
+  `IPSLOAD`, `IPSSNAPSHOT`, `IPSSTAT`, `IPSFILTER`
 
 Risk:
 
@@ -117,9 +123,10 @@ Redis operational/admin compatibility:
 IPS:
 
 - Rust covers add, dimension/idempotent add, query-last, range query, dimension-filtered range
-  query, batch query-last, remove timestamp, delete key, and count range, with typed client and
-  RESP coverage.
-- C++ IPS additionally has `LOAD`, richer feature-stat filters, server aggregation, and snap info.
+  query, batch query-last, remove timestamp, delete key, count range, local load, range snapshot,
+  stats, and named filter, with typed client and RESP coverage.
+- C++ IPS additionally has richer server aggregation and production snap metadata beyond the local
+  Rust snapshot/stat surface.
 
 Risk:
 
