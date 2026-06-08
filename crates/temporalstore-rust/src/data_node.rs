@@ -139,6 +139,8 @@ pub struct GcResponse {
     pub oplog_records_removed: usize,
     pub index_log_records_removed: usize,
     pub page_segments_removed: usize,
+    #[serde(default)]
+    pub page_segments_retained_live: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -830,6 +832,7 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
             let mut oplog_records_removed = 0;
             let mut index_log_records_removed = 0;
             let mut page_segments_removed = 0;
+            let mut page_segments_retained_live = 0;
             if cancellation.is_requested() {
                 return DataNodeTaskOutput::Gc(GcResponse {
                     status: Status::error(
@@ -843,6 +846,7 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
                     oplog_records_removed,
                     index_log_records_removed,
                     page_segments_removed,
+                    page_segments_retained_live,
                 });
             }
             match inner.engine.cache().invalidate_shard(request.shard_id) {
@@ -867,6 +871,7 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
                     oplog_records_removed,
                     index_log_records_removed,
                     page_segments_removed,
+                    page_segments_retained_live,
                 });
             }
             if let Some(retain_from_sequence) = request.retain_oplog_from_sequence {
@@ -896,6 +901,7 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
                     oplog_records_removed,
                     index_log_records_removed,
                     page_segments_removed,
+                    page_segments_retained_live,
                 });
             }
             if status.ok {
@@ -925,17 +931,21 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
                     oplog_records_removed,
                     index_log_records_removed,
                     page_segments_removed,
+                    page_segments_retained_live,
                 });
             }
             if status.ok {
                 if let Some(retain_from_page_segment_id) = request.retain_page_segments_from_id {
-                    match inner
-                        .engine
-                        .page_store()
-                        .gc_segments_before(retain_from_page_segment_id)
-                    {
+                    let live_page_segment_ids =
+                        inner.engine.live_page_segment_ids(request.shard_id);
+                    match inner.engine.page_store().gc_segments_before_with_live_refs(
+                        retain_from_page_segment_id,
+                        live_page_segment_ids,
+                    ) {
                         Ok(report) => {
                             page_segments_removed = report.removed_page_segment_ids.len();
+                            page_segments_retained_live =
+                                report.retained_live_page_segment_ids.len();
                         }
                         Err(err) => {
                             status = Status::error("page_store_gc_failed", &err.to_string());
@@ -957,6 +967,7 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
                 oplog_records_removed,
                 index_log_records_removed,
                 page_segments_removed,
+                page_segments_retained_live,
             })
         }
     }
@@ -1009,6 +1020,7 @@ fn task_timeout_output(kind: DataNodeTaskKind) -> DataNodeTaskOutput {
             oplog_records_removed: 0,
             index_log_records_removed: 0,
             page_segments_removed: 0,
+            page_segments_retained_live: 0,
         }),
     }
 }
@@ -1050,6 +1062,7 @@ fn task_canceled_output(task: &QueuedTask, message: &str) -> DataNodeTaskOutput 
             oplog_records_removed: 0,
             index_log_records_removed: 0,
             page_segments_removed: 0,
+            page_segments_retained_live: 0,
         }),
     }
 }
@@ -1345,6 +1358,7 @@ mod tests {
         assert_eq!(output.oplog_records_removed, 2);
         assert_eq!(output.index_log_records_removed, 1);
         assert_eq!(output.page_segments_removed, 1);
+        assert_eq!(output.page_segments_retained_live, 1);
         assert_eq!(engine.oplog_store().stats(1).last_sequence, 3);
         assert_eq!(engine.index_log_store().stats(1).last_sequence, 3);
         assert_eq!(engine.page_store().segment_ids().unwrap(), vec![0, 2]);

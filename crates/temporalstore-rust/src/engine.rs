@@ -758,6 +758,18 @@ impl TemporalEngine {
         fs::write(self.index_path(shard_id), bytes)
     }
 
+    pub fn live_page_segment_ids(&self, shard_id: ShardId) -> Vec<u64> {
+        let shards = self.shards.read().expect("engine lock poisoned");
+        let mut ids = shards
+            .get(&shard_id)
+            .map(collect_live_page_segment_ids)
+            .unwrap_or_default()
+            .into_iter()
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        ids
+    }
+
     fn index_path(&self, shard_id: ShardId) -> PathBuf {
         self.index_dir.join(format!("shard-{shard_id}.index.json"))
     }
@@ -1947,6 +1959,35 @@ fn delete_record(shard: &mut ShardState, key: &str) -> bool {
     removed
 }
 
+fn collect_live_page_segment_ids(shard: &ShardState) -> BTreeSet<u64> {
+    let mut ids = BTreeSet::new();
+    ids.extend(
+        shard
+            .strings
+            .values()
+            .map(|address| address.page_segment_id),
+    );
+    for fields in shard.hashes.values() {
+        ids.extend(fields.values().map(|address| address.page_segment_id));
+    }
+    for members in shard.sets.values() {
+        ids.extend(members.values().map(|address| address.page_segment_id));
+    }
+    for series in shard.features.values() {
+        ids.extend(series.values().map(|address| address.page_segment_id));
+    }
+    for series in shard.sequences.values() {
+        ids.extend(series.values().map(|address| address.page_segment_id));
+    }
+    for series in shard.ips.values() {
+        ids.extend(series.values().map(|address| address.page_segment_id));
+    }
+    for series in shard.ips_meta.values() {
+        ids.extend(series.values().map(|meta| meta.address.page_segment_id));
+    }
+    ids
+}
+
 fn record_exists(shard: &ShardState, key: &str) -> bool {
     shard.strings.contains_key(key)
         || shard.hashes.contains_key(key)
@@ -2267,6 +2308,90 @@ fn cached_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_page_segment_ids_scan_all_index_backed_data_models() {
+        let mut shard = ShardState::default();
+        shard.strings.insert(
+            "string".to_string(),
+            PageAddress {
+                page_segment_id: 7,
+                offset: 0,
+                length: 1,
+            },
+        );
+        shard.hashes.entry("hash".to_string()).or_default().insert(
+            "field".to_string(),
+            PageAddress {
+                page_segment_id: 8,
+                offset: 0,
+                length: 1,
+            },
+        );
+        shard.sets.entry("set".to_string()).or_default().insert(
+            b"member".to_vec(),
+            PageAddress {
+                page_segment_id: 9,
+                offset: 0,
+                length: 1,
+            },
+        );
+        shard
+            .features
+            .entry("feature".to_string())
+            .or_default()
+            .insert(
+                10,
+                PageAddress {
+                    page_segment_id: 10,
+                    offset: 0,
+                    length: 1,
+                },
+            );
+        shard
+            .sequences
+            .entry("sequence".to_string())
+            .or_default()
+            .insert(
+                11,
+                PageAddress {
+                    page_segment_id: 11,
+                    offset: 0,
+                    length: 1,
+                },
+            );
+        shard.ips.entry("ips".to_string()).or_default().insert(
+            12,
+            PageAddress {
+                page_segment_id: 12,
+                offset: 0,
+                length: 1,
+            },
+        );
+        shard.ips_meta.entry("ips".to_string()).or_default().insert(
+            13,
+            IpsPointMeta {
+                address: PageAddress {
+                    page_segment_id: 13,
+                    offset: 0,
+                    length: 1,
+                },
+                action_type: Some(1),
+                table_id: Some(2),
+                request_id: Some("r".to_string()),
+            },
+        );
+        shard
+            .risk
+            .entry("risk".to_string())
+            .or_default()
+            .insert(14, 1);
+
+        let ids = collect_live_page_segment_ids(&shard)
+            .into_iter()
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec![7, 8, 9, 10, 11, 12, 13]);
+    }
 
     #[test]
     fn string_round_trip() {

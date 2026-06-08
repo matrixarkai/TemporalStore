@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
@@ -32,6 +33,10 @@ pub struct PageStoreGcReport {
     pub retain_from_page_segment_id: u64,
     pub removed_page_segment_ids: Vec<u64>,
     pub retained_page_segment_ids: Vec<u64>,
+    #[serde(default)]
+    pub retained_live_page_segment_ids: Vec<u64>,
+    #[serde(default)]
+    pub retained_current_page_segment_ids: Vec<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -170,18 +175,36 @@ impl LocalPageStore {
         &self,
         retain_from_page_segment_id: u64,
     ) -> Result<PageStoreGcReport, PageStoreError> {
+        self.gc_segments_before_with_live_refs(retain_from_page_segment_id, std::iter::empty())
+    }
+
+    pub fn gc_segments_before_with_live_refs(
+        &self,
+        retain_from_page_segment_id: u64,
+        live_page_segment_ids: impl IntoIterator<Item = u64>,
+    ) -> Result<PageStoreGcReport, PageStoreError> {
         let inner = self.inner.lock().expect("page store lock poisoned");
         fs::create_dir_all(&inner.root)?;
         let current_page_segment_id = inner.page_segment_id;
+        let live_page_segment_ids = live_page_segment_ids.into_iter().collect::<BTreeSet<_>>();
         let mut removed = Vec::new();
         let mut retained = Vec::new();
+        let mut retained_live = Vec::new();
+        let mut retained_current = Vec::new();
         for page_segment_id in segment_ids_at(&inner.root)? {
-            if page_segment_id < retain_from_page_segment_id
-                && page_segment_id != current_page_segment_id
-            {
+            let below_retention_floor = page_segment_id < retain_from_page_segment_id;
+            let is_current = page_segment_id == current_page_segment_id;
+            let is_live = live_page_segment_ids.contains(&page_segment_id);
+            if below_retention_floor && !is_current && !is_live {
                 fs::remove_file(segment_path(&inner.root, page_segment_id))?;
                 removed.push(page_segment_id);
             } else {
+                if below_retention_floor && is_current {
+                    retained_current.push(page_segment_id);
+                }
+                if below_retention_floor && is_live {
+                    retained_live.push(page_segment_id);
+                }
                 retained.push(page_segment_id);
             }
         }
@@ -189,6 +212,8 @@ impl LocalPageStore {
             retain_from_page_segment_id,
             removed_page_segment_ids: removed,
             retained_page_segment_ids: retained,
+            retained_live_page_segment_ids: retained_live,
+            retained_current_page_segment_ids: retained_current,
         })
     }
 
@@ -257,6 +282,25 @@ mod tests {
         let report = store.gc_segments_before(2).unwrap();
         assert_eq!(report.removed_page_segment_ids, vec![1]);
         assert_eq!(report.retained_page_segment_ids, vec![0, 2]);
+        assert_eq!(report.retained_current_page_segment_ids, vec![0]);
+        assert!(report.retained_live_page_segment_ids.is_empty());
         assert_eq!(store.segment_ids().unwrap(), vec![0, 2]);
+    }
+
+    #[test]
+    fn gc_segments_retains_live_index_references_below_floor() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalPageStore::new(dir.path());
+        store.install_segment(0, b"current").unwrap();
+        store.install_segment(1, b"live").unwrap();
+        store.install_segment(2, b"stale").unwrap();
+        store.install_segment(3, b"keep").unwrap();
+
+        let report = store.gc_segments_before_with_live_refs(3, [1_u64]).unwrap();
+        assert_eq!(report.removed_page_segment_ids, vec![2]);
+        assert_eq!(report.retained_page_segment_ids, vec![0, 1, 3]);
+        assert_eq!(report.retained_current_page_segment_ids, vec![0]);
+        assert_eq!(report.retained_live_page_segment_ids, vec![1]);
+        assert_eq!(store.segment_ids().unwrap(), vec![0, 1, 3]);
     }
 }
