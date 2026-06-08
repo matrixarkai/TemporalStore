@@ -1308,6 +1308,43 @@ fn execute_on_shard(
                 CommandResponse::FeaturePoints { points }
             },
         ),
+        Command::FeatureQueryFiltered {
+            key,
+            start_ms,
+            end_ms,
+            count,
+            filters,
+        } => {
+            let limit = count.unwrap_or(feature_max_size).min(feature_max_size);
+            let points = shard
+                .features
+                .get(&key)
+                .map(|series| {
+                    series
+                        .range(start_ms..=end_ms)
+                        .filter_map(|(timestamp_ms, address)| {
+                            read_page_bytes(cache, page_store, shard_id, address).and_then(
+                                |value| {
+                                    let row = SequenceFeatureRow::decode_cpp_feature_value(
+                                        *timestamp_ms,
+                                        &value,
+                                    )?;
+                                    filters
+                                        .iter()
+                                        .all(|filter| sequence_filter_matches(&row, filter))
+                                        .then_some(FeaturePoint {
+                                            timestamp_ms: *timestamp_ms,
+                                            value,
+                                        })
+                                },
+                            )
+                        })
+                        .take(limit)
+                        .collect()
+                })
+                .unwrap_or_default();
+            CommandResponse::FeaturePoints { points }
+        }
         Command::FeatureReplace {
             key,
             start_ms,
@@ -2946,6 +2983,71 @@ mod tests {
                     value: b"a".to_vec()
                 }]
             }
+        );
+    }
+
+    #[test]
+    fn feature_query_filtered_matches_cpp_protobuf_feature_point() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let matching = SequenceFeatureRow {
+            timestamp_ms: 777,
+            gid: 1,
+            action_type: 2,
+            duration: 3,
+            author_id: 1,
+        };
+        let other = SequenceFeatureRow {
+            timestamp_ms: 778,
+            gid: 2,
+            action_type: 2,
+            duration: 5,
+            author_id: 9,
+        };
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureAppend {
+                key: "9".to_string(),
+                points: vec![
+                    FeaturePoint {
+                        timestamp_ms: matching.timestamp_ms,
+                        value: matching.encode_cpp_feature_value(),
+                    },
+                    FeaturePoint {
+                        timestamp_ms: other.timestamp_ms,
+                        value: other.encode_cpp_feature_value(),
+                    },
+                    FeaturePoint {
+                        timestamp_ms: 779,
+                        value: b"not-protobuf".to_vec(),
+                    },
+                ],
+            },
+        });
+
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureQueryFiltered {
+                key: "9".to_string(),
+                start_ms: 0,
+                end_ms: 100_000,
+                count: Some(1_000),
+                filters: vec![FeatureFilter {
+                    field: "gid".to_string(),
+                    op: FeatureFilterOp::Equal,
+                    value: 1,
+                }],
+            },
+        });
+
+        let CommandResponse::FeaturePoints { points } = response.response else {
+            panic!("expected feature points");
+        };
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].timestamp_ms, 777);
+        assert_eq!(
+            SequenceFeatureRow::decode_cpp_feature_value(points[0].timestamp_ms, &points[0].value),
+            Some(matching)
         );
     }
 

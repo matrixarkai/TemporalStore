@@ -1055,6 +1055,32 @@ impl TemporalStoreTable {
         }
     }
 
+    pub fn feature_query_filtered(
+        &self,
+        key: impl Into<String>,
+        start_ms: u64,
+        end_ms: u64,
+        count: Option<usize>,
+        filters: Vec<FeatureFilter>,
+    ) -> Result<Vec<FeaturePoint>, ClientError> {
+        match self
+            .execute(Command::FeatureQueryFiltered {
+                key: key.into(),
+                start_ms,
+                end_ms,
+                count,
+                filters,
+            })?
+            .response
+        {
+            CommandResponse::FeaturePoints { points } => Ok(points),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "feature_query_filtered",
+                response,
+            }),
+        }
+    }
+
     pub fn feature_replace(
         &self,
         key: impl Into<String>,
@@ -1842,6 +1868,7 @@ fn command_key(command: &Command) -> Option<&str> {
         | Command::FeatureAppend { key, .. }
         | Command::FeatureAppendWithPolicy { key, .. }
         | Command::FeatureQuery { key, .. }
+        | Command::FeatureQueryFiltered { key, .. }
         | Command::FeatureReplace { key, .. }
         | Command::FeatureDelete { key }
         | Command::FeatureAggQuery { key, .. }

@@ -42,6 +42,56 @@ pub struct SequenceFeatureRow {
     pub author_id: u64,
 }
 
+impl SequenceFeatureRow {
+    pub fn encode_cpp_feature_value(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        encode_varint_field(&mut out, 1, self.gid);
+        encode_varint_field(&mut out, 2, self.action_type as u64);
+        encode_varint_field(&mut out, 3, self.duration as u64);
+        encode_varint_field(&mut out, 4, self.author_id);
+        out
+    }
+
+    pub fn decode_cpp_feature_value(timestamp_ms: u64, value: &[u8]) -> Option<Self> {
+        let mut cursor = 0;
+        let mut gid = None;
+        let mut action_type = None;
+        let mut duration = None;
+        let mut author_id = None;
+        while cursor < value.len() {
+            let tag = decode_varint(value, &mut cursor)?;
+            let field = tag >> 3;
+            let wire_type = tag & 0x7;
+            match (field, wire_type) {
+                (1, 0) => gid = Some(decode_varint(value, &mut cursor)?),
+                (2, 0) => action_type = u32::try_from(decode_varint(value, &mut cursor)?).ok(),
+                (3, 0) => duration = u32::try_from(decode_varint(value, &mut cursor)?).ok(),
+                (4, 0) => author_id = Some(decode_varint(value, &mut cursor)?),
+                (_, 0) => {
+                    let _ = decode_varint(value, &mut cursor)?;
+                }
+                (_, 1) => cursor = cursor.checked_add(8)?,
+                (_, 2) => {
+                    let len = usize::try_from(decode_varint(value, &mut cursor)?).ok()?;
+                    cursor = cursor.checked_add(len)?;
+                }
+                (_, 5) => cursor = cursor.checked_add(4)?,
+                _ => return None,
+            }
+            if cursor > value.len() {
+                return None;
+            }
+        }
+        Some(Self {
+            timestamp_ms,
+            gid: gid?,
+            action_type: action_type?,
+            duration: duration?,
+            author_id: author_id?,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FeatureFilterOp {
@@ -191,6 +241,15 @@ pub enum Command {
         #[serde(default)]
         count: Option<usize>,
     },
+    FeatureQueryFiltered {
+        key: String,
+        start_ms: u64,
+        end_ms: u64,
+        #[serde(default)]
+        count: Option<usize>,
+        #[serde(default)]
+        filters: Vec<FeatureFilter>,
+    },
     FeatureReplace {
         key: String,
         start_ms: u64,
@@ -336,6 +395,32 @@ pub enum Command {
         #[serde(default)]
         count: Option<usize>,
     },
+}
+
+fn encode_varint_field(out: &mut Vec<u8>, field_number: u64, value: u64) {
+    encode_varint(out, field_number << 3);
+    encode_varint(out, value);
+}
+
+fn encode_varint(out: &mut Vec<u8>, mut value: u64) {
+    while value >= 0x80 {
+        out.push((value as u8) | 0x80);
+        value >>= 7;
+    }
+    out.push(value as u8);
+}
+
+fn decode_varint(bytes: &[u8], cursor: &mut usize) -> Option<u64> {
+    let mut value = 0_u64;
+    for shift in (0..64).step_by(7) {
+        let byte = *bytes.get(*cursor)?;
+        *cursor += 1;
+        value |= u64::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            return Some(value);
+        }
+    }
+    None
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

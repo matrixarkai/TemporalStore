@@ -6,8 +6,8 @@ use std::thread;
 
 use crate::client::{slot_id_for_key, stable_key_hash};
 use crate::types::{
-    Command, CommandResponse, ExecuteRequest, FeaturePoint, FeatureWritePolicy, ShardId,
-    StringSetCondition,
+    Command, CommandResponse, ExecuteRequest, FeatureFilter, FeatureFilterOp, FeaturePoint,
+    FeatureWritePolicy, ShardId, StringSetCondition,
 };
 use crate::TemporalStoreClient;
 
@@ -456,6 +456,52 @@ pub fn execute_redis_command_with_state(
                         .collect(),
                 ),
                 Ok(_) => RespValue::Error("ERR invalid fquery response".to_string()),
+                Err(err) => RespValue::Error(format!("ERR {err}")),
+            }
+        }
+        "FQUERYFILTER" if args.len() == 8 => {
+            let start_ms = match parse_u64(&args[2], "start_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let end_ms = match parse_u64(&args[3], "end_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let count = match parse_usize(&args[4], "count") {
+                Ok(value) => Some(value),
+                Err(err) => return RespValue::Error(err),
+            };
+            let op = match parse_feature_filter_op(&string_arg(&args[6])) {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            match execute(Command::FeatureQueryFiltered {
+                key: string_arg(&args[1]),
+                start_ms,
+                end_ms,
+                count,
+                filters: vec![FeatureFilter {
+                    field: string_arg(&args[5]),
+                    op,
+                    value: match parse_u64(&args[7], "filter_value") {
+                        Ok(value) => value,
+                        Err(err) => return RespValue::Error(err),
+                    },
+                }],
+            }) {
+                Ok(CommandResponse::FeaturePoints { points }) => RespValue::Array(
+                    points
+                        .into_iter()
+                        .map(|point| {
+                            RespValue::Array(vec![
+                                RespValue::Integer(point.timestamp_ms as i64),
+                                RespValue::Bulk(Some(point.value)),
+                            ])
+                        })
+                        .collect(),
+                ),
+                Ok(_) => RespValue::Error("ERR invalid fqueryfilter response".to_string()),
                 Err(err) => RespValue::Error(format!("ERR {err}")),
             }
         }
@@ -1213,6 +1259,16 @@ fn parse_feature_write_policy(value: &[u8]) -> Result<FeatureWritePolicy, String
         "NX" | "INSERT_IF_ABSENT" => Ok(FeatureWritePolicy::InsertIfAbsent),
         "XX" | "REPLACE_EXISTING" => Ok(FeatureWritePolicy::ReplaceExisting),
         _ => Err("ERR policy must be UPSERT, NX, or XX".to_string()),
+    }
+}
+
+fn parse_feature_filter_op(value: &str) -> Result<FeatureFilterOp, String> {
+    match value.to_ascii_uppercase().as_str() {
+        "=" | "==" | "EQ" => Ok(FeatureFilterOp::Equal),
+        "!=" | "<>" | "NE" => Ok(FeatureFilterOp::NotEqual),
+        ">" | "GT" => Ok(FeatureFilterOp::GreaterThan),
+        "<" | "LT" => Ok(FeatureFilterOp::LessThan),
+        _ => Err("ERR filter op must be =, !=, >, or <".to_string()),
     }
 }
 

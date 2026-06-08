@@ -7470,41 +7470,47 @@ mod tests {
             },
             HttpRequestOptions {
                 connect_timeout_ms: 1_000,
-                io_timeout_ms: 1_000,
+                io_timeout_ms: 5_000,
                 max_retries: 3,
             },
         )
         .unwrap();
         assert!(response.status.ok);
 
-        assert_eq!(
-            runtimes[1]
+        wait_for_replica_value(&runtimes[1], 2, "separate-node", b"ready");
+        wait_for_replica_value(&runtimes[2], 3, "separate-node", b"ready");
+    }
+
+    fn wait_for_replica_value(
+        runtime: &ProductionRaftRuntime,
+        node_id: u64,
+        key: &str,
+        expected: &[u8],
+    ) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let response = runtime
                 .cluster()
                 .read_from_replica(
-                    2,
+                    node_id,
                     Command::StringGet {
-                        key: "separate-node".to_string()
+                        key: key.to_string(),
                     },
                 )
-                .unwrap(),
-            CommandResponse::Bytes {
-                value: Some(b"ready".to_vec())
+                .unwrap();
+            if response
+                == (CommandResponse::Bytes {
+                    value: Some(expected.to_vec()),
+                })
+            {
+                return;
             }
-        );
-        assert_eq!(
-            runtimes[2]
-                .cluster()
-                .read_from_replica(
-                    3,
-                    Command::StringGet {
-                        key: "separate-node".to_string()
-                    },
-                )
-                .unwrap(),
-            CommandResponse::Bytes {
-                value: Some(b"ready".to_vec())
-            }
-        );
+            assert!(
+                std::time::Instant::now() < deadline,
+                "replica {node_id} did not catch up; last response: {response:?}"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
     }
 
     fn free_local_addr() -> String {

@@ -46,12 +46,17 @@ Feature:
 - write-policy add -> `FeatureAppendWithPolicy` with `upsert`, `insert_if_absent`, and
   `replace_existing`
 - `QUERY` -> `FeatureQuery`
+- C++ protobuf `FeaturePoint` value filtering -> `FeatureQueryFiltered`
 - `AGGQUERY` -> `FeatureAggQuery`
 - `REPLACE` -> `FeatureReplace`
 - `DEL` -> `FeatureDelete`
 - Typed client coverage: `feature_append`, `feature_append_with_policy`, `feature_query`,
-  `feature_replace`, `feature_delete`, `feature_agg_query`
-- RESP coverage: `FAPPEND`, `FAPPENDPOLICY`, `FQUERY`, `FREPLACE`, `FDEL`, `FAGG`
+  `feature_query_filtered`, `feature_replace`, `feature_delete`, `feature_agg_query`
+- RESP coverage: `FAPPEND`, `FAPPENDPOLICY`, `FQUERY`, `FQUERYFILTER`, `FREPLACE`, `FDEL`, `FAGG`
+- Rust can encode/decode the C++ `feature::FeaturePoint` protobuf value shape
+  (`gid`, `action_type`, `duration`, `author_id`) without generated C++ proto code.
+  `FeatureQueryFiltered` decodes those stored point bytes, applies typed filters matching the
+  C++ fields, and returns the original point bytes in timestamp order.
 
 Sequence:
 
