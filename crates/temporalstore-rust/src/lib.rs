@@ -66,8 +66,8 @@ pub use raft::{
     RaftDeploymentMode, RaftDistributedReadiness, RaftError, RaftHardState, RaftMembership,
     RaftMembershipChangeKind, RaftMembershipChangePlan, RaftMembershipChangeReport, RaftNodeId,
     RaftNodeStatus, RaftProductionReadinessError, RaftReadOptions, RaftReadStrategy, RaftRole,
-    RaftRpcRuntimeOptions, RaftTickOutcome, RaftTransport, RaftWalRecord, ReadIndexResponse,
-    VoteRequest, VoteResponse,
+    RaftRpcRuntimeOptions, RaftTickOutcome, RaftTransport, RaftWalRecord, RaftWalSegmentInfo,
+    RaftWalSegmentReport, ReadIndexResponse, VoteRequest, VoteResponse,
 };
 pub use readiness::{production_readiness_report, ProductionReadinessReport, ReadinessArea};
 pub use rebalance::{

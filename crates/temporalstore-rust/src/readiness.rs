@@ -104,6 +104,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "WAL-backed local Raft state persists commits, leadership, and membership"
                     .to_string(),
+                "local Raft WAL supports segmented append, sync, segment retention, ordered recovery, and corrupt-tail truncation"
+                    .to_string(),
                 "data-node Raft exposes planned add/remove/replace membership changes with joint-consensus, catch-up, quorum checks, and reports"
                     .to_string(),
                 "chunked snapshot message assembly and stale snapshot rejection are tested"
@@ -111,8 +113,6 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
             ],
             missing: vec![
                 "real OpenRaft or raft-rs data-node FSM/storage implementation".to_string(),
-                "durable per-node Raft log store with production segment, sync, and truncation policy"
-                    .to_string(),
                 "metaserver scheduler integration that drives networked data-node Raft membership plans from shard topology"
                     .to_string(),
                 "Raft snapshot install wired to TemporalEngine freeze/flush/download/install"

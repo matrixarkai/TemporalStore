@@ -193,6 +193,19 @@ pub struct RaftWalRecovery {
     pub corrupt_tail: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftWalSegmentInfo {
+    pub segment_id: u64,
+    pub path: String,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftWalSegmentReport {
+    pub active_segment_id: u64,
+    pub segments: Vec<RaftWalSegmentInfo>,
+}
+
 #[derive(Debug, Clone)]
 pub struct LocalRaftWal {
     root: PathBuf,
@@ -244,6 +257,116 @@ impl LocalRaftWal {
     ) -> io::Result<()> {
         self.append_node_record(shard_id, node_id, record)?;
         self.compact_node_records(shard_id, node_id, keep_last)
+    }
+
+    pub fn persist_node_segmented(
+        &self,
+        shard_id: ShardId,
+        node_id: RaftNodeId,
+        record: &RaftWalRecord,
+        max_segment_bytes: u64,
+        min_keep_segments: usize,
+    ) -> io::Result<RaftWalSegmentReport> {
+        let max_segment_bytes = max_segment_bytes.max(1);
+        let min_keep_segments = min_keep_segments.max(1);
+        let segment_dir = self.node_segment_dir(shard_id, node_id);
+        fs::create_dir_all(&segment_dir)?;
+        let recovery = self.recover_node_segmented(shard_id, node_id)?;
+        let sequence = recovery.valid_records as u64 + 1;
+        let envelope = RaftWalEnvelope {
+            sequence,
+            checksum: raft_wal_checksum(record)?,
+            record: record.clone(),
+        };
+        let mut encoded = Vec::new();
+        serde_json::to_writer(&mut encoded, &envelope).map_err(io::Error::other)?;
+        encoded.push(b'\n');
+
+        let mut active_segment_id = self
+            .node_segments(shard_id, node_id)?
+            .last()
+            .map(|segment| segment.segment_id)
+            .unwrap_or(1);
+        let mut active_path = self.node_segment_path(shard_id, node_id, active_segment_id);
+        let active_len = fs::metadata(&active_path)
+            .map(|metadata| metadata.len())
+            .unwrap_or_default();
+        if active_len > 0 && active_len + encoded.len() as u64 > max_segment_bytes {
+            active_segment_id += 1;
+            active_path = self.node_segment_path(shard_id, node_id, active_segment_id);
+        }
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&active_path)?;
+        file.write_all(&encoded)?;
+        file.sync_data()?;
+        self.prune_node_segments(shard_id, node_id, min_keep_segments)?;
+        self.segment_report(shard_id, node_id)
+    }
+
+    pub fn recover_node_segmented(
+        &self,
+        shard_id: ShardId,
+        node_id: RaftNodeId,
+    ) -> io::Result<RaftWalRecovery> {
+        let segments = self.node_segments(shard_id, node_id)?;
+        if segments.is_empty() {
+            return self.recover_node_legacy(shard_id, node_id);
+        }
+
+        let mut last_record = None;
+        let mut valid_records = 0usize;
+        let mut truncated_bytes = 0u64;
+        let mut corrupt_tail = false;
+        for segment in segments {
+            let bytes = fs::read(&segment.path)?;
+            let mut offset = 0usize;
+            let mut valid_until = 0usize;
+            while offset < bytes.len() {
+                let remaining = &bytes[offset..];
+                let line_len = remaining
+                    .iter()
+                    .position(|byte| *byte == b'\n')
+                    .map(|pos| pos + 1)
+                    .unwrap_or(remaining.len());
+                let raw_line = &remaining[..line_len];
+                let line = raw_line.strip_suffix(b"\n").unwrap_or(raw_line);
+                if line.is_empty() {
+                    valid_until = offset + line_len;
+                    offset += line_len;
+                    continue;
+                }
+                let Ok(envelope) = serde_json::from_slice::<RaftWalEnvelope>(line) else {
+                    break;
+                };
+                if envelope.checksum != raft_wal_checksum(&envelope.record)? {
+                    break;
+                }
+                valid_records += 1;
+                last_record = Some(envelope.record);
+                valid_until = offset + line_len;
+                offset += line_len;
+            }
+            let segment_truncated = bytes.len().saturating_sub(valid_until) as u64;
+            if segment_truncated > 0 {
+                OpenOptions::new()
+                    .write(true)
+                    .open(&segment.path)?
+                    .set_len(valid_until as u64)?;
+                truncated_bytes += segment_truncated;
+                corrupt_tail = true;
+                break;
+            }
+        }
+
+        Ok(RaftWalRecovery {
+            record: last_record,
+            valid_records,
+            truncated_bytes,
+            corrupt_tail,
+        })
     }
 
     pub fn compact_node_records(
@@ -304,11 +427,19 @@ impl LocalRaftWal {
         shard_id: ShardId,
         node_id: RaftNodeId,
     ) -> io::Result<Option<RaftWalRecord>> {
-        self.recover_node(shard_id, node_id)
+        self.recover_node_segmented(shard_id, node_id)
             .map(|recovery| recovery.record)
     }
 
     pub fn recover_node(
+        &self,
+        shard_id: ShardId,
+        node_id: RaftNodeId,
+    ) -> io::Result<RaftWalRecovery> {
+        self.recover_node_segmented(shard_id, node_id)
+    }
+
+    fn recover_node_legacy(
         &self,
         shard_id: ShardId,
         node_id: RaftNodeId,
@@ -389,6 +520,88 @@ impl LocalRaftWal {
         self.root
             .join(format!("shard-{shard_id}"))
             .join(format!("node-{node_id}.json"))
+    }
+
+    fn node_segment_dir(&self, shard_id: ShardId, node_id: RaftNodeId) -> PathBuf {
+        self.root
+            .join(format!("shard-{shard_id}"))
+            .join(format!("node-{node_id}.segments"))
+    }
+
+    fn node_segment_path(
+        &self,
+        shard_id: ShardId,
+        node_id: RaftNodeId,
+        segment_id: u64,
+    ) -> PathBuf {
+        self.node_segment_dir(shard_id, node_id)
+            .join(format!("{segment_id:020}.wal"))
+    }
+
+    fn node_segments(
+        &self,
+        shard_id: ShardId,
+        node_id: RaftNodeId,
+    ) -> io::Result<Vec<RaftWalSegmentInfo>> {
+        let dir = self.node_segment_dir(shard_id, node_id);
+        if !dir.exists() {
+            return Ok(Vec::new());
+        }
+        let mut segments = Vec::new();
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("wal") {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+                continue;
+            };
+            let Ok(segment_id) = stem.parse::<u64>() else {
+                continue;
+            };
+            segments.push(RaftWalSegmentInfo {
+                segment_id,
+                bytes: entry.metadata()?.len(),
+                path: path.to_string_lossy().into_owned(),
+            });
+        }
+        segments.sort_by_key(|segment| segment.segment_id);
+        Ok(segments)
+    }
+
+    fn prune_node_segments(
+        &self,
+        shard_id: ShardId,
+        node_id: RaftNodeId,
+        min_keep_segments: usize,
+    ) -> io::Result<()> {
+        let segments = self.node_segments(shard_id, node_id)?;
+        if segments.len() <= min_keep_segments {
+            return Ok(());
+        }
+        for segment in segments
+            .iter()
+            .take(segments.len().saturating_sub(min_keep_segments))
+        {
+            fs::remove_file(&segment.path)?;
+        }
+        Ok(())
+    }
+
+    pub fn segment_report(
+        &self,
+        shard_id: ShardId,
+        node_id: RaftNodeId,
+    ) -> io::Result<RaftWalSegmentReport> {
+        let segments = self.node_segments(shard_id, node_id)?;
+        Ok(RaftWalSegmentReport {
+            active_segment_id: segments
+                .last()
+                .map(|segment| segment.segment_id)
+                .unwrap_or(0),
+            segments,
+        })
     }
 }
 
@@ -3409,10 +3622,15 @@ impl RaftClusterInner {
         let Some(wal) = &self.wal else {
             return Ok(());
         };
-        let keep_last = self.config.max_disk_replicate_log_num as usize;
         for (node_id, record) in self.wal_records() {
-            wal.persist_node_with_retention(self.shard_id, node_id, &record, keep_last)
-                .map_err(|err| RaftError::Wal(err.to_string()))?;
+            wal.persist_node_segmented(
+                self.shard_id,
+                node_id,
+                &record,
+                self.config.max_segment_bytes,
+                self.config.min_keep_segment_num as usize,
+            )
+            .map_err(|err| RaftError::Wal(err.to_string()))?;
         }
         Ok(())
     }
@@ -7056,6 +7274,70 @@ mod tests {
     }
 
     #[test]
+    fn local_raft_wal_segments_roll_retain_and_recover_latest_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let cluster = RaftCluster::new_single_shard(7, [1, 2, 3]);
+        let wal = LocalRaftWal::new(dir.path());
+        for index in 0..8 {
+            cluster
+                .propose(Command::StringSet {
+                    key: "segmented-wal".to_string(),
+                    value: format!("v{index}").into_bytes(),
+                })
+                .unwrap();
+            for (node_id, record) in cluster.wal_records() {
+                wal.persist_node_segmented(7, node_id, &record, 256, 2)
+                    .unwrap();
+            }
+        }
+
+        let report = wal.segment_report(7, 1).unwrap();
+        assert_eq!(report.segments.len(), 2);
+        assert!(report.active_segment_id >= 2);
+        assert!(report.segments.iter().all(|segment| segment.bytes > 0));
+
+        let recovery = wal.recover_node(7, 1).unwrap();
+        let record = recovery.record.unwrap();
+        assert_eq!(record.hard_state.commit_index, 8);
+        assert_eq!(record.entries.len(), 8);
+    }
+
+    #[test]
+    fn local_raft_wal_segment_recovery_truncates_corrupt_tail_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let cluster = RaftCluster::new_single_shard(7, [1, 2, 3]);
+        let wal = LocalRaftWal::new(dir.path());
+        for index in 0..3 {
+            cluster
+                .propose(Command::StringSet {
+                    key: "segmented-crash".to_string(),
+                    value: format!("v{index}").into_bytes(),
+                })
+                .unwrap();
+            let record = cluster
+                .wal_records()
+                .into_iter()
+                .find(|(node_id, _)| *node_id == 1)
+                .unwrap()
+                .1;
+            wal.persist_node_segmented(7, 1, &record, 1024, 2).unwrap();
+        }
+        let report = wal.segment_report(7, 1).unwrap();
+        let active = report.segments.last().unwrap();
+        let before_corruption = fs::metadata(&active.path).unwrap().len();
+        let mut file = OpenOptions::new().append(true).open(&active.path).unwrap();
+        file.write_all(b"{\"sequence\":99,\"checksum\":\"bad\"")
+            .unwrap();
+        file.sync_data().unwrap();
+
+        let recovery = wal.recover_node(7, 1).unwrap();
+        assert!(recovery.corrupt_tail);
+        assert!(recovery.truncated_bytes > 0);
+        assert_eq!(fs::metadata(&active.path).unwrap().len(), before_corruption);
+        assert_eq!(recovery.record.unwrap().hard_state.commit_index, 3);
+    }
+
+    #[test]
     fn raft_cluster_recovers_committed_state_from_local_wal() {
         let dir = tempfile::tempdir().unwrap();
         let cluster = RaftCluster::new_single_shard(7, [1, 2, 3]);
@@ -7153,7 +7435,8 @@ mod tests {
     fn wal_backed_raft_cluster_compacts_wal_tail_but_recovers_latest_state() {
         let dir = tempfile::tempdir().unwrap();
         let config = RaftConfig {
-            max_disk_replicate_log_num: 3,
+            max_segment_bytes: 512,
+            min_keep_segment_num: 2,
             ..RaftConfig::default()
         };
         let cluster =
@@ -7169,7 +7452,8 @@ mod tests {
 
         let wal = LocalRaftWal::new(dir.path());
         let recovery = wal.recover_node(78, 1).unwrap();
-        assert_eq!(recovery.valid_records, 3);
+        let report = wal.segment_report(78, 1).unwrap();
+        assert_eq!(report.segments.len(), 2);
         let record = recovery.record.unwrap();
         assert_eq!(record.hard_state.commit_index, 8);
         assert_eq!(record.entries.len(), 8);
