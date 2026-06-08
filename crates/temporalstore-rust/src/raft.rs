@@ -1420,6 +1420,7 @@ pub struct ProductionRaftRuntimeOptions {
     pub security: ProductionRaftSecurity,
     pub heartbeat_interval_ms: u64,
     pub election_tick_ms: u64,
+    pub max_catchup_entries_per_heartbeat: u64,
     pub allow_plaintext_for_local_chaos: bool,
 }
 
@@ -1450,6 +1451,11 @@ impl ProductionRaftRuntimeOptions {
         if self.heartbeat_interval_ms == 0 || self.election_tick_ms == 0 {
             return Err(RaftError::InvalidConfig(
                 "production raft heartbeat/election intervals must be non-zero".to_string(),
+            ));
+        }
+        if self.max_catchup_entries_per_heartbeat == 0 {
+            return Err(RaftError::InvalidConfig(
+                "production raft max_catchup_entries_per_heartbeat must be non-zero".to_string(),
             ));
         }
         self.security
@@ -1538,6 +1544,7 @@ impl ProductionRaftRuntime {
         let cluster = self.cluster.clone();
         let heartbeat_interval = Duration::from_millis(self.options.heartbeat_interval_ms);
         let election_tick = Duration::from_millis(self.options.election_tick_ms);
+        let max_catchup_entries_per_heartbeat = self.options.max_catchup_entries_per_heartbeat;
         let stop = Arc::new(AtomicBool::new(false));
         let stop_thread = Arc::clone(&stop);
         let handle = thread::spawn(move || {
@@ -1545,7 +1552,8 @@ impl ProductionRaftRuntime {
             while !stop_thread.load(Ordering::SeqCst) {
                 let _ = cluster.tick_election();
                 if last_heartbeat.elapsed() >= heartbeat_interval {
-                    let _ = cluster.catch_up_live_followers();
+                    let _ =
+                        cluster.catch_up_live_followers_bounded(max_catchup_entries_per_heartbeat);
                     last_heartbeat = InstantCompat::now();
                 }
                 thread::sleep(election_tick);
@@ -5951,6 +5959,7 @@ mod tests {
             security: ProductionRaftSecurity::plaintext_for_local_chaos("token"),
             heartbeat_interval_ms: 5,
             election_tick_ms: 1,
+            max_catchup_entries_per_heartbeat: 1,
             allow_plaintext_for_local_chaos: true,
         };
 
@@ -5995,6 +6004,10 @@ mod tests {
             restart_nodes: vec![1],
         };
         chaos.validate().unwrap();
+
+        let mut invalid = options.clone();
+        invalid.max_catchup_entries_per_heartbeat = 0;
+        assert!(invalid.validate().is_err());
 
         let mut invalid = options;
         invalid.allow_plaintext_for_local_chaos = false;
@@ -6042,6 +6055,7 @@ mod tests {
                 security: ProductionRaftSecurity::plaintext_for_local_chaos("token"),
                 heartbeat_interval_ms: 20,
                 election_tick_ms: 5,
+                max_catchup_entries_per_heartbeat: 32,
                 allow_plaintext_for_local_chaos: true,
             })
             .unwrap();

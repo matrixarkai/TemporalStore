@@ -104,6 +104,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "data Raft supports C++ replicator-style bounded follower catch-up with lag/progress reports"
                     .to_string(),
+                "production Raft timer loop uses bounded follower catch-up per heartbeat"
+                    .to_string(),
                 "WAL-backed local Raft state persists commits, leadership, and membership"
                     .to_string(),
                 "local Raft WAL supports segmented append, sync, segment retention, ordered recovery, and corrupt-tail truncation"

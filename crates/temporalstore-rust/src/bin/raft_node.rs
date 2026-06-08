@@ -88,6 +88,10 @@ fn runtime_options_from_env() -> ProductionRaftRuntimeOptions {
         security: ProductionRaftSecurity::plaintext_for_local_chaos(auth_token),
         heartbeat_interval_ms: env_u64("TS_RAFT_HEARTBEAT_INTERVAL_MS", 100),
         election_tick_ms: env_u64("TS_RAFT_ELECTION_TICK_MS", 50),
+        max_catchup_entries_per_heartbeat: env_u64(
+            "TS_RAFT_MAX_CATCHUP_ENTRIES_PER_HEARTBEAT",
+            256,
+        ),
         allow_plaintext_for_local_chaos: env_bool("TS_RAFT_ALLOW_PLAINTEXT", true),
     }
 }
