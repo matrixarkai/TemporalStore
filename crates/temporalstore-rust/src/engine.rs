@@ -323,6 +323,9 @@ impl TemporalEngine {
     }
 
     pub fn set_config(&self, request: SetConfigRequest) -> Status {
+        if !self.is_shard_loaded(request.shard_id) {
+            return Status::error("shard_not_found", "shard is not loaded");
+        }
         self.configs
             .write()
             .expect("config lock poisoned")
@@ -331,6 +334,12 @@ impl TemporalEngine {
     }
 
     pub fn get_config(&self, shard_id: ShardId) -> GetConfigResponse {
+        if !self.is_shard_loaded(shard_id) {
+            return GetConfigResponse {
+                status: Status::error("shard_not_found", "shard is not loaded"),
+                config: Config::default(),
+            };
+        }
         let config = self
             .configs
             .read()
@@ -342,6 +351,15 @@ impl TemporalEngine {
             status: Status::ok(),
             config,
         }
+    }
+
+    fn is_shard_loaded(&self, shard_id: ShardId) -> bool {
+        self.infos
+            .read()
+            .expect("info lock poisoned")
+            .get(&shard_id)
+            .map(|info| info.loaded)
+            .unwrap_or(false)
     }
 
     pub fn get_info(&self, shard_id: ShardId) -> GetInfoResponse {
@@ -3186,6 +3204,18 @@ mod tests {
     #[test]
     fn control_api_load_config_info_stats_membership_and_unload() {
         let engine = TemporalEngine::default();
+        assert_eq!(
+            engine.set_config(SetConfigRequest {
+                shard_id: 7,
+                config: Config {
+                    version: 2,
+                    feature_max_size: 123,
+                    ..Config::default()
+                },
+            }),
+            Status::error("shard_not_found", "shard is not loaded")
+        );
+        assert_eq!(engine.get_config(7).status.code, "shard_not_found");
         assert!(
             engine
                 .load_shard_with(LoadShardRequest {
@@ -3302,6 +3332,7 @@ mod tests {
         let after_unload = engine.get_info(7);
         assert!(!after_unload.status.ok);
         assert_eq!(after_unload.status.code, "shard_not_found");
+        assert_eq!(engine.get_config(7).status.code, "shard_not_found");
         let second_unload = engine.unload_shard_with(UnloadShardRequest { shard_id: 7 });
         assert!(!second_unload.status.ok);
         assert_eq!(second_unload.status.code, "shard_not_found");
