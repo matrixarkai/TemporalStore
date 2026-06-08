@@ -103,6 +103,16 @@ pub struct RaftReplicationHealth {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftCatchUpReport {
+    pub leader_id: RaftNodeId,
+    pub leader_commit_index: u64,
+    pub max_entries_per_follower: u64,
+    pub replayed_log_entries: u64,
+    pub caught_up_voters: Vec<RaftNodeId>,
+    pub lagging_voters: Vec<RaftReplicaLag>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RaftScaleChangeReport {
     pub leader_id: RaftNodeId,
     pub voters: Vec<RaftNodeId>,
@@ -2516,6 +2526,31 @@ impl RaftCluster {
         Ok(caught_up)
     }
 
+    pub fn catch_up_live_followers_bounded(
+        &self,
+        max_entries_per_follower: u64,
+    ) -> Result<RaftCatchUpReport, RaftError> {
+        if max_entries_per_follower == 0 {
+            return Err(RaftError::InvalidConfig(
+                "max_entries_per_follower must be greater than zero".to_string(),
+            ));
+        }
+        let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+        let replayed_log_entries =
+            inner.catch_up_live_followers_bounded(max_entries_per_follower)?;
+        inner.persist_configured_wal()?;
+        let status = inner.status();
+        let health = replication_health_from_status(status.clone(), 0);
+        Ok(RaftCatchUpReport {
+            leader_id: status.leader_id,
+            leader_commit_index: status.commit_index,
+            max_entries_per_follower,
+            replayed_log_entries,
+            caught_up_voters: health.caught_up_voters,
+            lagging_voters: health.lagging_voters,
+        })
+    }
+
     pub fn hard_state(&self, node_id: RaftNodeId) -> Result<RaftHardState, RaftError> {
         let inner = self.inner.read().expect("raft cluster lock poisoned");
         let node = inner
@@ -3342,6 +3377,42 @@ impl RaftClusterInner {
             }
         }
         Ok(caught_up)
+    }
+
+    fn catch_up_live_followers_bounded(
+        &mut self,
+        max_entries_per_follower: u64,
+    ) -> Result<u64, RaftError> {
+        self.ensure_live_leader()?;
+        let leader_id = self.leader_id;
+        let leader = self
+            .nodes
+            .get(&leader_id)
+            .ok_or(RaftError::LeaderUnavailable)?;
+        let leader_log = leader.log.clone();
+        let leader_commit_index = leader.commit_index;
+        let mut replayed_log_entries = 0u64;
+        for node in self
+            .nodes
+            .values_mut()
+            .filter(|node| node.alive && node.id != leader_id)
+        {
+            if node.commit_index >= leader_commit_index {
+                continue;
+            }
+            let before = node.commit_index;
+            let target_commit_index =
+                leader_commit_index.min(node.commit_index + max_entries_per_follower);
+            node.log = leader_log
+                .iter()
+                .filter(|entry| entry.index <= target_commit_index)
+                .cloned()
+                .collect();
+            node.commit_index = target_commit_index;
+            apply_committed(node);
+            replayed_log_entries += node.commit_index.saturating_sub(before);
+        }
+        Ok(replayed_log_entries)
     }
 
     fn remove_node_safely(&mut self, node_id: RaftNodeId) -> Result<(), RaftError> {
@@ -6552,6 +6623,59 @@ mod tests {
                 value: Some(b"v1".to_vec())
             }
         );
+    }
+
+    #[test]
+    fn bounded_replica_catchup_replays_limited_log_entries_per_loop() {
+        let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+        cluster.set_alive(3, false).unwrap();
+        for index in 0..3 {
+            cluster
+                .propose(Command::StringSet {
+                    key: "bounded-catchup".to_string(),
+                    value: format!("v{index}").into_bytes(),
+                })
+                .unwrap();
+        }
+        cluster.set_alive(3, true).unwrap();
+
+        let first = cluster.catch_up_live_followers_bounded(1).unwrap();
+        assert_eq!(first.replayed_log_entries, 1);
+        assert_eq!(first.leader_commit_index, 3);
+        assert_eq!(
+            first.lagging_voters,
+            vec![RaftReplicaLag {
+                node_id: 3,
+                lag: 2,
+                alive: true,
+            }]
+        );
+        assert_eq!(cluster.local_status(3).unwrap().commit_index, 1);
+
+        let second = cluster.catch_up_live_followers_bounded(1).unwrap();
+        assert_eq!(second.replayed_log_entries, 1);
+        assert_eq!(cluster.local_status(3).unwrap().commit_index, 2);
+
+        let third = cluster.catch_up_live_followers_bounded(1).unwrap();
+        assert_eq!(third.replayed_log_entries, 1);
+        assert_eq!(third.lagging_voters, Vec::<RaftReplicaLag>::new());
+        assert_eq!(third.caught_up_voters, vec![1, 2, 3]);
+        assert_eq!(
+            cluster.read_from_replica(
+                3,
+                Command::StringGet {
+                    key: "bounded-catchup".to_string()
+                }
+            ),
+            Ok(CommandResponse::Bytes {
+                value: Some(b"v2".to_vec())
+            })
+        );
+
+        assert!(matches!(
+            cluster.catch_up_live_followers_bounded(0).unwrap_err(),
+            RaftError::InvalidConfig(_)
+        ));
     }
 
     #[test]
