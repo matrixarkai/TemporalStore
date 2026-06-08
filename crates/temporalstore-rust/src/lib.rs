@@ -11,6 +11,7 @@ pub mod oplog;
 pub mod page_store;
 pub mod proxy;
 pub mod raft;
+pub mod readiness;
 pub mod rebalance;
 pub mod redis;
 pub mod shared_store;
@@ -55,13 +56,19 @@ pub use page_store::{LocalPageStore, PageAddress, PageStoreStats};
 pub use proxy::{ProxyInfo, ProxyOptions, ProxyService, ProxyStats};
 pub use raft::{
     distributed_raft_readiness, handle_raft_http, require_production_raft_ready,
-    validate_raft_deployment_mode, AppendEntriesRequest, AppendEntriesResponse, HttpRaftTransport,
-    InstallSnapshotRequest, InstallSnapshotResponse, LocalRaftWal, MetaCommand, MetaRaftCluster,
-    MetaState, RaftCluster, RaftClusterStatus, RaftConfig, RaftConfigError, RaftDeploymentMode,
-    RaftDistributedReadiness, RaftError, RaftHardState, RaftMembership, RaftNodeId, RaftNodeStatus,
-    RaftProductionReadinessError, RaftReadOptions, RaftReadStrategy, RaftRole, RaftTickOutcome,
-    RaftTransport, RaftWalRecord, ReadIndexResponse, VoteRequest, VoteResponse,
+    validate_raft_deployment_mode, AppendEntriesRequest, AppendEntriesResponse,
+    DistributedRaftCommandResponse, DistributedRaftProposeRequest, DistributedRaftReadRequest,
+    HttpRaftTransport, InstallSnapshotRequest, InstallSnapshotResponse, LocalRaftWal, MetaCommand,
+    MetaRaftCluster, MetaState, ProductionRaftChaosPlan, ProductionRaftEngineKind,
+    ProductionRaftNode, ProductionRaftProcessSpec, ProductionRaftRuntime,
+    ProductionRaftRuntimeOptions, ProductionRaftSecurity, ProductionRaftSecurityMode,
+    ProductionRaftTimerHandle, RaftCluster, RaftClusterStatus, RaftConfig, RaftConfigError,
+    RaftDeploymentMode, RaftDistributedReadiness, RaftError, RaftHardState, RaftMembership,
+    RaftNodeId, RaftNodeStatus, RaftProductionReadinessError, RaftReadOptions, RaftReadStrategy,
+    RaftRole, RaftRpcRuntimeOptions, RaftTickOutcome, RaftTransport, RaftWalRecord,
+    ReadIndexResponse, VoteRequest, VoteResponse,
 };
+pub use readiness::{production_readiness_report, ProductionReadinessReport, ReadinessArea};
 pub use rebalance::{
     RebalanceController, RebalanceError, RebalanceOptions, RebalanceStep, ShardMovePlan,
     ShardReplica, ShardReplicaState, ShardRole,

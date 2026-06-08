@@ -256,7 +256,7 @@ pub struct LoadFinishRequest {
     pub status: Status,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MetaStats {
     pub register_shard_total: u64,
     pub get_shard_total: u64,
@@ -925,37 +925,29 @@ impl SingleNodeMeta {
         }
     }
 
-    fn apply_mutation(&self, mutation: MetaMutation) {
+    pub(crate) fn apply_mutation(&self, mutation: MetaMutation) -> Status {
         match mutation {
-            MetaMutation::RegisterShard(request) => {
-                self.apply_register(request);
-            }
-            MetaMutation::RegisterServer(request) => {
-                self.apply_register_server(request);
-            }
-            MetaMutation::RegisterProxy(request) => {
-                self.apply_register_proxy(request);
-            }
-            MetaMutation::AddNamespace(request) => {
-                self.apply_add_namespace(request);
-            }
-            MetaMutation::AddTable(request) => {
-                self.apply_add_table(request);
-            }
-            MetaMutation::FinishLoad(request) => {
-                self.apply_finish_load(request);
-            }
+            MetaMutation::RegisterShard(request) => self.apply_register(request).status,
+            MetaMutation::RegisterServer(request) => self.apply_register_server(request).status,
+            MetaMutation::RegisterProxy(request) => self.apply_register_proxy(request).status,
+            MetaMutation::AddNamespace(request) => self.apply_add_namespace(request).status,
+            MetaMutation::AddTable(request) => self.apply_add_table(request).status,
+            MetaMutation::FinishLoad(request) => self.apply_finish_load(request).status,
             MetaMutation::FreezeServer(request) => {
-                self.apply_set_server_state(&request.endpoint, MetaEntityState::Frozen);
+                self.apply_set_server_state(&request.endpoint, MetaEntityState::Frozen)
+                    .status
             }
             MetaMutation::DropServer(request) => {
-                self.apply_set_server_state(&request.endpoint, MetaEntityState::Dropped);
+                self.apply_set_server_state(&request.endpoint, MetaEntityState::Dropped)
+                    .status
             }
             MetaMutation::FreezeProxy(request) => {
-                self.apply_set_proxy_state(&request.endpoint, MetaEntityState::Frozen);
+                self.apply_set_proxy_state(&request.endpoint, MetaEntityState::Frozen)
+                    .status
             }
             MetaMutation::DropProxy(request) => {
-                self.apply_set_proxy_state(&request.endpoint, MetaEntityState::Dropped);
+                self.apply_set_proxy_state(&request.endpoint, MetaEntityState::Dropped)
+                    .status
             }
         }
     }

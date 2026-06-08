@@ -34,6 +34,7 @@ Rust now has a reusable `ProxyService`:
 - `/proxy/config` get/update
 - route cache with TTL
 - route refresh after backend error
+- backend failure pool behavior with continuous-failure windows and cached-backend bypass
 - HTTP connect/read/write timeout options
 - HTTP retry options
 - proxy stats:
@@ -42,6 +43,7 @@ Rust now has a reusable `ProxyService`:
   - route cache hits/misses
   - route refreshes
   - backend errors
+  - continuous backend failures
   - metaserver errors
   - bad requests
 
@@ -52,6 +54,7 @@ The Rust `proxy` binary now delegates to `ProxyService` and supports:
 - `TS_PROXY_IO_TIMEOUT_MS`
 - `TS_PROXY_MAX_RETRIES`
 - `TS_PROXY_REFRESH_ROUTE_ON_BACKEND_ERROR`
+- `TS_PROXY_BACKEND_CONTINUOUS_FAILED_TIME_MS`
 
 ## Still Missing
 
@@ -63,7 +66,6 @@ Rust proxy is still not a C++ proxy drop-in:
 - no namespace/table open path in proxy request bodies
 - no C++ client `MetaSyncer`
 - no full topology/slot router
-- no backend channel pool with continuous-failure timers
 - no heartbeat RPC to metaserver
 - no consul registration
 - no proxy location/VDC/CMDB integration

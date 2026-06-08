@@ -59,11 +59,29 @@ pub enum StringSetCondition {
     IfNotExists,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FeatureWritePolicy {
+    Upsert,
+    InsertIfAbsent,
+    ReplaceExisting,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FeatureFilter {
     pub field: String,
     pub op: FeatureFilterOp,
     pub value: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SequenceQuerySpec {
+    pub key: String,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub count: usize,
+    #[serde(default)]
+    pub filters: Vec<FeatureFilter>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -152,6 +170,11 @@ pub enum Command {
         key: String,
         points: Vec<FeaturePoint>,
     },
+    FeatureAppendWithPolicy {
+        key: String,
+        points: Vec<FeaturePoint>,
+        policy: FeatureWritePolicy,
+    },
     FeatureQuery {
         key: String,
         start_ms: u64,
@@ -188,10 +211,24 @@ pub enum Command {
         #[serde(default)]
         filters: Vec<FeatureFilter>,
     },
+    SequenceBatchQuery {
+        queries: Vec<SequenceQuerySpec>,
+    },
     IpsAdd {
         key: String,
         timestamp_ms: u64,
         instance: Vec<u8>,
+    },
+    IpsAddWithOptions {
+        key: String,
+        timestamp_ms: u64,
+        instance: Vec<u8>,
+        #[serde(default)]
+        action_type: Option<u32>,
+        #[serde(default)]
+        table_id: Option<u64>,
+        #[serde(default)]
+        request_id: Option<String>,
     },
     IpsQueryLast {
         key: String,
@@ -220,10 +257,30 @@ pub enum Command {
         start_ms: u64,
         end_ms: u64,
     },
+    IpsQueryRangeWithOptions {
+        key: String,
+        start_ms: u64,
+        end_ms: u64,
+        #[serde(default)]
+        count: Option<usize>,
+        #[serde(default)]
+        action_type: Option<u32>,
+        #[serde(default)]
+        table_id: Option<u64>,
+    },
     RiskIncrement {
         key: String,
         timestamp_ms: u64,
         amount: i64,
+    },
+    RiskIncrementWithOptions {
+        key: String,
+        timestamp_ms: u64,
+        amount: i64,
+        #[serde(default)]
+        precision_ms: Option<u64>,
+        #[serde(default)]
+        ttl_ms: Option<u64>,
     },
     RiskCount {
         key: String,
@@ -275,6 +332,9 @@ pub enum CommandResponse {
     },
     SequenceRows {
         rows: Vec<SequenceFeatureRow>,
+    },
+    SequenceRowGroups {
+        groups: Vec<(String, Vec<SequenceFeatureRow>)>,
     },
 }
 

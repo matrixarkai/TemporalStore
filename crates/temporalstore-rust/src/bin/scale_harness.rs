@@ -17,6 +17,7 @@ struct HarnessOptions {
     scale_events: usize,
     failover_every: usize,
     read_sample_every: usize,
+    max_log_entry_bytes: u64,
 }
 
 impl Default for HarnessOptions {
@@ -31,6 +32,7 @@ impl Default for HarnessOptions {
             scale_events: 2,
             failover_every: 250,
             read_sample_every: 100,
+            max_log_entry_bytes: RaftConfig::default().max_memory_replicate_log_bytes,
         }
     }
 }
@@ -51,6 +53,7 @@ struct HarnessSummary {
     write_ops_per_sec: f64,
     replication_healthy: bool,
     max_replica_lag: u64,
+    max_log_entry_bytes: u64,
 }
 
 fn main() {
@@ -67,6 +70,7 @@ fn main() {
         node_ids.clone(),
         RaftConfig {
             enable_pre_vote: true,
+            max_memory_replicate_log_bytes: options.max_log_entry_bytes,
             ..RaftConfig::default()
         },
     )
@@ -206,6 +210,7 @@ fn main() {
         write_ops_per_sec,
         replication_healthy: health.healthy,
         max_replica_lag: health.max_lag,
+        max_log_entry_bytes: options.max_log_entry_bytes,
     };
 
     println!("{}", serde_json::to_string_pretty(&summary).unwrap());
@@ -237,6 +242,7 @@ fn parse_options() -> HarnessOptions {
             "--scale-events" => options.scale_events = parse(value, key),
             "--failover-every" => options.failover_every = parse(value, key),
             "--read-sample-every" => options.read_sample_every = parse(value, key),
+            "--max-log-entry-bytes" => options.max_log_entry_bytes = parse(value, key),
             "--help" | "-h" => usage_and_exit(),
             other => {
                 eprintln!("unknown option: {other}");
@@ -269,6 +275,7 @@ fn usage_and_exit() -> ! {
     eprintln!("  --scale-events <n>       default 2");
     eprintln!("  --failover-every <n>     default 250, 0 disables");
     eprintln!("  --read-sample-every <n>  default 100, 0 disables");
+    eprintln!("  --max-log-entry-bytes <n> default 32768");
     std::process::exit(2);
 }
 

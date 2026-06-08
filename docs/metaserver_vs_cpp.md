@@ -25,7 +25,9 @@ Primary files read:
 
 ## Rust Metaserver Coverage
 
-Rust now has a richer `SingleNodeMeta` control-plane model:
+Rust now has a richer control-plane model. The HTTP metaserver can run either the
+single-node metadata store or an in-process Raft-backed `MetaRaftCluster`
+backend by setting `TS_META_RAFT=1` or `TS_META_RAFT_NODES=1,2,3`:
 
 - backward-compatible `/register_shard` and `/shards/<id>`
 - server register/list/freeze/drop
@@ -38,11 +40,15 @@ Rust now has a richer `SingleNodeMeta` control-plane model:
 - table topology partitions with slot ranges, shard ids, primary endpoint, and replica endpoints
 - load-aware replica placement with location diversity before same-location fill
 - meta info/stats counters
+- Raft-backed metadata mutation path for shard registration, server/proxy
+  registration, namespace/table creation, load-finish, and freeze/drop actions
+- `GET /meta/raft/status` for metaserver Raft leader/quorum/status inspection
 
 New/expanded HTTP routes:
 
 - `GET /meta/info`
 - `GET /meta/stats`
+- `GET /meta/raft/status`
 - `POST /servers/register`
 - `POST /servers/heartbeat`
 - `GET /servers`
@@ -64,7 +70,8 @@ New/expanded HTTP routes:
 Rust metaserver is still not a production C++ metaserver replacement:
 
 - no brpc/protobuf wire compatibility
-- no networked Raft-backed mutation path in the HTTP metaserver
+- no networked multi-process Raft transport for the metaserver yet; the current
+  HTTP binary uses the local in-process MetaRaft model
 - no full durable metabase snapshot/load in the HTTP metaserver beyond the local JSONL mutation log
 - no exact C++ partition id encoding or partition-set hierarchy
 - no full placement rule chain for host deduplication, cooldowns, or scheduler-owned repair actions

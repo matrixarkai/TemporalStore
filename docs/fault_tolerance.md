@@ -13,6 +13,8 @@ The Rust implementation models the TemporalStore fault-tolerance path locally:
 - new replicas can be added and bootstrapped from current state
 - replicas can be removed while preserving majority
 - local Raft snapshots can bootstrap lagging data and meta replicas
+- Raft install-snapshot requests can carry external S3/MinIO snapshot manifest references with
+  checksum and byte size metadata
 - stale snapshots cannot overwrite newer local state
 - leader election does not depend on S3 snapshot availability
 - metaserver Raft metadata remains readable/writable after leader failover with quorum
@@ -57,10 +59,12 @@ new/lagging replica -> install local/S3 snapshot -> catch up later Raft logs -> 
 
 The local model is useful for API and correctness shape, but it is not yet a production distributed system. Remaining production work:
 
-- replace in-process Raft with OpenRaft or raft-rs
-- persist Raft WAL, hard-state, snapshots, and membership changes
+- replace the local consensus model with OpenRaft or raft-rs
+- replace the local auto-persisting Raft WAL model with OpenRaft or raft-rs storage integrated into
+  real multi-process consensus
 - add real network transport for data-node and metaserver Raft
 - implement crash-recovery tests that kill and restart OS processes
-- wire S3 snapshots into the Raft install-snapshot path
+- wire external S3 snapshot references into real download, verification, and install-snapshot
+  streaming across processes
 - add multi-process chaos tests for packet loss, process kill, disk-full, slow follower, and rolling upgrade
 - add production failure detection and placement decisions in metaserver

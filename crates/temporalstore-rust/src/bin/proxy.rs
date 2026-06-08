@@ -18,6 +18,10 @@ fn main() {
         io_timeout_ms: env_u64("TS_PROXY_IO_TIMEOUT_MS", 200),
         max_retries: env_usize("TS_PROXY_MAX_RETRIES", 0),
         refresh_route_on_backend_error: env_bool("TS_PROXY_REFRESH_ROUTE_ON_BACKEND_ERROR", true),
+        backend_continuous_failed_time_ms: env_u64(
+            "TS_PROXY_BACKEND_CONTINUOUS_FAILED_TIME_MS",
+            10_000,
+        ),
     };
     let proxy = ProxyService::new(options);
     let heartbeat_interval_ms = env_u64("TS_PROXY_HEARTBEAT_INTERVAL_MS", 10_000);

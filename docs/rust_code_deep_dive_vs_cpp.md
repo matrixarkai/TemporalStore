@@ -6,10 +6,10 @@ The Rust repo is a clean open-source TemporalStore-shaped implementation, but it
 
 What exists today:
 
-- a typed command API for common, string, hash, set, feature, sequence, simplified IPS, and simplified risk data
+- a typed command API for common, string, hash, set, feature, sequence, and the implemented IPS/Risk subset
 - a TemporalStore Rust engine with shard-local indexes, local append-only page segment files, and read-through memory/disk cache
 - HTTP binaries for metaserver, server, proxy, and client
-- a Redis RESP proxy covering common string/hash/set commands plus feature extensions
+- a Redis RESP proxy covering common string/hash/set commands plus feature, IPS, and Risk extensions
 - an in-process Raft behavior model for data replication, metaserver replication, promotion, scale up/down, and replica read policy tests
 - an S3-compatible snapshot crate with manifest-last visibility, checksum verification, retention, stale restore guard, and Prometheus metric names
 - local smoke scripts, AWS existing-EKS Terraform, and compatibility-style tests
@@ -242,11 +242,11 @@ That is why "rewrite C++ TemporalStore in Rust" is not just translating syntax. 
 
 | Subsystem | Rust status | C++ status | Gap |
 | --- | --- | --- | --- |
-| Common/string/hash/set APIs | Mostly present | Mature | Missing exact wire compatibility and some policy flags like string `NX`/`XX`. |
-| Feature API | Basic append/query/replace/delete/agg | Rich feature point/range/write policy support | Need C++ proto-compatible feature shape and edge semantics. |
-| Sequence API | Basic typed rows and filters | Part of richer feature/data modules | Need exact C++ sequence semantics if required by callers. |
-| IPS | Simplified add/query-last | Rich add/batch query/remove/load/delete/stat/filter/snap behavior | Major missing subsystem. |
-| Risk | Simplified increment/count | Rich H/CPC/FOL/query/manager/window/precision semantics | Major missing subsystem. |
+| Common/string/hash/set APIs | Mostly present, including Redis `SET NX/XX GET EX/PX` | Mature | Missing exact internal wire compatibility. |
+| Feature API | Append/query/replace/delete/agg plus write-policy append with typed client and RESP coverage | Rich feature point/range/write policy support | Need C++ proto-compatible nested feature shape and exact aggregate semantics. |
+| Sequence API | Typed rows, filters, and batch query | Part of richer feature/data modules | Need exact C++ sequence edge-case policy if required by callers. |
+| IPS | Add/query-last/range/batch/remove/delete/count plus idempotent/dimensional add and dimension-filtered range with typed client and RESP coverage | Rich add/batch query/remove/load/delete/stat/filter/snap behavior | Missing load/snapshot/stat/filter and server aggregation. |
+| Risk | Increment/count plus precision/TTL increment, sum/min/max/first/last/events/detail with typed client and RESP coverage | Rich H/CPC/FOL/query/manager/window/precision semantics | Missing CPC/list-specific behavior and manager APIs. |
 | Local storage | Local page segments + JSON index | Oplog + page/slot store + dump/recover | Need WAL/oplog, dump scheduler, recovery boundaries, compaction. |
 | Cache | Simple memory + disk cache | mtcache/blockcache-like production cache | Need production SSD cache engine or Rust equivalent. |
 | Replication | In-process behavior model | ByteRaft-backed production replication | Need real Raft library and networked nodes. |

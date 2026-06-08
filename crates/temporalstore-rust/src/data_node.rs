@@ -806,11 +806,14 @@ fn command_key(command: &Command) -> Option<&str> {
         | Command::SetAdd { key, .. }
         | Command::SetRemove { key, .. }
         | Command::FeatureAppend { key, .. }
+        | Command::FeatureAppendWithPolicy { key, .. }
         | Command::FeatureReplace { key, .. }
         | Command::FeatureDelete { key }
         | Command::SequenceAdd { key, .. }
         | Command::IpsAdd { key, .. }
+        | Command::IpsAddWithOptions { key, .. }
         | Command::RiskIncrement { key, .. } => Some(key),
+        Command::RiskIncrementWithOptions { key, .. } => Some(key),
         _ => None,
     }
 }
@@ -830,11 +833,14 @@ fn is_write_command(command: &Command) -> bool {
             | Command::SetAdd { .. }
             | Command::SetRemove { .. }
             | Command::FeatureAppend { .. }
+            | Command::FeatureAppendWithPolicy { .. }
             | Command::FeatureReplace { .. }
             | Command::FeatureDelete { .. }
             | Command::SequenceAdd { .. }
             | Command::IpsAdd { .. }
+            | Command::IpsAddWithOptions { .. }
             | Command::RiskIncrement { .. }
+            | Command::RiskIncrementWithOptions { .. }
     )
 }
 

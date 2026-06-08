@@ -6,7 +6,8 @@ use std::thread;
 
 use crate::client::{slot_id_for_key, stable_key_hash};
 use crate::types::{
-    Command, CommandResponse, ExecuteRequest, FeaturePoint, ShardId, StringSetCondition,
+    Command, CommandResponse, ExecuteRequest, FeaturePoint, FeatureWritePolicy, ShardId,
+    StringSetCondition,
 };
 use crate::TemporalStoreClient;
 
@@ -403,6 +404,24 @@ pub fn execute_redis_command_with_state(
             })),
             Err(err) => RespValue::Error(err),
         },
+        "FAPPENDPOLICY" if args.len() == 5 => {
+            let timestamp_ms = match parse_u64(&args[2], "timestamp_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let policy = match parse_feature_write_policy(&args[4]) {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            integer_response(execute(Command::FeatureAppendWithPolicy {
+                key: string_arg(&args[1]),
+                points: vec![FeaturePoint {
+                    timestamp_ms,
+                    value: args[3].clone(),
+                }],
+                policy,
+            }))
+        }
         "FQUERY" if args.len() == 4 || args.len() == 5 => {
             let start_ms = match parse_u64(&args[2], "start_ms") {
                 Ok(value) => value,
@@ -493,6 +512,237 @@ pub fn execute_redis_command_with_state(
                 Ok(_) => RespValue::Error("ERR invalid fagg response".to_string()),
                 Err(err) => RespValue::Error(format!("ERR {err}")),
             }
+        }
+        "IPSADD" if args.len() == 4 => match parse_u64(&args[2], "timestamp_ms") {
+            Ok(timestamp_ms) => status_ok(execute(Command::IpsAdd {
+                key: string_arg(&args[1]),
+                timestamp_ms,
+                instance: args[3].clone(),
+            })),
+            Err(err) => RespValue::Error(err),
+        },
+        "IPSADDOPT" if args.len() == 7 => {
+            let timestamp_ms = match parse_u64(&args[2], "timestamp_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let action_type = match parse_u32(&args[4], "action_type") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let table_id = match parse_u64(&args[5], "table_id") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            integer_response(execute(Command::IpsAddWithOptions {
+                key: string_arg(&args[1]),
+                timestamp_ms,
+                instance: args[3].clone(),
+                action_type: Some(action_type),
+                table_id: Some(table_id),
+                request_id: Some(string_arg(&args[6])),
+            }))
+        }
+        "IPSQUERYLAST" if args.len() == 3 => match parse_usize(&args[2], "count") {
+            Ok(count) => feature_points_response(execute(Command::IpsQueryLast {
+                key: string_arg(&args[1]),
+                count,
+            })),
+            Err(err) => RespValue::Error(err),
+        },
+        "IPSQUERYRANGE" if args.len() == 4 || args.len() == 5 => {
+            let start_ms = match parse_u64(&args[2], "start_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let end_ms = match parse_u64(&args[3], "end_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let count = match args.get(4) {
+                Some(value) => match parse_usize(value, "count") {
+                    Ok(value) => Some(value),
+                    Err(err) => return RespValue::Error(err),
+                },
+                None => None,
+            };
+            feature_points_response(execute(Command::IpsQueryRange {
+                key: string_arg(&args[1]),
+                start_ms,
+                end_ms,
+                count,
+            }))
+        }
+        "IPSQUERYRANGEOPT" if args.len() == 7 => {
+            let start_ms = match parse_u64(&args[2], "start_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let end_ms = match parse_u64(&args[3], "end_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let count = match parse_usize(&args[4], "count") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let action_type = match parse_u32(&args[5], "action_type") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let table_id = match parse_u64(&args[6], "table_id") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            feature_points_response(execute(Command::IpsQueryRangeWithOptions {
+                key: string_arg(&args[1]),
+                start_ms,
+                end_ms,
+                count: Some(count),
+                action_type: Some(action_type),
+                table_id: Some(table_id),
+            }))
+        }
+        "IPSBATCHQUERYLAST" if args.len() >= 4 => {
+            let count = match parse_usize(&args[1], "count") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let keys = args[2..].iter().map(|arg| string_arg(arg)).collect();
+            match execute(Command::IpsBatchQueryLast { keys, count }) {
+                Ok(CommandResponse::FeaturePointGroups { groups }) => RespValue::Array(
+                    groups
+                        .into_iter()
+                        .map(|(key, points)| {
+                            RespValue::Array(vec![
+                                RespValue::Bulk(Some(key.into_bytes())),
+                                feature_points_value(points),
+                            ])
+                        })
+                        .collect(),
+                ),
+                Ok(_) => RespValue::Error("ERR invalid ips batch response".to_string()),
+                Err(err) => RespValue::Error(format!("ERR {err}")),
+            }
+        }
+        "IPSREMOVE" if args.len() == 3 => match parse_u64(&args[2], "timestamp_ms") {
+            Ok(timestamp_ms) => integer_response(execute(Command::IpsRemove {
+                key: string_arg(&args[1]),
+                timestamp_ms,
+            })),
+            Err(err) => RespValue::Error(err),
+        },
+        "IPSDEL" if args.len() == 2 => integer_response(execute(Command::IpsDelete {
+            key: string_arg(&args[1]),
+        })),
+        "IPSCOUNT" if args.len() == 4 => {
+            let start_ms = match parse_u64(&args[2], "start_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let end_ms = match parse_u64(&args[3], "end_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            integer_response(execute(Command::IpsCount {
+                key: string_arg(&args[1]),
+                start_ms,
+                end_ms,
+            }))
+        }
+        "RISKINCR" if args.len() == 4 => {
+            let timestamp_ms = match parse_u64(&args[2], "timestamp_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let amount = match parse_i64_arg(&args[3], "amount") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            status_ok(execute(Command::RiskIncrement {
+                key: string_arg(&args[1]),
+                timestamp_ms,
+                amount,
+            }))
+        }
+        "RISKINCROPT" if args.len() == 6 => {
+            let timestamp_ms = match parse_u64(&args[2], "timestamp_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let amount = match parse_i64_arg(&args[3], "amount") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let precision_ms = match parse_u64(&args[4], "precision_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let ttl_ms = match parse_u64(&args[5], "ttl_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            status_ok(execute(Command::RiskIncrementWithOptions {
+                key: string_arg(&args[1]),
+                timestamp_ms,
+                amount,
+                precision_ms: Some(precision_ms),
+                ttl_ms: Some(ttl_ms),
+            }))
+        }
+        "RISKCOUNT" if args.len() == 4 => {
+            let start_ms = match parse_u64(&args[2], "start_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let end_ms = match parse_u64(&args[3], "end_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            integer_response(execute(Command::RiskCount {
+                key: string_arg(&args[1]),
+                start_ms,
+                end_ms,
+            }))
+        }
+        "RISKQUERY" if args.len() == 5 => {
+            let start_ms = match parse_u64(&args[2], "start_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let end_ms = match parse_u64(&args[3], "end_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            integer_response(execute(Command::RiskQuery {
+                key: string_arg(&args[1]),
+                start_ms,
+                end_ms,
+                aggregator: string_arg(&args[4]),
+            }))
+        }
+        "RISKDETAIL" if args.len() == 4 || args.len() == 5 => {
+            let start_ms = match parse_u64(&args[2], "start_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let end_ms = match parse_u64(&args[3], "end_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let count = match args.get(4) {
+                Some(value) => match parse_usize(value, "count") {
+                    Ok(value) => Some(value),
+                    Err(err) => return RespValue::Error(err),
+                },
+                None => None,
+            };
+            feature_points_response(execute(Command::RiskDetail {
+                key: string_arg(&args[1]),
+                start_ms,
+                end_ms,
+                count,
+            }))
         }
         _ => RespValue::Error(format!("ERR unsupported command or arity: {command}")),
     }
@@ -762,6 +1012,28 @@ fn integer_ok(result: Result<CommandResponse, String>) -> RespValue {
     }
 }
 
+fn feature_points_response(result: Result<CommandResponse, String>) -> RespValue {
+    match result {
+        Ok(CommandResponse::FeaturePoints { points }) => feature_points_value(points),
+        Ok(_) => RespValue::Error("ERR invalid feature points response".to_string()),
+        Err(err) => RespValue::Error(format!("ERR {err}")),
+    }
+}
+
+fn feature_points_value(points: Vec<FeaturePoint>) -> RespValue {
+    RespValue::Array(
+        points
+            .into_iter()
+            .map(|point| {
+                RespValue::Array(vec![
+                    RespValue::Integer(point.timestamp_ms as i64),
+                    RespValue::Bulk(Some(point.value)),
+                ])
+            })
+            .collect(),
+    )
+}
+
 fn parse_prefixed_number(line: &[u8], prefix: u8) -> io::Result<usize> {
     if !line.starts_with(&[prefix]) {
         return Err(io::Error::new(
@@ -789,11 +1061,27 @@ fn parse_usize(value: &[u8], name: &str) -> Result<usize, String> {
         .ok_or_else(|| format!("ERR {name} must be an unsigned integer"))
 }
 
+fn parse_u32(value: &[u8], name: &str) -> Result<u32, String> {
+    std::str::from_utf8(value)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .ok_or_else(|| format!("ERR {name} must be an unsigned integer"))
+}
+
 fn parse_i64_arg(value: &[u8], name: &str) -> Result<i64, String> {
     std::str::from_utf8(value)
         .ok()
         .and_then(|value| value.parse().ok())
         .ok_or_else(|| format!("ERR {name} must be an integer"))
+}
+
+fn parse_feature_write_policy(value: &[u8]) -> Result<FeatureWritePolicy, String> {
+    match upper(value).as_str() {
+        "UPSERT" => Ok(FeatureWritePolicy::Upsert),
+        "NX" | "INSERT_IF_ABSENT" => Ok(FeatureWritePolicy::InsertIfAbsent),
+        "XX" | "REPLACE_EXISTING" => Ok(FeatureWritePolicy::ReplaceExisting),
+        _ => Err("ERR policy must be UPSERT, NX, or XX".to_string()),
+    }
 }
 
 fn split_inline(line: &[u8]) -> Vec<Vec<u8>> {
@@ -928,6 +1216,187 @@ mod tests {
         assert_eq!(
             run(vec!["FAGG", "feature", "0", "30", "sum"]),
             RespValue::Integer(5)
+        );
+        assert_eq!(
+            run(vec!["FAPPENDPOLICY", "feature", "20", "ignored", "NX"]),
+            RespValue::Integer(0)
+        );
+        assert_eq!(
+            run(vec!["FAPPENDPOLICY", "feature", "20", "9", "XX"]),
+            RespValue::Integer(1)
+        );
+        assert_eq!(
+            run(vec!["FAGG", "feature", "0", "30", "max"]),
+            RespValue::Integer(9)
+        );
+        assert_eq!(
+            run(vec!["IPSADD", "ips-a", "10", "a10"]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(
+            run(vec!["IPSADD", "ips-a", "20", "a20"]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(
+            run(vec!["IPSADD", "ips-b", "15", "b15"]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(
+            run(vec!["IPSQUERYRANGE", "ips-a", "0", "30", "1"]),
+            RespValue::Array(vec![RespValue::Array(vec![
+                RespValue::Integer(10),
+                RespValue::Bulk(Some(b"a10".to_vec())),
+            ])])
+        );
+        assert_eq!(
+            run(vec!["IPSQUERYLAST", "ips-a", "1"]),
+            RespValue::Array(vec![RespValue::Array(vec![
+                RespValue::Integer(20),
+                RespValue::Bulk(Some(b"a20".to_vec())),
+            ])])
+        );
+        assert_eq!(
+            run(vec!["IPSBATCHQUERYLAST", "1", "ips-a", "ips-b"]),
+            RespValue::Array(vec![
+                RespValue::Array(vec![
+                    RespValue::Bulk(Some(b"ips-a".to_vec())),
+                    RespValue::Array(vec![RespValue::Array(vec![
+                        RespValue::Integer(20),
+                        RespValue::Bulk(Some(b"a20".to_vec())),
+                    ])]),
+                ]),
+                RespValue::Array(vec![
+                    RespValue::Bulk(Some(b"ips-b".to_vec())),
+                    RespValue::Array(vec![RespValue::Array(vec![
+                        RespValue::Integer(15),
+                        RespValue::Bulk(Some(b"b15".to_vec())),
+                    ])]),
+                ]),
+            ])
+        );
+        assert_eq!(
+            run(vec!["IPSCOUNT", "ips-a", "0", "30"]),
+            RespValue::Integer(2)
+        );
+        assert_eq!(run(vec!["IPSREMOVE", "ips-a", "10"]), RespValue::Integer(1));
+        assert_eq!(run(vec!["IPSDEL", "ips-a"]), RespValue::Integer(1));
+        assert_eq!(
+            run(vec![
+                "IPSADDOPT",
+                "ips-opt",
+                "10",
+                "x10",
+                "7",
+                "99",
+                "req-1"
+            ]),
+            RespValue::Integer(1)
+        );
+        assert_eq!(
+            run(vec![
+                "IPSADDOPT",
+                "ips-opt",
+                "20",
+                "x20",
+                "8",
+                "99",
+                "req-2"
+            ]),
+            RespValue::Integer(1)
+        );
+        assert_eq!(
+            run(vec![
+                "IPSADDOPT",
+                "ips-opt",
+                "30",
+                "dup",
+                "7",
+                "99",
+                "req-1"
+            ]),
+            RespValue::Integer(0)
+        );
+        assert_eq!(
+            run(vec![
+                "IPSQUERYRANGEOPT",
+                "ips-opt",
+                "0",
+                "40",
+                "10",
+                "7",
+                "99",
+            ]),
+            RespValue::Array(vec![RespValue::Array(vec![
+                RespValue::Integer(10),
+                RespValue::Bulk(Some(b"x10".to_vec())),
+            ])])
+        );
+
+        assert_eq!(
+            run(vec!["RISKINCR", "risk", "10", "5"]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(
+            run(vec!["RISKINCR", "risk", "20", "-2"]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(
+            run(vec!["RISKINCR", "risk", "30", "7"]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(
+            run(vec!["RISKCOUNT", "risk", "0", "40"]),
+            RespValue::Integer(10)
+        );
+        assert_eq!(
+            run(vec!["RISKQUERY", "risk", "0", "40", "events"]),
+            RespValue::Integer(3)
+        );
+        assert_eq!(
+            run(vec!["RISKQUERY", "risk", "0", "40", "last"]),
+            RespValue::Integer(7)
+        );
+        assert_eq!(
+            run(vec!["RISKDETAIL", "risk", "15", "40", "2"]),
+            RespValue::Array(vec![
+                RespValue::Array(vec![
+                    RespValue::Integer(20),
+                    RespValue::Bulk(Some(b"-2".to_vec())),
+                ]),
+                RespValue::Array(vec![
+                    RespValue::Integer(30),
+                    RespValue::Bulk(Some(b"7".to_vec())),
+                ]),
+            ])
+        );
+        assert_eq!(
+            run(vec![
+                "RISKINCROPT",
+                "risk-bucket",
+                "1234",
+                "3",
+                "1000",
+                "60000",
+            ]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(
+            run(vec![
+                "RISKINCROPT",
+                "risk-bucket",
+                "1999",
+                "4",
+                "1000",
+                "60000",
+            ]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(
+            run(vec!["RISKDETAIL", "risk-bucket", "0", "2000", "10"]),
+            RespValue::Array(vec![RespValue::Array(vec![
+                RespValue::Integer(1000),
+                RespValue::Bulk(Some(b"7".to_vec())),
+            ])])
         );
     }
 

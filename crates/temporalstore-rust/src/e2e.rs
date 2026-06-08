@@ -373,11 +373,14 @@ fn is_write(command: &Command) -> bool {
             | Command::SetAdd { .. }
             | Command::SetRemove { .. }
             | Command::FeatureAppend { .. }
+            | Command::FeatureAppendWithPolicy { .. }
             | Command::FeatureReplace { .. }
             | Command::FeatureDelete { .. }
             | Command::SequenceAdd { .. }
             | Command::IpsAdd { .. }
+            | Command::IpsAddWithOptions { .. }
             | Command::RiskIncrement { .. }
+            | Command::RiskIncrementWithOptions { .. }
     )
 }
 

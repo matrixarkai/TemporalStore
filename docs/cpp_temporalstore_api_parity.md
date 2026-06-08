@@ -43,10 +43,50 @@ Set:
 Feature:
 
 - `ADD` -> `FeatureAppend`
+- write-policy add -> `FeatureAppendWithPolicy` with `upsert`, `insert_if_absent`, and
+  `replace_existing`
 - `QUERY` -> `FeatureQuery`
 - `AGGQUERY` -> `FeatureAggQuery`
 - `REPLACE` -> `FeatureReplace`
 - `DEL` -> `FeatureDelete`
+- Typed client coverage: `feature_append`, `feature_append_with_policy`, `feature_query`,
+  `feature_replace`, `feature_delete`, `feature_agg_query`
+- RESP coverage: `FAPPEND`, `FAPPENDPOLICY`, `FQUERY`, `FREPLACE`, `FDEL`, `FAGG`
+
+Sequence:
+
+- add rows -> `SequenceAdd`
+- query rows -> `SequenceQuery`
+- batch query rows -> `SequenceBatchQuery`
+- Typed client coverage: `sequence_add`, `sequence_query`, `sequence_batch_query`
+
+IPS:
+
+- `ADD` -> `IpsAdd`
+- dimension/idempotent add -> `IpsAddWithOptions`
+- query last -> `IpsQueryLast`
+- range query -> `IpsQueryRange`
+- dimension-filtered range query -> `IpsQueryRangeWithOptions`
+- batch query last -> `IpsBatchQueryLast`
+- remove timestamp -> `IpsRemove`
+- delete key -> `IpsDelete`
+- count range -> `IpsCount`
+- Typed client coverage: `ips_add`, `ips_add_with_options`, `ips_query_last`,
+  `ips_query_range`, `ips_query_range_with_options`, `ips_batch_query_last`,
+  `ips_remove`, `ips_delete`, `ips_count`
+- RESP coverage: `IPSADD`, `IPSADDOPT`, `IPSQUERYLAST`, `IPSQUERYRANGE`,
+  `IPSQUERYRANGEOPT`, `IPSBATCHQUERYLAST`, `IPSREMOVE`, `IPSDEL`, `IPSCOUNT`
+
+Risk:
+
+- increment -> `RiskIncrement`
+- precision/TTL increment -> `RiskIncrementWithOptions`
+- count/sum window -> `RiskCount`
+- aggregate query -> `RiskQuery` with `sum`, `min`, `max`, `first`, `last`, and `events`
+- detail list -> `RiskDetail`
+- Typed client coverage: `risk_increment`, `risk_increment_with_options`, `risk_count`,
+  `risk_query`, `risk_detail`
+- RESP coverage: `RISKINCR`, `RISKINCROPT`, `RISKCOUNT`, `RISKQUERY`, `RISKDETAIL`
 
 Runtime/control surface:
 
@@ -76,23 +116,25 @@ Redis operational/admin compatibility:
 
 IPS:
 
-- Rust has simplified `IpsAdd` and `IpsQueryLast`.
-- C++ IPS has `ADD`, `BATCH_QUERY`, `REMOVE`, `LOAD`, `DEL`, plus rich feature-stat filters,
-  data ranges, action/table dimensions, server aggregation, idempotence, and snap info.
+- Rust covers add, dimension/idempotent add, query-last, range query, dimension-filtered range
+  query, batch query-last, remove timestamp, delete key, and count range, with typed client and
+  RESP coverage.
+- C++ IPS additionally has `LOAD`, richer feature-stat filters, server aggregation, and snap info.
 
 Risk:
 
-- Rust has simplified `RiskIncrement` and `RiskCount`.
+- Rust covers increment, precision/TTL increment, count, sum/min/max/first/last/event aggregation,
+  and detail lists, with typed client and RESP coverage.
 - C++ risk has `HSET`, `HQUERY`, `CPCSET`, `CPCQUERY`, `FOLSET`, `FOLQUERY`,
   `HSETANDGET`, `FOLSETANDGET`, `CPCSETANDGET`, and `MANAGER`.
-- Missing C++ semantics include precision buckets, windows, count/min/max/change operators,
-  CPC/list detail, first/last tracking, TTL per risk object, and manager/debug operations.
+- Missing C++ semantics include CPC/list-specific behavior and manager/debug operations.
 
 Feature:
 
-- Rust supports point append/query/replace/delete and simple count/sum/min/max aggregation.
+- Rust supports point append/query/replace/delete, write-policy append, and simple
+  count/sum/min/max aggregation.
 - C++ feature API includes richer `FeaturePoint` structure with nested point arrays, time ranges,
-  write policy, and aggregate query behavior. Rust currently stores one value per timestamp.
+  and richer aggregate query behavior. Rust currently stores one value per timestamp.
 
 String:
 
@@ -120,7 +162,8 @@ The C++ deep dive describes a full serving engine. The Rust rewrite does not yet
 
 ## Current Conclusion
 
-The Rust repo now covers the main simple module APIs: common, string, hash, set, feature, plus
-simplified IPS and risk. It is not yet feature-complete versus the full C++ TemporalStore product,
-mainly because IPS, Risk, routing/topology, oplog/dump/load, and production replication are still
-large subsystems rather than small API aliases.
+The Rust repo now covers the main simple module APIs: common, string, hash, set, feature,
+sequence, and the implemented IPS/Risk subset with typed client and RESP coverage. It is not yet
+feature-complete versus the full C++ TemporalStore product, mainly because exact C++ proto
+semantics, routing/topology, oplog/dump/load, and production replication are still large subsystems
+rather than small API aliases.

@@ -33,6 +33,7 @@ pub struct ProxyOptions {
     pub io_timeout_ms: u64,
     pub max_retries: usize,
     pub refresh_route_on_backend_error: bool,
+    pub backend_continuous_failed_time_ms: u64,
 }
 
 impl ProxyOptions {
@@ -65,6 +66,7 @@ impl Default for ProxyOptions {
             io_timeout_ms: 200,
             max_retries: 0,
             refresh_route_on_backend_error: true,
+            backend_continuous_failed_time_ms: 10_000,
         }
     }
 }
@@ -77,6 +79,7 @@ pub struct ProxyStats {
     pub route_cache_misses: u64,
     pub route_refreshes: u64,
     pub backend_errors: u64,
+    pub continuous_backend_failures: u64,
     pub metaserver_errors: u64,
     pub bad_requests: u64,
     pub heartbeat_total: u64,
@@ -111,6 +114,7 @@ pub struct ProxyService {
 struct ProxyInner {
     options: RwLock<ProxyOptions>,
     routes: RwLock<HashMap<ShardId, CachedRoute>>,
+    backend_failures: RwLock<HashMap<String, BackendFailureState>>,
     stats: RwLock<ProxyStats>,
     boot_time_ms: u64,
 }
@@ -121,12 +125,20 @@ struct CachedRoute {
     fetched_at: Instant,
 }
 
+#[derive(Debug, Clone)]
+struct BackendFailureState {
+    first_failed_at: Instant,
+    last_failed_at: Instant,
+    consecutive_failures: u64,
+}
+
 impl ProxyService {
     pub fn new(options: ProxyOptions) -> Self {
         Self {
             inner: Arc::new(ProxyInner {
                 options: RwLock::new(options),
                 routes: RwLock::default(),
+                backend_failures: RwLock::default(),
                 stats: RwLock::default(),
                 boot_time_ms: now_ms(),
             }),
@@ -196,6 +208,7 @@ impl ProxyService {
             Ok(server_addr) => match self.post_execute(&server_addr, &request) {
                 Ok(response) => response,
                 Err(err) => {
+                    self.record_backend_failure(&server_addr);
                     self.inner
                         .stats
                         .write()
@@ -205,6 +218,10 @@ impl ProxyService {
                         match self.resolve_route(request.shard_id, true) {
                             Ok(refreshed) => self
                                 .post_execute(&refreshed, &request)
+                                .map(|response| {
+                                    self.record_backend_success(&refreshed);
+                                    response
+                                })
                                 .unwrap_or_else(|err| {
                                     execute_error("server_error", err.to_string())
                                 }),
@@ -229,6 +246,7 @@ impl ProxyService {
             Ok(server_addr) => match self.post_batch_execute(&server_addr, &request) {
                 Ok(response) => response,
                 Err(err) => {
+                    self.record_backend_failure(&server_addr);
                     self.inner
                         .stats
                         .write()
@@ -238,6 +256,10 @@ impl ProxyService {
                         match self.resolve_route(request.shard_id, true) {
                             Ok(refreshed) => self
                                 .post_batch_execute(&refreshed, &request)
+                                .map(|response| {
+                                    self.record_backend_success(&refreshed);
+                                    response
+                                })
                                 .unwrap_or_else(|err| BatchExecuteResponse {
                                     status: Status::error("server_error", err.to_string()),
                                     responses: Vec::new(),
@@ -272,6 +294,11 @@ impl ProxyService {
             .routes
             .write()
             .expect("proxy routes lock poisoned")
+            .clear();
+        self.inner
+            .backend_failures
+            .write()
+            .expect("proxy backend failure lock poisoned")
             .clear();
     }
 
@@ -401,12 +428,23 @@ impl ProxyService {
                 .cloned()
             {
                 if route.fetched_at.elapsed() <= ttl {
-                    self.inner
-                        .stats
-                        .write()
-                        .expect("proxy stats lock poisoned")
-                        .route_cache_hits += 1;
-                    return Ok(route.server_addr);
+                    if self.backend_failure_is_continuous(
+                        &route.server_addr,
+                        options.backend_continuous_failed_time_ms,
+                    ) {
+                        self.inner
+                            .stats
+                            .write()
+                            .expect("proxy stats lock poisoned")
+                            .continuous_backend_failures += 1;
+                    } else {
+                        self.inner
+                            .stats
+                            .write()
+                            .expect("proxy stats lock poisoned")
+                            .route_cache_hits += 1;
+                        return Ok(route.server_addr);
+                    }
                 }
             }
         }
@@ -494,6 +532,59 @@ impl ProxyService {
             .read()
             .expect("proxy options lock poisoned")
             .clone()
+    }
+
+    fn record_backend_failure(&self, server_addr: &str) {
+        let options = self.options();
+        let mut failures = self
+            .inner
+            .backend_failures
+            .write()
+            .expect("proxy backend failure lock poisoned");
+        let now = Instant::now();
+        let state =
+            failures
+                .entry(server_addr.to_string())
+                .or_insert_with(|| BackendFailureState {
+                    first_failed_at: now,
+                    last_failed_at: now,
+                    consecutive_failures: 0,
+                });
+        state.last_failed_at = now;
+        state.consecutive_failures += 1;
+        if state.first_failed_at.elapsed()
+            >= Duration::from_millis(options.backend_continuous_failed_time_ms)
+        {
+            self.inner
+                .stats
+                .write()
+                .expect("proxy stats lock poisoned")
+                .continuous_backend_failures += 1;
+        }
+    }
+
+    fn record_backend_success(&self, server_addr: &str) {
+        self.inner
+            .backend_failures
+            .write()
+            .expect("proxy backend failure lock poisoned")
+            .remove(server_addr);
+    }
+
+    fn backend_failure_is_continuous(
+        &self,
+        server_addr: &str,
+        continuous_failed_time_ms: u64,
+    ) -> bool {
+        self.inner
+            .backend_failures
+            .read()
+            .expect("proxy backend failure lock poisoned")
+            .get(server_addr)
+            .map(|state| {
+                state.first_failed_at.elapsed() >= Duration::from_millis(continuous_failed_time_ms)
+            })
+            .unwrap_or(false)
     }
 
     fn inc_bad_request(&self) {
@@ -636,6 +727,74 @@ mod tests {
         let info = proxy.info();
         assert_eq!(info.stats.backend_errors, 1);
         assert_eq!(info.stats.route_refreshes, 1);
+    }
+
+    #[test]
+    fn proxy_skips_cached_backend_after_continuous_failure_threshold() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        start_server(test_addr(18_316), engine.clone());
+        start_meta(test_addr(18_317), test_addr(18_316));
+        wait_for_http(&test_addr(18_317));
+        wait_for_http(&test_addr(18_316));
+
+        let bad_server = "127.0.0.1:1".to_string();
+        let proxy = ProxyService::new(ProxyOptions {
+            meta_addr: test_addr(18_317),
+            route_cache_ttl_ms: 60_000,
+            backend_continuous_failed_time_ms: 5,
+            connect_timeout_ms: 50,
+            io_timeout_ms: 200,
+            ..ProxyOptions::default()
+        });
+        proxy.inner.routes.write().unwrap().insert(
+            1,
+            CachedRoute {
+                server_addr: bad_server.clone(),
+                fetched_at: Instant::now(),
+            },
+        );
+        proxy.inner.backend_failures.write().unwrap().insert(
+            bad_server,
+            BackendFailureState {
+                first_failed_at: Instant::now() - Duration::from_millis(20),
+                last_failed_at: Instant::now() - Duration::from_millis(10),
+                consecutive_failures: 3,
+            },
+        );
+
+        let response = proxy.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            },
+        });
+        assert!(response.status.ok);
+        assert_eq!(
+            proxy
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "k".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"v".to_vec())
+            }
+        );
+        let info = proxy.info();
+        assert_eq!(info.stats.backend_errors, 0);
+        assert_eq!(info.stats.continuous_backend_failures, 1);
+        assert!(info.stats.route_refreshes >= 1);
+        assert!(info.stats.route_cache_hits >= 1);
     }
 
     #[test]

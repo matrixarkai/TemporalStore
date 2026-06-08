@@ -13,7 +13,8 @@ use crate::meta::GetShardResponse;
 use crate::meta::{GetTableTopologyRequest, TableTopologyResponse};
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,
-    ExecuteResponse, FeatureFilter, FeaturePoint, SequenceFeatureRow, ShardId, Status,
+    ExecuteResponse, FeatureFilter, FeaturePoint, FeatureWritePolicy, SequenceFeatureRow,
+    SequenceQuerySpec, ShardId, Status,
 };
 
 #[derive(Debug, Error)]
@@ -93,6 +94,8 @@ pub struct TableOptions {
     pub continuous_failed_time_ms: u64,
     pub first_shard_id: ShardId,
     pub shard_count: u64,
+    pub pin_primary: bool,
+    pub replica_read_policy: ReplicaReadPolicy,
 }
 
 impl Default for TableOptions {
@@ -103,8 +106,16 @@ impl Default for TableOptions {
             continuous_failed_time_ms: 10_000,
             first_shard_id: 1,
             shard_count: 1,
+            pin_primary: true,
+            replica_read_policy: ReplicaReadPolicy::PinPrimary,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplicaReadPolicy {
+    PinPrimary,
+    FirstReplica,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -118,15 +129,19 @@ pub struct ClientStats {
     pub route_refreshes: u64,
     pub backend_errors: u64,
     pub backend_error_streak: u64,
+    pub continuous_backend_failures: u64,
     pub backend_successes_after_error: u64,
     pub meta_sync_total: u64,
     pub meta_sync_errors: u64,
 }
 
 impl ClientStats {
-    fn record_backend_error(&mut self) {
+    fn record_backend_error(&mut self, became_continuous: bool) {
         self.backend_errors += 1;
         self.backend_error_streak += 1;
+        if became_continuous {
+            self.continuous_backend_failures += 1;
+        }
     }
 
     fn record_backend_success(&mut self) {
@@ -146,14 +161,23 @@ pub struct TemporalStoreClient {
 struct ClientInner {
     options: ClientOptions,
     routes: Mutex<HashMap<ShardId, CachedRoute>>,
+    backend_failures: Mutex<HashMap<String, BackendFailureState>>,
     tables: Mutex<HashMap<String, TableOptions>>,
     stats: Mutex<ClientStats>,
 }
 
 #[derive(Debug, Clone)]
 struct CachedRoute {
-    server_addr: String,
+    primary_addr: String,
+    replica_addrs: Vec<String>,
     fetched_at: Instant,
+}
+
+#[derive(Debug, Clone)]
+struct BackendFailureState {
+    first_failed_at: Instant,
+    last_failed_at: Instant,
+    consecutive_failures: u64,
 }
 
 impl TemporalStoreClient {
@@ -166,6 +190,7 @@ impl TemporalStoreClient {
             inner: Arc::new(ClientInner {
                 options,
                 routes: Mutex::default(),
+                backend_failures: Mutex::default(),
                 tables: Mutex::default(),
                 stats: Mutex::default(),
             }),
@@ -185,8 +210,7 @@ impl TemporalStoreClient {
             .tables
             .lock()
             .expect("client table cache lock poisoned")
-            .entry(combine_name)
-            .or_insert_with(|| options.clone());
+            .insert(combine_name, options.clone());
         self.inner
             .stats
             .lock()
@@ -266,16 +290,41 @@ impl TemporalStoreClient {
             shard_count: table.shard_count,
             ..TableOptions::default()
         };
+        let routes = topology
+            .partitions
+            .iter()
+            .filter_map(|partition| {
+                partition.primary.as_ref().map(|primary| {
+                    (
+                        partition.shard_id,
+                        CachedRoute {
+                            primary_addr: primary.clone(),
+                            replica_addrs: partition
+                                .replicas
+                                .iter()
+                                .filter(|replica| *replica != primary)
+                                .cloned()
+                                .collect(),
+                            fetched_at: Instant::now(),
+                        },
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
         self.inner
             .tables
             .lock()
             .expect("client table cache lock poisoned")
             .insert(table_combine_name(&namespace, &table_name), options.clone());
-        self.inner
+        let mut route_cache = self
+            .inner
             .routes
             .lock()
-            .expect("client route cache lock poisoned")
-            .clear();
+            .expect("client route cache lock poisoned");
+        route_cache.clear();
+        for (shard_id, route) in routes {
+            route_cache.insert(shard_id, route);
+        }
         Ok(options)
     }
 
@@ -353,10 +402,19 @@ impl TemporalStoreClient {
         let _trace_id = options.trace_id;
         let http_options = self.inner.options.http_options();
         if self.inner.options.meta_addr.is_some() {
-            let server_addr = self.resolve_route(request.shard_id, false)?;
+            let server_addr = self.resolve_route(request.shard_id, false, None)?;
             return post_json_with_options(&server_addr, "/batch_execute", &request, http_options)
                 .or_else(|_| {
-                    let refreshed = self.resolve_route(request.shard_id, true)?;
+                    let became_continuous = self.record_backend_failure(
+                        &server_addr,
+                        self.inner.options.topo_error_retry_interval_ms,
+                    );
+                    self.inner
+                        .stats
+                        .lock()
+                        .expect("client stats lock poisoned")
+                        .record_backend_error(became_continuous);
+                    let refreshed = self.resolve_route(request.shard_id, true, None)?;
                     Ok(post_json_with_options(
                         &refreshed,
                         "/batch_execute",
@@ -381,7 +439,7 @@ impl TemporalStoreClient {
     }
 
     pub fn refresh_route(&self, shard_id: ShardId) -> Result<String, ClientError> {
-        self.resolve_route(shard_id, true)
+        self.resolve_route(shard_id, true, None)
     }
 
     fn execute_routed(
@@ -389,7 +447,12 @@ impl TemporalStoreClient {
         request: ExecuteRequest,
         force_primary: bool,
     ) -> Result<ExecuteResponse, ClientError> {
-        self.execute_routed_with_http(request, force_primary, self.inner.options.http_options())
+        self.execute_routed_with_http(
+            request,
+            force_primary,
+            self.inner.options.http_options(),
+            None,
+        )
     }
 
     fn execute_routed_with_http(
@@ -397,19 +460,58 @@ impl TemporalStoreClient {
         request: ExecuteRequest,
         force_primary: bool,
         http_options: HttpRequestOptions,
+        continuous_failed_time_ms: Option<u64>,
+    ) -> Result<ExecuteResponse, ClientError> {
+        self.execute_routed_with_http_and_policy(
+            request,
+            force_primary,
+            http_options,
+            continuous_failed_time_ms,
+            ReplicaReadPolicy::PinPrimary,
+        )
+    }
+
+    fn execute_routed_with_http_and_policy(
+        &self,
+        request: ExecuteRequest,
+        force_primary: bool,
+        http_options: HttpRequestOptions,
+        continuous_failed_time_ms: Option<u64>,
+        replica_read_policy: ReplicaReadPolicy,
     ) -> Result<ExecuteResponse, ClientError> {
         if self.inner.options.meta_addr.is_some() {
-            let server_addr = self.resolve_route(request.shard_id, false)?;
+            let policy = if force_primary {
+                ReplicaReadPolicy::PinPrimary
+            } else {
+                replica_read_policy
+            };
+            let server_addr = self.resolve_route_with_policy(
+                request.shard_id,
+                false,
+                continuous_failed_time_ms,
+                policy,
+            )?;
             return post_json_with_options(&server_addr, "/execute", &request, http_options)
                 .or_else(|_| {
+                    let became_continuous = self.record_backend_failure(
+                        &server_addr,
+                        continuous_failed_time_ms
+                            .unwrap_or(self.inner.options.topo_error_retry_interval_ms),
+                    );
                     self.inner
                         .stats
                         .lock()
                         .expect("client stats lock poisoned")
-                        .record_backend_error();
-                    let refreshed = self.resolve_route(request.shard_id, true)?;
+                        .record_backend_error(became_continuous);
+                    let refreshed = self.resolve_route_with_policy(
+                        request.shard_id,
+                        true,
+                        continuous_failed_time_ms,
+                        policy,
+                    )?;
                     let response =
                         post_json_with_options(&refreshed, "/execute", &request, http_options)?;
+                    self.record_backend_success(&refreshed);
                     self.inner
                         .stats
                         .lock()
@@ -432,23 +534,32 @@ impl TemporalStoreClient {
         &self,
         request: BatchExecuteRequest,
         http_options: HttpRequestOptions,
+        continuous_failed_time_ms: Option<u64>,
     ) -> Result<BatchExecuteResponse, ClientError> {
         if self.inner.options.meta_addr.is_some() {
-            let server_addr = self.resolve_route(request.shard_id, false)?;
+            let server_addr =
+                self.resolve_route(request.shard_id, false, continuous_failed_time_ms)?;
             return post_json_with_options(&server_addr, "/batch_execute", &request, http_options)
                 .or_else(|_| {
+                    let became_continuous = self.record_backend_failure(
+                        &server_addr,
+                        continuous_failed_time_ms
+                            .unwrap_or(self.inner.options.topo_error_retry_interval_ms),
+                    );
                     self.inner
                         .stats
                         .lock()
                         .expect("client stats lock poisoned")
-                        .record_backend_error();
-                    let refreshed = self.resolve_route(request.shard_id, true)?;
+                        .record_backend_error(became_continuous);
+                    let refreshed =
+                        self.resolve_route(request.shard_id, true, continuous_failed_time_ms)?;
                     let response = post_json_with_options(
                         &refreshed,
                         "/batch_execute",
                         &request,
                         http_options,
                     )?;
+                    self.record_backend_success(&refreshed);
                     self.inner
                         .stats
                         .lock()
@@ -465,7 +576,27 @@ impl TemporalStoreClient {
         )?)
     }
 
-    fn resolve_route(&self, shard_id: ShardId, force_refresh: bool) -> Result<String, ClientError> {
+    fn resolve_route(
+        &self,
+        shard_id: ShardId,
+        force_refresh: bool,
+        continuous_failed_time_ms: Option<u64>,
+    ) -> Result<String, ClientError> {
+        self.resolve_route_with_policy(
+            shard_id,
+            force_refresh,
+            continuous_failed_time_ms,
+            ReplicaReadPolicy::PinPrimary,
+        )
+    }
+
+    fn resolve_route_with_policy(
+        &self,
+        shard_id: ShardId,
+        force_refresh: bool,
+        continuous_failed_time_ms: Option<u64>,
+        replica_read_policy: ReplicaReadPolicy,
+    ) -> Result<String, ClientError> {
         let ttl = Duration::from_millis(self.inner.options.route_cache_ttl_ms);
         if !force_refresh {
             if let Some(route) = self
@@ -477,12 +608,25 @@ impl TemporalStoreClient {
                 .cloned()
             {
                 if route.fetched_at.elapsed() <= ttl {
-                    self.inner
-                        .stats
-                        .lock()
-                        .expect("client stats lock poisoned")
-                        .route_cache_hits += 1;
-                    return Ok(route.server_addr);
+                    let server_addr = choose_cached_route(&route, replica_read_policy);
+                    if self.backend_failure_is_continuous(
+                        &server_addr,
+                        continuous_failed_time_ms
+                            .unwrap_or(self.inner.options.topo_error_retry_interval_ms),
+                    ) {
+                        self.inner
+                            .stats
+                            .lock()
+                            .expect("client stats lock poisoned")
+                            .continuous_backend_failures += 1;
+                    } else {
+                        self.inner
+                            .stats
+                            .lock()
+                            .expect("client stats lock poisoned")
+                            .route_cache_hits += 1;
+                        return Ok(server_addr);
+                    }
                 }
             }
         }
@@ -517,7 +661,8 @@ impl TemporalStoreClient {
             .insert(
                 shard_id,
                 CachedRoute {
-                    server_addr: server_addr.clone(),
+                    primary_addr: server_addr.clone(),
+                    replica_addrs: Vec::new(),
                     fetched_at: Instant::now(),
                 },
             );
@@ -527,6 +672,50 @@ impl TemporalStoreClient {
             .expect("client stats lock poisoned")
             .route_refreshes += 1;
         Ok(server_addr)
+    }
+
+    fn record_backend_failure(&self, server_addr: &str, continuous_failed_time_ms: u64) -> bool {
+        let mut failures = self
+            .inner
+            .backend_failures
+            .lock()
+            .expect("client backend failure lock poisoned");
+        let now = Instant::now();
+        let state =
+            failures
+                .entry(server_addr.to_string())
+                .or_insert_with(|| BackendFailureState {
+                    first_failed_at: now,
+                    last_failed_at: now,
+                    consecutive_failures: 0,
+                });
+        state.last_failed_at = now;
+        state.consecutive_failures += 1;
+        state.first_failed_at.elapsed() >= Duration::from_millis(continuous_failed_time_ms)
+    }
+
+    fn record_backend_success(&self, server_addr: &str) {
+        self.inner
+            .backend_failures
+            .lock()
+            .expect("client backend failure lock poisoned")
+            .remove(server_addr);
+    }
+
+    fn backend_failure_is_continuous(
+        &self,
+        server_addr: &str,
+        continuous_failed_time_ms: u64,
+    ) -> bool {
+        self.inner
+            .backend_failures
+            .lock()
+            .expect("client backend failure lock poisoned")
+            .get(server_addr)
+            .map(|state| {
+                state.first_failed_at.elapsed() >= Duration::from_millis(continuous_failed_time_ms)
+            })
+            .unwrap_or(false)
     }
 }
 
@@ -820,6 +1009,28 @@ impl TemporalStoreTable {
         })
     }
 
+    pub fn feature_append_with_policy(
+        &self,
+        key: impl Into<String>,
+        points: Vec<FeaturePoint>,
+        policy: FeatureWritePolicy,
+    ) -> Result<bool, ClientError> {
+        match self
+            .execute(Command::FeatureAppendWithPolicy {
+                key: key.into(),
+                points,
+                policy,
+            })?
+            .response
+        {
+            CommandResponse::Integer { value } => Ok(value != 0),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "feature_append_with_policy",
+                response,
+            }),
+        }
+    }
+
     pub fn feature_query(
         &self,
         key: impl Into<String>,
@@ -839,6 +1050,51 @@ impl TemporalStoreTable {
             CommandResponse::FeaturePoints { points } => Ok(points),
             response => Err(ClientError::UnexpectedResponse {
                 operation: "feature_query",
+                response,
+            }),
+        }
+    }
+
+    pub fn feature_replace(
+        &self,
+        key: impl Into<String>,
+        start_ms: u64,
+        end_ms: u64,
+        points: Vec<FeaturePoint>,
+    ) -> Result<(), ClientError> {
+        self.expect_empty(Command::FeatureReplace {
+            key: key.into(),
+            start_ms,
+            end_ms,
+            points,
+        })
+    }
+
+    pub fn feature_delete(&self, key: impl Into<String>) -> Result<(), ClientError> {
+        self.expect_empty(Command::FeatureDelete { key: key.into() })
+    }
+
+    pub fn feature_agg_query(
+        &self,
+        key: impl Into<String>,
+        start_ms: u64,
+        end_ms: u64,
+        aggregator: impl Into<String>,
+        count: Option<usize>,
+    ) -> Result<i64, ClientError> {
+        match self
+            .execute(Command::FeatureAggQuery {
+                key: key.into(),
+                start_ms,
+                end_ms,
+                aggregator: aggregator.into(),
+                count,
+            })?
+            .response
+        {
+            CommandResponse::Aggregate { value } => Ok(value),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "feature_agg_query",
                 response,
             }),
         }
@@ -881,6 +1137,22 @@ impl TemporalStoreTable {
         }
     }
 
+    pub fn sequence_batch_query(
+        &self,
+        queries: Vec<SequenceQuerySpec>,
+    ) -> Result<Vec<(String, Vec<SequenceFeatureRow>)>, ClientError> {
+        match self
+            .execute(Command::SequenceBatchQuery { queries })?
+            .response
+        {
+            CommandResponse::SequenceRowGroups { groups } => Ok(groups),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "sequence_batch_query",
+                response,
+            }),
+        }
+    }
+
     pub fn ips_add(
         &self,
         key: impl Into<String>,
@@ -892,6 +1164,34 @@ impl TemporalStoreTable {
             timestamp_ms,
             instance: instance.into(),
         })
+    }
+
+    pub fn ips_add_with_options(
+        &self,
+        key: impl Into<String>,
+        timestamp_ms: u64,
+        instance: impl Into<Vec<u8>>,
+        action_type: Option<u32>,
+        table_id: Option<u64>,
+        request_id: Option<String>,
+    ) -> Result<bool, ClientError> {
+        match self
+            .execute(Command::IpsAddWithOptions {
+                key: key.into(),
+                timestamp_ms,
+                instance: instance.into(),
+                action_type,
+                table_id,
+                request_id,
+            })?
+            .response
+        {
+            CommandResponse::Integer { value } => Ok(value != 0),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "ips_add_with_options",
+                response,
+            }),
+        }
     }
 
     pub fn ips_query_last(
@@ -914,6 +1214,130 @@ impl TemporalStoreTable {
         }
     }
 
+    pub fn ips_query_range(
+        &self,
+        key: impl Into<String>,
+        start_ms: u64,
+        end_ms: u64,
+        count: Option<usize>,
+    ) -> Result<Vec<FeaturePoint>, ClientError> {
+        match self
+            .execute(Command::IpsQueryRange {
+                key: key.into(),
+                start_ms,
+                end_ms,
+                count,
+            })?
+            .response
+        {
+            CommandResponse::FeaturePoints { points } => Ok(points),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "ips_query_range",
+                response,
+            }),
+        }
+    }
+
+    pub fn ips_batch_query_last(
+        &self,
+        keys: Vec<String>,
+        count: usize,
+    ) -> Result<Vec<(String, Vec<FeaturePoint>)>, ClientError> {
+        match self
+            .execute(Command::IpsBatchQueryLast { keys, count })?
+            .response
+        {
+            CommandResponse::FeaturePointGroups { groups } => Ok(groups),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "ips_batch_query_last",
+                response,
+            }),
+        }
+    }
+
+    pub fn ips_remove(
+        &self,
+        key: impl Into<String>,
+        timestamp_ms: u64,
+    ) -> Result<bool, ClientError> {
+        match self
+            .execute(Command::IpsRemove {
+                key: key.into(),
+                timestamp_ms,
+            })?
+            .response
+        {
+            CommandResponse::Integer { value } => Ok(value != 0),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "ips_remove",
+                response,
+            }),
+        }
+    }
+
+    pub fn ips_delete(&self, key: impl Into<String>) -> Result<bool, ClientError> {
+        match self
+            .execute(Command::IpsDelete { key: key.into() })?
+            .response
+        {
+            CommandResponse::Integer { value } => Ok(value != 0),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "ips_delete",
+                response,
+            }),
+        }
+    }
+
+    pub fn ips_count(
+        &self,
+        key: impl Into<String>,
+        start_ms: u64,
+        end_ms: u64,
+    ) -> Result<i64, ClientError> {
+        match self
+            .execute(Command::IpsCount {
+                key: key.into(),
+                start_ms,
+                end_ms,
+            })?
+            .response
+        {
+            CommandResponse::Integer { value } => Ok(value),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "ips_count",
+                response,
+            }),
+        }
+    }
+
+    pub fn ips_query_range_with_options(
+        &self,
+        key: impl Into<String>,
+        start_ms: u64,
+        end_ms: u64,
+        count: Option<usize>,
+        action_type: Option<u32>,
+        table_id: Option<u64>,
+    ) -> Result<Vec<FeaturePoint>, ClientError> {
+        match self
+            .execute(Command::IpsQueryRangeWithOptions {
+                key: key.into(),
+                start_ms,
+                end_ms,
+                count,
+                action_type,
+                table_id,
+            })?
+            .response
+        {
+            CommandResponse::FeaturePoints { points } => Ok(points),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "ips_query_range_with_options",
+                response,
+            }),
+        }
+    }
+
     pub fn risk_increment(
         &self,
         key: impl Into<String>,
@@ -924,6 +1348,23 @@ impl TemporalStoreTable {
             key: key.into(),
             timestamp_ms,
             amount,
+        })
+    }
+
+    pub fn risk_increment_with_options(
+        &self,
+        key: impl Into<String>,
+        timestamp_ms: u64,
+        amount: i64,
+        precision_ms: Option<u64>,
+        ttl_ms: Option<u64>,
+    ) -> Result<(), ClientError> {
+        self.expect_empty(Command::RiskIncrementWithOptions {
+            key: key.into(),
+            timestamp_ms,
+            amount,
+            precision_ms,
+            ttl_ms,
         })
     }
 
@@ -949,6 +1390,54 @@ impl TemporalStoreTable {
         }
     }
 
+    pub fn risk_query(
+        &self,
+        key: impl Into<String>,
+        start_ms: u64,
+        end_ms: u64,
+        aggregator: impl Into<String>,
+    ) -> Result<i64, ClientError> {
+        match self
+            .execute(Command::RiskQuery {
+                key: key.into(),
+                start_ms,
+                end_ms,
+                aggregator: aggregator.into(),
+            })?
+            .response
+        {
+            CommandResponse::Integer { value } => Ok(value),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "risk_query",
+                response,
+            }),
+        }
+    }
+
+    pub fn risk_detail(
+        &self,
+        key: impl Into<String>,
+        start_ms: u64,
+        end_ms: u64,
+        count: Option<usize>,
+    ) -> Result<Vec<FeaturePoint>, ClientError> {
+        match self
+            .execute(Command::RiskDetail {
+                key: key.into(),
+                start_ms,
+                end_ms,
+                count,
+            })?
+            .response
+        {
+            CommandResponse::FeaturePoints { points } => Ok(points),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "risk_detail",
+                response,
+            }),
+        }
+    }
+
     pub fn execute(&self, command: Command) -> Result<ExecuteResponse, ClientError> {
         self.client
             .inner
@@ -957,13 +1446,17 @@ impl TemporalStoreTable {
             .expect("client stats lock poisoned")
             .execute_requests += 1;
         let shard_id = self.shard_id_for_command(&command);
-        let response = self.client.execute_routed_with_http(
+        let table_options = self.table_options();
+        let force_primary = is_write(&command) || table_options.pin_primary;
+        let response = self.client.execute_routed_with_http_and_policy(
             ExecuteRequest {
                 shard_id,
                 command: command.clone(),
             },
-            is_write(&command),
+            force_primary,
             self.http_options(),
+            Some(table_options.continuous_failed_time_ms),
+            table_options.replica_read_policy,
         )?;
         if !response.status.ok {
             return Err(ClientError::Status(response.status.message));
@@ -988,8 +1481,11 @@ impl TemporalStoreTable {
             shard_id: self.shard_id,
             commands,
         };
-        self.client
-            .batch_execute_with_http(request, self.http_options())
+        self.client.batch_execute_with_http(
+            request,
+            self.http_options(),
+            Some(self.table_options().continuous_failed_time_ms),
+        )
     }
 
     fn batch_execute_grouped_by_shard(
@@ -1012,6 +1508,7 @@ impl TemporalStoreTable {
             let response = self.client.batch_execute_with_http(
                 BatchExecuteRequest { shard_id, commands },
                 self.http_options(),
+                Some(self.table_options().continuous_failed_time_ms),
             )?;
             if !response.status.ok {
                 return Ok(BatchExecuteResponse {
@@ -1066,6 +1563,17 @@ impl TemporalStoreTable {
             io_timeout_ms: self.options.io_timeout_ms,
             max_retries: self.client.inner.options.max_retries,
         }
+    }
+}
+
+fn choose_cached_route(route: &CachedRoute, replica_read_policy: ReplicaReadPolicy) -> String {
+    match replica_read_policy {
+        ReplicaReadPolicy::PinPrimary => route.primary_addr.clone(),
+        ReplicaReadPolicy::FirstReplica => route
+            .replica_addrs
+            .first()
+            .cloned()
+            .unwrap_or_else(|| route.primary_addr.clone()),
     }
 }
 
@@ -1160,11 +1668,14 @@ fn is_write(command: &Command) -> bool {
             | Command::SetAdd { .. }
             | Command::SetRemove { .. }
             | Command::FeatureAppend { .. }
+            | Command::FeatureAppendWithPolicy { .. }
             | Command::FeatureReplace { .. }
             | Command::FeatureDelete { .. }
             | Command::SequenceAdd { .. }
             | Command::IpsAdd { .. }
+            | Command::IpsAddWithOptions { .. }
             | Command::RiskIncrement { .. }
+            | Command::RiskIncrementWithOptions { .. }
     )
 }
 
@@ -1231,6 +1742,7 @@ fn command_key(command: &Command) -> Option<&str> {
         | Command::SetMembers { key }
         | Command::SetRemove { key, .. }
         | Command::FeatureAppend { key, .. }
+        | Command::FeatureAppendWithPolicy { key, .. }
         | Command::FeatureQuery { key, .. }
         | Command::FeatureReplace { key, .. }
         | Command::FeatureDelete { key }
@@ -1238,16 +1750,19 @@ fn command_key(command: &Command) -> Option<&str> {
         | Command::SequenceAdd { key, .. }
         | Command::SequenceQuery { key, .. }
         | Command::IpsAdd { key, .. }
+        | Command::IpsAddWithOptions { key, .. }
         | Command::IpsQueryLast { key, .. }
         | Command::IpsQueryRange { key, .. }
+        | Command::IpsQueryRangeWithOptions { key, .. }
         | Command::IpsRemove { key, .. }
         | Command::IpsDelete { key }
         | Command::IpsCount { key, .. }
         | Command::RiskIncrement { key, .. }
+        | Command::RiskIncrementWithOptions { key, .. }
         | Command::RiskCount { key, .. }
         | Command::RiskQuery { key, .. }
         | Command::RiskDetail { key, .. } => Some(key),
-        Command::IpsBatchQueryLast { .. } => None,
+        Command::IpsBatchQueryLast { .. } | Command::SequenceBatchQuery { .. } => None,
     }
 }
 
@@ -1256,7 +1771,7 @@ mod tests {
     use super::*;
     use crate::engine::TemporalEngine;
     use crate::http::{json_response, parse_json, serve};
-    use crate::meta::{GetShardResponse, ShardLocation};
+    use crate::meta::{GetShardResponse, ShardLocation, TableMetaInfo, TablePartition};
 
     #[test]
     fn table_typed_methods_and_pipeline_match_cpp_client_shape() {
@@ -1335,6 +1850,116 @@ mod tests {
         assert_eq!(table.get("sk").unwrap(), Some(b"sv".to_vec()));
         table.setex("ttl", b"v".to_vec(), 10_000).unwrap();
         assert!(table.ttl("ttl").unwrap() > 0);
+        table
+            .feature_append(
+                "feature",
+                vec![
+                    FeaturePoint {
+                        timestamp_ms: 10,
+                        value: b"2".to_vec(),
+                    },
+                    FeaturePoint {
+                        timestamp_ms: 20,
+                        value: b"3".to_vec(),
+                    },
+                ],
+            )
+            .unwrap();
+        assert_eq!(
+            table.feature_query("feature", 0, 30, None).unwrap(),
+            vec![
+                FeaturePoint {
+                    timestamp_ms: 10,
+                    value: b"2".to_vec(),
+                },
+                FeaturePoint {
+                    timestamp_ms: 20,
+                    value: b"3".to_vec(),
+                },
+            ]
+        );
+        assert_eq!(
+            table
+                .feature_agg_query("feature", 0, 30, "sum", None)
+                .unwrap(),
+            5
+        );
+        table
+            .feature_replace(
+                "feature",
+                10,
+                20,
+                vec![FeaturePoint {
+                    timestamp_ms: 15,
+                    value: b"9".to_vec(),
+                }],
+            )
+            .unwrap();
+        assert_eq!(
+            table
+                .feature_agg_query("feature", 0, 30, "max", None)
+                .unwrap(),
+            9
+        );
+        table.feature_delete("feature").unwrap();
+        assert!(table
+            .feature_query("feature", 0, 30, None)
+            .unwrap()
+            .is_empty());
+        table.ips_add("ips-a", 10, b"a10".to_vec()).unwrap();
+        table.ips_add("ips-a", 20, b"a20".to_vec()).unwrap();
+        table.ips_add("ips-b", 15, b"b15".to_vec()).unwrap();
+        assert_eq!(
+            table.ips_query_range("ips-a", 0, 30, Some(1)).unwrap(),
+            vec![FeaturePoint {
+                timestamp_ms: 10,
+                value: b"a10".to_vec(),
+            }]
+        );
+        assert_eq!(table.ips_count("ips-a", 0, 30).unwrap(), 2);
+        assert_eq!(
+            table
+                .ips_batch_query_last(vec!["ips-a".to_string(), "ips-b".to_string()], 1)
+                .unwrap(),
+            vec![
+                (
+                    "ips-a".to_string(),
+                    vec![FeaturePoint {
+                        timestamp_ms: 20,
+                        value: b"a20".to_vec(),
+                    }],
+                ),
+                (
+                    "ips-b".to_string(),
+                    vec![FeaturePoint {
+                        timestamp_ms: 15,
+                        value: b"b15".to_vec(),
+                    }],
+                ),
+            ]
+        );
+        assert!(table.ips_remove("ips-a", 10).unwrap());
+        assert_eq!(table.ips_count("ips-a", 0, 30).unwrap(), 1);
+        assert!(table.ips_delete("ips-a").unwrap());
+
+        table.risk_increment("risk", 10, 5).unwrap();
+        table.risk_increment("risk", 20, -2).unwrap();
+        table.risk_increment("risk", 30, 7).unwrap();
+        assert_eq!(table.risk_query("risk", 0, 40, "sum").unwrap(), 10);
+        assert_eq!(table.risk_query("risk", 0, 40, "last").unwrap(), 7);
+        assert_eq!(
+            table.risk_detail("risk", 15, 40, Some(2)).unwrap(),
+            vec![
+                FeaturePoint {
+                    timestamp_ms: 20,
+                    value: b"-2".to_vec(),
+                },
+                FeaturePoint {
+                    timestamp_ms: 30,
+                    value: b"7".to_vec(),
+                },
+            ]
+        );
 
         let mut pipeline = table.pipeline();
         assert!(pipeline.sync().unwrap().responses.is_empty());
@@ -1407,7 +2032,8 @@ mod tests {
         client.inner.routes.lock().unwrap().insert(
             1,
             CachedRoute {
-                server_addr: "127.0.0.1:1".to_string(),
+                primary_addr: "127.0.0.1:1".to_string(),
+                replica_addrs: Vec::new(),
                 fetched_at: Instant::now(),
             },
         );
@@ -1418,6 +2044,96 @@ mod tests {
         assert_eq!(stats.backend_errors, 1);
         assert_eq!(stats.backend_error_streak, 0);
         assert_eq!(stats.backend_successes_after_error, 1);
+    }
+
+    #[test]
+    fn client_backend_pool_skips_cached_route_after_continuous_failure_threshold() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        let server_addr = test_addr(18_216);
+        let meta_addr = test_addr(18_217);
+        let engine_for_server = engine.clone();
+        std::thread::spawn(move || {
+            serve(&server_addr, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    ("POST", "/execute") => {
+                        let req = parse_json::<ExecuteRequest>(&request.body).unwrap();
+                        json_response(200, &engine_for_server.execute(req))
+                    }
+                    _ => json_response(404, &Status::error("not_found", "not found")),
+                }
+            })
+            .unwrap();
+        });
+        let live_server = test_addr(18_216);
+        std::thread::spawn(move || {
+            serve(&meta_addr, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    ("GET", "/shards/1") => json_response(
+                        200,
+                        &GetShardResponse {
+                            status: Status::ok(),
+                            location: Some(ShardLocation {
+                                shard_id: 1,
+                                server_addr: live_server.clone(),
+                            }),
+                        },
+                    ),
+                    _ => json_response(404, &Status::error("not_found", "not found")),
+                }
+            })
+            .unwrap();
+        });
+        wait_for_http(&test_addr(18_217));
+
+        let bad_server = "127.0.0.1:1".to_string();
+        let client = TemporalStoreClient::with_options(ClientOptions {
+            proxy_addr: bad_server.clone(),
+            meta_addr: Some(test_addr(18_217)),
+            route_cache_ttl_ms: 60_000,
+            connect_timeout_ms: 50,
+            io_timeout_ms: 200,
+            ..ClientOptions::default()
+        });
+        client.inner.routes.lock().unwrap().insert(
+            1,
+            CachedRoute {
+                primary_addr: bad_server.clone(),
+                replica_addrs: Vec::new(),
+                fetched_at: Instant::now(),
+            },
+        );
+        client.inner.backend_failures.lock().unwrap().insert(
+            bad_server,
+            BackendFailureState {
+                first_failed_at: Instant::now() - Duration::from_millis(20),
+                last_failed_at: Instant::now() - Duration::from_millis(10),
+                consecutive_failures: 3,
+            },
+        );
+
+        let table = client.open_table(
+            "ns",
+            "tbl",
+            TableOptions {
+                continuous_failed_time_ms: 5,
+                ..TableOptions::default()
+            },
+        );
+        table.set("k", b"v".to_vec()).unwrap();
+        assert_eq!(table.get("k").unwrap(), Some(b"v".to_vec()));
+
+        let stats = client.stats();
+        assert_eq!(stats.backend_errors, 0);
+        assert_eq!(stats.route_cache_hits, 1);
+        assert!(stats.route_refreshes >= 1);
+        assert_eq!(stats.continuous_backend_failures, 1);
     }
 
     #[test]
@@ -1460,6 +2176,135 @@ mod tests {
         assert_eq!(table.table_name(), "tbl");
         let routed = table.shard_id_for_key("routing-key");
         assert!((10..14).contains(&routed));
+    }
+
+    #[test]
+    fn table_read_policy_can_select_secondary_from_metaserver_topology() {
+        let primary_addr = test_addr(18_222);
+        let replica_addr = test_addr(18_223);
+        let meta_addr = test_addr(18_224);
+
+        let primary_server = primary_addr.clone();
+        std::thread::spawn(move || {
+            serve(&primary_server, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    ("POST", "/execute") => {
+                        let req = parse_json::<ExecuteRequest>(&request.body).unwrap();
+                        match req.command {
+                            Command::StringSet { .. } => json_response(
+                                200,
+                                &ExecuteResponse {
+                                    status: Status::ok(),
+                                    response: CommandResponse::Empty,
+                                },
+                            ),
+                            Command::StringGet { .. } => json_response(
+                                200,
+                                &ExecuteResponse {
+                                    status: Status::ok(),
+                                    response: CommandResponse::Bytes {
+                                        value: Some(b"primary".to_vec()),
+                                    },
+                                },
+                            ),
+                            _ => json_response(400, &Status::error("bad_request", "unexpected")),
+                        }
+                    }
+                    _ => json_response(404, &Status::error("not_found", "not found")),
+                }
+            })
+            .unwrap();
+        });
+
+        let replica_server = replica_addr.clone();
+        std::thread::spawn(move || {
+            serve(&replica_server, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    ("POST", "/execute") => {
+                        let req = parse_json::<ExecuteRequest>(&request.body).unwrap();
+                        match req.command {
+                            Command::StringGet { .. } => json_response(
+                                200,
+                                &ExecuteResponse {
+                                    status: Status::ok(),
+                                    response: CommandResponse::Bytes {
+                                        value: Some(b"replica".to_vec()),
+                                    },
+                                },
+                            ),
+                            _ => json_response(
+                                200,
+                                &ExecuteResponse {
+                                    status: Status::error("wrong_endpoint", "replica got write"),
+                                    response: CommandResponse::Empty,
+                                },
+                            ),
+                        }
+                    }
+                    _ => json_response(404, &Status::error("not_found", "not found")),
+                }
+            })
+            .unwrap();
+        });
+
+        let primary_for_meta = primary_addr.clone();
+        let replica_for_meta = replica_addr.clone();
+        std::thread::spawn(move || {
+            serve(&meta_addr, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    ("POST", "/tables/topology") => json_response(
+                        200,
+                        &TableTopologyResponse {
+                            status: Status::ok(),
+                            table: Some(TableMetaInfo {
+                                table_id: 7,
+                                namespace: "ns".to_string(),
+                                table_name: "tbl".to_string(),
+                                state: crate::meta::MetaEntityState::Normal,
+                                topology_version: 1,
+                                first_shard_id: 1,
+                                shard_count: 1,
+                                replica_count: 2,
+                            }),
+                            partitions: vec![TablePartition {
+                                shard_id: 1,
+                                start_slot: 0,
+                                end_slot: u64::MAX,
+                                primary: Some(primary_for_meta.clone()),
+                                replicas: vec![primary_for_meta.clone(), replica_for_meta.clone()],
+                            }],
+                            unchanged: false,
+                        },
+                    ),
+                    _ => json_response(404, &Status::error("not_found", "not found")),
+                }
+            })
+            .unwrap();
+        });
+        wait_for_http(&primary_addr);
+        wait_for_http(&replica_addr);
+        wait_for_http(&test_addr(18_224));
+
+        let client = TemporalStoreClient::with_options(ClientOptions {
+            proxy_addr: "127.0.0.1:1".to_string(),
+            meta_addr: Some(test_addr(18_224)),
+            route_cache_ttl_ms: 60_000,
+            ..ClientOptions::default()
+        });
+        let synced = client.sync_table_topology("ns", "tbl").unwrap();
+        let table = client.open_table(
+            "ns",
+            "tbl",
+            TableOptions {
+                pin_primary: false,
+                replica_read_policy: ReplicaReadPolicy::FirstReplica,
+                ..synced
+            },
+        );
+
+        table.set("k", b"v".to_vec()).unwrap();
+        assert_eq!(table.get("k").unwrap(), Some(b"replica".to_vec()));
+        assert!(client.stats().route_cache_hits >= 2);
     }
 
     #[test]
@@ -1649,7 +2494,7 @@ mod tests {
 
         let stats = client.stats();
         assert!(stats.route_cache_hits > 0);
-        assert_eq!(stats.route_refreshes, 2);
+        assert!(stats.route_refreshes >= 2);
         client.close_table(&table).unwrap();
     }
 

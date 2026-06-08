@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
@@ -18,8 +18,8 @@ use crate::oplog::LocalOplogStore;
 use crate::page_store::{LocalPageStore, PageAddress};
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,
-    ExecuteResponse, FeatureFilter, FeatureFilterOp, FeaturePoint, SequenceFeatureRow, ShardId,
-    Status, StringSetCondition,
+    ExecuteResponse, FeatureFilter, FeatureFilterOp, FeaturePoint, FeatureWritePolicy,
+    SequenceFeatureRow, SequenceQuerySpec, ShardId, Status, StringSetCondition,
 };
 
 #[derive(Debug, Clone)]
@@ -49,7 +49,19 @@ struct ShardState {
     features: HashMap<String, BTreeMap<u64, PageAddress>>,
     sequences: HashMap<String, BTreeMap<u64, PageAddress>>,
     ips: HashMap<String, BTreeMap<u64, PageAddress>>,
+    #[serde(default)]
+    ips_meta: HashMap<String, BTreeMap<u64, IpsPointMeta>>,
+    #[serde(default)]
+    ips_request_ids: HashMap<String, BTreeSet<String>>,
     risk: HashMap<String, BTreeMap<u64, i64>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct IpsPointMeta {
+    address: PageAddress,
+    action_type: Option<u32>,
+    table_id: Option<u64>,
+    request_id: Option<String>,
 }
 
 struct ExecuteOutcome {
@@ -1155,6 +1167,40 @@ fn execute_on_shard(
             let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Empty
         }
+        Command::FeatureAppendWithPolicy {
+            key,
+            points,
+            policy,
+        } => {
+            remove_if_expired(shard, &key);
+            let series = shard.features.entry(key.clone()).or_default();
+            for point in points {
+                let exists = series.contains_key(&point.timestamp_ms);
+                let should_write = match policy {
+                    FeatureWritePolicy::Upsert => true,
+                    FeatureWritePolicy::InsertIfAbsent => !exists,
+                    FeatureWritePolicy::ReplaceExisting => exists,
+                };
+                if should_write {
+                    if let Ok(address) = page_store.append(&point.value) {
+                        series.insert(point.timestamp_ms, address);
+                        mutated = true;
+                    }
+                }
+            }
+            while series.len() > feature_max_size {
+                if let Some(oldest) = series.keys().next().copied() {
+                    series.remove(&oldest);
+                    mutated = true;
+                } else {
+                    break;
+                }
+            }
+            let _ = cache.invalidate_record(shard_id, "feature", &key);
+            CommandResponse::Integer {
+                value: if mutated { 1 } else { 0 },
+            }
+        }
         Command::FeatureQuery {
             key,
             start_ms,
@@ -1309,6 +1355,31 @@ fn execute_on_shard(
                 .unwrap_or_default();
             CommandResponse::SequenceRows { rows }
         }
+        Command::SequenceBatchQuery { queries } => {
+            let groups = queries
+                .into_iter()
+                .map(
+                    |SequenceQuerySpec {
+                         key,
+                         start_ms,
+                         end_ms,
+                         count,
+                         filters,
+                     }| {
+                        if remove_if_expired(shard, &key) {
+                            mutated = true;
+                            return (key, Vec::new());
+                        }
+                        let rows = sequence_rows_in_range(
+                            cache, page_store, shard_id, shard, &key, start_ms, end_ms, count,
+                            &filters,
+                        );
+                        (key, rows)
+                    },
+                )
+                .collect();
+            CommandResponse::SequenceRowGroups { groups }
+        }
         Command::IpsAdd {
             key,
             timestamp_ms,
@@ -1318,12 +1389,70 @@ fn execute_on_shard(
             if let Ok(address) = page_store.append(&instance) {
                 shard
                     .ips
-                    .entry(key)
+                    .entry(key.clone())
                     .or_default()
-                    .insert(timestamp_ms, address);
+                    .insert(timestamp_ms, address.clone());
+                shard.ips_meta.entry(key).or_default().insert(
+                    timestamp_ms,
+                    IpsPointMeta {
+                        address,
+                        action_type: None,
+                        table_id: None,
+                        request_id: None,
+                    },
+                );
                 mutated = true;
             }
             CommandResponse::Empty
+        }
+        Command::IpsAddWithOptions {
+            key,
+            timestamp_ms,
+            instance,
+            action_type,
+            table_id,
+            request_id,
+        } => {
+            remove_if_expired(shard, &key);
+            if let Some(request_id) = &request_id {
+                if shard
+                    .ips_request_ids
+                    .get(&key)
+                    .is_some_and(|ids| ids.contains(request_id))
+                {
+                    return ExecuteOutcome {
+                        response: CommandResponse::Integer { value: 0 },
+                        mutated: false,
+                    };
+                }
+            }
+            if let Ok(address) = page_store.append(&instance) {
+                shard
+                    .ips
+                    .entry(key.clone())
+                    .or_default()
+                    .insert(timestamp_ms, address.clone());
+                shard.ips_meta.entry(key.clone()).or_default().insert(
+                    timestamp_ms,
+                    IpsPointMeta {
+                        address,
+                        action_type,
+                        table_id,
+                        request_id: request_id.clone(),
+                    },
+                );
+                if let Some(request_id) = request_id {
+                    shard
+                        .ips_request_ids
+                        .entry(key)
+                        .or_default()
+                        .insert(request_id);
+                }
+                mutated = true;
+            }
+            CommandResponse::Integer {
+                value: if mutated { 1 } else { 0 },
+            }
         }
         Command::IpsQueryLast { key, count } => {
             if remove_if_expired(shard, &key) {
@@ -1412,12 +1541,26 @@ fn execute_on_shard(
                     shard.ips.remove(&key);
                 }
             }
+            if let Some(series) = shard.ips_meta.get_mut(&key) {
+                if let Some(meta) = series.remove(&timestamp_ms) {
+                    if let Some(request_id) = meta.request_id {
+                        if let Some(ids) = shard.ips_request_ids.get_mut(&key) {
+                            ids.remove(&request_id);
+                        }
+                    }
+                }
+                if series.is_empty() {
+                    shard.ips_meta.remove(&key);
+                }
+            }
             CommandResponse::Integer {
                 value: if mutated { 1 } else { 0 },
             }
         }
         Command::IpsDelete { key } => {
             mutated = shard.ips.remove(&key).is_some();
+            mutated |= shard.ips_meta.remove(&key).is_some();
+            shard.ips_request_ids.remove(&key);
             CommandResponse::Integer {
                 value: if mutated { 1 } else { 0 },
             }
@@ -1441,6 +1584,36 @@ fn execute_on_shard(
                 .unwrap_or_default();
             CommandResponse::Integer { value }
         }
+        Command::IpsQueryRangeWithOptions {
+            key,
+            start_ms,
+            end_ms,
+            count,
+            action_type,
+            table_id,
+        } => {
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+                return ExecuteOutcome {
+                    response: CommandResponse::FeaturePoints { points: Vec::new() },
+                    mutated,
+                };
+            }
+            CommandResponse::FeaturePoints {
+                points: ips_points_in_range_with_options(
+                    cache,
+                    page_store,
+                    shard_id,
+                    shard,
+                    &key,
+                    start_ms,
+                    end_ms,
+                    count,
+                    action_type,
+                    table_id,
+                ),
+            }
+        }
         Command::RiskIncrement {
             key,
             timestamp_ms,
@@ -1453,6 +1626,32 @@ fn execute_on_shard(
                 .or_default()
                 .entry(timestamp_ms)
                 .or_default() += amount;
+            mutated = true;
+            CommandResponse::Empty
+        }
+        Command::RiskIncrementWithOptions {
+            key,
+            timestamp_ms,
+            amount,
+            precision_ms,
+            ttl_ms,
+        } => {
+            remove_if_expired(shard, &key);
+            let bucket_ms = precision_ms
+                .filter(|precision_ms| *precision_ms > 0)
+                .map(|precision_ms| timestamp_ms - timestamp_ms % precision_ms)
+                .unwrap_or(timestamp_ms);
+            *shard
+                .risk
+                .entry(key.clone())
+                .or_default()
+                .entry(bucket_ms)
+                .or_default() += amount;
+            if let Some(ttl_ms) = ttl_ms {
+                shard
+                    .expires_at_ms
+                    .insert(key, now_ms().saturating_add(ttl_ms));
+            }
             mutated = true;
             CommandResponse::Empty
         }
@@ -1579,6 +1778,8 @@ fn delete_record(shard: &mut ShardState, key: &str) -> bool {
     removed |= shard.features.remove(key).is_some();
     removed |= shard.sequences.remove(key).is_some();
     removed |= shard.ips.remove(key).is_some();
+    removed |= shard.ips_meta.remove(key).is_some();
+    removed |= shard.ips_request_ids.remove(key).is_some();
     removed |= shard.risk.remove(key).is_some();
     removed
 }
@@ -1624,6 +1825,35 @@ fn sequence_filter_matches(row: &SequenceFeatureRow, filter: &FeatureFilter) -> 
         FeatureFilterOp::GreaterThan => lhs > filter.value,
         FeatureFilterOp::LessThan => lhs < filter.value,
     }
+}
+
+fn sequence_rows_in_range(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    shard: &ShardState,
+    key: &str,
+    start_ms: u64,
+    end_ms: u64,
+    count: usize,
+    filters: &[FeatureFilter],
+) -> Vec<SequenceFeatureRow> {
+    shard
+        .sequences
+        .get(key)
+        .map(|series| {
+            series
+                .range(start_ms..=end_ms)
+                .filter_map(|(_, address)| read_sequence_row(cache, page_store, shard_id, address))
+                .filter(|row| {
+                    filters
+                        .iter()
+                        .all(|filter| sequence_filter_matches(row, filter))
+                })
+                .take(count)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn aggregate_feature_values(values: &[Vec<u8>], aggregator: &str) -> i64 {
@@ -1686,6 +1916,43 @@ fn ips_points_in_range(
         .unwrap_or_default()
 }
 
+fn ips_points_in_range_with_options(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    shard: &ShardState,
+    key: &str,
+    start_ms: u64,
+    end_ms: u64,
+    count: Option<usize>,
+    action_type: Option<u32>,
+    table_id: Option<u64>,
+) -> Vec<FeaturePoint> {
+    let Some(series) = shard.ips_meta.get(key) else {
+        return ips_points_in_range(
+            cache, page_store, shard_id, shard, key, start_ms, end_ms, count,
+        );
+    };
+    series
+        .range(start_ms..=end_ms)
+        .filter(|(_, meta)| {
+            action_type
+                .map(|expected| meta.action_type == Some(expected))
+                .unwrap_or(true)
+                && table_id
+                    .map(|expected| meta.table_id == Some(expected))
+                    .unwrap_or(true)
+        })
+        .take(count.unwrap_or(usize::MAX))
+        .filter_map(|(timestamp_ms, meta)| {
+            read_page_bytes(cache, page_store, shard_id, &meta.address).map(|value| FeaturePoint {
+                timestamp_ms: *timestamp_ms,
+                value,
+            })
+        })
+        .collect()
+}
+
 fn read_page_bytes(
     cache: &MultiLayerCache,
     page_store: &LocalPageStore,
@@ -1726,13 +1993,16 @@ fn is_write_command(command: &Command) -> bool {
             | Command::SetAdd { .. }
             | Command::SetRemove { .. }
             | Command::FeatureAppend { .. }
+            | Command::FeatureAppendWithPolicy { .. }
             | Command::FeatureReplace { .. }
             | Command::FeatureDelete { .. }
             | Command::SequenceAdd { .. }
             | Command::IpsAdd { .. }
+            | Command::IpsAddWithOptions { .. }
             | Command::IpsRemove { .. }
             | Command::IpsDelete { .. }
             | Command::RiskIncrement { .. }
+            | Command::RiskIncrementWithOptions { .. }
     )
 }
 
@@ -3348,6 +3618,255 @@ mod tests {
                 ]
             }
         );
+    }
+
+    #[test]
+    fn feature_write_policy_sequence_batch_ips_dimensions_and_risk_precision_work() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureAppend {
+                key: "feature-policy".to_string(),
+                points: vec![FeaturePoint {
+                    timestamp_ms: 10,
+                    value: b"old".to_vec(),
+                }],
+            },
+        });
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::FeatureAppendWithPolicy {
+                        key: "feature-policy".to_string(),
+                        points: vec![FeaturePoint {
+                            timestamp_ms: 10,
+                            value: b"ignored".to_vec(),
+                        }],
+                        policy: FeatureWritePolicy::InsertIfAbsent,
+                    },
+                })
+                .response,
+            CommandResponse::Integer { value: 0 }
+        );
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::FeatureAppendWithPolicy {
+                        key: "feature-policy".to_string(),
+                        points: vec![FeaturePoint {
+                            timestamp_ms: 10,
+                            value: b"new".to_vec(),
+                        }],
+                        policy: FeatureWritePolicy::ReplaceExisting,
+                    },
+                })
+                .response,
+            CommandResponse::Integer { value: 1 }
+        );
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::FeatureQuery {
+                        key: "feature-policy".to_string(),
+                        start_ms: 0,
+                        end_ms: 20,
+                        count: None,
+                    },
+                })
+                .response,
+            CommandResponse::FeaturePoints {
+                points: vec![FeaturePoint {
+                    timestamp_ms: 10,
+                    value: b"new".to_vec(),
+                }]
+            }
+        );
+
+        for (key, gid, action_type) in [("seq-a", 1, 7), ("seq-b", 2, 8)] {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::SequenceAdd {
+                    key: key.to_string(),
+                    rows: vec![SequenceFeatureRow {
+                        timestamp_ms: 100,
+                        gid,
+                        action_type,
+                        duration: 5,
+                        author_id: 9,
+                    }],
+                },
+            });
+        }
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::SequenceBatchQuery {
+                        queries: vec![
+                            SequenceQuerySpec {
+                                key: "seq-a".to_string(),
+                                start_ms: 0,
+                                end_ms: 200,
+                                count: 10,
+                                filters: vec![FeatureFilter {
+                                    field: "action_type".to_string(),
+                                    op: FeatureFilterOp::Equal,
+                                    value: 7,
+                                }],
+                            },
+                            SequenceQuerySpec {
+                                key: "seq-b".to_string(),
+                                start_ms: 0,
+                                end_ms: 200,
+                                count: 10,
+                                filters: Vec::new(),
+                            },
+                        ],
+                    },
+                })
+                .response,
+            CommandResponse::SequenceRowGroups {
+                groups: vec![
+                    (
+                        "seq-a".to_string(),
+                        vec![SequenceFeatureRow {
+                            timestamp_ms: 100,
+                            gid: 1,
+                            action_type: 7,
+                            duration: 5,
+                            author_id: 9,
+                        }],
+                    ),
+                    (
+                        "seq-b".to_string(),
+                        vec![SequenceFeatureRow {
+                            timestamp_ms: 100,
+                            gid: 2,
+                            action_type: 8,
+                            duration: 5,
+                            author_id: 9,
+                        }],
+                    ),
+                ],
+            }
+        );
+
+        for (timestamp_ms, value, action_type, request_id) in [
+            (10, b"a10".to_vec(), Some(1), Some("r1".to_string())),
+            (20, b"a20".to_vec(), Some(2), Some("r2".to_string())),
+            (30, b"a30".to_vec(), Some(1), Some("r3".to_string())),
+        ] {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::IpsAddWithOptions {
+                    key: "ips-dim".to_string(),
+                    timestamp_ms,
+                    instance: value,
+                    action_type,
+                    table_id: Some(99),
+                    request_id,
+                },
+            });
+        }
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::IpsAddWithOptions {
+                        key: "ips-dim".to_string(),
+                        timestamp_ms: 40,
+                        instance: b"dup".to_vec(),
+                        action_type: Some(1),
+                        table_id: Some(99),
+                        request_id: Some("r1".to_string()),
+                    },
+                })
+                .response,
+            CommandResponse::Integer { value: 0 }
+        );
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::IpsQueryRangeWithOptions {
+                        key: "ips-dim".to_string(),
+                        start_ms: 0,
+                        end_ms: 40,
+                        count: None,
+                        action_type: Some(1),
+                        table_id: Some(99),
+                    },
+                })
+                .response,
+            CommandResponse::FeaturePoints {
+                points: vec![
+                    FeaturePoint {
+                        timestamp_ms: 10,
+                        value: b"a10".to_vec(),
+                    },
+                    FeaturePoint {
+                        timestamp_ms: 30,
+                        value: b"a30".to_vec(),
+                    },
+                ]
+            }
+        );
+
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::RiskIncrementWithOptions {
+                key: "risk-bucket".to_string(),
+                timestamp_ms: 1_234,
+                amount: 3,
+                precision_ms: Some(1_000),
+                ttl_ms: Some(60_000),
+            },
+        });
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::RiskIncrementWithOptions {
+                key: "risk-bucket".to_string(),
+                timestamp_ms: 1_999,
+                amount: 4,
+                precision_ms: Some(1_000),
+                ttl_ms: None,
+            },
+        });
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::RiskDetail {
+                        key: "risk-bucket".to_string(),
+                        start_ms: 0,
+                        end_ms: 2_000,
+                        count: None,
+                    },
+                })
+                .response,
+            CommandResponse::FeaturePoints {
+                points: vec![FeaturePoint {
+                    timestamp_ms: 1_000,
+                    value: b"7".to_vec(),
+                }]
+            }
+        );
+        assert!(matches!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::CommonTtl {
+                        key: "risk-bucket".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Integer { value } if value > 0
+        ));
     }
 
     #[test]
