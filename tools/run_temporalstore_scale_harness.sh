@@ -24,4 +24,7 @@ cd "$ROOT"
   --scale-events "${TS_SCALE_EVENTS:-2}" \
   --failover-every "${TS_SCALE_FAILOVER_EVERY:-10}" \
   --read-sample-every "${TS_SCALE_READ_SAMPLE_EVERY:-10}" \
-  --max-log-entry-bytes "${TS_SCALE_MAX_LOG_ENTRY_BYTES:-32768}"
+  --max-log-entry-bytes "${TS_SCALE_MAX_LOG_ENTRY_BYTES:-32768}" \
+  --compare-shared-store "${TS_SCALE_COMPARE_SHARED_STORE:-false}" \
+  --shared-store-ops "${TS_SCALE_SHARED_STORE_OPS:-1000}" \
+  --shared-store-flush-every "${TS_SCALE_SHARED_STORE_FLUSH_EVERY:-25}"

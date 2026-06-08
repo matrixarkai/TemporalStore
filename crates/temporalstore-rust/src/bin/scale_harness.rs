@@ -1,10 +1,14 @@
-use std::time::Instant;
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
+use temporalstore_rust::engine::TemporalEngine;
 use temporalstore_rust::raft::{RaftCluster, RaftConfig};
+use temporalstore_rust::shared_store::{SharedStoreReplicator, SharedStoreStorageMode};
 use temporalstore_rust::types::{
-    Command, CommandResponse, FeatureFilter, FeatureFilterOp, SequenceFeatureRow,
+    Command, CommandResponse, ExecuteRequest, FeatureFilter, FeatureFilterOp, SequenceFeatureRow,
 };
+use temporalstore_snapshot::object_store::FileObjectStore;
 
 #[derive(Debug, Clone, Copy)]
 struct HarnessOptions {
@@ -18,6 +22,9 @@ struct HarnessOptions {
     failover_every: usize,
     read_sample_every: usize,
     max_log_entry_bytes: u64,
+    compare_shared_store: bool,
+    shared_store_ops: usize,
+    shared_store_flush_every: usize,
 }
 
 impl Default for HarnessOptions {
@@ -33,6 +40,9 @@ impl Default for HarnessOptions {
             failover_every: 250,
             read_sample_every: 100,
             max_log_entry_bytes: RaftConfig::default().max_memory_replicate_log_bytes,
+            compare_shared_store: false,
+            shared_store_ops: 1_000,
+            shared_store_flush_every: 25,
         }
     }
 }
@@ -47,6 +57,8 @@ struct HarnessSummary {
     hash_ops: usize,
     sequence_rows: usize,
     sampled_reads: usize,
+    raft_replica_read_latency: LatencySummary,
+    shared_store: Option<SharedStoreComparisonSummary>,
     failovers: usize,
     scale_events: usize,
     elapsed_ms: u128,
@@ -54,6 +66,26 @@ struct HarnessSummary {
     replication_healthy: bool,
     max_replica_lag: u64,
     max_log_entry_bytes: u64,
+}
+
+#[derive(Debug, Default, Clone, Copy, Serialize)]
+struct LatencySummary {
+    samples: usize,
+    p50_us: u128,
+    p95_us: u128,
+    p99_us: u128,
+    max_us: u128,
+}
+
+#[derive(Debug, Serialize)]
+struct SharedStoreComparisonSummary {
+    sync_ops: usize,
+    async_ops: usize,
+    sync_replica_read_latency: LatencySummary,
+    async_replica_read_latency: LatencySummary,
+    sync_max_lag: u64,
+    async_max_lag: u64,
+    async_flush_every: usize,
 }
 
 fn main() {
@@ -77,6 +109,7 @@ fn main() {
     .expect("raft config should be valid");
 
     let mut sampled_reads = 0usize;
+    let mut raft_read_latencies = Vec::new();
     let mut failovers = 0usize;
     let mut rng = Lcg::new(0x5eed_cafe);
 
@@ -92,15 +125,15 @@ fn main() {
 
         if options.read_sample_every > 0 && i % options.read_sample_every == 0 {
             sampled_reads += 1;
-            assert_eq!(
-                cluster
-                    .read_from_replica(
-                        choose_live_replica(&cluster, &mut rng),
-                        Command::StringGet { key }
-                    )
-                    .expect("sample read should succeed"),
-                CommandResponse::Bytes { value: Some(value) }
-            );
+            let read_start = Instant::now();
+            let response = cluster
+                .read_from_replica(
+                    choose_live_replica(&cluster, &mut rng),
+                    Command::StringGet { key },
+                )
+                .expect("sample read should succeed");
+            raft_read_latencies.push(read_start.elapsed());
+            assert_eq!(response, CommandResponse::Bytes { value: Some(value) });
         }
 
         if options.failover_every > 0 && i > 0 && i % options.failover_every == 0 {
@@ -136,6 +169,7 @@ fn main() {
                 rows,
             })
             .expect("sequence write should commit");
+        let read_start = Instant::now();
         let response = cluster
             .read_from_replica(
                 choose_live_replica(&cluster, &mut rng),
@@ -152,6 +186,7 @@ fn main() {
                 },
             )
             .expect("sequence sample should read");
+        raft_read_latencies.push(read_start.elapsed());
         match response {
             CommandResponse::SequenceRows { rows } => assert!(!rows.is_empty()),
             other => panic!("unexpected sequence response: {other:?}"),
@@ -187,6 +222,11 @@ fn main() {
         .catch_up_live_followers()
         .expect("followers should catch up");
     let health = cluster.replication_health(0);
+    let shared_store = if options.compare_shared_store {
+        Some(run_shared_store_comparison(&options))
+    } else {
+        None
+    };
     let elapsed_ms = start.elapsed().as_millis();
     let write_ops = options.string_ops + options.hash_ops + options.sequence_keys;
     let write_ops_per_sec = if elapsed_ms == 0 {
@@ -204,6 +244,8 @@ fn main() {
         hash_ops: options.hash_ops,
         sequence_rows: options.sequence_keys * options.sequence_len,
         sampled_reads,
+        raft_replica_read_latency: summarize_latencies(&raft_read_latencies),
+        shared_store,
         failovers,
         scale_events: completed_scale_events,
         elapsed_ms,
@@ -243,6 +285,11 @@ fn parse_options() -> HarnessOptions {
             "--failover-every" => options.failover_every = parse(value, key),
             "--read-sample-every" => options.read_sample_every = parse(value, key),
             "--max-log-entry-bytes" => options.max_log_entry_bytes = parse(value, key),
+            "--compare-shared-store" => {
+                options.compare_shared_store = parse_bool(value, key);
+            }
+            "--shared-store-ops" => options.shared_store_ops = parse(value, key),
+            "--shared-store-flush-every" => options.shared_store_flush_every = parse(value, key),
             "--help" | "-h" => usage_and_exit(),
             other => {
                 eprintln!("unknown option: {other}");
@@ -276,6 +323,9 @@ fn usage_and_exit() -> ! {
     eprintln!("  --failover-every <n>     default 250, 0 disables");
     eprintln!("  --read-sample-every <n>  default 100, 0 disables");
     eprintln!("  --max-log-entry-bytes <n> default 32768");
+    eprintln!("  --compare-shared-store <bool> default false");
+    eprintln!("  --shared-store-ops <n> default 1000");
+    eprintln!("  --shared-store-flush-every <n> default 25");
     std::process::exit(2);
 }
 
@@ -297,6 +347,168 @@ fn choose_live_replica(cluster: &RaftCluster, rng: &mut Lcg) -> u64 {
     nodes.sort_unstable();
     let index = (rng.next() as usize) % nodes.len().max(1);
     nodes[index]
+}
+
+fn run_shared_store_comparison(options: &HarnessOptions) -> SharedStoreComparisonSummary {
+    let runtime = tokio::runtime::Runtime::new().expect("tokio runtime should start");
+    runtime.block_on(async {
+        let root =
+            std::env::temp_dir().join(format!("temporalstore-shared-store-scale-{}", now_ms()));
+        let store = Arc::new(FileObjectStore::new(root.join("objects")));
+        let replicator = SharedStoreReplicator::new("scale-harness", store);
+
+        let sync = run_shared_store_mode(
+            &replicator,
+            options.shard_id,
+            SharedStoreStorageMode::Sync,
+            options.shared_store_ops,
+            1,
+        )
+        .await;
+        let async_report = run_shared_store_mode(
+            &replicator,
+            options.shard_id + 1,
+            SharedStoreStorageMode::Async,
+            options.shared_store_ops,
+            options.shared_store_flush_every,
+        )
+        .await;
+
+        SharedStoreComparisonSummary {
+            sync_ops: options.shared_store_ops,
+            async_ops: options.shared_store_ops,
+            sync_replica_read_latency: sync.read_latency,
+            async_replica_read_latency: async_report.read_latency,
+            sync_max_lag: sync.max_lag,
+            async_max_lag: async_report.max_lag,
+            async_flush_every: options.shared_store_flush_every.max(1),
+        }
+    })
+}
+
+#[derive(Debug)]
+struct SharedStoreModeReport {
+    read_latency: LatencySummary,
+    max_lag: u64,
+}
+
+async fn run_shared_store_mode<O>(
+    replicator: &SharedStoreReplicator<O>,
+    shard_id: u64,
+    mode: SharedStoreStorageMode,
+    ops: usize,
+    flush_every: usize,
+) -> SharedStoreModeReport
+where
+    O: temporalstore_snapshot::object_store::ObjectStore + 'static,
+{
+    let primary = TemporalEngine::default();
+    let follower = TemporalEngine::default();
+    primary.load_shard(shard_id);
+    follower.load_shard(shard_id);
+    let writer = replicator.storage_writer(mode, 1);
+    let flush_every = flush_every.max(1);
+    let mut last_written = 0;
+    let mut last_replayed = 0;
+    let mut max_lag = 0;
+    let mut read_latencies = Vec::new();
+
+    for i in 0..ops {
+        let key = format!("shared:{shard_id}:{i}");
+        let value = format!("value-{i}").into_bytes();
+        let command = Command::StringSet {
+            key: key.clone(),
+            value: value.clone(),
+        };
+        let response = primary.execute(ExecuteRequest {
+            shard_id,
+            command: command.clone(),
+        });
+        assert!(response.status.ok, "primary shared-store write failed");
+        let report = writer
+            .write(shard_id, command)
+            .await
+            .expect("shared-store write should publish or queue");
+        last_written = report.oplog_index;
+        if mode == SharedStoreStorageMode::Async && (i + 1) % flush_every == 0 {
+            writer
+                .flush_pending(flush_every)
+                .await
+                .expect("shared-store async flush should publish");
+        }
+        let replay = replicator
+            .replay_oplog(shard_id, last_replayed, &follower)
+            .await
+            .expect("shared-store follower replay should succeed");
+        last_replayed = replay.last_oplog_index;
+        max_lag = max_lag.max(last_written.saturating_sub(last_replayed));
+        if last_replayed == last_written {
+            let read_start = Instant::now();
+            let read = follower.execute(ExecuteRequest {
+                shard_id,
+                command: Command::StringGet { key },
+            });
+            read_latencies.push(read_start.elapsed());
+            assert_eq!(read.response, CommandResponse::Bytes { value: Some(value) });
+        }
+    }
+
+    writer
+        .flush_pending(usize::MAX)
+        .await
+        .expect("final shared-store async flush should publish");
+    let replay = replicator
+        .replay_oplog(shard_id, last_replayed, &follower)
+        .await
+        .expect("final shared-store replay should succeed");
+    last_replayed = replay.last_oplog_index;
+    max_lag = max_lag.max(last_written.saturating_sub(last_replayed));
+
+    SharedStoreModeReport {
+        read_latency: summarize_latencies(&read_latencies),
+        max_lag,
+    }
+}
+
+fn summarize_latencies(values: &[Duration]) -> LatencySummary {
+    if values.is_empty() {
+        return LatencySummary::default();
+    }
+    let mut micros = values
+        .iter()
+        .map(|duration| duration.as_micros())
+        .collect::<Vec<_>>();
+    micros.sort_unstable();
+    LatencySummary {
+        samples: micros.len(),
+        p50_us: percentile(&micros, 50),
+        p95_us: percentile(&micros, 95),
+        p99_us: percentile(&micros, 99),
+        max_us: *micros.last().unwrap_or(&0),
+    }
+}
+
+fn percentile(sorted: &[u128], pct: usize) -> u128 {
+    let index = ((sorted.len().saturating_sub(1)) * pct) / 100;
+    sorted[index]
+}
+
+fn parse_bool(value: &str, key: &str) -> bool {
+    match value {
+        "1" | "true" | "TRUE" | "yes" | "YES" => true,
+        "0" | "false" | "FALSE" | "no" | "NO" => false,
+        _ => {
+            eprintln!("invalid {key} boolean value {value:?}");
+            std::process::exit(2);
+        }
+    }
+}
+
+fn now_ms() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default()
 }
 
 #[derive(Debug)]

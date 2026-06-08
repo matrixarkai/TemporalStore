@@ -82,6 +82,29 @@ The scale script:
 - runs `tools/redis_scale_load.py` with concurrent `SET`/`GET` traffic
 - prints QPS and p50/p95/p99 latency
 
+Replica-read/shared-store comparison:
+
+The current Terraform deploys one stateful server replica, so it cannot measure data-node
+replica-read latency or shared-store follower lag inside Kubernetes yet. Use the in-process scale
+harness on an EC2 instance or EKS job image to compare Raft replica reads against shared-store
+sync/async replay:
+
+```bash
+CARGO_TARGET_DIR=/tmp/temporalstore-target \
+cargo run --release -p temporalstore-rust --bin scale_harness -- \
+  --nodes 5 \
+  --string-ops 5000 \
+  --hash-ops 1000 \
+  --sequence-keys 8 \
+  --sequence-len 1000 \
+  --scale-events 4 \
+  --failover-every 500 \
+  --read-sample-every 50 \
+  --compare-shared-store true \
+  --shared-store-ops 5000 \
+  --shared-store-flush-every 50
+```
+
 Notes:
 
 - The current Rust server is still a single-shard/single-server runtime. The Terraform deploys one
