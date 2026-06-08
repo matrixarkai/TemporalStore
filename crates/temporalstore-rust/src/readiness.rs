@@ -140,11 +140,13 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "data-node runtime uses shard-affine worker lanes so one partition has FIFO single-lane execution while different partitions run in parallel"
                     .to_string(),
+                "data-node scheduler prioritizes foreground execute work over background dump/compact/GC and applies a separate background queue admission limit"
+                    .to_string(),
             ],
             missing: vec![
                 "tonic/gRPC data-node service and streaming callbacks".to_string(),
                 "hard cancellation of in-flight worker execution".to_string(),
-                "production quotas, admission policy, and scheduler priority classes".to_string(),
+                "full production tenant quotas and admission policy".to_string(),
                 "crash-safe recovery tests for oplog + index-log + page stream".to_string(),
             ],
         },

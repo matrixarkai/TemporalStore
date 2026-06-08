@@ -40,6 +40,7 @@ fn main() {
         DataNodeRuntimeOptions {
             worker_threads: env_usize("TS_SERVER_WORKER_THREADS", 4),
             max_queue_depth: env_usize("TS_SERVER_MAX_QUEUE_DEPTH", 1024),
+            max_background_queue_depth: env_usize("TS_SERVER_MAX_BACKGROUND_QUEUE_DEPTH", 128),
         },
     );
 
@@ -254,6 +255,7 @@ fn append_runtime_metrics(out: &mut String, runtime: &DataNodeRuntime) {
         ("submitted", stats.submitted_total),
         ("completed", stats.completed_total),
         ("rejected", stats.rejected_total),
+        ("rejected_background", stats.rejected_background_total),
         ("timed_out", stats.timed_out_total),
         ("dump", stats.dump_runs),
         ("compaction", stats.compaction_runs),
@@ -269,6 +271,11 @@ fn append_runtime_metrics(out: &mut String, runtime: &DataNodeRuntime) {
     out.push_str("# TYPE temporalstore_data_node_runtime_queue_depth gauge\n");
     out.push_str("temporalstore_data_node_runtime_queue_depth ");
     out.push_str(&stats.queue_depth.to_string());
+    out.push('\n');
+    out.push_str("# HELP temporalstore_data_node_runtime_background_queue_depth Current background data node queue depth.\n");
+    out.push_str("# TYPE temporalstore_data_node_runtime_background_queue_depth gauge\n");
+    out.push_str("temporalstore_data_node_runtime_background_queue_depth ");
+    out.push_str(&stats.background_queue_depth.to_string());
     out.push('\n');
     out.push_str("# HELP temporalstore_data_node_runtime_queued_shards Current shard queues with pending work.\n");
     out.push_str("# TYPE temporalstore_data_node_runtime_queued_shards gauge\n");

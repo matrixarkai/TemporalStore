@@ -14,6 +14,7 @@ use crate::types::{Command, CommandResponse, ExecuteRequest, ExecuteResponse, Sh
 pub struct DataNodeRuntimeOptions {
     pub worker_threads: usize,
     pub max_queue_depth: usize,
+    pub max_background_queue_depth: usize,
 }
 
 impl Default for DataNodeRuntimeOptions {
@@ -21,6 +22,7 @@ impl Default for DataNodeRuntimeOptions {
         Self {
             worker_threads: 4,
             max_queue_depth: 1024,
+            max_background_queue_depth: 128,
         }
     }
 }
@@ -69,9 +71,11 @@ pub struct DataNodeRuntimeStats {
     pub submitted_total: u64,
     pub completed_total: u64,
     pub rejected_total: u64,
+    pub rejected_background_total: u64,
     pub timed_out_total: u64,
     pub canceled_total: u64,
     pub queue_depth: usize,
+    pub background_queue_depth: usize,
     pub queued_shard_count: usize,
     pub running_shard_count: usize,
     pub dirty_object_count: usize,
@@ -160,6 +164,7 @@ struct MutableRuntimeStats {
     submitted_total: u64,
     completed_total: u64,
     rejected_total: u64,
+    rejected_background_total: u64,
     timed_out_total: u64,
     canceled_total: u64,
     dump_runs: u64,
@@ -178,10 +183,18 @@ struct QueuedTask {
 
 #[derive(Debug, Default)]
 struct RuntimeQueues {
-    by_shard: HashMap<ShardId, VecDeque<QueuedTask>>,
+    by_shard: HashMap<ShardId, ShardTaskQueues>,
     ready_shards: VecDeque<ShardId>,
+    ready_background_shards: VecDeque<ShardId>,
     running_shards: BTreeSet<ShardId>,
     queued_total: usize,
+    background_queued_total: usize,
+}
+
+#[derive(Debug, Default)]
+struct ShardTaskQueues {
+    foreground: VecDeque<QueuedTask>,
+    background: VecDeque<QueuedTask>,
 }
 
 #[derive(Debug)]
@@ -191,6 +204,12 @@ enum TaskRequest {
     Dump(DumpShardRequest),
     Compact(CompactionRequest),
     Gc(GcRequest),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskPriority {
+    Foreground,
+    Background,
 }
 
 impl TaskRequest {
@@ -203,32 +222,81 @@ impl TaskRequest {
             TaskRequest::Gc(request) => request.shard_id,
         }
     }
+
+    fn priority(&self) -> TaskPriority {
+        match self {
+            TaskRequest::Execute(_) | TaskRequest::CheckedExecute(_) => TaskPriority::Foreground,
+            TaskRequest::Dump(_) | TaskRequest::Compact(_) | TaskRequest::Gc(_) => {
+                TaskPriority::Background
+            }
+        }
+    }
 }
 
 impl RuntimeQueues {
     fn push(&mut self, task: QueuedTask) {
         let shard_id = task.request.shard_id();
+        let priority = task.request.priority();
         let queue = self.by_shard.entry(shard_id).or_default();
-        let was_empty = queue.is_empty();
-        queue.push_back(task);
+        match priority {
+            TaskPriority::Foreground => queue.foreground.push_back(task),
+            TaskPriority::Background => {
+                queue.background.push_back(task);
+                self.background_queued_total += 1;
+            }
+        }
         self.queued_total += 1;
-        if was_empty && !self.running_shards.contains(&shard_id) {
-            self.ready_shards.push_back(shard_id);
+        if self.running_shards.contains(&shard_id) {
+            return;
+        }
+        match priority {
+            TaskPriority::Foreground => {
+                self.ready_background_shards
+                    .retain(|ready_shard_id| *ready_shard_id != shard_id);
+                if !self.ready_shards.contains(&shard_id) {
+                    self.ready_shards.push_back(shard_id);
+                }
+            }
+            TaskPriority::Background => {
+                if queue.foreground.is_empty()
+                    && !self.ready_shards.contains(&shard_id)
+                    && !self.ready_background_shards.contains(&shard_id)
+                {
+                    self.ready_background_shards.push_back(shard_id);
+                }
+            }
         }
     }
 
     fn pop_ready(&mut self) -> Option<QueuedTask> {
-        while let Some(shard_id) = self.ready_shards.pop_front() {
+        if let Some(task) = self.pop_from_ready_queue(TaskPriority::Foreground) {
+            return Some(task);
+        }
+        self.pop_from_ready_queue(TaskPriority::Background)
+    }
+
+    fn pop_from_ready_queue(&mut self, priority: TaskPriority) -> Option<QueuedTask> {
+        while let Some(shard_id) = match priority {
+            TaskPriority::Foreground => self.ready_shards.pop_front(),
+            TaskPriority::Background => self.ready_background_shards.pop_front(),
+        } {
             if self.running_shards.contains(&shard_id) {
                 continue;
             }
             let Some(queue) = self.by_shard.get_mut(&shard_id) else {
                 continue;
             };
-            let Some(task) = queue.pop_front() else {
+            let task = match priority {
+                TaskPriority::Foreground => queue.foreground.pop_front(),
+                TaskPriority::Background => queue.background.pop_front(),
+            };
+            let Some(task) = task else {
                 continue;
             };
             self.queued_total = self.queued_total.saturating_sub(1);
+            if priority == TaskPriority::Background {
+                self.background_queued_total = self.background_queued_total.saturating_sub(1);
+            }
             self.running_shards.insert(shard_id);
             return Some(task);
         }
@@ -237,13 +305,13 @@ impl RuntimeQueues {
 
     fn finish_shard(&mut self, shard_id: ShardId) {
         self.running_shards.remove(&shard_id);
-        let has_more = self
-            .by_shard
-            .get(&shard_id)
-            .map(|queue| !queue.is_empty())
-            .unwrap_or(false);
-        if has_more {
+        let Some(queue) = self.by_shard.get(&shard_id) else {
+            return;
+        };
+        if !queue.foreground.is_empty() {
             self.ready_shards.push_back(shard_id);
+        } else if !queue.background.is_empty() {
+            self.ready_background_shards.push_back(shard_id);
         } else {
             self.by_shard.remove(&shard_id);
         }
@@ -251,18 +319,42 @@ impl RuntimeQueues {
 
     fn remove_job(&mut self, job_id: u64) -> bool {
         for (shard_id, queue) in self.by_shard.iter_mut() {
-            let before = queue.len();
-            queue.retain(|task| task.job_id != job_id);
-            if queue.len() != before {
-                self.queued_total = self.queued_total.saturating_sub(before - queue.len());
+            let foreground_before = queue.foreground.len();
+            queue.foreground.retain(|task| task.job_id != job_id);
+            if queue.foreground.len() != foreground_before {
+                self.queued_total = self
+                    .queued_total
+                    .saturating_sub(foreground_before - queue.foreground.len());
                 if queue.is_empty() && !self.running_shards.contains(shard_id) {
                     self.ready_shards
+                        .retain(|ready_shard_id| ready_shard_id != shard_id);
+                    self.ready_background_shards
+                        .retain(|ready_shard_id| ready_shard_id != shard_id);
+                }
+                return true;
+            }
+            let background_before = queue.background.len();
+            queue.background.retain(|task| task.job_id != job_id);
+            if queue.background.len() != background_before {
+                let removed = background_before - queue.background.len();
+                self.queued_total = self.queued_total.saturating_sub(removed);
+                self.background_queued_total = self.background_queued_total.saturating_sub(removed);
+                if queue.is_empty() && !self.running_shards.contains(shard_id) {
+                    self.ready_shards
+                        .retain(|ready_shard_id| ready_shard_id != shard_id);
+                    self.ready_background_shards
                         .retain(|ready_shard_id| ready_shard_id != shard_id);
                 }
                 return true;
             }
         }
         false
+    }
+}
+
+impl ShardTaskQueues {
+    fn is_empty(&self) -> bool {
+        self.foreground.is_empty() && self.background.is_empty()
     }
 }
 
@@ -279,6 +371,7 @@ impl DataNodeRuntime {
             options: DataNodeRuntimeOptions {
                 worker_threads: options.worker_threads.max(1),
                 max_queue_depth: options.max_queue_depth.max(1),
+                max_background_queue_depth: options.max_background_queue_depth.max(1),
             },
             queue: Mutex::default(),
             queue_signal: Condvar::new(),
@@ -301,12 +394,28 @@ impl DataNodeRuntime {
 
     #[cfg(test)]
     fn new_without_workers_for_test(engine: TemporalEngine, max_queue_depth: usize) -> Self {
+        Self::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: max_queue_depth.max(1),
+                max_background_queue_depth: max_queue_depth.max(1),
+            },
+        )
+    }
+
+    #[cfg(test)]
+    fn new_without_workers_with_options(
+        engine: TemporalEngine,
+        options: DataNodeRuntimeOptions,
+    ) -> Self {
         Self {
             inner: Arc::new(DataNodeRuntimeInner {
                 engine,
                 options: DataNodeRuntimeOptions {
                     worker_threads: 0,
-                    max_queue_depth: max_queue_depth.max(1),
+                    max_queue_depth: options.max_queue_depth.max(1),
+                    max_background_queue_depth: options.max_background_queue_depth.max(1),
                 },
                 queue: Mutex::default(),
                 queue_signal: Condvar::new(),
@@ -479,9 +588,11 @@ impl DataNodeRuntime {
             submitted_total: stats.submitted_total,
             completed_total: stats.completed_total,
             rejected_total: stats.rejected_total,
+            rejected_background_total: stats.rejected_background_total,
             timed_out_total: stats.timed_out_total,
             canceled_total: stats.canceled_total,
             queue_depth,
+            background_queue_depth: queue.background_queued_total,
             queued_shard_count,
             running_shard_count,
             dirty_object_count: dirty.by_key.len(),
@@ -509,6 +620,7 @@ impl DataNodeRuntime {
             finished_at_ms: None,
         };
         {
+            let priority = request.priority();
             let mut queue = self
                 .inner
                 .queue
@@ -522,6 +634,25 @@ impl DataNodeRuntime {
                     .rejected_total += 1;
                 return DataNodeTaskStatus {
                     status: Status::error("queue_full", "data node worker queue is full"),
+                    finished_at_ms: Some(now_ms()),
+                    ..status
+                };
+            }
+            if priority == TaskPriority::Background
+                && queue.background_queued_total >= self.inner.options.max_background_queue_depth
+            {
+                let mut stats = self
+                    .inner
+                    .stats
+                    .lock()
+                    .expect("runtime stats lock poisoned");
+                stats.rejected_total += 1;
+                stats.rejected_background_total += 1;
+                return DataNodeTaskStatus {
+                    status: Status::error(
+                        "background_queue_full",
+                        "data node background worker queue is full",
+                    ),
                     finished_at_ms: Some(now_ms()),
                     ..status
                 };
@@ -957,6 +1088,7 @@ mod tests {
             DataNodeRuntimeOptions {
                 worker_threads: 1,
                 max_queue_depth: 8,
+                max_background_queue_depth: 8,
             },
         );
         let job = runtime.submit_execute(
@@ -994,6 +1126,7 @@ mod tests {
             DataNodeRuntimeOptions {
                 worker_threads: 1,
                 max_queue_depth: 1,
+                max_background_queue_depth: 1,
             },
         );
         let _first = runtime.submit_execute(
@@ -1082,6 +1215,7 @@ mod tests {
             DataNodeRuntimeOptions {
                 worker_threads: 1,
                 max_queue_depth: 8,
+                max_background_queue_depth: 8,
             },
         );
         let submitted = runtime.submit_gc(
@@ -1161,6 +1295,55 @@ mod tests {
         assert!(queues.running_shards.is_empty());
     }
 
+    #[test]
+    fn runtime_scheduler_prioritizes_foreground_over_background() {
+        let mut queues = RuntimeQueues::default();
+        queues.push(queued_dump(1, 1));
+        queues.push(queued_string_set(2, 1, "foreground"));
+        queues.push(queued_dump(3, 2));
+
+        let first = queues.pop_ready().expect("foreground work should be ready");
+        assert_eq!(first.job_id, 2);
+        assert_eq!(first.request.priority(), TaskPriority::Foreground);
+        queues.finish_shard(1);
+
+        let second = queues.pop_ready().expect("background shard should run");
+        assert_eq!(second.request.priority(), TaskPriority::Background);
+        assert_eq!(queues.background_queued_total, 1);
+    }
+
+    #[test]
+    fn runtime_rejects_background_work_when_background_queue_is_full() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 8,
+                max_background_queue_depth: 1,
+            },
+        );
+
+        let accepted = runtime.submit_dump(
+            DumpShardRequest { shard_id: 1 },
+            RequestController { timeout_ms: 1000 },
+        );
+        assert!(accepted.status.ok);
+        let rejected = runtime.submit_gc(
+            GcRequest {
+                shard_id: 1,
+                retain_oplog_from_sequence: None,
+                retain_index_log_from_sequence: None,
+                retain_page_segments_from_id: None,
+            },
+            RequestController { timeout_ms: 1000 },
+        );
+        assert_eq!(rejected.status.code, "background_queue_full");
+        assert_eq!(runtime.stats().rejected_background_total, 1);
+        assert_eq!(runtime.stats().background_queue_depth, 1);
+    }
+
     fn queued_string_set(job_id: u64, shard_id: ShardId, key: &str) -> QueuedTask {
         QueuedTask {
             job_id,
@@ -1174,6 +1357,16 @@ mod tests {
                     value: b"v".to_vec(),
                 },
             }),
+        }
+    }
+
+    fn queued_dump(job_id: u64, shard_id: ShardId) -> QueuedTask {
+        QueuedTask {
+            job_id,
+            kind: DataNodeTaskKind::Dump,
+            deadline: Instant::now() + Duration::from_secs(60),
+            submitted_at_ms: now_ms(),
+            request: TaskRequest::Dump(DumpShardRequest { shard_id }),
         }
     }
 
