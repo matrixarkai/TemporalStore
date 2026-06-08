@@ -58,6 +58,48 @@ pub struct RaftExternalSnapshotRef {
     pub byte_size: u64,
 }
 
+pub const DEFAULT_EXTERNAL_SNAPSHOT_THRESHOLD_BYTES: u64 = 256 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum RaftSnapshotTransferMode {
+    PeerStreaming,
+    ExternalStore,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftSnapshotTransferPolicy {
+    pub external_threshold_bytes: u64,
+    pub allow_peer_streaming: bool,
+    pub allow_external_store: bool,
+}
+
+impl Default for RaftSnapshotTransferPolicy {
+    fn default() -> Self {
+        Self {
+            external_threshold_bytes: DEFAULT_EXTERNAL_SNAPSHOT_THRESHOLD_BYTES,
+            allow_peer_streaming: true,
+            allow_external_store: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftSnapshotTransferDecision {
+    pub mode: RaftSnapshotTransferMode,
+    pub snapshot_bytes: u64,
+    pub threshold_bytes: u64,
+    pub external_snapshot_ref: Option<RaftExternalSnapshotRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftReplicaBootstrapPlan {
+    pub shard_id: ShardId,
+    pub target_id: RaftNodeId,
+    pub transfer: RaftSnapshotTransferDecision,
+    pub last_included_index: u64,
+    pub catch_up_from_index: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RaftNodeStatus {
     pub node_id: RaftNodeId,
@@ -1876,6 +1918,54 @@ pub enum RaftError {
     NoJointConsensus,
     #[error("invalid snapshot chunk: {0}")]
     InvalidSnapshotChunk(String),
+    #[error("external snapshot reference is required: snapshot_bytes={snapshot_bytes}, threshold_bytes={threshold_bytes}")]
+    ExternalSnapshotRequired {
+        snapshot_bytes: u64,
+        threshold_bytes: u64,
+    },
+    #[error("snapshot serialization failed: {0}")]
+    SnapshotEncoding(String),
+}
+
+pub fn estimate_snapshot_bytes(snapshot: &RaftSnapshot) -> Result<u64, RaftError> {
+    serde_json::to_vec(snapshot)
+        .map(|bytes| bytes.len() as u64)
+        .map_err(|err| RaftError::SnapshotEncoding(err.to_string()))
+}
+
+pub fn decide_snapshot_transfer(
+    snapshot: &RaftSnapshot,
+    policy: RaftSnapshotTransferPolicy,
+    external_snapshot_ref: Option<RaftExternalSnapshotRef>,
+) -> Result<RaftSnapshotTransferDecision, RaftError> {
+    let threshold = policy.external_threshold_bytes.max(1);
+    let snapshot_bytes = estimate_snapshot_bytes(snapshot)?;
+    if snapshot_bytes <= threshold && policy.allow_peer_streaming {
+        return Ok(RaftSnapshotTransferDecision {
+            mode: RaftSnapshotTransferMode::PeerStreaming,
+            snapshot_bytes,
+            threshold_bytes: threshold,
+            external_snapshot_ref: None,
+        });
+    }
+    if policy.allow_external_store {
+        let Some(snapshot_ref) = external_snapshot_ref else {
+            return Err(RaftError::ExternalSnapshotRequired {
+                snapshot_bytes,
+                threshold_bytes: threshold,
+            });
+        };
+        return Ok(RaftSnapshotTransferDecision {
+            mode: RaftSnapshotTransferMode::ExternalStore,
+            snapshot_bytes,
+            threshold_bytes: threshold,
+            external_snapshot_ref: Some(snapshot_ref),
+        });
+    }
+    Err(RaftError::ExternalSnapshotRequired {
+        snapshot_bytes,
+        threshold_bytes: threshold,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -2842,6 +2932,43 @@ impl RaftCluster {
             external_snapshot_ref,
             snapshot: self.create_snapshot()?,
         })
+    }
+
+    pub fn plan_snapshot_bootstrap(
+        &self,
+        target_id: RaftNodeId,
+        policy: RaftSnapshotTransferPolicy,
+        external_snapshot_ref: Option<RaftExternalSnapshotRef>,
+    ) -> Result<RaftReplicaBootstrapPlan, RaftError> {
+        let snapshot = self.create_snapshot()?;
+        let transfer = decide_snapshot_transfer(&snapshot, policy, external_snapshot_ref.clone())?;
+        Ok(RaftReplicaBootstrapPlan {
+            shard_id: snapshot.shard_id,
+            target_id,
+            catch_up_from_index: snapshot.last_included_index.saturating_add(1),
+            last_included_index: snapshot.last_included_index,
+            transfer,
+        })
+    }
+
+    pub fn build_install_snapshot_request_with_policy(
+        &self,
+        target_id: RaftNodeId,
+        policy: RaftSnapshotTransferPolicy,
+        external_snapshot_ref: Option<RaftExternalSnapshotRef>,
+    ) -> Result<InstallSnapshotRequest, RaftError> {
+        let snapshot = self.create_snapshot()?;
+        let transfer = decide_snapshot_transfer(&snapshot, policy, external_snapshot_ref.clone())?;
+        match transfer.mode {
+            RaftSnapshotTransferMode::PeerStreaming => {
+                self.build_install_snapshot_request_with_external_ref(target_id, None)
+            }
+            RaftSnapshotTransferMode::ExternalStore => self
+                .build_install_snapshot_request_with_external_ref(
+                    target_id,
+                    transfer.external_snapshot_ref,
+                ),
+        }
     }
 
     pub fn receive_install_snapshot(
@@ -5490,6 +5617,80 @@ mod tests {
         let response = cluster.receive_install_snapshot(request).unwrap();
         assert!(response.success);
         assert_eq!(response.last_included_index, 1);
+    }
+
+    #[test]
+    fn snapshot_transfer_policy_streams_small_snapshots_to_peer() {
+        let cluster = RaftCluster::new_single_shard(20, [1, 2, 3]);
+        cluster
+            .propose(Command::StringSet {
+                key: "small-snapshot".to_string(),
+                value: b"v".to_vec(),
+            })
+            .unwrap();
+
+        let plan = cluster
+            .plan_snapshot_bootstrap(3, RaftSnapshotTransferPolicy::default(), None)
+            .unwrap();
+        assert_eq!(plan.transfer.mode, RaftSnapshotTransferMode::PeerStreaming);
+        assert_eq!(plan.last_included_index, 1);
+        assert_eq!(plan.catch_up_from_index, 2);
+
+        let request = cluster
+            .build_install_snapshot_request_with_policy(
+                3,
+                RaftSnapshotTransferPolicy::default(),
+                None,
+            )
+            .unwrap();
+        assert_eq!(request.external_snapshot_ref, None);
+    }
+
+    #[test]
+    fn snapshot_transfer_policy_requires_external_ref_for_large_snapshot() {
+        let cluster = RaftCluster::new_single_shard(21, [1, 2, 3]);
+        cluster
+            .propose(Command::StringSet {
+                key: "large-snapshot".to_string(),
+                value: vec![b'x'; 1024],
+            })
+            .unwrap();
+        let policy = RaftSnapshotTransferPolicy {
+            external_threshold_bytes: 1,
+            allow_peer_streaming: true,
+            allow_external_store: true,
+        };
+
+        let err = cluster
+            .plan_snapshot_bootstrap(3, policy.clone(), None)
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            RaftError::ExternalSnapshotRequired {
+                snapshot_bytes: _,
+                threshold_bytes: 1
+            }
+        ));
+
+        let snapshot_ref = RaftExternalSnapshotRef {
+            uri: "s3://temporalstore-test/cluster-a/shards/21/snapshots/1-1-large/manifest.json"
+                .to_string(),
+            checksum: "sha256:def456".to_string(),
+            byte_size: 1024,
+        };
+        let plan = cluster
+            .plan_snapshot_bootstrap(3, policy.clone(), Some(snapshot_ref.clone()))
+            .unwrap();
+        assert_eq!(plan.transfer.mode, RaftSnapshotTransferMode::ExternalStore);
+        assert_eq!(
+            plan.transfer.external_snapshot_ref.as_ref(),
+            Some(&snapshot_ref)
+        );
+
+        let request = cluster
+            .build_install_snapshot_request_with_policy(3, policy, Some(snapshot_ref.clone()))
+            .unwrap();
+        assert_eq!(request.external_snapshot_ref, Some(snapshot_ref));
     }
 
     #[test]
