@@ -1,5 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::{Arc, RwLock};
+use std::fs::{self, OpenOptions};
+use std::io::{self, BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -278,6 +281,77 @@ pub struct MetaInfo {
     pub status: Status,
     pub stats: MetaStats,
     pub boot_time_ms: u64,
+    pub durable_mutation_log: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", content = "request", rename_all = "snake_case")]
+pub enum MetaMutation {
+    RegisterShard(RegisterShardRequest),
+    RegisterServer(RegisterServerRequest),
+    RegisterProxy(RegisterProxyRequest),
+    AddNamespace(AddNamespaceRequest),
+    AddTable(AddTableRequest),
+    FinishLoad(LoadFinishRequest),
+    FreezeServer(StateChangeRequest),
+    DropServer(StateChangeRequest),
+    FreezeProxy(StateChangeRequest),
+    DropProxy(StateChangeRequest),
+}
+
+#[derive(Debug, Clone)]
+pub struct LocalMetaMutationLog {
+    path: PathBuf,
+    write_lock: Arc<Mutex<()>>,
+}
+
+impl LocalMetaMutationLog {
+    pub fn new(path: impl Into<PathBuf>) -> io::Result<Self> {
+        let path = path.into();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        Ok(Self {
+            path,
+            write_lock: Arc::default(),
+        })
+    }
+
+    pub fn append(&self, mutation: &MetaMutation) -> io::Result<()> {
+        let _guard = self
+            .write_lock
+            .lock()
+            .expect("meta mutation log lock poisoned");
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
+        serde_json::to_writer(&mut file, mutation).map_err(io::Error::other)?;
+        file.write_all(b"\n")?;
+        file.sync_data()?;
+        Ok(())
+    }
+
+    pub fn load(&self) -> io::Result<Vec<MetaMutation>> {
+        if !self.path.exists() {
+            return Ok(Vec::new());
+        }
+        let file = OpenOptions::new().read(true).open(&self.path)?;
+        let mut mutations = Vec::new();
+        for line in BufReader::new(file).lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let mutation = serde_json::from_str::<MetaMutation>(&line).map_err(io::Error::other)?;
+            mutations.push(mutation);
+        }
+        Ok(mutations)
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
 }
 
 #[derive(Debug, Default)]
@@ -315,6 +389,7 @@ struct MetaState {
 pub struct SingleNodeMeta {
     inner: Arc<RwLock<MetaState>>,
     boot_time_ms: u64,
+    mutation_log: Option<LocalMetaMutationLog>,
 }
 
 impl Default for SingleNodeMeta {
@@ -325,12 +400,30 @@ impl Default for SingleNodeMeta {
                 ..MetaState::default()
             })),
             boot_time_ms: now_ms(),
+            mutation_log: None,
         }
     }
 }
 
 impl SingleNodeMeta {
+    pub fn with_mutation_log(path: impl Into<PathBuf>) -> io::Result<Self> {
+        let log = LocalMetaMutationLog::new(path)?;
+        let meta = Self {
+            mutation_log: Some(log.clone()),
+            ..Self::default()
+        };
+        for mutation in log.load()? {
+            meta.apply_mutation(mutation);
+        }
+        Ok(meta)
+    }
+
     pub fn register(&self, request: RegisterShardRequest) -> RegisterShardResponse {
+        self.record_mutation(MetaMutation::RegisterShard(request.clone()));
+        self.apply_register(request)
+    }
+
+    fn apply_register(&self, request: RegisterShardRequest) -> RegisterShardResponse {
         let mut state = self.inner.write().expect("meta lock poisoned");
         state.counters.register_shard_total += 1;
         state.shards.insert(
@@ -362,6 +455,11 @@ impl SingleNodeMeta {
     }
 
     pub fn register_server(&self, request: RegisterServerRequest) -> AckResponse {
+        self.record_mutation(MetaMutation::RegisterServer(request.clone()));
+        self.apply_register_server(request)
+    }
+
+    fn apply_register_server(&self, request: RegisterServerRequest) -> AckResponse {
         let mut state = self.inner.write().expect("meta lock poisoned");
         state.counters.server_register_total += 1;
         let now = now_ms();
@@ -412,6 +510,11 @@ impl SingleNodeMeta {
     }
 
     pub fn register_proxy(&self, request: RegisterProxyRequest) -> AckResponse {
+        self.record_mutation(MetaMutation::RegisterProxy(request.clone()));
+        self.apply_register_proxy(request)
+    }
+
+    fn apply_register_proxy(&self, request: RegisterProxyRequest) -> AckResponse {
         let mut state = self.inner.write().expect("meta lock poisoned");
         state.counters.proxy_register_total += 1;
         state.proxies.insert(
@@ -465,6 +568,11 @@ impl SingleNodeMeta {
     }
 
     pub fn add_namespace(&self, request: AddNamespaceRequest) -> AckResponse {
+        self.record_mutation(MetaMutation::AddNamespace(request.clone()));
+        self.apply_add_namespace(request)
+    }
+
+    fn apply_add_namespace(&self, request: AddNamespaceRequest) -> AckResponse {
         let mut state = self.inner.write().expect("meta lock poisoned");
         state.counters.namespace_create_total += 1;
         state
@@ -477,6 +585,11 @@ impl SingleNodeMeta {
     }
 
     pub fn add_table(&self, request: AddTableRequest) -> AckResponse {
+        self.record_mutation(MetaMutation::AddTable(request.clone()));
+        self.apply_add_table(request)
+    }
+
+    fn apply_add_table(&self, request: AddTableRequest) -> AckResponse {
         if request.namespace.is_empty() || request.table_name.is_empty() {
             return AckResponse {
                 status: Status::error("bad_request", "namespace and table_name are required"),
@@ -667,6 +780,11 @@ impl SingleNodeMeta {
     }
 
     pub fn finish_load(&self, request: LoadFinishRequest) -> AckResponse {
+        self.record_mutation(MetaMutation::FinishLoad(request.clone()));
+        self.apply_finish_load(request)
+    }
+
+    fn apply_finish_load(&self, request: LoadFinishRequest) -> AckResponse {
         let mut state = self.inner.write().expect("meta lock poisoned");
         state.counters.load_finish_total += 1;
         if !request.status.ok {
@@ -693,6 +811,7 @@ impl SingleNodeMeta {
             status: Status::ok(),
             stats: self.stats(),
             boot_time_ms: self.boot_time_ms,
+            durable_mutation_log: self.mutation_log.is_some(),
         }
     }
 
@@ -719,6 +838,33 @@ impl SingleNodeMeta {
     }
 
     fn set_server_state(&self, endpoint: &str, next: MetaEntityState) -> AckResponse {
+        if !self
+            .inner
+            .read()
+            .expect("meta lock poisoned")
+            .servers
+            .contains_key(endpoint)
+        {
+            return AckResponse {
+                status: Status::error("not_found", "server not found"),
+            };
+        }
+        let request = StateChangeRequest {
+            endpoint: endpoint.to_string(),
+        };
+        match next {
+            MetaEntityState::Frozen => {
+                self.record_mutation(MetaMutation::FreezeServer(request));
+            }
+            MetaEntityState::Dropped => {
+                self.record_mutation(MetaMutation::DropServer(request));
+            }
+            MetaEntityState::Normal => {}
+        }
+        self.apply_set_server_state(endpoint, next)
+    }
+
+    fn apply_set_server_state(&self, endpoint: &str, next: MetaEntityState) -> AckResponse {
         let mut state = self.inner.write().expect("meta lock poisoned");
         let Some(server) = state.servers.get_mut(endpoint) else {
             return AckResponse {
@@ -733,6 +879,33 @@ impl SingleNodeMeta {
     }
 
     fn set_proxy_state(&self, endpoint: &str, next: MetaEntityState) -> AckResponse {
+        if !self
+            .inner
+            .read()
+            .expect("meta lock poisoned")
+            .proxies
+            .contains_key(endpoint)
+        {
+            return AckResponse {
+                status: Status::error("not_found", "proxy not found"),
+            };
+        }
+        let request = StateChangeRequest {
+            endpoint: endpoint.to_string(),
+        };
+        match next {
+            MetaEntityState::Frozen => {
+                self.record_mutation(MetaMutation::FreezeProxy(request));
+            }
+            MetaEntityState::Dropped => {
+                self.record_mutation(MetaMutation::DropProxy(request));
+            }
+            MetaEntityState::Normal => {}
+        }
+        self.apply_set_proxy_state(endpoint, next)
+    }
+
+    fn apply_set_proxy_state(&self, endpoint: &str, next: MetaEntityState) -> AckResponse {
         let mut state = self.inner.write().expect("meta lock poisoned");
         let Some(proxy) = state.proxies.get_mut(endpoint) else {
             return AckResponse {
@@ -744,9 +917,59 @@ impl SingleNodeMeta {
             status: Status::ok(),
         }
     }
+
+    fn record_mutation(&self, mutation: MetaMutation) {
+        if let Some(log) = &self.mutation_log {
+            log.append(&mutation)
+                .expect("failed to append metaserver mutation log");
+        }
+    }
+
+    fn apply_mutation(&self, mutation: MetaMutation) {
+        match mutation {
+            MetaMutation::RegisterShard(request) => {
+                self.apply_register(request);
+            }
+            MetaMutation::RegisterServer(request) => {
+                self.apply_register_server(request);
+            }
+            MetaMutation::RegisterProxy(request) => {
+                self.apply_register_proxy(request);
+            }
+            MetaMutation::AddNamespace(request) => {
+                self.apply_add_namespace(request);
+            }
+            MetaMutation::AddTable(request) => {
+                self.apply_add_table(request);
+            }
+            MetaMutation::FinishLoad(request) => {
+                self.apply_finish_load(request);
+            }
+            MetaMutation::FreezeServer(request) => {
+                self.apply_set_server_state(&request.endpoint, MetaEntityState::Frozen);
+            }
+            MetaMutation::DropServer(request) => {
+                self.apply_set_server_state(&request.endpoint, MetaEntityState::Dropped);
+            }
+            MetaMutation::FreezeProxy(request) => {
+                self.apply_set_proxy_state(&request.endpoint, MetaEntityState::Frozen);
+            }
+            MetaMutation::DropProxy(request) => {
+                self.apply_set_proxy_state(&request.endpoint, MetaEntityState::Dropped);
+            }
+        }
+    }
 }
 
 fn build_partitions(state: &MetaState, table: &TableMetaInfo) -> Vec<TablePartition> {
+    #[derive(Debug)]
+    struct PlacementCandidate {
+        server_addr: String,
+        location: String,
+        key_count: u64,
+        memory_bytes: u64,
+    }
+
     let mut normal_servers = state
         .servers
         .values()
@@ -762,28 +985,69 @@ fn build_partitions(state: &MetaState, table: &TableMetaInfo) -> Vec<TablePartit
                 .iter()
                 .map(|load| load.memory_bytes)
                 .sum::<u64>();
-            (server.server_addr.clone(), key_count, memory_bytes)
+            PlacementCandidate {
+                server_addr: server.server_addr.clone(),
+                location: server.location.clone(),
+                key_count,
+                memory_bytes,
+            }
         })
         .collect::<Vec<_>>();
-    normal_servers
-        .sort_by(|left, right| (left.1, left.2, &left.0).cmp(&(right.1, right.2, &right.0)));
+    normal_servers.sort_by(|left, right| {
+        (left.key_count, left.memory_bytes, &left.server_addr).cmp(&(
+            right.key_count,
+            right.memory_bytes,
+            &right.server_addr,
+        ))
+    });
     let slot_count = 1_u64 << 30;
     let mut partitions = Vec::new();
     for offset in 0..table.shard_count {
         let shard_id = table.first_shard_id + offset;
         let start_slot = slot_count * offset / table.shard_count;
         let end_slot = (slot_count * (offset + 1) / table.shard_count).saturating_sub(1);
-        let mut replicas = BTreeSet::new();
+        let mut replicas = Vec::new();
+        let mut seen_replicas = BTreeSet::new();
+        let mut used_locations = BTreeSet::new();
         if let Some(location) = state.shards.get(&shard_id) {
-            replicas.insert(location.server_addr.clone());
+            push_replica(
+                state,
+                &mut replicas,
+                &mut seen_replicas,
+                &mut used_locations,
+                &location.server_addr,
+            );
         }
-        for (server, _, _) in &normal_servers {
+        for candidate in &normal_servers {
             if replicas.len() >= table.replica_count as usize {
                 break;
             }
-            replicas.insert(server.clone());
+            if seen_replicas.contains(&candidate.server_addr) {
+                continue;
+            }
+            if !candidate.location.is_empty() && used_locations.contains(&candidate.location) {
+                continue;
+            }
+            push_replica(
+                state,
+                &mut replicas,
+                &mut seen_replicas,
+                &mut used_locations,
+                &candidate.server_addr,
+            );
         }
-        let replicas = replicas.into_iter().collect::<Vec<_>>();
+        for candidate in &normal_servers {
+            if replicas.len() >= table.replica_count as usize {
+                break;
+            }
+            push_replica(
+                state,
+                &mut replicas,
+                &mut seen_replicas,
+                &mut used_locations,
+                &candidate.server_addr,
+            );
+        }
         let primary = state
             .shards
             .get(&shard_id)
@@ -798,6 +1062,24 @@ fn build_partitions(state: &MetaState, table: &TableMetaInfo) -> Vec<TablePartit
         });
     }
     partitions
+}
+
+fn push_replica(
+    state: &MetaState,
+    replicas: &mut Vec<String>,
+    seen_replicas: &mut BTreeSet<String>,
+    used_locations: &mut BTreeSet<String>,
+    server_addr: &str,
+) {
+    if !seen_replicas.insert(server_addr.to_string()) {
+        return;
+    }
+    if let Some(server) = state.servers.get(server_addr) {
+        if !server.location.is_empty() {
+            used_locations.insert(server.location.clone());
+        }
+    }
+    replicas.push(server_addr.to_string());
 }
 
 fn ensure_server(state: &mut MetaState, server_addr: &str) {
@@ -1025,6 +1307,51 @@ mod tests {
     }
 
     #[test]
+    fn metaserver_topology_prefers_location_diversity_before_same_zone_load() {
+        let meta = SingleNodeMeta::default();
+        for (server_addr, location, key_count, memory_bytes) in [
+            ("zone-a-cool", "zone-a", 10, 10),
+            ("zone-a-warm", "zone-a", 20, 20),
+            ("zone-b-hot", "zone-b", 10_000, 10_000),
+        ] {
+            meta.register_server(RegisterServerRequest {
+                server_addr: server_addr.to_string(),
+                node_id: 0,
+                location: location.to_string(),
+                binary_version: String::new(),
+            });
+            meta.server_heartbeat(ServerHeartbeatRequest {
+                server_addr: server_addr.to_string(),
+                boot_time_ms: 1,
+                binary_version: String::new(),
+                shard_loads: vec![ShardLoad {
+                    shard_id: 1,
+                    key_count,
+                    memory_bytes,
+                }],
+            });
+        }
+        meta.add_table(AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+            first_shard_id: 200,
+            shard_count: 1,
+            replica_count: 2,
+        });
+
+        let topo = meta.get_table_topology(GetTableTopologyRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+            old_topology_version: 0,
+        });
+        assert_eq!(
+            topo.partitions[0].replicas,
+            vec!["zone-a-cool".to_string(), "zone-b-hot".to_string()]
+        );
+        assert_eq!(topo.partitions[0].primary.as_deref(), Some("zone-a-cool"));
+    }
+
+    #[test]
     fn metaserver_tracks_proxy_heartbeat_config_changes() {
         let meta = SingleNodeMeta::default();
         meta.register_proxy(RegisterProxyRequest {
@@ -1064,5 +1391,105 @@ mod tests {
         assert!(ack.status.ok);
         assert_eq!(meta.get(42).location.unwrap().server_addr, "s1");
         assert_eq!(meta.stats().load_finish_total, 1);
+    }
+
+    #[test]
+    fn metaserver_mutation_log_recovers_routes_tables_and_state_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("meta-mutations.jsonl");
+        let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        assert!(meta.info().durable_mutation_log);
+        meta.register_server(RegisterServerRequest {
+            server_addr: "server-a".to_string(),
+            node_id: 1,
+            location: "zone-a".to_string(),
+            binary_version: "v1".to_string(),
+        });
+        meta.register(RegisterShardRequest {
+            shard_id: 10,
+            server_addr: "server-a".to_string(),
+        });
+        meta.register_proxy(RegisterProxyRequest {
+            proxy_addr: "proxy-a".to_string(),
+            namespace: "ns".to_string(),
+            location: "zone-a".to_string(),
+            config_version: 7,
+            binary_version: "v1".to_string(),
+        });
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "ns".to_string(),
+        });
+        assert!(
+            meta.add_table(AddTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "tbl".to_string(),
+                first_shard_id: 10,
+                shard_count: 1,
+                replica_count: 1,
+            })
+            .status
+            .ok
+        );
+        assert!(
+            meta.freeze_proxy(StateChangeRequest {
+                endpoint: "proxy-a".to_string(),
+            })
+            .status
+            .ok
+        );
+
+        let mutations = LocalMetaMutationLog::new(&log_path)
+            .unwrap()
+            .load()
+            .unwrap();
+        assert_eq!(mutations.len(), 6);
+
+        let recovered = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        assert_eq!(
+            recovered.get(10).location.unwrap(),
+            ShardLocation {
+                shard_id: 10,
+                server_addr: "server-a".to_string(),
+            }
+        );
+        assert_eq!(recovered.list_tables().tables.len(), 1);
+        assert_eq!(
+            recovered
+                .get_table_topology(GetTableTopologyRequest {
+                    namespace: "ns".to_string(),
+                    table_name: "tbl".to_string(),
+                    old_topology_version: 0,
+                })
+                .partitions[0]
+                .primary
+                .as_deref(),
+            Some("server-a")
+        );
+        assert_eq!(
+            recovered.list_proxies().proxies[0].state,
+            MetaEntityState::Frozen
+        );
+    }
+
+    #[test]
+    fn metaserver_mutation_log_ignores_failed_state_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("meta-mutations.jsonl");
+        let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+
+        let missing_server = meta.freeze_server(StateChangeRequest {
+            endpoint: "missing-server".to_string(),
+        });
+        let missing_proxy = meta.drop_proxy(StateChangeRequest {
+            endpoint: "missing-proxy".to_string(),
+        });
+
+        assert!(!missing_server.status.ok);
+        assert!(!missing_proxy.status.ok);
+        assert!(LocalMetaMutationLog::new(&log_path)
+            .unwrap()
+            .load()
+            .unwrap()
+            .is_empty());
     }
 }

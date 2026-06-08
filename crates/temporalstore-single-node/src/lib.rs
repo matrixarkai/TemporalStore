@@ -43,23 +43,24 @@ pub use index_log::{IndexLogRecord, IndexLogStats, LocalIndexLogStore};
 pub use meta::{
     AckResponse, AddNamespaceRequest, AddTableRequest, FreezeStaleServersRequest, GetShardResponse,
     GetTableTopologyRequest, ListNamespacesResponse, ListProxiesResponse, ListServersResponse,
-    ListTablesResponse, LoadFinishRequest, MetaEntityState, MetaInfo, MetaStats, NamespaceMetaInfo,
-    ProxyHeartbeatRequest, ProxyHeartbeatResponse, ProxyMetaInfo, RegisterProxyRequest,
-    RegisterServerRequest, RegisterShardRequest, RegisterShardResponse, ServerHeartbeatRequest,
-    ServerHeartbeatResponse, ServerMetaInfo, ShardLoad, ShardLocation, SingleNodeMeta,
-    StaleResourceReport, StaleServerReport, StateChangeRequest, TableMetaInfo, TablePartition,
-    TableTopologyResponse,
+    ListTablesResponse, LoadFinishRequest, LocalMetaMutationLog, MetaEntityState, MetaInfo,
+    MetaMutation, MetaStats, NamespaceMetaInfo, ProxyHeartbeatRequest, ProxyHeartbeatResponse,
+    ProxyMetaInfo, RegisterProxyRequest, RegisterServerRequest, RegisterShardRequest,
+    RegisterShardResponse, ServerHeartbeatRequest, ServerHeartbeatResponse, ServerMetaInfo,
+    ShardLoad, ShardLocation, SingleNodeMeta, StaleResourceReport, StaleServerReport,
+    StateChangeRequest, TableMetaInfo, TablePartition, TableTopologyResponse,
 };
 pub use oplog::{LocalOplogStore, OplogRecord, OplogStats};
 pub use page_store::{LocalPageStore, PageAddress, PageStoreStats};
 pub use proxy::{ProxyInfo, ProxyOptions, ProxyService, ProxyStats};
 pub use raft::{
-    distributed_raft_readiness, handle_raft_http, AppendEntriesRequest, AppendEntriesResponse,
-    HttpRaftTransport, InstallSnapshotRequest, InstallSnapshotResponse, LocalRaftWal, MetaCommand,
-    MetaRaftCluster, MetaState, RaftCluster, RaftClusterStatus, RaftConfig, RaftConfigError,
+    distributed_raft_readiness, handle_raft_http, require_production_raft_ready,
+    validate_raft_deployment_mode, AppendEntriesRequest, AppendEntriesResponse, HttpRaftTransport,
+    InstallSnapshotRequest, InstallSnapshotResponse, LocalRaftWal, MetaCommand, MetaRaftCluster,
+    MetaState, RaftCluster, RaftClusterStatus, RaftConfig, RaftConfigError, RaftDeploymentMode,
     RaftDistributedReadiness, RaftError, RaftHardState, RaftMembership, RaftNodeId, RaftNodeStatus,
-    RaftReadOptions, RaftReadStrategy, RaftRole, RaftTickOutcome, RaftTransport, RaftWalRecord,
-    ReadIndexResponse, VoteRequest, VoteResponse,
+    RaftProductionReadinessError, RaftReadOptions, RaftReadStrategy, RaftRole, RaftTickOutcome,
+    RaftTransport, RaftWalRecord, ReadIndexResponse, VoteRequest, VoteResponse,
 };
 pub use rebalance::{
     RebalanceController, RebalanceError, RebalanceOptions, RebalanceStep, ShardMovePlan,

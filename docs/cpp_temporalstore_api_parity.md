@@ -31,7 +31,7 @@ Hash:
 - `MSET` -> `HashMultiSet`
 - `GETALL` -> `HashGetAll`
 - `LEN` -> `HashLen`
-- `INCRBY` -> `HashIncrBy`
+- `INCRBY` -> `HashIncrBy`, including C++-style rejection of non-integer values and i64 overflow
 - Redis-compatible `HSET`, `HGET`, `HDEL`, `HMGET`, `HMSET`, `HGETALL`, `HLEN`, `HINCRBY`
 
 Set:
@@ -58,6 +58,20 @@ Runtime/control surface:
 - in-process Raft behavior model
 - S3-compatible snapshot store abstraction
 
+Redis operational/admin compatibility:
+
+- `AUTH`
+- `BGSAVE`
+- `CONFIG GET`
+- `CONFIG SET`
+- `CONFIG REWRITE`
+- `INFO`
+- `SLAVEOF`
+- `PARTITION LOAD`
+- `PARTITION UNLOAD`
+- `PARTITION INFO`
+- CRC64 slot/hash helpers through `PSLOTHASHKEY`, `PCLUSTERKEYSLOT`, and `PCLUSTERHASH`
+
 ## Partially Implemented
 
 IPS:
@@ -82,8 +96,8 @@ Feature:
 
 String:
 
-- C++ `SetRequest` has `nx_flag` and `xx_flag`.
-- Redis-compatible `SET ... EX/PX` exists, but `NX`/`XX` policy is not implemented yet.
+- C++ `SetRequest` has `nx_flag` and `xx_flag`; Rust now supports equivalent
+  `StringSetConditional` plus Redis-compatible `SET NX/XX GET EX/PX`.
 
 ## Missing Production Runtime Features
 

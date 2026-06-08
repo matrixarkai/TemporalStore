@@ -36,6 +36,7 @@ Rust now has a richer `SingleNodeMeta` control-plane model:
 - table create/list
 - table topology query with topology version and not-modified behavior
 - table topology partitions with slot ranges, shard ids, primary endpoint, and replica endpoints
+- load-aware replica placement with location diversity before same-location fill
 - meta info/stats counters
 
 New/expanded HTTP routes:
@@ -64,9 +65,9 @@ Rust metaserver is still not a production C++ metaserver replacement:
 
 - no brpc/protobuf wire compatibility
 - no networked Raft-backed mutation path in the HTTP metaserver
-- no durable metabase snapshot/load in the HTTP metaserver
+- no full durable metabase snapshot/load in the HTTP metaserver beyond the local JSONL mutation log
 - no exact C++ partition id encoding or partition-set hierarchy
-- no placement rule chain for host/location/load deduplication
+- no full placement rule chain for host deduplication, cooldowns, or scheduler-owned repair actions
 - no task scheduler for create/load/freeze/drop membership workflows
 - no proxy group placement/config model beyond simple config version
 - no safe-mode checks or frozen-resource cooldown policy

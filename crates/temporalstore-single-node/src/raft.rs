@@ -1,12 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
-use std::io;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::engine::TemporalEngine;
@@ -65,6 +66,44 @@ pub struct RaftClusterStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftReplicaLag {
+    pub node_id: RaftNodeId,
+    pub lag: u64,
+    pub alive: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftReplicationHealth {
+    pub leader_id: RaftNodeId,
+    pub leader_commit_index: u64,
+    pub max_allowed_lag: u64,
+    pub max_lag: u64,
+    pub caught_up_voters: Vec<RaftNodeId>,
+    pub lagging_voters: Vec<RaftReplicaLag>,
+    pub live_voters: usize,
+    pub majority: usize,
+    pub healthy: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftScaleChangeReport {
+    pub leader_id: RaftNodeId,
+    pub voters: Vec<RaftNodeId>,
+    pub live_voters: usize,
+    pub majority: usize,
+    pub caught_up_voters: Vec<RaftNodeId>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftFailoverReport {
+    pub old_leader_id: RaftNodeId,
+    pub new_leader_id: RaftNodeId,
+    pub term: u64,
+    pub commit_index: u64,
+    pub caught_up_voters: Vec<RaftNodeId>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ReadIndexResponse {
     pub leader_id: RaftNodeId,
     pub node_id: RaftNodeId,
@@ -90,7 +129,24 @@ pub struct RaftMembership {
 pub struct RaftWalRecord {
     pub hard_state: RaftHardState,
     pub membership: RaftMembership,
+    #[serde(default)]
+    pub joint_membership: Option<JointConsensusMembership>,
     pub entries: Vec<RaftLogEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct RaftWalEnvelope {
+    sequence: u64,
+    checksum: String,
+    record: RaftWalRecord,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RaftWalRecovery {
+    pub record: Option<RaftWalRecord>,
+    pub valid_records: usize,
+    pub truncated_bytes: u64,
+    pub corrupt_tail: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -109,14 +165,29 @@ impl LocalRaftWal {
         node_id: RaftNodeId,
         record: &RaftWalRecord,
     ) -> io::Result<()> {
+        self.append_node_record(shard_id, node_id, record)
+    }
+
+    pub fn append_node_record(
+        &self,
+        shard_id: ShardId,
+        node_id: RaftNodeId,
+        record: &RaftWalRecord,
+    ) -> io::Result<()> {
         let path = self.node_path(shard_id, node_id);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let tmp = path.with_extension("json.tmp");
-        let bytes = serde_json::to_vec_pretty(record).map_err(io::Error::other)?;
-        fs::write(&tmp, bytes)?;
-        fs::rename(tmp, path)?;
+        let recovery = self.recover_node(shard_id, node_id)?;
+        let envelope = RaftWalEnvelope {
+            sequence: recovery.valid_records as u64 + 1,
+            checksum: raft_wal_checksum(record)?,
+            record: record.clone(),
+        };
+        let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
+        serde_json::to_writer(&mut file, &envelope).map_err(io::Error::other)?;
+        file.write_all(b"\n")?;
+        file.sync_data()?;
         Ok(())
     }
 
@@ -125,14 +196,85 @@ impl LocalRaftWal {
         shard_id: ShardId,
         node_id: RaftNodeId,
     ) -> io::Result<Option<RaftWalRecord>> {
+        self.recover_node(shard_id, node_id)
+            .map(|recovery| recovery.record)
+    }
+
+    pub fn recover_node(
+        &self,
+        shard_id: ShardId,
+        node_id: RaftNodeId,
+    ) -> io::Result<RaftWalRecovery> {
         let path = self.node_path(shard_id, node_id);
         if !path.exists() {
-            return Ok(None);
+            return Ok(RaftWalRecovery {
+                record: None,
+                valid_records: 0,
+                truncated_bytes: 0,
+                corrupt_tail: false,
+            });
         }
-        let bytes = fs::read(path)?;
-        serde_json::from_slice(&bytes)
-            .map(Some)
-            .map_err(io::Error::other)
+        let bytes = fs::read(&path)?;
+        if bytes.is_empty() {
+            return Ok(RaftWalRecovery {
+                record: None,
+                valid_records: 0,
+                truncated_bytes: 0,
+                corrupt_tail: false,
+            });
+        }
+        if let Ok(record) = serde_json::from_slice::<RaftWalRecord>(&bytes) {
+            return Ok(RaftWalRecovery {
+                record: Some(record),
+                valid_records: 1,
+                truncated_bytes: 0,
+                corrupt_tail: false,
+            });
+        }
+
+        let mut offset = 0usize;
+        let mut valid_until = 0usize;
+        let mut last_record = None;
+        let mut valid_records = 0usize;
+        while offset < bytes.len() {
+            let remaining = &bytes[offset..];
+            let line_len = remaining
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map(|pos| pos + 1)
+                .unwrap_or(remaining.len());
+            let raw_line = &remaining[..line_len];
+            let line = raw_line.strip_suffix(b"\n").unwrap_or(raw_line);
+            if line.is_empty() {
+                valid_until = offset + line_len;
+                offset += line_len;
+                continue;
+            }
+            let Ok(envelope) = serde_json::from_slice::<RaftWalEnvelope>(line) else {
+                break;
+            };
+            if envelope.checksum != raft_wal_checksum(&envelope.record)? {
+                break;
+            }
+            valid_records += 1;
+            last_record = Some(envelope.record);
+            valid_until = offset + line_len;
+            offset += line_len;
+        }
+
+        let truncated_bytes = bytes.len().saturating_sub(valid_until) as u64;
+        if truncated_bytes > 0 {
+            OpenOptions::new()
+                .write(true)
+                .open(&path)?
+                .set_len(valid_until as u64)?;
+        }
+        Ok(RaftWalRecovery {
+            record: last_record,
+            valid_records,
+            truncated_bytes,
+            corrupt_tail: truncated_bytes > 0,
+        })
     }
 
     fn node_path(&self, shard_id: ShardId, node_id: RaftNodeId) -> PathBuf {
@@ -715,6 +857,8 @@ pub fn handle_raft_http(cluster: &RaftCluster, request: HttpRequest) -> (u16, Ve
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RaftDistributedReadiness {
     pub complete: bool,
+    pub production_ready: bool,
+    pub mode: RaftDeploymentMode,
     pub local_model_tested: bool,
     pub transport_contracts_present: bool,
     pub http_transport_tested: bool,
@@ -722,22 +866,68 @@ pub struct RaftDistributedReadiness {
     pub missing: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RaftDeploymentMode {
+    LocalModel,
+    ProductionDistributed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftProductionReadinessError {
+    pub mode: RaftDeploymentMode,
+    pub message: String,
+    pub missing: Vec<String>,
+}
+
+impl std::fmt::Display for RaftProductionReadinessError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}", self.message)?;
+        if !self.missing.is_empty() {
+            write!(formatter, ": {}", self.missing.join("; "))?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for RaftProductionReadinessError {}
+
 pub fn distributed_raft_readiness() -> RaftDistributedReadiness {
     let missing = vec![
         "full OpenRaft or raft-rs consensus engine swap".to_string(),
         "production Raft RPC runtime connection pooling and auth".to_string(),
-        "durable metaserver HTTP mutation log and recovery".to_string(),
         "production randomized election timers and heartbeat scheduler".to_string(),
         "external multi-process crash/restart and network partition test harness".to_string(),
     ];
     RaftDistributedReadiness {
         complete: missing.is_empty(),
+        production_ready: false,
+        mode: RaftDeploymentMode::LocalModel,
         local_model_tested: true,
         transport_contracts_present: true,
         http_transport_tested: true,
         timer_election_tested: true,
         missing,
     }
+}
+
+pub fn validate_raft_deployment_mode(
+    mode: RaftDeploymentMode,
+) -> Result<RaftDistributedReadiness, RaftProductionReadinessError> {
+    let readiness = distributed_raft_readiness();
+    match mode {
+        RaftDeploymentMode::LocalModel => Ok(readiness),
+        RaftDeploymentMode::ProductionDistributed if readiness.production_ready => Ok(readiness),
+        RaftDeploymentMode::ProductionDistributed => Err(RaftProductionReadinessError {
+            mode,
+            message: "distributed Raft is not production-ready; use LocalModel for tests or integrate a real Raft engine first".to_string(),
+            missing: readiness.missing,
+        }),
+    }
+}
+
+pub fn require_production_raft_ready() -> Result<(), RaftProductionReadinessError> {
+    validate_raft_deployment_mode(RaftDeploymentMode::ProductionDistributed).map(|_| ())
 }
 
 #[cfg(feature = "openraft-engine")]
@@ -1022,6 +1212,7 @@ impl RaftCluster {
         let wal = LocalRaftWal::new(root.as_ref().to_path_buf());
         let mut nodes = BTreeMap::new();
         let mut leader_id = None;
+        let mut joint_membership = None;
         for node_id in node_ids {
             let record = wal
                 .load_node(shard_id, node_id)
@@ -1042,6 +1233,9 @@ impl RaftCluster {
                 node.log = record.entries;
                 apply_committed(&mut node);
                 leader_id.get_or_insert(record.membership.leader_id);
+                if joint_membership.is_none() {
+                    joint_membership = record.joint_membership;
+                }
                 node
             } else {
                 new_node(node_id, RaftRole::Follower, shard_id)
@@ -1064,7 +1258,7 @@ impl RaftCluster {
                 nodes,
                 config,
                 election_elapsed_tick: 0,
-                joint_membership: None,
+                joint_membership,
                 pending_snapshots: BTreeMap::new(),
             })),
         })
@@ -1173,6 +1367,21 @@ impl RaftCluster {
         Ok(inner.leader_id)
     }
 
+    pub fn failover_primary(&self) -> Result<RaftFailoverReport, RaftError> {
+        let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+        let old_leader_id = inner.leader_id;
+        if inner
+            .nodes
+            .get(&old_leader_id)
+            .map(|node| node.alive && node.role == RaftRole::Leader)
+            .unwrap_or(false)
+        {
+            return Ok(inner.failover_report(old_leader_id));
+        }
+        inner.promote_best_live_follower()?;
+        Ok(inner.failover_report(old_leader_id))
+    }
+
     pub fn tick_election(&self) -> Result<RaftTickOutcome, RaftError> {
         let mut inner = self.inner.write().expect("raft cluster lock poisoned");
         if inner
@@ -1233,6 +1442,12 @@ impl RaftCluster {
         Ok(())
     }
 
+    pub fn add_node_safely(&self, node_id: RaftNodeId) -> Result<RaftScaleChangeReport, RaftError> {
+        self.add_node(node_id)?;
+        self.catch_up_live_followers()?;
+        Ok(self.scale_change_report())
+    }
+
     pub fn remove_node(&self, node_id: RaftNodeId) -> Result<(), RaftError> {
         let mut inner = self.inner.write().expect("raft cluster lock poisoned");
         if inner.nodes.len() == 1 {
@@ -1246,6 +1461,15 @@ impl RaftCluster {
             inner.promote_best_live_follower()?;
         }
         Ok(())
+    }
+
+    pub fn remove_node_safely(
+        &self,
+        node_id: RaftNodeId,
+    ) -> Result<RaftScaleChangeReport, RaftError> {
+        let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+        inner.remove_node_safely(node_id)?;
+        Ok(inner.scale_change_report())
     }
 
     pub fn begin_joint_consensus(
@@ -1376,6 +1600,11 @@ impl RaftCluster {
         Ok(())
     }
 
+    pub fn catch_up_live_followers(&self) -> Result<Vec<RaftNodeId>, RaftError> {
+        let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+        inner.catch_up_live_followers()
+    }
+
     pub fn hard_state(&self, node_id: RaftNodeId) -> Result<RaftHardState, RaftError> {
         let inner = self.inner.read().expect("raft cluster lock poisoned");
         let node = inner
@@ -1418,6 +1647,7 @@ impl RaftCluster {
                             commit_index: node.commit_index,
                         },
                         membership: membership.clone(),
+                        joint_membership: inner.joint_membership.clone(),
                         entries: node.log.clone(),
                     },
                 )
@@ -1583,6 +1813,11 @@ impl RaftCluster {
                 vote_granted: false,
                 reject_reason: Some("stale_term".to_string()),
             });
+        }
+        if request.term > node.current_term {
+            node.current_term = request.term;
+            node.voted_for = None;
+            node.role = RaftRole::Follower;
         }
         let local_last_index = node.log.last().map(|entry| entry.index).unwrap_or_default();
         let local_last_term = node.log.last().map(|entry| entry.term).unwrap_or_default();
@@ -1993,6 +2228,18 @@ impl RaftCluster {
             .status()
     }
 
+    pub fn replication_health(&self, max_allowed_lag: u64) -> RaftReplicationHealth {
+        let status = self.status();
+        replication_health_from_status(status, max_allowed_lag)
+    }
+
+    pub fn scale_change_report(&self) -> RaftScaleChangeReport {
+        self.inner
+            .read()
+            .expect("raft cluster lock poisoned")
+            .scale_change_report()
+    }
+
     pub fn config(&self) -> RaftConfig {
         self.inner
             .read()
@@ -2069,7 +2316,142 @@ impl RaftClusterInner {
             .ok_or(RaftError::LeaderUnavailable)
     }
 
+    fn best_live_candidate_in(
+        &self,
+        allowed: &BTreeSet<RaftNodeId>,
+    ) -> Result<RaftNodeId, RaftError> {
+        self.nodes
+            .values()
+            .filter(|node| allowed.contains(&node.id) && node.alive)
+            .min_by_key(|node| {
+                (
+                    std::cmp::Reverse(node.commit_index),
+                    std::cmp::Reverse(node.log.last().map(|entry| entry.index).unwrap_or_default()),
+                    node.id,
+                )
+            })
+            .map(|node| node.id)
+            .ok_or(RaftError::LeaderUnavailable)
+    }
+
+    fn catch_up_live_followers(&mut self) -> Result<Vec<RaftNodeId>, RaftError> {
+        self.ensure_live_leader()?;
+        let leader_id = self.leader_id;
+        let leader = self
+            .nodes
+            .get(&leader_id)
+            .ok_or(RaftError::LeaderUnavailable)?;
+        let leader_log = leader.log.clone();
+        let leader_commit_index = leader.commit_index;
+        let mut caught_up = Vec::new();
+        for node in self
+            .nodes
+            .values_mut()
+            .filter(|node| node.alive && node.id != leader_id)
+        {
+            if node.commit_index < leader_commit_index
+                || node.log.last().map(|entry| entry.index).unwrap_or_default()
+                    < leader_log
+                        .last()
+                        .map(|entry| entry.index)
+                        .unwrap_or_default()
+            {
+                node.log = leader_log.clone();
+                node.commit_index = leader_commit_index;
+                apply_committed(node);
+            }
+            if node.commit_index >= leader_commit_index {
+                caught_up.push(node.id);
+            }
+        }
+        Ok(caught_up)
+    }
+
+    fn remove_node_safely(&mut self, node_id: RaftNodeId) -> Result<(), RaftError> {
+        if self.nodes.len() == 1 {
+            return Err(RaftError::CannotRemoveLastNode);
+        }
+        if !self.nodes.contains_key(&node_id) {
+            return Err(RaftError::NodeNotFound(node_id));
+        }
+        let remaining = self
+            .nodes
+            .keys()
+            .copied()
+            .filter(|id| *id != node_id)
+            .collect::<BTreeSet<_>>();
+        let required_after = majority(remaining.len());
+        let live_after = remaining
+            .iter()
+            .filter(|id| self.nodes.get(id).map(|node| node.alive).unwrap_or(false))
+            .count();
+        if live_after < required_after {
+            return Err(RaftError::NoMajority {
+                live: live_after,
+                required: required_after,
+            });
+        }
+
+        if self.leader_id == node_id {
+            let leader_commit_index = self.leader_commit_index();
+            let candidate_id = self.best_live_candidate_in(&remaining)?;
+            let candidate = self
+                .nodes
+                .get(&candidate_id)
+                .ok_or(RaftError::NodeNotFound(candidate_id))?;
+            if candidate.commit_index < leader_commit_index {
+                return Err(RaftError::ReplicaLagging {
+                    replica_id: candidate_id,
+                    replica_commit_index: candidate.commit_index,
+                    leader_commit_index,
+                });
+            }
+            self.nodes.remove(&node_id);
+            self.elect_leader(candidate_id)?;
+        } else {
+            self.nodes.remove(&node_id);
+        }
+        Ok(())
+    }
+
+    fn scale_change_report(&self) -> RaftScaleChangeReport {
+        let status = self.status();
+        RaftScaleChangeReport {
+            leader_id: status.leader_id,
+            voters: self.nodes.keys().copied().collect(),
+            live_voters: status.live_voters,
+            majority: status.majority,
+            caught_up_voters: status
+                .nodes
+                .into_iter()
+                .filter(|node| node.alive && node.lag == 0)
+                .map(|node| node.node_id)
+                .collect(),
+        }
+    }
+
+    fn failover_report(&self, old_leader_id: RaftNodeId) -> RaftFailoverReport {
+        let status = self.status();
+        let term = status.current_term;
+        RaftFailoverReport {
+            old_leader_id,
+            new_leader_id: status.leader_id,
+            term,
+            commit_index: status.commit_index,
+            caught_up_voters: status
+                .nodes
+                .into_iter()
+                .filter(|node| node.alive && node.lag == 0)
+                .map(|node| node.node_id)
+                .collect(),
+        }
+    }
+
     fn pre_vote_would_win(&self, candidate_id: RaftNodeId) -> Result<bool, RaftError> {
+        self.candidate_log_would_win(candidate_id)
+    }
+
+    fn candidate_log_would_win(&self, candidate_id: RaftNodeId) -> Result<bool, RaftError> {
         let candidate = self
             .nodes
             .get(&candidate_id)
@@ -2094,7 +2476,44 @@ impl RaftClusterInner {
                 (candidate_last_term, candidate_last_index) >= (local_last_term, local_last_index)
             })
             .count();
+        if let Some(membership) = &self.joint_membership {
+            let old_votes = self.up_to_date_votes_in(candidate_id, &membership.old_voters)?;
+            let new_votes = self.up_to_date_votes_in(candidate_id, &membership.new_voters)?;
+            return Ok(old_votes >= majority(membership.old_voters.len())
+                && new_votes >= majority(membership.new_voters.len()));
+        }
         Ok(votes >= majority(self.nodes.len()))
+    }
+
+    fn up_to_date_votes_in(
+        &self,
+        candidate_id: RaftNodeId,
+        voters: &[RaftNodeId],
+    ) -> Result<usize, RaftError> {
+        let candidate = self
+            .nodes
+            .get(&candidate_id)
+            .ok_or(RaftError::NodeNotFound(candidate_id))?;
+        let candidate_last_index = candidate
+            .log
+            .last()
+            .map(|entry| entry.index)
+            .unwrap_or_default();
+        let candidate_last_term = candidate
+            .log
+            .last()
+            .map(|entry| entry.term)
+            .unwrap_or_default();
+        Ok(voters
+            .iter()
+            .filter_map(|node_id| self.nodes.get(node_id))
+            .filter(|node| node.alive)
+            .filter(|node| {
+                let local_last_index = node.log.last().map(|entry| entry.index).unwrap_or_default();
+                let local_last_term = node.log.last().map(|entry| entry.term).unwrap_or_default();
+                (candidate_last_term, candidate_last_index) >= (local_last_term, local_last_index)
+            })
+            .count())
     }
 
     fn elect_leader(&mut self, node_id: RaftNodeId) -> Result<(), RaftError> {
@@ -2116,6 +2535,18 @@ impl RaftClusterInner {
             .unwrap_or(false)
         {
             return Err(RaftError::NodeNotFound(node_id));
+        }
+        if !self.candidate_log_would_win(node_id)? {
+            let candidate_commit_index = self
+                .nodes
+                .get(&node_id)
+                .map(|node| node.commit_index)
+                .unwrap_or_default();
+            return Err(RaftError::ReplicaLagging {
+                replica_id: node_id,
+                replica_commit_index: candidate_commit_index,
+                leader_commit_index: self.leader_commit_index(),
+            });
         }
         self.leader_id = node_id;
         let next_term = self
@@ -2261,6 +2692,42 @@ fn node_status(node: &RaftNode, leader_commit_index: u64) -> RaftNodeStatus {
     }
 }
 
+fn replication_health_from_status(
+    status: RaftClusterStatus,
+    max_allowed_lag: u64,
+) -> RaftReplicationHealth {
+    let mut max_lag = 0;
+    let mut caught_up_voters = Vec::new();
+    let mut lagging_voters = Vec::new();
+    for node in status.nodes {
+        max_lag = max_lag.max(node.lag);
+        if node.alive && node.lag <= max_allowed_lag {
+            caught_up_voters.push(node.node_id);
+        } else {
+            lagging_voters.push(RaftReplicaLag {
+                node_id: node.node_id,
+                lag: node.lag,
+                alive: node.alive,
+            });
+        }
+    }
+    let healthy = status.has_majority
+        && status.leader_lease_valid
+        && lagging_voters.is_empty()
+        && caught_up_voters.len() >= status.majority;
+    RaftReplicationHealth {
+        leader_id: status.leader_id,
+        leader_commit_index: status.commit_index,
+        max_allowed_lag,
+        max_lag,
+        caught_up_voters,
+        lagging_voters,
+        live_voters: status.live_voters,
+        majority: status.majority,
+        healthy,
+    }
+}
+
 fn new_node(id: RaftNodeId, role: RaftRole, shard_id: ShardId) -> RaftNode {
     let engine = TemporalEngine::default();
     engine.load_shard(shard_id);
@@ -2303,6 +2770,16 @@ fn apply_committed(node: &mut RaftNode) -> Option<CommandResponse> {
         }
     }
     last_response
+}
+
+fn raft_wal_checksum(record: &RaftWalRecord) -> io::Result<String> {
+    let bytes = serde_json::to_vec(record).map_err(io::Error::other)?;
+    let digest = Sha256::digest(bytes);
+    let mut checksum = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        checksum.push_str(&format!("{byte:02x}"));
+    }
+    Ok(checksum)
 }
 
 fn majority(replica_count: usize) -> usize {
@@ -2703,6 +3180,12 @@ impl MetaRaftCluster {
         Ok(())
     }
 
+    pub fn add_node_safely(&self, node_id: RaftNodeId) -> Result<RaftScaleChangeReport, RaftError> {
+        self.add_node(node_id)?;
+        self.catch_up_live_followers()?;
+        Ok(self.scale_change_report())
+    }
+
     pub fn create_snapshot(&self) -> Result<MetaRaftSnapshot, RaftError> {
         let inner = self.inner.read().expect("meta raft lock poisoned");
         let leader = inner
@@ -2764,6 +3247,66 @@ impl MetaRaftCluster {
         }
         Ok(())
     }
+
+    pub fn remove_node_safely(
+        &self,
+        node_id: RaftNodeId,
+    ) -> Result<RaftScaleChangeReport, RaftError> {
+        let mut inner = self.inner.write().expect("meta raft lock poisoned");
+        inner.remove_node_safely(node_id)?;
+        Ok(inner.scale_change_report())
+    }
+
+    pub fn catch_up(&self, node_id: RaftNodeId) -> Result<(), RaftError> {
+        let mut inner = self.inner.write().expect("meta raft lock poisoned");
+        let leader = inner
+            .nodes
+            .get(&inner.leader_id)
+            .ok_or(RaftError::LeaderUnavailable)?;
+        let leader_log = leader.log.clone();
+        let leader_commit_index = leader.commit_index;
+        let leader_state = leader.state.clone();
+        let node = inner
+            .nodes
+            .get_mut(&node_id)
+            .ok_or(RaftError::NodeNotFound(node_id))?;
+        node.log = leader_log;
+        node.commit_index = leader_commit_index;
+        node.state = leader_state;
+        apply_meta_committed(node);
+        Ok(())
+    }
+
+    pub fn catch_up_live_followers(&self) -> Result<Vec<RaftNodeId>, RaftError> {
+        let mut inner = self.inner.write().expect("meta raft lock poisoned");
+        inner.catch_up_live_followers()
+    }
+
+    pub fn failover_primary(&self) -> Result<RaftFailoverReport, RaftError> {
+        let mut inner = self.inner.write().expect("meta raft lock poisoned");
+        let old_leader_id = inner.leader_id;
+        if inner
+            .nodes
+            .get(&old_leader_id)
+            .map(|node| node.alive && node.role == RaftRole::Leader)
+            .unwrap_or(false)
+        {
+            return Ok(inner.failover_report(old_leader_id));
+        }
+        inner.promote_best_live_follower()?;
+        Ok(inner.failover_report(old_leader_id))
+    }
+
+    pub fn replication_health(&self, max_allowed_lag: u64) -> RaftReplicationHealth {
+        replication_health_from_status(self.status(), max_allowed_lag)
+    }
+
+    pub fn scale_change_report(&self) -> RaftScaleChangeReport {
+        self.inner
+            .read()
+            .expect("meta raft lock poisoned")
+            .scale_change_report()
+    }
 }
 
 impl MetaRaftClusterInner {
@@ -2796,6 +3339,138 @@ impl MetaRaftClusterInner {
         self.elect_leader(candidate)
     }
 
+    fn best_live_candidate_in(
+        &self,
+        allowed: &BTreeSet<RaftNodeId>,
+    ) -> Result<RaftNodeId, RaftError> {
+        self.nodes
+            .values()
+            .filter(|node| allowed.contains(&node.id) && node.alive)
+            .min_by_key(|node| {
+                (
+                    std::cmp::Reverse(node.commit_index),
+                    std::cmp::Reverse(node.log.last().map(|entry| entry.index).unwrap_or_default()),
+                    node.id,
+                )
+            })
+            .map(|node| node.id)
+            .ok_or(RaftError::LeaderUnavailable)
+    }
+
+    fn catch_up_live_followers(&mut self) -> Result<Vec<RaftNodeId>, RaftError> {
+        self.ensure_live_leader()?;
+        let leader_id = self.leader_id;
+        let leader = self
+            .nodes
+            .get(&leader_id)
+            .ok_or(RaftError::LeaderUnavailable)?;
+        let leader_log = leader.log.clone();
+        let leader_commit_index = leader.commit_index;
+        let leader_state = leader.state.clone();
+        let mut caught_up = Vec::new();
+        for node in self
+            .nodes
+            .values_mut()
+            .filter(|node| node.alive && node.id != leader_id)
+        {
+            if node.commit_index < leader_commit_index
+                || node.log.last().map(|entry| entry.index).unwrap_or_default()
+                    < leader_log
+                        .last()
+                        .map(|entry| entry.index)
+                        .unwrap_or_default()
+            {
+                node.log = leader_log.clone();
+                node.commit_index = leader_commit_index;
+                node.state = leader_state.clone();
+                apply_meta_committed(node);
+            }
+            if node.commit_index >= leader_commit_index {
+                caught_up.push(node.id);
+            }
+        }
+        Ok(caught_up)
+    }
+
+    fn remove_node_safely(&mut self, node_id: RaftNodeId) -> Result<(), RaftError> {
+        if self.nodes.len() == 1 {
+            return Err(RaftError::CannotRemoveLastNode);
+        }
+        if !self.nodes.contains_key(&node_id) {
+            return Err(RaftError::NodeNotFound(node_id));
+        }
+        let remaining = self
+            .nodes
+            .keys()
+            .copied()
+            .filter(|id| *id != node_id)
+            .collect::<BTreeSet<_>>();
+        let required_after = majority(remaining.len());
+        let live_after = remaining
+            .iter()
+            .filter(|id| self.nodes.get(id).map(|node| node.alive).unwrap_or(false))
+            .count();
+        if live_after < required_after {
+            return Err(RaftError::NoMajority {
+                live: live_after,
+                required: required_after,
+            });
+        }
+
+        if self.leader_id == node_id {
+            let leader_commit_index = self.leader_commit_index();
+            let candidate_id = self.best_live_candidate_in(&remaining)?;
+            let candidate = self
+                .nodes
+                .get(&candidate_id)
+                .ok_or(RaftError::NodeNotFound(candidate_id))?;
+            if candidate.commit_index < leader_commit_index {
+                return Err(RaftError::ReplicaLagging {
+                    replica_id: candidate_id,
+                    replica_commit_index: candidate.commit_index,
+                    leader_commit_index,
+                });
+            }
+            self.nodes.remove(&node_id);
+            self.elect_leader(candidate_id)?;
+        } else {
+            self.nodes.remove(&node_id);
+        }
+        Ok(())
+    }
+
+    fn scale_change_report(&self) -> RaftScaleChangeReport {
+        let status = self.status();
+        RaftScaleChangeReport {
+            leader_id: status.leader_id,
+            voters: self.nodes.keys().copied().collect(),
+            live_voters: status.live_voters,
+            majority: status.majority,
+            caught_up_voters: status
+                .nodes
+                .into_iter()
+                .filter(|node| node.alive && node.lag == 0)
+                .map(|node| node.node_id)
+                .collect(),
+        }
+    }
+
+    fn failover_report(&self, old_leader_id: RaftNodeId) -> RaftFailoverReport {
+        let status = self.status();
+        RaftFailoverReport {
+            old_leader_id,
+            new_leader_id: status.leader_id,
+            term: status.current_term,
+            commit_index: status.commit_index,
+            caught_up_voters: status
+                .nodes
+                .into_iter()
+                .filter(|node| node.alive && node.lag == 0)
+                .map(|node| node.node_id)
+                .collect(),
+        }
+    }
+
     fn elect_leader(&mut self, node_id: RaftNodeId) -> Result<(), RaftError> {
         if self.config.prohibits_election {
             return Err(RaftError::ElectionProhibited);
@@ -2812,6 +3487,18 @@ impl MetaRaftClusterInner {
             .unwrap_or(false)
         {
             return Err(RaftError::NodeNotFound(node_id));
+        }
+        if !self.candidate_log_would_win(node_id)? {
+            let candidate_commit_index = self
+                .nodes
+                .get(&node_id)
+                .map(|node| node.commit_index)
+                .unwrap_or_default();
+            return Err(RaftError::ReplicaLagging {
+                replica_id: node_id,
+                replica_commit_index: candidate_commit_index,
+                leader_commit_index: self.leader_commit_index(),
+            });
         }
         self.leader_id = node_id;
         let next_term = self
@@ -2830,6 +3517,34 @@ impl MetaRaftClusterInner {
             node.current_term = next_term;
         }
         Ok(())
+    }
+
+    fn candidate_log_would_win(&self, candidate_id: RaftNodeId) -> Result<bool, RaftError> {
+        let candidate = self
+            .nodes
+            .get(&candidate_id)
+            .ok_or(RaftError::NodeNotFound(candidate_id))?;
+        let candidate_last_index = candidate
+            .log
+            .last()
+            .map(|entry| entry.index)
+            .unwrap_or_default();
+        let candidate_last_term = candidate
+            .log
+            .last()
+            .map(|entry| entry.term)
+            .unwrap_or_default();
+        let votes = self
+            .nodes
+            .values()
+            .filter(|node| node.alive)
+            .filter(|node| {
+                let local_last_index = node.log.last().map(|entry| entry.index).unwrap_or_default();
+                let local_last_term = node.log.last().map(|entry| entry.term).unwrap_or_default();
+                (candidate_last_term, candidate_last_index) >= (local_last_term, local_last_index)
+            })
+            .count();
+        Ok(votes >= majority(self.nodes.len()))
     }
 
     fn leader_commit_index(&self) -> u64 {
@@ -3014,6 +3729,33 @@ mod tests {
     }
 
     #[test]
+    fn raft_rejects_electing_stale_replica_until_it_catches_up() {
+        let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+        cluster.set_alive(3, false).unwrap();
+        cluster
+            .propose(Command::StringSet {
+                key: "stale-election".to_string(),
+                value: b"committed".to_vec(),
+            })
+            .unwrap();
+        cluster.set_alive(3, true).unwrap();
+
+        assert_eq!(
+            cluster.elect_leader(3).unwrap_err(),
+            RaftError::ReplicaLagging {
+                replica_id: 3,
+                replica_commit_index: 0,
+                leader_commit_index: 1,
+            }
+        );
+        assert_eq!(cluster.leader_id(), 1);
+
+        cluster.catch_up(3).unwrap();
+        cluster.elect_leader(3).unwrap();
+        assert_eq!(cluster.leader_id(), 3);
+    }
+
+    #[test]
     fn raft_transport_append_entries_catches_up_lagging_replica() {
         let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
         cluster.set_alive(3, false).unwrap();
@@ -3088,6 +3830,74 @@ mod tests {
             vote_response.reject_reason.as_deref(),
             Some("candidate_log_behind")
         );
+    }
+
+    #[test]
+    fn request_vote_higher_term_resets_prior_vote_before_decision() {
+        let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+        cluster.elect_leader(2).unwrap();
+        assert_eq!(cluster.hard_state(1).unwrap().voted_for, None);
+
+        let first_vote = cluster
+            .request_vote(VoteRequest {
+                rpc: None,
+                shard_id: 1,
+                term: 3,
+                candidate_id: 2,
+                target_id: 1,
+                last_log_index: 0,
+                last_log_term: 0,
+            })
+            .unwrap();
+        assert!(first_vote.vote_granted);
+        assert_eq!(cluster.hard_state(1).unwrap().voted_for, Some(2));
+
+        let higher_term_vote = cluster
+            .request_vote(VoteRequest {
+                rpc: None,
+                shard_id: 1,
+                term: 4,
+                candidate_id: 3,
+                target_id: 1,
+                last_log_index: 0,
+                last_log_term: 0,
+            })
+            .unwrap();
+        assert!(higher_term_vote.vote_granted);
+        let hard_state = cluster.hard_state(1).unwrap();
+        assert_eq!(hard_state.current_term, 4);
+        assert_eq!(hard_state.voted_for, Some(3));
+    }
+
+    #[test]
+    fn request_vote_higher_term_updates_term_even_when_candidate_log_is_behind() {
+        let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+        cluster
+            .propose(Command::StringSet {
+                key: "vote-term".to_string(),
+                value: b"v".to_vec(),
+            })
+            .unwrap();
+        let response = cluster
+            .request_vote(VoteRequest {
+                rpc: None,
+                shard_id: 1,
+                term: 5,
+                candidate_id: 3,
+                target_id: 1,
+                last_log_index: 0,
+                last_log_term: 0,
+            })
+            .unwrap();
+        assert!(!response.vote_granted);
+        assert_eq!(response.term, 5);
+        assert_eq!(
+            response.reject_reason.as_deref(),
+            Some("candidate_log_behind")
+        );
+        let hard_state = cluster.hard_state(1).unwrap();
+        assert_eq!(hard_state.current_term, 5);
+        assert_eq!(hard_state.voted_for, None);
     }
 
     #[test]
@@ -3274,6 +4084,49 @@ mod tests {
     }
 
     #[test]
+    fn joint_consensus_state_survives_wal_restore_and_still_requires_both_majorities() {
+        let dir = tempfile::tempdir().unwrap();
+        let cluster = RaftCluster::new_single_shard(222, [1, 2, 3]);
+        cluster.begin_joint_consensus([1, 2, 3, 4, 5]).unwrap();
+        cluster.persist_wal(dir.path()).unwrap();
+
+        let restored = RaftCluster::restore_single_shard_from_wal(
+            dir.path(),
+            222,
+            [1, 2, 3, 4, 5],
+            RaftConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            restored.joint_membership(),
+            Some(JointConsensusMembership {
+                old_voters: vec![1, 2, 3],
+                new_voters: vec![1, 2, 3, 4, 5],
+            })
+        );
+
+        restored.set_alive(2, false).unwrap();
+        restored.set_alive(4, false).unwrap();
+        restored.set_alive(5, false).unwrap();
+        assert_eq!(
+            restored
+                .propose(Command::StringSet {
+                    key: "blocked-after-restore".to_string(),
+                    value: b"v".to_vec(),
+                })
+                .unwrap_err(),
+            RaftError::NoMajority {
+                live: 2,
+                required: 3,
+            }
+        );
+
+        restored.set_alive(4, true).unwrap();
+        restored.commit_joint_consensus().unwrap();
+        assert_eq!(restored.membership().voters, vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
     fn raft_rpc_runtime_retries_transport_errors_and_releases_inflight() {
         let transport = FlakyTransport {
             cluster: RaftCluster::new_single_shard(23, [1, 2, 3]),
@@ -3446,6 +4299,8 @@ mod tests {
     fn distributed_raft_readiness_reports_remaining_production_gaps() {
         let readiness = distributed_raft_readiness();
         assert!(!readiness.complete);
+        assert!(!readiness.production_ready);
+        assert_eq!(readiness.mode, RaftDeploymentMode::LocalModel);
         assert!(readiness.local_model_tested);
         assert!(readiness.transport_contracts_present);
         assert!(readiness
@@ -3455,11 +4310,23 @@ mod tests {
         assert!(readiness
             .missing
             .iter()
-            .any(|item| item.contains("metaserver") && item.contains("recovery")));
-        assert!(readiness
+            .any(|item| item.contains("connection pooling") && item.contains("auth")));
+    }
+
+    #[test]
+    fn production_raft_mode_is_blocked_until_real_engine_exists() {
+        assert!(validate_raft_deployment_mode(RaftDeploymentMode::LocalModel).is_ok());
+        let err =
+            validate_raft_deployment_mode(RaftDeploymentMode::ProductionDistributed).unwrap_err();
+        assert_eq!(err.mode, RaftDeploymentMode::ProductionDistributed);
+        assert!(err
+            .message
+            .contains("distributed Raft is not production-ready"));
+        assert!(err
             .missing
             .iter()
-            .any(|item| item.contains("connection pooling") && item.contains("auth")));
+            .any(|item| item.contains("OpenRaft") || item.contains("raft-rs")));
+        assert_eq!(require_production_raft_ready().unwrap_err(), err);
     }
 
     fn wait_for_http(addr: &str) {
@@ -3813,6 +4680,71 @@ mod tests {
     }
 
     #[test]
+    fn replication_health_reports_lag_and_heartbeat_catches_up_secondary() {
+        let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+        cluster.set_alive(3, false).unwrap();
+        cluster
+            .propose(Command::StringSet {
+                key: "lag-key".to_string(),
+                value: b"v1".to_vec(),
+            })
+            .unwrap();
+        cluster.set_alive(3, true).unwrap();
+
+        let health = cluster.replication_health(0);
+        assert!(!health.healthy);
+        assert_eq!(health.max_lag, 1);
+        assert_eq!(
+            health.lagging_voters,
+            vec![RaftReplicaLag {
+                node_id: 3,
+                lag: 1,
+                alive: true,
+            }]
+        );
+
+        let caught_up = cluster.catch_up_live_followers().unwrap();
+        assert_eq!(caught_up, vec![2, 3]);
+        let health = cluster.replication_health(0);
+        assert!(health.healthy);
+        assert_eq!(health.caught_up_voters, vec![1, 2, 3]);
+        assert_eq!(
+            cluster
+                .read_from_replica(
+                    3,
+                    Command::StringGet {
+                        key: "lag-key".to_string()
+                    },
+                )
+                .unwrap(),
+            CommandResponse::Bytes {
+                value: Some(b"v1".to_vec())
+            }
+        );
+    }
+
+    #[test]
+    fn safe_scale_up_adds_replica_only_after_catchup() {
+        let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+        cluster
+            .propose(Command::StringSet {
+                key: "scale-up-safe".to_string(),
+                value: b"ready".to_vec(),
+            })
+            .unwrap();
+
+        let report = cluster.add_node_safely(4).unwrap();
+        assert_eq!(report.voters, vec![1, 2, 3, 4]);
+        assert_eq!(report.majority, 3);
+        assert_eq!(report.caught_up_voters, vec![1, 2, 3, 4]);
+        assert_eq!(
+            cluster.commit_index(4).unwrap(),
+            cluster.status().commit_index
+        );
+        assert!(cluster.read_index(4).is_ok());
+    }
+
+    #[test]
     fn scale_down_removes_replica_and_continues_with_majority() {
         let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
         cluster.remove_node(3).unwrap();
@@ -3825,6 +4757,80 @@ mod tests {
         assert_eq!(cluster.commit_index(1).unwrap(), 1);
         assert_eq!(cluster.commit_index(2).unwrap(), 1);
         assert_eq!(cluster.commit_index(3), Err(RaftError::NodeNotFound(3)));
+    }
+
+    #[test]
+    fn safe_scale_down_rejects_quorum_loss_and_promotes_caught_up_leader_successor() {
+        let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+        cluster.set_alive(2, false).unwrap();
+        assert_eq!(
+            cluster.remove_node_safely(3).unwrap_err(),
+            RaftError::NoMajority {
+                live: 1,
+                required: 2,
+            }
+        );
+
+        cluster.set_alive(2, true).unwrap();
+        cluster
+            .propose(Command::StringSet {
+                key: "before-leader-remove".to_string(),
+                value: b"ok".to_vec(),
+            })
+            .unwrap();
+        let report = cluster.remove_node_safely(1).unwrap();
+        assert_ne!(report.leader_id, 1);
+        assert_eq!(report.voters, vec![2, 3]);
+        assert_eq!(report.majority, 2);
+        assert!(report.caught_up_voters.contains(&report.leader_id));
+        cluster
+            .propose(Command::StringSet {
+                key: "after-leader-remove".to_string(),
+                value: b"still-ok".to_vec(),
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn primary_crash_promotes_caught_up_secondary_and_old_primary_recovers() {
+        let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+        cluster
+            .propose(Command::StringSet {
+                key: "before-crash".to_string(),
+                value: b"v1".to_vec(),
+            })
+            .unwrap();
+        cluster.set_alive(1, false).unwrap();
+
+        let report = cluster.failover_primary().unwrap();
+        assert_eq!(report.old_leader_id, 1);
+        assert_eq!(report.new_leader_id, 2);
+        assert_eq!(report.commit_index, 1);
+        assert_eq!(cluster.leader_id(), 2);
+        cluster
+            .propose(Command::StringSet {
+                key: "after-crash".to_string(),
+                value: b"v2".to_vec(),
+            })
+            .unwrap();
+
+        cluster.set_alive(1, true).unwrap();
+        assert_eq!(cluster.local_status(1).unwrap().lag, 1);
+        cluster.catch_up_live_followers().unwrap();
+        assert_eq!(cluster.local_status(1).unwrap().lag, 0);
+        assert_eq!(
+            cluster
+                .read_from_replica(
+                    1,
+                    Command::StringGet {
+                        key: "after-crash".to_string()
+                    },
+                )
+                .unwrap(),
+            CommandResponse::Bytes {
+                value: Some(b"v2".to_vec())
+            }
+        );
     }
 
     #[test]
@@ -3985,6 +4991,65 @@ mod tests {
     }
 
     #[test]
+    fn metaserver_raft_health_catchup_safe_scale_and_failover_work() {
+        let meta = MetaRaftCluster::new([10, 11, 12]);
+        meta.set_alive(12, false).unwrap();
+        meta.propose(MetaCommand::PutShardLocation(ShardLocation {
+            shard_id: 42,
+            server_addr: "server-before-meta-lag".to_string(),
+        }))
+        .unwrap();
+        meta.set_alive(12, true).unwrap();
+
+        let health = meta.replication_health(0);
+        assert!(!health.healthy);
+        assert_eq!(
+            health.lagging_voters,
+            vec![RaftReplicaLag {
+                node_id: 12,
+                lag: 1,
+                alive: true,
+            }]
+        );
+        assert_eq!(meta.catch_up_live_followers().unwrap(), vec![11, 12]);
+        assert!(meta.replication_health(0).healthy);
+
+        let report = meta.add_node_safely(13).unwrap();
+        assert_eq!(report.voters, vec![10, 11, 12, 13]);
+        assert_eq!(report.caught_up_voters, vec![10, 11, 12, 13]);
+
+        meta.set_alive(11, false).unwrap();
+        meta.set_alive(12, false).unwrap();
+        assert_eq!(
+            meta.remove_node_safely(13).unwrap_err(),
+            RaftError::NoMajority {
+                live: 1,
+                required: 2,
+            }
+        );
+        meta.set_alive(11, true).unwrap();
+        meta.set_alive(12, true).unwrap();
+        meta.catch_up_live_followers().unwrap();
+
+        meta.set_alive(10, false).unwrap();
+        let failover = meta.failover_primary().unwrap();
+        assert_eq!(failover.old_leader_id, 10);
+        assert_ne!(failover.new_leader_id, 10);
+        meta.propose(MetaCommand::PutShardLocation(ShardLocation {
+            shard_id: 43,
+            server_addr: "server-after-meta-failover".to_string(),
+        }))
+        .unwrap();
+        assert_eq!(
+            meta.get_shard_location(failover.new_leader_id, 43).unwrap(),
+            Some(ShardLocation {
+                shard_id: 43,
+                server_addr: "server-after-meta-failover".to_string()
+            })
+        );
+    }
+
+    #[test]
     fn metaserver_raft_status_read_index_and_transfer_leader_work() {
         let meta = MetaRaftCluster::new([10, 11, 12]);
         meta.propose(MetaCommand::PutShardLocation(ShardLocation {
@@ -4141,6 +5206,43 @@ mod tests {
         assert_eq!(record.membership.voters, vec![1, 2, 3]);
         assert_eq!(record.entries.len(), 1);
         assert_eq!(record.entries[0].index, 1);
+    }
+
+    #[test]
+    fn local_raft_wal_recovers_latest_valid_record_and_truncates_corrupt_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let cluster = RaftCluster::new_single_shard(7, [1, 2, 3]);
+        cluster
+            .propose(Command::StringSet {
+                key: "wal-crash".to_string(),
+                value: b"v1".to_vec(),
+            })
+            .unwrap();
+        cluster.persist_wal(dir.path()).unwrap();
+        cluster
+            .propose(Command::StringSet {
+                key: "wal-crash".to_string(),
+                value: b"v2".to_vec(),
+            })
+            .unwrap();
+        cluster.persist_wal(dir.path()).unwrap();
+
+        let wal = LocalRaftWal::new(dir.path());
+        let path = wal.node_path(7, 1);
+        let before_corruption = fs::metadata(&path).unwrap().len();
+        let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(b"{\"sequence\":3,\"checksum\":\"bad\"")
+            .unwrap();
+        file.sync_data().unwrap();
+
+        let recovery = wal.recover_node(7, 1).unwrap();
+        assert!(recovery.corrupt_tail);
+        assert!(recovery.truncated_bytes > 0);
+        assert_eq!(recovery.valid_records, 2);
+        assert_eq!(fs::metadata(&path).unwrap().len(), before_corruption);
+        let record = recovery.record.unwrap();
+        assert_eq!(record.hard_state.commit_index, 2);
+        assert_eq!(record.entries.len(), 2);
     }
 
     #[test]

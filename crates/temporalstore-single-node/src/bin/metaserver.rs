@@ -11,7 +11,12 @@ fn main() {
     let addr = std::env::var("TS_META_BIND_ADDR")
         .or_else(|_| std::env::var("TS_META_ADDR"))
         .unwrap_or_else(|_| "127.0.0.1:17001".to_string());
-    let meta = SingleNodeMeta::default();
+    let meta = std::env::var("TS_META_MUTATION_LOG")
+        .ok()
+        .map(SingleNodeMeta::with_mutation_log)
+        .transpose()
+        .expect("failed to open metaserver mutation log")
+        .unwrap_or_default();
     let stale_after_ms = env_u64("TS_META_STALE_AFTER_MS", 30_000);
     let detector_interval_ms = env_u64("TS_META_FAILURE_DETECTOR_INTERVAL_MS", 10_000);
     let _failure_detector = meta.start_failure_detector_loop(stale_after_ms, detector_interval_ms);

@@ -1,8 +1,10 @@
+use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::thread;
 
+use crate::client::{slot_id_for_key, stable_key_hash};
 use crate::types::{
     Command, CommandResponse, ExecuteRequest, FeaturePoint, ShardId, StringSetCondition,
 };
@@ -66,8 +68,9 @@ fn handle_stream(
 ) -> io::Result<()> {
     let reader_stream = stream.try_clone()?;
     let mut reader = BufReader::new(reader_stream);
+    let mut state = RedisCommandState::default();
     while let Some(args) = read_command(&mut reader)? {
-        let response = execute_redis_command(args, shard_id, |command| {
+        let response = execute_redis_command_with_state(args, shard_id, &mut state, |command| {
             client
                 .execute(ExecuteRequest { shard_id, command })
                 .map_err(|err| err.to_string())
@@ -88,9 +91,42 @@ fn handle_stream(
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RedisCommandState {
+    pub config: HashMap<String, String>,
+    pub master: Option<(String, String)>,
+    pub authenticated: bool,
+    pub loaded_shard_id: Option<ShardId>,
+}
+
+impl Default for RedisCommandState {
+    fn default() -> Self {
+        let mut config = HashMap::new();
+        config.insert("requirepass".to_string(), String::new());
+        config.insert("maxmemory".to_string(), "0".to_string());
+        config.insert("maxmemory-policy".to_string(), "noeviction".to_string());
+        Self {
+            config,
+            master: None,
+            authenticated: false,
+            loaded_shard_id: None,
+        }
+    }
+}
+
 pub fn execute_redis_command(
     args: Vec<Vec<u8>>,
-    _shard_id: ShardId,
+    shard_id: ShardId,
+    mut execute: impl FnMut(Command) -> Result<CommandResponse, String>,
+) -> RespValue {
+    let mut state = RedisCommandState::default();
+    execute_redis_command_with_state(args, shard_id, &mut state, |command| execute(command))
+}
+
+pub fn execute_redis_command_with_state(
+    args: Vec<Vec<u8>>,
+    shard_id: ShardId,
+    state: &mut RedisCommandState,
     mut execute: impl FnMut(Command) -> Result<CommandResponse, String>,
 ) -> RespValue {
     if args.is_empty() {
@@ -98,11 +134,57 @@ pub fn execute_redis_command(
     }
     let command = upper(&args[0]);
     match command.as_str() {
+        "AUTH" if args.len() == 2 => {
+            let configured = state
+                .config
+                .get("requirepass")
+                .map(String::as_str)
+                .unwrap_or_default();
+            if configured.is_empty() || configured.as_bytes() == args[1].as_slice() {
+                state.authenticated = true;
+                RespValue::SimpleString("OK".to_string())
+            } else {
+                RespValue::Error("ERR invalid password".to_string())
+            }
+        }
         "PING" => RespValue::SimpleString(
             args.get(1)
                 .map(|value| String::from_utf8_lossy(value).to_string())
                 .unwrap_or_else(|| "PONG".to_string()),
         ),
+        "BGSAVE" if args.len() == 1 || args.len() == 2 => {
+            RespValue::SimpleString("Background saving started".to_string())
+        }
+        "CONFIG" if args.len() >= 2 => redis_config_response(&args, state),
+        "SLAVEOF" if args.len() == 3 => {
+            let host = string_arg(&args[1]);
+            let port = string_arg(&args[2]);
+            if host.eq_ignore_ascii_case("no") && port.eq_ignore_ascii_case("one") {
+                state.master = None;
+            } else {
+                state.master = Some((host, port));
+            }
+            RespValue::SimpleString("OK".to_string())
+        }
+        "INFO" if args.len() == 1 || args.len() == 2 => {
+            let section = args
+                .get(1)
+                .map(|value| string_arg(value))
+                .unwrap_or_else(|| "default".to_string());
+            RespValue::Bulk(Some(
+                redis_info(section.as_str(), shard_id, state).into_bytes(),
+            ))
+        }
+        "PARTITION" if args.len() >= 2 => redis_partition_response(&args, shard_id, state),
+        "PSLOTHASHKEY" if args.len() == 2 => {
+            RespValue::Integer(slot_id_for_key(String::from_utf8_lossy(&args[1]).as_ref()) as i64)
+        }
+        "PCLUSTERKEYSLOT" if args.len() == 2 => {
+            RespValue::Integer(slot_id_for_key(String::from_utf8_lossy(&args[1]).as_ref()) as i64)
+        }
+        "PCLUSTERHASH" if args.len() == 2 => {
+            RespValue::Integer(stable_key_hash(String::from_utf8_lossy(&args[1]).as_ref()) as i64)
+        }
         "GET" if args.len() == 2 => bytes_response(execute(Command::StringGet {
             key: string_arg(&args[1]),
         })),
@@ -416,6 +498,123 @@ pub fn execute_redis_command(
     }
 }
 
+fn redis_config_response(args: &[Vec<u8>], state: &mut RedisCommandState) -> RespValue {
+    match upper(&args[1]).as_str() {
+        "GET" if args.len() == 3 => {
+            let key = string_arg(&args[2]);
+            match state.config.get(&key) {
+                Some(value) => RespValue::Array(vec![
+                    RespValue::Bulk(Some(key.into_bytes())),
+                    RespValue::Bulk(Some(value.clone().into_bytes())),
+                ]),
+                None => RespValue::Array(Vec::new()),
+            }
+        }
+        "SET" if args.len() == 4 => {
+            state
+                .config
+                .insert(string_arg(&args[2]), string_arg(&args[3]));
+            RespValue::SimpleString("OK".to_string())
+        }
+        "REWRITE" if args.len() == 2 => RespValue::SimpleString("OK".to_string()),
+        _ => RespValue::Error("ERR syntax error".to_string()),
+    }
+}
+
+fn redis_partition_response(
+    args: &[Vec<u8>],
+    shard_id: ShardId,
+    state: &mut RedisCommandState,
+) -> RespValue {
+    match upper(&args[1]).as_str() {
+        "LOAD" if args.len() >= 3 => {
+            let loaded = parse_u64(&args[2], "partition_id").unwrap_or(shard_id);
+            state.loaded_shard_id = Some(loaded);
+            RespValue::SimpleString("OK".to_string())
+        }
+        "UNLOAD" if args.len() >= 3 => {
+            state.loaded_shard_id = None;
+            RespValue::SimpleString("OK".to_string())
+        }
+        "INFO" if args.len() == 2 || args.len() == 3 => RespValue::Bulk(Some(
+            format!(
+                "partition_id:{}\r\npartition_loading_stats:{}\r\n",
+                state.loaded_shard_id.unwrap_or(shard_id),
+                if state.loaded_shard_id.is_some() {
+                    "loaded"
+                } else {
+                    "not_exist"
+                }
+            )
+            .into_bytes(),
+        )),
+        _ => RespValue::Error("ERR syntax error".to_string()),
+    }
+}
+
+fn redis_info(section: &str, shard_id: ShardId, state: &RedisCommandState) -> String {
+    let section = section.to_ascii_lowercase();
+    let all = section == "all";
+    let default = section == "default";
+    let mut parts = Vec::new();
+    if all || default || section == "server" {
+        parts.push(
+            "# Server\r\nredis_version:temporalstore-rust\r\nredis_mode:temporalstore\r\narch_bits:64\r\nmultiplexing_api:std-tcp\r\n".to_string(),
+        );
+    }
+    if all || default || section == "clients" {
+        parts.push("# Clients\r\nconnected_clients:1\r\nblocked_clients:0\r\n".to_string());
+    }
+    if all || default || section == "memory" {
+        let maxmemory = state
+            .config
+            .get("maxmemory")
+            .map(String::as_str)
+            .unwrap_or("0");
+        let policy = state
+            .config
+            .get("maxmemory-policy")
+            .map(String::as_str)
+            .unwrap_or("noeviction");
+        parts.push(format!(
+            "# Memory\r\nused_memory:0\r\nmaxmemory:{maxmemory}\r\nmaxmemory_policy:{policy}\r\n"
+        ));
+    }
+    if all || default || section == "stats" {
+        let loading = if state.loaded_shard_id.is_some() {
+            "loaded"
+        } else {
+            "not_exist"
+        };
+        parts.push(format!(
+            "# Stats\r\npartition_loading_stats:{loading}\r\ntotal_commands_processed:0\r\n"
+        ));
+    }
+    if all || default || section == "replication" {
+        let mut replication = "# Replication\r\n".to_string();
+        if let Some((host, port)) = &state.master {
+            replication.push_str("role:slave\r\n");
+            replication.push_str(&format!(
+                "master_host:{host}\r\nmaster_port:{port}\r\nmaster_link_status:up\r\n"
+            ));
+        } else {
+            replication.push_str("role:master\r\n");
+        }
+        replication.push_str("connected_slaves:0\r\n");
+        parts.push(replication);
+    }
+    if all || default || section == "cluster" {
+        parts.push(format!(
+            "# Cluster\r\ncluster_enabled:0\r\nloaded_shard_id:{}\r\n",
+            state.loaded_shard_id.unwrap_or(shard_id)
+        ));
+    }
+    if parts.is_empty() {
+        return String::new();
+    }
+    parts.join("\r\n")
+}
+
 pub fn read_command(reader: &mut impl BufRead) -> io::Result<Option<Vec<Vec<u8>>>> {
     let mut first = Vec::new();
     let bytes = reader.read_until(b'\n', &mut first)?;
@@ -708,6 +907,11 @@ mod tests {
         );
         assert_eq!(run(vec!["HINCRBY", "h", "n", "3"]), RespValue::Integer(3));
         assert_eq!(run(vec!["HINCRBY", "h", "n", "-1"]), RespValue::Integer(2));
+        assert_eq!(run(vec!["HSET", "h", "bad", "abc"]), RespValue::Integer(1));
+        assert_eq!(
+            run(vec!["HINCRBY", "h", "bad", "1"]),
+            RespValue::Error("ERR hash value is not an integer".to_string())
+        );
         assert_eq!(run(vec!["SADD", "s", "m"]), RespValue::Integer(1));
         assert_eq!(
             run(vec!["SMEMBERS", "s"]),
@@ -724,6 +928,121 @@ mod tests {
         assert_eq!(
             run(vec!["FAGG", "feature", "0", "30", "sum"]),
             RespValue::Integer(5)
+        );
+    }
+
+    #[test]
+    fn redis_operational_commands_match_cpp_server_shape() {
+        let mut state = RedisCommandState::default();
+        let run = |state: &mut RedisCommandState, args: Vec<&str>| {
+            execute_redis_command_with_state(
+                args.into_iter()
+                    .map(|arg| arg.as_bytes().to_vec())
+                    .collect(),
+                7,
+                state,
+                |_| Err("unexpected data command".to_string()),
+            )
+        };
+
+        assert_eq!(
+            run(&mut state, vec!["CONFIG", "GET", "requirepass"]),
+            RespValue::Array(vec![
+                RespValue::Bulk(Some(b"requirepass".to_vec())),
+                RespValue::Bulk(Some(Vec::new())),
+            ])
+        );
+        assert_eq!(
+            run(&mut state, vec!["CONFIG", "SET", "requirepass", "secret"]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(
+            run(&mut state, vec!["AUTH", "bad"]),
+            RespValue::Error("ERR invalid password".to_string())
+        );
+        assert_eq!(
+            run(&mut state, vec!["AUTH", "secret"]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert!(state.authenticated);
+
+        assert_eq!(
+            run(&mut state, vec!["SLAVEOF", "127.0.0.1", "18001"]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        let info = run(&mut state, vec!["INFO", "replication"]);
+        match info {
+            RespValue::Bulk(Some(bytes)) => {
+                let text = String::from_utf8(bytes).unwrap();
+                assert!(text.contains("role:slave"));
+                assert!(text.contains("master_host:127.0.0.1"));
+                assert!(text.contains("master_port:18001"));
+            }
+            other => panic!("unexpected info response: {other:?}"),
+        }
+        assert_eq!(
+            run(&mut state, vec!["SLAVEOF", "NO", "ONE"]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        let info = run(&mut state, vec!["INFO", "replication"]);
+        match info {
+            RespValue::Bulk(Some(bytes)) => {
+                assert!(String::from_utf8(bytes).unwrap().contains("role:master"));
+            }
+            other => panic!("unexpected info response: {other:?}"),
+        }
+
+        assert_eq!(
+            run(
+                &mut state,
+                vec!["PARTITION", "LOAD", "7", "1", "file:///tmp/partition"]
+            ),
+            RespValue::SimpleString("OK".to_string())
+        );
+        let partition = run(&mut state, vec!["PARTITION", "INFO"]);
+        match partition {
+            RespValue::Bulk(Some(bytes)) => {
+                let text = String::from_utf8(bytes).unwrap();
+                assert!(text.contains("partition_id:7"));
+                assert!(text.contains("partition_loading_stats:loaded"));
+            }
+            other => panic!("unexpected partition info response: {other:?}"),
+        }
+        assert_eq!(
+            run(&mut state, vec!["BGSAVE"]),
+            RespValue::SimpleString("Background saving started".to_string())
+        );
+        assert_eq!(
+            run(&mut state, vec!["CONFIG", "REWRITE"]),
+            RespValue::SimpleString("OK".to_string())
+        );
+    }
+
+    #[test]
+    fn redis_slot_hash_commands_use_cpp_crc64_formula() {
+        let mut state = RedisCommandState::default();
+        let mut run = |args: Vec<&str>| {
+            execute_redis_command_with_state(
+                args.into_iter()
+                    .map(|arg| arg.as_bytes().to_vec())
+                    .collect(),
+                1,
+                &mut state,
+                |_| Err("unexpected data command".to_string()),
+            )
+        };
+
+        assert_eq!(
+            run(vec!["PSLOTHASHKEY", "123456789"]),
+            RespValue::Integer(0x3a71_b645)
+        );
+        assert_eq!(
+            run(vec!["PCLUSTERKEYSLOT", "123456789"]),
+            RespValue::Integer(0x3a71_b645)
+        );
+        assert_eq!(
+            run(vec!["PCLUSTERHASH", "123456789"]),
+            RespValue::Integer(0xe9c6_d914_c4b8_d9cau64 as i64)
         );
     }
 }

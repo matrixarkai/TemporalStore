@@ -225,6 +225,18 @@ impl TemporalEngine {
                 response: CommandResponse::Empty,
             };
         }
+        if let Err(status) = validate_command_preconditions(
+            &self.cache,
+            &self.page_store,
+            request.shard_id,
+            shard,
+            &command,
+        ) {
+            return ExecuteResponse {
+                status,
+                response: CommandResponse::Empty,
+            };
+        }
         let outcome = execute_on_shard(
             &self.cache,
             &self.page_store,
@@ -1724,6 +1736,48 @@ fn is_write_command(command: &Command) -> bool {
     )
 }
 
+fn validate_command_preconditions(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    shard: &ShardState,
+    command: &Command,
+) -> Result<(), Status> {
+    if let Command::HashIncrBy {
+        key,
+        field,
+        increment,
+    } = command
+    {
+        if shard
+            .expires_at_ms
+            .get(key)
+            .map(|expires_at| *expires_at <= now_ms())
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
+        let Some(bytes) = shard
+            .hashes
+            .get(key)
+            .and_then(|entries| entries.get(field))
+            .and_then(|address| read_page_bytes(cache, page_store, shard_id, address))
+        else {
+            return 0_i64
+                .checked_add(*increment)
+                .map(|_| ())
+                .ok_or_else(|| Status::error("out_of_range", "hash increment overflows i64"));
+        };
+        let current = parse_i64(&bytes)
+            .ok_or_else(|| Status::error("unmatched", "hash value is not an integer"))?;
+        current
+            .checked_add(*increment)
+            .map(|_| ())
+            .ok_or_else(|| Status::error("out_of_range", "hash increment overflows i64"))?;
+    }
+    Ok(())
+}
+
 fn cached_response(
     cache: &MultiLayerCache,
     key: CacheKey,
@@ -2210,6 +2264,56 @@ mod tests {
                 .response,
             CommandResponse::Integer { value: 12 }
         );
+    }
+
+    #[test]
+    fn hash_incrby_rejects_non_integer_and_overflow_like_cpp() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashMultiSet {
+                key: "h".to_string(),
+                entries: vec![
+                    ("alpha".to_string(), b"abc".to_vec()),
+                    ("mixed".to_string(), b"123abc".to_vec()),
+                    ("max".to_string(), i64::MAX.to_string().into_bytes()),
+                    ("min".to_string(), i64::MIN.to_string().into_bytes()),
+                ],
+            },
+        });
+
+        for field in ["alpha", "mixed"] {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashIncrBy {
+                    key: "h".to_string(),
+                    field: field.to_string(),
+                    increment: 1,
+                },
+            });
+            assert_eq!(response.status.code, "unmatched");
+            assert_eq!(response.response, CommandResponse::Empty);
+        }
+
+        let overflow = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashIncrBy {
+                key: "h".to_string(),
+                field: "max".to_string(),
+                increment: 1,
+            },
+        });
+        assert_eq!(overflow.status.code, "out_of_range");
+        let underflow = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashIncrBy {
+                key: "h".to_string(),
+                field: "min".to_string(),
+                increment: -1,
+            },
+        });
+        assert_eq!(underflow.status.code, "out_of_range");
     }
 
     #[test]

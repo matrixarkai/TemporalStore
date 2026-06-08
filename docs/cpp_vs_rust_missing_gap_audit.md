@@ -34,6 +34,42 @@ brpc and Thrift are intentionally not part of the Rust target. The Rust open-sou
 
 ## What Was Closed In The Latest Pass
 
+This pass closed one of the hard readiness blockers instead of leaving it as a note:
+
+1. `SingleNodeMeta::with_mutation_log(path)` now replays a durable JSONL metaserver mutation log.
+2. Mutating metaserver operations append `MetaMutation` records before applying state changes.
+3. The metaserver binary enables this with `TS_META_MUTATION_LOG`.
+4. Recovery is test-backed for shard routes, registered servers/proxies, namespaces/tables,
+   topology, and state changes.
+5. Replica placement now keeps load-aware ordering but prefers distinct server locations before
+   filling same-location replicas, matching one important C++ placement-rule behavior.
+6. Failed server/proxy freeze/drop requests no longer append no-op durable metaserver mutations.
+
+This pass compared the Rust RESP layer against the local C++ server Redis command handler in
+`C:\Users\Vincent Jiang\Documents\Codex\temporalstore-small\src\server\redis_service.cc` and
+`redis_command_handler.cc`. It closed these small, test-backed compatibility gaps:
+
+1. Stateful Redis operational command context for connection-local admin behavior.
+2. `CONFIG GET`, `CONFIG SET`, and `CONFIG REWRITE`.
+3. `AUTH` against `requirepass`.
+4. `SLAVEOF host port` and `SLAVEOF NO ONE`, surfaced through `INFO replication`.
+5. `INFO` sections for server, clients, memory, stats, replication, and cluster.
+6. `BGSAVE` smoke response.
+7. `PARTITION LOAD`, `PARTITION UNLOAD`, and `PARTITION INFO` smoke behavior for local tests.
+8. Slot/hash helpers `PSLOTHASHKEY`, `PCLUSTERKEYSLOT`, and `PCLUSTERHASH` using the same
+   C++ CRC64-derived slot formula already used by the Rust client router.
+
+These are Redis/admin compatibility shims for local tooling and smoke tests. They do not replace
+the C++ partition manager implementation behind those commands.
+
+This continuation compared the Rust hash module with
+`C:\Users\Vincent Jiang\Documents\Codex\temporalstore-small\src\extension\hash\test.cc` and
+closed the C++ `INCRBY` edge-case behavior:
+
+1. Existing non-integer hash values now return an `unmatched` error instead of being treated as `0`.
+2. Arithmetic overflow and underflow now return `out_of_range` instead of saturating.
+3. The RESP `HINCRBY` path surfaces these errors as Redis error replies.
+
 This pass compared proxy, client, data-node, and metaserver surfaces again and closed four more test-backed control-plane gaps:
 
 1. Proxy heartbeat auto-register: `ProxyService::heartbeat_to_meta()` sends heartbeat, registers the proxy on `not_found`, then retries heartbeat.
@@ -74,6 +110,9 @@ This pass closed another ByteRaft/ByteKV `RaftEngine` API/configuration gap:
 - `RaftConfig::validate()` rejects unusable settings before constructing a data-node or metaserver Raft group.
 - `RaftReadOptions` and `RaftReadStrategy` model the C++ `ReadOptions` shape: relaxed read, lease read, read-index, follower-read switch, fill-cache flag, ignore-write-intent flag, and wait timeout.
 - data-node Raft and metaserver Raft now both support fallible constructors with explicit config, `config()` inspection, log-entry size enforcement, leader-only read enforcement, optional follower reads, and election prohibition.
+- data-node Raft WAL now persists in-progress joint-consensus membership and restores it after restart, so a restarted group still requires both old and new majorities before writes or membership commit.
+- data-node and metaserver Raft election paths now reject stale candidates whose logs are not up-to-date with a voting majority before leadership can move.
+- data-node Raft `RequestVote` receive path now follows Raft term monotonicity more closely: higher terms update local hard state and clear old votes before grant/reject decisions, including the candidate-log-behind rejection path.
 
 This is API/config parity plus local-model enforcement. It is not yet the actual optimization implementation for reorder queues, inflight replication windows, WAL sync/segments, network transport timeout, or pre-vote. Those fields become operationally meaningful when the in-process model is replaced by OpenRaft/raft-rs plus durable WAL and transport.
 
@@ -144,7 +183,7 @@ The Rust data node also has a first runtime layer around `TemporalEngine`: worke
 | Proxy | brpc/thrift server, C++ client wrapper, MetaSyncer, heartbeat/config, consul registration | HTTP proxy service with `/execute`, `/batch_execute`, `/shards`, `/proxy/info`, `/proxy/config`, `/proxy/heartbeat`, route cache, stats, retries/timeouts, backend-error route refresh, background heartbeat loop, heartbeat auto-register helper | tonic proxy service, service discovery/consul, namespace/table open path |
 | Client SDK | C++ `Client`, `Table`, `Pipeline`, `MetaSyncer`, router, backend pool | Rust `TemporalStoreClient`, `TemporalStoreTable`, `TemporalStorePipeline`, typed methods, open/close table cache, stats, retries/timeouts, direct route refresh, backend error streak tracking, open table from metaserver topology, background topology sync, C++ `crc64 >> 34` slot router | tonic SDK, VDC affinity, full backend pool with continuous-failure timers |
 | Routing | namespace/table/partition-set/slot routing | key-to-shard routing from table options using C++ CRC64 slot formula, explicit `shard_id` request, simple metaserver route | full partition-set endpoint picking, route versioning, placement hierarchy |
-| Metaserver | full topology, heartbeat, placement, scheduling, Raft-backed metadata | shard route map, namespace/table topology, load-aware replica fill, server/proxy register/list/heartbeat, stale resource failure-detector loop, meta stats, in-process meta Raft, rebalance model | networked metaserver Raft for HTTP mutations, persistent metabase, full placement rule chain, full background scheduler loop |
+| Metaserver | full topology, heartbeat, placement, scheduling, Raft-backed metadata | shard route map, namespace/table topology, load-aware replica fill with location diversity, server/proxy register/list/heartbeat, stale resource failure-detector loop, durable local JSONL mutation log/replay, meta stats, in-process meta Raft, rebalance model | networked metaserver Raft for HTTP mutations, full host/cooldown placement rule chain, full background scheduler loop |
 | Data node execution | partition workers, async callbacks, load-version guards | `TemporalEngine` plus `DataNodeRuntime` worker queue, async jobs, cancel status surface, dirty tracking, checked execute/batch routes, invalid stream range rejection | tonic streaming/callback shape, hard in-flight cancellation, production scheduling |
 | Hot object model | `ObjectManager`, model objects, dirty slots | per-type maps of key/field/timestamp to `PageAddress` | object ids, dirty slot tracking, object lifecycle, model-specific memory layout |
 | Oplog | binary mutation log with replay/reclaim semantics | JSONL command oplog with explicit retain-from-sequence GC rewrite | binary/protobuf compatibility, fsync policy, replay into hot object manager |
@@ -158,7 +197,7 @@ The Rust data node also has a first runtime layer around `TemporalEngine`: worke
 | Sequence | C++ feature/data-module behavior | typed rows, timestamp ordering, filters, count | exact C++ filters/options, batch semantics, edge-case policy |
 | IPS | rich IPS add/query/remove/load/delete/stat/filter/snap | add, query-last, query range, batch query-last, remove timestamp, delete key, count range | load/snapshot/stat/filter, action/table dimensions, idempotence |
 | Risk | H/CPC/FOL query/update/manager semantics | increment/count plus sum/min/max/first/last/event aggregation and detail list | precision buckets, manager APIs |
-| Redis | not the main C++ wire API | useful RESP compatibility, including `SET NX/XX GET EX/PX` | sorted sets/lists if needed |
+| Redis | not the main C++ wire API; C++ server also exposes admin commands such as `INFO`, `CONFIG`, `SLAVEOF`, and `PARTITION` | useful RESP compatibility, including `SET NX/XX GET EX/PX`, hash/set commands, feature commands, C++-style `INFO`/`CONFIG`/`SLAVEOF`/`AUTH`/`BGSAVE`/`PARTITION` smoke commands, and CRC64 slot/hash helpers | sorted sets/lists if needed; real partition-manager backing for admin commands |
 | Metrics | production metrics/logging | Prometheus `/metrics` for shard/cache/page/oplog/runtime plus snapshot metric names; local raft metrics renderer | dashboards and alerts |
 | Deployment | internal production environment | Docker and existing-EKS Terraform skeleton | service discovery, autoscale controller, rolling upgrade, runbooks, auth/TLS |
 | Testing | mature internal tests and production history | local unit/integration/compat tests | multi-process chaos, crash recovery, AWS E2E, perf benchmarks, C++ golden corpus |
@@ -170,11 +209,11 @@ These cannot be honestly marked done yet:
 - replace in-process Raft with a real Rust Raft library
 - productionize Raft WAL segments and hard-state sync policy
 - implement real data-node tonic/gRPC transport
-- connect HTTP metaserver mutations to durable/networked metaserver Raft
+- connect HTTP metaserver mutations to networked metaserver Raft
 - make shard membership changes durable through metaserver Raft
 - add crash-safe WAL/index/page recovery tests
 - wire engine snapshots into Raft snapshot install
-- expand heartbeat/load-report payloads and connect them to placement decisions
+- expand heartbeat/load-report payloads beyond current key/memory/location placement inputs
 
 ## P1 Still Missing Before C++ Feature Parity
 
