@@ -71,8 +71,9 @@ pub use raft::{
 };
 pub use readiness::{production_readiness_report, ProductionReadinessReport, ReadinessArea};
 pub use rebalance::{
-    RebalanceController, RebalanceError, RebalanceOptions, RebalanceStep, ShardMovePlan,
-    ShardReplica, ShardReplicaState, ShardRole,
+    MembershipUpdatePeerRequest, MembershipUpdatePeerStatus, MembershipUpdateTaskOptions,
+    MembershipUpdateTaskPlan, MembershipUpdateTaskReport, RebalanceController, RebalanceError,
+    RebalanceOptions, RebalanceStep, ShardMovePlan, ShardReplica, ShardReplicaState, ShardRole,
 };
 pub use redis::{execute_redis_command, read_command, serve_redis_proxy, RespValue};
 pub use shared_store::{

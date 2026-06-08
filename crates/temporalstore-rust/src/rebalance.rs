@@ -3,8 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::control::MembershipUpdateRequest;
 use crate::raft::RaftNodeId;
-use crate::types::ShardId;
+use crate::types::{ShardId, Status};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ShardRole {
@@ -67,6 +68,73 @@ pub enum RebalanceStep {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MembershipUpdateTaskOptions {
+    pub exclude_self: bool,
+    pub success_threshold: usize,
+    pub submit_fsm: bool,
+}
+
+impl Default for MembershipUpdateTaskOptions {
+    fn default() -> Self {
+        Self {
+            exclude_self: true,
+            success_threshold: 0,
+            submit_fsm: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MembershipUpdatePeerStatus {
+    Ok,
+    NotFound,
+    Failed { code: String, message: String },
+}
+
+impl MembershipUpdatePeerStatus {
+    pub fn from_status(status: Status) -> Self {
+        if status.ok {
+            Self::Ok
+        } else if status.code == "not_found" {
+            Self::NotFound
+        } else {
+            Self::Failed {
+                code: status.code,
+                message: status.message,
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MembershipUpdatePeerRequest {
+    pub replica_id: u64,
+    pub node_id: RaftNodeId,
+    pub request: MembershipUpdateRequest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MembershipUpdateTaskPlan {
+    pub shard_id: ShardId,
+    pub self_replica_id: u64,
+    pub active_replica_ids: Vec<u64>,
+    pub primary_replica_id: u64,
+    pub membership_version: u64,
+    pub requests: Vec<MembershipUpdatePeerRequest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MembershipUpdateTaskReport {
+    pub plan: MembershipUpdateTaskPlan,
+    pub success_count: usize,
+    pub not_found_count: usize,
+    pub failed_count: usize,
+    pub success_threshold: usize,
+    pub accepted: bool,
+    pub should_submit_fsm: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RebalanceOptions {
     pub max_moves_per_round: usize,
@@ -104,6 +172,13 @@ pub enum RebalanceError {
     NoTargetNode,
     #[error("move target is not loading: {0}")]
     TargetNotLoading(u64),
+    #[error("active membership is empty for shard {0}")]
+    EmptyMembership(ShardId),
+    #[error("primary replica {primary_replica_id} is not active for shard {shard_id}")]
+    PrimaryNotActive {
+        shard_id: ShardId,
+        primary_replica_id: u64,
+    },
 }
 
 impl RebalanceController {
@@ -330,6 +405,114 @@ impl RebalanceController {
         }])
     }
 
+    pub fn plan_membership_update_task(
+        &self,
+        self_replica_id: u64,
+        active_replica_ids: impl IntoIterator<Item = u64>,
+        primary_replica_id: u64,
+        membership_version: u64,
+        options: MembershipUpdateTaskOptions,
+    ) -> Result<MembershipUpdateTaskPlan, RebalanceError> {
+        let self_replica = self
+            .replicas
+            .get(&self_replica_id)
+            .ok_or(RebalanceError::ReplicaNotFound(self_replica_id))?;
+        let mut active_replica_ids = active_replica_ids.into_iter().collect::<Vec<_>>();
+        active_replica_ids.sort_unstable();
+        active_replica_ids.dedup();
+        if active_replica_ids.is_empty() {
+            return Err(RebalanceError::EmptyMembership(self_replica.shard_id));
+        }
+        if !active_replica_ids.contains(&primary_replica_id) {
+            return Err(RebalanceError::PrimaryNotActive {
+                shard_id: self_replica.shard_id,
+                primary_replica_id,
+            });
+        }
+
+        let replica_node_ids = active_replica_ids
+            .iter()
+            .map(|replica_id| {
+                self.replicas
+                    .get(replica_id)
+                    .ok_or(RebalanceError::ReplicaNotFound(*replica_id))
+                    .map(|replica| replica.node_id)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let leader_node_id = self
+            .replicas
+            .get(&primary_replica_id)
+            .ok_or(RebalanceError::ReplicaNotFound(primary_replica_id))?
+            .node_id;
+
+        let mut requests = Vec::new();
+        for replica_id in &active_replica_ids {
+            if options.exclude_self && *replica_id == self_replica_id {
+                continue;
+            }
+            let replica = self
+                .replicas
+                .get(replica_id)
+                .ok_or(RebalanceError::ReplicaNotFound(*replica_id))?;
+            if replica.shard_id != self_replica.shard_id
+                || replica.state == ShardReplicaState::Frozen
+            {
+                continue;
+            }
+            requests.push(MembershipUpdatePeerRequest {
+                replica_id: *replica_id,
+                node_id: replica.node_id,
+                request: MembershipUpdateRequest {
+                    shard_id: self_replica.shard_id,
+                    replica_node_ids: replica_node_ids.clone(),
+                    leader_node_id: Some(leader_node_id),
+                },
+            });
+        }
+
+        Ok(MembershipUpdateTaskPlan {
+            shard_id: self_replica.shard_id,
+            self_replica_id,
+            active_replica_ids,
+            primary_replica_id,
+            membership_version,
+            requests,
+        })
+    }
+
+    pub fn evaluate_membership_update_task(
+        &self,
+        plan: MembershipUpdateTaskPlan,
+        peer_statuses: impl IntoIterator<Item = MembershipUpdatePeerStatus>,
+        options: MembershipUpdateTaskOptions,
+    ) -> MembershipUpdateTaskReport {
+        let mut success_count = 0;
+        let mut not_found_count = 0;
+        let mut failed_count = 0;
+        for status in peer_statuses {
+            match status {
+                MembershipUpdatePeerStatus::Ok => success_count += 1,
+                MembershipUpdatePeerStatus::NotFound => not_found_count += 1,
+                MembershipUpdatePeerStatus::Failed { .. } => failed_count += 1,
+            }
+        }
+        let threshold = if options.success_threshold == 0 {
+            plan.requests.len()
+        } else {
+            options.success_threshold
+        };
+        let accepted = success_count + not_found_count >= threshold;
+        MembershipUpdateTaskReport {
+            plan,
+            success_count,
+            not_found_count,
+            failed_count,
+            success_threshold: threshold,
+            accepted,
+            should_submit_fsm: accepted && options.submit_fsm,
+        }
+    }
+
     pub fn rollback_move(&mut self, target_replica_id: u64) -> Result<(), RebalanceError> {
         let target = self
             .replicas
@@ -491,6 +674,105 @@ mod tests {
                 shard_id: 10,
                 node_id: 2,
             }
+        );
+    }
+
+    #[test]
+    fn membership_update_task_matches_cpp_threshold_and_not_found_rules() {
+        let mut frozen = replica(4, 10, 4, ShardRole::Secondary);
+        frozen.state = ShardReplicaState::Frozen;
+        let controller = RebalanceController::with_replicas([
+            replica(1, 10, 1, ShardRole::Primary),
+            replica(2, 10, 2, ShardRole::Secondary),
+            replica(3, 10, 3, ShardRole::Secondary),
+            frozen,
+        ]);
+        let options = MembershipUpdateTaskOptions {
+            exclude_self: true,
+            success_threshold: 2,
+            submit_fsm: true,
+        };
+
+        let plan = controller
+            .plan_membership_update_task(1, [1, 2, 3, 4], 1, 7, options)
+            .unwrap();
+        assert_eq!(plan.shard_id, 10);
+        assert_eq!(plan.active_replica_ids, vec![1, 2, 3, 4]);
+        assert_eq!(plan.requests.len(), 2);
+        assert_eq!(
+            plan.requests
+                .iter()
+                .map(|request| request.replica_id)
+                .collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+        assert!(plan.requests.iter().all(|request| {
+            request.request.replica_node_ids == vec![1, 2, 3, 4]
+                && request.request.leader_node_id == Some(1)
+        }));
+
+        let report = controller.evaluate_membership_update_task(
+            plan.clone(),
+            [
+                MembershipUpdatePeerStatus::Ok,
+                MembershipUpdatePeerStatus::NotFound,
+            ],
+            options,
+        );
+        assert!(report.accepted);
+        assert!(report.should_submit_fsm);
+        assert_eq!(report.success_count, 1);
+        assert_eq!(report.not_found_count, 1);
+
+        let failed = controller.evaluate_membership_update_task(
+            plan,
+            [
+                MembershipUpdatePeerStatus::Ok,
+                MembershipUpdatePeerStatus::Failed {
+                    code: "timeout".to_string(),
+                    message: "rpc timeout".to_string(),
+                },
+            ],
+            options,
+        );
+        assert!(!failed.accepted);
+        assert!(!failed.should_submit_fsm);
+        assert_eq!(failed.failed_count, 1);
+    }
+
+    #[test]
+    fn membership_update_task_validates_active_primary_and_replica_ids() {
+        let controller = RebalanceController::with_replicas([
+            replica(1, 10, 1, ShardRole::Primary),
+            replica(2, 10, 2, ShardRole::Secondary),
+        ]);
+
+        assert_eq!(
+            controller
+                .plan_membership_update_task(1, [], 1, 1, MembershipUpdateTaskOptions::default())
+                .unwrap_err(),
+            RebalanceError::EmptyMembership(10)
+        );
+        assert_eq!(
+            controller
+                .plan_membership_update_task(1, [2], 1, 1, MembershipUpdateTaskOptions::default())
+                .unwrap_err(),
+            RebalanceError::PrimaryNotActive {
+                shard_id: 10,
+                primary_replica_id: 1,
+            }
+        );
+        assert_eq!(
+            controller
+                .plan_membership_update_task(
+                    1,
+                    [1, 99],
+                    1,
+                    1,
+                    MembershipUpdateTaskOptions::default()
+                )
+                .unwrap_err(),
+            RebalanceError::ReplicaNotFound(99)
         );
     }
 }

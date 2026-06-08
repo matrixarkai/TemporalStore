@@ -200,6 +200,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "Docker and existing-EKS Terraform skeleton".to_string(),
                 "Prometheus text metrics for core local surfaces".to_string(),
                 "local scale harness".to_string(),
+                "C++-style membership update task model filters sibling replicas, applies success thresholds, treats not_found as acceptable reboot state, and gates FSM submit"
+                    .to_string(),
             ],
             missing: vec![
                 "autoscale controller and metaserver-driven shard rebalance loop".to_string(),
