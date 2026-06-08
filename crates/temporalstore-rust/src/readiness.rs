@@ -114,6 +114,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "data-node Raft exposes planned add/remove/replace membership changes with joint-consensus, catch-up, quorum checks, and reports"
                     .to_string(),
+                "metaserver table topology can be converted into data-node Raft voter membership plans with no-op detection and server-state validation"
+                    .to_string(),
                 "chunked snapshot message assembly and stale snapshot rejection are tested"
                     .to_string(),
                 "external snapshot transfer policy, leader upload, metaserver snapshot-ref recording, URI download, install, and Raft catch-up are tested"
@@ -121,7 +123,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
             ],
             missing: vec![
                 "real OpenRaft or raft-rs data-node FSM/storage implementation".to_string(),
-                "metaserver scheduler integration that drives networked data-node Raft membership plans from shard topology"
+                "metaserver scheduler loop that applies networked data-node Raft membership plans and persists task state"
                     .to_string(),
                 "multi-process crash/restart/partition/slow-follower tests that kill real OS processes"
                     .to_string(),

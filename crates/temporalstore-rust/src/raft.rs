@@ -23,8 +23,8 @@ use crate::meta::{
     LoadFinishRequest, MetaEntityState, MetaInfo, MetaMutation, MetaStats, ProxyHeartbeatRequest,
     ProxyHeartbeatResponse, PublishShardSnapshotRequest, RegisterProxyRequest,
     RegisterServerRequest, RegisterShardRequest, RegisterShardResponse, ServerHeartbeatRequest,
-    ServerHeartbeatResponse, ShardLocation, ShardSnapshotRef, SingleNodeMeta, StaleServerReport,
-    StateChangeRequest, TableTopologyResponse,
+    ServerHeartbeatResponse, ServerMetaInfo, ShardLocation, ShardSnapshotRef, SingleNodeMeta,
+    StaleServerReport, StateChangeRequest, TableTopologyResponse,
 };
 use crate::types::{Command, CommandResponse, ExecuteRequest, ShardId, Status};
 use bytes::Bytes;
@@ -472,6 +472,15 @@ pub struct RaftMembershipChangeReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DataRaftTopologyMembershipPlan {
+    pub shard_id: ShardId,
+    pub target_voters: Vec<RaftNodeId>,
+    pub target_servers: Vec<String>,
+    pub no_change: bool,
+    pub membership_change: Option<RaftMembershipChangePlan>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RaftFailoverReport {
     pub old_leader_id: RaftNodeId,
     pub new_leader_id: RaftNodeId,
@@ -486,6 +495,90 @@ pub struct ReadIndexResponse {
     pub node_id: RaftNodeId,
     pub term: u64,
     pub read_index: u64,
+}
+
+pub fn plan_data_raft_membership_from_topology(
+    cluster: &RaftCluster,
+    topology: &TableTopologyResponse,
+    servers: &[ServerMetaInfo],
+    shard_id: ShardId,
+) -> Result<DataRaftTopologyMembershipPlan, RaftError> {
+    let partition = topology
+        .partitions
+        .iter()
+        .find(|partition| partition.shard_id == shard_id)
+        .ok_or_else(|| {
+            RaftError::InvalidConfig(format!("topology does not contain shard {shard_id}"))
+        })?;
+    let servers_by_addr = servers
+        .iter()
+        .map(|server| (server.server_addr.as_str(), server))
+        .collect::<BTreeMap<_, _>>();
+    let mut target_servers = Vec::new();
+    let mut seen_servers = BTreeSet::new();
+    if let Some(primary) = &partition.primary {
+        if seen_servers.insert(primary.clone()) {
+            target_servers.push(primary.clone());
+        }
+    }
+    for replica in &partition.replicas {
+        if seen_servers.insert(replica.clone()) {
+            target_servers.push(replica.clone());
+        }
+    }
+    if target_servers.is_empty() {
+        return Err(RaftError::InvalidConfig(format!(
+            "topology shard {shard_id} has no primary or replicas"
+        )));
+    }
+
+    let mut target_voters = Vec::new();
+    for server_addr in &target_servers {
+        let server = servers_by_addr.get(server_addr.as_str()).ok_or_else(|| {
+            RaftError::InvalidConfig(format!(
+                "topology shard {shard_id} references unknown server {server_addr}"
+            ))
+        })?;
+        if server.state != MetaEntityState::Normal {
+            return Err(RaftError::InvalidConfig(format!(
+                "topology shard {shard_id} references non-normal server {server_addr}"
+            )));
+        }
+        if server.node_id == 0 {
+            return Err(RaftError::InvalidConfig(format!(
+                "server {server_addr} has no data raft node id"
+            )));
+        }
+        target_voters.push(server.node_id);
+    }
+    target_voters.sort_unstable();
+    target_voters.dedup();
+
+    let current_voters = cluster
+        .status()
+        .nodes
+        .into_iter()
+        .filter(|node| node.replica_role.participates_in_quorum())
+        .map(|node| node.node_id)
+        .collect::<BTreeSet<_>>();
+    let target_set = target_voters.iter().copied().collect::<BTreeSet<_>>();
+    if current_voters == target_set {
+        return Ok(DataRaftTopologyMembershipPlan {
+            shard_id,
+            target_voters,
+            target_servers,
+            no_change: true,
+            membership_change: None,
+        });
+    }
+    let membership_change = cluster.plan_membership_change(target_voters.clone())?;
+    Ok(DataRaftTopologyMembershipPlan {
+        shard_id,
+        target_voters,
+        target_servers,
+        no_change: false,
+        membership_change: Some(membership_change),
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -6076,6 +6169,7 @@ mod tests {
     use crate::http::{
         json_response, parse_json, post_json_with_options, serve, HttpRequestOptions,
     };
+    use crate::meta::{TableMetaInfo, TablePartition};
     use crate::types::{Command, FeatureFilter, FeatureFilterOp, SequenceFeatureRow};
     use std::time::{Duration, Instant};
 
@@ -7518,6 +7612,52 @@ mod tests {
         listener.local_addr().unwrap().to_string()
     }
 
+    fn topology_for_shard(
+        shard_id: ShardId,
+        primary: &str,
+        replicas: impl IntoIterator<Item = &'static str>,
+    ) -> TableTopologyResponse {
+        TableTopologyResponse {
+            status: Status::ok(),
+            table: Some(TableMetaInfo {
+                table_id: 1,
+                namespace: "ns".to_string(),
+                table_name: "table".to_string(),
+                state: MetaEntityState::Normal,
+                topology_version: 1,
+                first_shard_id: shard_id,
+                shard_count: 1,
+                replica_count: 3,
+                use_cpp_partition_ids: false,
+                partition_version: 0,
+            }),
+            partitions: vec![TablePartition {
+                shard_id,
+                start_slot: 0,
+                end_slot: u64::MAX,
+                primary: Some(primary.to_string()),
+                replicas: replicas
+                    .into_iter()
+                    .map(|replica| replica.to_string())
+                    .collect(),
+            }],
+            unchanged: false,
+        }
+    }
+
+    fn server_meta(addr: &str, node_id: u64, state: MetaEntityState) -> ServerMetaInfo {
+        ServerMetaInfo {
+            server_addr: addr.to_string(),
+            node_id,
+            location: "zone-a".to_string(),
+            state,
+            last_heartbeat_ms: 1,
+            boot_time_ms: 1,
+            binary_version: "test".to_string(),
+            shard_loads: Vec::new(),
+        }
+    }
+
     fn long_sequence_rows(count: usize) -> Vec<SequenceFeatureRow> {
         (0..count)
             .map(|offset| SequenceFeatureRow {
@@ -8295,6 +8435,57 @@ mod tests {
         assert_eq!(report.committed_membership.voters, vec![1, 2, 4]);
         assert_eq!(cluster.commit_index(3), Err(RaftError::NodeNotFound(3)));
         assert!(cluster.read_index(4).is_ok());
+    }
+
+    #[test]
+    fn topology_membership_planner_maps_metaserver_replicas_to_raft_voters() {
+        let cluster = RaftCluster::new_single_shard(7, [1, 2, 3]);
+        let topology = topology_for_shard(7, "s1", ["s1", "s2", "s4"]);
+        let servers = vec![
+            server_meta("s1", 1, MetaEntityState::Normal),
+            server_meta("s2", 2, MetaEntityState::Normal),
+            server_meta("s3", 3, MetaEntityState::Normal),
+            server_meta("s4", 4, MetaEntityState::Normal),
+        ];
+
+        let plan =
+            plan_data_raft_membership_from_topology(&cluster, &topology, &servers, 7).unwrap();
+
+        assert!(!plan.no_change);
+        assert_eq!(plan.target_servers, vec!["s1", "s2", "s4"]);
+        assert_eq!(plan.target_voters, vec![1, 2, 4]);
+        let membership = plan.membership_change.unwrap();
+        assert_eq!(membership.kind, RaftMembershipChangeKind::ReplaceVoter);
+        assert_eq!(membership.add_voters, vec![4]);
+        assert_eq!(membership.remove_voters, vec![3]);
+    }
+
+    #[test]
+    fn topology_membership_planner_reports_noop_and_rejects_bad_servers() {
+        let cluster = RaftCluster::new_single_shard(7, [1, 2, 3]);
+        let topology = topology_for_shard(7, "s1", ["s1", "s2", "s3"]);
+        let servers = vec![
+            server_meta("s1", 1, MetaEntityState::Normal),
+            server_meta("s2", 2, MetaEntityState::Normal),
+            server_meta("s3", 3, MetaEntityState::Normal),
+        ];
+
+        let plan =
+            plan_data_raft_membership_from_topology(&cluster, &topology, &servers, 7).unwrap();
+
+        assert!(plan.no_change);
+        assert_eq!(plan.target_voters, vec![1, 2, 3]);
+        assert!(plan.membership_change.is_none());
+
+        let frozen_servers = vec![
+            server_meta("s1", 1, MetaEntityState::Normal),
+            server_meta("s2", 2, MetaEntityState::Frozen),
+            server_meta("s3", 3, MetaEntityState::Normal),
+        ];
+        assert!(matches!(
+            plan_data_raft_membership_from_topology(&cluster, &topology, &frozen_servers, 7),
+            Err(RaftError::InvalidConfig(message)) if message.contains("non-normal server s2")
+        ));
     }
 
     #[test]
