@@ -135,6 +135,65 @@ pub struct MembershipUpdateTaskReport {
     pub should_submit_fsm: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SchedulerTaskResult {
+    Ok,
+    RetryLater,
+    Aborted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SchedulerTaskKind {
+    UpdateMembership(MembershipUpdateTaskPlan),
+    RebalanceStep(RebalanceStep),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SchedulerTask {
+    pub id: u64,
+    pub priority: i32,
+    pub create_time_ms: u64,
+    pub next_run_time_ms: u64,
+    pub last_run_time_ms: u64,
+    pub retry_times: u64,
+    pub kind: SchedulerTaskKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskSchedulerOptions {
+    pub base_postpone_ms: u64,
+    pub max_postpone_ms: u64,
+    pub max_retry_times: u64,
+    pub max_inflight: usize,
+}
+
+impl Default for TaskSchedulerOptions {
+    fn default() -> Self {
+        Self {
+            base_postpone_ms: 1_000,
+            max_postpone_ms: 60_000,
+            max_retry_times: 10,
+            max_inflight: 1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SchedulerRunReport {
+    pub task_id: u64,
+    pub result: SchedulerTaskResult,
+    pub retry_times: u64,
+    pub next_run_time_ms: Option<u64>,
+    pub queue_len: usize,
+    pub aborted: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeterministicTaskScheduler {
+    queue: BTreeMap<u64, SchedulerTask>,
+    next_task_id: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RebalanceOptions {
     pub max_moves_per_round: usize,
@@ -179,6 +238,91 @@ pub enum RebalanceError {
         shard_id: ShardId,
         primary_replica_id: u64,
     },
+    #[error("task not found: {0}")]
+    TaskNotFound(u64),
+    #[error("scheduler inflight limit is zero")]
+    InvalidSchedulerInflight,
+}
+
+impl DeterministicTaskScheduler {
+    pub fn submit(&mut self, priority: i32, now_ms: u64, kind: SchedulerTaskKind) -> SchedulerTask {
+        let id = self.next_task_id;
+        self.next_task_id += 1;
+        let task = SchedulerTask {
+            id,
+            priority,
+            create_time_ms: now_ms,
+            next_run_time_ms: now_ms,
+            last_run_time_ms: 0,
+            retry_times: 0,
+            kind,
+        };
+        self.queue.insert(id, task.clone());
+        task
+    }
+
+    pub fn queue_len(&self) -> usize {
+        self.queue.len()
+    }
+
+    pub fn snapshot(&self) -> Vec<SchedulerTask> {
+        let mut tasks = self.queue.values().cloned().collect::<Vec<_>>();
+        tasks.sort_by_key(|task| (task.priority, task.next_run_time_ms, task.id));
+        tasks
+    }
+
+    pub fn pop_first_available(&mut self, now_ms: u64) -> Option<SchedulerTask> {
+        let task_id = self
+            .queue
+            .values()
+            .filter(|task| task.next_run_time_ms <= now_ms)
+            .min_by_key(|task| (task.priority, task.next_run_time_ms, task.id))
+            .map(|task| task.id)?;
+        self.queue.remove(&task_id)
+    }
+
+    pub fn run_next(
+        &mut self,
+        now_ms: u64,
+        result: SchedulerTaskResult,
+        options: TaskSchedulerOptions,
+    ) -> Result<Option<SchedulerRunReport>, RebalanceError> {
+        if options.max_inflight == 0 {
+            return Err(RebalanceError::InvalidSchedulerInflight);
+        }
+        let Some(mut task) = self.pop_first_available(now_ms) else {
+            return Ok(None);
+        };
+        task.last_run_time_ms = now_ms;
+        let mut aborted = false;
+        let next_run_time_ms = match result {
+            SchedulerTaskResult::Ok | SchedulerTaskResult::Aborted => None,
+            SchedulerTaskResult::RetryLater => {
+                task.retry_times += 1;
+                if task.retry_times > options.max_retry_times {
+                    aborted = true;
+                    None
+                } else {
+                    let postpone = task
+                        .retry_times
+                        .saturating_mul(options.base_postpone_ms)
+                        .min(options.max_postpone_ms);
+                    task.next_run_time_ms = now_ms.saturating_add(postpone);
+                    let next = task.next_run_time_ms;
+                    self.queue.insert(task.id, task.clone());
+                    Some(next)
+                }
+            }
+        };
+        Ok(Some(SchedulerRunReport {
+            task_id: task.id,
+            result,
+            retry_times: task.retry_times,
+            next_run_time_ms,
+            queue_len: self.queue.len(),
+            aborted,
+        }))
+    }
 }
 
 impl RebalanceController {
@@ -640,6 +784,120 @@ mod tests {
                 .state,
             ShardReplicaState::Frozen
         );
+    }
+
+    #[test]
+    fn task_scheduler_runs_lower_priority_first_and_skips_postponed_tasks() {
+        let mut scheduler = DeterministicTaskScheduler::default();
+        let slow = scheduler.submit(
+            10,
+            0,
+            SchedulerTaskKind::RebalanceStep(RebalanceStep::UnloadSource {
+                shard_id: 1,
+                replica_id: 11,
+                node_id: 1,
+            }),
+        );
+        let urgent = scheduler.submit(
+            0,
+            0,
+            SchedulerTaskKind::RebalanceStep(RebalanceStep::FreezeSource {
+                shard_id: 1,
+                replica_id: 12,
+                node_id: 2,
+            }),
+        );
+        assert_eq!(scheduler.snapshot()[0].id, urgent.id);
+
+        let retry = scheduler
+            .run_next(
+                10,
+                SchedulerTaskResult::RetryLater,
+                TaskSchedulerOptions {
+                    base_postpone_ms: 100,
+                    max_postpone_ms: 250,
+                    max_retry_times: 3,
+                    max_inflight: 1,
+                },
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(retry.task_id, urgent.id);
+        assert_eq!(retry.next_run_time_ms, Some(110));
+
+        let done = scheduler
+            .run_next(50, SchedulerTaskResult::Ok, TaskSchedulerOptions::default())
+            .unwrap()
+            .unwrap();
+        assert_eq!(done.task_id, slow.id);
+        assert_eq!(scheduler.queue_len(), 1);
+    }
+
+    #[test]
+    fn task_scheduler_retries_with_capped_backoff_and_aborts() {
+        let mut scheduler = DeterministicTaskScheduler::default();
+        let task = scheduler.submit(
+            0,
+            0,
+            SchedulerTaskKind::RebalanceStep(RebalanceStep::LoadTarget {
+                shard_id: 1,
+                replica_id: 2,
+                node_id: 3,
+                load_version: 4,
+            }),
+        );
+        let options = TaskSchedulerOptions {
+            base_postpone_ms: 100,
+            max_postpone_ms: 150,
+            max_retry_times: 2,
+            max_inflight: 1,
+        };
+
+        let first = scheduler
+            .run_next(1, SchedulerTaskResult::RetryLater, options)
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.task_id, task.id);
+        assert_eq!(first.retry_times, 1);
+        assert_eq!(first.next_run_time_ms, Some(101));
+
+        let second = scheduler
+            .run_next(101, SchedulerTaskResult::RetryLater, options)
+            .unwrap()
+            .unwrap();
+        assert_eq!(second.retry_times, 2);
+        assert_eq!(second.next_run_time_ms, Some(251));
+
+        let aborted = scheduler
+            .run_next(251, SchedulerTaskResult::RetryLater, options)
+            .unwrap()
+            .unwrap();
+        assert!(aborted.aborted);
+        assert_eq!(aborted.retry_times, 3);
+        assert_eq!(aborted.next_run_time_ms, None);
+        assert_eq!(scheduler.queue_len(), 0);
+    }
+
+    #[test]
+    fn task_scheduler_can_enqueue_update_membership_plan() {
+        let controller = RebalanceController::with_replicas([
+            replica(1, 10, 1, ShardRole::Primary),
+            replica(2, 10, 2, ShardRole::Secondary),
+            replica(3, 10, 3, ShardRole::Secondary),
+        ]);
+        let plan = controller
+            .plan_membership_update_task(1, [1, 2, 3], 1, 7, MembershipUpdateTaskOptions::default())
+            .unwrap();
+        let mut scheduler = DeterministicTaskScheduler::default();
+        let task = scheduler.submit(0, 42, SchedulerTaskKind::UpdateMembership(plan.clone()));
+        assert_eq!(task.priority, 0);
+        assert_eq!(task.next_run_time_ms, 42);
+
+        let Some(next) = scheduler.pop_first_available(42) else {
+            panic!("expected update membership task");
+        };
+        assert_eq!(next.id, task.id);
+        assert_eq!(next.kind, SchedulerTaskKind::UpdateMembership(plan));
     }
 
     #[test]
