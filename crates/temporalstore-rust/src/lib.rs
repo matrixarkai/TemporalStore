@@ -9,6 +9,7 @@ pub mod index_log;
 pub mod meta;
 pub mod oplog;
 pub mod page_store;
+pub mod partition_id;
 pub mod proxy;
 pub mod raft;
 pub mod readiness;
@@ -53,6 +54,11 @@ pub use meta::{
 };
 pub use oplog::{LocalOplogStore, OplogRecord, OplogStats};
 pub use page_store::{LocalPageStore, PageAddress, PageStoreStats};
+pub use partition_id::{
+    validate_partition_count_per_set, validate_partition_set_count, PartitionId, PartitionIdError,
+    MAX_PARTITION_SET_INDEX, MAX_TABLE_ID, MIN_SLOTS_PER_PARTITION, PARTITION_INDEX_MASK,
+    PARTITION_VERSION_MASK, SLOT_COUNT, SLOT_MASK,
+};
 pub use proxy::{ProxyInfo, ProxyOptions, ProxyService, ProxyStats};
 pub use raft::{
     distributed_raft_readiness, handle_raft_http, require_production_raft_ready,

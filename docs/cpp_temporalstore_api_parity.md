@@ -152,8 +152,9 @@ String:
 
 The C++ deep dive describes a full serving engine. The Rust rewrite does not yet have:
 
-- metaserver namespace/table/partition-set topology model
-- slot hashing and routing compatible with C++ `crc64 >> 34`
+- full metaserver namespace/table/partition-set placement hierarchy
+- slot hashing and routing compatible with C++ `crc64 >> 34`; Rust also has an opt-in C++
+  `PartitionId` bit-layout helper for table partition ids
 - brpc/thrift SDK compatibility
 - partition worker pools
 - hot object manager with dirty slot tracking

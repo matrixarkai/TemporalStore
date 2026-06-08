@@ -8,6 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use crate::partition_id::{validate_partition_set_count, PartitionId, MAX_TABLE_ID};
 use crate::types::{ShardId, Status};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -197,6 +198,10 @@ pub struct AddTableRequest {
     pub shard_count: u64,
     #[serde(default = "default_replica_count")]
     pub replica_count: u64,
+    #[serde(default)]
+    pub use_cpp_partition_ids: bool,
+    #[serde(default)]
+    pub partition_version: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -217,6 +222,10 @@ pub struct TableMetaInfo {
     pub first_shard_id: ShardId,
     pub shard_count: u64,
     pub replica_count: u64,
+    #[serde(default)]
+    pub use_cpp_partition_ids: bool,
+    #[serde(default)]
+    pub partition_version: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -652,6 +661,21 @@ impl SingleNodeMeta {
                 status: Status::error("bad_request", "shard_count must be > 0"),
             };
         }
+        if request.use_cpp_partition_ids {
+            if request.shard_count > u32::MAX as u64 {
+                return AckResponse {
+                    status: Status::error(
+                        "bad_request",
+                        "shard_count exceeds C++ partition-set range",
+                    ),
+                };
+            }
+            if let Err(err) = validate_partition_set_count(request.shard_count as u32) {
+                return AckResponse {
+                    status: Status::error("bad_request", err.to_string()),
+                };
+            }
+        }
         let mut state = self.inner.write().expect("meta lock poisoned");
         state.counters.table_create_total += 1;
         state
@@ -665,17 +689,39 @@ impl SingleNodeMeta {
             };
         }
         let table_id = state.next_table_id;
+        if request.use_cpp_partition_ids && table_id > MAX_TABLE_ID as u64 {
+            return AckResponse {
+                status: Status::error(
+                    "bad_request",
+                    "table_id exceeds C++ partition id table range",
+                ),
+            };
+        }
         state.next_table_id += 1;
         state.topology_version += 1;
+        let first_shard_id = if request.use_cpp_partition_ids {
+            match PartitionId::new(table_id, 0, 0, request.partition_version as u64) {
+                Ok(partition_id) => partition_id.id(),
+                Err(err) => {
+                    return AckResponse {
+                        status: Status::error("bad_request", err.to_string()),
+                    };
+                }
+            }
+        } else {
+            request.first_shard_id
+        };
         let info = TableMetaInfo {
             table_id,
             namespace: request.namespace,
             table_name: request.table_name,
             state: MetaEntityState::Normal,
             topology_version: state.topology_version,
-            first_shard_id: request.first_shard_id,
+            first_shard_id,
             shard_count: request.shard_count,
             replica_count: request.replica_count.max(1),
+            use_cpp_partition_ids: request.use_cpp_partition_ids,
+            partition_version: request.partition_version,
         };
         state.tables.insert(key, TableRecord { info });
         AckResponse {
@@ -1055,7 +1101,7 @@ fn build_partitions(state: &MetaState, table: &TableMetaInfo) -> Vec<TablePartit
     let slot_count = 1_u64 << 30;
     let mut partitions = Vec::new();
     for offset in 0..table.shard_count {
-        let shard_id = table.first_shard_id + offset;
+        let shard_id = table_shard_id(table, offset).unwrap_or(table.first_shard_id + offset);
         let start_slot = slot_count * offset / table.shard_count;
         let end_slot = (slot_count * (offset + 1) / table.shard_count).saturating_sub(1);
         let mut replicas = Vec::new();
@@ -1114,6 +1160,16 @@ fn build_partitions(state: &MetaState, table: &TableMetaInfo) -> Vec<TablePartit
         });
     }
     partitions
+}
+
+fn table_shard_id(
+    table: &TableMetaInfo,
+    offset: u64,
+) -> Result<ShardId, crate::partition_id::PartitionIdError> {
+    if !table.use_cpp_partition_ids {
+        return Ok(table.first_shard_id + offset);
+    }
+    PartitionId::new(table.table_id, offset, 0, table.partition_version as u64).map(PartitionId::id)
 }
 
 fn push_replica(
@@ -1289,6 +1345,8 @@ mod tests {
                 first_shard_id: 10,
                 shard_count: 2,
                 replica_count: 2,
+                use_cpp_partition_ids: false,
+                partition_version: 0,
             })
             .status
             .ok
@@ -1312,6 +1370,56 @@ mod tests {
         assert!(unchanged.status.ok);
         assert!(unchanged.unchanged);
         assert!(unchanged.partitions.is_empty());
+    }
+
+    #[test]
+    fn metaserver_can_generate_cpp_compatible_partition_ids_for_table_topology() {
+        let meta = SingleNodeMeta::default();
+        meta.add_table(AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "cpp_ids".to_string(),
+            first_shard_id: 999,
+            shard_count: 3,
+            replica_count: 1,
+            use_cpp_partition_ids: true,
+            partition_version: 17,
+        });
+
+        let topo = meta.get_table_topology(GetTableTopologyRequest {
+            namespace: "ns".to_string(),
+            table_name: "cpp_ids".to_string(),
+            old_topology_version: 0,
+        });
+
+        assert!(topo.status.ok);
+        let table = topo.table.unwrap();
+        assert_eq!(table.table_id, 1);
+        assert!(table.use_cpp_partition_ids);
+        assert_eq!(table.partition_version, 17);
+        assert_eq!(
+            table.first_shard_id,
+            PartitionId::new(1, 0, 0, 17).unwrap().id()
+        );
+        let shard_ids = topo
+            .partitions
+            .iter()
+            .map(|partition| partition.shard_id)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            shard_ids,
+            vec![
+                PartitionId::new(1, 0, 0, 17).unwrap().id(),
+                PartitionId::new(1, 1, 0, 17).unwrap().id(),
+                PartitionId::new(1, 2, 0, 17).unwrap().id(),
+            ]
+        );
+        for (offset, shard_id) in shard_ids.into_iter().enumerate() {
+            let decoded = PartitionId::from_raw(shard_id);
+            assert_eq!(decoded.table_id(), 1);
+            assert_eq!(decoded.partition_set_index(), offset as u32);
+            assert_eq!(decoded.partition_index(), 0);
+            assert_eq!(decoded.partition_version(), 17);
+        }
     }
 
     #[test]
@@ -1345,6 +1453,8 @@ mod tests {
             first_shard_id: 100,
             shard_count: 1,
             replica_count: 2,
+            use_cpp_partition_ids: false,
+            partition_version: 0,
         });
 
         let topo = meta.get_table_topology(GetTableTopologyRequest {
@@ -1389,6 +1499,8 @@ mod tests {
             first_shard_id: 200,
             shard_count: 1,
             replica_count: 2,
+            use_cpp_partition_ids: false,
+            partition_version: 0,
         });
 
         let topo = meta.get_table_topology(GetTableTopologyRequest {
@@ -1478,6 +1590,8 @@ mod tests {
                 first_shard_id: 10,
                 shard_count: 1,
                 replica_count: 1,
+                use_cpp_partition_ids: false,
+                partition_version: 0,
             })
             .status
             .ok

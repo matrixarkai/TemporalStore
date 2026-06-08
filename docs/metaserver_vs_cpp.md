@@ -73,7 +73,8 @@ Rust metaserver is still not a production C++ metaserver replacement:
 - no networked multi-process Raft transport for the metaserver yet; the current
   HTTP binary uses the local in-process MetaRaft model
 - no full durable metabase snapshot/load in the HTTP metaserver beyond the local JSONL mutation log
-- no exact C++ partition id encoding or partition-set hierarchy
+- no full C++ partition-set hierarchy; Rust now has the exact `PartitionId` bit layout and an
+  opt-in encoded table topology path
 - no full placement rule chain for host deduplication, cooldowns, or scheduler-owned repair actions
 - no task scheduler for create/load/freeze/drop membership workflows
 - no proxy group placement/config model beyond simple config version

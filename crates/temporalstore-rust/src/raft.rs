@@ -8523,6 +8523,8 @@ mod tests {
                 first_shard_id: 100,
                 shard_count: 2,
                 replica_count: 1,
+                use_cpp_partition_ids: false,
+                partition_version: 0,
             })
             .status
             .ok
@@ -8556,6 +8558,8 @@ mod tests {
             first_shard_id: 100,
             shard_count: 2,
             replica_count: 1,
+            use_cpp_partition_ids: false,
+            partition_version: 0,
         });
         assert!(!duplicate.status.ok);
         assert_eq!(duplicate.status.code, "already_exists");
