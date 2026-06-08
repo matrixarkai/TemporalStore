@@ -38,6 +38,33 @@ pub enum RaftRole {
     Follower,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RaftReplicaRole {
+    Voter,
+    Learner,
+    Witness,
+}
+
+impl RaftReplicaRole {
+    fn participates_in_quorum(self) -> bool {
+        matches!(self, Self::Voter | Self::Witness)
+    }
+
+    fn can_serve_data(self) -> bool {
+        matches!(self, Self::Voter | Self::Learner)
+    }
+
+    fn can_be_leader(self) -> bool {
+        matches!(self, Self::Voter)
+    }
+}
+
+impl Default for RaftReplicaRole {
+    fn default() -> Self {
+        Self::Voter
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RaftLogEntry {
     pub term: u64,
@@ -202,6 +229,7 @@ pub struct RaftSnapshotPublishReport {
 pub struct RaftNodeStatus {
     pub node_id: RaftNodeId,
     pub role: RaftRole,
+    pub replica_role: RaftReplicaRole,
     pub current_term: u64,
     pub commit_index: u64,
     pub last_log_index: u64,
@@ -323,6 +351,8 @@ pub struct RaftMembership {
 pub struct RaftWalRecord {
     pub hard_state: RaftHardState,
     pub membership: RaftMembership,
+    #[serde(default)]
+    pub replica_role: RaftReplicaRole,
     #[serde(default)]
     pub joint_membership: Option<JointConsensusMembership>,
     #[serde(default)]
@@ -1944,6 +1974,7 @@ pub enum RaftConfigError {
 struct RaftNode {
     id: RaftNodeId,
     role: RaftRole,
+    replica_role: RaftReplicaRole,
     current_term: u64,
     voted_for: Option<RaftNodeId>,
     commit_index: u64,
@@ -2387,14 +2418,24 @@ impl RaftCluster {
                     },
                     shard_id,
                 );
+                node.replica_role = record.replica_role;
                 node.current_term = record.hard_state.current_term;
                 node.voted_for = record.hard_state.voted_for;
                 node.commit_index = record.hard_state.commit_index;
                 if let Some(snapshot) = record.installed_snapshot.clone() {
-                    install_snapshot_state(&mut node, snapshot);
+                    if node.replica_role.can_serve_data() {
+                        install_snapshot_state(&mut node, snapshot);
+                    } else {
+                        node.current_term = node.current_term.max(snapshot.last_included_term);
+                        node.commit_index = node.commit_index.max(snapshot.last_included_index);
+                        node.applied_index = snapshot.last_included_index;
+                        node.installed_snapshot = Some(snapshot);
+                    }
                 }
                 node.log = record.entries;
-                apply_committed(&mut node);
+                if node.replica_role.can_serve_data() {
+                    apply_committed(&mut node);
+                }
                 leader_id.get_or_insert(record.membership.leader_id);
                 if joint_membership.is_none() {
                     joint_membership = record.joint_membership;
@@ -2457,7 +2498,7 @@ impl RaftCluster {
             return Err(RaftError::NoMajority { live, required });
         }
         let required = inner.required_majority();
-        let live = inner.nodes.values().filter(|node| node.alive).count();
+        let live = inner.live_quorum_participants();
         if live < required {
             return Err(RaftError::NoMajority { live, required });
         }
@@ -2479,7 +2520,9 @@ impl RaftCluster {
         let mut replicated = 0;
         for node in inner.nodes.values_mut().filter(|node| node.alive) {
             append_entry(node, entry.clone());
-            replicated += 1;
+            if node.replica_role.participates_in_quorum() {
+                replicated += 1;
+            }
         }
         if replicated < required || inner.joint_majority_failure().is_some() {
             return Err(RaftError::NoMajority {
@@ -2491,6 +2534,9 @@ impl RaftCluster {
         let mut leader_response = CommandResponse::Empty;
         for node in inner.nodes.values_mut().filter(|node| node.alive) {
             node.commit_index = entry.index;
+            if !node.replica_role.can_serve_data() {
+                continue;
+            }
             if let Some(response) = apply_committed(node) {
                 if node.id == leader_id {
                     leader_response = response;
@@ -2539,6 +2585,10 @@ impl RaftCluster {
                 return Err(RaftError::NoMajority { live, required });
             }
             let required = inner.required_majority();
+            let live = inner.live_quorum_participants();
+            if live < required {
+                return Err(RaftError::NoMajority { live, required });
+            }
             let leader_id = inner.leader_id;
             let shard_id = inner.shard_id;
             let leader = inner
@@ -2566,13 +2616,30 @@ impl RaftCluster {
             (entry, leader_id, target_ids, required)
         };
 
-        let mut replicated = 1usize;
+        let mut replicated = {
+            let inner = self.inner.read().expect("raft cluster lock poisoned");
+            inner
+                .nodes
+                .get(&leader_id)
+                .map(|node| usize::from(node.replica_role.participates_in_quorum()))
+                .unwrap_or_default()
+        };
         let mut successful_targets = Vec::new();
         for target_id in target_ids {
             let request = self.build_append_entries_request(target_id)?;
             match transport.append_entries(request) {
                 Ok(response) if response.success && response.match_index >= entry.index => {
-                    replicated += 1;
+                    let counts_for_quorum = self
+                        .inner
+                        .read()
+                        .expect("raft cluster lock poisoned")
+                        .nodes
+                        .get(&target_id)
+                        .map(|node| node.replica_role.participates_in_quorum())
+                        .unwrap_or(false);
+                    if counts_for_quorum {
+                        replicated += 1;
+                    }
                     successful_targets.push(target_id);
                 }
                 _ => {}
@@ -2592,7 +2659,11 @@ impl RaftCluster {
                 .get_mut(&leader_id)
                 .ok_or(RaftError::LeaderUnavailable)?;
             leader.commit_index = entry.index;
-            let response = apply_committed(leader).unwrap_or(CommandResponse::Empty);
+            let response = if leader.replica_role.can_serve_data() {
+                apply_committed(leader).unwrap_or(CommandResponse::Empty)
+            } else {
+                CommandResponse::Empty
+            };
             inner.persist_configured_wal()?;
             response
         };
@@ -2722,6 +2793,14 @@ impl RaftCluster {
     }
 
     pub fn add_node(&self, node_id: RaftNodeId) -> Result<(), RaftError> {
+        self.add_node_with_role(node_id, RaftReplicaRole::Voter)
+    }
+
+    pub fn add_node_with_role(
+        &self,
+        node_id: RaftNodeId,
+        replica_role: RaftReplicaRole,
+    ) -> Result<(), RaftError> {
         let mut inner = self.inner.write().expect("raft cluster lock poisoned");
         if inner.nodes.contains_key(&node_id) {
             return Err(RaftError::NodeAlreadyExists(node_id));
@@ -2732,10 +2811,13 @@ impl RaftCluster {
             .get(&inner.leader_id)
             .ok_or(RaftError::LeaderUnavailable)?;
         let mut node = new_node(node_id, RaftRole::Follower, inner.shard_id);
+        node.replica_role = replica_role;
         node.current_term = leader.current_term;
         node.log = leader.log.clone();
         node.commit_index = leader.commit_index;
-        apply_committed(&mut node);
+        if node.replica_role.can_serve_data() {
+            apply_committed(&mut node);
+        }
         inner.nodes.insert(node_id, node);
         inner.persist_configured_wal()?;
         Ok(())
@@ -2749,7 +2831,13 @@ impl RaftCluster {
 
     pub fn remove_node(&self, node_id: RaftNodeId) -> Result<(), RaftError> {
         let mut inner = self.inner.write().expect("raft cluster lock poisoned");
-        if inner.nodes.len() == 1 {
+        if inner.voting_node_ids().len() == 1
+            && inner
+                .nodes
+                .get(&node_id)
+                .map(|node| node.replica_role.participates_in_quorum())
+                .unwrap_or(false)
+        {
             return Err(RaftError::CannotRemoveLastNode);
         }
         inner
@@ -2821,7 +2909,7 @@ impl RaftCluster {
             return Err(RaftError::JointConsensusInProgress);
         }
         inner.ensure_live_leader()?;
-        let mut old_voters = inner.nodes.keys().copied().collect::<Vec<_>>();
+        let mut old_voters = inner.voting_node_ids();
         old_voters.sort_unstable();
         let mut new_voters = new_voters.into_iter().collect::<Vec<_>>();
         new_voters.sort_unstable();
@@ -2840,6 +2928,7 @@ impl RaftCluster {
         for node_id in &new_voters {
             if !inner.nodes.contains_key(node_id) {
                 let mut node = new_node(*node_id, RaftRole::Follower, shard_id);
+                node.replica_role = RaftReplicaRole::Voter;
                 node.current_term = leader_term;
                 node.log = leader_log.clone();
                 node.commit_index = leader_commit_index;
@@ -2879,7 +2968,7 @@ impl RaftCluster {
         }
         let raft_membership = RaftMembership {
             shard_id: inner.shard_id,
-            voters: inner.nodes.keys().copied().collect(),
+            voters: inner.voting_node_ids(),
             leader_id: inner.leader_id,
         };
         inner.persist_configured_wal()?;
@@ -2940,7 +3029,9 @@ impl RaftCluster {
             .ok_or(RaftError::NodeNotFound(node_id))?;
         node.log = leader_log;
         node.commit_index = leader_commit_index;
-        apply_committed(node);
+        if node.replica_role.can_serve_data() {
+            apply_committed(node);
+        }
         inner.persist_configured_wal()?;
         Ok(())
     }
@@ -2994,7 +3085,7 @@ impl RaftCluster {
         let inner = self.inner.read().expect("raft cluster lock poisoned");
         RaftMembership {
             shard_id: inner.shard_id,
-            voters: inner.nodes.keys().copied().collect(),
+            voters: inner.voting_node_ids(),
             leader_id: inner.leader_id,
         }
     }
@@ -3003,7 +3094,7 @@ impl RaftCluster {
         let inner = self.inner.read().expect("raft cluster lock poisoned");
         let membership = RaftMembership {
             shard_id: inner.shard_id,
-            voters: inner.nodes.keys().copied().collect(),
+            voters: inner.voting_node_ids(),
             leader_id: inner.leader_id,
         };
         inner
@@ -3019,6 +3110,7 @@ impl RaftCluster {
                             commit_index: node.commit_index,
                         },
                         membership: membership.clone(),
+                        replica_role: node.replica_role,
                         joint_membership: inner.joint_membership.clone(),
                         installed_snapshot: node.installed_snapshot.clone(),
                         entries: node.log.clone(),
@@ -3127,7 +3219,9 @@ impl RaftCluster {
         }
         let last_index = node.log.last().map(|entry| entry.index).unwrap_or_default();
         node.commit_index = request.leader_commit.min(last_index);
-        apply_committed(node);
+        if node.replica_role.can_serve_data() {
+            apply_committed(node);
+        }
         let term = node.current_term;
         inner.persist_configured_wal()?;
         Ok(AppendEntriesResponse {
@@ -3178,10 +3272,29 @@ impl RaftCluster {
                 reject_reason: Some("shard_mismatch".to_string()),
             });
         }
+        if !inner
+            .nodes
+            .get(&request.candidate_id)
+            .map(|candidate| candidate.replica_role.can_be_leader())
+            .unwrap_or(false)
+        {
+            return Ok(VoteResponse {
+                term: 0,
+                vote_granted: false,
+                reject_reason: Some("candidate_not_voter".to_string()),
+            });
+        }
         let node = inner
             .nodes
             .get_mut(&request.target_id)
             .ok_or(RaftError::NodeNotFound(request.target_id))?;
+        if !node.replica_role.participates_in_quorum() {
+            return Ok(VoteResponse {
+                term: node.current_term,
+                vote_granted: false,
+                reject_reason: Some("target_not_voter".to_string()),
+            });
+        }
         if request.term < node.current_term {
             return Ok(VoteResponse {
                 term: node.current_term,
@@ -3687,6 +3800,9 @@ impl RaftCluster {
             .nodes
             .get(&node_id)
             .ok_or(RaftError::NodeNotFound(node_id))?;
+        if !node.replica_role.can_serve_data() {
+            return Err(RaftError::NodeNotFound(node_id));
+        }
         Ok(node
             .engine
             .execute(ExecuteRequest {
@@ -3712,6 +3828,9 @@ impl RaftCluster {
             .get(&node_id)
             .ok_or(RaftError::NodeNotFound(node_id))?;
         if !node.alive {
+            return Err(RaftError::NodeNotFound(node_id));
+        }
+        if !node.replica_role.can_serve_data() {
             return Err(RaftError::NodeNotFound(node_id));
         }
         if node.commit_index < leader_commit_index {
@@ -3750,6 +3869,9 @@ impl RaftCluster {
         if !node.alive {
             return Err(RaftError::NodeNotFound(node_id));
         }
+        if !node.replica_role.can_serve_data() {
+            return Err(RaftError::NodeNotFound(node_id));
+        }
         if node.commit_index < status.commit_index {
             return Err(RaftError::ReplicaLagging {
                 replica_id: node_id,
@@ -3776,6 +3898,9 @@ impl RaftCluster {
             .get(&node_id)
             .ok_or(RaftError::NodeNotFound(node_id))?;
         if !node.alive {
+            return Err(RaftError::NodeNotFound(node_id));
+        }
+        if !node.replica_role.can_serve_data() {
             return Err(RaftError::NodeNotFound(node_id));
         }
         if !options.enable_read_from_follower && node_id != inner.leader_id {
@@ -3879,7 +4004,7 @@ impl RaftClusterInner {
     fn best_live_candidate(&self) -> Result<RaftNodeId, RaftError> {
         self.nodes
             .values()
-            .filter(|node| node.alive)
+            .filter(|node| node.alive && node.replica_role.can_be_leader())
             .min_by_key(|node| {
                 (
                     std::cmp::Reverse(node.commit_index),
@@ -3897,7 +4022,9 @@ impl RaftClusterInner {
     ) -> Result<RaftNodeId, RaftError> {
         self.nodes
             .values()
-            .filter(|node| allowed.contains(&node.id) && node.alive)
+            .filter(|node| {
+                allowed.contains(&node.id) && node.alive && node.replica_role.can_be_leader()
+            })
             .min_by_key(|node| {
                 (
                     std::cmp::Reverse(node.commit_index),
@@ -3933,7 +4060,9 @@ impl RaftClusterInner {
             {
                 node.log = leader_log.clone();
                 node.commit_index = leader_commit_index;
-                apply_committed(node);
+                if node.replica_role.can_serve_data() {
+                    apply_committed(node);
+                }
             }
             if node.commit_index >= leader_commit_index {
                 caught_up.push(node.id);
@@ -3972,23 +4101,30 @@ impl RaftClusterInner {
                 .cloned()
                 .collect();
             node.commit_index = target_commit_index;
-            apply_committed(node);
+            if node.replica_role.can_serve_data() {
+                apply_committed(node);
+            }
             replayed_log_entries += node.commit_index.saturating_sub(before);
         }
         Ok(replayed_log_entries)
     }
 
     fn remove_node_safely(&mut self, node_id: RaftNodeId) -> Result<(), RaftError> {
-        if self.nodes.len() == 1 {
+        if self.voting_node_ids().len() == 1
+            && self
+                .nodes
+                .get(&node_id)
+                .map(|node| node.replica_role.participates_in_quorum())
+                .unwrap_or(false)
+        {
             return Err(RaftError::CannotRemoveLastNode);
         }
         if !self.nodes.contains_key(&node_id) {
             return Err(RaftError::NodeNotFound(node_id));
         }
         let remaining = self
-            .nodes
-            .keys()
-            .copied()
+            .voting_node_ids()
+            .into_iter()
             .filter(|id| *id != node_id)
             .collect::<BTreeSet<_>>();
         let required_after = majority(remaining.len());
@@ -4040,7 +4176,7 @@ impl RaftClusterInner {
         {
             return Err(RaftError::LeaderUnavailable);
         }
-        let old_voters = self.nodes.keys().copied().collect::<BTreeSet<_>>();
+        let old_voters = self.voting_node_ids().into_iter().collect::<BTreeSet<_>>();
         let new_voters = new_voters.into_iter().collect::<BTreeSet<_>>();
         if new_voters.is_empty() {
             return Err(RaftError::CannotRemoveLastNode);
@@ -4097,13 +4233,15 @@ impl RaftClusterInner {
         let status = self.status();
         RaftScaleChangeReport {
             leader_id: status.leader_id,
-            voters: self.nodes.keys().copied().collect(),
+            voters: self.voting_node_ids(),
             live_voters: status.live_voters,
             majority: status.majority,
             caught_up_voters: status
                 .nodes
                 .into_iter()
-                .filter(|node| node.alive && node.lag == 0)
+                .filter(|node| {
+                    node.alive && node.lag == 0 && node.replica_role.participates_in_quorum()
+                })
                 .map(|node| node.node_id)
                 .collect(),
         }
@@ -4120,7 +4258,9 @@ impl RaftClusterInner {
             caught_up_voters: status
                 .nodes
                 .into_iter()
-                .filter(|node| node.alive && node.lag == 0)
+                .filter(|node| {
+                    node.alive && node.lag == 0 && node.replica_role.participates_in_quorum()
+                })
                 .map(|node| node.node_id)
                 .collect(),
         }
@@ -4149,6 +4289,7 @@ impl RaftClusterInner {
             .nodes
             .values()
             .filter(|node| node.alive)
+            .filter(|node| node.replica_role.participates_in_quorum())
             .filter(|node| {
                 let local_last_index = node.log.last().map(|entry| entry.index).unwrap_or_default();
                 let local_last_term = node.log.last().map(|entry| entry.term).unwrap_or_default();
@@ -4161,7 +4302,7 @@ impl RaftClusterInner {
             return Ok(old_votes >= majority(membership.old_voters.len())
                 && new_votes >= majority(membership.new_voters.len()));
         }
-        Ok(votes >= majority(self.nodes.len()))
+        Ok(votes >= majority(self.voting_node_ids().len()))
     }
 
     fn up_to_date_votes_in(
@@ -4187,6 +4328,7 @@ impl RaftClusterInner {
             .iter()
             .filter_map(|node_id| self.nodes.get(node_id))
             .filter(|node| node.alive)
+            .filter(|node| node.replica_role.participates_in_quorum())
             .filter(|node| {
                 let local_last_index = node.log.last().map(|entry| entry.index).unwrap_or_default();
                 let local_last_term = node.log.last().map(|entry| entry.term).unwrap_or_default();
@@ -4200,7 +4342,7 @@ impl RaftClusterInner {
             return Err(RaftError::ElectionProhibited);
         }
         let required = self.required_majority();
-        let live = self.nodes.values().filter(|node| node.alive).count();
+        let live = self.live_quorum_participants();
         if live < required {
             return Err(RaftError::NoMajority { live, required });
         }
@@ -4210,7 +4352,7 @@ impl RaftClusterInner {
         if !self
             .nodes
             .get(&node_id)
-            .map(|node| node.alive)
+            .map(|node| node.alive && node.replica_role.can_be_leader())
             .unwrap_or(false)
         {
             return Err(RaftError::NodeNotFound(node_id));
@@ -4272,7 +4414,7 @@ impl RaftClusterInner {
     fn wal_records(&self) -> Vec<(RaftNodeId, RaftWalRecord)> {
         let membership = RaftMembership {
             shard_id: self.shard_id,
-            voters: self.nodes.keys().copied().collect(),
+            voters: self.voting_node_ids(),
             leader_id: self.leader_id,
         };
         self.nodes
@@ -4287,6 +4429,7 @@ impl RaftClusterInner {
                             commit_index: node.commit_index,
                         },
                         membership: membership.clone(),
+                        replica_role: node.replica_role,
                         joint_membership: self.joint_membership.clone(),
                         installed_snapshot: node.installed_snapshot.clone(),
                         entries: node.log.clone(),
@@ -4303,13 +4446,28 @@ impl RaftClusterInner {
             .unwrap_or_default()
     }
 
+    fn voting_node_ids(&self) -> Vec<RaftNodeId> {
+        self.nodes
+            .values()
+            .filter(|node| node.replica_role.participates_in_quorum())
+            .map(|node| node.id)
+            .collect()
+    }
+
+    fn live_quorum_participants(&self) -> usize {
+        self.nodes
+            .values()
+            .filter(|node| node.alive && node.replica_role.participates_in_quorum())
+            .count()
+    }
+
     fn required_majority(&self) -> usize {
         self.joint_membership
             .as_ref()
             .map(|membership| {
                 majority(membership.old_voters.len()).max(majority(membership.new_voters.len()))
             })
-            .unwrap_or_else(|| majority(self.nodes.len()))
+            .unwrap_or_else(|| majority(self.voting_node_ids().len()))
     }
 
     fn joint_majority_failure(&self) -> Option<(usize, usize)> {
@@ -4326,11 +4484,13 @@ impl RaftClusterInner {
             .map(|node| node.current_term)
             .unwrap_or_default();
         let majority = self.required_majority();
-        let live_voters = self.nodes.values().filter(|node| node.alive).count();
+        let live_voters = self.live_quorum_participants();
         let leader_lease_valid = self
             .nodes
             .get(&self.leader_id)
-            .map(|node| node.alive && node.role == RaftRole::Leader)
+            .map(|node| {
+                node.alive && node.role == RaftRole::Leader && node.replica_role.can_be_leader()
+            })
             .unwrap_or(false)
             && live_voters >= majority
             && self.joint_majority_failure().is_none();
@@ -4371,7 +4531,12 @@ fn joint_majority_failure(
 fn live_voters_in(nodes: &BTreeMap<RaftNodeId, RaftNode>, voters: &[RaftNodeId]) -> usize {
     voters
         .iter()
-        .filter(|node_id| nodes.get(node_id).map(|node| node.alive).unwrap_or(false))
+        .filter(|node_id| {
+            nodes
+                .get(node_id)
+                .map(|node| node.alive && node.replica_role.participates_in_quorum())
+                .unwrap_or(false)
+        })
         .count()
 }
 
@@ -4406,6 +4571,7 @@ fn node_status(node: &RaftNode, leader_commit_index: u64) -> RaftNodeStatus {
     RaftNodeStatus {
         node_id: node.id,
         role: node.role,
+        replica_role: node.replica_role,
         current_term: node.current_term,
         commit_index: node.commit_index,
         last_log_index: node.log.last().map(|entry| entry.index).unwrap_or_default(),
@@ -4424,6 +4590,9 @@ fn replication_health_from_status(
     let mut lagging_voters = Vec::new();
     for node in status.nodes {
         max_lag = max_lag.max(node.lag);
+        if !node.replica_role.participates_in_quorum() {
+            continue;
+        }
         if node.alive && node.lag <= max_allowed_lag {
             caught_up_voters.push(node.node_id);
         } else {
@@ -4457,6 +4626,7 @@ fn new_node(id: RaftNodeId, role: RaftRole, shard_id: ShardId) -> RaftNode {
     RaftNode {
         id,
         role,
+        replica_role: RaftReplicaRole::Voter,
         current_term: 1,
         voted_for: None,
         commit_index: 0,
@@ -5642,6 +5812,7 @@ fn meta_node_status(node: &MetaRaftNode, leader_commit_index: u64) -> RaftNodeSt
     RaftNodeStatus {
         node_id: node.id,
         role: node.role,
+        replica_role: RaftReplicaRole::Voter,
         current_term: node.current_term,
         commit_index: node.commit_index,
         last_log_index: node.log.last().map(|entry| entry.index).unwrap_or_default(),
@@ -7493,6 +7664,130 @@ mod tests {
                 value: Some(b"before-scale-up".to_vec())
             }
         );
+    }
+
+    #[test]
+    fn learner_and_witness_roles_match_cpp_membership_shape() {
+        let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+        cluster
+            .add_node_with_role(4, RaftReplicaRole::Learner)
+            .unwrap();
+        cluster
+            .add_node_with_role(5, RaftReplicaRole::Witness)
+            .unwrap();
+
+        let status = cluster.status();
+        assert_eq!(status.majority, 3);
+        assert_eq!(status.live_voters, 4);
+        assert_eq!(
+            cluster.local_status(4).unwrap().replica_role,
+            RaftReplicaRole::Learner
+        );
+        assert_eq!(
+            cluster.local_status(5).unwrap().replica_role,
+            RaftReplicaRole::Witness
+        );
+        assert_eq!(cluster.membership().voters, vec![1, 2, 3, 5]);
+
+        cluster
+            .propose(Command::StringSet {
+                key: "role-k".to_string(),
+                value: b"role-v".to_vec(),
+            })
+            .unwrap();
+        assert_eq!(
+            cluster.read_from_replica(
+                4,
+                Command::StringGet {
+                    key: "role-k".to_string()
+                }
+            ),
+            Ok(CommandResponse::Bytes {
+                value: Some(b"role-v".to_vec())
+            })
+        );
+        assert_eq!(
+            cluster.read_from_replica(
+                5,
+                Command::StringGet {
+                    key: "role-k".to_string()
+                }
+            ),
+            Err(RaftError::NodeNotFound(5))
+        );
+        assert!(matches!(
+            cluster.elect_leader(4),
+            Err(RaftError::NodeNotFound(4))
+        ));
+        assert!(matches!(
+            cluster.elect_leader(5),
+            Err(RaftError::NodeNotFound(5))
+        ));
+    }
+
+    #[test]
+    fn learner_does_not_count_for_majority_but_witness_does() {
+        let cluster = RaftCluster::new_single_shard(1, [1, 2]);
+        cluster
+            .add_node_with_role(4, RaftReplicaRole::Learner)
+            .unwrap();
+        cluster.set_alive(2, false).unwrap();
+        assert_eq!(
+            cluster
+                .propose(Command::StringSet {
+                    key: "k".to_string(),
+                    value: b"v".to_vec(),
+                })
+                .unwrap_err(),
+            RaftError::NoMajority {
+                live: 1,
+                required: 2
+            }
+        );
+
+        cluster.set_alive(2, true).unwrap();
+        cluster
+            .add_node_with_role(5, RaftReplicaRole::Witness)
+            .unwrap();
+        cluster.set_alive(2, false).unwrap();
+        cluster
+            .propose(Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            })
+            .unwrap();
+        assert_eq!(cluster.status().live_voters, 2);
+    }
+
+    #[test]
+    fn replica_roles_survive_wal_restore() {
+        let dir = tempfile::tempdir().unwrap();
+        let cluster =
+            RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], RaftConfig::default())
+                .unwrap();
+        cluster
+            .add_node_with_role(4, RaftReplicaRole::Learner)
+            .unwrap();
+        cluster
+            .add_node_with_role(5, RaftReplicaRole::Witness)
+            .unwrap();
+
+        let restored = RaftCluster::restore_single_shard_from_wal(
+            dir.path(),
+            1,
+            [1, 2, 3, 4, 5],
+            RaftConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            restored.local_status(4).unwrap().replica_role,
+            RaftReplicaRole::Learner
+        );
+        assert_eq!(
+            restored.local_status(5).unwrap().replica_role,
+            RaftReplicaRole::Witness
+        );
+        assert_eq!(restored.membership().voters, vec![1, 2, 3, 5]);
     }
 
     #[test]
