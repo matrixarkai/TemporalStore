@@ -226,22 +226,22 @@ fn request_raw_once(
     let io_timeout = Some(Duration::from_millis(options.io_timeout_ms));
     stream.set_read_timeout(io_timeout)?;
     stream.set_write_timeout(io_timeout)?;
-    write!(
-        stream,
+    let header = format!(
         "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nContent-Length: {}\r\n{extra_headers}Connection: close\r\n\r\n",
         body.len()
-    )?;
-    stream.write_all(body)?;
-    stream.flush()?;
+    );
+    write_all_with_would_block_retry(&mut stream, header.as_bytes(), options.io_timeout_ms)?;
+    write_all_with_would_block_retry(&mut stream, body, options.io_timeout_ms)?;
+    flush_with_would_block_retry(&mut stream, options.io_timeout_ms)?;
 
-    let mut response = Vec::new();
-    read_to_end_with_would_block_retry(&mut stream, &mut response, options.io_timeout_ms)?;
-    let marker = b"\r\n\r\n";
-    let Some(header_end) = response.windows(marker.len()).position(|w| w == marker) else {
+    let response = read_http_response(&mut stream, options.io_timeout_ms)?;
+    let (header_end, content_length) = parse_response_header(&response)?;
+    if response.len() < header_end + b"\r\n\r\n".len() + content_length {
         return Err(HttpError::BadResponse(
-            "missing response header".to_string(),
+            "incomplete response body".to_string(),
         ));
-    };
+    }
+    let marker = b"\r\n\r\n";
     let status_line = String::from_utf8_lossy(&response[..header_end])
         .lines()
         .next()
@@ -250,27 +250,142 @@ fn request_raw_once(
     if !status_line.contains(" 200 ") {
         return Err(HttpError::BadResponse(status_line));
     }
-    Ok(response[header_end + marker.len()..].to_vec())
+    let body_start = header_end + marker.len();
+    Ok(response[body_start..body_start + content_length].to_vec())
 }
 
-fn read_to_end_with_would_block_retry(
-    stream: &mut TcpStream,
-    response: &mut Vec<u8>,
-    timeout_ms: u64,
-) -> Result<(), std::io::Error> {
+fn read_http_response(stream: &mut TcpStream, timeout_ms: u64) -> Result<Vec<u8>, HttpError> {
     let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms.max(1));
+    let marker = b"\r\n\r\n";
+    let mut response = Vec::new();
     let mut chunk = [0; 4096];
     loop {
         match stream.read(&mut chunk) {
-            Ok(0) => return Ok(()),
-            Ok(read) => response.extend_from_slice(&chunk[..read]),
+            Ok(0) => return Ok(response),
+            Ok(read) => {
+                response.extend_from_slice(&chunk[..read]);
+                if let Some(header_end) = response.windows(marker.len()).position(|w| w == marker) {
+                    let (_, content_length) = parse_response_header(&response)?;
+                    let expected_len = header_end + marker.len() + content_length;
+                    if response.len() >= expected_len {
+                        response.truncate(expected_len);
+                        return Ok(response);
+                    }
+                }
+            }
             Err(err)
                 if matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
                     && std::time::Instant::now() < deadline =>
             {
                 thread::sleep(Duration::from_millis(2));
             }
-            Err(err) => return Err(err),
+            Err(err) => return Err(HttpError::Io(err)),
         }
+    }
+}
+
+fn write_all_with_would_block_retry(
+    stream: &mut TcpStream,
+    mut bytes: &[u8],
+    timeout_ms: u64,
+) -> Result<(), HttpError> {
+    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms.max(1));
+    while !bytes.is_empty() {
+        match stream.write(bytes) {
+            Ok(0) => {
+                return Err(HttpError::BadResponse(
+                    "socket closed while writing request".to_string(),
+                ));
+            }
+            Ok(written) => bytes = &bytes[written..],
+            Err(err)
+                if matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
+                    && std::time::Instant::now() < deadline =>
+            {
+                thread::sleep(Duration::from_millis(2));
+            }
+            Err(err) => return Err(HttpError::Io(err)),
+        }
+    }
+    Ok(())
+}
+
+fn flush_with_would_block_retry(stream: &mut TcpStream, timeout_ms: u64) -> Result<(), HttpError> {
+    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms.max(1));
+    loop {
+        match stream.flush() {
+            Ok(()) => return Ok(()),
+            Err(err)
+                if matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
+                    && std::time::Instant::now() < deadline =>
+            {
+                thread::sleep(Duration::from_millis(2));
+            }
+            Err(err) => return Err(HttpError::Io(err)),
+        }
+    }
+}
+
+fn parse_response_header(response: &[u8]) -> Result<(usize, usize), HttpError> {
+    let marker = b"\r\n\r\n";
+    let Some(header_end) = response.windows(marker.len()).position(|w| w == marker) else {
+        return Err(HttpError::BadResponse(
+            "missing response header".to_string(),
+        ));
+    };
+    let headers = String::from_utf8_lossy(&response[..header_end]);
+    let content_length = headers
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+        .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+        .unwrap_or_default();
+    Ok((header_end, content_length))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::Value;
+    use std::net::TcpListener;
+    use std::time::Instant;
+
+    #[test]
+    fn client_returns_after_content_length_without_waiting_for_close() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _ = read_http_request(&mut stream).unwrap();
+            let body = br#"{"ok":true}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            stream.write_all(body).unwrap();
+            stream.flush().unwrap();
+            thread::sleep(Duration::from_millis(250));
+        });
+
+        let started = Instant::now();
+        let response: Value = post_json_with_options(
+            &addr,
+            "/raft/propose",
+            &serde_json::json!({"command":"test"}),
+            HttpRequestOptions {
+                connect_timeout_ms: 100,
+                io_timeout_ms: 100,
+                max_retries: 0,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(response["ok"], true);
+        assert!(
+            started.elapsed() < Duration::from_millis(200),
+            "client waited for connection close instead of returning after Content-Length"
+        );
     }
 }
