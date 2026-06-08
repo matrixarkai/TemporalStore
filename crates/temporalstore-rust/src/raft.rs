@@ -54,6 +54,93 @@ pub struct RaftSnapshot {
     pub entries: Vec<RaftLogEntry>,
 }
 
+pub const DATA_RAFT_LOG_MAGIC: u32 = 0x5453_5246; // "TSRF"
+pub const DATA_RAFT_COMMAND_MAGIC: u32 = 0x5453_5243; // "TSRC"
+pub const DATA_RAFT_CODEC_VERSION: u32 = 1;
+
+const DATA_RAFT_LOG_HEADER_LEN: usize = 56;
+const DATA_RAFT_COMMAND_HEADER_LEN: usize = 40;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DataRaftLogCodecEntry {
+    pub shard_id: ShardId,
+    pub raft_index: u64,
+    pub log_id: u64,
+    pub log_size: u64,
+    pub oplog_sequence: u64,
+    pub command: Command,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DataRaftCommandCodecEntry {
+    pub shard_id: ShardId,
+    pub raft_index: u64,
+    pub request_id: u64,
+    pub commands: Vec<Command>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DataRaftCommittedLogApplier {
+    shard_id: ShardId,
+    applied_raft_index: u64,
+    applied_oplog_sequence: u64,
+}
+
+impl DataRaftCommittedLogApplier {
+    pub fn new(shard_id: ShardId) -> Self {
+        Self {
+            shard_id,
+            applied_raft_index: 0,
+            applied_oplog_sequence: 0,
+        }
+    }
+
+    pub fn applied_raft_index(&self) -> u64 {
+        self.applied_raft_index
+    }
+
+    pub fn applied_oplog_sequence(&self) -> u64 {
+        self.applied_oplog_sequence
+    }
+
+    pub fn apply(
+        &mut self,
+        raft_index: u64,
+        committed_log: &[u8],
+        engine: &TemporalEngine,
+    ) -> Result<Option<CommandResponse>, RaftError> {
+        if raft_index <= self.applied_raft_index {
+            return Ok(None);
+        }
+        let entry = parse_data_raft_log(committed_log)?;
+        if entry.shard_id != self.shard_id {
+            return Err(RaftError::InvalidDataRaftLog(format!(
+                "shard mismatch: log={}, applier={}",
+                entry.shard_id, self.shard_id
+            )));
+        }
+        if entry.raft_index != raft_index {
+            return Err(RaftError::InvalidDataRaftLog(format!(
+                "raft index mismatch: header={}, apply={}",
+                entry.raft_index, raft_index
+            )));
+        }
+        let response = engine.execute(ExecuteRequest {
+            shard_id: entry.shard_id,
+            command: entry.command,
+        });
+        if !response.status.ok {
+            return Err(RaftError::InvalidDataRaftLog(format!(
+                "engine apply failed: {} {}",
+                response.status.code, response.status.message
+            )));
+        }
+        self.applied_raft_index = entry.raft_index;
+        self.applied_oplog_sequence = entry.oplog_sequence;
+        Ok(Some(response.response))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RaftExternalSnapshotRef {
     pub uri: String,
@@ -1937,6 +2024,211 @@ pub enum RaftError {
     SnapshotEncoding(String),
     #[error("snapshot store error: {0}")]
     SnapshotStore(String),
+    #[error("invalid data raft log: {0}")]
+    InvalidDataRaftLog(String),
+    #[error("invalid data raft command: {0}")]
+    InvalidDataRaftCommand(String),
+}
+
+pub fn serialize_data_raft_log(entry: &DataRaftLogCodecEntry) -> Result<Vec<u8>, RaftError> {
+    if entry.oplog_sequence == 0 {
+        return Err(RaftError::InvalidDataRaftLog(
+            "oplog sequence must be nonzero".to_string(),
+        ));
+    }
+    let payload = serde_json::to_vec(&entry.command)
+        .map_err(|err| RaftError::InvalidDataRaftLog(err.to_string()))?;
+    if payload.is_empty() {
+        return Err(RaftError::InvalidDataRaftLog(
+            "command payload is empty".to_string(),
+        ));
+    }
+    let log_size = if entry.log_size == 0 {
+        payload.len() as u64
+    } else {
+        entry.log_size
+    };
+    let mut bytes = Vec::with_capacity(DATA_RAFT_LOG_HEADER_LEN + payload.len());
+    push_u32_le(&mut bytes, DATA_RAFT_LOG_MAGIC);
+    push_u32_le(&mut bytes, DATA_RAFT_CODEC_VERSION);
+    push_u64_le(&mut bytes, entry.shard_id);
+    push_u64_le(&mut bytes, entry.raft_index);
+    push_u64_le(&mut bytes, entry.log_id);
+    push_u64_le(&mut bytes, log_size);
+    push_u64_le(&mut bytes, entry.oplog_sequence);
+    push_u64_le(&mut bytes, payload.len() as u64);
+    bytes.extend_from_slice(&payload);
+    Ok(bytes)
+}
+
+pub fn parse_data_raft_log(bytes: &[u8]) -> Result<DataRaftLogCodecEntry, RaftError> {
+    if bytes.len() < DATA_RAFT_LOG_HEADER_LEN {
+        return Err(RaftError::InvalidDataRaftLog(format!(
+            "truncated header: bytes={}, need={}",
+            bytes.len(),
+            DATA_RAFT_LOG_HEADER_LEN
+        )));
+    }
+    let magic = read_u32_le(bytes, 0)?;
+    if magic != DATA_RAFT_LOG_MAGIC {
+        return Err(RaftError::InvalidDataRaftLog(format!(
+            "bad magic: {magic:#x}"
+        )));
+    }
+    let version = read_u32_le(bytes, 4)?;
+    if version != DATA_RAFT_CODEC_VERSION {
+        return Err(RaftError::InvalidDataRaftLog(format!(
+            "unsupported version: {version}"
+        )));
+    }
+    let shard_id = read_u64_le(bytes, 8)?;
+    let raft_index = read_u64_le(bytes, 16)?;
+    let log_id = read_u64_le(bytes, 24)?;
+    let log_size = read_u64_le(bytes, 32)?;
+    let oplog_sequence = read_u64_le(bytes, 40)?;
+    let payload_size = read_u64_le(bytes, 48)?;
+    if oplog_sequence == 0 {
+        return Err(RaftError::InvalidDataRaftLog(
+            "oplog sequence must be nonzero".to_string(),
+        ));
+    }
+    if payload_size > u32::MAX as u64 {
+        return Err(RaftError::InvalidDataRaftLog(format!(
+            "payload too large: {payload_size}"
+        )));
+    }
+    let payload_size_usize = payload_size as usize;
+    if bytes.len() - DATA_RAFT_LOG_HEADER_LEN != payload_size_usize {
+        return Err(RaftError::InvalidDataRaftLog(format!(
+            "payload size mismatch: header={}, actual={}",
+            payload_size,
+            bytes.len() - DATA_RAFT_LOG_HEADER_LEN
+        )));
+    }
+    let command = serde_json::from_slice(&bytes[DATA_RAFT_LOG_HEADER_LEN..])
+        .map_err(|err| RaftError::InvalidDataRaftLog(err.to_string()))?;
+    Ok(DataRaftLogCodecEntry {
+        shard_id,
+        raft_index,
+        log_id,
+        log_size,
+        oplog_sequence,
+        command,
+    })
+}
+
+pub fn serialize_data_raft_command(
+    entry: &DataRaftCommandCodecEntry,
+) -> Result<Vec<u8>, RaftError> {
+    if entry.shard_id == 0 {
+        return Err(RaftError::InvalidDataRaftCommand(
+            "shard id must be nonzero".to_string(),
+        ));
+    }
+    if entry.commands.is_empty() {
+        return Err(RaftError::InvalidDataRaftCommand(
+            "command batch is empty".to_string(),
+        ));
+    }
+    let payload = serde_json::to_vec(&entry.commands)
+        .map_err(|err| RaftError::InvalidDataRaftCommand(err.to_string()))?;
+    if payload.is_empty() {
+        return Err(RaftError::InvalidDataRaftCommand(
+            "command payload is empty".to_string(),
+        ));
+    }
+    let mut bytes = Vec::with_capacity(DATA_RAFT_COMMAND_HEADER_LEN + payload.len());
+    push_u32_le(&mut bytes, DATA_RAFT_COMMAND_MAGIC);
+    push_u32_le(&mut bytes, DATA_RAFT_CODEC_VERSION);
+    push_u64_le(&mut bytes, entry.shard_id);
+    push_u64_le(&mut bytes, entry.raft_index);
+    push_u64_le(&mut bytes, entry.request_id);
+    push_u64_le(&mut bytes, payload.len() as u64);
+    bytes.extend_from_slice(&payload);
+    Ok(bytes)
+}
+
+pub fn parse_data_raft_command(bytes: &[u8]) -> Result<DataRaftCommandCodecEntry, RaftError> {
+    if bytes.len() < DATA_RAFT_COMMAND_HEADER_LEN {
+        return Err(RaftError::InvalidDataRaftCommand(format!(
+            "truncated header: bytes={}, need={}",
+            bytes.len(),
+            DATA_RAFT_COMMAND_HEADER_LEN
+        )));
+    }
+    let magic =
+        read_u32_le(bytes, 0).map_err(|err| RaftError::InvalidDataRaftCommand(err.to_string()))?;
+    if magic != DATA_RAFT_COMMAND_MAGIC {
+        return Err(RaftError::InvalidDataRaftCommand(format!(
+            "bad magic: {magic:#x}"
+        )));
+    }
+    let version =
+        read_u32_le(bytes, 4).map_err(|err| RaftError::InvalidDataRaftCommand(err.to_string()))?;
+    if version != DATA_RAFT_CODEC_VERSION {
+        return Err(RaftError::InvalidDataRaftCommand(format!(
+            "unsupported version: {version}"
+        )));
+    }
+    let shard_id =
+        read_u64_le(bytes, 8).map_err(|err| RaftError::InvalidDataRaftCommand(err.to_string()))?;
+    let raft_index =
+        read_u64_le(bytes, 16).map_err(|err| RaftError::InvalidDataRaftCommand(err.to_string()))?;
+    let request_id =
+        read_u64_le(bytes, 24).map_err(|err| RaftError::InvalidDataRaftCommand(err.to_string()))?;
+    let payload_size =
+        read_u64_le(bytes, 32).map_err(|err| RaftError::InvalidDataRaftCommand(err.to_string()))?;
+    if shard_id == 0 {
+        return Err(RaftError::InvalidDataRaftCommand(
+            "shard id must be nonzero".to_string(),
+        ));
+    }
+    let payload_size_usize = usize::try_from(payload_size).map_err(|_| {
+        RaftError::InvalidDataRaftCommand(format!("payload too large: {payload_size}"))
+    })?;
+    if bytes.len() - DATA_RAFT_COMMAND_HEADER_LEN != payload_size_usize {
+        return Err(RaftError::InvalidDataRaftCommand(format!(
+            "payload size mismatch: header={}, actual={}",
+            payload_size,
+            bytes.len() - DATA_RAFT_COMMAND_HEADER_LEN
+        )));
+    }
+    let commands = serde_json::from_slice(&bytes[DATA_RAFT_COMMAND_HEADER_LEN..])
+        .map_err(|err| RaftError::InvalidDataRaftCommand(err.to_string()))?;
+    Ok(DataRaftCommandCodecEntry {
+        shard_id,
+        raft_index,
+        request_id,
+        commands,
+    })
+}
+
+fn push_u32_le(bytes: &mut Vec<u8>, value: u32) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+fn push_u64_le(bytes: &mut Vec<u8>, value: u64) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+fn read_u32_le(bytes: &[u8], offset: usize) -> Result<u32, RaftError> {
+    let end = offset.saturating_add(4);
+    let slice = bytes
+        .get(offset..end)
+        .ok_or_else(|| RaftError::InvalidDataRaftLog("truncated u32".to_string()))?;
+    Ok(u32::from_le_bytes(
+        slice.try_into().expect("u32 slice length"),
+    ))
+}
+
+fn read_u64_le(bytes: &[u8], offset: usize) -> Result<u64, RaftError> {
+    let end = offset.saturating_add(8);
+    let slice = bytes
+        .get(offset..end)
+        .ok_or_else(|| RaftError::InvalidDataRaftLog("truncated u64".to_string()))?;
+    Ok(u64::from_le_bytes(
+        slice.try_into().expect("u64 slice length"),
+    ))
 }
 
 pub fn estimate_snapshot_bytes(snapshot: &RaftSnapshot) -> Result<u64, RaftError> {
@@ -5460,6 +5752,164 @@ mod tests {
     };
     use crate::types::{Command, FeatureFilter, FeatureFilterOp, SequenceFeatureRow};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn data_raft_log_codec_round_trips_cxx_style_header() {
+        let entry = DataRaftLogCodecEntry {
+            shard_id: 7,
+            raft_index: 11,
+            log_id: 13,
+            log_size: 0,
+            oplog_sequence: 17,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            },
+        };
+
+        let bytes = serialize_data_raft_log(&entry).unwrap();
+        assert_eq!(
+            u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
+            DATA_RAFT_LOG_MAGIC
+        );
+        assert_eq!(
+            u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
+            DATA_RAFT_CODEC_VERSION
+        );
+        let decoded = parse_data_raft_log(&bytes).unwrap();
+        assert_eq!(decoded.shard_id, entry.shard_id);
+        assert_eq!(decoded.raft_index, entry.raft_index);
+        assert_eq!(decoded.log_id, entry.log_id);
+        assert_eq!(decoded.oplog_sequence, entry.oplog_sequence);
+        assert_eq!(decoded.command, entry.command);
+        assert!(decoded.log_size > 0);
+    }
+
+    #[test]
+    fn data_raft_log_codec_rejects_bad_header_and_sequence() {
+        let entry = DataRaftLogCodecEntry {
+            shard_id: 7,
+            raft_index: 11,
+            log_id: 13,
+            log_size: 0,
+            oplog_sequence: 17,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            },
+        };
+        let mut bytes = serialize_data_raft_log(&entry).unwrap();
+        bytes[0] = 0;
+        assert!(matches!(
+            parse_data_raft_log(&bytes),
+            Err(RaftError::InvalidDataRaftLog(_))
+        ));
+
+        let mut bytes = serialize_data_raft_log(&entry).unwrap();
+        bytes[4..8].copy_from_slice(&2_u32.to_le_bytes());
+        assert!(matches!(
+            parse_data_raft_log(&bytes),
+            Err(RaftError::InvalidDataRaftLog(_))
+        ));
+
+        let mut bytes = serialize_data_raft_log(&entry).unwrap();
+        bytes.truncate(DATA_RAFT_LOG_HEADER_LEN + 1);
+        assert!(matches!(
+            parse_data_raft_log(&bytes),
+            Err(RaftError::InvalidDataRaftLog(_))
+        ));
+
+        let zero_sequence = DataRaftLogCodecEntry {
+            oplog_sequence: 0,
+            ..entry
+        };
+        assert!(matches!(
+            serialize_data_raft_log(&zero_sequence),
+            Err(RaftError::InvalidDataRaftLog(_))
+        ));
+    }
+
+    #[test]
+    fn data_raft_command_codec_round_trips_batch_request() {
+        let entry = DataRaftCommandCodecEntry {
+            shard_id: 7,
+            raft_index: 19,
+            request_id: 23,
+            commands: vec![
+                Command::StringSet {
+                    key: "k1".to_string(),
+                    value: b"v1".to_vec(),
+                },
+                Command::StringSet {
+                    key: "k2".to_string(),
+                    value: b"v2".to_vec(),
+                },
+            ],
+        };
+
+        let bytes = serialize_data_raft_command(&entry).unwrap();
+        assert_eq!(
+            u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
+            DATA_RAFT_COMMAND_MAGIC
+        );
+        let decoded = parse_data_raft_command(&bytes).unwrap();
+        assert_eq!(decoded, entry);
+    }
+
+    #[test]
+    fn committed_data_raft_applier_replays_once_and_rejects_wrong_shard() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(7);
+        let committed = serialize_data_raft_log(&DataRaftLogCodecEntry {
+            shard_id: 7,
+            raft_index: 11,
+            log_id: 13,
+            log_size: 0,
+            oplog_sequence: 17,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            },
+        })
+        .unwrap();
+        let mut applier = DataRaftCommittedLogApplier::new(7);
+
+        let response = applier.apply(11, &committed, &engine).unwrap();
+        assert_eq!(response, Some(CommandResponse::Empty));
+        assert_eq!(applier.applied_raft_index(), 11);
+        assert_eq!(applier.applied_oplog_sequence(), 17);
+        assert_eq!(applier.apply(11, &committed, &engine).unwrap(), None);
+
+        let read = engine.execute(ExecuteRequest {
+            shard_id: 7,
+            command: Command::StringGet {
+                key: "k".to_string(),
+            },
+        });
+        assert_eq!(
+            read.response,
+            CommandResponse::Bytes {
+                value: Some(b"v".to_vec())
+            }
+        );
+
+        let wrong_shard = serialize_data_raft_log(&DataRaftLogCodecEntry {
+            shard_id: 8,
+            raft_index: 12,
+            log_id: 14,
+            log_size: 0,
+            oplog_sequence: 18,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: b"bad".to_vec(),
+            },
+        })
+        .unwrap();
+        assert!(matches!(
+            applier.apply(12, &wrong_shard, &engine),
+            Err(RaftError::InvalidDataRaftLog(_))
+        ));
+    }
 
     #[test]
     fn raft_replicates_committed_write_to_majority_and_followers() {
