@@ -1338,7 +1338,6 @@ pub fn distributed_raft_readiness() -> RaftDistributedReadiness {
     let missing = vec![
         "replace local consensus model with OpenRaft or raft-rs FSM/storage integration"
             .to_string(),
-        "wire data-node Raft snapshots to real engine snapshot create/download/install".to_string(),
         "run external multi-process crash/restart, partition, slow follower, and rolling restart tests"
             .to_string(),
         "add production mTLS transport implementation instead of validation-only config".to_string(),
@@ -4549,6 +4548,12 @@ impl MetaRaftCluster {
     pub fn finish_load(&self, request: LoadFinishRequest) -> AckResponse {
         AckResponse {
             status: self.mutation_status(MetaMutation::FinishLoad(request)),
+        }
+    }
+
+    pub fn publish_shard_snapshot(&self, request: PublishShardSnapshotRequest) -> AckResponse {
+        AckResponse {
+            status: self.mutation_status(MetaMutation::PublishShardSnapshot(request)),
         }
     }
 

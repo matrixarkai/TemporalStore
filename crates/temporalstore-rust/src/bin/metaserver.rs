@@ -1,9 +1,9 @@
 use temporalstore_rust::http::{json_response, parse_json, serve, HttpRequest};
 use temporalstore_rust::meta::{
     AddNamespaceRequest, AddTableRequest, FreezeStaleServersRequest, GetShardResponse,
-    GetTableTopologyRequest, LoadFinishRequest, ProxyHeartbeatRequest, RegisterProxyRequest,
-    RegisterServerRequest, RegisterShardRequest, ServerHeartbeatRequest, SingleNodeMeta,
-    StateChangeRequest,
+    GetTableTopologyRequest, LoadFinishRequest, ProxyHeartbeatRequest, PublishShardSnapshotRequest,
+    RegisterProxyRequest, RegisterServerRequest, RegisterShardRequest, ServerHeartbeatRequest,
+    SingleNodeMeta, StateChangeRequest,
 };
 use temporalstore_rust::raft::{MetaRaftCluster, RaftClusterStatus, RaftNodeId};
 use temporalstore_rust::types::Status;
@@ -82,6 +82,11 @@ fn handle(meta: &MetaBackend, request: HttpRequest) -> (u16, Vec<u8>) {
                 .parse()
                 .unwrap_or_default();
             json_response(200, &backend_call!(meta, get, shard_id))
+        }
+        ("POST", "/shards/snapshot") | ("POST", "/publish_shard_snapshot") => {
+            parse_or(&request.body, |req: PublishShardSnapshotRequest| {
+                backend_call!(meta, publish_shard_snapshot, req)
+            })
         }
         ("POST", "/servers/register") => parse_or(&request.body, |req: RegisterServerRequest| {
             backend_call!(meta, register_server, req)

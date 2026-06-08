@@ -116,12 +116,12 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "chunked snapshot message assembly and stale snapshot rejection are tested"
                     .to_string(),
+                "external snapshot transfer policy, leader upload, metaserver snapshot-ref recording, URI download, install, and Raft catch-up are tested"
+                    .to_string(),
             ],
             missing: vec![
                 "real OpenRaft or raft-rs data-node FSM/storage implementation".to_string(),
                 "metaserver scheduler integration that drives networked data-node Raft membership plans from shard topology"
-                    .to_string(),
-                "Raft snapshot install wired to TemporalEngine freeze/flush/download/install"
                     .to_string(),
                 "multi-process crash/restart/partition/slow-follower tests that kill real OS processes"
                     .to_string(),
@@ -144,10 +144,11 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "data-node scheduler prioritizes foreground execute work over background dump/compact/GC and applies a separate background queue admission limit"
                     .to_string(),
+                "background dump/compact/GC honor in-flight cancellation checkpoints before destructive phases"
+                    .to_string(),
             ],
             missing: vec![
                 "tonic/gRPC data-node service and streaming callbacks".to_string(),
-                "hard cancellation of in-flight worker execution".to_string(),
                 "full production tenant quotas and admission policy".to_string(),
                 "crash-safe recovery tests for oplog + index-log + page stream".to_string(),
             ],
@@ -297,7 +298,16 @@ mod tests {
         assert!(data_raft
             .iter()
             .any(|item| item.contains("real OS processes")));
-        assert!(data_raft.iter().any(|item| item.contains("TemporalEngine")));
+
+        let covered = &report
+            .areas
+            .iter()
+            .find(|area| area.area == "data_node_distributed_raft")
+            .expect("data-node raft area must exist")
+            .covered;
+        assert!(covered
+            .iter()
+            .any(|item| item.contains("external snapshot transfer policy")));
 
         let scale = report
             .missing_by_area("scale_testing")
