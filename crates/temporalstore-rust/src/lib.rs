@@ -57,6 +57,7 @@ pub use proxy::{ProxyInfo, ProxyOptions, ProxyService, ProxyStats};
 pub use raft::{
     distributed_raft_readiness, handle_raft_http, require_production_raft_ready,
     validate_raft_deployment_mode, AppendEntriesRequest, AppendEntriesResponse,
+    DataRaftConsensusBackend, DataRaftConsensusOptions, DataRaftPeer, DataRaftStatus,
     DistributedRaftCommandResponse, DistributedRaftProposeRequest, DistributedRaftReadRequest,
     HttpRaftTransport, InstallSnapshotRequest, InstallSnapshotResponse, LocalRaftWal, MetaCommand,
     MetaRaftCluster, MetaState, ProductionRaftChaosPlan, ProductionRaftEngineKind,
@@ -67,7 +68,8 @@ pub use raft::{
     RaftMembership, RaftMembershipChangeKind, RaftMembershipChangePlan, RaftMembershipChangeReport,
     RaftNodeId, RaftNodeStatus, RaftProductionReadinessError, RaftReadOptions, RaftReadStrategy,
     RaftRole, RaftRpcRuntimeOptions, RaftTickOutcome, RaftTransport, RaftWalRecord,
-    RaftWalSegmentInfo, RaftWalSegmentReport, ReadIndexResponse, VoteRequest, VoteResponse,
+    RaftWalSegmentInfo, RaftWalSegmentReport, ReadIndexResponse,
+    UnavailableDataRaftConsensusBackend, VoteRequest, VoteResponse,
 };
 pub use readiness::{production_readiness_report, ProductionReadinessReport, ReadinessArea};
 pub use rebalance::{

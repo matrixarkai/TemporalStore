@@ -106,6 +106,161 @@ pub struct DataRaftCommandCodecEntry {
     pub commands: Vec<Command>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DataRaftPeer {
+    pub replica_id: RaftNodeId,
+    pub raft_addr: String,
+    pub snapshot_addr: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DataRaftConsensusOptions {
+    pub shard_id: ShardId,
+    pub replica_id: RaftNodeId,
+    pub group_id: u64,
+    pub raft_addr: String,
+    pub snapshot_addr: String,
+    pub wal_dir: Option<PathBuf>,
+    pub snapshot_dir: Option<PathBuf>,
+    pub wal_sync: bool,
+    pub peers: Vec<DataRaftPeer>,
+    pub initial_applied_index: u64,
+}
+
+impl Default for DataRaftConsensusOptions {
+    fn default() -> Self {
+        Self {
+            shard_id: 0,
+            replica_id: 0,
+            group_id: 0,
+            raft_addr: String::new(),
+            snapshot_addr: String::new(),
+            wal_dir: None,
+            snapshot_dir: None,
+            wal_sync: true,
+            peers: Vec::new(),
+            initial_applied_index: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DataRaftStatus {
+    pub running: bool,
+    pub leader: bool,
+    pub learner: bool,
+    pub term: u64,
+    pub leader_replica_id: RaftNodeId,
+    pub committed_index: u64,
+    pub applied_index: u64,
+    pub first_index: u64,
+    pub last_index: u64,
+    pub pending_config_change_index: u64,
+    pub voter_count: u64,
+    pub learner_count: u64,
+}
+
+pub trait DataRaftConsensusBackend {
+    fn start(&mut self) -> Result<(), RaftError>;
+    fn stop(&mut self);
+    fn is_leader(&self) -> bool;
+    fn status(&self) -> Result<DataRaftStatus, RaftError>;
+    fn propose(&mut self, serialized_entry: Vec<u8>) -> Result<u64, RaftError>;
+    fn wait_for_applied_index(&self, index: u64, timeout_ms: u64) -> Result<(), RaftError>;
+    fn trigger_snapshot(&mut self) -> Result<u64, RaftError>;
+    fn read_index(&self, timeout_ms: u64) -> Result<(), RaftError>;
+    fn add_peer(&mut self, peer: DataRaftPeer) -> Result<(), RaftError>;
+    fn add_learner(&mut self, peer: DataRaftPeer) -> Result<(), RaftError>;
+    fn promote_peer(&mut self, replica_id: RaftNodeId) -> Result<(), RaftError>;
+    fn remove_peer(&mut self, replica_id: RaftNodeId) -> Result<(), RaftError>;
+    fn transfer_leader(&mut self, replica_id: RaftNodeId) -> Result<(), RaftError>;
+    fn can_serve_bounded_stale_read(&self, max_stale_index_lag: u64) -> Result<(), RaftError>;
+}
+
+#[derive(Debug, Clone)]
+pub struct UnavailableDataRaftConsensusBackend {
+    options: DataRaftConsensusOptions,
+}
+
+impl UnavailableDataRaftConsensusBackend {
+    pub fn new(options: DataRaftConsensusOptions) -> Self {
+        Self { options }
+    }
+
+    fn unavailable(operation: &'static str) -> RaftError {
+        RaftError::Transport(format!("data raft backend unavailable: {operation}"))
+    }
+}
+
+impl DataRaftConsensusBackend for UnavailableDataRaftConsensusBackend {
+    fn start(&mut self) -> Result<(), RaftError> {
+        Err(Self::unavailable("start"))
+    }
+
+    fn stop(&mut self) {}
+
+    fn is_leader(&self) -> bool {
+        false
+    }
+
+    fn status(&self) -> Result<DataRaftStatus, RaftError> {
+        Ok(DataRaftStatus {
+            running: false,
+            leader: false,
+            learner: false,
+            term: 0,
+            leader_replica_id: 0,
+            committed_index: 0,
+            applied_index: self.options.initial_applied_index,
+            first_index: 0,
+            last_index: 0,
+            pending_config_change_index: 0,
+            voter_count: self.options.peers.len() as u64,
+            learner_count: 0,
+        })
+    }
+
+    fn propose(&mut self, _serialized_entry: Vec<u8>) -> Result<u64, RaftError> {
+        Err(Self::unavailable("propose"))
+    }
+
+    fn wait_for_applied_index(&self, _index: u64, _timeout_ms: u64) -> Result<(), RaftError> {
+        Err(Self::unavailable("wait_for_applied_index"))
+    }
+
+    fn trigger_snapshot(&mut self) -> Result<u64, RaftError> {
+        Err(Self::unavailable("trigger_snapshot"))
+    }
+
+    fn read_index(&self, _timeout_ms: u64) -> Result<(), RaftError> {
+        Err(Self::unavailable("read_index"))
+    }
+
+    fn add_peer(&mut self, _peer: DataRaftPeer) -> Result<(), RaftError> {
+        Err(Self::unavailable("add_peer"))
+    }
+
+    fn add_learner(&mut self, _peer: DataRaftPeer) -> Result<(), RaftError> {
+        Err(Self::unavailable("add_learner"))
+    }
+
+    fn promote_peer(&mut self, _replica_id: RaftNodeId) -> Result<(), RaftError> {
+        Err(Self::unavailable("promote_peer"))
+    }
+
+    fn remove_peer(&mut self, _replica_id: RaftNodeId) -> Result<(), RaftError> {
+        Err(Self::unavailable("remove_peer"))
+    }
+
+    fn transfer_leader(&mut self, _replica_id: RaftNodeId) -> Result<(), RaftError> {
+        Err(Self::unavailable("transfer_leader"))
+    }
+
+    fn can_serve_bounded_stale_read(&self, _max_stale_index_lag: u64) -> Result<(), RaftError> {
+        Err(Self::unavailable("can_serve_bounded_stale_read"))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataRaftCommittedLogApplier {
     shard_id: ShardId,
@@ -6001,6 +6156,32 @@ mod tests {
     }
 
     #[test]
+    fn cpp_data_raft_replication_rejects_corrupt_log_payload() {
+        assert!(matches!(
+            parse_data_raft_log(b"bad"),
+            Err(RaftError::InvalidDataRaftLog(_))
+        ));
+
+        let entry = DataRaftLogCodecEntry {
+            shard_id: 1,
+            raft_index: 1,
+            log_id: 1,
+            log_size: 0,
+            oplog_sequence: 1,
+            command: Command::StringSet {
+                key: "clicks".to_string(),
+                value: b"1".to_vec(),
+            },
+        };
+        let mut encoded = serialize_data_raft_log(&entry).unwrap();
+        encoded[0] = 0;
+        assert!(matches!(
+            parse_data_raft_log(&encoded),
+            Err(RaftError::InvalidDataRaftLog(_))
+        ));
+    }
+
+    #[test]
     fn data_raft_command_codec_round_trips_batch_request() {
         let entry = DataRaftCommandCodecEntry {
             shard_id: 7,
@@ -6025,6 +6206,114 @@ mod tests {
         );
         let decoded = parse_data_raft_command(&bytes).unwrap();
         assert_eq!(decoded, entry);
+    }
+
+    #[test]
+    fn cpp_data_raft_replication_rejects_invalid_command_payload() {
+        assert!(matches!(
+            parse_data_raft_command(b"bad"),
+            Err(RaftError::InvalidDataRaftCommand(_))
+        ));
+
+        let empty_batch = DataRaftCommandCodecEntry {
+            shard_id: 1,
+            raft_index: 1,
+            request_id: 1,
+            commands: Vec::new(),
+        };
+        assert!(matches!(
+            serialize_data_raft_command(&empty_batch),
+            Err(RaftError::InvalidDataRaftCommand(_))
+        ));
+
+        let missing_partition = DataRaftCommandCodecEntry {
+            shard_id: 0,
+            raft_index: 1,
+            request_id: 1,
+            commands: vec![Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            }],
+        };
+        assert!(matches!(
+            serialize_data_raft_command(&missing_partition),
+            Err(RaftError::InvalidDataRaftCommand(_))
+        ));
+
+        let valid = DataRaftCommandCodecEntry {
+            shard_id: 1,
+            raft_index: 1,
+            request_id: 1,
+            commands: vec![Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            }],
+        };
+        let mut encoded = serialize_data_raft_command(&valid).unwrap();
+        encoded[0] = 0;
+        assert!(matches!(
+            parse_data_raft_command(&encoded),
+            Err(RaftError::InvalidDataRaftCommand(_))
+        ));
+    }
+
+    #[test]
+    fn cpp_data_raft_unavailable_consensus_fails_closed_for_safety_operations() {
+        let options = DataRaftConsensusOptions {
+            shard_id: 11,
+            replica_id: 11,
+            group_id: 11,
+            ..DataRaftConsensusOptions::default()
+        };
+        let mut backend = UnavailableDataRaftConsensusBackend::new(options);
+        let peer = DataRaftPeer {
+            replica_id: 12,
+            raft_addr: "127.0.0.1:17012".to_string(),
+            snapshot_addr: "127.0.0.1:18012".to_string(),
+        };
+
+        assert!(matches!(backend.start(), Err(RaftError::Transport(_))));
+        assert!(!backend.is_leader());
+        assert!(matches!(
+            backend.propose(b"x".to_vec()),
+            Err(RaftError::Transport(_))
+        ));
+        assert!(matches!(
+            backend.wait_for_applied_index(1, 1),
+            Err(RaftError::Transport(_))
+        ));
+        assert!(matches!(
+            backend.trigger_snapshot(),
+            Err(RaftError::Transport(_))
+        ));
+        assert!(matches!(
+            backend.read_index(1),
+            Err(RaftError::Transport(_))
+        ));
+        assert!(matches!(
+            backend.add_peer(peer.clone()),
+            Err(RaftError::Transport(_))
+        ));
+        assert!(matches!(
+            backend.add_learner(peer.clone()),
+            Err(RaftError::Transport(_))
+        ));
+        assert!(matches!(
+            backend.promote_peer(peer.replica_id),
+            Err(RaftError::Transport(_))
+        ));
+        assert!(matches!(
+            backend.remove_peer(peer.replica_id),
+            Err(RaftError::Transport(_))
+        ));
+        assert!(matches!(
+            backend.transfer_leader(peer.replica_id),
+            Err(RaftError::Transport(_))
+        ));
+        assert!(matches!(
+            backend.can_serve_bounded_stale_read(0),
+            Err(RaftError::Transport(_))
+        ));
     }
 
     #[test]
