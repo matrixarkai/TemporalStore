@@ -82,6 +82,39 @@ The JSON output includes:
 - `shared_store.async_replica_read_latency`: latency for reads after async flush/replay windows
 - `shared_store.sync_max_lag` and `shared_store.async_max_lag`: max oplog lag observed while replaying
 
+## Client Scale Harness
+
+`client_scale_harness` focuses on the Rust client library and the proxy/client serving path. It
+starts local HTTP data-node servers plus a tiny metaserver route service, creates multiple
+`TemporalStoreClient` instances, opens a sharded table, and drives concurrent write/read/batch
+traffic through `TemporalStoreTable`.
+
+Example:
+
+```bash
+CARGO_TARGET_DIR=/tmp/temporalstore-rust-target \
+cargo run -p temporalstore-rust --bin client_scale_harness -- \
+  --clients 8 \
+  --threads-per-client 4 \
+  --ops-per-thread 1000 \
+  --shards 16 \
+  --servers 4 \
+  --read-every 2 \
+  --batch-every 50
+```
+
+The JSON output includes:
+
+- `ops_per_sec`: successful client operations per second across writes, sampled reads, and batches
+- `write_latency`, `read_latency`, `batch_latency`: p50/p95/p99/max latency summaries
+- `aggregate_client_stats.route_cache_hits/misses/refreshes`: client route-cache behavior
+- `aggregate_client_stats.backend_errors`: data-node call failures observed by clients
+- `route_cache_size_total`: summed route-cache entries across all client instances
+
+Use this harness after changing `client.rs`, `proxy.rs`, route-cache behavior, or table key-to-shard
+routing. It is intentionally process-local for fast iteration; AWS validation can run the same
+binary inside a larger EC2/EKS job once real multi-process data-node deployment is available.
+
 AWS/EKS usage:
 
 The existing Terraform in `infra/aws-existing-eks` still deploys one stateful server, so it can scale

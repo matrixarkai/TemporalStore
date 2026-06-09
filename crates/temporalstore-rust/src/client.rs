@@ -818,6 +818,14 @@ impl TemporalStoreTable {
         }
     }
 
+    pub fn client_stats(&self) -> ClientStats {
+        self.client.stats()
+    }
+
+    pub fn client_route_cache_size(&self) -> usize {
+        self.client.route_cache_size()
+    }
+
     pub fn set(
         &self,
         key: impl Into<String>,
