@@ -39,6 +39,12 @@ pub struct PageStoreGcReport {
     pub retained_current_page_segment_ids: Vec<u64>,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PageStoreRollReport {
+    pub previous_page_segment_id: u64,
+    pub new_page_segment_id: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct LocalPageStore {
     inner: Arc<Mutex<PageStoreInner>>,
@@ -87,6 +93,25 @@ impl LocalPageStore {
         inner.stats.writes += 1;
         inner.stats.bytes_written += address.length;
         Ok(address)
+    }
+
+    pub fn roll_segment(&self) -> Result<PageStoreRollReport, PageStoreError> {
+        let mut inner = self.inner.lock().expect("page store lock poisoned");
+        fs::create_dir_all(&inner.root)?;
+        let previous_page_segment_id = inner.page_segment_id;
+        let next_from_current = inner.page_segment_id.saturating_add(1);
+        let next_from_disk = segment_ids_at(&inner.root)?
+            .into_iter()
+            .max()
+            .map(|id| id.saturating_add(1))
+            .unwrap_or_default();
+        inner.page_segment_id = next_from_current.max(next_from_disk);
+        inner.write_offset = 0;
+        File::create(segment_path(&inner.root, inner.page_segment_id))?;
+        Ok(PageStoreRollReport {
+            previous_page_segment_id,
+            new_page_segment_id: inner.page_segment_id,
+        })
     }
 
     pub fn read(&self, address: &PageAddress) -> Result<Vec<u8>, PageStoreError> {
@@ -285,6 +310,23 @@ mod tests {
         assert_eq!(report.retained_current_page_segment_ids, vec![0]);
         assert!(report.retained_live_page_segment_ids.is_empty());
         assert_eq!(store.segment_ids().unwrap(), vec![0, 2]);
+    }
+
+    #[test]
+    fn roll_segment_moves_future_appends_to_fresh_segment() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalPageStore::new(dir.path());
+        let first = store.append(b"first").unwrap();
+        assert_eq!(first.page_segment_id, 0);
+
+        let roll = store.roll_segment().unwrap();
+        assert_eq!(roll.previous_page_segment_id, 0);
+        assert_eq!(roll.new_page_segment_id, 1);
+        let second = store.append(b"second").unwrap();
+        assert_eq!(second.page_segment_id, 1);
+        assert_eq!(second.offset, 0);
+        assert_eq!(store.read(&first).unwrap(), b"first");
+        assert_eq!(store.read(&second).unwrap(), b"second");
     }
 
     #[test]

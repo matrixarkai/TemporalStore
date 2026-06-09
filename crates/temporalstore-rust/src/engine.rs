@@ -83,6 +83,15 @@ struct ExecuteOutcome {
     mutated: bool,
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShardCompactionReport {
+    pub shard_id: ShardId,
+    pub previous_page_segment_id: u64,
+    pub compacted_page_segment_id: u64,
+    pub rewritten_page_refs: usize,
+    pub stale_page_segment_ids: Vec<u64>,
+}
+
 impl TemporalEngine {
     pub fn new(cache: MultiLayerCache) -> Self {
         Self::with_cache_and_page_store(cache, LocalPageStore::default())
@@ -897,6 +906,116 @@ impl TemporalEngine {
             .collect::<Vec<_>>();
         ids.sort_unstable();
         ids
+    }
+
+    pub fn compact_shard_pages(&self, shard_id: ShardId) -> Result<ShardCompactionReport, Status> {
+        let mut shards = self.shards.write().expect("engine lock poisoned");
+        let Some(shard) = shards.get_mut(&shard_id) else {
+            return Err(Status::error("shard_not_loaded", "shard is not loaded"));
+        };
+        let before_segments = collect_live_page_segment_ids(shard);
+        let roll = self
+            .page_store
+            .roll_segment()
+            .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
+        let mut rewritten_page_refs = 0;
+
+        compact_page_addresses(
+            &self.page_store,
+            &self.cache,
+            shard_id,
+            shard.strings.values_mut(),
+            &mut rewritten_page_refs,
+        )?;
+        for fields in shard.hashes.values_mut() {
+            compact_page_addresses(
+                &self.page_store,
+                &self.cache,
+                shard_id,
+                fields.values_mut(),
+                &mut rewritten_page_refs,
+            )?;
+        }
+        for members in shard.sets.values_mut() {
+            compact_page_addresses(
+                &self.page_store,
+                &self.cache,
+                shard_id,
+                members.values_mut(),
+                &mut rewritten_page_refs,
+            )?;
+        }
+        for series in shard.features.values_mut() {
+            compact_page_addresses(
+                &self.page_store,
+                &self.cache,
+                shard_id,
+                series.values_mut(),
+                &mut rewritten_page_refs,
+            )?;
+        }
+        for series in shard.sequences.values_mut() {
+            compact_page_addresses(
+                &self.page_store,
+                &self.cache,
+                shard_id,
+                series.values_mut(),
+                &mut rewritten_page_refs,
+            )?;
+        }
+        for series in shard.ips.values_mut() {
+            compact_page_addresses(
+                &self.page_store,
+                &self.cache,
+                shard_id,
+                series.values_mut(),
+                &mut rewritten_page_refs,
+            )?;
+        }
+        for (key, series) in &mut shard.ips_meta {
+            for (timestamp, meta) in series {
+                let bytes = read_page_bytes(&self.cache, &self.page_store, shard_id, &meta.address)
+                    .ok_or_else(|| {
+                        Status::error(
+                            "page_compaction_failed",
+                            format!("missing IPS page for {key}@{timestamp}"),
+                        )
+                    })?;
+                let new_address = self
+                    .page_store
+                    .append(&bytes)
+                    .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
+                meta.address = new_address.clone();
+                let _ = self.cache.put(
+                    CacheKey::page(
+                        shard_id,
+                        new_address.page_segment_id,
+                        new_address.offset,
+                        new_address.length,
+                    ),
+                    bytes,
+                );
+                rewritten_page_refs += 1;
+            }
+        }
+
+        let after_segments = collect_live_page_segment_ids(shard);
+        let stale_page_segment_ids = before_segments
+            .difference(&after_segments)
+            .copied()
+            .collect::<Vec<_>>();
+        let index_bytes = serde_json::to_vec_pretty(shard)
+            .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
+        self.persist_index_bytes(shard_id, &index_bytes)
+            .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
+        let _ = self.index_log_store.append_json(shard_id, &index_bytes);
+        Ok(ShardCompactionReport {
+            shard_id,
+            previous_page_segment_id: roll.previous_page_segment_id,
+            compacted_page_segment_id: roll.new_page_segment_id,
+            rewritten_page_refs,
+            stale_page_segment_ids,
+        })
     }
 
     fn index_path(&self, shard_id: ShardId) -> PathBuf {
@@ -2287,6 +2406,38 @@ fn collect_live_page_segment_ids(shard: &ShardState) -> BTreeSet<u64> {
     ids
 }
 
+fn compact_page_addresses<'a>(
+    page_store: &LocalPageStore,
+    cache: &MultiLayerCache,
+    shard_id: ShardId,
+    addresses: impl IntoIterator<Item = &'a mut PageAddress>,
+    rewritten_page_refs: &mut usize,
+) -> Result<(), Status> {
+    for address in addresses {
+        let bytes = read_page_bytes(cache, page_store, shard_id, address).ok_or_else(|| {
+            Status::error(
+                "page_compaction_failed",
+                "missing page bytes during compaction",
+            )
+        })?;
+        let new_address = page_store
+            .append(&bytes)
+            .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
+        *address = new_address.clone();
+        let _ = cache.put(
+            CacheKey::page(
+                shard_id,
+                new_address.page_segment_id,
+                new_address.offset,
+                new_address.length,
+            ),
+            bytes,
+        );
+        *rewritten_page_refs += 1;
+    }
+    Ok(())
+}
+
 fn record_exists(shard: &ShardState, key: &str) -> bool {
     shard.strings.contains_key(key)
         || shard.hashes.contains_key(key)
@@ -2870,6 +3021,93 @@ mod tests {
             .into_iter()
             .collect::<Vec<_>>();
         assert_eq!(ids, vec![7, 8, 9, 10, 11, 12, 13]);
+    }
+
+    #[test]
+    fn page_compaction_rewrites_live_addresses_and_allows_old_segment_gc() {
+        let page_dir = unique_temp_path("compact-pages");
+        let index_dir = unique_temp_path("compact-index");
+        let page_store = LocalPageStore::new(&page_dir);
+        let engine = TemporalEngine::with_cache_page_store_and_index_dir(
+            MultiLayerCache::default(),
+            page_store.clone(),
+            &index_dir,
+        );
+        engine.load_shard(1);
+
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: "k".to_string(),
+                        value: b"v2".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::HashSet {
+                        key: "h".to_string(),
+                        field: "f".to_string(),
+                        value: b"hv".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+        assert_eq!(engine.live_page_segment_ids(1), vec![0]);
+
+        let report = engine.compact_shard_pages(1).unwrap();
+        assert_eq!(report.previous_page_segment_id, 0);
+        assert_eq!(report.compacted_page_segment_id, 1);
+        assert_eq!(report.rewritten_page_refs, 2);
+        assert_eq!(report.stale_page_segment_ids, vec![0]);
+        assert_eq!(engine.live_page_segment_ids(1), vec![1]);
+
+        let gc = page_store
+            .gc_segments_before_with_live_refs(1, engine.live_page_segment_ids(1))
+            .unwrap();
+        assert_eq!(gc.removed_page_segment_ids, vec![0]);
+        assert_eq!(page_store.segment_ids().unwrap(), vec![1]);
+
+        let restarted = TemporalEngine::with_cache_page_store_and_index_dir(
+            MultiLayerCache::default(),
+            page_store,
+            &index_dir,
+        );
+        restarted.load_shard(1);
+        assert_eq!(
+            restarted
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "k".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"v2".to_vec())
+            }
+        );
+        assert_eq!(
+            restarted
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::HashGet {
+                        key: "h".to_string(),
+                        field: "f".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"hv".to_vec())
+            }
+        );
     }
 
     #[test]

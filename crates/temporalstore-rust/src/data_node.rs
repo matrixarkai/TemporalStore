@@ -116,6 +116,12 @@ pub struct CompactionResponse {
     pub status: Status,
     pub shard_id: ShardId,
     pub compacted_objects: usize,
+    #[serde(default)]
+    pub previous_page_segment_id: u64,
+    #[serde(default)]
+    pub compacted_page_segment_id: u64,
+    #[serde(default)]
+    pub stale_page_segment_ids: Vec<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -893,16 +899,35 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
             if cancellation.is_requested() {
                 return task_canceled_output(task, "data node compaction canceled before scan");
             }
-            let compacted_objects = dirty_count(&inner.dirty, request.shard_id);
+            let compaction = inner.engine.compact_shard_pages(request.shard_id);
+            let (
+                status,
+                compacted_objects,
+                previous_page_segment_id,
+                compacted_page_segment_id,
+                stale_page_segment_ids,
+            ) = match compaction {
+                Ok(report) => (
+                    Status::ok(),
+                    report.rewritten_page_refs,
+                    report.previous_page_segment_id,
+                    report.compacted_page_segment_id,
+                    report.stale_page_segment_ids,
+                ),
+                Err(status) => (status, 0, 0, 0, Vec::new()),
+            };
             inner
                 .stats
                 .lock()
                 .expect("runtime stats lock poisoned")
                 .compaction_runs += 1;
             DataNodeTaskOutput::Compact(CompactionResponse {
-                status: Status::ok(),
+                status,
                 shard_id: request.shard_id,
                 compacted_objects,
+                previous_page_segment_id,
+                compacted_page_segment_id,
+                stale_page_segment_ids,
             })
         }
         TaskRequest::Gc(request) => {
@@ -1094,6 +1119,9 @@ fn task_timeout_output(kind: DataNodeTaskKind) -> DataNodeTaskOutput {
             status,
             shard_id: 0,
             compacted_objects: 0,
+            previous_page_segment_id: 0,
+            compacted_page_segment_id: 0,
+            stale_page_segment_ids: Vec::new(),
         }),
         DataNodeTaskKind::Gc => DataNodeTaskOutput::Gc(GcResponse {
             status,
@@ -1136,6 +1164,9 @@ fn task_canceled_output(task: &QueuedTask, message: &str) -> DataNodeTaskOutput 
             status,
             shard_id,
             compacted_objects: 0,
+            previous_page_segment_id: 0,
+            compacted_page_segment_id: 0,
+            stale_page_segment_ids: Vec::new(),
         }),
         DataNodeTaskKind::Gc => DataNodeTaskOutput::Gc(GcResponse {
             status,
@@ -1209,16 +1240,6 @@ fn clear_dirty_shard(dirty: &Mutex<DirtyTracker>, shard_id: ShardId) -> usize {
         .by_key
         .retain(|(dirty_shard_id, _), _| *dirty_shard_id != shard_id);
     before - dirty.by_key.len()
-}
-
-fn dirty_count(dirty: &Mutex<DirtyTracker>, shard_id: ShardId) -> usize {
-    dirty
-        .lock()
-        .expect("dirty tracker lock poisoned")
-        .by_key
-        .keys()
-        .filter(|(dirty_shard_id, _)| *dirty_shard_id == shard_id)
-        .count()
 }
 
 fn dirty_shards(dirty: &Mutex<DirtyTracker>) -> Vec<ShardId> {
@@ -1503,6 +1524,59 @@ mod tests {
         assert_eq!(
             runtime.cancel_job(submitted.job_id).status.code,
             "job_already_finished"
+        );
+    }
+
+    #[test]
+    fn runtime_compaction_rewrites_live_pages_and_reports_stale_segments() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        for (key, value) in [("a", b"one".to_vec()), ("b", b"two".to_vec())] {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: key.to_string(),
+                    value,
+                },
+            });
+            assert!(response.status.ok);
+        }
+        assert_eq!(engine.live_page_segment_ids(1), vec![0]);
+
+        let runtime = DataNodeRuntime::new(
+            engine.clone(),
+            DataNodeRuntimeOptions {
+                worker_threads: 1,
+                max_queue_depth: 8,
+                max_background_queue_depth: 8,
+            },
+        );
+        let submitted = runtime.submit_compaction(
+            CompactionRequest { shard_id: 1 },
+            RequestController { timeout_ms: 1000 },
+        );
+        let finished = wait_for_job(&runtime, submitted.job_id);
+        let Some(DataNodeTaskOutput::Compact(output)) = finished.output else {
+            panic!("expected compaction output");
+        };
+        assert!(output.status.ok);
+        assert_eq!(output.compacted_objects, 2);
+        assert_eq!(output.previous_page_segment_id, 0);
+        assert_eq!(output.compacted_page_segment_id, 1);
+        assert_eq!(output.stale_page_segment_ids, vec![0]);
+        assert_eq!(engine.live_page_segment_ids(1), vec![1]);
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "a".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"one".to_vec())
+            }
         );
     }
 

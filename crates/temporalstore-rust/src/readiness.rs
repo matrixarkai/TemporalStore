@@ -204,12 +204,15 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
             ready: false,
             covered: vec![
                 "local page segment files with page-address indexes".to_string(),
+                "local page compaction rolls to a fresh segment, rewrites live page references, persists the compacted index, and makes old segments GC-eligible"
+                    .to_string(),
                 "memory plus disk read-through cache with zstd block envelope".to_string(),
                 "shared-store checkpoint/oplog replay model and GC tests".to_string(),
             ],
             missing: vec![
                 "binary/protobuf oplog and index-log compatibility".to_string(),
-                "atomic dump/load/install pipeline and page compaction parity".to_string(),
+                "atomic dump/load/install pipeline plus C++ zone/page-header compaction parity"
+                    .to_string(),
                 "production SSD cache admission, eviction, warmup, pinning, and observability"
                     .to_string(),
                 "ByteStore/S3 live backend integration tied to follower cursors/Raft snapshots"

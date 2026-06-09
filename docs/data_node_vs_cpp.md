@@ -148,10 +148,11 @@ The runtime supports:
 - `/compact`
 - `/gc`
 
-Dump clears dirty objects for the shard. GC now clears the shard's memory/disk cache and accepts
-explicit retention boundaries for the local oplog, index log, and page segments; it rewrites JSONL
-log tails and deletes old non-current page segment files below the requested generation. Compaction
-is still a control-plane hook and does not yet rewrite live page data into compacted zones.
+Dump clears dirty objects for the shard. Compaction now rolls the local page store to a fresh page
+segment, rewrites live page-address-backed objects, persists the compacted index, and reports stale
+page segments. GC now clears the shard's memory/disk cache and accepts explicit retention
+boundaries for the local oplog, index log, and page segments; it rewrites JSONL log tails and
+deletes old non-current page segment files below the requested generation.
 
 Stats now expose a C++-style partition/object-manager summary:
 
@@ -231,11 +232,11 @@ Still missing major data-node internals:
 - full C++ `ObjectManager` memory layout with stable object ids and page ids
 - slot context manager with dump/rewrite ownership, not only routing-slot accounting
 - full C++ dirty-slot dump ownership and pacing policy
-- merged page dump to zones
+- full C++ merged page dump to zones and page-header-compatible rewrite policy
 - topology-change-triggered replay rescheduling and primary-change retry policy
 - production readonly-replica role assignment from metaserver scheduler and topology-change
   rescheduling around the metaserver route
-- page compaction
+- production page compaction scheduling and C++ page header parity
 - C++-style page rewrite garbage collection with page headers and zone ownership
 - expirer/evicter background tasks
 - primary-pull `RemotePartitionStream` binary/protobuf parity beyond the current HTTP stream source
