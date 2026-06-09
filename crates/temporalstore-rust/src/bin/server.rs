@@ -1,3 +1,7 @@
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use serde::{Deserialize, Serialize};
 use temporalstore_rust::engine::TemporalEngine;
 use temporalstore_rust::http::{
     get_json_with_options, json_response, parse_json, post_json, serve, HttpRequestOptions,
@@ -65,6 +69,10 @@ fn main() {
     let replica_replay_interval_ms = env_u64("TS_REPLICA_REPLAY_INTERVAL_MS", 0);
     let replica_replay_max_stream_bytes =
         env_u64("TS_REPLICA_REPLAY_MAX_STREAM_BYTES", 16 * 1024 * 1024);
+    let replica_replay_max_backoff_ms = env_u64(
+        "TS_REPLICA_REPLAY_MAX_BACKOFF_MS",
+        replica_replay_interval_ms.saturating_mul(16).max(30_000),
+    );
 
     let server_registration = RegisterServerRequest {
         server_addr: advertised_addr.clone(),
@@ -113,7 +121,7 @@ fn main() {
         binary_version.clone(),
         heartbeat_interval_ms,
     );
-    start_replica_replay_loop(
+    let replica_replay_loop = start_replica_replay_loop(
         engine.clone(),
         replica_replay_cursor_dir.clone(),
         meta_addr.clone(),
@@ -122,6 +130,7 @@ fn main() {
         replica_replay_primary_addr,
         replica_replay_interval_ms,
         replica_replay_max_stream_bytes,
+        replica_replay_max_backoff_ms,
     );
 
     println!("temporalstore server listening on {addr}");
@@ -131,11 +140,15 @@ fn main() {
             ("GET", "/metrics") => {
                 let mut metrics = engine.prometheus_metrics();
                 append_runtime_metrics(&mut metrics, &runtime);
+                append_replica_replay_metrics(&mut metrics, &replica_replay_loop.status());
                 (200, metrics.into_bytes())
             }
             ("GET", "/server/info") => json_response(200, &engine.loaded_shard_stats()),
             ("GET", "/server/runtime_stats") => json_response(200, &runtime.stats()),
             ("GET", "/server/dirty_objects") => json_response(200, &runtime.dirty_objects()),
+            ("GET", "/server/replica_replay_status") => {
+                json_response(200, &replica_replay_loop.status())
+            }
             ("POST", "/heartbeat") => json_response(
                 200,
                 &send_heartbeat(&engine, &meta_addr, &advertised_addr, &binary_version),
@@ -270,6 +283,41 @@ fn main() {
     .expect("server failed");
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct ReplicaReplayLoopStatus {
+    enabled: bool,
+    shard_id: u64,
+    configured_primary_addr: String,
+    last_primary_addr: Option<String>,
+    attempts_total: u64,
+    success_total: u64,
+    failure_total: u64,
+    skipped_total: u64,
+    consecutive_failures: u64,
+    next_delay_ms: u64,
+    last_attempt_at_ms: u64,
+    last_success_at_ms: u64,
+    last_error: Option<String>,
+    last_report: Option<temporalstore_rust::ReplicaReplayReport>,
+}
+
+#[derive(Debug, Clone)]
+struct ReplicaReplayLoopHandle {
+    status: Arc<Mutex<ReplicaReplayLoopStatus>>,
+}
+
+impl ReplicaReplayLoopHandle {
+    fn new(status: ReplicaReplayLoopStatus) -> Self {
+        Self {
+            status: Arc::new(Mutex::new(status)),
+        }
+    }
+
+    fn status(&self) -> ReplicaReplayLoopStatus {
+        self.status.lock().unwrap().clone()
+    }
+}
+
 fn env_usize(name: &str, default: usize) -> usize {
     std::env::var(name)
         .ok()
@@ -335,15 +383,42 @@ fn start_replica_replay_loop(
     primary_addr: String,
     interval_ms: u64,
     max_stream_bytes: u64,
-) {
+    max_backoff_ms: u64,
+) -> ReplicaReplayLoopHandle {
+    let handle = ReplicaReplayLoopHandle::new(ReplicaReplayLoopStatus {
+        enabled: interval_ms > 0,
+        shard_id,
+        configured_primary_addr: primary_addr.clone(),
+        last_primary_addr: None,
+        attempts_total: 0,
+        success_total: 0,
+        failure_total: 0,
+        skipped_total: 0,
+        consecutive_failures: 0,
+        next_delay_ms: interval_ms,
+        last_attempt_at_ms: 0,
+        last_success_at_ms: 0,
+        last_error: None,
+        last_report: None,
+    });
     if interval_ms == 0 {
-        return;
+        return handle;
     }
+    let status = Arc::clone(&handle.status);
+    let max_backoff_ms = max_backoff_ms.max(interval_ms);
     std::thread::spawn(move || loop {
+        let mut delay_ms = interval_ms;
         if let Some(primary_addr) =
             resolve_replica_replay_primary_addr(&meta_addr, &local_addr, shard_id, &primary_addr)
         {
-            let _ = run_replica_replay(
+            {
+                let mut status = status.lock().unwrap();
+                status.last_primary_addr = Some(primary_addr.clone());
+                status.attempts_total += 1;
+                status.last_attempt_at_ms = now_ms();
+                status.next_delay_ms = interval_ms;
+            }
+            let response = run_replica_replay(
                 &engine,
                 &cursor_dir,
                 ReplicaReplayRequest {
@@ -353,9 +428,34 @@ fn start_replica_replay_loop(
                     max_stream_bytes: Some(max_stream_bytes),
                 },
             );
+            let mut status = status.lock().unwrap();
+            if response.status.ok {
+                status.success_total += 1;
+                status.consecutive_failures = 0;
+                status.last_success_at_ms = now_ms();
+                status.last_error = None;
+                status.last_report = response.report;
+                status.next_delay_ms = interval_ms;
+            } else {
+                status.failure_total += 1;
+                status.consecutive_failures += 1;
+                status.last_error = Some(response.status.message);
+                let shifts = status.consecutive_failures.saturating_sub(1).min(10) as u32;
+                delay_ms = interval_ms
+                    .saturating_mul(1u64 << shifts)
+                    .min(max_backoff_ms);
+                status.next_delay_ms = delay_ms;
+            }
+        } else {
+            let mut status = status.lock().unwrap();
+            status.skipped_total += 1;
+            status.last_primary_addr = None;
+            status.last_error = Some("primary route unavailable or local".to_string());
+            status.next_delay_ms = interval_ms;
         }
-        std::thread::sleep(std::time::Duration::from_millis(interval_ms));
+        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
     });
+    handle
 }
 
 fn resolve_replica_replay_primary_addr(
@@ -441,6 +541,47 @@ fn append_runtime_metrics(out: &mut String, runtime: &DataNodeRuntime) {
     out.push('\n');
 }
 
+fn append_replica_replay_metrics(out: &mut String, status: &ReplicaReplayLoopStatus) {
+    out.push_str("# HELP temporalstore_replica_replay_loop_enabled Whether background replica replay is enabled.\n");
+    out.push_str("# TYPE temporalstore_replica_replay_loop_enabled gauge\n");
+    out.push_str("temporalstore_replica_replay_loop_enabled ");
+    out.push_str(if status.enabled { "1" } else { "0" });
+    out.push('\n');
+
+    out.push_str("# HELP temporalstore_replica_replay_loop_events_total Background replica replay loop events.\n");
+    out.push_str("# TYPE temporalstore_replica_replay_loop_events_total counter\n");
+    for (kind, value) in [
+        ("attempt", status.attempts_total),
+        ("success", status.success_total),
+        ("failure", status.failure_total),
+        ("skipped", status.skipped_total),
+    ] {
+        out.push_str("temporalstore_replica_replay_loop_events_total{shard_id=\"");
+        out.push_str(&status.shard_id.to_string());
+        out.push_str("\",kind=\"");
+        out.push_str(kind);
+        out.push_str("\"} ");
+        out.push_str(&value.to_string());
+        out.push('\n');
+    }
+
+    out.push_str("# HELP temporalstore_replica_replay_loop_consecutive_failures Current consecutive replay failures.\n");
+    out.push_str("# TYPE temporalstore_replica_replay_loop_consecutive_failures gauge\n");
+    out.push_str("temporalstore_replica_replay_loop_consecutive_failures{shard_id=\"");
+    out.push_str(&status.shard_id.to_string());
+    out.push_str("\"} ");
+    out.push_str(&status.consecutive_failures.to_string());
+    out.push('\n');
+
+    out.push_str("# HELP temporalstore_replica_replay_loop_next_delay_ms Next background replay delay in milliseconds.\n");
+    out.push_str("# TYPE temporalstore_replica_replay_loop_next_delay_ms gauge\n");
+    out.push_str("temporalstore_replica_replay_loop_next_delay_ms{shard_id=\"");
+    out.push_str(&status.shard_id.to_string());
+    out.push_str("\"} ");
+    out.push_str(&status.next_delay_ms.to_string());
+    out.push('\n');
+}
+
 fn start_heartbeat_loop(
     engine: TemporalEngine,
     meta_addr: String,
@@ -455,6 +596,13 @@ fn start_heartbeat_loop(
         let _ = send_heartbeat(&engine, &meta_addr, &server_addr, &binary_version);
         std::thread::sleep(std::time::Duration::from_millis(interval_ms));
     });
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default()
 }
 
 fn send_heartbeat(
@@ -633,6 +781,7 @@ mod tests {
             primary_addr,
             10,
             16 * 1024 * 1024,
+            80,
         );
 
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -696,6 +845,7 @@ mod tests {
             String::new(),
             10,
             16 * 1024 * 1024,
+            80,
         );
 
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -719,6 +869,49 @@ mod tests {
                 read
             );
             thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn server_background_replica_replay_loop_reports_failures_with_backoff() {
+        let follower_dir = tempdir().unwrap();
+        let cursor_dir = tempdir().unwrap();
+        let follower = TemporalEngine::with_local_dirs(
+            1024,
+            follower_dir.path().join("cache"),
+            follower_dir.path().join("pages"),
+            follower_dir.path().join("index"),
+        );
+
+        let missing_primary = free_local_addr();
+        let replay_loop = start_replica_replay_loop(
+            follower,
+            cursor_dir.path().display().to_string(),
+            String::new(),
+            "127.0.0.1:0".to_string(),
+            29,
+            missing_primary,
+            10,
+            16 * 1024,
+            40,
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let status = replay_loop.status();
+            if status.failure_total >= 2 {
+                assert_eq!(status.attempts_total, status.failure_total);
+                assert!(status.consecutive_failures >= 2, "{status:?}");
+                assert!(status.next_delay_ms >= 20, "{status:?}");
+                assert!(status.last_error.is_some(), "{status:?}");
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "replica replay loop did not record failures; status: {:?}",
+                status
+            );
+            thread::sleep(Duration::from_millis(10));
         }
     }
 

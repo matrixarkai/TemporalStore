@@ -67,6 +67,7 @@ Rust now covers these data-node surfaces:
 - opt-in background replica replay loop in the server process, configured by
   `TS_REPLICA_REPLAY_PRIMARY_ADDR` and `TS_REPLICA_REPLAY_INTERVAL_MS`
 - metaserver-discovered background replica replay when no fixed primary address is configured
+- background replica replay status, failure counters, skip counters, and bounded retry backoff
 
 The new oplog stream is implemented in:
 
@@ -186,6 +187,17 @@ If `TS_REPLICA_REPLAY_PRIMARY_ADDR` is set, the loop uses that fixed stream sour
 the loop resolves the current primary through `TS_META_ADDR` using `GET /shards/<shard_id>` and
 skips replay when the route points back to the local advertised server.
 
+This pass adds an observable loop status endpoint:
+
+```text
+GET /server/replica_replay_status
+```
+
+The status records attempts, successes, failures, skips, consecutive failures, last primary route,
+last error, last replay report, and next retry delay. The metrics endpoint also exports
+`temporalstore_replica_replay_loop_*` counters and gauges. Failed replay attempts use bounded
+backoff up to `TS_REPLICA_REPLAY_MAX_BACKOFF_MS`.
+
 ## What Is Still Missing Vs C++
 
 Still missing major data-node internals:
@@ -200,13 +212,13 @@ Still missing major data-node internals:
 - background periodic dump scheduler
 - merged page dump to zones
 - topology-change-triggered replay rescheduling and primary-change retry policy
-- production readonly-replica role scheduling, replay backoff/error reporting, and topology-change
-  rescheduling around the metaserver route
+- production readonly-replica role scheduling and topology-change rescheduling around the
+  metaserver route
 - page compaction
 - C++-style page rewrite garbage collection with page headers and zone ownership
 - expirer/evicter background tasks
 - primary-pull `RemotePartitionStream` binary/protobuf parity beyond the current HTTP stream source
-- retry/backoff policy when the metaserver primary route changes
+- refresh policy when the metaserver primary route changes while replay is in progress
 - membership finish callbacks to metaserver
 - full heartbeat/load reporting payload parity beyond local `partition_info` stats
 - storage quotas and admission control beyond local shard `maxmemory_bytes`

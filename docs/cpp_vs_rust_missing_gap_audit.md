@@ -38,6 +38,8 @@ The Rust code now covers the local correctness skeleton for TemporalStore-style 
 - metaserver-discovered background replica replay: when no fixed primary is configured, the server
   polls `GET /shards/<shard_id>`, uses the returned route as the replay stream source, and skips
   replay if the route points back to the local advertised server
+- background replica replay operational status: `/server/replica_replay_status`, Prometheus loop
+  counters/gauges, consecutive-failure tracking, last error/report, and bounded failure backoff
 
 It is still not production C++ TemporalStore parity. The largest missing areas are tonic/gRPC service definitions, production storage lifecycle, and operational controls.
 
@@ -194,6 +196,8 @@ This C++ parity pass closed the next data-node replay gap:
   server-side replay without manual requests.
 - If `TS_REPLICA_REPLAY_PRIMARY_ADDR` is empty, the loop discovers the current primary from the
   metaserver shard route and uses that server as the remote stream source.
+- The background loop now reports replay attempts/successes/failures/skips and backs off failed
+  attempts up to `TS_REPLICA_REPLAY_MAX_BACKOFF_MS` instead of hammering an unavailable primary.
 
 This pass also widened data-node heartbeat/load-report parity:
 
