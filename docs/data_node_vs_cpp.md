@@ -46,6 +46,7 @@ Rust now covers these data-node surfaces:
 - config set/get
 - info/stats
 - membership update
+- membership-update finish callback to metaserver after local membership install
 - page stream read/scan
 - index stream read/scan
 - oplog stream read/scan
@@ -107,6 +108,10 @@ This pass also adds C++-style server-side load-version validation:
 ```
 
 These routes reject requests whose `load_version` does not match the currently loaded shard version. The original `/execute` and `/batch_execute` routes remain for compatibility with the current proxy/client path.
+
+The `/update_membership` route now mirrors the C++ control-plane callback shape: after a successful
+local membership install, the server posts a best-effort `LoadFinishRequest` to
+`/partitions/finish_load` with server address, shard id, loaded version, and the local result status.
 
 The Rust `server` binary now registers itself with the metaserver and periodically sends:
 
@@ -227,7 +232,7 @@ Still missing major data-node internals:
 - expirer/evicter background tasks
 - primary-pull `RemotePartitionStream` binary/protobuf parity beyond the current HTTP stream source
 - refresh policy when the metaserver primary route changes while replay is in progress
-- membership finish callbacks to metaserver
+- membership finish callback retry/persistence beyond the current best-effort HTTP callback
 - full heartbeat/load reporting payload parity beyond local `partition_info` stats
 - storage quotas and admission control beyond local shard `maxmemory_bytes`
 - real readonly replicator loop

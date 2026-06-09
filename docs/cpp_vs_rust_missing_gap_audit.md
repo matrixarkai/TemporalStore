@@ -42,6 +42,8 @@ The Rust code now covers the local correctness skeleton for TemporalStore-style 
   counters/gauges, consecutive-failure tracking, last error/report, and bounded failure backoff
 - server startup shard load parity for readonly secondary mode, table name, shard URI, load version,
   routing-slot range, and local node id
+- server membership-update finish callback to metaserver through `/partitions/finish_load` after a
+  successful local membership install
 
 It is still not production C++ TemporalStore parity. The largest missing areas are tonic/gRPC service definitions, production storage lifecycle, and operational controls.
 
@@ -204,6 +206,9 @@ This C++ parity pass closed the next data-node replay gap:
   `TS_SHARD_LOAD_VERSION`, `TS_SHARD_START_ROUTING_SLOT`, `TS_SHARD_END_ROUTING_SLOT`,
   `TS_SERVER_NODE_ID`, and `TS_SHARD_READONLY` / `TS_SERVER_READONLY`, so a process can boot as a
   readonly replaying secondary instead of always loading a writable shard.
+- The server `/update_membership` path now reports successful local membership installation back to
+  metaserver with server address, shard id, load version, and status, matching the C++ callback
+  control-plane shape at the HTTP/JSON layer.
 
 This pass also widened data-node heartbeat/load-report parity:
 

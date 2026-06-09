@@ -7,8 +7,9 @@ use temporalstore_rust::http::{
     get_json_with_options, json_response, parse_json, post_json, serve, HttpRequestOptions,
 };
 use temporalstore_rust::meta::{
-    AckResponse, GetShardResponse, PartitionLoad, RegisterServerRequest, RegisterShardRequest,
-    RegisterShardResponse, ServerHeartbeatRequest, ServerHeartbeatResponse, ShardLoad,
+    AckResponse, GetShardResponse, LoadFinishRequest, PartitionLoad, RegisterServerRequest,
+    RegisterShardRequest, RegisterShardResponse, ServerHeartbeatRequest, ServerHeartbeatResponse,
+    ShardLoad,
 };
 use temporalstore_rust::types::{BatchExecuteRequest, ExecuteRequest, ExecuteResponse, Status};
 use temporalstore_rust::{
@@ -263,7 +264,15 @@ fn main() {
             }
             ("POST", "/update_membership") => {
                 match parse_json::<MembershipUpdateRequest>(&request.body) {
-                    Ok(req) => json_response(200, &engine.update_membership(req)),
+                    Ok(req) => json_response(
+                        200,
+                        &update_membership_with_finish_callback(
+                            &engine,
+                            &meta_addr,
+                            &advertised_addr,
+                            req,
+                        ),
+                    ),
                     Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
                 }
             }
@@ -407,6 +416,31 @@ fn run_replica_replay(
             report: None,
         },
     }
+}
+
+fn update_membership_with_finish_callback(
+    engine: &TemporalEngine,
+    meta_addr: &str,
+    server_addr: &str,
+    request: MembershipUpdateRequest,
+) -> Status {
+    let shard_id = request.shard_id;
+    let status = engine.update_membership(request);
+    if status.ok {
+        if let Some(info) = engine.get_info(shard_id).info {
+            let _ = post_json::<_, AckResponse>(
+                meta_addr,
+                "/partitions/finish_load",
+                &LoadFinishRequest {
+                    server_addr: server_addr.to_string(),
+                    shard_id,
+                    load_version: info.load_version,
+                    status: status.clone(),
+                },
+            );
+        }
+    }
+    status
 }
 
 fn start_replica_replay_loop(
@@ -685,6 +719,7 @@ fn send_heartbeat(
 #[cfg(test)]
 mod tests {
     use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -744,6 +779,65 @@ mod tests {
 
         for key in keys {
             std::env::remove_var(key);
+        }
+    }
+
+    #[test]
+    fn membership_update_posts_finish_callback_to_meta() {
+        let engine_dir = tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            engine_dir.path().join("cache"),
+            engine_dir.path().join("pages"),
+            engine_dir.path().join("index"),
+        );
+        assert!(
+            engine
+                .load_shard_with(LoadShardRequest {
+                    shard_id: 41,
+                    load_version: 99,
+                    local_node_id: Some(7),
+                    shard_uri: "local://table/shard-41".to_string(),
+                    start_routing_slot: 0,
+                    end_routing_slot: 999,
+                    readonly: false,
+                    table_name: "events".to_string(),
+                })
+                .status
+                .ok
+        );
+        let callbacks = Arc::new(Mutex::new(Vec::<LoadFinishRequest>::new()));
+        let meta_addr = start_finish_load_server(Arc::clone(&callbacks));
+
+        let status = update_membership_with_finish_callback(
+            &engine,
+            &meta_addr,
+            "server-a:17002",
+            MembershipUpdateRequest {
+                shard_id: 41,
+                membership_version: 3,
+                replica_membership_version: 5,
+                replica_node_ids: vec![7, 8],
+                leader_node_id: Some(7),
+            },
+        );
+        assert!(status.ok, "{status:?}");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let seen = callbacks.lock().unwrap().clone();
+            if let Some(request) = seen.first() {
+                assert_eq!(request.server_addr, "server-a:17002");
+                assert_eq!(request.shard_id, 41);
+                assert_eq!(request.load_version, 99);
+                assert!(request.status.ok);
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "metaserver did not receive finish callback"
+            );
+            thread::sleep(Duration::from_millis(20));
         }
     }
 
@@ -1053,6 +1147,38 @@ mod tests {
                             }),
                         },
                     ),
+                    ("GET", "/health") => json_response(200, &Status::ok()),
+                    _ => json_response(404, &Status::error("not_found", "unknown route")),
+                }
+            })
+            .unwrap()
+        });
+        wait_for_http(&meta_addr);
+        meta_addr
+    }
+
+    fn start_finish_load_server(callbacks: Arc<Mutex<Vec<LoadFinishRequest>>>) -> String {
+        let meta_addr = free_local_addr();
+        let bind_addr = meta_addr.clone();
+        thread::spawn(move || {
+            serve(&bind_addr, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    ("POST", "/partitions/finish_load") => {
+                        match parse_json::<LoadFinishRequest>(&request.body) {
+                            Ok(req) => {
+                                callbacks.lock().unwrap().push(req);
+                                json_response(
+                                    200,
+                                    &AckResponse {
+                                        status: Status::ok(),
+                                    },
+                                )
+                            }
+                            Err(err) => {
+                                json_response(400, &Status::error("bad_request", err.to_string()))
+                            }
+                        }
+                    }
                     ("GET", "/health") => json_response(200, &Status::ok()),
                     _ => json_response(404, &Status::error("not_found", "unknown route")),
                 }
