@@ -92,6 +92,12 @@ pub struct ShardCompactionReport {
     pub stale_page_segment_ids: Vec<u64>,
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShardExpirySweepReport {
+    pub shard_id: ShardId,
+    pub expired_records_removed: usize,
+}
+
 impl TemporalEngine {
     pub fn new(cache: MultiLayerCache) -> Self {
         Self::with_cache_and_page_store(cache, LocalPageStore::default())
@@ -519,17 +525,22 @@ impl TemporalEngine {
     }
 
     pub fn loaded_shard_stats(&self) -> Vec<ShardStats> {
-        let shard_ids = self
+        self.loaded_shard_ids()
+            .into_iter()
+            .filter_map(|shard_id| self.shard_stats(shard_id))
+            .collect()
+    }
+
+    pub fn loaded_shard_ids(&self) -> Vec<ShardId> {
+        let mut shard_ids = self
             .shards
             .read()
             .expect("engine lock poisoned")
             .keys()
             .copied()
             .collect::<Vec<_>>();
+        shard_ids.sort_unstable();
         shard_ids
-            .into_iter()
-            .filter_map(|shard_id| self.shard_stats(shard_id))
-            .collect()
     }
 
     pub fn prometheus_metrics(&self) -> String {
@@ -906,6 +917,47 @@ impl TemporalEngine {
             .collect::<Vec<_>>();
         ids.sort_unstable();
         ids
+    }
+
+    pub fn sweep_expired_records(
+        &self,
+        shard_id: ShardId,
+    ) -> Result<ShardExpirySweepReport, Status> {
+        let mut shards = self.shards.write().expect("engine lock poisoned");
+        let Some(shard) = shards.get_mut(&shard_id) else {
+            return Err(Status::error("shard_not_loaded", "shard is not loaded"));
+        };
+        let now = now_ms();
+        let expired_keys = shard
+            .expires_at_ms
+            .iter()
+            .filter_map(|(key, expires_at)| (*expires_at <= now).then(|| key.clone()))
+            .collect::<Vec<_>>();
+        let mut expired_records_removed = 0;
+        for key in expired_keys {
+            if delete_record(shard, &key) {
+                invalidate_record_all(&self.cache, shard_id, &key);
+                expired_records_removed += 1;
+            }
+        }
+        if expired_records_removed > 0 {
+            let index_bytes = serde_json::to_vec_pretty(shard)
+                .map_err(|err| Status::error("expire_sweep_failed", err.to_string()))?;
+            self.persist_index_bytes(shard_id, &index_bytes)
+                .map_err(|err| Status::error("expire_sweep_failed", err.to_string()))?;
+            let _ = self.index_log_store.append_json(shard_id, &index_bytes);
+        }
+        Ok(ShardExpirySweepReport {
+            shard_id,
+            expired_records_removed,
+        })
+    }
+
+    pub fn sweep_all_expired_records(&self) -> Vec<ShardExpirySweepReport> {
+        self.loaded_shard_ids()
+            .into_iter()
+            .filter_map(|shard_id| self.sweep_expired_records(shard_id).ok())
+            .collect()
     }
 
     pub fn compact_shard_pages(&self, shard_id: ShardId) -> Result<ShardCompactionReport, Status> {
@@ -3180,6 +3232,47 @@ mod tests {
             panic!("expected ttl integer response");
         };
         assert!(value > 0);
+    }
+
+    #[test]
+    fn expiry_sweep_removes_expired_records_without_lazy_read() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSetEx {
+                        key: "expire-me".to_string(),
+                        value: b"gone".to_vec(),
+                        ttl_ms: 1,
+                    },
+                })
+                .status
+                .ok
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        let report = engine.sweep_expired_records(1).unwrap();
+        assert_eq!(report.expired_records_removed, 1);
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "expire-me".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes { value: None }
+        );
+        assert_eq!(
+            engine
+                .sweep_expired_records(1)
+                .unwrap()
+                .expired_records_removed,
+            0
+        );
     }
 
     #[test]

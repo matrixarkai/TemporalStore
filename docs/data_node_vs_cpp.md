@@ -170,6 +170,11 @@ The engine applies a one-second per-shard admission window before executing comm
 `read_qps` and writes beyond `write_qps` return `admission_rejected`; storage byte admission still
 uses `maxmemory_bytes`.
 
+The data-node runtime also has a stoppable background expiry sweep. It periodically scans loaded
+shards, removes expired records without waiting for lazy read-time deletion, invalidates cache
+entries for removed keys, persists the compacted index, and reports sweep/removal counters in
+runtime stats.
+
 This pass adds a reusable replica replay loop in
 `crates/temporalstore-rust/src/replica_replay.rs`. It consumes the existing stream APIs in the same
 order the C++ secondary catch-up path expects:
@@ -238,7 +243,7 @@ Still missing major data-node internals:
   rescheduling around the metaserver route
 - production page compaction scheduling and C++ page header parity
 - C++-style page rewrite garbage collection with page headers and zone ownership
-- expirer/evicter background tasks
+- production evicter background tasks and cache admission policy
 - primary-pull `RemotePartitionStream` binary/protobuf parity beyond the current HTTP stream source
 - refresh policy when the metaserver primary route changes while replay is in progress
 - membership finish callback retry/persistence beyond the current best-effort HTTP callback

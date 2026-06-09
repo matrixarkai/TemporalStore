@@ -80,6 +80,8 @@ pub struct DataNodeRuntimeStats {
     pub running_shard_count: usize,
     pub dirty_object_count: usize,
     pub dirty_shard_count: usize,
+    pub expiry_sweeps: u64,
+    pub expired_records_removed: u64,
     pub dump_runs: u64,
     pub compaction_runs: u64,
     pub gc_runs: u64,
@@ -160,6 +162,12 @@ pub struct DirtyDumpScheduler {
     handle: Option<JoinHandle<()>>,
 }
 
+#[derive(Debug)]
+pub struct ExpirySweepScheduler {
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
 impl DirtyDumpScheduler {
     pub fn stop(mut self) {
         self.stop.store(true, Ordering::Relaxed);
@@ -170,6 +178,24 @@ impl DirtyDumpScheduler {
 }
 
 impl Drop for DirtyDumpScheduler {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl ExpirySweepScheduler {
+    pub fn stop(mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for ExpirySweepScheduler {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(handle) = self.handle.take() {
@@ -199,6 +225,8 @@ struct MutableRuntimeStats {
     rejected_background_total: u64,
     timed_out_total: u64,
     canceled_total: u64,
+    expiry_sweeps: u64,
+    expired_records_removed: u64,
     dump_runs: u64,
     compaction_runs: u64,
     gc_runs: u64,
@@ -651,6 +679,42 @@ impl DataNodeRuntime {
         }
     }
 
+    pub fn sweep_expired_records(&self) -> usize {
+        let reports = self.inner.engine.sweep_all_expired_records();
+        let removed = reports
+            .iter()
+            .map(|report| report.expired_records_removed)
+            .sum::<usize>();
+        let mut stats = self
+            .inner
+            .stats
+            .lock()
+            .expect("runtime stats lock poisoned");
+        stats.expiry_sweeps += 1;
+        stats.expired_records_removed += removed as u64;
+        removed
+    }
+
+    pub fn start_expiry_sweep_scheduler(&self, interval: Duration) -> ExpirySweepScheduler {
+        let runtime = self.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let scheduler_stop = Arc::clone(&stop);
+        let sleep_interval = interval.max(Duration::from_millis(1));
+        let handle = thread::spawn(move || {
+            while !scheduler_stop.load(Ordering::Relaxed) {
+                thread::sleep(sleep_interval);
+                if scheduler_stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                runtime.sweep_expired_records();
+            }
+        });
+        ExpirySweepScheduler {
+            stop,
+            handle: Some(handle),
+        }
+    }
+
     pub fn stats(&self) -> DataNodeRuntimeStats {
         let stats = self
             .inner
@@ -689,6 +753,8 @@ impl DataNodeRuntime {
             running_shard_count,
             dirty_object_count: dirty.by_key.len(),
             dirty_shard_count,
+            expiry_sweeps: stats.expiry_sweeps,
+            expired_records_removed: stats.expired_records_removed,
             dump_runs: stats.dump_runs,
             compaction_runs: stats.compaction_runs,
             gc_runs: stats.gc_runs,
@@ -1462,6 +1528,50 @@ mod tests {
         assert!(first[0].status.ok);
         assert!(second.is_empty());
         assert_eq!(runtime.stats().background_queue_depth, 1);
+    }
+
+    #[test]
+    fn runtime_expiry_sweep_scheduler_removes_expired_records() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let runtime = DataNodeRuntime::new(
+            engine.clone(),
+            DataNodeRuntimeOptions {
+                worker_threads: 1,
+                max_queue_depth: 8,
+                max_background_queue_depth: 8,
+            },
+        );
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSetEx {
+                        key: "ttl".to_string(),
+                        value: b"gone".to_vec(),
+                        ttl_ms: 1,
+                    },
+                })
+                .status
+                .ok
+        );
+        let scheduler = runtime.start_expiry_sweep_scheduler(Duration::from_millis(5));
+        wait_until(Duration::from_secs(1), || {
+            runtime.stats().expired_records_removed >= 1
+        });
+        scheduler.stop();
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "ttl".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes { value: None }
+        );
+        assert!(runtime.stats().expiry_sweeps >= 1);
     }
 
     #[test]
