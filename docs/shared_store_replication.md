@@ -87,6 +87,25 @@ shared store oplog -> command replay -> catch up after checkpoint
 - Shared-store GC can delete oplog objects before a replay-safe index and checkpoint GC keeps the
   newest N checkpoints while deleting old checkpoint index/page payloads by prefix.
 
+## Local Storage Modes Harness
+
+Run the harness below when changing shared-store storage, replay, or local Raft WAL behavior:
+
+```bash
+CARGO_TARGET_DIR=/tmp/temporalstore-rust-target \
+cargo run -p temporalstore-rust --bin storage_modes_harness -- \
+  --async-flush-limit 1
+```
+
+The harness validates three local paths in one run:
+
+- sync shared-store storage publishes oplog entries immediately and a follower can replay them
+- async shared-store storage queues entries, flushes them with a bounded limit, then replays them
+- Raft writes committed entries to local WAL segment files and restores the shard from those files
+
+The output is JSON and includes per-write publish/queue status, async flush progress, replay
+position, restored read value, and the local WAL segment files used by each Raft replica.
+
 ## What Is Still Missing For Production
 
 - integration with real Raft commit index

@@ -89,7 +89,7 @@ pub use shared_store::{
     ReplayReport, SharedStoreCheckpointManifest, SharedStoreFlushReport, SharedStoreOplogEntry,
     SharedStoreOplogObject, SharedStorePageSegment, SharedStoreReplayCursor,
     SharedStoreReplicationError, SharedStoreReplicator, SharedStoreRetryPolicy,
-    SharedStoreStorageMode, SharedStoreStorageWriter,
+    SharedStoreStorageMode, SharedStoreStorageWriter, SharedStoreWriteReport,
 };
 pub use types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,
