@@ -2612,6 +2612,68 @@ pub fn shard_snapshot_ref_from_snapshot_ref(snapshot_ref: &SnapshotRef) -> Shard
     }
 }
 
+fn validate_downloaded_snapshot_ref(
+    expected_shard_id: ShardId,
+    snapshot_ref: &ShardSnapshotRef,
+    manifest: &temporalstore_snapshot::SnapshotManifest,
+    index_bytes: &[u8],
+) -> Result<(), RaftError> {
+    if manifest.shard_id != expected_shard_id {
+        return Err(RaftError::SnapshotStore(format!(
+            "snapshot shard mismatch: manifest={}, ref={}",
+            manifest.shard_id, expected_shard_id
+        )));
+    }
+    if manifest.last_log_index != snapshot_ref.last_log_index {
+        return Err(RaftError::SnapshotStore(format!(
+            "snapshot log index mismatch: manifest={}, ref={}",
+            manifest.last_log_index, snapshot_ref.last_log_index
+        )));
+    }
+    let index_entry = manifest
+        .checksums
+        .iter()
+        .find(|entry| entry.relative_path == "index.bin")
+        .ok_or_else(|| {
+            RaftError::SnapshotStore("snapshot manifest missing index.bin".to_string())
+        })?;
+    if index_bytes.len() as u64 != index_entry.byte_size {
+        return Err(RaftError::SnapshotStore(format!(
+            "snapshot index byte size mismatch: actual={}, manifest={}",
+            index_bytes.len(),
+            index_entry.byte_size
+        )));
+    }
+    let index_checksum = hex::encode(Sha256::digest(index_bytes));
+    if index_checksum != index_entry.sha256 {
+        return Err(RaftError::SnapshotStore(format!(
+            "snapshot index checksum mismatch: actual={index_checksum}, manifest={}",
+            index_entry.sha256
+        )));
+    }
+
+    let mut total_bytes = 0;
+    let mut aggregate = Sha256::new();
+    for entry in &manifest.checksums {
+        total_bytes += entry.byte_size;
+        aggregate.update(entry.sha256.as_bytes());
+    }
+    if total_bytes != snapshot_ref.byte_size {
+        return Err(RaftError::SnapshotStore(format!(
+            "snapshot byte size mismatch: manifest={}, ref={}",
+            total_bytes, snapshot_ref.byte_size
+        )));
+    }
+    let aggregate_checksum = hex::encode(aggregate.finalize());
+    if aggregate_checksum != snapshot_ref.checksum {
+        return Err(RaftError::SnapshotStore(format!(
+            "snapshot checksum mismatch: manifest={aggregate_checksum}, ref={}",
+            snapshot_ref.checksum
+        )));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct RaftCluster {
     inner: Arc<RwLock<RaftClusterInner>>,
@@ -4012,6 +4074,12 @@ impl RaftCluster {
         let snapshot_bytes = tokio::fs::read(&local_snapshot.index_path)
             .await
             .map_err(|err| RaftError::SnapshotStore(err.to_string()))?;
+        validate_downloaded_snapshot_ref(
+            self.shard_id(),
+            snapshot_ref,
+            &local_snapshot.manifest,
+            &snapshot_bytes,
+        )?;
         let snapshot = serde_json::from_slice::<RaftSnapshot>(&snapshot_bytes)
             .map_err(|err| RaftError::SnapshotEncoding(err.to_string()))?;
         self.install_snapshot(target_id, snapshot.clone())?;
@@ -4145,6 +4213,13 @@ impl RaftCluster {
             .read()
             .expect("raft cluster lock poisoned")
             .leader_id
+    }
+
+    pub fn shard_id(&self) -> ShardId {
+        self.inner
+            .read()
+            .expect("raft cluster lock poisoned")
+            .shard_id
     }
 
     pub fn read_index(&self, node_id: RaftNodeId) -> Result<ReadIndexResponse, RaftError> {
@@ -6973,6 +7048,22 @@ mod tests {
         let recorded = meta.get(22).location.unwrap().latest_snapshot.unwrap();
         assert_eq!(recorded.uri, report.meta_ref.uri);
         assert_eq!(recorded.last_log_index, 1);
+
+        let mut bad_ref = recorded.clone();
+        bad_ref.checksum = "bad-checksum".to_string();
+        let err = cluster
+            .bootstrap_replica_from_external_snapshot(
+                3,
+                &snapshots,
+                &bad_ref,
+                tmp.path().join("restore-node-3-bad"),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, RaftError::SnapshotStore(message) if message.contains("checksum")),
+            "unexpected error: {err:?}"
+        );
 
         cluster
             .propose(Command::StringSet {

@@ -92,6 +92,9 @@ Covered locally:
 - metaserver snapshot bootstrap
 - metaserver stale snapshot rejection
 - end-to-end workflow defaults to Raft
+- external snapshot bootstrap validates the metaserver snapshot reference against the
+  downloaded manifest and `index.bin` payload before install, including shard id,
+  last log index, byte size, and SHA-256 checksum
 
 ## Missing For Production Raft Parity
 
