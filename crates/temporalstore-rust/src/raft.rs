@@ -4251,6 +4251,16 @@ impl RaftCluster {
     where
         O: ObjectStore + 'static,
     {
+        let local_commit_index = self
+            .hard_state(target_id)
+            .map(|state| state.commit_index)
+            .unwrap_or_default();
+        if snapshot_ref.last_log_index < local_commit_index {
+            return Err(RaftError::StaleSnapshot {
+                snapshot_index: snapshot_ref.last_log_index,
+                local_commit_index,
+            });
+        }
         let local_snapshot = snapshot_store
             .download_snapshot_by_uri(&snapshot_ref.uri, destination)
             .await
@@ -7354,6 +7364,65 @@ mod tests {
         assert_eq!(
             restored.latest_external_snapshot_ref(),
             Some(report.raft_ref)
+        );
+    }
+
+    #[tokio::test]
+    async fn external_snapshot_bootstrap_rejects_stale_local_replica_before_download() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(temporalstore_snapshot::FileObjectStore::with_uri_scheme(
+            tmp.path().join("objects"),
+            "s3",
+        ));
+        let snapshots = S3SnapshotStore::new("cluster-a", "test", tmp.path().join("local"), store);
+        let meta = SingleNodeMeta::default();
+        meta.register(RegisterShardRequest {
+            shard_id: 24,
+            server_addr: "raft://node-1".to_string(),
+        });
+        let cluster = RaftCluster::new_single_shard_with_wal(
+            tmp.path().join("wal"),
+            24,
+            [1, 2, 3],
+            RaftConfig::default(),
+        )
+        .unwrap();
+        cluster
+            .propose(Command::StringSet {
+                key: "snapshot-a".to_string(),
+                value: b"a".to_vec(),
+            })
+            .unwrap();
+        let report = cluster
+            .publish_leader_snapshot_and_record_meta(&snapshots, &meta)
+            .await
+            .unwrap();
+        cluster
+            .propose(Command::StringSet {
+                key: "snapshot-b".to_string(),
+                value: b"b".to_vec(),
+            })
+            .unwrap();
+        cluster.catch_up(3).unwrap();
+        assert_eq!(cluster.hard_state(3).unwrap().commit_index, 2);
+
+        let mut stale_ref = report.meta_ref.clone();
+        stale_ref.checksum = "bad-checksum-should-not-be-read".to_string();
+        let err = cluster
+            .bootstrap_replica_from_external_snapshot(
+                3,
+                &snapshots,
+                &stale_ref,
+                tmp.path().join("restore-stale-node-3"),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            RaftError::StaleSnapshot {
+                snapshot_index: 1,
+                local_commit_index: 2
+            }
         );
     }
 

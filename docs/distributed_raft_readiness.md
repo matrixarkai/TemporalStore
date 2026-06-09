@@ -42,6 +42,8 @@ The Rust code currently has:
 - external snapshot references on Raft install-snapshot requests, so a leader can attach the
   immutable S3/MinIO snapshot manifest URI, checksum, and byte size while keeping Raft log catch-up
   as the source for recent writes
+- external snapshot bootstrap rejects stale snapshots before download/verify work when the target
+  replica already has a higher local commit index
 - durable local metaserver mutation log and replay for HTTP/admin mutations when
   `TS_META_MUTATION_LOG` is set
 - Raft transport message contracts:
@@ -143,6 +145,8 @@ Still missing:
 - production OpenRaft/raft-rs durable log-store adapter beyond the local segmented WAL model
 - metaserver-driven networked Raft membership changes for each shard
 - snapshot install wired to `TemporalEngine` freeze, flush, download, verify, and install
+- production engine snapshot install with freeze/flush/download/verify/install lifecycle; the local
+  external snapshot path now has stale-local-state preflight before download
 - external chaos tests that kill/restart real OS processes and inject network partitions/slow followers
 - AWS multi-node validation with real metaserver, proxy, client, and data-node processes
 
