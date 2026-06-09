@@ -180,6 +180,20 @@ curl -s http://127.0.0.1:19001/raft/propose \
   -d '{"command":{"kind":"string_set","key":"k","value":[118]}}'
 ```
 
+## Local Data-Node Raft Harness
+
+For a one-command local proof that the data-node Raft HTTP transport replicates between three
+separate node endpoints and writes local WAL segment files, run:
+
+```bash
+CARGO_TARGET_DIR=/tmp/temporalstore-rust-target \
+cargo run -p temporalstore-rust --bin distributed_raft_harness
+```
+
+The harness starts three data-node Raft runtimes on different loopback ports, proposes a write
+through node 1, waits until reads from nodes 1, 2, and 3 return the replicated value, and prints a
+JSON report with each node address, Raft status, replica read result, and WAL files.
+
 ## Current Test Coverage
 
 The local model is covered by unit and integration tests:
