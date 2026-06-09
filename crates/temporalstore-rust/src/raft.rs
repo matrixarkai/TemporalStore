@@ -1708,9 +1708,9 @@ pub fn distributed_raft_readiness() -> RaftDistributedReadiness {
     let missing = vec![
         "replace local consensus model with OpenRaft or raft-rs FSM/storage integration"
             .to_string(),
-        "run external multi-process crash/restart, partition, slow follower, and rolling restart tests"
+        "run external partition, slow follower, and rolling restart tests".to_string(),
+        "add production mTLS transport implementation instead of validation-only config"
             .to_string(),
-        "add production mTLS transport implementation instead of validation-only config".to_string(),
         "integrate metaserver shard membership changes with networked Raft groups".to_string(),
     ];
     RaftDistributedReadiness {
@@ -1966,9 +1966,24 @@ impl ProductionRaftRuntime {
 
     pub fn start_timer_loop(&self) -> ProductionRaftTimerHandle {
         let cluster = self.cluster.clone();
+        let local_node_id = self.options.local_node_id;
         let heartbeat_interval = Duration::from_millis(self.options.heartbeat_interval_ms);
         let election_tick = Duration::from_millis(self.options.election_tick_ms);
         let max_catchup_entries_per_heartbeat = self.options.max_catchup_entries_per_heartbeat;
+        let peer_map = self.options.peer_map();
+        let peer_ids = peer_map.keys().copied().collect::<Vec<_>>();
+        let http_options = HttpRequestOptions {
+            connect_timeout_ms: self.options.rpc.deadline_ms,
+            io_timeout_ms: self.options.rpc.deadline_ms,
+            max_retries: self.options.rpc.max_retries,
+        };
+        let rpc_options = self.options.rpc;
+        let auth_token = self
+            .options
+            .security
+            .auth_token
+            .clone()
+            .expect("validated production raft auth token");
         let stop = Arc::new(AtomicBool::new(false));
         let stop_thread = Arc::clone(&stop);
         let handle = thread::spawn(move || {
@@ -1976,8 +1991,35 @@ impl ProductionRaftRuntime {
             while !stop_thread.load(Ordering::SeqCst) {
                 let _ = cluster.tick_election();
                 if last_heartbeat.elapsed() >= heartbeat_interval {
-                    let _ =
-                        cluster.catch_up_live_followers_bounded(max_catchup_entries_per_heartbeat);
+                    if cluster.leader_id() == local_node_id {
+                        let transport = RaftRpcRuntime::with_auth_token(
+                            AuthenticatedRaftTransport::new(
+                                HttpRaftTransport::with_options(peer_map.clone(), http_options),
+                                auth_token.clone(),
+                            ),
+                            rpc_options,
+                            Some(auth_token.clone()),
+                        );
+                        let mut sent = 0;
+                        for target_id in &peer_ids {
+                            if sent >= max_catchup_entries_per_heartbeat {
+                                break;
+                            }
+                            let Ok(request) = cluster.build_append_entries_request(*target_id)
+                            else {
+                                continue;
+                            };
+                            let entry_count = request.entries.len() as u64;
+                            if transport
+                                .append_entries(request)
+                                .map(|response| response.success)
+                                .unwrap_or(false)
+                            {
+                                let _ = cluster.catch_up(*target_id);
+                                sent += entry_count.max(1);
+                            }
+                        }
+                    }
                     last_heartbeat = InstantCompat::now();
                 }
                 thread::sleep(election_tick);

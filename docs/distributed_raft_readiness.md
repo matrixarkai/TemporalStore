@@ -14,6 +14,8 @@ The Rust code currently has:
 - mTLS configuration validation for production deployments
 - plaintext transport allowed only for local chaos tests
 - timer supervisor for election ticks, heartbeat cadence, and follower catch-up
+- leader heartbeat loop sends network AppendEntries to secondary data-node processes so restarted
+  secondaries can catch up from the leader's log and local WAL state
 - multi-process chaos plan validation for crash/restart and partition scenarios
 - in-process data-node Raft model used by the runtime FSM/tests
 - in-process metaserver Raft model behind `ProductionMetaRaftRuntime`
@@ -108,6 +110,8 @@ The production runtime surface is:
 - `ProductionRaftChaosPlan`
 - `raft_node` binary with `/raft/propose`, `/raft/read`, `/raft/status`, and peer `/raft/*`
   transport endpoints
+- `raft_secondary_replication_harness` binary that starts real `raft_node` OS processes, kills and
+  restarts a secondary, and verifies the restarted secondary catches up and serves reads
 
 Production deployments should use `ProductionRaftSecurity::mtls`. Local chaos tests can use
 `ProductionRaftSecurity::plaintext_for_local_chaos` only when
@@ -180,7 +184,7 @@ curl -s http://127.0.0.1:19001/raft/propose \
   -d '{"command":{"kind":"string_set","key":"k","value":[118]}}'
 ```
 
-## Local Data-Node Raft Harness
+## Local Data-Node Raft Harnesses
 
 For a one-command local proof that the data-node Raft HTTP transport replicates between three
 separate node endpoints and writes local WAL segment files, run:
@@ -193,6 +197,20 @@ cargo run -p temporalstore-rust --bin distributed_raft_harness
 The harness starts three data-node Raft runtimes on different loopback ports, proposes a write
 through node 1, waits until reads from nodes 1, 2, and 3 return the replicated value, and prints a
 JSON report with each node address, Raft status, replica read result, and WAL files.
+
+For a stronger process-level secondary replication check, build all binaries and run:
+
+```bash
+CARGO_TARGET_DIR=/tmp/temporalstore-rust-target \
+cargo build -p temporalstore-rust --bins
+
+CARGO_TARGET_DIR=/tmp/temporalstore-rust-target \
+cargo run -p temporalstore-rust --bin raft_secondary_replication_harness
+```
+
+This harness starts three real `raft_node` OS processes, writes through the leader, kills secondary
+node 3, writes while that secondary is down, restarts node 3 with the same local WAL directory, and
+waits until all nodes can read the pre-stop, while-down, and after-restart keys.
 
 ## Current Test Coverage
 
@@ -229,6 +247,7 @@ distributed_raft_readiness_reports_remaining_production_blockers
 production_raft_mode_is_blocked_until_real_engine_and_chaos_exist
 production_raft_runtime_validates_security_timer_and_chaos_contracts
 production_raft_runtime_replicates_over_separate_http_nodes
+raft_secondary_replication_harness
 metaserver_raft_health_catchup_safe_scale_and_failover_work
 metaserver_raft_promotes_follower_after_leader_failure_and_keeps_metadata_available
 metaserver_raft_rejects_reads_and_writes_without_majority
