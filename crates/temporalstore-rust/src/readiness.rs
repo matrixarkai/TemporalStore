@@ -114,6 +114,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "data-node Raft exposes planned add/remove/replace membership changes with joint-consensus, catch-up, quorum checks, and reports"
                     .to_string(),
+                "metaserver Raft exposes matching planned add/remove/replace membership changes with catch-up, quorum checks, and reports"
+                    .to_string(),
                 "metaserver table topology can be converted into data-node Raft voter membership plans with no-op detection and server-state validation"
                     .to_string(),
                 "metaserver topology membership plans can be applied to data-node Raft with joint-consensus catch-up and an applied/no-op report"

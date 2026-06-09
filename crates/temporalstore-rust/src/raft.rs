@@ -6085,6 +6085,70 @@ impl MetaRaftCluster {
         Ok(self.scale_change_report())
     }
 
+    pub fn plan_membership_change(
+        &self,
+        new_voters: impl IntoIterator<Item = RaftNodeId>,
+    ) -> Result<RaftMembershipChangePlan, RaftError> {
+        let inner = self.inner.read().expect("meta raft lock poisoned");
+        inner.plan_membership_change(new_voters)
+    }
+
+    pub fn apply_membership_change_safely(
+        &self,
+        new_voters: impl IntoIterator<Item = RaftNodeId>,
+    ) -> Result<RaftMembershipChangeReport, RaftError> {
+        let plan = self.plan_membership_change(new_voters)?;
+        let joint_membership = JointConsensusMembership {
+            old_voters: plan.old_voters.clone(),
+            new_voters: plan.new_voters.clone(),
+        };
+        {
+            let mut inner = self.inner.write().expect("meta raft lock poisoned");
+            inner.ensure_live_leader()?;
+            let leader = inner
+                .nodes
+                .get(&inner.leader_id)
+                .ok_or(RaftError::LeaderUnavailable)?;
+            let leader_term = leader.current_term;
+            let leader_log = leader.log.clone();
+            let leader_commit_index = leader.commit_index;
+            let leader_state = leader.state.clone();
+            let leader_meta = leader.meta.clone();
+            for node_id in &plan.add_voters {
+                if inner.nodes.contains_key(node_id) {
+                    continue;
+                }
+                let mut node = new_meta_node(*node_id, RaftRole::Follower);
+                node.current_term = leader_term;
+                node.log = leader_log.clone();
+                node.commit_index = leader_commit_index;
+                node.state = leader_state.clone();
+                node.meta = leader_meta.clone();
+                apply_meta_committed(&mut node);
+                inner.nodes.insert(*node_id, node);
+            }
+        }
+        let caught_up_voters = self.catch_up_live_followers()?;
+        let mut inner = self.inner.write().expect("meta raft lock poisoned");
+        for node_id in &plan.remove_voters {
+            inner.remove_node_safely(*node_id)?;
+        }
+        let status = inner.status();
+        let committed_membership = RaftMembership {
+            shard_id: plan.shard_id,
+            voters: inner.nodes.keys().copied().collect(),
+            leader_id: status.leader_id,
+        };
+        Ok(RaftMembershipChangeReport {
+            plan,
+            joint_membership,
+            committed_membership,
+            caught_up_voters,
+            leader_id: status.leader_id,
+            commit_index: status.commit_index,
+        })
+    }
+
     pub fn create_snapshot(&self) -> Result<MetaRaftSnapshot, RaftError> {
         let inner = self.inner.read().expect("meta raft lock poisoned");
         let leader = inner
@@ -6336,6 +6400,71 @@ impl MetaRaftClusterInner {
             self.nodes.remove(&node_id);
         }
         Ok(())
+    }
+
+    fn plan_membership_change(
+        &self,
+        new_voters: impl IntoIterator<Item = RaftNodeId>,
+    ) -> Result<RaftMembershipChangePlan, RaftError> {
+        if !self
+            .nodes
+            .get(&self.leader_id)
+            .map(|node| node.alive && node.role == RaftRole::Leader)
+            .unwrap_or(false)
+        {
+            return Err(RaftError::LeaderUnavailable);
+        }
+        let old_voters = self.nodes.keys().copied().collect::<BTreeSet<_>>();
+        let new_voters = new_voters.into_iter().collect::<BTreeSet<_>>();
+        if new_voters.is_empty() {
+            return Err(RaftError::CannotRemoveLastNode);
+        }
+        if old_voters == new_voters {
+            return Err(RaftError::InvalidConfig(
+                "membership change must add or remove at least one voter".to_string(),
+            ));
+        }
+
+        let add_voters = new_voters
+            .difference(&old_voters)
+            .copied()
+            .collect::<Vec<_>>();
+        let remove_voters = old_voters
+            .difference(&new_voters)
+            .copied()
+            .collect::<Vec<_>>();
+        let kind = match (add_voters.is_empty(), remove_voters.is_empty()) {
+            (false, true) => RaftMembershipChangeKind::AddVoter,
+            (true, false) => RaftMembershipChangeKind::RemoveVoter,
+            (false, false) => RaftMembershipChangeKind::ReplaceVoter,
+            (true, true) => unreachable!("old_voters != new_voters was checked"),
+        };
+
+        let live_new_voters = new_voters
+            .iter()
+            .filter(|node_id| {
+                self.nodes
+                    .get(node_id)
+                    .map(|node| node.alive)
+                    .unwrap_or(true)
+            })
+            .count();
+        let required_new_majority = majority(new_voters.len());
+        if live_new_voters < required_new_majority {
+            return Err(RaftError::NoMajority {
+                live: live_new_voters,
+                required: required_new_majority,
+            });
+        }
+
+        Ok(RaftMembershipChangePlan {
+            shard_id: 0,
+            kind,
+            old_voters: old_voters.into_iter().collect(),
+            new_voters: new_voters.into_iter().collect(),
+            add_voters,
+            remove_voters,
+        })
     }
 
     fn scale_change_report(&self) -> RaftScaleChangeReport {
@@ -9638,6 +9767,60 @@ mod tests {
                 server_addr: "server-after-meta-failover".to_string(),
                 latest_snapshot: None,
             })
+        );
+    }
+
+    #[test]
+    fn metaserver_raft_membership_plan_and_apply_match_data_raft_shape() {
+        let meta = MetaRaftCluster::new([10, 11, 12]);
+        meta.propose(MetaCommand::PutShardLocation(ShardLocation {
+            shard_id: 44,
+            server_addr: "server-before-meta-membership".to_string(),
+            latest_snapshot: None,
+        }))
+        .unwrap();
+
+        let plan = meta.plan_membership_change([10, 11, 13]).unwrap();
+        assert_eq!(plan.shard_id, 0);
+        assert_eq!(plan.kind, RaftMembershipChangeKind::ReplaceVoter);
+        assert_eq!(plan.old_voters, vec![10, 11, 12]);
+        assert_eq!(plan.new_voters, vec![10, 11, 13]);
+        assert_eq!(plan.add_voters, vec![13]);
+        assert_eq!(plan.remove_voters, vec![12]);
+
+        let report = meta.apply_membership_change_safely([10, 11, 13]).unwrap();
+        assert_eq!(report.plan, plan);
+        assert_eq!(report.joint_membership.old_voters, vec![10, 11, 12]);
+        assert_eq!(report.joint_membership.new_voters, vec![10, 11, 13]);
+        assert_eq!(report.committed_membership.voters, vec![10, 11, 13]);
+        assert_eq!(
+            meta.get_shard_location(13, 44).unwrap(),
+            Some(ShardLocation {
+                shard_id: 44,
+                server_addr: "server-before-meta-membership".to_string(),
+                latest_snapshot: None,
+            })
+        );
+        assert_eq!(meta.commit_index(12), Err(RaftError::NodeNotFound(12)));
+    }
+
+    #[test]
+    fn metaserver_raft_membership_apply_rejects_noop_and_quorum_loss() {
+        let meta = MetaRaftCluster::new([10, 11, 12]);
+        assert!(matches!(
+            meta.plan_membership_change([10, 11, 12]),
+            Err(RaftError::InvalidConfig(message))
+                if message.contains("membership change must add or remove")
+        ));
+
+        meta.set_alive(11, false).unwrap();
+        meta.set_alive(12, false).unwrap();
+        assert_eq!(
+            meta.apply_membership_change_safely([10, 11]).unwrap_err(),
+            RaftError::NoMajority {
+                live: 1,
+                required: 2,
+            }
         );
     }
 

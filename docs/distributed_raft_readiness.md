@@ -29,6 +29,7 @@ The Rust code currently has:
 - safe data-node scale-down that rejects quorum loss and promotes only a caught-up successor
 - primary crash failover report for deterministic secondary promotion
 - equivalent metaserver health, catch-up, safe scale, and failover APIs
+- equivalent metaserver membership plan/apply reports for add/remove/replace voters
 - read-index and leader-transfer guards
 - local snapshot install
 - chunked snapshot install that assembles multiple `InstallSnapshotChunkRequest` messages before
