@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, HashMap, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -146,6 +146,30 @@ pub struct GcResponse {
 #[derive(Debug, Clone)]
 pub struct DataNodeRuntime {
     inner: Arc<DataNodeRuntimeInner>,
+}
+
+#[derive(Debug)]
+pub struct DirtyDumpScheduler {
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl DirtyDumpScheduler {
+    pub fn stop(mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for DirtyDumpScheduler {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -351,6 +375,18 @@ impl RuntimeQueues {
             }
         }
         false
+    }
+
+    fn has_pending_dump(&self, shard_id: ShardId) -> bool {
+        self.by_shard
+            .get(&shard_id)
+            .map(|queue| {
+                queue
+                    .background
+                    .iter()
+                    .any(|task| matches!(task.request, TaskRequest::Dump(_)))
+            })
+            .unwrap_or(false)
     }
 }
 
@@ -573,8 +609,40 @@ impl DataNodeRuntime {
     ) -> Vec<DataNodeTaskStatus> {
         self.dirty_shards()
             .into_iter()
+            .filter(|shard_id| {
+                !self
+                    .inner
+                    .queue
+                    .lock()
+                    .expect("runtime queue lock poisoned")
+                    .has_pending_dump(*shard_id)
+            })
             .map(|shard_id| self.submit_dump(DumpShardRequest { shard_id }, controller))
             .collect()
+    }
+
+    pub fn start_dirty_dump_scheduler(
+        &self,
+        interval: Duration,
+        controller: RequestController,
+    ) -> DirtyDumpScheduler {
+        let runtime = self.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let scheduler_stop = Arc::clone(&stop);
+        let sleep_interval = interval.max(Duration::from_millis(1));
+        let handle = thread::spawn(move || {
+            while !scheduler_stop.load(Ordering::Relaxed) {
+                thread::sleep(sleep_interval);
+                if scheduler_stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                runtime.schedule_dirty_shard_dumps(controller);
+            }
+        });
+        DirtyDumpScheduler {
+            stop,
+            handle: Some(handle),
+        }
     }
 
     pub fn stats(&self) -> DataNodeRuntimeStats {
@@ -1314,6 +1382,68 @@ mod tests {
     }
 
     #[test]
+    fn runtime_dirty_dump_scheduler_periodically_flushes_dirty_shards() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        engine.load_shard(2);
+        let runtime = DataNodeRuntime::new(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 2,
+                max_queue_depth: 8,
+                max_background_queue_depth: 8,
+            },
+        );
+        let scheduler = runtime.start_dirty_dump_scheduler(
+            Duration::from_millis(5),
+            RequestController { timeout_ms: 1000 },
+        );
+
+        for (shard_id, key) in [(1, "periodic-a"), (2, "periodic-b")] {
+            let job = runtime.submit_execute(
+                ExecuteRequest {
+                    shard_id,
+                    command: Command::StringSet {
+                        key: key.to_string(),
+                        value: b"v".to_vec(),
+                    },
+                },
+                RequestController { timeout_ms: 1000 },
+            );
+            assert!(wait_for_job(&runtime, job.job_id).status.ok);
+        }
+
+        wait_until(Duration::from_secs(1), || {
+            runtime.dirty_objects().is_empty() && runtime.stats().dump_runs >= 2
+        });
+        scheduler.stop();
+        assert!(runtime.dirty_objects().is_empty());
+        assert_eq!(runtime.dirty_shards(), Vec::<ShardId>::new());
+    }
+
+    #[test]
+    fn runtime_dirty_dump_scheduler_skips_already_queued_dump_for_shard() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 8,
+                max_background_queue_depth: 8,
+            },
+        );
+        mark_dirty(&runtime.inner.dirty, 1, Some("queued"));
+        let first = runtime.schedule_dirty_shard_dumps(RequestController { timeout_ms: 1000 });
+        let second = runtime.schedule_dirty_shard_dumps(RequestController { timeout_ms: 1000 });
+
+        assert_eq!(first.len(), 1);
+        assert!(first[0].status.ok);
+        assert!(second.is_empty());
+        assert_eq!(runtime.stats().background_queue_depth, 1);
+    }
+
+    #[test]
     fn runtime_rejects_when_queue_is_full() {
         let engine = TemporalEngine::default();
         engine.load_shard(1);
@@ -1712,5 +1842,19 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         panic!("job {job_id} did not finish");
+    }
+
+    fn wait_until(timeout: Duration, mut predicate: impl FnMut() -> bool) {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if predicate() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            predicate(),
+            "condition did not become true within {timeout:?}"
+        );
     }
 }

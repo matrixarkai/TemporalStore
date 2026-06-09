@@ -99,7 +99,10 @@ Important current behavior:
 - `StreamKind::Page` and `StreamKind::Index` can read local page/index bytes
 - `StreamKind::Oplog` currently returns empty bytes
 
-The big difference from C++ is that Rust has no separate hot object manager, dirty slot scheduler, append-only mutation log, or merged background dump loop. It writes individual values to page segments immediately and persists index JSON after mutations.
+The big difference from C++ is that Rust has no separate hot object manager or C++ dirty-slot
+ownership model. It now has append-only oplog/index-log flows and a periodic dirty-shard dump
+scheduler, but it still writes individual values to page segments immediately and persists index
+JSON after mutations instead of using the full C++ merged page/slot dump and recovery pipeline.
 
 ## Cache Deep Dive
 
@@ -260,7 +263,7 @@ That is why "rewrite C++ TemporalStore in Rust" is not just translating syntax. 
 | Sequence API | Typed rows, filters, and batch query | Part of richer feature/data modules | Need exact C++ sequence edge-case policy if required by callers. |
 | IPS | Add/query-last/range/batch/remove/delete/count plus idempotent/dimensional add, dimension-filtered range, local load, range snapshot, stats, and named filter with typed client and RESP coverage | Rich add/batch query/remove/load/delete/stat/filter/snap behavior | Missing production snap metadata and server aggregation. |
 | Risk | Increment/count plus precision/TTL increment, sum/min/max/first/last/events/detail with typed client and RESP coverage | Rich H/CPC/FOL/query/manager/window/precision semantics | Missing CPC/list-specific behavior and manager APIs. |
-| Local storage | Local page segments + JSON index | Oplog + page/slot store + dump/recover | Need WAL/oplog, dump scheduler, recovery boundaries, compaction. |
+| Local storage | Local page segments + JSON index, oplog/index-log, and periodic dirty-shard dump scheduling | Oplog + page/slot store + dump/recover | Need binary log/header parity, C++ dirty-slot ownership, recovery boundaries, merged dump/load, and compaction. |
 | Cache | Simple memory + disk cache | mtcache/blockcache-like production cache | Need production SSD cache engine or Rust equivalent. |
 | Replication | In-process behavior model | ByteRaft-backed production replication | Need real Raft library and networked nodes. |
 | Metaserver | Simple route + in-process raft model | Full topology and routing control plane | Need namespace/table/shard/slot topology and heartbeat. |

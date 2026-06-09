@@ -229,5 +229,5 @@ Still intentionally missing from the open-source Rust target:
 The Rust repo now covers the main simple module APIs: common, string, hash, set, feature,
 sequence, and the implemented IPS/Risk subset with typed client and RESP coverage. It is not yet
 feature-complete versus the full C++ TemporalStore product, mainly because exact C++ proto
-semantics, routing/topology, oplog/dump/load, and production replication are still large subsystems
-rather than small API aliases.
+semantics, routing/topology, C++ slot-owned dump/load recovery, and production replication are
+still large subsystems rather than small API aliases.
