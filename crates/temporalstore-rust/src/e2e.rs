@@ -385,6 +385,8 @@ fn is_write(command: &Command) -> bool {
             | Command::IpsDelete { .. }
             | Command::RiskIncrement { .. }
             | Command::RiskIncrementWithOptions { .. }
+            | Command::RiskSet { .. }
+            | Command::RiskSetAndGet { .. }
     )
 }
 

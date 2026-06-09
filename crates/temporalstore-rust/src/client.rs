@@ -14,7 +14,7 @@ use crate::meta::{GetTableTopologyRequest, TableTopologyResponse};
 use crate::types::{
     parse_cpp_feature_filters, BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse,
     ExecuteRequest, ExecuteResponse, FeatureFilter, FeaturePoint, FeatureWritePolicy, IpsStats,
-    SequenceFeatureRow, SequenceQuerySpec, ShardId, Status,
+    RiskFamily, SequenceFeatureRow, SequenceQuerySpec, ShardId, Status,
 };
 
 #[derive(Debug, Error)]
@@ -1573,6 +1573,93 @@ impl TemporalStoreTable {
         }
     }
 
+    pub fn risk_family_set(
+        &self,
+        family: RiskFamily,
+        key: impl Into<String>,
+        timestamp_ms: u64,
+        amount: i64,
+    ) -> Result<(), ClientError> {
+        self.expect_empty(Command::RiskSet {
+            family,
+            key: key.into(),
+            timestamp_ms,
+            amount,
+        })
+    }
+
+    pub fn risk_family_query(
+        &self,
+        family: RiskFamily,
+        key: impl Into<String>,
+        start_ms: u64,
+        end_ms: u64,
+        aggregator: impl Into<String>,
+    ) -> Result<i64, ClientError> {
+        match self
+            .execute(Command::RiskFamilyQuery {
+                family,
+                key: key.into(),
+                start_ms,
+                end_ms,
+                aggregator: aggregator.into(),
+            })?
+            .response
+        {
+            CommandResponse::Integer { value } => Ok(value),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "risk_family_query",
+                response,
+            }),
+        }
+    }
+
+    pub fn risk_family_set_and_get(
+        &self,
+        family: RiskFamily,
+        key: impl Into<String>,
+        timestamp_ms: u64,
+        amount: i64,
+        start_ms: u64,
+        end_ms: u64,
+        aggregator: impl Into<String>,
+    ) -> Result<i64, ClientError> {
+        match self
+            .execute(Command::RiskSetAndGet {
+                family,
+                key: key.into(),
+                timestamp_ms,
+                amount,
+                start_ms,
+                end_ms,
+                aggregator: aggregator.into(),
+            })?
+            .response
+        {
+            CommandResponse::Integer { value } => Ok(value),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "risk_family_set_and_get",
+                response,
+            }),
+        }
+    }
+
+    pub fn risk_manager(
+        &self,
+        key: impl Into<String>,
+    ) -> Result<Vec<(String, Vec<u8>)>, ClientError> {
+        match self
+            .execute(Command::RiskManager { key: key.into() })?
+            .response
+        {
+            CommandResponse::HashEntries { entries } => Ok(entries),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "risk_manager",
+                response,
+            }),
+        }
+    }
+
     pub fn execute(&self, command: Command) -> Result<ExecuteResponse, ClientError> {
         self.client
             .inner
@@ -1815,6 +1902,8 @@ fn is_write(command: &Command) -> bool {
             | Command::IpsDelete { .. }
             | Command::RiskIncrement { .. }
             | Command::RiskIncrementWithOptions { .. }
+            | Command::RiskSet { .. }
+            | Command::RiskSetAndGet { .. }
     )
 }
 
@@ -1905,7 +1994,11 @@ fn command_key(command: &Command) -> Option<&str> {
         | Command::RiskIncrementWithOptions { key, .. }
         | Command::RiskCount { key, .. }
         | Command::RiskQuery { key, .. }
-        | Command::RiskDetail { key, .. } => Some(key),
+        | Command::RiskDetail { key, .. }
+        | Command::RiskSet { key, .. }
+        | Command::RiskSetAndGet { key, .. }
+        | Command::RiskFamilyQuery { key, .. }
+        | Command::RiskManager { key } => Some(key),
         Command::IpsBatchQueryLast { .. } | Command::SequenceBatchQuery { .. } => None,
     }
 }
@@ -2163,6 +2256,44 @@ mod tests {
                     timestamp_ms: 30,
                     value: b"7".to_vec(),
                 },
+            ]
+        );
+        table
+            .risk_family_set(RiskFamily::H, "risk-cpp", 10, 5)
+            .unwrap();
+        assert_eq!(
+            table
+                .risk_family_set_and_get(RiskFamily::H, "risk-cpp", 20, 7, 0, 30, "sum")
+                .unwrap(),
+            12
+        );
+        table
+            .risk_family_set(RiskFamily::Cpc, "risk-cpp", 10, 3)
+            .unwrap();
+        assert_eq!(
+            table
+                .risk_family_set_and_get(RiskFamily::Cpc, "risk-cpp", 20, 4, 0, 30, "sum")
+                .unwrap(),
+            7
+        );
+        table
+            .risk_family_set(RiskFamily::Fol, "risk-cpp", 10, 11)
+            .unwrap();
+        assert_eq!(
+            table
+                .risk_family_query(RiskFamily::Fol, "risk-cpp", 0, 30, "sum")
+                .unwrap(),
+            11
+        );
+        assert_eq!(
+            table.risk_manager("risk-cpp").unwrap(),
+            vec![
+                ("h_events".to_string(), b"2".to_vec()),
+                ("h_sum".to_string(), b"12".to_vec()),
+                ("cpc_events".to_string(), b"2".to_vec()),
+                ("cpc_sum".to_string(), b"7".to_vec()),
+                ("fol_events".to_string(), b"1".to_vec()),
+                ("fol_sum".to_string(), b"11".to_vec()),
             ]
         );
 

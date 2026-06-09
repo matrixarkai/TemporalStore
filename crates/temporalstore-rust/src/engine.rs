@@ -17,10 +17,9 @@ use crate::index_log::LocalIndexLogStore;
 use crate::oplog::LocalOplogStore;
 use crate::page_store::{LocalPageStore, PageAddress};
 use crate::types::{
-    parse_cpp_feature_filters, BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse,
-    ExecuteRequest, ExecuteResponse, FeatureFilter, FeatureFilterOp, FeaturePoint,
-    FeatureWritePolicy, IpsStats, SequenceFeatureRow, SequenceQuerySpec, ShardId, Status,
-    StringSetCondition,
+    BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,
+    ExecuteResponse, FeatureFilter, FeatureFilterOp, FeaturePoint, FeatureWritePolicy, IpsStats,
+    RiskFamily, SequenceFeatureRow, SequenceQuerySpec, ShardId, Status, StringSetCondition,
 };
 
 #[derive(Debug, Clone)]
@@ -1950,6 +1949,103 @@ fn execute_on_shard(
                 .unwrap_or_default();
             CommandResponse::FeaturePoints { points }
         }
+        Command::RiskSet {
+            family,
+            key,
+            timestamp_ms,
+            amount,
+        } => {
+            remove_if_expired(shard, &key);
+            let key = risk_family_key(family, &key);
+            *shard
+                .risk
+                .entry(key)
+                .or_default()
+                .entry(timestamp_ms)
+                .or_default() += amount;
+            mutated = true;
+            CommandResponse::Empty
+        }
+        Command::RiskSetAndGet {
+            family,
+            key,
+            timestamp_ms,
+            amount,
+            start_ms,
+            end_ms,
+            aggregator,
+        } => {
+            remove_if_expired(shard, &key);
+            let key = risk_family_key(family, &key);
+            let series = shard.risk.entry(key).or_default();
+            *series.entry(timestamp_ms).or_default() += amount;
+            let values = series
+                .range(start_ms..=end_ms)
+                .map(|(_, value)| *value)
+                .collect::<Vec<_>>();
+            mutated = true;
+            CommandResponse::Integer {
+                value: aggregate_risk_values(&values, &aggregator),
+            }
+        }
+        Command::RiskFamilyQuery {
+            family,
+            key,
+            start_ms,
+            end_ms,
+            aggregator,
+        } => {
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+                return ExecuteOutcome {
+                    response: CommandResponse::Integer { value: 0 },
+                    mutated,
+                };
+            }
+            let key = risk_family_key(family, &key);
+            let values = shard
+                .risk
+                .get(&key)
+                .map(|series| {
+                    series
+                        .range(start_ms..=end_ms)
+                        .map(|(_, value)| *value)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            CommandResponse::Integer {
+                value: aggregate_risk_values(&values, &aggregator),
+            }
+        }
+        Command::RiskManager { key } => {
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+                return ExecuteOutcome {
+                    response: CommandResponse::HashEntries {
+                        entries: Vec::new(),
+                    },
+                    mutated,
+                };
+            }
+            let mut entries = Vec::new();
+            for family in [RiskFamily::H, RiskFamily::Cpc, RiskFamily::Fol] {
+                let family_key = risk_family_key(family, &key);
+                let values = shard
+                    .risk
+                    .get(&family_key)
+                    .map(|series| series.values().copied().collect::<Vec<_>>())
+                    .unwrap_or_default();
+                entries.push((
+                    format!("{}_events", risk_family_name(family)),
+                    values.len().to_string().into_bytes(),
+                ));
+                entries.push((
+                    format!("{}_sum", risk_family_name(family)),
+                    values.iter().sum::<i64>().to_string().into_bytes(),
+                ));
+            }
+            CommandResponse::HashEntries { entries }
+        }
     };
     ExecuteOutcome { response, mutated }
 }
@@ -2130,6 +2226,18 @@ fn aggregate_risk_values(values: &[i64], aggregator: &str) -> i64 {
     }
 }
 
+fn risk_family_key(family: RiskFamily, key: &str) -> String {
+    format!("risk:{}:{key}", risk_family_name(family))
+}
+
+fn risk_family_name(family: RiskFamily) -> &'static str {
+    match family {
+        RiskFamily::H => "h",
+        RiskFamily::Cpc => "cpc",
+        RiskFamily::Fol => "fol",
+    }
+}
+
 fn ips_points_in_range(
     cache: &MultiLayerCache,
     page_store: &LocalPageStore,
@@ -2282,6 +2390,8 @@ fn is_write_command(command: &Command) -> bool {
             | Command::IpsDelete { .. }
             | Command::RiskIncrement { .. }
             | Command::RiskIncrementWithOptions { .. }
+            | Command::RiskSet { .. }
+            | Command::RiskSetAndGet { .. }
     )
 }
 
@@ -2379,6 +2489,7 @@ fn cached_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::parse_cpp_feature_filters;
 
     #[test]
     fn live_page_segment_ids_scan_all_index_backed_data_models() {
@@ -4362,6 +4473,85 @@ mod tests {
                         value: b"7".to_vec(),
                     },
                 ]
+            }
+        );
+    }
+
+    #[test]
+    fn risk_cpp_family_set_query_setandget_and_manager_work() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        for (family, timestamp_ms, amount) in [
+            (RiskFamily::H, 10, 5),
+            (RiskFamily::H, 20, 7),
+            (RiskFamily::Cpc, 10, 3),
+            (RiskFamily::Fol, 10, 11),
+        ] {
+            assert!(
+                engine
+                    .execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::RiskSet {
+                            family,
+                            key: "risk-cpp".to_string(),
+                            timestamp_ms,
+                            amount,
+                        },
+                    })
+                    .status
+                    .ok
+            );
+        }
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::RiskFamilyQuery {
+                        family: RiskFamily::H,
+                        key: "risk-cpp".to_string(),
+                        start_ms: 0,
+                        end_ms: 30,
+                        aggregator: "sum".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Integer { value: 12 }
+        );
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::RiskSetAndGet {
+                        family: RiskFamily::Cpc,
+                        key: "risk-cpp".to_string(),
+                        timestamp_ms: 20,
+                        amount: 4,
+                        start_ms: 0,
+                        end_ms: 30,
+                        aggregator: "sum".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Integer { value: 7 }
+        );
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::RiskManager {
+                        key: "risk-cpp".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::HashEntries {
+                entries: vec![
+                    ("h_events".to_string(), b"2".to_vec()),
+                    ("h_sum".to_string(), b"12".to_vec()),
+                    ("cpc_events".to_string(), b"2".to_vec()),
+                    ("cpc_sum".to_string(), b"7".to_vec()),
+                    ("fol_events".to_string(), b"1".to_vec()),
+                    ("fol_sum".to_string(), b"11".to_vec()),
+                ],
             }
         );
     }

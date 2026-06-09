@@ -7,7 +7,7 @@ use std::thread;
 use crate::client::{slot_id_for_key, stable_key_hash};
 use crate::types::{
     parse_cpp_feature_filters, Command, CommandResponse, ExecuteRequest, FeatureFilter,
-    FeatureFilterOp, FeaturePoint, FeatureWritePolicy, ShardId, StringSetCondition,
+    FeatureFilterOp, FeaturePoint, FeatureWritePolicy, RiskFamily, ShardId, StringSetCondition,
 };
 use crate::TemporalStoreClient;
 
@@ -917,7 +917,80 @@ pub fn execute_redis_command_with_state(
                 count,
             }))
         }
+        "RISKHSET" | "CPCSET" | "FOLSET" if args.len() == 4 => {
+            let timestamp_ms = match parse_u64(&args[2], "timestamp_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let amount = match parse_i64_arg(&args[3], "amount") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            status_ok(execute(Command::RiskSet {
+                family: risk_family_for_command(&command),
+                key: string_arg(&args[1]),
+                timestamp_ms,
+                amount,
+            }))
+        }
+        "HQUERY" | "CPCQUERY" | "FOLQUERY" if args.len() == 5 => {
+            let start_ms = match parse_u64(&args[2], "start_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let end_ms = match parse_u64(&args[3], "end_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            integer_response(execute(Command::RiskFamilyQuery {
+                family: risk_family_for_command(&command),
+                key: string_arg(&args[1]),
+                start_ms,
+                end_ms,
+                aggregator: string_arg(&args[4]),
+            }))
+        }
+        "HSETANDGET" | "CPCSETANDGET" | "FOLSETANDGET" if args.len() == 7 => {
+            let timestamp_ms = match parse_u64(&args[2], "timestamp_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let amount = match parse_i64_arg(&args[3], "amount") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let start_ms = match parse_u64(&args[4], "start_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let end_ms = match parse_u64(&args[5], "end_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            integer_response(execute(Command::RiskSetAndGet {
+                family: risk_family_for_command(&command),
+                key: string_arg(&args[1]),
+                timestamp_ms,
+                amount,
+                start_ms,
+                end_ms,
+                aggregator: string_arg(&args[6]),
+            }))
+        }
+        "RISKMANAGER" if args.len() == 2 => hash_entries_response(execute(Command::RiskManager {
+            key: string_arg(&args[1]),
+        })),
         _ => RespValue::Error(format!("ERR unsupported command or arity: {command}")),
+    }
+}
+
+fn risk_family_for_command(command: &str) -> RiskFamily {
+    if command.starts_with("CPC") {
+        RiskFamily::Cpc
+    } else if command.starts_with("FOL") {
+        RiskFamily::Fol
+    } else {
+        RiskFamily::H
     }
 }
 
@@ -1189,6 +1262,24 @@ fn feature_points_response(result: Result<CommandResponse, String>) -> RespValue
     match result {
         Ok(CommandResponse::FeaturePoints { points }) => feature_points_value(points),
         Ok(_) => RespValue::Error("ERR invalid feature points response".to_string()),
+        Err(err) => RespValue::Error(format!("ERR {err}")),
+    }
+}
+
+fn hash_entries_response(result: Result<CommandResponse, String>) -> RespValue {
+    match result {
+        Ok(CommandResponse::HashEntries { entries }) => RespValue::Array(
+            entries
+                .into_iter()
+                .flat_map(|(field, value)| {
+                    [
+                        RespValue::Bulk(Some(field.into_bytes())),
+                        RespValue::Bulk(Some(value)),
+                    ]
+                })
+                .collect(),
+        ),
+        Ok(_) => RespValue::Error("ERR invalid hash entries response".to_string()),
         Err(err) => RespValue::Error(format!("ERR {err}")),
     }
 }
@@ -1670,6 +1761,55 @@ mod tests {
                 RespValue::Integer(1000),
                 RespValue::Bulk(Some(b"7".to_vec())),
             ])])
+        );
+        assert_eq!(
+            run(vec!["RISKHSET", "risk-cpp", "10", "5"]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(
+            run(vec!["HSETANDGET", "risk-cpp", "20", "7", "0", "30", "sum"]),
+            RespValue::Integer(12)
+        );
+        assert_eq!(
+            run(vec!["CPCSET", "risk-cpp", "10", "3"]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(
+            run(vec![
+                "CPCSETANDGET",
+                "risk-cpp",
+                "20",
+                "4",
+                "0",
+                "30",
+                "sum"
+            ]),
+            RespValue::Integer(7)
+        );
+        assert_eq!(
+            run(vec!["FOLSET", "risk-cpp", "10", "11"]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(
+            run(vec!["FOLQUERY", "risk-cpp", "0", "30", "sum"]),
+            RespValue::Integer(11)
+        );
+        assert_eq!(
+            run(vec!["RISKMANAGER", "risk-cpp"]),
+            RespValue::Array(vec![
+                RespValue::Bulk(Some(b"h_events".to_vec())),
+                RespValue::Bulk(Some(b"2".to_vec())),
+                RespValue::Bulk(Some(b"h_sum".to_vec())),
+                RespValue::Bulk(Some(b"12".to_vec())),
+                RespValue::Bulk(Some(b"cpc_events".to_vec())),
+                RespValue::Bulk(Some(b"2".to_vec())),
+                RespValue::Bulk(Some(b"cpc_sum".to_vec())),
+                RespValue::Bulk(Some(b"7".to_vec())),
+                RespValue::Bulk(Some(b"fol_events".to_vec())),
+                RespValue::Bulk(Some(b"1".to_vec())),
+                RespValue::Bulk(Some(b"fol_sum".to_vec())),
+                RespValue::Bulk(Some(b"11".to_vec())),
+            ])
         );
     }
 

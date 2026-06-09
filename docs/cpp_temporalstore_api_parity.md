@@ -104,9 +104,16 @@ Risk:
 - count/sum window -> `RiskCount`
 - aggregate query -> `RiskQuery` with `sum`, `min`, `max`, `first`, `last`, and `events`
 - detail list -> `RiskDetail`
+- C++-named family commands -> `RiskSet`, `RiskFamilyQuery`, `RiskSetAndGet`, and
+  `RiskManager` for the `h`, `cpc`, and `fol` risk families
 - Typed client coverage: `risk_increment`, `risk_increment_with_options`, `risk_count`,
-  `risk_query`, `risk_detail`
+  `risk_query`, `risk_detail`, `risk_family_set`, `risk_family_query`,
+  `risk_family_set_and_get`, and `risk_manager`
 - RESP coverage: `RISKINCR`, `RISKINCROPT`, `RISKCOUNT`, `RISKQUERY`, `RISKDETAIL`
+  plus C++-style `RISKHSET`, `HQUERY`, `HSETANDGET`, `CPCSET`, `CPCQUERY`,
+  `CPCSETANDGET`, `FOLSET`, `FOLQUERY`, `FOLSETANDGET`, and `RISKMANAGER`.
+  `RISKHSET` is used for H-family set-only writes in RESP so normal Redis `HSET`
+  remains hash-compatible.
 
 Runtime/control surface:
 
@@ -147,8 +154,10 @@ Risk:
 - Rust covers increment, precision/TTL increment, count, sum/min/max/first/last/event aggregation,
   and detail lists, with typed client and RESP coverage.
 - C++ risk has `HSET`, `HQUERY`, `CPCSET`, `CPCQUERY`, `FOLSET`, `FOLQUERY`,
-  `HSETANDGET`, `FOLSETANDGET`, `CPCSETANDGET`, and `MANAGER`.
-- Missing C++ semantics include CPC/list-specific behavior and manager/debug operations.
+  `HSETANDGET`, `FOLSETANDGET`, `CPCSETANDGET`, and `MANAGER`. Rust now covers
+  those command shapes for local integer-window behavior and a manager summary.
+- Missing C++ semantics include deeper CPC/list-specific internals and production
+  manager/debug operations beyond the local summary.
 
 Feature:
 

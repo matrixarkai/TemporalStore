@@ -210,7 +210,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "exact C++ Feature nested point/proto semantics and aggregate edge cases"
                     .to_string(),
                 "IPS production snap metadata and server aggregation behavior".to_string(),
-                "Risk CPC/list-specific behavior and manager APIs".to_string(),
+                "Risk production CPC/list internals and full manager/debug APIs".to_string(),
                 "C++ golden corpus compatibility suite".to_string(),
             ],
         },

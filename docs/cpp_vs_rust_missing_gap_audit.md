@@ -234,7 +234,7 @@ The Rust data node also has a first runtime layer around `TemporalEngine`: worke
 | Feature | richer feature proto semantics | append/query/replace/delete/agg, write-policy append, 5k long-sequence coverage | nested point arrays, exact aggregate semantics |
 | Sequence | C++ feature/data-module behavior | typed rows, timestamp ordering, filters, count, batch query | exact C++ filters/options and edge-case policy |
 | IPS | rich IPS add/query/remove/load/delete/stat/filter/snap | add, idempotent/dimensional add, query-last, query range, dimension-filtered range, batch query-last, remove timestamp, delete key, count range, load, range snapshot, stats, and named filter; typed client and RESP coverage | production snap metadata and server aggregation |
-| Risk | H/CPC/FOL query/update/manager semantics | increment/count plus precision/TTL increment, sum/min/max/first/last/event aggregation and detail list; typed client and RESP coverage | CPC/list-specific behavior, manager APIs |
+| Risk | H/CPC/FOL query/update/manager semantics | increment/count plus precision/TTL increment, sum/min/max/first/last/event aggregation, detail list, H/CPC/FOL family set/query/set-and-get command shape, and local manager summary; typed client and RESP coverage | production CPC/list internals and full manager/debug APIs |
 | Redis | not the main C++ wire API; C++ server also exposes admin commands such as `INFO`, `CONFIG`, `SLAVEOF`, and `PARTITION` | useful RESP compatibility, including `SET NX/XX GET EX/PX`, hash/set commands, feature commands, C++-style `INFO`/`CONFIG`/`SLAVEOF`/`AUTH`/`BGSAVE`/`PARTITION` smoke commands, and CRC64 slot/hash helpers | sorted sets/lists if needed; real partition-manager backing for admin commands |
 | Metrics | production metrics/logging | Prometheus `/metrics` for shard/cache/page/oplog/runtime plus snapshot metric names; local raft metrics renderer | dashboards and alerts |
 | Deployment | internal production environment | Docker and existing-EKS Terraform skeleton | service discovery, autoscale controller, rolling upgrade, runbooks, auth/TLS |
@@ -256,7 +256,7 @@ These cannot be honestly marked done yet:
 
 - exact C++ Feature proto nested point and aggregate semantics
 - remaining IPS module details: production snap metadata and server aggregation
-- remaining Risk module details: CPC/list-specific behavior and manager APIs
+- remaining Risk module details: production CPC/list internals and full manager/debug APIs
 - binary/protobuf oplog and index-log formats
 - page compaction and C++-style page rewrite garbage collection
 - production cache backend

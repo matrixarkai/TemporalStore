@@ -200,6 +200,14 @@ pub struct IpsStats {
     pub table_id_counts: Vec<(u64, u64)>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RiskFamily {
+    H,
+    Cpc,
+    Fol,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Command {
@@ -451,6 +459,31 @@ pub enum Command {
         end_ms: u64,
         #[serde(default)]
         count: Option<usize>,
+    },
+    RiskSet {
+        family: RiskFamily,
+        key: String,
+        timestamp_ms: u64,
+        amount: i64,
+    },
+    RiskSetAndGet {
+        family: RiskFamily,
+        key: String,
+        timestamp_ms: u64,
+        amount: i64,
+        start_ms: u64,
+        end_ms: u64,
+        aggregator: String,
+    },
+    RiskFamilyQuery {
+        family: RiskFamily,
+        key: String,
+        start_ms: u64,
+        end_ms: u64,
+        aggregator: String,
+    },
+    RiskManager {
+        key: String,
     },
 }
 
