@@ -79,6 +79,8 @@ pub struct RaftSnapshot {
     pub shard_id: ShardId,
     pub last_included_term: u64,
     pub last_included_index: u64,
+    #[serde(default)]
+    pub external_snapshot_ref: Option<RaftExternalSnapshotRef>,
     pub entries: Vec<RaftLogEntry>,
 }
 
@@ -3721,6 +3723,8 @@ impl RaftCluster {
             .nodes
             .get(&inner.leader_id)
             .ok_or(RaftError::LeaderUnavailable)?;
+        let mut snapshot = self.create_snapshot()?;
+        snapshot.external_snapshot_ref = external_snapshot_ref.clone();
         Ok(InstallSnapshotRequest {
             rpc: None,
             shard_id: inner.shard_id,
@@ -3728,7 +3732,7 @@ impl RaftCluster {
             leader_id: inner.leader_id,
             target_id,
             external_snapshot_ref,
-            snapshot: self.create_snapshot()?,
+            snapshot,
         })
     }
 
@@ -3966,6 +3970,7 @@ impl RaftCluster {
                 shard_id: request.shard_id,
                 last_included_term: request.last_included_term,
                 last_included_index: request.last_included_index,
+                external_snapshot_ref: None,
                 entries,
             },
         )?;
@@ -4004,6 +4009,7 @@ impl RaftCluster {
             shard_id: inner.shard_id,
             last_included_term,
             last_included_index: leader.commit_index,
+            external_snapshot_ref: None,
             entries,
         })
     }
@@ -4096,8 +4102,13 @@ impl RaftCluster {
             &local_snapshot.manifest,
             &snapshot_bytes,
         )?;
-        let snapshot = serde_json::from_slice::<RaftSnapshot>(&snapshot_bytes)
+        let mut snapshot = serde_json::from_slice::<RaftSnapshot>(&snapshot_bytes)
             .map_err(|err| RaftError::SnapshotEncoding(err.to_string()))?;
+        snapshot.external_snapshot_ref = Some(RaftExternalSnapshotRef {
+            uri: snapshot_ref.uri.clone(),
+            checksum: snapshot_ref.checksum.clone(),
+            byte_size: snapshot_ref.byte_size,
+        });
         self.install_snapshot(target_id, snapshot.clone())?;
         {
             let mut inner = self.inner.write().expect("raft cluster lock poisoned");
@@ -4140,36 +4151,42 @@ impl RaftCluster {
             });
         }
         let shard_id = inner.shard_id;
-        let node = inner
-            .nodes
-            .get_mut(&node_id)
-            .ok_or(RaftError::NodeNotFound(node_id))?;
-        if snapshot.last_included_index < node.commit_index {
-            return Err(RaftError::StaleSnapshot {
-                snapshot_index: snapshot.last_included_index,
-                local_commit_index: node.commit_index,
-            });
-        }
+        let external_snapshot_ref = snapshot.external_snapshot_ref.clone();
+        {
+            let node = inner
+                .nodes
+                .get_mut(&node_id)
+                .ok_or(RaftError::NodeNotFound(node_id))?;
+            if snapshot.last_included_index < node.commit_index {
+                return Err(RaftError::StaleSnapshot {
+                    snapshot_index: snapshot.last_included_index,
+                    local_commit_index: node.commit_index,
+                });
+            }
 
-        let engine = TemporalEngine::default();
-        engine.load_shard(shard_id);
-        for entry in &snapshot.entries {
-            engine.execute(ExecuteRequest {
-                shard_id: entry.shard_id,
-                command: entry.command.clone(),
-            });
-        }
+            let engine = TemporalEngine::default();
+            engine.load_shard(shard_id);
+            for entry in &snapshot.entries {
+                engine.execute(ExecuteRequest {
+                    shard_id: entry.shard_id,
+                    command: entry.command.clone(),
+                });
+            }
 
-        node.engine = engine;
-        node.current_term = node.current_term.max(snapshot.last_included_term);
-        node.commit_index = snapshot.last_included_index;
-        node.log
-            .retain(|entry| entry.index > snapshot.last_included_index);
-        node.applied.clear();
-        node.applied
-            .extend(snapshot.entries.iter().map(|entry| entry.index));
-        node.applied_index = snapshot.last_included_index;
-        node.installed_snapshot = Some(snapshot);
+            node.engine = engine;
+            node.current_term = node.current_term.max(snapshot.last_included_term);
+            node.commit_index = snapshot.last_included_index;
+            node.log
+                .retain(|entry| entry.index > snapshot.last_included_index);
+            node.applied.clear();
+            node.applied
+                .extend(snapshot.entries.iter().map(|entry| entry.index));
+            node.applied_index = snapshot.last_included_index;
+            node.installed_snapshot = Some(snapshot);
+        }
+        if let Some(snapshot_ref) = external_snapshot_ref {
+            inner.latest_external_snapshot_ref = Some(snapshot_ref);
+        }
         inner.persist_configured_wal()?;
         Ok(())
     }
@@ -6974,6 +6991,10 @@ mod tests {
             .build_install_snapshot_request_with_external_ref(3, Some(snapshot_ref.clone()))
             .unwrap();
         assert_eq!(request.external_snapshot_ref, Some(snapshot_ref));
+        assert_eq!(
+            request.snapshot.external_snapshot_ref,
+            request.external_snapshot_ref
+        );
         let response = cluster.receive_install_snapshot(request).unwrap();
         assert!(response.success);
         assert_eq!(response.last_included_index, 1);
@@ -7051,6 +7072,10 @@ mod tests {
             .build_install_snapshot_request_with_policy(3, policy, Some(snapshot_ref.clone()))
             .unwrap();
         assert_eq!(request.external_snapshot_ref, Some(snapshot_ref));
+        assert_eq!(
+            request.snapshot.external_snapshot_ref,
+            request.external_snapshot_ref
+        );
     }
 
     #[tokio::test]
@@ -7150,6 +7175,13 @@ mod tests {
                 value: Some(b"log-value".to_vec())
             })
         );
+        let installed_ref = cluster
+            .wal_records()
+            .into_iter()
+            .find(|(node_id, _)| *node_id == 3)
+            .and_then(|(_, record)| record.installed_snapshot)
+            .and_then(|snapshot| snapshot.external_snapshot_ref);
+        assert_eq!(installed_ref, Some(report.raft_ref.clone()));
         let restored = RaftCluster::restore_single_shard_from_wal(
             tmp.path().join("wal"),
             22,
