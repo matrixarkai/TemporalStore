@@ -194,6 +194,12 @@ pub struct DeterministicTaskScheduler {
     next_task_id: u64,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskSchedulerSnapshot {
+    pub tasks: Vec<SchedulerTask>,
+    pub next_task_id: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RebalanceOptions {
     pub max_moves_per_round: usize,
@@ -242,6 +248,8 @@ pub enum RebalanceError {
     TaskNotFound(u64),
     #[error("scheduler inflight limit is zero")]
     InvalidSchedulerInflight,
+    #[error("scheduler snapshot is corrupt: {0}")]
+    CorruptSchedulerSnapshot(String),
 }
 
 impl DeterministicTaskScheduler {
@@ -269,6 +277,52 @@ impl DeterministicTaskScheduler {
         let mut tasks = self.queue.values().cloned().collect::<Vec<_>>();
         tasks.sort_by_key(|task| (task.priority, task.next_run_time_ms, task.id));
         tasks
+    }
+
+    pub fn export_snapshot(&self) -> TaskSchedulerSnapshot {
+        TaskSchedulerSnapshot {
+            tasks: self.snapshot(),
+            next_task_id: self.next_task_id,
+        }
+    }
+
+    pub fn encode_snapshot(&self) -> Result<Vec<u8>, RebalanceError> {
+        serde_json::to_vec(&self.export_snapshot())
+            .map_err(|err| RebalanceError::CorruptSchedulerSnapshot(err.to_string()))
+    }
+
+    pub fn restore_snapshot(snapshot: TaskSchedulerSnapshot) -> Result<Self, RebalanceError> {
+        let mut queue = BTreeMap::new();
+        let mut max_task_id = 0;
+        for task in snapshot.tasks {
+            max_task_id = max_task_id.max(task.id);
+            if queue.insert(task.id, task).is_some() {
+                return Err(RebalanceError::CorruptSchedulerSnapshot(
+                    "duplicate task id".to_string(),
+                ));
+            }
+        }
+        Ok(Self {
+            queue,
+            next_task_id: snapshot.next_task_id.max(max_task_id + 1),
+        })
+    }
+
+    pub fn decode_snapshot(bytes: &[u8]) -> Result<Self, RebalanceError> {
+        let snapshot = serde_json::from_slice(bytes)
+            .map_err(|err| RebalanceError::CorruptSchedulerSnapshot(err.to_string()))?;
+        Self::restore_snapshot(snapshot)
+    }
+
+    pub fn has_update_membership_task(&self, shard_id: ShardId, membership_version: u64) -> bool {
+        self.queue.values().any(|task| {
+            matches!(
+                &task.kind,
+                SchedulerTaskKind::UpdateMembership(plan)
+                    if plan.shard_id == shard_id
+                        && plan.membership_version == membership_version
+            )
+        })
     }
 
     pub fn pop_first_available(&mut self, now_ms: u64) -> Option<SchedulerTask> {
@@ -659,6 +713,50 @@ impl RebalanceController {
         }
     }
 
+    pub fn repair_broken_membership_tasks(
+        &self,
+        scheduler: &mut DeterministicTaskScheduler,
+        now_ms: u64,
+        priority: i32,
+    ) -> Result<Vec<SchedulerTask>, RebalanceError> {
+        let mut repaired = Vec::new();
+        let mut shard_ids = self
+            .replicas
+            .values()
+            .filter(|replica| replica.state == ShardReplicaState::Freezing)
+            .map(|replica| replica.shard_id)
+            .collect::<Vec<_>>();
+        shard_ids.sort_unstable();
+        shard_ids.dedup();
+
+        for shard_id in shard_ids {
+            let active_replica_ids = self.active_replica_ids(shard_id);
+            let Some(primary_replica_id) = self.primary_replica_id(shard_id) else {
+                continue;
+            };
+            if scheduler.has_update_membership_task(shard_id, self.membership_version) {
+                continue;
+            }
+            let plan = self.plan_membership_update_task(
+                primary_replica_id,
+                active_replica_ids,
+                primary_replica_id,
+                self.membership_version,
+                MembershipUpdateTaskOptions {
+                    success_threshold: 1,
+                    submit_fsm: true,
+                    ..MembershipUpdateTaskOptions::default()
+                },
+            )?;
+            repaired.push(scheduler.submit(
+                priority,
+                now_ms,
+                SchedulerTaskKind::UpdateMembership(plan),
+            ));
+        }
+        Ok(repaired)
+    }
+
     pub fn rollback_move(&mut self, target_replica_id: u64) -> Result<(), RebalanceError> {
         let target = self
             .replicas
@@ -898,6 +996,96 @@ mod tests {
         };
         assert_eq!(next.id, task.id);
         assert_eq!(next.kind, SchedulerTaskKind::UpdateMembership(plan));
+    }
+
+    #[test]
+    fn task_scheduler_snapshot_restores_pending_retry_state() {
+        let mut scheduler = DeterministicTaskScheduler::default();
+        let task = scheduler.submit(
+            0,
+            10,
+            SchedulerTaskKind::RebalanceStep(RebalanceStep::FreezeSource {
+                shard_id: 7,
+                replica_id: 2,
+                node_id: 2,
+            }),
+        );
+        let retry = scheduler
+            .run_next(
+                20,
+                SchedulerTaskResult::RetryLater,
+                TaskSchedulerOptions {
+                    base_postpone_ms: 100,
+                    max_postpone_ms: 1_000,
+                    max_retry_times: 3,
+                    max_inflight: 1,
+                },
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(retry.next_run_time_ms, Some(120));
+
+        let encoded = scheduler.encode_snapshot().unwrap();
+        let mut restored = DeterministicTaskScheduler::decode_snapshot(&encoded).unwrap();
+        assert!(restored.pop_first_available(119).is_none());
+        let restored_task = restored.pop_first_available(120).unwrap();
+        assert_eq!(restored_task.id, task.id);
+        assert_eq!(restored_task.retry_times, 1);
+        assert_eq!(restored_task.last_run_time_ms, 20);
+    }
+
+    #[test]
+    fn repair_broken_membership_tasks_resubmits_freezing_shards() {
+        let mut controller = RebalanceController::with_replicas([
+            replica(1, 10, 1, ShardRole::Primary),
+            replica(2, 10, 2, ShardRole::Secondary),
+            replica(3, 20, 1, ShardRole::Primary),
+            replica(4, 20, 2, ShardRole::Secondary),
+        ]);
+        let plan = ShardMovePlan {
+            shard_id: 10,
+            source_replica_id: 2,
+            source_node_id: 2,
+            target_replica_id: 5,
+            target_node_id: 3,
+            load_version: 2,
+        };
+        controller.begin_move(&plan).unwrap();
+        controller
+            .finish_target_load(plan.target_replica_id)
+            .unwrap();
+        assert_eq!(controller.membership_version(), 2);
+
+        let mut scheduler = DeterministicTaskScheduler::default();
+        let repaired = controller
+            .repair_broken_membership_tasks(&mut scheduler, 100, 0)
+            .unwrap();
+        assert_eq!(repaired.len(), 1);
+        assert_eq!(scheduler.queue_len(), 1);
+        let SchedulerTaskKind::UpdateMembership(task_plan) = &repaired[0].kind else {
+            panic!("expected update membership task");
+        };
+        assert_eq!(task_plan.shard_id, 10);
+        assert_eq!(task_plan.membership_version, 2);
+        assert_eq!(task_plan.primary_replica_id, 1);
+        assert_eq!(task_plan.active_replica_ids, vec![1, 2, 5]);
+
+        let report = controller.evaluate_membership_update_task(
+            task_plan.clone(),
+            [MembershipUpdatePeerStatus::Ok],
+            MembershipUpdateTaskOptions {
+                success_threshold: 1,
+                submit_fsm: true,
+                ..MembershipUpdateTaskOptions::default()
+            },
+        );
+        assert!(report.accepted);
+        assert!(report.should_submit_fsm);
+
+        let duplicate = controller
+            .repair_broken_membership_tasks(&mut scheduler, 200, 0)
+            .unwrap();
+        assert!(duplicate.is_empty());
     }
 
     #[test]

@@ -118,6 +118,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "C++-style deterministic metaserver task scheduler model covers priority ordering, retry-later backoff, abort, and UpdateMembership task enqueue"
                     .to_string(),
+                "scheduler task queue can be snapshotted/restored and freezing shard replicas can be repaired into UpdateMembership tasks"
+                    .to_string(),
                 "chunked snapshot message assembly and stale snapshot rejection are tested"
                     .to_string(),
                 "external snapshot transfer policy, leader upload, metaserver snapshot-ref recording, URI download, install, and Raft catch-up are tested"
