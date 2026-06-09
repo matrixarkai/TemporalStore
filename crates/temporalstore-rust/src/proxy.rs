@@ -1,13 +1,11 @@
-use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::http::{
-    get_json_with_options, post_json_with_options, HttpError, HttpRequest, HttpRequestOptions,
-};
+use crate::client::{ClientOptions, ClientStats, RequestOptions, TemporalStoreClient};
+use crate::http::{get_json_with_options, post_json_with_options, HttpRequest, HttpRequestOptions};
 use crate::meta::GetShardResponse;
 use crate::meta::{
     AckResponse, ProxyHeartbeatRequest, ProxyHeartbeatResponse, RegisterProxyRequest,
@@ -113,32 +111,19 @@ pub struct ProxyService {
 #[derive(Debug)]
 struct ProxyInner {
     options: RwLock<ProxyOptions>,
-    routes: RwLock<HashMap<ShardId, CachedRoute>>,
-    backend_failures: RwLock<HashMap<String, BackendFailureState>>,
+    client: RwLock<TemporalStoreClient>,
+    last_client_stats: RwLock<ClientStats>,
     stats: RwLock<ProxyStats>,
     boot_time_ms: u64,
-}
-
-#[derive(Debug, Clone)]
-struct CachedRoute {
-    server_addr: String,
-    fetched_at: Instant,
-}
-
-#[derive(Debug, Clone)]
-struct BackendFailureState {
-    first_failed_at: Instant,
-    last_failed_at: Instant,
-    consecutive_failures: u64,
 }
 
 impl ProxyService {
     pub fn new(options: ProxyOptions) -> Self {
         Self {
             inner: Arc::new(ProxyInner {
+                client: RwLock::new(proxy_client_from_options(&options)),
                 options: RwLock::new(options),
-                routes: RwLock::default(),
-                backend_failures: RwLock::default(),
+                last_client_stats: RwLock::default(),
                 stats: RwLock::default(),
                 boot_time_ms: now_ms(),
             }),
@@ -204,36 +189,12 @@ impl ProxyService {
             .write()
             .expect("proxy stats lock poisoned")
             .execute_requests += 1;
-        match self.resolve_route(request.shard_id, false) {
-            Ok(server_addr) => match self.post_execute(&server_addr, &request) {
-                Ok(response) => response,
-                Err(err) => {
-                    self.record_backend_failure(&server_addr);
-                    self.inner
-                        .stats
-                        .write()
-                        .expect("proxy stats lock poisoned")
-                        .backend_errors += 1;
-                    if self.options().refresh_route_on_backend_error {
-                        match self.resolve_route(request.shard_id, true) {
-                            Ok(refreshed) => self
-                                .post_execute(&refreshed, &request)
-                                .map(|response| {
-                                    self.record_backend_success(&refreshed);
-                                    response
-                                })
-                                .unwrap_or_else(|err| {
-                                    execute_error("server_error", err.to_string())
-                                }),
-                            Err(status) => execute_error(status.code, status.message),
-                        }
-                    } else {
-                        execute_error("server_error", err.to_string())
-                    }
-                }
-            },
-            Err(status) => execute_error(status.code, status.message),
-        }
+        let response = self
+            .client()
+            .execute_with_options(request, RequestOptions::default())
+            .unwrap_or_else(|err| execute_error("server_error", err.to_string()));
+        self.sync_client_stats();
+        response
     }
 
     pub fn batch_execute(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
@@ -242,64 +203,33 @@ impl ProxyService {
             .write()
             .expect("proxy stats lock poisoned")
             .batch_execute_requests += 1;
-        match self.resolve_route(request.shard_id, false) {
-            Ok(server_addr) => match self.post_batch_execute(&server_addr, &request) {
-                Ok(response) => response,
-                Err(err) => {
-                    self.record_backend_failure(&server_addr);
-                    self.inner
-                        .stats
-                        .write()
-                        .expect("proxy stats lock poisoned")
-                        .backend_errors += 1;
-                    if self.options().refresh_route_on_backend_error {
-                        match self.resolve_route(request.shard_id, true) {
-                            Ok(refreshed) => self
-                                .post_batch_execute(&refreshed, &request)
-                                .map(|response| {
-                                    self.record_backend_success(&refreshed);
-                                    response
-                                })
-                                .unwrap_or_else(|err| BatchExecuteResponse {
-                                    status: Status::error("server_error", err.to_string()),
-                                    responses: Vec::new(),
-                                }),
-                            Err(status) => BatchExecuteResponse {
-                                status,
-                                responses: Vec::new(),
-                            },
-                        }
-                    } else {
-                        BatchExecuteResponse {
-                            status: Status::error("server_error", err.to_string()),
-                            responses: Vec::new(),
-                        }
-                    }
-                }
-            },
-            Err(status) => BatchExecuteResponse {
-                status,
+        let response = self
+            .client()
+            .batch_execute_with_options(request, RequestOptions::default())
+            .unwrap_or_else(|err| BatchExecuteResponse {
+                status: Status::error("server_error", err.to_string()),
                 responses: Vec::new(),
-            },
-        }
+            });
+        self.sync_client_stats();
+        response
     }
 
     pub fn update_options(&self, options: ProxyOptions) {
         *self
             .inner
+            .client
+            .write()
+            .expect("proxy client lock poisoned") = proxy_client_from_options(&options);
+        *self
+            .inner
+            .last_client_stats
+            .write()
+            .expect("proxy client stats lock poisoned") = ClientStats::default();
+        *self
+            .inner
             .options
             .write()
             .expect("proxy options lock poisoned") = options;
-        self.inner
-            .routes
-            .write()
-            .expect("proxy routes lock poisoned")
-            .clear();
-        self.inner
-            .backend_failures
-            .write()
-            .expect("proxy backend failure lock poisoned")
-            .clear();
     }
 
     pub fn info(&self) -> ProxyInfo {
@@ -307,12 +237,7 @@ impl ProxyService {
         ProxyInfo {
             status: Status::ok(),
             meta_addr: options.meta_addr,
-            route_cache_size: self
-                .inner
-                .routes
-                .read()
-                .expect("proxy routes lock poisoned")
-                .len(),
+            route_cache_size: self.client().route_cache_size(),
             stats: *self.inner.stats.read().expect("proxy stats lock poisoned"),
             boot_time_ms: self.inner.boot_time_ms,
         }
@@ -325,12 +250,7 @@ impl ProxyService {
             boot_time_ms: self.inner.boot_time_ms,
             meta_addr: options.meta_addr.clone(),
             config_version: proxy_config_version(&options),
-            route_cache_size: self
-                .inner
-                .routes
-                .read()
-                .expect("proxy routes lock poisoned")
-                .len(),
+            route_cache_size: self.client().route_cache_size(),
             stats: *self.inner.stats.read().expect("proxy stats lock poisoned"),
         }
     }
@@ -415,68 +335,6 @@ impl ProxyService {
         })
     }
 
-    fn resolve_route(&self, shard_id: ShardId, force_refresh: bool) -> Result<String, Status> {
-        let options = self.options();
-        let ttl = Duration::from_millis(options.route_cache_ttl_ms);
-        if !force_refresh {
-            if let Some(route) = self
-                .inner
-                .routes
-                .read()
-                .expect("proxy routes lock poisoned")
-                .get(&shard_id)
-                .cloned()
-            {
-                if route.fetched_at.elapsed() <= ttl {
-                    if self.backend_failure_is_continuous(
-                        &route.server_addr,
-                        options.backend_continuous_failed_time_ms,
-                    ) {
-                        self.inner
-                            .stats
-                            .write()
-                            .expect("proxy stats lock poisoned")
-                            .continuous_backend_failures += 1;
-                    } else {
-                        self.inner
-                            .stats
-                            .write()
-                            .expect("proxy stats lock poisoned")
-                            .route_cache_hits += 1;
-                        return Ok(route.server_addr);
-                    }
-                }
-            }
-        }
-        self.inner
-            .stats
-            .write()
-            .expect("proxy stats lock poisoned")
-            .route_cache_misses += 1;
-        let response = self.get_shard(shard_id, true)?;
-        let server_addr = response
-            .location
-            .ok_or_else(|| Status::error("shard_not_found", "shard is not registered"))?
-            .server_addr;
-        self.inner
-            .routes
-            .write()
-            .expect("proxy routes lock poisoned")
-            .insert(
-                shard_id,
-                CachedRoute {
-                    server_addr: server_addr.clone(),
-                    fetched_at: Instant::now(),
-                },
-            );
-        self.inner
-            .stats
-            .write()
-            .expect("proxy stats lock poisoned")
-            .route_refreshes += 1;
-        Ok(server_addr)
-    }
-
     fn get_shard(&self, shard_id: ShardId, count_error: bool) -> Result<GetShardResponse, Status> {
         let options = self.options();
         get_json_with_options::<GetShardResponse>(
@@ -503,27 +361,34 @@ impl ProxyService {
         })
     }
 
-    fn post_execute(
-        &self,
-        server_addr: &str,
-        request: &ExecuteRequest,
-    ) -> Result<ExecuteResponse, HttpError> {
-        let options = self.options();
-        post_json_with_options(server_addr, "/execute", request, options.http_options())
+    fn client(&self) -> TemporalStoreClient {
+        self.inner
+            .client
+            .read()
+            .expect("proxy client lock poisoned")
+            .clone()
     }
 
-    fn post_batch_execute(
-        &self,
-        server_addr: &str,
-        request: &BatchExecuteRequest,
-    ) -> Result<BatchExecuteResponse, HttpError> {
-        let options = self.options();
-        post_json_with_options(
-            server_addr,
-            "/batch_execute",
-            request,
-            options.http_options(),
-        )
+    fn sync_client_stats(&self) {
+        let current = self.client().stats();
+        let mut last = self
+            .inner
+            .last_client_stats
+            .write()
+            .expect("proxy client stats lock poisoned");
+        let mut stats = self.inner.stats.write().expect("proxy stats lock poisoned");
+        stats.route_cache_hits += current
+            .route_cache_hits
+            .saturating_sub(last.route_cache_hits);
+        stats.route_cache_misses += current
+            .route_cache_misses
+            .saturating_sub(last.route_cache_misses);
+        stats.route_refreshes += current.route_refreshes.saturating_sub(last.route_refreshes);
+        stats.backend_errors += current.backend_errors.saturating_sub(last.backend_errors);
+        stats.continuous_backend_failures += current
+            .continuous_backend_failures
+            .saturating_sub(last.continuous_backend_failures);
+        *last = current;
     }
 
     fn options(&self) -> ProxyOptions {
@@ -532,59 +397,6 @@ impl ProxyService {
             .read()
             .expect("proxy options lock poisoned")
             .clone()
-    }
-
-    fn record_backend_failure(&self, server_addr: &str) {
-        let options = self.options();
-        let mut failures = self
-            .inner
-            .backend_failures
-            .write()
-            .expect("proxy backend failure lock poisoned");
-        let now = Instant::now();
-        let state =
-            failures
-                .entry(server_addr.to_string())
-                .or_insert_with(|| BackendFailureState {
-                    first_failed_at: now,
-                    last_failed_at: now,
-                    consecutive_failures: 0,
-                });
-        state.last_failed_at = now;
-        state.consecutive_failures += 1;
-        if state.first_failed_at.elapsed()
-            >= Duration::from_millis(options.backend_continuous_failed_time_ms)
-        {
-            self.inner
-                .stats
-                .write()
-                .expect("proxy stats lock poisoned")
-                .continuous_backend_failures += 1;
-        }
-    }
-
-    fn record_backend_success(&self, server_addr: &str) {
-        self.inner
-            .backend_failures
-            .write()
-            .expect("proxy backend failure lock poisoned")
-            .remove(server_addr);
-    }
-
-    fn backend_failure_is_continuous(
-        &self,
-        server_addr: &str,
-        continuous_failed_time_ms: u64,
-    ) -> bool {
-        self.inner
-            .backend_failures
-            .read()
-            .expect("proxy backend failure lock poisoned")
-            .get(server_addr)
-            .map(|state| {
-                state.first_failed_at.elapsed() >= Duration::from_millis(continuous_failed_time_ms)
-            })
-            .unwrap_or(false)
     }
 
     fn inc_bad_request(&self) {
@@ -614,6 +426,19 @@ fn now_ms() -> u64 {
         .unwrap_or_default()
 }
 
+fn proxy_client_from_options(options: &ProxyOptions) -> TemporalStoreClient {
+    TemporalStoreClient::with_options(ClientOptions {
+        proxy_addr: options.proxy_addr.clone(),
+        meta_addr: Some(options.meta_addr.clone()),
+        connect_timeout_ms: options.connect_timeout_ms,
+        io_timeout_ms: options.io_timeout_ms,
+        max_retries: options.max_retries,
+        route_cache_ttl_ms: options.route_cache_ttl_ms,
+        topo_error_retry_interval_ms: options.backend_continuous_failed_time_ms,
+        ..ClientOptions::default()
+    })
+}
+
 fn proxy_config_version(options: &ProxyOptions) -> u64 {
     let mut version = 1469598103934665603u64;
     for byte in serde_json::to_vec(options).unwrap_or_default() {
@@ -630,6 +455,7 @@ mod tests {
     use crate::http::{json_response, parse_json, serve};
     use crate::meta::ShardLocation;
     use crate::types::Command;
+    use std::time::Instant;
 
     #[test]
     fn proxy_caches_route_and_forwards_execute() {
@@ -708,13 +534,9 @@ mod tests {
             io_timeout_ms: 200,
             ..ProxyOptions::default()
         });
-        proxy.inner.routes.write().unwrap().insert(
-            1,
-            CachedRoute {
-                server_addr: "127.0.0.1:1".to_string(),
-                fetched_at: Instant::now(),
-            },
-        );
+        proxy
+            .client()
+            .insert_cached_route_for_test(1, "127.0.0.1:1");
 
         let response = proxy.execute(ExecuteRequest {
             shard_id: 1,
@@ -753,21 +575,12 @@ mod tests {
             io_timeout_ms: 200,
             ..ProxyOptions::default()
         });
-        proxy.inner.routes.write().unwrap().insert(
-            1,
-            CachedRoute {
-                server_addr: bad_server.clone(),
-                fetched_at: Instant::now(),
-            },
-        );
-        proxy.inner.backend_failures.write().unwrap().insert(
-            bad_server,
-            BackendFailureState {
-                first_failed_at: Instant::now() - Duration::from_millis(20),
-                last_failed_at: Instant::now() - Duration::from_millis(10),
-                consecutive_failures: 3,
-            },
-        );
+        proxy
+            .client()
+            .insert_cached_route_for_test(1, bad_server.clone());
+        proxy
+            .client()
+            .insert_backend_failure_for_test(bad_server, 20, 10, 3);
 
         let response = proxy.execute(ExecuteRequest {
             shard_id: 1,

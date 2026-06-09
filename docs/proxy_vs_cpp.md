@@ -32,9 +32,10 @@ Rust now has a reusable `ProxyService`:
 - `/health`
 - `/proxy/info`
 - `/proxy/config` get/update
-- route cache with TTL
-- route refresh after backend error
-- backend failure pool behavior with continuous-failure windows and cached-backend bypass
+- forwarding delegates through the Rust `TemporalStoreClient`
+- client-owned route cache with TTL
+- client-owned route refresh after backend error
+- client-owned backend failure pool behavior with continuous-failure windows and cached-backend bypass
 - HTTP connect/read/write timeout options
 - HTTP retry options
 - proxy stats:
@@ -64,12 +65,9 @@ Rust proxy is still not a C++ proxy drop-in:
 - no thrift framed parser
 - no C++ thrift request/response wire compatibility
 - no namespace/table open path in proxy request bodies
-- no C++ client `MetaSyncer`
 - no full topology/slot router
-- no heartbeat RPC to metaserver
 - no consul registration
 - no proxy location/VDC/CMDB integration
-- no proxy auto-register
 - no Risk/IPS thrift method coverage
 
-The current Rust proxy is an HTTP/JSON proxy with production-shaped routing/cache/retry behavior. It is suitable for the open-source Rust path, but not yet a wire-compatible replacement for the internal C++ proxy.
+The current Rust proxy is an HTTP/JSON proxy that wraps the Rust client library for routing/cache/retry behavior. It is suitable for the open-source Rust path, but not yet a wire-compatible replacement for the internal C++ proxy.

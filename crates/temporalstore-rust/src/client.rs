@@ -376,6 +376,53 @@ impl TemporalStoreClient {
         *self.inner.stats.lock().expect("client stats lock poisoned")
     }
 
+    pub fn route_cache_size(&self) -> usize {
+        self.inner
+            .routes
+            .lock()
+            .expect("client route cache lock poisoned")
+            .len()
+    }
+
+    #[cfg(test)]
+    pub fn insert_cached_route_for_test(&self, shard_id: ShardId, primary_addr: impl Into<String>) {
+        self.inner
+            .routes
+            .lock()
+            .expect("client route cache lock poisoned")
+            .insert(
+                shard_id,
+                CachedRoute {
+                    primary_addr: primary_addr.into(),
+                    replica_addrs: Vec::new(),
+                    fetched_at: Instant::now(),
+                },
+            );
+    }
+
+    #[cfg(test)]
+    pub fn insert_backend_failure_for_test(
+        &self,
+        server_addr: impl Into<String>,
+        first_failed_ago_ms: u64,
+        last_failed_ago_ms: u64,
+        consecutive_failures: u64,
+    ) {
+        let now = Instant::now();
+        self.inner
+            .backend_failures
+            .lock()
+            .expect("client backend failure lock poisoned")
+            .insert(
+                server_addr.into(),
+                BackendFailureState {
+                    first_failed_at: now - Duration::from_millis(first_failed_ago_ms),
+                    last_failed_at: now - Duration::from_millis(last_failed_ago_ms),
+                    consecutive_failures,
+                },
+            );
+    }
+
     pub fn execute(&self, request: ExecuteRequest) -> Result<ExecuteResponse, HttpError> {
         post_json(&self.inner.options.proxy_addr, "/execute", &request)
     }

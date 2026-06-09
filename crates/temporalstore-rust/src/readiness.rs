@@ -66,7 +66,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
             area: "proxy".to_string(),
             ready: false,
             covered: vec![
-                "HTTP proxy execute/batch routes, route cache, retries, stats/config endpoint"
+                "HTTP proxy execute/batch routes delegate through TemporalStoreClient for route cache, retries, backend-error refresh, and stats sync"
                     .to_string(),
                 "background heartbeat loop and heartbeat auto-register".to_string(),
                 "backend-error route refresh and failure-streak avoidance".to_string(),
