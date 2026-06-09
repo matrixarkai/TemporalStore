@@ -30,6 +30,7 @@ The Rust code now covers the local correctness skeleton for TemporalStore-style 
 - Prometheus scrape output for shard records, cache, page-store, oplog, and data-node runtime counters
 - S3-compatible snapshot store crate
 - replica replay loop consuming checkpoint index/pages, index-log tail, and oplog tail with a persisted cursor
+- remote HTTP stream source for replica replay over `/read_stream` and `/scan_stream`
 
 It is still not production C++ TemporalStore parity. The largest missing areas are tonic/gRPC service definitions, production storage lifecycle, and operational controls.
 
@@ -177,6 +178,9 @@ This C++ parity pass closed the next data-node replay gap:
 - Resume is idempotent and test-backed: a second run applies only new tail records, and a third run
   applies nothing.
 - Replay rejects index-log or oplog sequence gaps before the follower is considered caught up.
+- The replay loop now accepts either an in-process engine source or an HTTP remote stream source,
+  so the Rust secondary catch-up path can consume another server's stream APIs instead of requiring
+  direct access to the primary engine.
 
 This pass also widened data-node heartbeat/load-report parity:
 

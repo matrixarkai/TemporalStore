@@ -5,8 +5,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::control::{ScanStreamRequest, StreamKind, StreamReadRequest};
+use crate::control::{
+    ScanStreamRequest, ScanStreamResponse, StreamKind, StreamReadRequest, StreamReadResponse,
+};
 use crate::engine::TemporalEngine;
+use crate::http::{post_json_with_options, HttpError, HttpRequestOptions};
 use crate::index_log::IndexLogRecord;
 use crate::oplog::OplogRecord;
 use crate::page_store::PageStoreError;
@@ -18,6 +21,8 @@ pub enum ReplicaReplayError {
     Io(#[from] std::io::Error),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("http error: {0}")]
+    Http(#[from] HttpError),
     #[error("stream {kind:?} failed: {status:?}")]
     StreamFailed { kind: StreamKind, status: Status },
     #[error("page store error: {0}")]
@@ -28,6 +33,82 @@ pub enum ReplicaReplayError {
     IndexLogGap { expected: u64, actual: u64 },
     #[error("replicated command failed at oplog sequence {sequence}: {status:?}")]
     ApplyFailed { sequence: u64, status: Status },
+}
+
+pub trait ReplicaStreamSource {
+    fn read_stream(
+        &self,
+        request: StreamReadRequest,
+    ) -> Result<StreamReadResponse, ReplicaReplayError>;
+
+    fn scan_stream(
+        &self,
+        request: ScanStreamRequest,
+    ) -> Result<ScanStreamResponse, ReplicaReplayError>;
+}
+
+impl ReplicaStreamSource for TemporalEngine {
+    fn read_stream(
+        &self,
+        request: StreamReadRequest,
+    ) -> Result<StreamReadResponse, ReplicaReplayError> {
+        Ok(TemporalEngine::read_stream(self, request))
+    }
+
+    fn scan_stream(
+        &self,
+        request: ScanStreamRequest,
+    ) -> Result<ScanStreamResponse, ReplicaReplayError> {
+        Ok(TemporalEngine::scan_stream(self, request))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct HttpReplicaStreamSource {
+    addr: String,
+    options: HttpRequestOptions,
+}
+
+impl HttpReplicaStreamSource {
+    pub fn new(addr: impl Into<String>) -> Self {
+        Self {
+            addr: addr.into(),
+            options: HttpRequestOptions::default(),
+        }
+    }
+
+    pub fn with_options(addr: impl Into<String>, options: HttpRequestOptions) -> Self {
+        Self {
+            addr: addr.into(),
+            options,
+        }
+    }
+}
+
+impl ReplicaStreamSource for HttpReplicaStreamSource {
+    fn read_stream(
+        &self,
+        request: StreamReadRequest,
+    ) -> Result<StreamReadResponse, ReplicaReplayError> {
+        Ok(post_json_with_options(
+            &self.addr,
+            "/read_stream",
+            &request,
+            self.options,
+        )?)
+    }
+
+    fn scan_stream(
+        &self,
+        request: ScanStreamRequest,
+    ) -> Result<ScanStreamResponse, ReplicaReplayError> {
+        Ok(post_json_with_options(
+            &self.addr,
+            "/scan_stream",
+            &request,
+            self.options,
+        )?)
+    }
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -79,11 +160,14 @@ impl ReplicaReplayLoop {
         Self { options }
     }
 
-    pub fn run(
+    pub fn run<S>(
         &self,
-        primary: &TemporalEngine,
+        primary: &S,
         follower: &TemporalEngine,
-    ) -> Result<ReplicaReplayReport, ReplicaReplayError> {
+    ) -> Result<ReplicaReplayReport, ReplicaReplayError>
+    where
+        S: ReplicaStreamSource,
+    {
         let mut cursor = self.load_cursor()?;
         cursor.shard_id = self.options.shard_id;
         let mut report = ReplicaReplayReport {
@@ -143,18 +227,21 @@ impl ReplicaReplayLoop {
         Ok(())
     }
 
-    fn install_index(
+    fn install_index<S>(
         &self,
-        primary: &TemporalEngine,
+        primary: &S,
         follower: &TemporalEngine,
-    ) -> Result<(), ReplicaReplayError> {
+    ) -> Result<(), ReplicaReplayError>
+    where
+        S: ReplicaStreamSource,
+    {
         let response = primary.read_stream(StreamReadRequest {
             shard_id: self.options.shard_id,
             stream_kind: StreamKind::Index,
             page_segment_id: 0,
             offset: 0,
             size: self.options.max_stream_bytes,
-        });
+        })?;
         if !response.status.ok {
             return Err(ReplicaReplayError::StreamFailed {
                 kind: StreamKind::Index,
@@ -165,20 +252,24 @@ impl ReplicaReplayLoop {
         Ok(())
     }
 
-    fn install_pages(
+    fn install_pages<S>(
         &self,
-        primary: &TemporalEngine,
+        primary: &S,
         follower: &TemporalEngine,
-    ) -> Result<Vec<u64>, ReplicaReplayError> {
+    ) -> Result<Vec<u64>, ReplicaReplayError>
+    where
+        S: ReplicaStreamSource,
+    {
+        follower.load_shard(self.options.shard_id);
         let mut installed = Vec::new();
-        for page_segment_id in primary.page_store().segment_ids()? {
+        for page_segment_id in follower.live_page_segment_ids(self.options.shard_id) {
             let response = primary.read_stream(StreamReadRequest {
                 shard_id: self.options.shard_id,
                 stream_kind: StreamKind::Page,
                 page_segment_id,
                 offset: 0,
                 size: self.options.max_stream_bytes,
-            });
+            })?;
             if !response.status.ok {
                 return Err(ReplicaReplayError::StreamFailed {
                     kind: StreamKind::Page,
@@ -194,12 +285,15 @@ impl ReplicaReplayLoop {
         Ok(installed)
     }
 
-    fn replay_index_log(
+    fn replay_index_log<S>(
         &self,
-        primary: &TemporalEngine,
+        primary: &S,
         follower: &TemporalEngine,
         cursor: &mut ReplicaReplayCursor,
-    ) -> Result<usize, ReplicaReplayError> {
+    ) -> Result<usize, ReplicaReplayError>
+    where
+        S: ReplicaStreamSource,
+    {
         let response = primary.scan_stream(ScanStreamRequest {
             shard_id: self.options.shard_id,
             stream_kind: StreamKind::IndexLog,
@@ -207,7 +301,7 @@ impl ReplicaReplayLoop {
             start_offset: cursor.index_log_offset,
             end_offset: u64::MAX,
             max_bytes: self.options.max_stream_bytes,
-        });
+        })?;
         if !response.status.ok {
             return Err(ReplicaReplayError::StreamFailed {
                 kind: StreamKind::IndexLog,
@@ -234,12 +328,15 @@ impl ReplicaReplayLoop {
         Ok(applied)
     }
 
-    fn replay_oplog(
+    fn replay_oplog<S>(
         &self,
-        primary: &TemporalEngine,
+        primary: &S,
         follower: &TemporalEngine,
         cursor: &mut ReplicaReplayCursor,
-    ) -> Result<usize, ReplicaReplayError> {
+    ) -> Result<usize, ReplicaReplayError>
+    where
+        S: ReplicaStreamSource,
+    {
         let response = primary.scan_stream(ScanStreamRequest {
             shard_id: self.options.shard_id,
             stream_kind: StreamKind::Oplog,
@@ -247,7 +344,7 @@ impl ReplicaReplayLoop {
             start_offset: cursor.oplog_offset,
             end_offset: u64::MAX,
             max_bytes: self.options.max_stream_bytes,
-        });
+        })?;
         if !response.status.ok {
             return Err(ReplicaReplayError::StreamFailed {
                 kind: StreamKind::Oplog,
@@ -292,9 +389,14 @@ fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::net::TcpListener;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
     use tempfile::tempdir;
 
     use super::*;
+    use crate::http::{json_response, parse_json, serve};
     use crate::types::{Command, CommandResponse};
 
     #[test]
@@ -386,5 +488,121 @@ mod tests {
                 value: Some(b"v2".to_vec())
             }
         );
+    }
+
+    #[test]
+    fn replica_replay_can_pull_streams_over_http() {
+        let primary_dir = tempdir().unwrap();
+        let follower_dir = tempdir().unwrap();
+        let cursor_dir = tempdir().unwrap();
+        let primary = TemporalEngine::with_local_dirs(
+            1024,
+            primary_dir.path().join("cache"),
+            primary_dir.path().join("pages"),
+            primary_dir.path().join("index"),
+        );
+        let follower = TemporalEngine::with_local_dirs(
+            1024,
+            follower_dir.path().join("cache"),
+            follower_dir.path().join("pages"),
+            follower_dir.path().join("index"),
+        );
+        primary.load_shard(11);
+        primary.execute(ExecuteRequest {
+            shard_id: 11,
+            command: Command::StringSet {
+                key: "remote".to_string(),
+                value: b"http-stream".to_vec(),
+            },
+        });
+
+        let addr = free_local_addr();
+        let primary_for_server = primary.clone();
+        let server_addr = addr.clone();
+        thread::spawn(move || {
+            serve(&server_addr, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    ("POST", "/read_stream") => {
+                        match parse_json::<StreamReadRequest>(&request.body) {
+                            Ok(req) => json_response(200, &primary_for_server.read_stream(req)),
+                            Err(err) => {
+                                json_response(400, &Status::error("bad_request", err.to_string()))
+                            }
+                        }
+                    }
+                    ("POST", "/scan_stream") => {
+                        match parse_json::<ScanStreamRequest>(&request.body) {
+                            Ok(req) => json_response(200, &primary_for_server.scan_stream(req)),
+                            Err(err) => {
+                                json_response(400, &Status::error("bad_request", err.to_string()))
+                            }
+                        }
+                    }
+                    ("GET", "/health") => json_response(200, &Status::ok()),
+                    _ => json_response(404, &Status::error("not_found", "unknown route")),
+                }
+            })
+            .unwrap()
+        });
+        wait_for_http(&addr);
+
+        let source = HttpReplicaStreamSource::with_options(
+            addr,
+            HttpRequestOptions {
+                connect_timeout_ms: 1_000,
+                io_timeout_ms: 5_000,
+                max_retries: 3,
+            },
+        );
+        let replay = ReplicaReplayLoop::new(ReplicaReplayOptions::new(
+            11,
+            cursor_dir.path().join("cursor.json"),
+        ));
+        let report = replay.run(&source, &follower).unwrap();
+        assert_eq!(report.oplog_records, 1);
+        assert_eq!(report.index_log_records, 1);
+        assert_eq!(report.installed_page_segments, vec![0]);
+
+        let read = follower.execute(ExecuteRequest {
+            shard_id: 11,
+            command: Command::StringGet {
+                key: "remote".to_string(),
+            },
+        });
+        assert_eq!(
+            read.response,
+            CommandResponse::Bytes {
+                value: Some(b"http-stream".to_vec())
+            }
+        );
+    }
+
+    fn free_local_addr() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().to_string()
+    }
+
+    fn wait_for_http(addr: &str) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if crate::http::get_json_with_options::<Status>(
+                addr,
+                "/health",
+                HttpRequestOptions {
+                    connect_timeout_ms: 100,
+                    io_timeout_ms: 100,
+                    max_retries: 0,
+                },
+            )
+            .is_ok()
+            {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "http stream server did not start"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
     }
 }
