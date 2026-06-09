@@ -60,7 +60,9 @@ Feature:
 - C++ `QueryRequest.filters` string syntax is supported through
   `FeatureFilter::parse_cpp_filter`, client `feature_query_cpp_filters`, and RESP
   `FQUERYFILTERSTR`; examples match C++ filters like `gid = 1`, `duration < 4`,
-  and `author_id != 9`.
+  and `author_id != 9`. Repeated filters on the same field follow the C++
+  `std::map` behavior: the later filter overwrites the earlier one for that
+  field.
 
 Sequence:
 

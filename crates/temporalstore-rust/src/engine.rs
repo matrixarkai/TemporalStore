@@ -3068,6 +3068,23 @@ mod tests {
         assert_eq!(points.len(), 1);
         assert_eq!(points[0].timestamp_ms, 777);
 
+        let filters = parse_cpp_feature_filters(["gid = 1", "gid != 1"]).unwrap();
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureQueryFiltered {
+                key: "9".to_string(),
+                start_ms: 0,
+                end_ms: 100_000,
+                count: Some(1_000),
+                filters,
+            },
+        });
+        let CommandResponse::FeaturePoints { points } = response.response else {
+            panic!("expected feature points");
+        };
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].timestamp_ms, 778);
+
         assert!(FeatureFilter::parse_cpp_filter("unknown = 1").is_err());
         assert!(FeatureFilter::parse_cpp_filter("gid >= 1").is_err());
         assert!(FeatureFilter::parse_cpp_filter("gid = nope").is_err());

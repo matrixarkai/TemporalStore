@@ -163,11 +163,22 @@ impl FeatureFilter {
 pub fn parse_cpp_feature_filters<'a>(
     filters: impl IntoIterator<Item = &'a str>,
 ) -> Result<Vec<FeatureFilter>, String> {
-    filters
+    let mut parsed = Vec::new();
+    for filter in filters
         .into_iter()
         .filter(|filter| !filter.trim().is_empty())
-        .map(FeatureFilter::parse_cpp_filter)
-        .collect()
+    {
+        let filter = FeatureFilter::parse_cpp_filter(filter)?;
+        if let Some(index) = parsed
+            .iter()
+            .position(|existing: &FeatureFilter| existing.field == filter.field)
+        {
+            parsed[index] = filter;
+        } else {
+            parsed.push(filter);
+        }
+    }
+    Ok(parsed)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
