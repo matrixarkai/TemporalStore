@@ -29,6 +29,7 @@ struct SecondaryReplicationSummary {
     writes: Vec<WriteSummary>,
     reads_after_restart: Vec<ReadSummary>,
     restarted_secondary: RaftNodeId,
+    partition: PartitionSummary,
     crashed_leader: RaftNodeId,
     failover: AdminFailoverResponse,
     reads_after_leader_crash: Vec<ReadSummary>,
@@ -43,7 +44,7 @@ struct NodeSummary {
     wal_files: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct WriteSummary {
     key: String,
     status: Status,
@@ -58,6 +59,14 @@ struct ReadSummary {
 }
 
 #[derive(Debug, Serialize)]
+struct PartitionSummary {
+    isolated_node: RaftNodeId,
+    majority_write: WriteSummary,
+    isolated_read_status: Status,
+    healed_read: ReadSummary,
+}
+
+#[derive(Debug, Serialize)]
 struct AdminLivenessRequest {
     node_id: RaftNodeId,
     alive: bool,
@@ -66,6 +75,12 @@ struct AdminLivenessRequest {
 #[derive(Debug, Serialize)]
 struct AdminElectRequest {
     node_id: RaftNodeId,
+}
+
+#[derive(Debug, Serialize)]
+struct AdminPeerBlockRequest {
+    peer_id: RaftNodeId,
+    blocked: bool,
 }
 
 #[derive(Debug, serde::Deserialize, Serialize)]
@@ -156,6 +171,7 @@ fn main() {
         restarted_node,
     ));
     wait_for_http(&restarted_node.addr);
+    initialize_liveness(&nodes);
 
     wait_for_value(
         restarted_node,
@@ -186,6 +202,9 @@ fn main() {
             "v4",
         ));
     }
+
+    let partition = run_partition_phase(&nodes);
+    writes.push(partition.majority_write.clone());
 
     let crashed_leader = 1;
     let leader_index = children
@@ -262,12 +281,68 @@ fn main() {
             writes,
             reads_after_restart,
             restarted_secondary,
+            partition,
             crashed_leader,
             failover,
             reads_after_leader_crash,
         })
         .expect("summary should serialize")
     );
+}
+
+fn run_partition_phase(nodes: &[ProductionRaftNode]) -> PartitionSummary {
+    let isolated_node = 3;
+    for majority in nodes.iter().filter(|node| node.node_id != isolated_node) {
+        mark_liveness(majority, isolated_node, false);
+        for peer in nodes.iter().filter(|node| node.node_id != isolated_node) {
+            mark_liveness(majority, peer.node_id, true);
+        }
+    }
+    let isolated = nodes
+        .iter()
+        .find(|node| node.node_id == isolated_node)
+        .expect("isolated node should exist");
+    for peer in nodes.iter().filter(|node| node.node_id != isolated_node) {
+        block_peer(isolated, peer.node_id, true);
+    }
+    for peer in nodes.iter().filter(|node| node.node_id != isolated_node) {
+        mark_liveness(isolated, peer.node_id, false);
+    }
+    mark_liveness(isolated, isolated_node, true);
+
+    let leader = nodes
+        .iter()
+        .find(|node| node.node_id == 1)
+        .expect("leader should exist");
+    let majority_write = propose(leader, "partition-majority", "v-partition");
+    for majority in nodes.iter().filter(|node| node.node_id != isolated_node) {
+        wait_for_value(
+            majority,
+            majority.node_id,
+            "partition-majority",
+            "v-partition",
+        );
+    }
+
+    let isolated_read = read_value(isolated, isolated_node, "partition-majority");
+    assert!(
+        !isolated_read.status.ok,
+        "isolated follower unexpectedly served a read during partition: {:?}",
+        isolated_read
+    );
+
+    for peer in nodes.iter().filter(|node| node.node_id != isolated_node) {
+        block_peer(isolated, peer.node_id, false);
+    }
+    initialize_liveness(nodes);
+    let _heal_trigger = propose(leader, "partition-heal-trigger", "v-heal");
+    let healed_read = wait_for_value(isolated, isolated_node, "partition-majority", "v-partition");
+    PartitionSummary {
+        isolated_node,
+        majority_write,
+        isolated_read_status: isolated_read.status,
+        healed_read,
+    }
 }
 
 fn validate_surviving_cluster(
@@ -413,6 +488,21 @@ fn initialize_liveness(nodes: &[ProductionRaftNode]) {
     }
 }
 
+fn block_peer(node: &ProductionRaftNode, peer_id: RaftNodeId, blocked: bool) {
+    let response: AdminLivenessResponse = post_json_with_options(
+        &node.addr,
+        "/raft/admin/block_peer",
+        &AdminPeerBlockRequest { peer_id, blocked },
+        request_options(),
+    )
+    .expect("block peer admin request failed");
+    assert!(
+        response.status.ok,
+        "block peer admin request failed: {:?}",
+        response.status
+    );
+}
+
 fn elect_leader(node: &ProductionRaftNode, leader_id: RaftNodeId) {
     let response: AdminLivenessResponse = post_json_with_options(
         &node.addr,
@@ -446,38 +536,43 @@ fn wait_for_value(
 ) -> ReadSummary {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let response: DistributedRaftCommandResponse = post_json_with_options(
-            &node.addr,
-            "/raft/read",
-            &DistributedRaftReadRequest {
-                node_id,
-                command: Command::StringGet {
-                    key: key.to_string(),
-                },
-            },
-            request_options(),
-        )
-        .expect("read request failed");
-        let value = match &response.response {
-            CommandResponse::Bytes { value: Some(bytes) } => {
-                Some(String::from_utf8_lossy(bytes).to_string())
-            }
-            _ => None,
-        };
-        if value.as_deref() == Some(expected) {
-            return ReadSummary {
-                node_id,
-                key: key.to_string(),
-                value,
-                status: response.status,
-            };
+        let read = read_value(node, node_id, key);
+        if read.value.as_deref() == Some(expected) {
+            return read;
         }
         assert!(
             Instant::now() < deadline,
             "node {node_id} did not return {key}={expected}; last response: {:?}",
-            response
+            read
         );
         thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn read_value(node: &ProductionRaftNode, node_id: RaftNodeId, key: &str) -> ReadSummary {
+    let response: DistributedRaftCommandResponse = post_json_with_options(
+        &node.addr,
+        "/raft/read",
+        &DistributedRaftReadRequest {
+            node_id,
+            command: Command::StringGet {
+                key: key.to_string(),
+            },
+        },
+        request_options(),
+    )
+    .expect("read request failed");
+    let value = match &response.response {
+        CommandResponse::Bytes { value: Some(bytes) } => {
+            Some(String::from_utf8_lossy(bytes).to_string())
+        }
+        _ => None,
+    };
+    ReadSummary {
+        node_id,
+        key: key.to_string(),
+        value,
+        status: response.status,
     }
 }
 

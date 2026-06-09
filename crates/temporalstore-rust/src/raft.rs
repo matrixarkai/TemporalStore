@@ -1990,6 +1990,7 @@ impl ProductionRaftRuntime {
         node_id: RaftNodeId,
         command: Command,
     ) -> Result<CommandResponse, RaftError> {
+        self.cluster.read_index(node_id)?;
         self.cluster.read_from_replica(node_id, command)
     }
 

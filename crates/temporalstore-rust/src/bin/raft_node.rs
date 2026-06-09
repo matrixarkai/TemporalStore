@@ -1,4 +1,5 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use temporalstore_rust::http::{json_response, parse_json, serve, HttpRequest};
@@ -18,6 +19,12 @@ struct RaftAdminLivenessRequest {
 #[derive(Debug, Deserialize)]
 struct RaftAdminElectRequest {
     node_id: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct RaftAdminPeerBlockRequest {
+    peer_id: u64,
+    blocked: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -46,12 +53,13 @@ fn main() {
     let runtime = ProductionRaftRuntime::start(options).expect("failed to start raft node runtime");
     let _timer = runtime.start_timer_loop();
     let local_admin_enabled = env_bool("TS_RAFT_ENABLE_LOCAL_ADMIN", false);
+    let blocked_peers = Arc::new(Mutex::new(BTreeSet::new()));
     println!(
         "temporalstore raft node {} listening on {bind_addr}",
         runtime.status().leader_id
     );
     serve(&bind_addr, move |request| {
-        handle(&runtime, local_admin_enabled, request)
+        handle(&runtime, local_admin_enabled, &blocked_peers, request)
     })
     .expect("raft node failed");
 }
@@ -59,6 +67,7 @@ fn main() {
 fn handle(
     runtime: &ProductionRaftRuntime,
     local_admin_enabled: bool,
+    blocked_peers: &Arc<Mutex<BTreeSet<u64>>>,
     request: HttpRequest,
 ) -> (u16, Vec<u8>) {
     match (request.method.as_str(), request.path.as_str()) {
@@ -111,6 +120,28 @@ fn handle(
             };
             json_response(200, &response)
         }
+        ("POST", "/raft/admin/block_peer") => {
+            if !local_admin_enabled {
+                return json_response(403, &Status::error("forbidden", "local admin disabled"));
+            }
+            match parse_json::<RaftAdminPeerBlockRequest>(&request.body) {
+                Ok(req) => {
+                    let mut blocked = blocked_peers.lock().expect("blocked peer lock poisoned");
+                    if req.blocked {
+                        blocked.insert(req.peer_id);
+                    } else {
+                        blocked.remove(&req.peer_id);
+                    }
+                    json_response(
+                        200,
+                        &RaftAdminLivenessResponse {
+                            status: Status::ok(),
+                        },
+                    )
+                }
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
         ("POST", "/raft/propose") => {
             match parse_json::<DistributedRaftProposeRequest>(&request.body) {
                 Ok(req) => json_response(200, &command_response(runtime.propose(req.command))),
@@ -124,7 +155,37 @@ fn handle(
             ),
             Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
         },
-        _ => handle_raft_http(&runtime.cluster(), request),
+        _ => {
+            if let Some(peer_id) = incoming_peer_id(&request) {
+                if blocked_peers
+                    .lock()
+                    .expect("blocked peer lock poisoned")
+                    .contains(&peer_id)
+                {
+                    return json_response(
+                        503,
+                        &Status::error("raft_peer_blocked", "local chaos peer block active"),
+                    );
+                }
+            }
+            handle_raft_http(&runtime.cluster(), request)
+        }
+    }
+}
+
+fn incoming_peer_id(request: &HttpRequest) -> Option<u64> {
+    match request.path.as_str() {
+        "/raft/append_entries" | "/raft/install_snapshot" | "/raft/install_snapshot_chunk" => {
+            serde_json::from_slice::<serde_json::Value>(&request.body)
+                .ok()?
+                .get("leader_id")?
+                .as_u64()
+        }
+        "/raft/request_vote" => serde_json::from_slice::<serde_json::Value>(&request.body)
+            .ok()?
+            .get("candidate_id")?
+            .as_u64(),
+        _ => None,
     }
 }
 

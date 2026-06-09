@@ -112,10 +112,11 @@ The production runtime surface is:
 - `ProductionRaftSecurity::mtls`
 - `ProductionRaftChaosPlan`
 - `raft_node` binary with `/raft/propose`, `/raft/read`, `/raft/status`, gated local-chaos
-  `/raft/admin/*` endpoints, and peer `/raft/*` transport endpoints
+  `/raft/admin/*` endpoints, local peer-block chaos controls, and peer `/raft/*` transport endpoints
 - `raft_secondary_replication_harness` binary that starts real `raft_node` OS processes, kills and
-  restarts a secondary, kills the original leader, triggers surviving-node failover, and verifies
-  catch-up plus post-failover reads
+  restarts a secondary, injects a network partition with stale-read rejection, heals and verifies
+  follower catch-up, kills the original leader, triggers surviving-node failover, and verifies
+  post-failover reads
 
 Production deployments should use `ProductionRaftSecurity::mtls`. Local chaos tests can use
 `ProductionRaftSecurity::plaintext_for_local_chaos` only when
@@ -125,7 +126,7 @@ Production deployments should use `ProductionRaftSecurity::mtls`. Local chaos te
 
 - Replace the local consensus model with OpenRaft or raft-rs FSM/storage integration.
 - Wire data-node Raft snapshots to real engine snapshot create/download/install.
-- Run external multi-process crash/restart, network partition, slow follower, and rolling restart tests.
+- Run external multi-process packet-loss, slow follower, and rolling restart tests.
 - Add actual mTLS transport implementation, not just config validation and authenticated metadata.
 - Integrate metaserver shard membership changes with networked data-node Raft groups.
 
@@ -137,6 +138,7 @@ Covered today:
 
 - separate `raft_node` process wrapper
 - HTTP Raft transport endpoints for propose/read/status and peer messages
+- local OS-process harness coverage for network partition stale-read rejection, heal, and catch-up
 - local majority commit, catch-up, safe reads, promotion, safe scale up, and safe scale down
 - WAL-backed local model recovery for commits, leadership, and membership
 - local snapshot and chunked snapshot message behavior
@@ -149,7 +151,7 @@ Still missing:
 - snapshot install wired to `TemporalEngine` freeze, flush, download, verify, and install
 - production engine snapshot install with freeze/flush/download/verify/install lifecycle; the local
   external snapshot path now has stale-local-state preflight before download
-- external chaos tests that kill/restart real OS processes and inject network partitions/slow followers
+- external chaos tests that inject packet loss, slow followers, disk pressure, and rolling restarts
 - AWS multi-node validation with real metaserver, proxy, client, and data-node processes
 
 The executable readiness gate for this repeated check is:
