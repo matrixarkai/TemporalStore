@@ -58,6 +58,11 @@ fn main() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(3_000);
+    let replica_replay_primary_addr =
+        std::env::var("TS_REPLICA_REPLAY_PRIMARY_ADDR").unwrap_or_default();
+    let replica_replay_interval_ms = env_u64("TS_REPLICA_REPLAY_INTERVAL_MS", 0);
+    let replica_replay_max_stream_bytes =
+        env_u64("TS_REPLICA_REPLAY_MAX_STREAM_BYTES", 16 * 1024 * 1024);
 
     let server_registration = RegisterServerRequest {
         server_addr: advertised_addr.clone(),
@@ -105,6 +110,14 @@ fn main() {
         advertised_addr.clone(),
         binary_version.clone(),
         heartbeat_interval_ms,
+    );
+    start_replica_replay_loop(
+        engine.clone(),
+        replica_replay_cursor_dir.clone(),
+        shard_id,
+        replica_replay_primary_addr,
+        replica_replay_interval_ms,
+        replica_replay_max_stream_bytes,
     );
 
     println!("temporalstore server listening on {addr}");
@@ -260,6 +273,13 @@ fn env_usize(name: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
+fn env_u64(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
+}
+
 fn run_replica_replay(
     engine: &TemporalEngine,
     cursor_dir: &str,
@@ -300,6 +320,32 @@ fn run_replica_replay(
             report: None,
         },
     }
+}
+
+fn start_replica_replay_loop(
+    engine: TemporalEngine,
+    cursor_dir: String,
+    shard_id: u64,
+    primary_addr: String,
+    interval_ms: u64,
+    max_stream_bytes: u64,
+) {
+    if interval_ms == 0 || primary_addr.is_empty() {
+        return;
+    }
+    std::thread::spawn(move || loop {
+        let _ = run_replica_replay(
+            &engine,
+            &cursor_dir,
+            ReplicaReplayRequest {
+                shard_id,
+                primary_addr: primary_addr.clone(),
+                cursor_path: None,
+                max_stream_bytes: Some(max_stream_bytes),
+            },
+        );
+        std::thread::sleep(std::time::Duration::from_millis(interval_ms));
+    });
 }
 
 fn append_runtime_metrics(out: &mut String, runtime: &DataNodeRuntime) {
@@ -508,6 +554,99 @@ mod tests {
                 value: Some(b"remote".to_vec())
             }
         );
+    }
+
+    #[test]
+    fn server_background_replica_replay_loop_pulls_remote_streams() {
+        let primary_dir = tempdir().unwrap();
+        let follower_dir = tempdir().unwrap();
+        let cursor_dir = tempdir().unwrap();
+        let primary = TemporalEngine::with_local_dirs(
+            1024,
+            primary_dir.path().join("cache"),
+            primary_dir.path().join("pages"),
+            primary_dir.path().join("index"),
+        );
+        let follower = TemporalEngine::with_local_dirs(
+            1024,
+            follower_dir.path().join("cache"),
+            follower_dir.path().join("pages"),
+            follower_dir.path().join("index"),
+        );
+        primary.load_shard(19);
+        primary.execute(ExecuteRequest {
+            shard_id: 19,
+            command: Command::StringSet {
+                key: "background-replay".to_string(),
+                value: b"loop".to_vec(),
+            },
+        });
+
+        let primary_addr = start_primary_stream_server(primary);
+        start_replica_replay_loop(
+            follower.clone(),
+            cursor_dir.path().display().to_string(),
+            19,
+            primary_addr,
+            10,
+            16 * 1024 * 1024,
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let read = follower.execute(ExecuteRequest {
+                shard_id: 19,
+                command: Command::StringGet {
+                    key: "background-replay".to_string(),
+                },
+            });
+            if read.response
+                == (CommandResponse::Bytes {
+                    value: Some(b"loop".to_vec()),
+                })
+            {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "background replica replay loop did not catch up; last response: {:?}",
+                read
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn start_primary_stream_server(primary: TemporalEngine) -> String {
+        let primary_addr = free_local_addr();
+        let primary_for_server = primary.clone();
+        let bind_addr = primary_addr.clone();
+        thread::spawn(move || {
+            serve(&bind_addr, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    ("GET", "/health") => json_response(200, &Status::ok()),
+                    ("POST", "/read_stream") => {
+                        match parse_json::<StreamReadRequest>(&request.body) {
+                            Ok(req) => json_response(200, &primary_for_server.read_stream(req)),
+                            Err(err) => {
+                                json_response(400, &Status::error("bad_request", err.to_string()))
+                            }
+                        }
+                    }
+                    ("POST", "/scan_stream") => {
+                        match parse_json::<ScanStreamRequest>(&request.body) {
+                            Ok(req) => json_response(200, &primary_for_server.scan_stream(req)),
+                            Err(err) => {
+                                json_response(400, &Status::error("bad_request", err.to_string()))
+                            }
+                        }
+                    }
+                    _ => json_response(404, &Status::error("not_found", "unknown route")),
+                }
+            })
+            .unwrap()
+        });
+        wait_for_http(&primary_addr);
+        primary_addr
     }
 
     fn free_local_addr() -> String {

@@ -33,6 +33,8 @@ The Rust code now covers the local correctness skeleton for TemporalStore-style 
 - remote HTTP stream source for replica replay over `/read_stream` and `/scan_stream`
 - server-side `/replica/replay` endpoint for secondary data-node catch-up from a primary stream
   source
+- opt-in background server replica replay loop for readonly/secondary catch-up from a configured
+  primary stream source
 
 It is still not production C++ TemporalStore parity. The largest missing areas are tonic/gRPC service definitions, production storage lifecycle, and operational controls.
 
@@ -185,6 +187,8 @@ This C++ parity pass closed the next data-node replay gap:
   direct access to the primary engine.
 - The server binary now exposes `/replica/replay`, persists cursors under
   `TS_REPLICA_REPLAY_CURSOR_DIR` or the index directory, and returns a replay report/status payload.
+- `TS_REPLICA_REPLAY_PRIMARY_ADDR` plus `TS_REPLICA_REPLAY_INTERVAL_MS` enables continuous
+  server-side replay without manual requests.
 
 This pass also widened data-node heartbeat/load-report parity:
 
