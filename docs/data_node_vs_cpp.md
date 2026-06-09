@@ -58,6 +58,8 @@ Rust now covers these data-node surfaces:
 - local index JSON persistence
 - local read-through memory/disk cache
 - shared-store checkpoint restore and oplog replay
+- C++-style replica replay order for local stream sources:
+  checkpoint index/pages -> index-log tail -> oplog tail -> persisted replay cursor
 
 The new oplog stream is implemented in:
 
@@ -134,6 +136,18 @@ Stats now expose a C++-style partition/object-manager summary:
 - table name, shard URI, load version, readonly state, routing-slot range, and storage bytes in `partition_info`
 - Prometheus gauges for object count, page refs, dirty objects, dirty slots, and routing-slot span
 
+This pass adds a reusable replica replay loop in
+`crates/temporalstore-rust/src/replica_replay.rs`. It consumes the existing stream APIs in the same
+order the C++ secondary catch-up path expects:
+
+```text
+install index checkpoint -> copy page segments -> load shard -> replay index-log tail -> replay oplog tail -> save cursor
+```
+
+The cursor records checkpoint install state, page segment ids, index-log byte offset/sequence, and
+oplog byte offset/sequence. A resumed replay starts after the persisted offsets and rejects sequence
+gaps before serving reads.
+
 ## What Is Still Missing Vs C++
 
 Still missing major data-node internals:
@@ -147,7 +161,7 @@ Still missing major data-node internals:
 - dirty slot scheduling tied to background dump tasks
 - background periodic dump scheduler
 - merged page dump to zones
-- index-log replay separate from oplog replay
+- remote/networked replica stream source
 - page compaction
 - C++-style page rewrite garbage collection with page headers and zone ownership
 - expirer/evicter background tasks

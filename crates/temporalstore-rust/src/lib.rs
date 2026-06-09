@@ -15,6 +15,7 @@ pub mod raft;
 pub mod readiness;
 pub mod rebalance;
 pub mod redis;
+pub mod replica_replay;
 pub mod shared_store;
 pub mod types;
 
@@ -85,6 +86,10 @@ pub use rebalance::{
     RebalanceOptions, RebalanceStep, ShardMovePlan, ShardReplica, ShardReplicaState, ShardRole,
 };
 pub use redis::{execute_redis_command, read_command, serve_redis_proxy, RespValue};
+pub use replica_replay::{
+    ReplicaReplayCursor, ReplicaReplayError, ReplicaReplayLoop, ReplicaReplayOptions,
+    ReplicaReplayReport,
+};
 pub use shared_store::{
     ReplayReport, SharedStoreCheckpointManifest, SharedStoreFlushReport, SharedStoreOplogEntry,
     SharedStoreOplogObject, SharedStorePageSegment, SharedStoreReplayCursor,

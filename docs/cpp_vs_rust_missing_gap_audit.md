@@ -27,6 +27,7 @@ The Rust code now covers the local correctness skeleton for TemporalStore-style 
 - Redis RESP adapter, including conditional `SET NX/XX`, `GET`, `EX`, and `PX`
 - Prometheus scrape output for shard records, cache, page-store, oplog, and data-node runtime counters
 - S3-compatible snapshot store crate
+- replica replay loop consuming checkpoint index/pages, index-log tail, and oplog tail with a persisted cursor
 
 It is still not production C++ TemporalStore parity. The largest missing areas are tonic/gRPC service definitions, production storage lifecycle, and operational controls.
 
@@ -165,6 +166,16 @@ The previous pass closed a ByteRaft/ByteKV `RaftEngine` behavior gap:
 
 This is still an in-process correctness model, not a replacement for OpenRaft/raft-rs with durable WAL and network transport.
 
+This C++ parity pass closed the next data-node replay gap:
+
+- `ReplicaReplayLoop` installs index bytes and page segments from the primary stream source.
+- It replays index-log records separately from oplog records, in C++ secondary catch-up order.
+- It persists a cursor with checkpoint install state, copied page segments, index-log byte
+  offset/sequence, and oplog byte offset/sequence.
+- Resume is idempotent and test-backed: a second run applies only new tail records, and a third run
+  applies nothing.
+- Replay rejects index-log or oplog sequence gaps before the follower is considered caught up.
+
 ## What Was Closed In The Previous Pass
 
 This pass closed several behavior gaps without carrying brpc or Thrift forward:
@@ -270,7 +281,6 @@ Do not claim full C++ parity yet.
 The next best implementation chunks are:
 
 1. Add durable WAL/recovery tests around oplog + index-log + page stream.
-2. Add a replica replay loop that consumes checkpoint, page stream, index-log, and oplog.
-3. Replace the local Raft model with OpenRaft or raft-rs.
-4. Connect metaserver table topology and data-node heartbeat reports to real placement/rebalance workflows.
-5. Port IPS and Risk semantics from the C++ protos as separate modules.
+2. Replace the local Raft model with OpenRaft or raft-rs.
+3. Connect metaserver table topology and data-node heartbeat reports to real placement/rebalance workflows.
+4. Port IPS and Risk semantics from the C++ protos as separate modules.
