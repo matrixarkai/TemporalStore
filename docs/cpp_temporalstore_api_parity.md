@@ -176,23 +176,53 @@ String:
 
 ## Missing Production Runtime Features
 
-The C++ deep dive describes a full serving engine. The Rust rewrite does not yet have:
+The C++ deep dive describes a full serving engine. The Rust rewrite has closed several of the
+older gaps, but it is still not a drop-in production replacement for C++ TemporalStore.
 
-- full metaserver namespace/table/partition-set placement hierarchy
-- slot hashing and routing compatible with C++ `crc64 >> 34`; Rust also has an opt-in C++
-  `PartitionId` bit-layout helper for table partition ids
-- brpc/thrift SDK compatibility
-- partition worker pools
-- full C++ hot object manager; Rust now exposes logical object/page-ref/dirty-slot partition stats
-- append-only oplog with reclaim boundaries
-- background merged slot/page dump scheduler
-- ByteStore stream backend
-- blockcache/mtcache-compatible cache engine
-- readonly replica replay from primary
-- production ByteRaft/OpenRaft integration
-- heartbeat/load report to metaserver
-- quota/admission control
-- full metrics server and dashboards
+Covered or substantially covered in Rust now:
+
+- C++ `crc64 >> 34` table routing formula in the Rust client router, plus an opt-in C++
+  `PartitionId` bit-layout helper for table partition ids.
+- Shard-affine data-node worker lanes with bounded foreground/background queues, per-shard FIFO
+  execution, cross-shard parallelism, and foreground priority over background work.
+- Append-only local oplog and index-log streams, replica replay cursors, replay gap checks, and GC
+  retention boundaries for oplog/index-log/page segments.
+- Readonly secondary behavior: readonly startup mode, writes rejected with `readonly_shard`, remote
+  HTTP primary stream source, `/replica/replay`, background replay loop, metaserver-discovered
+  primary route, replay backoff, status endpoint, and Prometheus loop metrics.
+- Server registration plus periodic heartbeat/load reporting to metaserver, including per-partition
+  `partition_info` stats.
+- Local per-shard admission control: `maxmemory_bytes`, `read_qps`, and `write_qps`.
+- Prometheus scrape output from data-node/server paths for shard records, cache, page-store, oplog,
+  runtime queues/jobs/dirty objects, and replica replay loop status.
+
+Partially covered, but still materially smaller than C++:
+
+- Metaserver namespace/table topology, table partitions, topology versioning, server/proxy
+  inventory, heartbeat, local mutation-log replay, optional in-process Raft-backed mutation path,
+  load-aware/location-diverse replica fill, rebalance model, and scheduler/task models exist. The
+  full C++ namespace/table/partition-set placement hierarchy and placement-rule chain are still not
+  complete.
+- Hot object state is represented by per-type maps of key/field/timestamp to `PageAddress`, with
+  logical object/page-ref/dirty-object/dirty-slot stats. Rust still does not clone the full C++
+  `ObjectManager` memory layout with stable object ids, page ids, slot ownership, and lifecycle.
+- Cache is a Rust multi-layer read-through cache over memory, local page files, and page-address
+  blocks. It is not blockcache/mtcache-compatible and does not provide CacheLib-style SSD admission,
+  eviction, warmup, pinning, and observability.
+- Shared-store replication exists for file/object-store checkpoint, page, index, and oplog flows.
+  There is still no production ByteStore stream backend parity.
+- Raft has local/distributed model coverage, HTTP transport contracts, WAL persistence, snapshots,
+  external snapshot refs, membership safety models, and local harnesses. It is still not production
+  ByteRaft parity and still lacks real OpenRaft/raft-rs FSM/storage integration, actual mTLS
+  transport implementation, networked metaserver-driven data-Raft membership scheduling, and
+  external multi-process/host chaos validation.
+
+Still intentionally missing from the open-source Rust target:
+
+- brpc/thrift SDK wire compatibility. The Rust target uses HTTP/JSON admin/debug, RESP compatibility,
+  and a Rust client API today; tonic/gRPC remains the intended open internal RPC path.
+- Full C++ dashboards/runbooks/production alerting package. Prometheus metric output exists, but the
+  complete dashboard and operations bundle is not done.
 
 ## Current Conclusion
 

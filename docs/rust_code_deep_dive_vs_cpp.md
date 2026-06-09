@@ -16,11 +16,20 @@ What exists today:
 
 What is still missing versus C++:
 
-- production networked Raft and durable Raft WAL
-- C++-compatible metaserver topology, namespace/table model, and slot routing
-- C++ ObjectManager hot object model, dirty slot tracking, oplog, dump/recover pipeline, and readonly replica replay
+- production OpenRaft/raft-rs integration and real mTLS/networked membership scheduling; Rust does
+  have local/distributed Raft model coverage, HTTP transport contracts, snapshots, and WAL-backed
+  local recovery
+- full C++ metaserver namespace/table/partition-set placement hierarchy; Rust already has table
+  topology, C++ CRC64 slot routing, C++ `PartitionId` bit layout helpers, server/proxy inventory,
+  heartbeat, local mutation-log replay, and scheduler/rebalance models
+- full C++ `ObjectManager` memory layout, stable object/page ids, slot ownership, merged dump, and
+  page compaction; Rust already has logical object/page-ref/dirty-slot stats, append-only oplog and
+  index-log streams, GC retention boundaries, and readonly replica replay from primary streams
 - full Feature, IPS, and Risk semantics from the C++ extension protos
-- ByteStore/local stream backend parity, blockcache/mtcache parity, quota/admission, heartbeat/load reporting, SDK compatibility, metrics server, dashboards, and operational tooling
+- ByteStore stream backend parity, blockcache/mtcache-compatible cache engine, brpc/thrift SDK
+  compatibility, full dashboards/runbooks, and operational tooling. Rust already has shared-store
+  object/file flows, local multi-layer cache, local quota/admission, heartbeat/load reporting, and
+  Prometheus metric output.
 
 So the right framing is: the Rust code is a good open-source v1 skeleton and local correctness harness. The C++ code is still the production reference for complete TemporalStore behavior.
 
@@ -315,13 +324,20 @@ P1, required for production-like parity:
 
 - full C++ Feature/IPS/Risk semantics
 - C++ protobuf/brpc/thrift compatibility or a documented migration API
-- production cache backend, likely CacheLib via FFI or a Rust cache with SSD tier support
-- page/index compaction and garbage collection
-- snapshot integration with Raft and bootstrap
-- scale up/down controller backed by metaserver decisions
-- load reporting and placement policy
-- S3/ByteStore-style shared snapshot/object storage support
-- quota/admission and kill switch wiring into real servers
+- production cache backend, likely CacheLib via FFI or a Rust cache with SSD tier support; the
+  current Rust cache is a local memory plus disk read-through cache
+- page/index compaction and full C++ page rewrite garbage collection; local GC retention boundaries
+  exist for oplog/index-log/page segment files
+- production Raft snapshot lifecycle wired to engine freeze/flush/download/verify/install; local and
+  external snapshot bootstrap guards exist today
+- scale up/down controller backed by metaserver decisions and networked data-Raft membership
+  scheduling
+- full C++ placement policy beyond current load-aware/location-diverse replica fill and heartbeat
+  load reporting
+- production ByteStore stream backend; current shared-store work covers local file/object-store
+  checkpoint, page, index, and oplog flows
+- tenant-level/distributed quota and admission plus kill switch wiring across real services; local
+  shard `maxmemory_bytes`, `read_qps`, and `write_qps` admission already exists
 
 P2, required for launch quality:
 
