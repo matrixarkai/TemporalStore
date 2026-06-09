@@ -30,6 +30,7 @@ struct SecondaryReplicationSummary {
     reads_after_restart: Vec<ReadSummary>,
     restarted_secondary: RaftNodeId,
     partition: PartitionSummary,
+    lagging_follower: LaggingFollowerSummary,
     crashed_leader: RaftNodeId,
     failover: AdminFailoverResponse,
     reads_after_leader_crash: Vec<ReadSummary>,
@@ -64,6 +65,14 @@ struct PartitionSummary {
     majority_write: WriteSummary,
     isolated_read_status: Status,
     healed_read: ReadSummary,
+}
+
+#[derive(Debug, Serialize)]
+struct LaggingFollowerSummary {
+    follower_node: RaftNodeId,
+    majority_writes: Vec<WriteSummary>,
+    observed_lag: u64,
+    catchup_reads: Vec<ReadSummary>,
 }
 
 #[derive(Debug, Serialize)]
@@ -205,6 +214,8 @@ fn main() {
 
     let partition = run_partition_phase(&nodes);
     writes.push(partition.majority_write.clone());
+    let lagging_follower = run_lagging_follower_phase(&nodes);
+    writes.extend(lagging_follower.majority_writes.iter().cloned());
 
     let crashed_leader = 1;
     let leader_index = children
@@ -282,6 +293,7 @@ fn main() {
             reads_after_restart,
             restarted_secondary,
             partition,
+            lagging_follower,
             crashed_leader,
             failover,
             reads_after_leader_crash,
@@ -342,6 +354,65 @@ fn run_partition_phase(nodes: &[ProductionRaftNode]) -> PartitionSummary {
         majority_write,
         isolated_read_status: isolated_read.status,
         healed_read,
+    }
+}
+
+fn run_lagging_follower_phase(nodes: &[ProductionRaftNode]) -> LaggingFollowerSummary {
+    let follower_node = 3;
+    let leader = nodes
+        .iter()
+        .find(|node| node.node_id == 1)
+        .expect("leader should exist");
+    let follower = nodes
+        .iter()
+        .find(|node| node.node_id == follower_node)
+        .expect("lagging follower should exist");
+
+    for peer in nodes.iter().filter(|node| node.node_id != follower_node) {
+        block_peer(follower, peer.node_id, true);
+    }
+
+    let majority_writes = (0..3)
+        .map(|index| {
+            propose(
+                leader,
+                &format!("lagging-follower-{index}"),
+                &format!("v-lag-{index}"),
+            )
+        })
+        .collect::<Vec<_>>();
+    for index in 0..3 {
+        for majority in nodes.iter().filter(|node| node.node_id != follower_node) {
+            wait_for_value(
+                majority,
+                majority.node_id,
+                &format!("lagging-follower-{index}"),
+                &format!("v-lag-{index}"),
+            );
+        }
+    }
+    let observed_lag = wait_for_lag(leader, follower_node, 3);
+
+    for peer in nodes.iter().filter(|node| node.node_id != follower_node) {
+        block_peer(follower, peer.node_id, false);
+    }
+    let _heal_trigger = propose(leader, "lagging-follower-heal", "v-lag-heal");
+    let catchup_reads = (0..3)
+        .map(|index| {
+            wait_for_value(
+                follower,
+                follower_node,
+                &format!("lagging-follower-{index}"),
+                &format!("v-lag-{index}"),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    LaggingFollowerSummary {
+        follower_node,
+        majority_writes,
+        observed_lag,
+        catchup_reads,
     }
 }
 
@@ -595,6 +666,33 @@ fn wait_for_cluster_commit(node: &ProductionRaftNode, min_commit_index: u64) {
             "node {} did not reach commit {}; last status: {:?}",
             node.node_id,
             min_commit_index,
+            status
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn wait_for_lag(node: &ProductionRaftNode, lagging_node_id: RaftNodeId, min_lag: u64) -> u64 {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let status: RaftClusterStatus =
+            get_json_with_options(&node.addr, "/raft/status", request_options())
+                .expect("status request failed");
+        let lag = status
+            .nodes
+            .iter()
+            .find(|replica| replica.node_id == lagging_node_id)
+            .map(|replica| replica.lag)
+            .unwrap_or_default();
+        if lag >= min_lag {
+            return lag;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "node {} did not observe lag {} for follower {}; last status: {:?}",
+            node.node_id,
+            min_lag,
+            lagging_node_id,
             status
         );
         thread::sleep(Duration::from_millis(50));
