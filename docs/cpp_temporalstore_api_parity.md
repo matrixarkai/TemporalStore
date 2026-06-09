@@ -57,6 +57,10 @@ Feature:
   (`gid`, `action_type`, `duration`, `author_id`) without generated C++ proto code.
   `FeatureQueryFiltered` decodes those stored point bytes, applies typed filters matching the
   C++ fields, and returns the original point bytes in timestamp order.
+- C++ `QueryRequest.filters` string syntax is supported through
+  `FeatureFilter::parse_cpp_filter`, client `feature_query_cpp_filters`, and RESP
+  `FQUERYFILTERSTR`; examples match C++ filters like `gid = 1`, `duration < 4`,
+  and `author_id != 9`.
 
 Sequence:
 

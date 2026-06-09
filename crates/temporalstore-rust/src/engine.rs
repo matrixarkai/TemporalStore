@@ -17,9 +17,10 @@ use crate::index_log::LocalIndexLogStore;
 use crate::oplog::LocalOplogStore;
 use crate::page_store::{LocalPageStore, PageAddress};
 use crate::types::{
-    BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,
-    ExecuteResponse, FeatureFilter, FeatureFilterOp, FeaturePoint, FeatureWritePolicy, IpsStats,
-    SequenceFeatureRow, SequenceQuerySpec, ShardId, Status, StringSetCondition,
+    parse_cpp_feature_filters, BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse,
+    ExecuteRequest, ExecuteResponse, FeatureFilter, FeatureFilterOp, FeaturePoint,
+    FeatureWritePolicy, IpsStats, SequenceFeatureRow, SequenceQuerySpec, ShardId, Status,
+    StringSetCondition,
 };
 
 #[derive(Debug, Clone)]
@@ -3049,6 +3050,27 @@ mod tests {
             SequenceFeatureRow::decode_cpp_feature_value(points[0].timestamp_ms, &points[0].value),
             Some(matching)
         );
+
+        let filters = parse_cpp_feature_filters(["gid = 1", "duration < 4"]).unwrap();
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureQueryFiltered {
+                key: "9".to_string(),
+                start_ms: 0,
+                end_ms: 100_000,
+                count: Some(1_000),
+                filters,
+            },
+        });
+        let CommandResponse::FeaturePoints { points } = response.response else {
+            panic!("expected feature points");
+        };
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].timestamp_ms, 777);
+
+        assert!(FeatureFilter::parse_cpp_filter("unknown = 1").is_err());
+        assert!(FeatureFilter::parse_cpp_filter("gid >= 1").is_err());
+        assert!(FeatureFilter::parse_cpp_filter("gid = nope").is_err());
     }
 
     #[test]

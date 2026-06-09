@@ -124,6 +124,52 @@ pub struct FeatureFilter {
     pub value: u64,
 }
 
+impl FeatureFilter {
+    pub fn parse_cpp_filter(value: &str) -> Result<Self, String> {
+        let mut parts = value.split_whitespace();
+        let field = parts
+            .next()
+            .ok_or_else(|| "filter must be '<field> <op> <value>'".to_string())?;
+        let op = parts
+            .next()
+            .ok_or_else(|| "filter must be '<field> <op> <value>'".to_string())?;
+        let raw_value = parts
+            .next()
+            .ok_or_else(|| "filter must be '<field> <op> <value>'".to_string())?;
+        if parts.next().is_some() {
+            return Err("filter must be '<field> <op> <value>'".to_string());
+        }
+        if !matches!(field, "gid" | "action_type" | "duration" | "author_id") {
+            return Err(format!("unknown feature field '{field}'"));
+        }
+        let op = match op {
+            "=" | "==" => FeatureFilterOp::Equal,
+            "!=" => FeatureFilterOp::NotEqual,
+            ">" => FeatureFilterOp::GreaterThan,
+            "<" => FeatureFilterOp::LessThan,
+            _ => return Err(format!("unsupported feature filter op '{op}'")),
+        };
+        let value = raw_value
+            .parse::<u64>()
+            .map_err(|_| format!("feature filter value '{raw_value}' is not uint64"))?;
+        Ok(Self {
+            field: field.to_string(),
+            op,
+            value,
+        })
+    }
+}
+
+pub fn parse_cpp_feature_filters<'a>(
+    filters: impl IntoIterator<Item = &'a str>,
+) -> Result<Vec<FeatureFilter>, String> {
+    filters
+        .into_iter()
+        .filter(|filter| !filter.trim().is_empty())
+        .map(FeatureFilter::parse_cpp_filter)
+        .collect()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SequenceQuerySpec {
     pub key: String,

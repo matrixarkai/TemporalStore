@@ -12,9 +12,9 @@ use crate::http::{
 use crate::meta::GetShardResponse;
 use crate::meta::{GetTableTopologyRequest, TableTopologyResponse};
 use crate::types::{
-    BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,
-    ExecuteResponse, FeatureFilter, FeaturePoint, FeatureWritePolicy, IpsStats, SequenceFeatureRow,
-    SequenceQuerySpec, ShardId, Status,
+    parse_cpp_feature_filters, BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse,
+    ExecuteRequest, ExecuteResponse, FeatureFilter, FeaturePoint, FeatureWritePolicy, IpsStats,
+    SequenceFeatureRow, SequenceQuerySpec, ShardId, Status,
 };
 
 #[derive(Debug, Error)]
@@ -23,6 +23,8 @@ pub enum ClientError {
     Http(#[from] HttpError),
     #[error("server returned error: {0}")]
     Status(String),
+    #[error("invalid request: {0}")]
+    InvalidRequest(String),
     #[error("unexpected response for {operation}: {response:?}")]
     UnexpectedResponse {
         operation: &'static str,
@@ -1079,6 +1081,19 @@ impl TemporalStoreTable {
                 response,
             }),
         }
+    }
+
+    pub fn feature_query_cpp_filters(
+        &self,
+        key: impl Into<String>,
+        start_ms: u64,
+        end_ms: u64,
+        count: Option<usize>,
+        filters: &[String],
+    ) -> Result<Vec<FeaturePoint>, ClientError> {
+        let filters = parse_cpp_feature_filters(filters.iter().map(String::as_str))
+            .map_err(ClientError::InvalidRequest)?;
+        self.feature_query_filtered(key, start_ms, end_ms, count, filters)
     }
 
     pub fn feature_replace(

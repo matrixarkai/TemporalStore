@@ -6,8 +6,8 @@ use std::thread;
 
 use crate::client::{slot_id_for_key, stable_key_hash};
 use crate::types::{
-    Command, CommandResponse, ExecuteRequest, FeatureFilter, FeatureFilterOp, FeaturePoint,
-    FeatureWritePolicy, ShardId, StringSetCondition,
+    parse_cpp_feature_filters, Command, CommandResponse, ExecuteRequest, FeatureFilter,
+    FeatureFilterOp, FeaturePoint, FeatureWritePolicy, ShardId, StringSetCondition,
 };
 use crate::TemporalStoreClient;
 
@@ -502,6 +502,50 @@ pub fn execute_redis_command_with_state(
                         .collect(),
                 ),
                 Ok(_) => RespValue::Error("ERR invalid fqueryfilter response".to_string()),
+                Err(err) => RespValue::Error(format!("ERR {err}")),
+            }
+        }
+        "FQUERYFILTERSTR" if args.len() >= 6 => {
+            let start_ms = match parse_u64(&args[2], "start_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let end_ms = match parse_u64(&args[3], "end_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let count = match parse_usize(&args[4], "count") {
+                Ok(value) => Some(value),
+                Err(err) => return RespValue::Error(err),
+            };
+            let raw_filters = args
+                .iter()
+                .skip(5)
+                .map(|filter| string_arg(filter))
+                .collect::<Vec<_>>();
+            let filters = match parse_cpp_feature_filters(raw_filters.iter().map(String::as_str)) {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(format!("ERR {err}")),
+            };
+            match execute(Command::FeatureQueryFiltered {
+                key: string_arg(&args[1]),
+                start_ms,
+                end_ms,
+                count,
+                filters,
+            }) {
+                Ok(CommandResponse::FeaturePoints { points }) => RespValue::Array(
+                    points
+                        .into_iter()
+                        .map(|point| {
+                            RespValue::Array(vec![
+                                RespValue::Integer(point.timestamp_ms as i64),
+                                RespValue::Bulk(Some(point.value)),
+                            ])
+                        })
+                        .collect(),
+                ),
+                Ok(_) => RespValue::Error("ERR invalid fqueryfilterstr response".to_string()),
                 Err(err) => RespValue::Error(format!("ERR {err}")),
             }
         }
@@ -1300,6 +1344,7 @@ fn trim_crlf(value: &mut Vec<u8>) {
 mod tests {
     use super::*;
     use crate::engine::TemporalEngine;
+    use crate::types::SequenceFeatureRow;
 
     #[test]
     fn resp_parser_reads_array_command() {
@@ -1625,6 +1670,88 @@ mod tests {
                 RespValue::Integer(1000),
                 RespValue::Bulk(Some(b"7".to_vec())),
             ])])
+        );
+    }
+
+    #[test]
+    fn redis_feature_query_filterstr_uses_cpp_filter_syntax() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let matching = SequenceFeatureRow {
+            timestamp_ms: 10,
+            gid: 7,
+            action_type: 1,
+            duration: 5,
+            author_id: 99,
+        };
+        let other = SequenceFeatureRow {
+            timestamp_ms: 20,
+            gid: 8,
+            action_type: 1,
+            duration: 9,
+            author_id: 99,
+        };
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureAppend {
+                key: "feature-pb".to_string(),
+                points: vec![
+                    FeaturePoint {
+                        timestamp_ms: matching.timestamp_ms,
+                        value: matching.encode_cpp_feature_value(),
+                    },
+                    FeaturePoint {
+                        timestamp_ms: other.timestamp_ms,
+                        value: other.encode_cpp_feature_value(),
+                    },
+                ],
+            },
+        });
+        let run = |args: Vec<&str>| {
+            execute_redis_command(
+                args.into_iter()
+                    .map(|arg| arg.as_bytes().to_vec())
+                    .collect(),
+                1,
+                |command| {
+                    let response = engine.execute(ExecuteRequest {
+                        shard_id: 1,
+                        command,
+                    });
+                    if response.status.ok {
+                        Ok(response.response)
+                    } else {
+                        Err(response.status.message)
+                    }
+                },
+            )
+        };
+
+        assert_eq!(
+            run(vec![
+                "FQUERYFILTERSTR",
+                "feature-pb",
+                "0",
+                "30",
+                "10",
+                "gid = 7",
+                "duration < 6",
+            ]),
+            RespValue::Array(vec![RespValue::Array(vec![
+                RespValue::Integer(10),
+                RespValue::Bulk(Some(matching.encode_cpp_feature_value())),
+            ])])
+        );
+        assert_eq!(
+            run(vec![
+                "FQUERYFILTERSTR",
+                "feature-pb",
+                "0",
+                "30",
+                "10",
+                "gid >= 7",
+            ]),
+            RespValue::Error("ERR unsupported feature filter op '>='".to_string())
         );
     }
 
