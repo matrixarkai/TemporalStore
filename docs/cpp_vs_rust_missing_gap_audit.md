@@ -35,6 +35,9 @@ The Rust code now covers the local correctness skeleton for TemporalStore-style 
   source
 - opt-in background server replica replay loop for readonly/secondary catch-up from a configured
   primary stream source
+- metaserver-discovered background replica replay: when no fixed primary is configured, the server
+  polls `GET /shards/<shard_id>`, uses the returned route as the replay stream source, and skips
+  replay if the route points back to the local advertised server
 
 It is still not production C++ TemporalStore parity. The largest missing areas are tonic/gRPC service definitions, production storage lifecycle, and operational controls.
 
@@ -189,6 +192,8 @@ This C++ parity pass closed the next data-node replay gap:
   `TS_REPLICA_REPLAY_CURSOR_DIR` or the index directory, and returns a replay report/status payload.
 - `TS_REPLICA_REPLAY_PRIMARY_ADDR` plus `TS_REPLICA_REPLAY_INTERVAL_MS` enables continuous
   server-side replay without manual requests.
+- If `TS_REPLICA_REPLAY_PRIMARY_ADDR` is empty, the loop discovers the current primary from the
+  metaserver shard route and uses that server as the remote stream source.
 
 This pass also widened data-node heartbeat/load-report parity:
 

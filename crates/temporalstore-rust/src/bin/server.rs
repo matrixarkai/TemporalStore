@@ -1,8 +1,10 @@
 use temporalstore_rust::engine::TemporalEngine;
-use temporalstore_rust::http::{json_response, parse_json, post_json, serve, HttpRequestOptions};
+use temporalstore_rust::http::{
+    get_json_with_options, json_response, parse_json, post_json, serve, HttpRequestOptions,
+};
 use temporalstore_rust::meta::{
-    AckResponse, PartitionLoad, RegisterServerRequest, RegisterShardRequest, RegisterShardResponse,
-    ServerHeartbeatRequest, ServerHeartbeatResponse, ShardLoad,
+    AckResponse, GetShardResponse, PartitionLoad, RegisterServerRequest, RegisterShardRequest,
+    RegisterShardResponse, ServerHeartbeatRequest, ServerHeartbeatResponse, ShardLoad,
 };
 use temporalstore_rust::types::{BatchExecuteRequest, ExecuteRequest, ExecuteResponse, Status};
 use temporalstore_rust::{
@@ -114,6 +116,8 @@ fn main() {
     start_replica_replay_loop(
         engine.clone(),
         replica_replay_cursor_dir.clone(),
+        meta_addr.clone(),
+        advertised_addr.clone(),
         shard_id,
         replica_replay_primary_addr,
         replica_replay_interval_ms,
@@ -325,27 +329,64 @@ fn run_replica_replay(
 fn start_replica_replay_loop(
     engine: TemporalEngine,
     cursor_dir: String,
+    meta_addr: String,
+    local_addr: String,
     shard_id: u64,
     primary_addr: String,
     interval_ms: u64,
     max_stream_bytes: u64,
 ) {
-    if interval_ms == 0 || primary_addr.is_empty() {
+    if interval_ms == 0 {
         return;
     }
     std::thread::spawn(move || loop {
-        let _ = run_replica_replay(
-            &engine,
-            &cursor_dir,
-            ReplicaReplayRequest {
-                shard_id,
-                primary_addr: primary_addr.clone(),
-                cursor_path: None,
-                max_stream_bytes: Some(max_stream_bytes),
-            },
-        );
+        if let Some(primary_addr) =
+            resolve_replica_replay_primary_addr(&meta_addr, &local_addr, shard_id, &primary_addr)
+        {
+            let _ = run_replica_replay(
+                &engine,
+                &cursor_dir,
+                ReplicaReplayRequest {
+                    shard_id,
+                    primary_addr,
+                    cursor_path: None,
+                    max_stream_bytes: Some(max_stream_bytes),
+                },
+            );
+        }
         std::thread::sleep(std::time::Duration::from_millis(interval_ms));
     });
+}
+
+fn resolve_replica_replay_primary_addr(
+    meta_addr: &str,
+    local_addr: &str,
+    shard_id: u64,
+    configured_primary_addr: &str,
+) -> Option<String> {
+    let candidate = if configured_primary_addr.is_empty() {
+        let response = get_json_with_options::<GetShardResponse>(
+            meta_addr,
+            &format!("/shards/{shard_id}"),
+            HttpRequestOptions {
+                connect_timeout_ms: 500,
+                io_timeout_ms: 1_000,
+                max_retries: 1,
+            },
+        )
+        .ok()?;
+        if !response.status.ok {
+            return None;
+        }
+        response.location?.server_addr
+    } else {
+        configured_primary_addr.to_string()
+    };
+    if candidate.is_empty() || candidate == local_addr {
+        None
+    } else {
+        Some(candidate)
+    }
 }
 
 fn append_runtime_metrics(out: &mut String, runtime: &DataNodeRuntime) {
@@ -586,6 +627,8 @@ mod tests {
         start_replica_replay_loop(
             follower.clone(),
             cursor_dir.path().display().to_string(),
+            String::new(),
+            "127.0.0.1:0".to_string(),
             19,
             primary_addr,
             10,
@@ -610,6 +653,69 @@ mod tests {
             assert!(
                 Instant::now() < deadline,
                 "background replica replay loop did not catch up; last response: {:?}",
+                read
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn server_background_replica_replay_loop_discovers_primary_from_meta() {
+        let primary_dir = tempdir().unwrap();
+        let follower_dir = tempdir().unwrap();
+        let cursor_dir = tempdir().unwrap();
+        let primary = TemporalEngine::with_local_dirs(
+            1024,
+            primary_dir.path().join("cache"),
+            primary_dir.path().join("pages"),
+            primary_dir.path().join("index"),
+        );
+        let follower = TemporalEngine::with_local_dirs(
+            1024,
+            follower_dir.path().join("cache"),
+            follower_dir.path().join("pages"),
+            follower_dir.path().join("index"),
+        );
+        primary.load_shard(23);
+        primary.execute(ExecuteRequest {
+            shard_id: 23,
+            command: Command::StringSet {
+                key: "meta-discovered-replay".to_string(),
+                value: b"route".to_vec(),
+            },
+        });
+
+        let primary_addr = start_primary_stream_server(primary);
+        let meta_addr = start_meta_route_server(23, primary_addr.clone());
+        start_replica_replay_loop(
+            follower.clone(),
+            cursor_dir.path().display().to_string(),
+            meta_addr,
+            "secondary:17002".to_string(),
+            23,
+            String::new(),
+            10,
+            16 * 1024 * 1024,
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let read = follower.execute(ExecuteRequest {
+                shard_id: 23,
+                command: Command::StringGet {
+                    key: "meta-discovered-replay".to_string(),
+                },
+            });
+            if read.response
+                == (CommandResponse::Bytes {
+                    value: Some(b"route".to_vec()),
+                })
+            {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "metaserver-discovered replica replay did not catch up; last response: {:?}",
                 read
             );
             thread::sleep(Duration::from_millis(20));
@@ -647,6 +753,33 @@ mod tests {
         });
         wait_for_http(&primary_addr);
         primary_addr
+    }
+
+    fn start_meta_route_server(shard_id: u64, primary_addr: String) -> String {
+        let meta_addr = free_local_addr();
+        let bind_addr = meta_addr.clone();
+        thread::spawn(move || {
+            serve(&bind_addr, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    ("GET", path) if path == format!("/shards/{shard_id}") => json_response(
+                        200,
+                        &GetShardResponse {
+                            status: Status::ok(),
+                            location: Some(temporalstore_rust::ShardLocation {
+                                shard_id,
+                                server_addr: primary_addr.clone(),
+                                latest_snapshot: None,
+                            }),
+                        },
+                    ),
+                    ("GET", "/health") => json_response(200, &Status::ok()),
+                    _ => json_response(404, &Status::error("not_found", "unknown route")),
+                }
+            })
+            .unwrap()
+        });
+        wait_for_http(&meta_addr);
+        meta_addr
     }
 
     fn free_local_addr() -> String {

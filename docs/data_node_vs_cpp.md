@@ -66,6 +66,7 @@ Rust now covers these data-node surfaces:
   source and persist its replay cursor
 - opt-in background replica replay loop in the server process, configured by
   `TS_REPLICA_REPLAY_PRIMARY_ADDR` and `TS_REPLICA_REPLAY_INTERVAL_MS`
+- metaserver-discovered background replica replay when no fixed primary address is configured
 
 The new oplog stream is implemented in:
 
@@ -177,10 +178,13 @@ By default, cursors are stored under `TS_REPLICA_REPLAY_CURSOR_DIR` or
 The same path can run continuously in a secondary process:
 
 ```text
-TS_REPLICA_REPLAY_PRIMARY_ADDR=127.0.0.1:17002
 TS_REPLICA_REPLAY_INTERVAL_MS=1000
 TS_REPLICA_REPLAY_MAX_STREAM_BYTES=16777216
 ```
+
+If `TS_REPLICA_REPLAY_PRIMARY_ADDR` is set, the loop uses that fixed stream source. If it is empty,
+the loop resolves the current primary through `TS_META_ADDR` using `GET /shards/<shard_id>` and
+skips replay when the route points back to the local advertised server.
 
 ## What Is Still Missing Vs C++
 
@@ -195,12 +199,14 @@ Still missing major data-node internals:
 - dirty slot scheduling tied to background dump tasks
 - background periodic dump scheduler
 - merged page dump to zones
-- metaserver-driven primary discovery and automatic readonly replica replay scheduling
+- topology-change-triggered replay rescheduling and primary-change retry policy
+- production readonly-replica role scheduling, replay backoff/error reporting, and topology-change
+  rescheduling around the metaserver route
 - page compaction
 - C++-style page rewrite garbage collection with page headers and zone ownership
 - expirer/evicter background tasks
-- primary-pull `RemotePartitionStream`
-- retry/refresh logic when primary changes
+- primary-pull `RemotePartitionStream` binary/protobuf parity beyond the current HTTP stream source
+- retry/backoff policy when the metaserver primary route changes
 - membership finish callbacks to metaserver
 - full heartbeat/load reporting payload parity beyond local `partition_info` stats
 - storage quotas and admission control beyond local shard `maxmemory_bytes`
