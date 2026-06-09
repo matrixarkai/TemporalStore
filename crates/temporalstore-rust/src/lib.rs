@@ -88,7 +88,8 @@ pub use rebalance::{
 pub use redis::{execute_redis_command, read_command, serve_redis_proxy, RespValue};
 pub use replica_replay::{
     HttpReplicaStreamSource, ReplicaReplayCursor, ReplicaReplayError, ReplicaReplayLoop,
-    ReplicaReplayOptions, ReplicaReplayReport, ReplicaStreamSource,
+    ReplicaReplayOptions, ReplicaReplayReport, ReplicaReplayRequest, ReplicaReplayResponse,
+    ReplicaStreamSource,
 };
 pub use shared_store::{
     ReplayReport, SharedStoreCheckpointManifest, SharedStoreFlushReport, SharedStoreOplogEntry,

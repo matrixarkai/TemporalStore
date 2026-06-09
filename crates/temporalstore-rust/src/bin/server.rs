@@ -1,5 +1,5 @@
 use temporalstore_rust::engine::TemporalEngine;
-use temporalstore_rust::http::{json_response, parse_json, post_json, serve};
+use temporalstore_rust::http::{json_response, parse_json, post_json, serve, HttpRequestOptions};
 use temporalstore_rust::meta::{
     AckResponse, PartitionLoad, RegisterServerRequest, RegisterShardRequest, RegisterShardResponse,
     ServerHeartbeatRequest, ServerHeartbeatResponse, ShardLoad,
@@ -7,8 +7,10 @@ use temporalstore_rust::meta::{
 use temporalstore_rust::types::{BatchExecuteRequest, ExecuteRequest, ExecuteResponse, Status};
 use temporalstore_rust::{
     CheckedBatchExecuteRequest, CheckedExecuteRequest, CompactionRequest, DataNodeRuntime,
-    DataNodeRuntimeOptions, DumpShardRequest, GcRequest, LoadShardRequest, MembershipUpdateRequest,
-    RequestController, ScanStreamRequest, SetConfigRequest, StreamReadRequest, UnloadShardRequest,
+    DataNodeRuntimeOptions, DumpShardRequest, GcRequest, HttpReplicaStreamSource, LoadShardRequest,
+    MembershipUpdateRequest, ReplicaReplayLoop, ReplicaReplayOptions, ReplicaReplayRequest,
+    ReplicaReplayResponse, RequestController, ScanStreamRequest, SetConfigRequest,
+    StreamReadRequest, UnloadShardRequest,
 };
 
 fn main() {
@@ -28,6 +30,8 @@ fn main() {
         .unwrap_or_else(|_| "target/temporalstore-pages".to_string());
     let index_dir = std::env::var("TS_INDEX_DIR")
         .unwrap_or_else(|_| "target/temporalstore-indexes".to_string());
+    let replica_replay_cursor_dir = std::env::var("TS_REPLICA_REPLAY_CURSOR_DIR")
+        .unwrap_or_else(|_| format!("{index_dir}/replica-replay-cursors"));
     let cache_memory_bytes = std::env::var("TS_CACHE_MEMORY_BYTES")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -234,6 +238,15 @@ fn main() {
                 Ok(req) => json_response(200, &engine.scan_stream(req)),
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
             },
+            ("POST", "/replica/replay") => {
+                match parse_json::<ReplicaReplayRequest>(&request.body) {
+                    Ok(req) => json_response(
+                        200,
+                        &run_replica_replay(&engine, &replica_replay_cursor_dir, req),
+                    ),
+                    Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+                }
+            }
             _ => json_response(404, &Status::error("not_found", "unknown server route")),
         }
     })
@@ -245,6 +258,48 @@ fn env_usize(name: &str, default: usize) -> usize {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(default)
+}
+
+fn run_replica_replay(
+    engine: &TemporalEngine,
+    cursor_dir: &str,
+    request: ReplicaReplayRequest,
+) -> ReplicaReplayResponse {
+    if request.primary_addr.is_empty() {
+        return ReplicaReplayResponse {
+            status: Status::error("bad_request", "primary_addr is required"),
+            report: None,
+        };
+    }
+    let cursor_path = request.cursor_path.clone().unwrap_or_else(|| {
+        format!(
+            "{}/shard-{}.cursor.json",
+            cursor_dir.trim_end_matches('/'),
+            request.shard_id
+        )
+    });
+    let mut options = ReplicaReplayOptions::new(request.shard_id, cursor_path);
+    if let Some(max_stream_bytes) = request.max_stream_bytes {
+        options.max_stream_bytes = max_stream_bytes.max(1);
+    }
+    let source = HttpReplicaStreamSource::with_options(
+        request.primary_addr,
+        HttpRequestOptions {
+            connect_timeout_ms: 1_000,
+            io_timeout_ms: 5_000,
+            max_retries: 3,
+        },
+    );
+    match ReplicaReplayLoop::new(options).run(&source, engine) {
+        Ok(report) => ReplicaReplayResponse {
+            status: Status::ok(),
+            report: Some(report),
+        },
+        Err(err) => ReplicaReplayResponse {
+            status: Status::error("replica_replay_failed", err.to_string()),
+            report: None,
+        },
+    }
 }
 
 fn append_runtime_metrics(out: &mut String, runtime: &DataNodeRuntime) {
@@ -355,4 +410,132 @@ fn send_heartbeat(
             status: Status::error("heartbeat_failed", err.to_string()),
             forbid_auto_register: false,
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::TcpListener;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    use tempfile::tempdir;
+    use temporalstore_rust::http::get_json_with_options;
+    use temporalstore_rust::types::{Command, CommandResponse};
+
+    use super::*;
+
+    #[test]
+    fn server_replica_replay_endpoint_pulls_remote_streams() {
+        let primary_dir = tempdir().unwrap();
+        let follower_dir = tempdir().unwrap();
+        let cursor_dir = tempdir().unwrap();
+        let primary = TemporalEngine::with_local_dirs(
+            1024,
+            primary_dir.path().join("cache"),
+            primary_dir.path().join("pages"),
+            primary_dir.path().join("index"),
+        );
+        let follower = TemporalEngine::with_local_dirs(
+            1024,
+            follower_dir.path().join("cache"),
+            follower_dir.path().join("pages"),
+            follower_dir.path().join("index"),
+        );
+        primary.load_shard(17);
+        primary.execute(ExecuteRequest {
+            shard_id: 17,
+            command: Command::StringSet {
+                key: "server-replay".to_string(),
+                value: b"remote".to_vec(),
+            },
+        });
+
+        let primary_addr = free_local_addr();
+        let primary_for_server = primary.clone();
+        let bind_addr = primary_addr.clone();
+        thread::spawn(move || {
+            serve(&bind_addr, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    ("GET", "/health") => json_response(200, &Status::ok()),
+                    ("POST", "/read_stream") => {
+                        match parse_json::<StreamReadRequest>(&request.body) {
+                            Ok(req) => json_response(200, &primary_for_server.read_stream(req)),
+                            Err(err) => {
+                                json_response(400, &Status::error("bad_request", err.to_string()))
+                            }
+                        }
+                    }
+                    ("POST", "/scan_stream") => {
+                        match parse_json::<ScanStreamRequest>(&request.body) {
+                            Ok(req) => json_response(200, &primary_for_server.scan_stream(req)),
+                            Err(err) => {
+                                json_response(400, &Status::error("bad_request", err.to_string()))
+                            }
+                        }
+                    }
+                    _ => json_response(404, &Status::error("not_found", "unknown route")),
+                }
+            })
+            .unwrap()
+        });
+        wait_for_http(&primary_addr);
+
+        let response = run_replica_replay(
+            &follower,
+            &cursor_dir.path().display().to_string(),
+            ReplicaReplayRequest {
+                shard_id: 17,
+                primary_addr,
+                cursor_path: None,
+                max_stream_bytes: None,
+            },
+        );
+        assert!(response.status.ok, "{:?}", response.status);
+        let report = response.report.unwrap();
+        assert_eq!(report.installed_page_segments, vec![0]);
+        assert_eq!(report.index_log_records, 1);
+        assert_eq!(report.oplog_records, 1);
+
+        let read = follower.execute(ExecuteRequest {
+            shard_id: 17,
+            command: Command::StringGet {
+                key: "server-replay".to_string(),
+            },
+        });
+        assert_eq!(
+            read.response,
+            CommandResponse::Bytes {
+                value: Some(b"remote".to_vec())
+            }
+        );
+    }
+
+    fn free_local_addr() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().to_string()
+    }
+
+    fn wait_for_http(addr: &str) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if get_json_with_options::<Status>(
+                addr,
+                "/health",
+                HttpRequestOptions {
+                    connect_timeout_ms: 100,
+                    io_timeout_ms: 100,
+                    max_retries: 0,
+                },
+            )
+            .is_ok()
+            {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "primary stream server did not start"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
 }

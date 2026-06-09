@@ -133,6 +133,22 @@ pub struct ReplicaReplayReport {
     pub cursor: ReplicaReplayCursor,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReplicaReplayRequest {
+    pub shard_id: ShardId,
+    pub primary_addr: String,
+    #[serde(default)]
+    pub cursor_path: Option<String>,
+    #[serde(default)]
+    pub max_stream_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReplicaReplayResponse {
+    pub status: Status,
+    pub report: Option<ReplicaReplayReport>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ReplicaReplayOptions {
     pub shard_id: ShardId,

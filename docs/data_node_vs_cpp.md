@@ -62,6 +62,8 @@ Rust now covers these data-node surfaces:
 - C++-style replica replay order for local stream sources:
   checkpoint index/pages -> index-log tail -> oplog tail -> persisted replay cursor
 - remote HTTP replica stream source for `/read_stream` and `/scan_stream`
+- `/replica/replay` server endpoint that lets a secondary data-node pull from a primary stream
+  source and persist its replay cursor
 
 The new oplog stream is implemented in:
 
@@ -155,6 +157,21 @@ gaps before serving reads. The same replay loop can now pull from an in-process 
 remote HTTP stream source, matching the C++ shape where a secondary consumes partition streams from
 another server.
 
+The server binary exposes this as:
+
+```text
+POST /replica/replay
+{
+  "shard_id": 1,
+  "primary_addr": "127.0.0.1:17002",
+  "cursor_path": "... optional ...",
+  "max_stream_bytes": 16777216
+}
+```
+
+By default, cursors are stored under `TS_REPLICA_REPLAY_CURSOR_DIR` or
+`<TS_INDEX_DIR>/replica-replay-cursors`.
+
 ## What Is Still Missing Vs C++
 
 Still missing major data-node internals:
@@ -168,7 +185,7 @@ Still missing major data-node internals:
 - dirty slot scheduling tied to background dump tasks
 - background periodic dump scheduler
 - merged page dump to zones
-- production readonly replica replay loop wiring in the server process
+- background readonly replica replay scheduler in the server process
 - page compaction
 - C++-style page rewrite garbage collection with page headers and zone ownership
 - expirer/evicter background tasks
