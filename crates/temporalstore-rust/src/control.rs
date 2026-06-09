@@ -113,6 +113,30 @@ pub struct GetInfoResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ObjectManagerStats {
+    pub object_count: usize,
+    pub page_ref_count: usize,
+    pub dirty_object_count: usize,
+    pub dirty_slot_count: usize,
+    pub routing_slot_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PartitionInfoStats {
+    pub shard_id: ShardId,
+    pub loaded: bool,
+    pub readonly: bool,
+    pub load_version: u64,
+    pub table_name: String,
+    pub shard_uri: String,
+    pub start_routing_slot: u32,
+    pub end_routing_slot: u32,
+    pub total_records: usize,
+    pub storage_bytes: u64,
+    pub object_manager: ObjectManagerStats,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ShardStats {
     pub shard_id: ShardId,
     pub loaded: bool,
@@ -127,6 +151,8 @@ pub struct ShardStats {
     pub ips_records: usize,
     pub risk_records: usize,
     pub storage_bytes: u64,
+    pub object_manager: ObjectManagerStats,
+    pub partition_info: PartitionInfoStats,
     pub cache: CacheStats,
     pub page_store: PageStoreStats,
     pub oplog: OplogStats,

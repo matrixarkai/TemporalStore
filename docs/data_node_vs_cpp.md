@@ -126,6 +126,14 @@ explicit retention boundaries for the local oplog, index log, and page segments;
 log tails and deletes old non-current page segment files below the requested generation. Compaction
 is still a control-plane hook and does not yet rewrite live page data into compacted zones.
 
+Stats now expose a C++-style partition/object-manager summary:
+
+- logical object count across strings, hashes, sets, feature series, sequence series, IPS series, and risk series
+- page-address reference count separate from logical object count
+- transient dirty object and dirty routing-slot counts
+- table name, shard URI, load version, readonly state, routing-slot range, and storage bytes in `partition_info`
+- Prometheus gauges for object count, page refs, dirty objects, dirty slots, and routing-slot span
+
 ## What Is Still Missing Vs C++
 
 Still missing major data-node internals:
@@ -134,9 +142,9 @@ Still missing major data-node internals:
 - in-flight cancellation after a worker has started executing
 - batch write/read splitting and pin-primary details at server layer
 - binary protobuf-compatible `OpLog`, `IndexLog`, and `PageHeader`
-- object manager with object ids/page ids
-- slot context manager
-- dirty slot tracking
+- full C++ `ObjectManager` memory layout with stable object ids and page ids
+- slot context manager with dump/rewrite ownership, not only routing-slot accounting
+- dirty slot scheduling tied to background dump tasks
 - background periodic dump scheduler
 - merged page dump to zones
 - index-log replay separate from oplog replay
@@ -148,7 +156,7 @@ Still missing major data-node internals:
 - membership finish callbacks to metaserver
 - full heartbeat/load reporting payload parity
 - storage quotas and admission control
-- per-partition metrics equivalent to C++ `PartitionInfo`
+- full per-partition heartbeat/load payload parity beyond local `partition_info` stats
 - real readonly replicator loop
 - byteraft data FSM integration
 

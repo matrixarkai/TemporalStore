@@ -9,9 +9,10 @@ use crate::cache::{CacheKey, MultiLayerCache};
 use crate::control::{
     CheckedBatchExecuteRequest, CheckedBatchExecuteResponse, CheckedExecuteRequest,
     CheckedExecuteResponse, Config, GetConfigResponse, GetInfoResponse, GetStatsResponse,
-    LoadShardRequest, LoadShardResponse, MembershipUpdateRequest, ScanStreamRequest,
-    ScanStreamResponse, SetConfigRequest, ShardInfo, ShardStats, StreamKind, StreamReadRequest,
-    StreamReadResponse, StreamRecord, UnloadShardRequest, UnloadShardResponse,
+    LoadShardRequest, LoadShardResponse, MembershipUpdateRequest, ObjectManagerStats,
+    PartitionInfoStats, ScanStreamRequest, ScanStreamResponse, SetConfigRequest, ShardInfo,
+    ShardStats, StreamKind, StreamReadRequest, StreamReadResponse, StreamRecord,
+    UnloadShardRequest, UnloadShardResponse,
 };
 use crate::index_log::LocalIndexLogStore;
 use crate::oplog::LocalOplogStore;
@@ -54,6 +55,8 @@ struct ShardState {
     #[serde(default)]
     ips_request_ids: HashMap<String, BTreeSet<String>>,
     risk: HashMap<String, BTreeMap<u64, i64>>,
+    #[serde(skip)]
+    dirty_objects: BTreeSet<String>,
 }
 
 const FEATURE_ADD_HARD_MAX_SIZE: usize = 100_000;
@@ -289,6 +292,9 @@ impl TemporalEngine {
             command.clone(),
         );
         if outcome.mutated {
+            for object_key in command_object_keys(&command) {
+                shard.dirty_objects.insert(object_key);
+            }
             if is_write_command(&command) {
                 let _ = self.oplog_store.append(request.shard_id, command);
             }
@@ -456,6 +462,20 @@ impl TemporalEngine {
         out.push_str("# TYPE temporalstore_oplog_records_total counter\n");
         out.push_str("# HELP temporalstore_oplog_bytes_total Oplog appended bytes by shard.\n");
         out.push_str("# TYPE temporalstore_oplog_bytes_total counter\n");
+        out.push_str(
+            "# HELP temporalstore_object_manager_objects Logical hot objects tracked by shard.\n",
+        );
+        out.push_str("# TYPE temporalstore_object_manager_objects gauge\n");
+        out.push_str("# HELP temporalstore_object_manager_page_refs Page-address references tracked by shard.\n");
+        out.push_str("# TYPE temporalstore_object_manager_page_refs gauge\n");
+        out.push_str("# HELP temporalstore_object_manager_dirty_objects Dirty logical objects tracked by shard.\n");
+        out.push_str("# TYPE temporalstore_object_manager_dirty_objects gauge\n");
+        out.push_str("# HELP temporalstore_object_manager_dirty_slots Dirty routing slots tracked by shard.\n");
+        out.push_str("# TYPE temporalstore_object_manager_dirty_slots gauge\n");
+        out.push_str(
+            "# HELP temporalstore_partition_routing_slots Routing slots owned by shard.\n",
+        );
+        out.push_str("# TYPE temporalstore_partition_routing_slots gauge\n");
         for stats in self.loaded_shard_stats() {
             push_metric(
                 &mut out,
@@ -593,6 +613,36 @@ impl TemporalEngine {
                 "temporalstore_oplog_bytes_total",
                 &[("shard_id", stats.shard_id.to_string())],
                 stats.oplog.bytes_written,
+            );
+            push_metric(
+                &mut out,
+                "temporalstore_object_manager_objects",
+                &[("shard_id", stats.shard_id.to_string())],
+                stats.object_manager.object_count as u64,
+            );
+            push_metric(
+                &mut out,
+                "temporalstore_object_manager_page_refs",
+                &[("shard_id", stats.shard_id.to_string())],
+                stats.object_manager.page_ref_count as u64,
+            );
+            push_metric(
+                &mut out,
+                "temporalstore_object_manager_dirty_objects",
+                &[("shard_id", stats.shard_id.to_string())],
+                stats.object_manager.dirty_object_count as u64,
+            );
+            push_metric(
+                &mut out,
+                "temporalstore_object_manager_dirty_slots",
+                &[("shard_id", stats.shard_id.to_string())],
+                stats.object_manager.dirty_slot_count as u64,
+            );
+            push_metric(
+                &mut out,
+                "temporalstore_partition_routing_slots",
+                &[("shard_id", stats.shard_id.to_string())],
+                stats.object_manager.routing_slot_count as u64,
             );
         }
         out
@@ -829,21 +879,55 @@ impl TemporalEngine {
             let sequence_records = state.sequences.len();
             let ips_records = state.ips.len();
             let risk_records = state.risk.len();
+            let total_records = string_records
+                + hash_records
+                + set_records
+                + feature_records
+                + sequence_records
+                + ips_records
+                + risk_records;
+            let loaded = info.as_ref().map(|info| info.loaded).unwrap_or(true);
+            let readonly = info.as_ref().map(|info| info.readonly).unwrap_or(false);
+            let load_version = info
+                .as_ref()
+                .map(|info| info.load_version)
+                .unwrap_or_default();
+            let table_name = info
+                .as_ref()
+                .map(|info| info.table_name.clone())
+                .unwrap_or_default();
+            let shard_uri = info
+                .as_ref()
+                .map(|info| info.shard_uri.clone())
+                .unwrap_or_default();
+            let start_routing_slot = info
+                .as_ref()
+                .map(|info| info.start_routing_slot)
+                .unwrap_or_default();
+            let end_routing_slot = info
+                .as_ref()
+                .map(|info| info.end_routing_slot)
+                .unwrap_or(u32::MAX);
+            let object_manager = object_manager_stats(state, start_routing_slot, end_routing_slot);
+            let partition_info = PartitionInfoStats {
+                shard_id,
+                loaded,
+                readonly,
+                load_version,
+                table_name,
+                shard_uri,
+                start_routing_slot,
+                end_routing_slot,
+                total_records,
+                storage_bytes: page_store.bytes_written,
+                object_manager: object_manager.clone(),
+            };
             ShardStats {
                 shard_id,
-                loaded: info.as_ref().map(|info| info.loaded).unwrap_or(true),
-                readonly: info.as_ref().map(|info| info.readonly).unwrap_or(false),
-                load_version: info
-                    .as_ref()
-                    .map(|info| info.load_version)
-                    .unwrap_or_default(),
-                total_records: string_records
-                    + hash_records
-                    + set_records
-                    + feature_records
-                    + sequence_records
-                    + ips_records
-                    + risk_records,
+                loaded,
+                readonly,
+                load_version,
+                total_records,
                 string_records,
                 hash_records,
                 set_records,
@@ -852,6 +936,8 @@ impl TemporalEngine {
                 ips_records,
                 risk_records,
                 storage_bytes: page_store.bytes_written,
+                object_manager,
+                partition_info,
                 cache: self.cache.stats(),
                 page_store,
                 oplog: self.oplog_store.stats(shard_id),
@@ -2361,6 +2447,122 @@ fn read_page_bytes(
 
 fn parse_i64(bytes: &Vec<u8>) -> Option<i64> {
     std::str::from_utf8(bytes).ok()?.parse().ok()
+}
+
+fn object_manager_stats(
+    shard: &ShardState,
+    start_routing_slot: u32,
+    end_routing_slot: u32,
+) -> ObjectManagerStats {
+    let object_count = shard.strings.len()
+        + shard.hashes.len()
+        + shard.sets.len()
+        + shard.features.len()
+        + shard.sequences.len()
+        + shard.ips.len()
+        + shard.risk.len();
+    let page_ref_count = shard.strings.len()
+        + shard.hashes.values().map(HashMap::len).sum::<usize>()
+        + shard.sets.values().map(BTreeMap::len).sum::<usize>()
+        + shard.features.values().map(BTreeMap::len).sum::<usize>()
+        + shard.sequences.values().map(BTreeMap::len).sum::<usize>()
+        + shard.ips.values().map(BTreeMap::len).sum::<usize>();
+    let routing_slot_count = routing_slot_count(start_routing_slot, end_routing_slot);
+    let dirty_slots = shard
+        .dirty_objects
+        .iter()
+        .map(|key| slot_for_object(key, start_routing_slot, routing_slot_count))
+        .collect::<BTreeSet<_>>();
+    ObjectManagerStats {
+        object_count,
+        page_ref_count,
+        dirty_object_count: shard.dirty_objects.len(),
+        dirty_slot_count: dirty_slots.len(),
+        routing_slot_count,
+    }
+}
+
+fn routing_slot_count(start_routing_slot: u32, end_routing_slot: u32) -> u32 {
+    if end_routing_slot < start_routing_slot {
+        return 0;
+    }
+    end_routing_slot
+        .saturating_sub(start_routing_slot)
+        .saturating_add(1)
+}
+
+fn slot_for_object(key: &str, start_routing_slot: u32, routing_slot_count: u32) -> u32 {
+    if routing_slot_count == 0 {
+        return start_routing_slot;
+    }
+    start_routing_slot + (stable_object_hash(key) % routing_slot_count as u64) as u32
+}
+
+fn stable_object_hash(key: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in key.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+fn command_object_keys(command: &Command) -> Vec<String> {
+    match command {
+        Command::CommonDelete { key }
+        | Command::CommonExpire { key, .. }
+        | Command::StringSet { key, .. }
+        | Command::StringSetEx { key, .. }
+        | Command::StringSetConditional { key, .. }
+        | Command::StringDelete { key }
+        | Command::HashSet { key, .. }
+        | Command::HashMultiSet { key, .. }
+        | Command::HashIncrBy { key, .. }
+        | Command::HashDelete { key, .. }
+        | Command::SetAdd { key, .. }
+        | Command::SetRemove { key, .. }
+        | Command::FeatureAppend { key, .. }
+        | Command::FeatureAppendWithPolicy { key, .. }
+        | Command::FeatureReplace { key, .. }
+        | Command::FeatureDelete { key }
+        | Command::SequenceAdd { key, .. }
+        | Command::IpsAdd { key, .. }
+        | Command::IpsAddWithOptions { key, .. }
+        | Command::IpsLoad { key, .. }
+        | Command::IpsRemove { key, .. }
+        | Command::IpsDelete { key }
+        | Command::RiskIncrement { key, .. }
+        | Command::RiskIncrementWithOptions { key, .. } => vec![key.clone()],
+        Command::RiskSet { family, key, .. } | Command::RiskSetAndGet { family, key, .. } => {
+            vec![risk_family_key(*family, key)]
+        }
+        Command::SequenceBatchQuery { .. }
+        | Command::CommonTtl { .. }
+        | Command::CommonExists { .. }
+        | Command::StringGet { .. }
+        | Command::HashGet { .. }
+        | Command::HashMultiGet { .. }
+        | Command::HashGetAll { .. }
+        | Command::HashLen { .. }
+        | Command::SetMembers { .. }
+        | Command::FeatureQuery { .. }
+        | Command::FeatureQueryFiltered { .. }
+        | Command::FeatureAggQuery { .. }
+        | Command::SequenceQuery { .. }
+        | Command::IpsQueryLast { .. }
+        | Command::IpsQueryRange { .. }
+        | Command::IpsBatchQueryLast { .. }
+        | Command::IpsCount { .. }
+        | Command::IpsQueryRangeWithOptions { .. }
+        | Command::IpsSnapshot { .. }
+        | Command::IpsStat { .. }
+        | Command::IpsFilter { .. }
+        | Command::RiskCount { .. }
+        | Command::RiskQuery { .. }
+        | Command::RiskDetail { .. }
+        | Command::RiskFamilyQuery { .. }
+        | Command::RiskManager { .. } => Vec::new(),
+    }
 }
 
 fn is_write_command(command: &Command) -> bool {
@@ -4840,6 +5042,117 @@ mod tests {
     }
 
     #[test]
+    fn stats_include_cpp_style_partition_and_object_manager_accounting() {
+        let engine = TemporalEngine::default();
+        assert!(
+            engine
+                .load_shard_with(LoadShardRequest {
+                    shard_id: 9,
+                    load_version: 77,
+                    local_node_id: Some(3),
+                    shard_uri: "local://table/shard-9".to_string(),
+                    start_routing_slot: 10,
+                    end_routing_slot: 20,
+                    readonly: false,
+                    table_name: "feature_table".to_string(),
+                })
+                .status
+                .ok
+        );
+        for command in [
+            Command::StringSet {
+                key: "string-key".to_string(),
+                value: b"v".to_vec(),
+            },
+            Command::HashSet {
+                key: "hash-key".to_string(),
+                field: "a".to_string(),
+                value: b"1".to_vec(),
+            },
+            Command::HashSet {
+                key: "hash-key".to_string(),
+                field: "b".to_string(),
+                value: b"2".to_vec(),
+            },
+            Command::SetAdd {
+                key: "set-key".to_string(),
+                member: b"m1".to_vec(),
+            },
+            Command::SetAdd {
+                key: "set-key".to_string(),
+                member: b"m2".to_vec(),
+            },
+            Command::FeatureAppend {
+                key: "feature-key".to_string(),
+                points: vec![
+                    FeaturePoint {
+                        timestamp_ms: 1,
+                        value: b"f1".to_vec(),
+                    },
+                    FeaturePoint {
+                        timestamp_ms: 2,
+                        value: b"f2".to_vec(),
+                    },
+                ],
+            },
+            Command::SequenceAdd {
+                key: "sequence-key".to_string(),
+                rows: vec![
+                    SequenceFeatureRow {
+                        timestamp_ms: 10,
+                        gid: 1,
+                        action_type: 2,
+                        duration: 3,
+                        author_id: 4,
+                    },
+                    SequenceFeatureRow {
+                        timestamp_ms: 20,
+                        gid: 5,
+                        action_type: 6,
+                        duration: 7,
+                        author_id: 8,
+                    },
+                ],
+            },
+            Command::IpsAdd {
+                key: "ips-key".to_string(),
+                timestamp_ms: 30,
+                instance: b"i".to_vec(),
+            },
+            Command::RiskSet {
+                family: RiskFamily::Cpc,
+                key: "risk-key".to_string(),
+                timestamp_ms: 40,
+                amount: 5,
+            },
+        ] {
+            assert!(
+                engine
+                    .execute(ExecuteRequest {
+                        shard_id: 9,
+                        command,
+                    })
+                    .status
+                    .ok
+            );
+        }
+
+        let stats = engine.get_stats(9).stats.unwrap();
+        assert_eq!(stats.total_records, 7);
+        assert_eq!(stats.object_manager.object_count, 7);
+        assert_eq!(stats.object_manager.page_ref_count, 10);
+        assert_eq!(stats.object_manager.dirty_object_count, 7);
+        assert!(stats.object_manager.dirty_slot_count > 0);
+        assert!(stats.object_manager.dirty_slot_count <= 7);
+        assert_eq!(stats.object_manager.routing_slot_count, 11);
+        assert_eq!(stats.partition_info.table_name, "feature_table");
+        assert_eq!(stats.partition_info.shard_uri, "local://table/shard-9");
+        assert_eq!(stats.partition_info.start_routing_slot, 10);
+        assert_eq!(stats.partition_info.end_routing_slot, 20);
+        assert_eq!(stats.partition_info.object_manager, stats.object_manager);
+    }
+
+    #[test]
     fn prometheus_metrics_include_records_cache_page_and_oplog() {
         let engine = TemporalEngine::default();
         engine.load_shard(1);
@@ -4862,5 +5175,11 @@ mod tests {
         assert!(metrics.contains("temporalstore_cache_operations_total"));
         assert!(metrics.contains("temporalstore_page_store_operations_total"));
         assert!(metrics.contains("temporalstore_oplog_records_total{shard_id=\"1\"} 1"));
+        assert!(metrics.contains("temporalstore_object_manager_objects{shard_id=\"1\"} 1"));
+        assert!(metrics.contains("temporalstore_object_manager_page_refs{shard_id=\"1\"} 1"));
+        assert!(metrics.contains("temporalstore_object_manager_dirty_objects{shard_id=\"1\"} 1"));
+        assert!(
+            metrics.contains("temporalstore_partition_routing_slots{shard_id=\"1\"} 4294967295")
+        );
     }
 }

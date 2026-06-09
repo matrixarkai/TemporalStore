@@ -180,7 +180,7 @@ The C++ deep dive describes a full serving engine. The Rust rewrite does not yet
   `PartitionId` bit-layout helper for table partition ids
 - brpc/thrift SDK compatibility
 - partition worker pools
-- hot object manager with dirty slot tracking
+- full C++ hot object manager; Rust now exposes logical object/page-ref/dirty-slot partition stats
 - append-only oplog with reclaim boundaries
 - background merged slot/page dump scheduler
 - ByteStore stream backend
