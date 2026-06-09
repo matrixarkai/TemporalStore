@@ -116,6 +116,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "metaserver table topology can be converted into data-node Raft voter membership plans with no-op detection and server-state validation"
                     .to_string(),
+                "metaserver topology membership plans can be applied to data-node Raft with joint-consensus catch-up and an applied/no-op report"
+                    .to_string(),
                 "C++-style deterministic metaserver task scheduler model covers priority ordering, retry-later backoff, abort, and UpdateMembership task enqueue"
                     .to_string(),
                 "scheduler task queue can be snapshotted/restored and freezing shard replicas can be repaired into UpdateMembership tasks"
@@ -129,7 +131,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
             ],
             missing: vec![
                 "real OpenRaft or raft-rs data-node FSM/storage implementation".to_string(),
-                "networked metaserver Raft transport and scheduler loop that applies networked data-node Raft membership plans and persists task state"
+                "networked metaserver Raft transport and scheduler loop that drives data-node Raft membership apply across real processes and persists task state"
                     .to_string(),
                 "multi-process crash/restart/partition/slow-follower tests that kill real OS processes"
                     .to_string(),

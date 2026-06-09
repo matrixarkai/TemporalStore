@@ -62,9 +62,10 @@ pub use partition_id::{
 };
 pub use proxy::{ProxyInfo, ProxyOptions, ProxyService, ProxyStats};
 pub use raft::{
-    distributed_raft_readiness, handle_raft_http, require_production_raft_ready,
-    validate_raft_deployment_mode, AppendEntriesRequest, AppendEntriesResponse,
-    DataRaftConsensusBackend, DataRaftConsensusOptions, DataRaftPeer, DataRaftStatus,
+    apply_data_raft_membership_from_topology, distributed_raft_readiness, handle_raft_http,
+    require_production_raft_ready, validate_raft_deployment_mode, AppendEntriesRequest,
+    AppendEntriesResponse, DataRaftConsensusBackend, DataRaftConsensusOptions, DataRaftPeer,
+    DataRaftStatus, DataRaftTopologyApplyReport, DataRaftTopologyMembershipPlan,
     DistributedRaftCommandResponse, DistributedRaftProposeRequest, DistributedRaftReadRequest,
     HttpRaftTransport, InstallSnapshotRequest, InstallSnapshotResponse, LocalRaftWal, MetaCommand,
     MetaRaftCluster, MetaState, ProductionMetaRaftRuntime, ProductionMetaRaftRuntimeOptions,
