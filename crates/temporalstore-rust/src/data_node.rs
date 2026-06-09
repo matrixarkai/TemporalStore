@@ -528,13 +528,15 @@ impl DataNodeRuntime {
                 .lock()
                 .expect("runtime cancellation lock poisoned")
                 .insert(job_id);
-            return DataNodeTaskStatus {
+            let cancel_requested = DataNodeTaskStatus {
                 status: Status::error(
                     "job_cancel_requested",
                     "data node job cancellation requested",
                 ),
                 ..existing
             };
+            jobs.insert(job_id, cancel_requested.clone());
+            return cancel_requested;
         }
         let canceled = DataNodeTaskStatus {
             status: Status::error("job_canceled", "data node job canceled before execution"),
@@ -1388,6 +1390,41 @@ mod tests {
         assert_eq!(canceled.status.code, "job_canceled");
         assert_eq!(runtime.stats().canceled_total, 1);
         assert_eq!(runtime.stats().queue_depth, 0);
+    }
+
+    #[test]
+    fn runtime_marks_inflight_cancellation_requested_before_worker_finishes() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 8);
+
+        let submitted = runtime.submit_dump(
+            DumpShardRequest { shard_id: 1 },
+            RequestController { timeout_ms: 1000 },
+        );
+        let task = runtime
+            .inner
+            .queue
+            .lock()
+            .expect("runtime queue lock poisoned")
+            .pop_ready()
+            .expect("task should be marked running");
+        assert_eq!(task.job_id, submitted.job_id);
+
+        let cancel_requested = runtime.cancel_job(submitted.job_id);
+        assert_eq!(cancel_requested.status.code, "job_cancel_requested");
+        assert_eq!(
+            runtime.job_status(submitted.job_id).unwrap().status.code,
+            "job_cancel_requested"
+        );
+        assert_eq!(runtime.stats().canceled_total, 0);
+
+        let output = execute_task(&runtime.inner, &task);
+        let DataNodeTaskOutput::Dump(response) = output else {
+            panic!("expected dump output");
+        };
+        assert_eq!(response.status.code, "job_canceled");
+        assert!(take_canceled(&runtime.inner, submitted.job_id));
     }
 
     #[test]
