@@ -14,6 +14,9 @@ Common:
 - `EXPIRE` -> `CommonExpire`
 - `TTL` -> `CommonTtl`
 - Redis-compatible `EXISTS`
+- C++ `common2::Expire` first resolves the object and returns not-found for missing keys; Rust now
+  matches that engine behavior. The RESP adapter preserves Redis shape by translating missing
+  `EXPIRE` to integer `0`.
 
 String:
 

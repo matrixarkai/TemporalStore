@@ -45,6 +45,9 @@ The Rust code now covers the local correctness skeleton for TemporalStore-style 
 - server membership-update finish callback to metaserver through `/partitions/finish_load` after a
   successful local membership install
 - local per-shard read/write QPS admission through `Config.read_qps` and `Config.write_qps`
+- C++ common-module `EXPIRE` missing-key behavior from
+  `temporalstore-small/src/extension/common/implement.cc`: engine returns not-found instead of
+  creating orphan TTL metadata; RESP `EXPIRE` maps that not-found to integer `0`
 
 It is still not production C++ TemporalStore parity. The largest missing areas are tonic/gRPC service definitions, production storage lifecycle, and operational controls.
 
@@ -212,6 +215,9 @@ This C++ parity pass closed the next data-node replay gap:
   control-plane shape at the HTTP/JSON layer.
 - The engine now enforces existing `read_qps` and `write_qps` config fields with a one-second
   per-shard admission window, returning `admission_rejected` when the local limit is exceeded.
+- A careful scan of `temporalstore-small/src/extension/common/{interface.proto,implement.cc,test.cc}`
+  found that C++ `EXPIRE` rejects missing keys. Rust now enforces the same engine precondition and
+  keeps Redis-compatible `EXPIRE missing` behavior as `0`.
 
 This pass also widened data-node heartbeat/load-report parity:
 

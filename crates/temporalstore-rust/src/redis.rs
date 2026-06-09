@@ -1220,10 +1220,16 @@ fn expire_response(
     mut execute: impl FnMut(Command) -> Result<CommandResponse, String>,
 ) -> RespValue {
     match parse_u64(&args[2], "ttl") {
-        Ok(ttl) => integer_ok(execute(Command::CommonExpire {
+        Ok(ttl) => match execute(Command::CommonExpire {
             key: string_arg(&args[1]),
             ttl_ms: ttl.saturating_mul(factor),
-        })),
+        }) {
+            Ok(_) => RespValue::Integer(1),
+            Err(err) if err.contains("not_found") || err.contains("key not found") => {
+                RespValue::Integer(0)
+            }
+            Err(err) => RespValue::Error(format!("ERR {err}")),
+        },
         Err(err) => RespValue::Error(err),
     }
 }
@@ -1503,6 +1509,8 @@ mod tests {
             run(vec!["EXISTS", "k", "missing", "k1"]),
             RespValue::Integer(2)
         );
+        assert_eq!(run(vec!["EXPIRE", "missing", "10"]), RespValue::Integer(0));
+        assert_eq!(run(vec!["EXPIRE", "k", "10"]), RespValue::Integer(1));
         assert_eq!(
             run(vec!["GETDEL", "k1"]),
             RespValue::Bulk(Some(b"v1".to_vec()))

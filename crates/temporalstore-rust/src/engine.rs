@@ -2689,6 +2689,17 @@ fn validate_command_preconditions(
     command: &Command,
 ) -> Result<(), Status> {
     match command {
+        Command::CommonExpire { key, .. } => {
+            if shard
+                .expires_at_ms
+                .get(key)
+                .map(|expires_at| *expires_at <= now_ms())
+                .unwrap_or(false)
+                || !record_exists(shard, key)
+            {
+                return Err(Status::error("not_found", "key not found"));
+            }
+        }
         Command::FeatureAppend { key, points }
         | Command::FeatureAppendWithPolicy { key, points, .. } => {
             let current = shard
@@ -3743,6 +3754,20 @@ mod tests {
                 .response,
             CommandResponse::Integer { value: -2 }
         );
+    }
+
+    #[test]
+    fn common_expire_missing_key_matches_cpp_not_found() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::CommonExpire {
+                key: "missing".to_string(),
+                ttl_ms: 1000,
+            },
+        });
+        assert_eq!(response.status.code, "not_found");
     }
 
     #[test]

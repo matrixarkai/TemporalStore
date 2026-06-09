@@ -83,6 +83,9 @@ Important current behavior:
 - read miss falls back to local page file using the address in the index
 - page-block and response-cache fill happens after page-file read
 - expired keys are lazily removed
+- `CommonExpire` follows the C++ `common2::Expire` missing-key rule: missing keys return not-found
+  at the engine/API layer rather than creating TTL metadata. Redis `EXPIRE` still returns `0` for
+  that case.
 - `feature_max_size` defaults to `5000`
 - `StreamKind::Page` and `StreamKind::Index` can read local page/index bytes
 - `StreamKind::Oplog` currently returns empty bytes
