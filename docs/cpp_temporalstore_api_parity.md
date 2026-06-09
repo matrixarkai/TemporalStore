@@ -45,6 +45,9 @@ Feature:
 - `ADD` -> `FeatureAppend`
 - write-policy add -> `FeatureAppendWithPolicy` with `upsert`, `insert_if_absent`, and
   `replace_existing`
+- C++ add hard limit is enforced before mutation: current feature size plus incoming
+  points greater than `100000` returns `invalid_argument`; the normal retained window
+  still defaults to `feature_max_size = 5000` after successful writes.
 - `QUERY` -> `FeatureQuery`
 - C++ protobuf `FeaturePoint` value filtering -> `FeatureQueryFiltered`
 - `AGGQUERY` -> `FeatureAggQuery`

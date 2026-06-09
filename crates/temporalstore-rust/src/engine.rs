@@ -57,6 +57,8 @@ struct ShardState {
     risk: HashMap<String, BTreeMap<u64, i64>>,
 }
 
+const FEATURE_ADD_HARD_MAX_SIZE: usize = 100_000;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct IpsPointMeta {
     address: PageAddress,
@@ -2290,6 +2292,37 @@ fn validate_command_preconditions(
     shard: &ShardState,
     command: &Command,
 ) -> Result<(), Status> {
+    match command {
+        Command::FeatureAppend { key, points }
+        | Command::FeatureAppendWithPolicy { key, points, .. } => {
+            let current = shard
+                .features
+                .get(key)
+                .map(|series| series.len())
+                .unwrap_or(0);
+            if current.saturating_add(points.len()) > FEATURE_ADD_HARD_MAX_SIZE {
+                return Err(Status::error(
+                    "invalid_argument",
+                    format!("{key} size bigger than {FEATURE_ADD_HARD_MAX_SIZE}"),
+                ));
+            }
+        }
+        Command::FeatureReplace { key, points, .. } => {
+            let current = shard
+                .features
+                .get(key)
+                .map(|series| series.len())
+                .unwrap_or(0);
+            if current.saturating_add(points.len()) > FEATURE_ADD_HARD_MAX_SIZE {
+                return Err(Status::error(
+                    "invalid_argument",
+                    format!("{key} size bigger than {FEATURE_ADD_HARD_MAX_SIZE}"),
+                ));
+            }
+        }
+        _ => {}
+    }
+
     if let Command::HashIncrBy {
         key,
         field,
@@ -2982,6 +3015,61 @@ mod tests {
                 points: vec![FeaturePoint {
                     timestamp_ms: 1,
                     value: b"a".to_vec()
+                }]
+            }
+        );
+    }
+
+    #[test]
+    fn feature_append_rejects_cpp_hard_size_limit_before_mutation() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureAppend {
+                key: "huge-feature".to_string(),
+                points: vec![FeaturePoint {
+                    timestamp_ms: 1,
+                    value: b"kept".to_vec(),
+                }],
+            },
+        });
+
+        let oversized_points = (0..FEATURE_ADD_HARD_MAX_SIZE)
+            .map(|offset| FeaturePoint {
+                timestamp_ms: 10 + offset as u64,
+                value: b"x".to_vec(),
+            })
+            .collect::<Vec<_>>();
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureAppend {
+                key: "huge-feature".to_string(),
+                points: oversized_points,
+            },
+        });
+        assert_eq!(response.status.ok, false);
+        assert_eq!(response.status.code, "invalid_argument");
+        assert!(response
+            .status
+            .message
+            .contains("huge-feature size bigger than 100000"));
+
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureQuery {
+                key: "huge-feature".to_string(),
+                start_ms: 0,
+                end_ms: u64::MAX,
+                count: Some(10),
+            },
+        });
+        assert_eq!(
+            response.response,
+            CommandResponse::FeaturePoints {
+                points: vec![FeaturePoint {
+                    timestamp_ms: 1,
+                    value: b"kept".to_vec(),
                 }]
             }
         );
