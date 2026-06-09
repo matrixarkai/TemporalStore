@@ -2017,6 +2017,126 @@ impl ProductionRaftTimerHandle {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProductionMetaRaftRuntimeOptions {
+    pub engine: ProductionRaftEngineKind,
+    pub local_node_id: RaftNodeId,
+    pub nodes: Vec<ProductionRaftNode>,
+    pub config: RaftConfig,
+    pub heartbeat_interval_ms: u64,
+    pub election_tick_ms: u64,
+    pub failure_detector_interval_ms: u64,
+    pub stale_server_after_ms: u64,
+}
+
+impl ProductionMetaRaftRuntimeOptions {
+    pub fn validate(&self) -> Result<(), RaftError> {
+        self.config
+            .validate()
+            .map_err(|err| RaftError::InvalidConfig(err.to_string()))?;
+        if self.nodes.is_empty() {
+            return Err(RaftError::InvalidConfig(
+                "production meta raft requires at least one node".to_string(),
+            ));
+        }
+        if !self
+            .nodes
+            .iter()
+            .any(|node| node.node_id == self.local_node_id)
+        {
+            return Err(RaftError::InvalidConfig(
+                "local_node_id must be present in production meta raft nodes".to_string(),
+            ));
+        }
+        if self.heartbeat_interval_ms == 0
+            || self.election_tick_ms == 0
+            || self.failure_detector_interval_ms == 0
+        {
+            return Err(RaftError::InvalidConfig(
+                "production meta raft intervals must be non-zero".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn voter_ids(&self) -> Vec<RaftNodeId> {
+        self.nodes.iter().map(|node| node.node_id).collect()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ProductionMetaRaftRuntime {
+    options: ProductionMetaRaftRuntimeOptions,
+    cluster: MetaRaftCluster,
+}
+
+impl ProductionMetaRaftRuntime {
+    pub fn start(options: ProductionMetaRaftRuntimeOptions) -> Result<Self, RaftError> {
+        options.validate()?;
+        let cluster =
+            MetaRaftCluster::new_with_config(options.voter_ids(), options.config.clone())?;
+        Ok(Self { options, cluster })
+    }
+
+    pub fn cluster(&self) -> MetaRaftCluster {
+        self.cluster.clone()
+    }
+
+    pub fn status(&self) -> RaftClusterStatus {
+        self.cluster.status()
+    }
+
+    pub fn validate_ready(&self) -> Result<(), RaftError> {
+        self.options.validate()?;
+        let status = self.status();
+        if !status.has_majority {
+            return Err(RaftError::NoMajority {
+                live: status.live_voters,
+                required: status.majority,
+            });
+        }
+        Ok(())
+    }
+
+    pub fn propose(&self, command: MetaCommand) -> Result<(), RaftError> {
+        self.cluster.propose(command)
+    }
+
+    pub fn propose_mutation(&self, mutation: MetaMutation) -> Result<Status, RaftError> {
+        self.cluster.propose_mutation(mutation)
+    }
+
+    pub fn start_timer_loop(&self) -> ProductionRaftTimerHandle {
+        let cluster = self.cluster.clone();
+        let heartbeat_interval = Duration::from_millis(self.options.heartbeat_interval_ms);
+        let election_tick = Duration::from_millis(self.options.election_tick_ms);
+        let failure_detector_interval =
+            Duration::from_millis(self.options.failure_detector_interval_ms);
+        let stale_server_after_ms = self.options.stale_server_after_ms;
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_thread = Arc::clone(&stop);
+        let handle = thread::spawn(move || {
+            let mut last_heartbeat = InstantCompat::now();
+            let mut last_failure_detector = InstantCompat::now();
+            while !stop_thread.load(Ordering::SeqCst) {
+                if last_heartbeat.elapsed() >= heartbeat_interval {
+                    let _ = cluster.failover_primary();
+                    let _ = cluster.catch_up_live_followers();
+                    last_heartbeat = InstantCompat::now();
+                }
+                if stale_server_after_ms > 0
+                    && last_failure_detector.elapsed() >= failure_detector_interval
+                {
+                    let _ = cluster.freeze_stale_servers(stale_server_after_ms);
+                    last_failure_detector = InstantCompat::now();
+                }
+                thread::sleep(election_tick);
+            }
+        });
+        ProductionRaftTimerHandle { stop, handle }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProductionRaftProcessSpec {
     pub node_id: RaftNodeId,
     pub addr: String,
@@ -9143,6 +9263,67 @@ mod tests {
         for node_id in [10, 11, 12] {
             assert_eq!(meta.commit_index(node_id).unwrap(), 2);
         }
+    }
+
+    #[test]
+    fn production_meta_raft_runtime_ticks_failover_and_failure_detection() {
+        let runtime = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+            engine: ProductionRaftEngineKind::OpenRaft,
+            local_node_id: 10,
+            nodes: vec![
+                ProductionRaftNode {
+                    node_id: 10,
+                    addr: "127.0.0.1:17101".to_string(),
+                },
+                ProductionRaftNode {
+                    node_id: 11,
+                    addr: "127.0.0.1:17102".to_string(),
+                },
+                ProductionRaftNode {
+                    node_id: 12,
+                    addr: "127.0.0.1:17103".to_string(),
+                },
+            ],
+            config: RaftConfig::default(),
+            heartbeat_interval_ms: 5,
+            election_tick_ms: 2,
+            failure_detector_interval_ms: 5,
+            stale_server_after_ms: 1,
+        })
+        .unwrap();
+        assert!(runtime.validate_ready().is_ok());
+        assert!(
+            runtime
+                .cluster()
+                .register_server(RegisterServerRequest {
+                    server_addr: "server-stale".to_string(),
+                    node_id: 1,
+                    location: "az-a".to_string(),
+                    binary_version: "test".to_string(),
+                })
+                .status
+                .ok
+        );
+        runtime.cluster().set_alive(10, false).unwrap();
+        let timer = runtime.start_timer_loop();
+        let deadline = std::time::Instant::now() + Duration::from_millis(200);
+        while std::time::Instant::now() < deadline {
+            let status = runtime.status();
+            let servers = runtime.cluster().list_servers();
+            let server_frozen = servers
+                .servers
+                .first()
+                .map(|server| server.state == MetaEntityState::Frozen)
+                .unwrap_or(false);
+            if status.leader_id != 10 && server_frozen {
+                timer.stop();
+                assert!(status.has_majority);
+                return;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        timer.stop();
+        panic!("production metaserver raft runtime did not fail over and freeze stale server");
     }
 
     #[test]

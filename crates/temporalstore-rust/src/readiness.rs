@@ -124,10 +124,12 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "external snapshot transfer policy, leader upload, metaserver snapshot-ref recording, URI download, install, and Raft catch-up are tested"
                     .to_string(),
+                "metaserver Raft has a production runtime wrapper with validation, status, failover/catch-up timer, and stale-server detection"
+                    .to_string(),
             ],
             missing: vec![
                 "real OpenRaft or raft-rs data-node FSM/storage implementation".to_string(),
-                "metaserver scheduler loop that applies networked data-node Raft membership plans and persists task state"
+                "networked metaserver Raft transport and scheduler loop that applies networked data-node Raft membership plans and persists task state"
                     .to_string(),
                 "multi-process crash/restart/partition/slow-follower tests that kill real OS processes"
                     .to_string(),

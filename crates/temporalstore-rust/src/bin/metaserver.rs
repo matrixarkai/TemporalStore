@@ -5,7 +5,10 @@ use temporalstore_rust::meta::{
     RegisterProxyRequest, RegisterServerRequest, RegisterShardRequest, ServerHeartbeatRequest,
     SingleNodeMeta, StateChangeRequest,
 };
-use temporalstore_rust::raft::{MetaRaftCluster, RaftClusterStatus, RaftNodeId};
+use temporalstore_rust::raft::{
+    ProductionMetaRaftRuntime, ProductionMetaRaftRuntimeOptions, ProductionRaftEngineKind,
+    ProductionRaftNode, RaftClusterStatus, RaftConfig, RaftNodeId,
+};
 use temporalstore_rust::types::Status;
 
 fn main() {
@@ -16,10 +19,10 @@ fn main() {
     let stale_after_ms = env_u64("TS_META_STALE_AFTER_MS", 30_000);
     let detector_interval_ms = env_u64("TS_META_FAILURE_DETECTOR_INTERVAL_MS", 10_000);
     let _failure_detector = match &backend {
-        MetaBackend::Single(meta) => {
-            Some(meta.start_failure_detector_loop(stale_after_ms, detector_interval_ms))
-        }
-        MetaBackend::Raft(_) => None,
+        MetaBackend::Single(meta) => Some(MetaBackground::Single(
+            meta.start_failure_detector_loop(stale_after_ms, detector_interval_ms),
+        )),
+        MetaBackend::Raft(runtime) => Some(MetaBackground::Raft(runtime.start_timer_loop())),
     };
     println!("temporalstore metaserver listening on {addr}");
     serve(&addr, move |request| handle(&backend, request)).expect("metaserver failed");
@@ -28,13 +31,21 @@ fn main() {
 #[derive(Clone)]
 enum MetaBackend {
     Single(SingleNodeMeta),
-    Raft(MetaRaftCluster),
+    Raft(ProductionMetaRaftRuntime),
+}
+
+enum MetaBackground {
+    Single(std::thread::JoinHandle<()>),
+    Raft(temporalstore_rust::raft::ProductionRaftTimerHandle),
 }
 
 impl MetaBackend {
     fn from_env() -> std::io::Result<Self> {
         if env_bool("TS_META_RAFT", false) || std::env::var("TS_META_RAFT_NODES").is_ok() {
-            return Ok(Self::Raft(MetaRaftCluster::new(parse_raft_node_ids())));
+            return Ok(Self::Raft(
+                ProductionMetaRaftRuntime::start(runtime_options_from_env())
+                    .expect("failed to initialize metaserver raft runtime"),
+            ));
         }
         let meta = std::env::var("TS_META_MUTATION_LOG")
             .ok()
@@ -47,7 +58,17 @@ impl MetaBackend {
     fn raft_status(&self) -> Option<RaftClusterStatus> {
         match self {
             Self::Single(_) => None,
-            Self::Raft(meta) => Some(meta.status()),
+            Self::Raft(runtime) => Some(runtime.status()),
+        }
+    }
+
+    fn raft_ready(&self) -> Status {
+        match self {
+            Self::Single(_) => Status::error("raft_disabled", "meta raft is disabled"),
+            Self::Raft(runtime) => runtime
+                .validate_ready()
+                .map(|_| Status::ok())
+                .unwrap_or_else(|err| Status::error("raft_not_ready", err.to_string())),
         }
     }
 }
@@ -56,7 +77,7 @@ macro_rules! backend_call {
     ($backend:expr, $method:ident $(, $arg:expr)*) => {
         match $backend {
             MetaBackend::Single(meta) => meta.$method($($arg),*),
-            MetaBackend::Raft(meta) => meta.$method($($arg),*),
+            MetaBackend::Raft(runtime) => runtime.cluster().$method($($arg),*),
         }
     };
 }
@@ -73,6 +94,7 @@ fn handle(meta: &MetaBackend, request: HttpRequest) -> (u16, Vec<u8>) {
                 &Status::error("raft_disabled", "meta raft is disabled"),
             ),
         },
+        ("GET", "/meta/raft/ready") => json_response(200, &meta.raft_ready()),
         ("POST", "/register_shard") => parse_or(&request.body, |req: RegisterShardRequest| {
             backend_call!(meta, register, req)
         }),
@@ -165,17 +187,60 @@ fn env_bool(name: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
-fn parse_raft_node_ids() -> Vec<RaftNodeId> {
+fn runtime_options_from_env() -> ProductionMetaRaftRuntimeOptions {
+    ProductionMetaRaftRuntimeOptions {
+        engine: ProductionRaftEngineKind::OpenRaft,
+        local_node_id: env_u64("TS_META_RAFT_NODE_ID", 1),
+        nodes: parse_meta_raft_nodes(),
+        config: RaftConfig::default(),
+        heartbeat_interval_ms: env_u64("TS_META_RAFT_HEARTBEAT_INTERVAL_MS", 100),
+        election_tick_ms: env_u64("TS_META_RAFT_ELECTION_TICK_MS", 50),
+        failure_detector_interval_ms: env_u64("TS_META_FAILURE_DETECTOR_INTERVAL_MS", 10_000),
+        stale_server_after_ms: env_u64("TS_META_STALE_AFTER_MS", 30_000),
+    }
+}
+
+fn parse_meta_raft_nodes() -> Vec<ProductionRaftNode> {
     std::env::var("TS_META_RAFT_NODES")
         .ok()
         .map(|value| {
             value
                 .split(',')
-                .filter_map(|part| part.trim().parse().ok())
+                .enumerate()
+                .filter_map(|(index, part)| parse_meta_raft_node(index, part.trim()))
                 .collect::<Vec<_>>()
         })
         .filter(|nodes| !nodes.is_empty())
-        .unwrap_or_else(|| vec![1, 2, 3])
+        .unwrap_or_else(|| {
+            vec![
+                ProductionRaftNode {
+                    node_id: 1,
+                    addr: "127.0.0.1:17101".to_string(),
+                },
+                ProductionRaftNode {
+                    node_id: 2,
+                    addr: "127.0.0.1:17102".to_string(),
+                },
+                ProductionRaftNode {
+                    node_id: 3,
+                    addr: "127.0.0.1:17103".to_string(),
+                },
+            ]
+        })
+}
+
+fn parse_meta_raft_node(index: usize, value: &str) -> Option<ProductionRaftNode> {
+    if let Some((id, addr)) = value.split_once('=') {
+        return Some(ProductionRaftNode {
+            node_id: id.trim().parse().ok()?,
+            addr: addr.trim().to_string(),
+        });
+    }
+    let node_id = value.parse::<RaftNodeId>().ok()?;
+    Some(ProductionRaftNode {
+        node_id,
+        addr: format!("127.0.0.1:{}", 17101 + index),
+    })
 }
 
 fn parse_or<T, R>(body: &[u8], f: impl FnOnce(T) -> R) -> (u16, Vec<u8>)

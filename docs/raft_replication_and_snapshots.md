@@ -8,6 +8,8 @@ The distributed TemporalStore Rust crate currently models this with in-process c
 
 - `RaftCluster` for data-node shard replication.
 - `MetaRaftCluster` for metaserver metadata replication.
+- `ProductionRaftRuntime` wraps data-node Raft runtime/options/timers.
+- `ProductionMetaRaftRuntime` wraps metaserver Raft runtime/options/timers and stale-server detection.
 - `EndToEndWorkflow::new` uses `ReplicationMode::Raft`.
 - `ReplicationMode::SharedStore` is named, but rejected for the normal write path until it has full semantics.
 
@@ -45,6 +47,14 @@ The metaserver model supports:
 - leader promotion
 - membership changes
 - local metadata snapshot create/install
+- production runtime validation/status surface
+- background failover/catch-up tick loop
+- background stale-server failure detector in Raft mode
+
+The `metaserver` binary uses `ProductionMetaRaftRuntime` when `TS_META_RAFT=1` or
+`TS_META_RAFT_NODES` is set. It exposes `/meta/raft/status` and
+`/meta/raft/ready`. `TS_META_RAFT_NODES` accepts either `1,2,3` or
+`1=127.0.0.1:17101,2=127.0.0.1:17102,3=127.0.0.1:17103`.
 
 Metaserver snapshots store the compacted `MetaState` plus the last included Raft
 index and term. A lagging metadata node can install a snapshot and serve the same

@@ -8,6 +8,7 @@ contracts, but it is not production complete yet.
 The Rust code currently has:
 
 - production data-node Raft runtime options with OpenRaft/raft-rs engine selection
+- production metaserver Raft runtime options with failover/catch-up timer and stale-server detection
 - WAL-backed production runtime startup and recovery
 - authenticated production RPC runtime construction over the existing Raft HTTP transport
 - mTLS configuration validation for production deployments
@@ -15,7 +16,7 @@ The Rust code currently has:
 - timer supervisor for election ticks, heartbeat cadence, and follower catch-up
 - multi-process chaos plan validation for crash/restart and partition scenarios
 - in-process data-node Raft model used by the runtime FSM/tests
-- in-process metaserver Raft model
+- in-process metaserver Raft model behind `ProductionMetaRaftRuntime`
 - majority commit behavior
 - primary/leader promotion
 - follower catch-up
@@ -100,6 +101,9 @@ The production runtime surface is:
 - `ProductionRaftRuntime::transport`
 - `ProductionRaftRuntime::propose`
 - `ProductionRaftRuntime::start_timer_loop`
+- `ProductionMetaRaftRuntime::start`
+- `ProductionMetaRaftRuntime::start_timer_loop`
+- `ProductionMetaRaftRuntime::validate_ready`
 - `ProductionRaftSecurity::mtls`
 - `ProductionRaftChaosPlan`
 - `raft_node` binary with `/raft/propose`, `/raft/read`, `/raft/status`, and peer `/raft/*`
