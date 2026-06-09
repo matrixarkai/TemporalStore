@@ -53,6 +53,7 @@ Rust now covers these data-node surfaces:
 - index-log stream read/scan
 - readonly shard rejects writes
 - checked execute/batch execute validates loaded `load_version`
+- per-shard read/write QPS admission through existing `read_qps` and `write_qps` config fields
 - server register plus periodic heartbeat/load report to metaserver, including per-partition
   `partition_info` stats
 - startup shard load options for table name, shard URI, load version, routing-slot range,
@@ -160,6 +161,11 @@ Stats now expose a C++-style partition/object-manager summary:
 - table name, shard URI, load version, readonly state, routing-slot range, and storage bytes in `partition_info`
 - Prometheus gauges for object count, page refs, dirty objects, dirty slots, and routing-slot span
 
+This pass also makes the existing `Config.read_qps` and `Config.write_qps` fields operational.
+The engine applies a one-second per-shard admission window before executing commands. Reads beyond
+`read_qps` and writes beyond `write_qps` return `admission_rejected`; storage byte admission still
+uses `maxmemory_bytes`.
+
 This pass adds a reusable replica replay loop in
 `crates/temporalstore-rust/src/replica_replay.rs`. It consumes the existing stream APIs in the same
 order the C++ secondary catch-up path expects:
@@ -234,7 +240,8 @@ Still missing major data-node internals:
 - refresh policy when the metaserver primary route changes while replay is in progress
 - membership finish callback retry/persistence beyond the current best-effort HTTP callback
 - full heartbeat/load reporting payload parity beyond local `partition_info` stats
-- storage quotas and admission control beyond local shard `maxmemory_bytes`
+- production tenant-level quotas and distributed admission control beyond local per-shard
+  `maxmemory_bytes` / QPS admission
 - real readonly replicator loop
 - byteraft data FSM integration
 
