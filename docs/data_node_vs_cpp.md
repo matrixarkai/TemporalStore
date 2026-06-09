@@ -54,6 +54,8 @@ Rust now covers these data-node surfaces:
 - checked execute/batch execute validates loaded `load_version`
 - server register plus periodic heartbeat/load report to metaserver, including per-partition
   `partition_info` stats
+- startup shard load options for table name, shard URI, load version, routing-slot range,
+  local node id, and readonly secondary mode
 - metaserver load-finish callback endpoint
 - local page file persistence
 - local index JSON persistence
@@ -116,6 +118,12 @@ The heartbeat now includes both compact `ShardLoad` placement signals and a rich
 `PartitionLoad` payload with the same local `partition_info` shape exposed by `GetStats`.
 That carries table name, shard URI, load version, readonly state, routing-slot range, storage bytes,
 logical object count, page refs, dirty object count, and dirty slot count to the metaserver.
+
+The server process no longer always boot-loads a writable anonymous shard. Startup load metadata is
+driven by `TS_TABLE_NAME`, `TS_SHARD_URI`, `TS_SHARD_LOAD_VERSION`,
+`TS_SHARD_START_ROUTING_SLOT`, `TS_SHARD_END_ROUTING_SLOT`, `TS_SERVER_NODE_ID`, and
+`TS_SHARD_READONLY` / `TS_SERVER_READONLY`. A readonly startup shard can serve reads after replay
+but rejects writes with `readonly_shard`.
 
 This pass also adds an explicit runtime layer:
 
@@ -212,8 +220,8 @@ Still missing major data-node internals:
 - background periodic dump scheduler
 - merged page dump to zones
 - topology-change-triggered replay rescheduling and primary-change retry policy
-- production readonly-replica role scheduling and topology-change rescheduling around the
-  metaserver route
+- production readonly-replica role assignment from metaserver scheduler and topology-change
+  rescheduling around the metaserver route
 - page compaction
 - C++-style page rewrite garbage collection with page headers and zone ownership
 - expirer/evicter background tasks

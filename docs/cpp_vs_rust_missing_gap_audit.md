@@ -40,6 +40,8 @@ The Rust code now covers the local correctness skeleton for TemporalStore-style 
   replay if the route points back to the local advertised server
 - background replica replay operational status: `/server/replica_replay_status`, Prometheus loop
   counters/gauges, consecutive-failure tracking, last error/report, and bounded failure backoff
+- server startup shard load parity for readonly secondary mode, table name, shard URI, load version,
+  routing-slot range, and local node id
 
 It is still not production C++ TemporalStore parity. The largest missing areas are tonic/gRPC service definitions, production storage lifecycle, and operational controls.
 
@@ -198,6 +200,10 @@ This C++ parity pass closed the next data-node replay gap:
   metaserver shard route and uses that server as the remote stream source.
 - The background loop now reports replay attempts/successes/failures/skips and backs off failed
   attempts up to `TS_REPLICA_REPLAY_MAX_BACKOFF_MS` instead of hammering an unavailable primary.
+- The server binary now honors startup load metadata through `TS_TABLE_NAME`, `TS_SHARD_URI`,
+  `TS_SHARD_LOAD_VERSION`, `TS_SHARD_START_ROUTING_SLOT`, `TS_SHARD_END_ROUTING_SLOT`,
+  `TS_SERVER_NODE_ID`, and `TS_SHARD_READONLY` / `TS_SERVER_READONLY`, so a process can boot as a
+  readonly replaying secondary instead of always loading a writable shard.
 
 This pass also widened data-node heartbeat/load-report parity:
 

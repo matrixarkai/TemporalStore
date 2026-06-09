@@ -42,9 +42,20 @@ fn main() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(16 * 1024 * 1024);
+    let node_id = std::env::var("TS_SERVER_NODE_ID")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_default();
     let engine =
         TemporalEngine::with_local_dirs(cache_memory_bytes, cache_dir, page_store_dir, index_dir);
-    engine.load_shard(shard_id);
+    let startup_load = startup_load_shard_request(shard_id, node_id);
+    let load_response = engine.load_shard_with(startup_load);
+    if !load_response.status.ok {
+        eprintln!(
+            "startup shard load failed for shard {shard_id}: {}",
+            load_response.status.message
+        );
+    }
     let runtime = DataNodeRuntime::new(
         engine.clone(),
         DataNodeRuntimeOptions {
@@ -54,10 +65,6 @@ fn main() {
         },
     );
 
-    let node_id = std::env::var("TS_SERVER_NODE_ID")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or_default();
     let location = std::env::var("TS_SERVER_LOCATION").unwrap_or_default();
     let binary_version = env!("CARGO_PKG_VERSION").to_string();
     let heartbeat_interval_ms = std::env::var("TS_SERVER_HEARTBEAT_INTERVAL_MS")
@@ -330,6 +337,34 @@ fn env_u64(name: &str, default: u64) -> u64 {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(default)
+}
+
+fn env_u32(name: &str, default: u32) -> u32 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
+}
+
+fn env_bool(name: &str, default: bool) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(default)
+}
+
+fn startup_load_shard_request(shard_id: u64, node_id: u64) -> LoadShardRequest {
+    LoadShardRequest {
+        shard_id,
+        load_version: env_u64("TS_SHARD_LOAD_VERSION", 0),
+        local_node_id: if node_id == 0 { None } else { Some(node_id) },
+        shard_uri: std::env::var("TS_SHARD_URI")
+            .unwrap_or_else(|_| format!("local://shard/{shard_id}")),
+        start_routing_slot: env_u32("TS_SHARD_START_ROUTING_SLOT", 0),
+        end_routing_slot: env_u32("TS_SHARD_END_ROUTING_SLOT", u32::MAX),
+        readonly: env_bool("TS_SHARD_READONLY", env_bool("TS_SERVER_READONLY", false)),
+        table_name: std::env::var("TS_TABLE_NAME").unwrap_or_default(),
+    }
 }
 
 fn run_replica_replay(
@@ -658,6 +693,59 @@ mod tests {
     use temporalstore_rust::types::{Command, CommandResponse};
 
     use super::*;
+
+    #[test]
+    fn startup_load_request_uses_readonly_secondary_env() {
+        let keys = [
+            "TS_SHARD_LOAD_VERSION",
+            "TS_SHARD_URI",
+            "TS_SHARD_START_ROUTING_SLOT",
+            "TS_SHARD_END_ROUTING_SLOT",
+            "TS_SHARD_READONLY",
+            "TS_SERVER_READONLY",
+            "TS_TABLE_NAME",
+        ];
+        for key in keys {
+            std::env::remove_var(key);
+        }
+        std::env::set_var("TS_SHARD_LOAD_VERSION", "42");
+        std::env::set_var("TS_SHARD_URI", "local://table/shard-31");
+        std::env::set_var("TS_SHARD_START_ROUTING_SLOT", "100");
+        std::env::set_var("TS_SHARD_END_ROUTING_SLOT", "199");
+        std::env::set_var("TS_SHARD_READONLY", "true");
+        std::env::set_var("TS_TABLE_NAME", "events");
+
+        let request = startup_load_shard_request(31, 7);
+        assert_eq!(request.shard_id, 31);
+        assert_eq!(request.load_version, 42);
+        assert_eq!(request.local_node_id, Some(7));
+        assert_eq!(request.shard_uri, "local://table/shard-31");
+        assert_eq!(request.start_routing_slot, 100);
+        assert_eq!(request.end_routing_slot, 199);
+        assert!(request.readonly);
+        assert_eq!(request.table_name, "events");
+
+        let engine_dir = tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            engine_dir.path().join("cache"),
+            engine_dir.path().join("pages"),
+            engine_dir.path().join("index"),
+        );
+        assert!(engine.load_shard_with(request).status.ok);
+        let write = engine.execute(ExecuteRequest {
+            shard_id: 31,
+            command: Command::StringSet {
+                key: "readonly-startup".to_string(),
+                value: b"blocked".to_vec(),
+            },
+        });
+        assert_eq!(write.status.code, "readonly_shard");
+
+        for key in keys {
+            std::env::remove_var(key);
+        }
+    }
 
     #[test]
     fn server_replica_replay_endpoint_pulls_remote_streams() {
