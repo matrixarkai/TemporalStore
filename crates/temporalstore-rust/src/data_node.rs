@@ -563,6 +563,20 @@ impl DataNodeRuntime {
             .collect()
     }
 
+    pub fn dirty_shards(&self) -> Vec<ShardId> {
+        dirty_shards(&self.inner.dirty)
+    }
+
+    pub fn schedule_dirty_shard_dumps(
+        &self,
+        controller: RequestController,
+    ) -> Vec<DataNodeTaskStatus> {
+        self.dirty_shards()
+            .into_iter()
+            .map(|shard_id| self.submit_dump(DumpShardRequest { shard_id }, controller))
+            .collect()
+    }
+
     pub fn stats(&self) -> DataNodeRuntimeStats {
         let stats = self
             .inner
@@ -1139,6 +1153,18 @@ fn dirty_count(dirty: &Mutex<DirtyTracker>, shard_id: ShardId) -> usize {
         .count()
 }
 
+fn dirty_shards(dirty: &Mutex<DirtyTracker>) -> Vec<ShardId> {
+    dirty
+        .lock()
+        .expect("dirty tracker lock poisoned")
+        .by_key
+        .keys()
+        .map(|(shard_id, _)| *shard_id)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 fn command_key(command: &Command) -> Option<&str> {
     match command {
         Command::CommonDelete { key }
@@ -1242,6 +1268,49 @@ mod tests {
         };
         assert_eq!(output.dirty_objects_flushed, 1);
         assert!(runtime.dirty_objects().is_empty());
+    }
+
+    #[test]
+    fn runtime_schedules_dumps_for_dirty_shards() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        engine.load_shard(2);
+        let runtime = DataNodeRuntime::new(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 2,
+                max_queue_depth: 8,
+                max_background_queue_depth: 8,
+            },
+        );
+
+        for (shard_id, key) in [(1, "alpha"), (2, "beta")] {
+            let job = runtime.submit_execute(
+                ExecuteRequest {
+                    shard_id,
+                    command: Command::StringSet {
+                        key: key.to_string(),
+                        value: key.as_bytes().to_vec(),
+                    },
+                },
+                RequestController { timeout_ms: 1000 },
+            );
+            assert!(wait_for_job(&runtime, job.job_id).status.ok);
+        }
+
+        assert_eq!(runtime.dirty_shards(), vec![1, 2]);
+        let dumps = runtime.schedule_dirty_shard_dumps(RequestController { timeout_ms: 1000 });
+        assert_eq!(dumps.len(), 2);
+        for dump in dumps {
+            let finished = wait_for_job(&runtime, dump.job_id);
+            let Some(DataNodeTaskOutput::Dump(output)) = finished.output else {
+                panic!("expected dump output");
+            };
+            assert!(output.status.ok);
+            assert_eq!(output.dirty_objects_flushed, 1);
+        }
+        assert!(runtime.dirty_objects().is_empty());
+        assert!(runtime.dirty_shards().is_empty());
     }
 
     #[test]

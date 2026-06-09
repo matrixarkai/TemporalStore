@@ -160,6 +160,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "data-node scheduler prioritizes foreground execute work over background dump/compact/GC and applies a separate background queue admission limit"
                     .to_string(),
+                "dirty shards can be discovered and scheduled as background dump tasks".to_string(),
                 "background dump/compact/GC honor in-flight cancellation checkpoints before destructive phases"
                     .to_string(),
                 "local partition_info and object-manager stats report logical objects, page refs, dirty objects, dirty routing slots, and storage bytes"

@@ -160,6 +160,7 @@ Stats now expose a C++-style partition/object-manager summary:
 - transient dirty object and dirty routing-slot counts
 - table name, shard URI, load version, readonly state, routing-slot range, and storage bytes in `partition_info`
 - Prometheus gauges for object count, page refs, dirty objects, dirty slots, and routing-slot span
+- dirty shards can be converted into background dump tasks with `schedule_dirty_shard_dumps`
 
 This pass also makes the existing `Config.read_qps` and `Config.write_qps` fields operational.
 The engine applies a one-second per-shard admission window before executing commands. Reads beyond
@@ -227,8 +228,7 @@ Still missing major data-node internals:
 - binary protobuf-compatible `OpLog`, `IndexLog`, and `PageHeader`
 - full C++ `ObjectManager` memory layout with stable object ids and page ids
 - slot context manager with dump/rewrite ownership, not only routing-slot accounting
-- dirty slot scheduling tied to background dump tasks
-- background periodic dump scheduler
+- full background periodic dump scheduler with C++ dirty-slot ownership and pacing policy
 - merged page dump to zones
 - topology-change-triggered replay rescheduling and primary-change retry policy
 - production readonly-replica role assignment from metaserver scheduler and topology-change
