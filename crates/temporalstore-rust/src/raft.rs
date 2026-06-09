@@ -605,6 +605,8 @@ pub struct RaftWalRecord {
     #[serde(default)]
     pub joint_membership: Option<JointConsensusMembership>,
     #[serde(default)]
+    pub latest_external_snapshot_ref: Option<RaftExternalSnapshotRef>,
+    #[serde(default)]
     pub installed_snapshot: Option<RaftSnapshot>,
     pub entries: Vec<RaftLogEntry>,
 }
@@ -2688,6 +2690,7 @@ struct RaftClusterInner {
     wal: Option<LocalRaftWal>,
     election_elapsed_tick: u64,
     joint_membership: Option<JointConsensusMembership>,
+    latest_external_snapshot_ref: Option<RaftExternalSnapshotRef>,
     pending_snapshots: BTreeMap<(RaftNodeId, String), PendingSnapshotChunks>,
 }
 
@@ -2724,6 +2727,7 @@ impl RaftCluster {
                 wal: None,
                 election_elapsed_tick: 0,
                 joint_membership: None,
+                latest_external_snapshot_ref: None,
                 pending_snapshots: BTreeMap::new(),
             })),
         })
@@ -2757,6 +2761,7 @@ impl RaftCluster {
         let mut nodes = BTreeMap::new();
         let mut leader_id = None;
         let mut joint_membership = None;
+        let mut latest_external_snapshot_ref = None;
         for node_id in node_ids {
             let record = wal
                 .load_node(shard_id, node_id)
@@ -2793,6 +2798,9 @@ impl RaftCluster {
                 if joint_membership.is_none() {
                     joint_membership = record.joint_membership;
                 }
+                if latest_external_snapshot_ref.is_none() {
+                    latest_external_snapshot_ref = record.latest_external_snapshot_ref;
+                }
                 node
             } else {
                 new_node(node_id, RaftRole::Follower, shard_id)
@@ -2817,6 +2825,7 @@ impl RaftCluster {
                 wal: Some(wal),
                 election_elapsed_tick: 0,
                 joint_membership,
+                latest_external_snapshot_ref,
                 pending_snapshots: BTreeMap::new(),
             })),
         })
@@ -3465,6 +3474,7 @@ impl RaftCluster {
                         membership: membership.clone(),
                         replica_role: node.replica_role,
                         joint_membership: inner.joint_membership.clone(),
+                        latest_external_snapshot_ref: inner.latest_external_snapshot_ref.clone(),
                         installed_snapshot: node.installed_snapshot.clone(),
                         entries: node.log.clone(),
                     },
@@ -4024,10 +4034,16 @@ impl RaftCluster {
             .upload_snapshot(local_snapshot)
             .await
             .map_err(|err| RaftError::SnapshotStore(err.to_string()))?;
+        let raft_ref = raft_external_ref_from_snapshot_ref(&snapshot_ref);
+        {
+            let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+            inner.latest_external_snapshot_ref = Some(raft_ref.clone());
+            inner.persist_configured_wal()?;
+        }
         Ok(RaftSnapshotPublishReport {
             shard_id: snapshot_ref.shard_id,
             last_log_index: snapshot_ref.last_log_index,
-            raft_ref: raft_external_ref_from_snapshot_ref(&snapshot_ref),
+            raft_ref,
             meta_ref: shard_snapshot_ref_from_snapshot_ref(&snapshot_ref),
         })
     }
@@ -4083,6 +4099,15 @@ impl RaftCluster {
         let snapshot = serde_json::from_slice::<RaftSnapshot>(&snapshot_bytes)
             .map_err(|err| RaftError::SnapshotEncoding(err.to_string()))?;
         self.install_snapshot(target_id, snapshot.clone())?;
+        {
+            let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+            inner.latest_external_snapshot_ref = Some(RaftExternalSnapshotRef {
+                uri: snapshot_ref.uri.clone(),
+                checksum: snapshot_ref.checksum.clone(),
+                byte_size: snapshot_ref.byte_size,
+            });
+            inner.persist_configured_wal()?;
+        }
         self.catch_up(target_id)?;
         Ok(RaftReplicaBootstrapPlan {
             shard_id: snapshot.shard_id,
@@ -4220,6 +4245,14 @@ impl RaftCluster {
             .read()
             .expect("raft cluster lock poisoned")
             .shard_id
+    }
+
+    pub fn latest_external_snapshot_ref(&self) -> Option<RaftExternalSnapshotRef> {
+        self.inner
+            .read()
+            .expect("raft cluster lock poisoned")
+            .latest_external_snapshot_ref
+            .clone()
     }
 
     pub fn read_index(&self, node_id: RaftNodeId) -> Result<ReadIndexResponse, RaftError> {
@@ -4856,6 +4889,7 @@ impl RaftClusterInner {
                         membership: membership.clone(),
                         replica_role: node.replica_role,
                         joint_membership: self.joint_membership.clone(),
+                        latest_external_snapshot_ref: self.latest_external_snapshot_ref.clone(),
                         installed_snapshot: node.installed_snapshot.clone(),
                         entries: node.log.clone(),
                     },
@@ -7032,7 +7066,13 @@ mod tests {
             shard_id: 22,
             server_addr: "raft://node-1".to_string(),
         });
-        let cluster = RaftCluster::new_single_shard(22, [1, 2, 3]);
+        let cluster = RaftCluster::new_single_shard_with_wal(
+            tmp.path().join("wal"),
+            22,
+            [1, 2, 3],
+            RaftConfig::default(),
+        )
+        .unwrap();
         cluster.set_alive(3, false).unwrap();
         cluster
             .propose(Command::StringSet {
@@ -7048,6 +7088,10 @@ mod tests {
         let recorded = meta.get(22).location.unwrap().latest_snapshot.unwrap();
         assert_eq!(recorded.uri, report.meta_ref.uri);
         assert_eq!(recorded.last_log_index, 1);
+        assert_eq!(
+            cluster.latest_external_snapshot_ref(),
+            Some(report.raft_ref.clone())
+        );
 
         let mut bad_ref = recorded.clone();
         bad_ref.checksum = "bad-checksum".to_string();
@@ -7105,6 +7149,17 @@ mod tests {
             Ok(CommandResponse::Bytes {
                 value: Some(b"log-value".to_vec())
             })
+        );
+        let restored = RaftCluster::restore_single_shard_from_wal(
+            tmp.path().join("wal"),
+            22,
+            [1, 2, 3],
+            RaftConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            restored.latest_external_snapshot_ref(),
+            Some(report.raft_ref)
         );
     }
 

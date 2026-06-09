@@ -92,6 +92,8 @@ Covered locally:
 - metaserver snapshot bootstrap
 - metaserver stale snapshot rejection
 - end-to-end workflow defaults to Raft
+- latest external snapshot metadata is stored in Raft cluster state and restored
+  from the local WAL
 - external snapshot bootstrap validates the metaserver snapshot reference against the
   downloaded manifest and `index.bin` payload before install, including shard id,
   last log index, byte size, and SHA-256 checksum
@@ -105,7 +107,6 @@ system, the Rust code still needs:
 - data Raft WAL recovery is present locally; production still needs metaserver HTTP mutation recovery
 - local timeout tick election, pre-vote, and randomized scheduler model are present; production still needs integration with an external Raft runtime
 - production streaming InstallSnapshot RPCs over long-lived streams
-- snapshot metadata stored in Raft state
 - S3 snapshot references attached to Raft snapshot metadata
 - log compaction after snapshot finalization
 - membership-change safety through the actual OpenRaft/raft-rs joint-consensus log path
