@@ -3180,6 +3180,7 @@ impl RaftCluster {
                 .unwrap_or_default()
         };
         let mut successful_targets = Vec::new();
+        let mut failed_targets = Vec::new();
         for target_id in target_ids {
             let request = self.build_append_entries_request(target_id)?;
             match transport.append_entries(request) {
@@ -3197,7 +3198,7 @@ impl RaftCluster {
                     }
                     successful_targets.push(target_id);
                 }
-                _ => {}
+                _ => failed_targets.push(target_id),
             }
         }
         if replicated < required {
@@ -3222,6 +3223,17 @@ impl RaftCluster {
             inner.persist_configured_wal()?;
             response
         };
+
+        for target_id in failed_targets {
+            if transport
+                .install_snapshot(self.build_install_snapshot_request(target_id)?)
+                .map(|response| response.success)
+                .unwrap_or(false)
+            {
+                let _ = self.catch_up(target_id);
+                successful_targets.push(target_id);
+            }
+        }
 
         for target_id in &successful_targets {
             let request = AppendEntriesRequest {
@@ -3741,11 +3753,16 @@ impl RaftCluster {
                 reject_reason: Some("shard_mismatch".to_string()),
             });
         }
+        let entries = request.entries;
+        let target_id = request.target_id;
+        let leader_id = request.leader_id;
+        let term = request.term;
+        let leader_commit = request.leader_commit;
         let node = inner
             .nodes
-            .get_mut(&request.target_id)
-            .ok_or(RaftError::NodeNotFound(request.target_id))?;
-        if request.term < node.current_term {
+            .get_mut(&target_id)
+            .ok_or(RaftError::NodeNotFound(target_id))?;
+        if term < node.current_term {
             return Ok(AppendEntriesResponse {
                 term: node.current_term,
                 success: false,
@@ -3768,17 +3785,35 @@ impl RaftCluster {
                 });
             }
         }
-        node.current_term = request.term;
+        node.current_term = term;
         node.role = RaftRole::Follower;
-        for entry in request.entries {
+        for entry in entries.iter().cloned() {
             append_entry(node, entry);
         }
         let last_index = node.log.last().map(|entry| entry.index).unwrap_or_default();
-        node.commit_index = request.leader_commit.min(last_index);
+        node.commit_index = leader_commit.min(last_index);
         if node.replica_role.can_serve_data() {
             apply_committed(node);
         }
         let term = node.current_term;
+        if leader_id != target_id {
+            if let Some(leader) = inner.nodes.get_mut(&leader_id) {
+                leader.alive = true;
+                leader.role = RaftRole::Leader;
+                leader.current_term = leader.current_term.max(term);
+                for entry in entries {
+                    append_entry(leader, entry);
+                }
+                let leader_last_index = leader
+                    .log
+                    .last()
+                    .map(|entry| entry.index)
+                    .unwrap_or_default();
+                leader.commit_index = leader
+                    .commit_index
+                    .max(leader_commit.min(leader_last_index));
+            }
+        }
         inner.persist_configured_wal()?;
         Ok(AppendEntriesResponse {
             term,

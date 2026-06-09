@@ -126,16 +126,20 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "chunked snapshot message assembly and stale snapshot rejection are tested"
                     .to_string(),
+                "distributed append failures fall back to post-commit snapshot install for lagging followers"
+                    .to_string(),
                 "external snapshot transfer policy, leader upload, metaserver snapshot-ref recording, URI download, install, and Raft catch-up are tested"
                     .to_string(),
                 "metaserver Raft has a production runtime wrapper with validation, status, failover/catch-up timer, and stale-server detection"
+                    .to_string(),
+                "local OS-process raft_node harness covers secondary restart catch-up and surviving-node failover after leader crash"
                     .to_string(),
             ],
             missing: vec![
                 "real OpenRaft or raft-rs data-node FSM/storage implementation".to_string(),
                 "networked metaserver Raft transport and scheduler loop that drives data-node Raft membership apply across real processes and persists task state"
                     .to_string(),
-                "multi-process crash/restart/partition/slow-follower tests that kill real OS processes"
+                "external multi-process network partition, slow-follower, and rolling-restart tests"
                     .to_string(),
             ],
         },

@@ -111,10 +111,11 @@ The production runtime surface is:
 - `ProductionMetaRaftRuntime::validate_ready`
 - `ProductionRaftSecurity::mtls`
 - `ProductionRaftChaosPlan`
-- `raft_node` binary with `/raft/propose`, `/raft/read`, `/raft/status`, and peer `/raft/*`
-  transport endpoints
+- `raft_node` binary with `/raft/propose`, `/raft/read`, `/raft/status`, gated local-chaos
+  `/raft/admin/*` endpoints, and peer `/raft/*` transport endpoints
 - `raft_secondary_replication_harness` binary that starts real `raft_node` OS processes, kills and
-  restarts a secondary, and verifies the restarted secondary catches up and serves reads
+  restarts a secondary, kills the original leader, triggers surviving-node failover, and verifies
+  catch-up plus post-failover reads
 
 Production deployments should use `ProductionRaftSecurity::mtls`. Local chaos tests can use
 `ProductionRaftSecurity::plaintext_for_local_chaos` only when
@@ -213,9 +214,12 @@ CARGO_TARGET_DIR=/tmp/temporalstore-rust-target \
 cargo run -p temporalstore-rust --bin raft_secondary_replication_harness
 ```
 
-This harness starts three real `raft_node` OS processes, writes through the leader, kills secondary
-node 3, writes while that secondary is down, restarts node 3 with the same local WAL directory, and
-waits until all nodes can read the pre-stop, while-down, and after-restart keys.
+This harness starts three real `raft_node` OS processes with `TS_RAFT_ENABLE_LOCAL_ADMIN=true`,
+writes through the leader, kills secondary node 3, writes while that secondary is down, restarts
+node 3 with the same local WAL directory, waits until all nodes can read the pre-stop, while-down,
+and after-restart keys, then kills leader node 1, marks it dead in the surviving local-chaos
+runtimes, triggers failover on node 2, writes through the new leader, and verifies the surviving
+replicas can read the post-failover key.
 
 ## Current Test Coverage
 

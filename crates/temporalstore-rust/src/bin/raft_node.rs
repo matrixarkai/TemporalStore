@@ -1,12 +1,35 @@
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
 use temporalstore_rust::http::{json_response, parse_json, serve, HttpRequest};
 use temporalstore_rust::{
     handle_raft_http, CommandResponse, DistributedRaftCommandResponse,
     DistributedRaftProposeRequest, DistributedRaftReadRequest, ProductionRaftEngineKind,
     ProductionRaftNode, ProductionRaftRuntime, ProductionRaftRuntimeOptions,
-    ProductionRaftSecurity, RaftConfig, RaftRpcRuntimeOptions, Status,
+    ProductionRaftSecurity, RaftConfig, RaftFailoverReport, RaftRpcRuntimeOptions, Status,
 };
+
+#[derive(Debug, Deserialize)]
+struct RaftAdminLivenessRequest {
+    node_id: u64,
+    alive: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct RaftAdminElectRequest {
+    node_id: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct RaftAdminLivenessResponse {
+    status: Status,
+}
+
+#[derive(Debug, Serialize)]
+struct RaftAdminFailoverResponse {
+    status: Status,
+    report: Option<RaftFailoverReport>,
+}
 
 fn main() {
     let options = runtime_options_from_env();
@@ -22,17 +45,72 @@ fn main() {
         .unwrap_or_else(|| "127.0.0.1:19001".to_string());
     let runtime = ProductionRaftRuntime::start(options).expect("failed to start raft node runtime");
     let _timer = runtime.start_timer_loop();
+    let local_admin_enabled = env_bool("TS_RAFT_ENABLE_LOCAL_ADMIN", false);
     println!(
         "temporalstore raft node {} listening on {bind_addr}",
         runtime.status().leader_id
     );
-    serve(&bind_addr, move |request| handle(&runtime, request)).expect("raft node failed");
+    serve(&bind_addr, move |request| {
+        handle(&runtime, local_admin_enabled, request)
+    })
+    .expect("raft node failed");
 }
 
-fn handle(runtime: &ProductionRaftRuntime, request: HttpRequest) -> (u16, Vec<u8>) {
+fn handle(
+    runtime: &ProductionRaftRuntime,
+    local_admin_enabled: bool,
+    request: HttpRequest,
+) -> (u16, Vec<u8>) {
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/health") => json_response(200, &Status::ok()),
         ("GET", "/raft/status") => json_response(200, &runtime.status()),
+        ("POST", "/raft/admin/liveness") => {
+            if !local_admin_enabled {
+                return json_response(403, &Status::error("forbidden", "local admin disabled"));
+            }
+            match parse_json::<RaftAdminLivenessRequest>(&request.body) {
+                Ok(req) => {
+                    let status = runtime
+                        .cluster()
+                        .set_alive(req.node_id, req.alive)
+                        .map(|_| Status::ok())
+                        .unwrap_or_else(|err| Status::error("raft_error", err.to_string()));
+                    json_response(200, &RaftAdminLivenessResponse { status })
+                }
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        ("POST", "/raft/admin/elect") => match parse_json::<RaftAdminElectRequest>(&request.body) {
+            Ok(req) => {
+                if !local_admin_enabled {
+                    return json_response(403, &Status::error("forbidden", "local admin disabled"));
+                }
+                let cluster = runtime.cluster();
+                let status = cluster
+                    .catch_up(req.node_id)
+                    .and_then(|_| cluster.elect_leader(req.node_id))
+                    .map(|_| Status::ok())
+                    .unwrap_or_else(|err| Status::error("raft_error", err.to_string()));
+                json_response(200, &RaftAdminLivenessResponse { status })
+            }
+            Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+        },
+        ("POST", "/raft/admin/failover") => {
+            if !local_admin_enabled {
+                return json_response(403, &Status::error("forbidden", "local admin disabled"));
+            }
+            let response = match runtime.cluster().failover_primary() {
+                Ok(report) => RaftAdminFailoverResponse {
+                    status: Status::ok(),
+                    report: Some(report),
+                },
+                Err(err) => RaftAdminFailoverResponse {
+                    status: Status::error("raft_error", err.to_string()),
+                    report: None,
+                },
+            };
+            json_response(200, &response)
+        }
         ("POST", "/raft/propose") => {
             match parse_json::<DistributedRaftProposeRequest>(&request.body) {
                 Ok(req) => json_response(200, &command_response(runtime.propose(req.command))),

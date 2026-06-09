@@ -73,12 +73,12 @@ pub use raft::{
     ProductionRaftProcessSpec, ProductionRaftRuntime, ProductionRaftRuntimeOptions,
     ProductionRaftSecurity, ProductionRaftSecurityMode, ProductionRaftTimerHandle,
     RaftCatchUpReport, RaftCluster, RaftClusterStatus, RaftConfig, RaftConfigError,
-    RaftDeploymentMode, RaftDistributedReadiness, RaftError, RaftHardState, RaftMembership,
-    RaftMembershipChangeKind, RaftMembershipChangePlan, RaftMembershipChangeReport, RaftNodeId,
-    RaftNodeStatus, RaftProductionReadinessError, RaftReadOptions, RaftReadStrategy, RaftRole,
-    RaftRpcRuntimeOptions, RaftTickOutcome, RaftTransport, RaftWalRecord, RaftWalSegmentInfo,
-    RaftWalSegmentReport, ReadIndexResponse, UnavailableDataRaftConsensusBackend, VoteRequest,
-    VoteResponse,
+    RaftDeploymentMode, RaftDistributedReadiness, RaftError, RaftFailoverReport, RaftHardState,
+    RaftMembership, RaftMembershipChangeKind, RaftMembershipChangePlan, RaftMembershipChangeReport,
+    RaftNodeId, RaftNodeStatus, RaftProductionReadinessError, RaftReadOptions, RaftReadStrategy,
+    RaftRole, RaftRpcRuntimeOptions, RaftTickOutcome, RaftTransport, RaftWalRecord,
+    RaftWalSegmentInfo, RaftWalSegmentReport, ReadIndexResponse,
+    UnavailableDataRaftConsensusBackend, VoteRequest, VoteResponse,
 };
 pub use readiness::{production_readiness_report, ProductionReadinessReport, ReadinessArea};
 pub use rebalance::{

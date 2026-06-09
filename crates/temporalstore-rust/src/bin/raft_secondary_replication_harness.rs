@@ -9,7 +9,8 @@ use serde::Serialize;
 use temporalstore_rust::http::{get_json_with_options, post_json_with_options, HttpRequestOptions};
 use temporalstore_rust::{
     Command, CommandResponse, DistributedRaftCommandResponse, DistributedRaftProposeRequest,
-    DistributedRaftReadRequest, ProductionRaftNode, RaftClusterStatus, RaftNodeId, Status,
+    DistributedRaftReadRequest, ProductionRaftNode, RaftClusterStatus, RaftFailoverReport,
+    RaftNodeId, Status,
 };
 
 #[derive(Debug, Clone)]
@@ -28,6 +29,9 @@ struct SecondaryReplicationSummary {
     writes: Vec<WriteSummary>,
     reads_after_restart: Vec<ReadSummary>,
     restarted_secondary: RaftNodeId,
+    crashed_leader: RaftNodeId,
+    failover: AdminFailoverResponse,
+    reads_after_leader_crash: Vec<ReadSummary>,
 }
 
 #[derive(Debug, Serialize)]
@@ -51,6 +55,28 @@ struct ReadSummary {
     key: String,
     value: Option<String>,
     status: Status,
+}
+
+#[derive(Debug, Serialize)]
+struct AdminLivenessRequest {
+    node_id: RaftNodeId,
+    alive: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct AdminElectRequest {
+    node_id: RaftNodeId,
+}
+
+#[derive(Debug, serde::Deserialize, Serialize)]
+struct AdminLivenessResponse {
+    status: Status,
+}
+
+#[derive(Debug, serde::Deserialize, Serialize)]
+struct AdminFailoverResponse {
+    status: Status,
+    report: Option<RaftFailoverReport>,
 }
 
 struct ChildNode {
@@ -95,11 +121,14 @@ fn main() {
     for node in &nodes {
         wait_for_http(&node.addr);
     }
+    initialize_liveness(&nodes);
 
-    let writes = vec![
-        propose(&nodes[0], "secondary-before-restart", "v1"),
-        propose(&nodes[0], "secondary-before-stop", "v2"),
-    ];
+    let writes = vec![propose(&nodes[0], "secondary-before-restart", "v1")];
+    for node in &nodes {
+        wait_for_value(node, node.node_id, "secondary-before-restart", "v1");
+    }
+    let mut writes = writes;
+    writes.push(propose(&nodes[0], "secondary-before-stop", "v2"));
     wait_for_value(&nodes[1], 2, "secondary-before-stop", "v2");
     wait_for_value(&nodes[2], 3, "secondary-before-stop", "v2");
 
@@ -113,7 +142,6 @@ fn main() {
     let _ = stopped.child.wait();
     drop(stopped);
 
-    let mut writes = writes;
     writes.push(propose(&nodes[0], "secondary-while-down", "v3"));
     wait_for_value(&nodes[1], 2, "secondary-while-down", "v3");
 
@@ -159,8 +187,53 @@ fn main() {
         ));
     }
 
+    let crashed_leader = 1;
+    let leader_index = children
+        .iter()
+        .position(|child| child.node.node_id == crashed_leader)
+        .expect("leader child should exist");
+    let mut crashed = children.remove(leader_index);
+    crashed.child.kill().expect("failed to kill leader");
+    let _ = crashed.child.wait();
+    drop(crashed);
+
+    for survivor in nodes.iter().filter(|node| node.node_id != crashed_leader) {
+        mark_liveness(survivor, crashed_leader, false);
+        for peer in nodes.iter().filter(|node| node.node_id != crashed_leader) {
+            mark_liveness(survivor, peer.node_id, true);
+        }
+    }
+    let new_leader = nodes
+        .iter()
+        .find(|node| node.node_id == 2)
+        .expect("surviving node should exist");
+    for survivor in nodes.iter().filter(|node| node.node_id != crashed_leader) {
+        elect_leader(survivor, new_leader.node_id);
+    }
+    let failover = trigger_failover(new_leader);
+    assert!(
+        failover.status.ok,
+        "leader failover failed: {:?}",
+        failover.status
+    );
+    writes.push(propose(new_leader, "after-leader-crash", "v5"));
+
+    let mut reads_after_leader_crash = Vec::new();
+    for node in nodes.iter().filter(|node| node.node_id != crashed_leader) {
+        reads_after_leader_crash.push(wait_for_value(
+            node,
+            node.node_id,
+            "after-leader-crash",
+            "v5",
+        ));
+    }
+    for node in nodes.iter().filter(|node| node.node_id != crashed_leader) {
+        wait_for_cluster_commit(node, writes.len() as u64);
+    }
+
     let node_summaries = nodes
         .iter()
+        .filter(|node| node.node_id != crashed_leader)
         .map(|node| {
             let wal_dir = wal_dir(&options.root, node.node_id);
             NodeSummary {
@@ -173,6 +246,12 @@ fn main() {
             }
         })
         .collect::<Vec<_>>();
+    validate_surviving_cluster(
+        &node_summaries,
+        crashed_leader,
+        new_leader.node_id,
+        writes.len() as u64,
+    );
 
     println!(
         "{}",
@@ -183,9 +262,68 @@ fn main() {
             writes,
             reads_after_restart,
             restarted_secondary,
+            crashed_leader,
+            failover,
+            reads_after_leader_crash,
         })
         .expect("summary should serialize")
     );
+}
+
+fn validate_surviving_cluster(
+    nodes: &[NodeSummary],
+    crashed_leader: RaftNodeId,
+    expected_leader: RaftNodeId,
+    min_commit_index: u64,
+) {
+    assert!(
+        nodes.len() >= 2,
+        "leader-crash phase must leave at least two surviving nodes"
+    );
+    for node in nodes {
+        assert!(
+            node.status.has_majority,
+            "node {} does not report majority after leader crash: {:?}",
+            node.node_id, node.status
+        );
+        assert_eq!(
+            node.status.leader_id, expected_leader,
+            "node {} does not agree on the post-crash leader",
+            node.node_id
+        );
+        assert!(
+            node.status.commit_index >= min_commit_index,
+            "node {} commit index {} is behind expected {}",
+            node.node_id,
+            node.status.commit_index,
+            min_commit_index
+        );
+        let crashed = node
+            .status
+            .nodes
+            .iter()
+            .find(|status| status.node_id == crashed_leader)
+            .expect("status should include crashed leader voter");
+        assert!(
+            !crashed.alive,
+            "node {} still reports crashed leader {} alive",
+            node.node_id, crashed_leader
+        );
+        for survivor in node
+            .status
+            .nodes
+            .iter()
+            .filter(|status| status.node_id != crashed_leader)
+        {
+            assert!(
+                survivor.alive && survivor.lag == 0,
+                "node {} sees survivor {} unhealthy after leader crash: {:?}",
+                node.node_id,
+                survivor.node_id,
+                survivor
+            );
+        }
+    }
 }
 
 fn spawn_node(
@@ -209,6 +347,7 @@ fn spawn_node(
         .env("TS_RAFT_RPC_DEADLINE_MS", "1000")
         .env("TS_RAFT_RPC_RETRIES", "3")
         .env("TS_RAFT_ALLOW_PLAINTEXT", "true")
+        .env("TS_RAFT_ENABLE_LOCAL_ADMIN", "true")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -233,11 +372,70 @@ fn propose(node: &ProductionRaftNode, key: &str, value: &str) -> WriteSummary {
         request_options(),
     )
     .expect("proposal request failed");
-    assert!(response.status.ok, "proposal failed: {:?}", response.status);
+    if !response.status.ok {
+        let status: RaftClusterStatus =
+            get_json_with_options(&node.addr, "/raft/status", request_options())
+                .expect("status request after failed proposal failed");
+        panic!(
+            "proposal for key {key} on node {} failed: {:?}; local status: {:?}",
+            node.node_id, response.status, status
+        );
+    }
     WriteSummary {
         key: key.to_string(),
         status: response.status,
     }
+}
+
+fn mark_liveness(node: &ProductionRaftNode, target_id: RaftNodeId, alive: bool) {
+    let response: AdminLivenessResponse = post_json_with_options(
+        &node.addr,
+        "/raft/admin/liveness",
+        &AdminLivenessRequest {
+            node_id: target_id,
+            alive,
+        },
+        request_options(),
+    )
+    .expect("liveness admin request failed");
+    assert!(
+        response.status.ok,
+        "liveness admin request failed: {:?}",
+        response.status
+    );
+}
+
+fn initialize_liveness(nodes: &[ProductionRaftNode]) {
+    for node in nodes {
+        for peer in nodes {
+            mark_liveness(node, peer.node_id, true);
+        }
+    }
+}
+
+fn elect_leader(node: &ProductionRaftNode, leader_id: RaftNodeId) {
+    let response: AdminLivenessResponse = post_json_with_options(
+        &node.addr,
+        "/raft/admin/elect",
+        &AdminElectRequest { node_id: leader_id },
+        request_options(),
+    )
+    .expect("elect admin request failed");
+    assert!(
+        response.status.ok,
+        "elect admin request failed: {:?}",
+        response.status
+    );
+}
+
+fn trigger_failover(node: &ProductionRaftNode) -> AdminFailoverResponse {
+    post_json_with_options(
+        &node.addr,
+        "/raft/admin/failover",
+        &serde_json::json!({}),
+        request_options(),
+    )
+    .expect("failover admin request failed")
 }
 
 fn wait_for_value(
@@ -278,6 +476,31 @@ fn wait_for_value(
             Instant::now() < deadline,
             "node {node_id} did not return {key}={expected}; last response: {:?}",
             response
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn wait_for_cluster_commit(node: &ProductionRaftNode, min_commit_index: u64) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let status: RaftClusterStatus =
+            get_json_with_options(&node.addr, "/raft/status", request_options())
+                .expect("status request failed");
+        let live_caught_up = status
+            .nodes
+            .iter()
+            .filter(|replica| replica.alive)
+            .all(|replica| replica.lag == 0 && replica.commit_index >= min_commit_index);
+        if status.has_majority && status.commit_index >= min_commit_index && live_caught_up {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "node {} did not reach commit {}; last status: {:?}",
+            node.node_id,
+            min_commit_index,
+            status
         );
         thread::sleep(Duration::from_millis(50));
     }
