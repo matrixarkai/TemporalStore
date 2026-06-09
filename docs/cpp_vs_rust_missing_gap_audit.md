@@ -23,6 +23,8 @@ The Rust code now covers the local correctness skeleton for TemporalStore-style 
 - client key-to-shard routing, table open/close cache, stats, expanded typed methods, and multi-shard pipeline grouping
 - metaserver namespace/table topology, server/proxy register/list/heartbeat, topology versioning, meta stats/info, optional Raft-backed HTTP mutation path, and production metaserver Raft runtime wrapper
 - data-node checked execute/batch by load version, server registration, periodic heartbeat load reporting, and loaded-shard stats
+- heartbeat load reports now include C++-style per-partition `partition_info` payloads in addition
+  to compact placement load signals
 - data-node worker runtime with bounded async queue, job status, dirty-object ids, dump/compact/GC hooks, and load-finish callback endpoint
 - Redis RESP adapter, including conditional `SET NX/XX`, `GET`, `EX`, and `PX`
 - Prometheus scrape output for shard records, cache, page-store, oplog, and data-node runtime counters
@@ -176,6 +178,14 @@ This C++ parity pass closed the next data-node replay gap:
   applies nothing.
 - Replay rejects index-log or oplog sequence gaps before the follower is considered caught up.
 
+This pass also widened data-node heartbeat/load-report parity:
+
+- `ServerHeartbeatRequest` carries `partition_loads` beside compact `shard_loads`.
+- `PartitionLoad` embeds the existing C++-style `PartitionInfoStats` shape.
+- The server binary sends per-partition table name, shard URI, load version, readonly state,
+  routing-slot range, storage bytes, object/page-ref counts, and dirty object/slot counts.
+- The metaserver stores and returns this richer load payload from `list_servers()`.
+
 ## What Was Closed In The Previous Pass
 
 This pass closed several behavior gaps without carrying brpc or Thrift forward:
@@ -261,7 +271,8 @@ These cannot be honestly marked done yet:
 - make shard membership changes durable through metaserver Raft
 - add crash-safe WAL/index/page recovery tests
 - wire engine snapshots into Raft snapshot install
-- expand heartbeat/load-report payloads beyond current key/memory/location placement inputs
+- expand heartbeat/load-report payloads beyond local partition stats into the full C++ server
+  heartbeat contract
 
 ## P1 Still Missing Before C++ Feature Parity
 

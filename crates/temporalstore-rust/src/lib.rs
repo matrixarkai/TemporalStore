@@ -47,11 +47,11 @@ pub use meta::{
     AckResponse, AddNamespaceRequest, AddTableRequest, FreezeStaleServersRequest, GetShardResponse,
     GetTableTopologyRequest, ListNamespacesResponse, ListProxiesResponse, ListServersResponse,
     ListTablesResponse, LoadFinishRequest, LocalMetaMutationLog, MetaEntityState, MetaInfo,
-    MetaMutation, MetaStats, NamespaceMetaInfo, ProxyHeartbeatRequest, ProxyHeartbeatResponse,
-    ProxyMetaInfo, RegisterProxyRequest, RegisterServerRequest, RegisterShardRequest,
-    RegisterShardResponse, ServerHeartbeatRequest, ServerHeartbeatResponse, ServerMetaInfo,
-    ShardLoad, ShardLocation, SingleNodeMeta, StaleResourceReport, StaleServerReport,
-    StateChangeRequest, TableMetaInfo, TablePartition, TableTopologyResponse,
+    MetaMutation, MetaStats, NamespaceMetaInfo, PartitionLoad, ProxyHeartbeatRequest,
+    ProxyHeartbeatResponse, ProxyMetaInfo, RegisterProxyRequest, RegisterServerRequest,
+    RegisterShardRequest, RegisterShardResponse, ServerHeartbeatRequest, ServerHeartbeatResponse,
+    ServerMetaInfo, ShardLoad, ShardLocation, SingleNodeMeta, StaleResourceReport,
+    StaleServerReport, StateChangeRequest, TableMetaInfo, TablePartition, TableTopologyResponse,
 };
 pub use oplog::{LocalOplogStore, OplogRecord, OplogStats};
 pub use page_store::{LocalPageStore, PageAddress, PageStoreStats};

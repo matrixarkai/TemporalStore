@@ -8,6 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
+use crate::control::PartitionInfoStats;
 use crate::partition_id::{validate_partition_set_count, PartitionId, MAX_TABLE_ID};
 use crate::types::{ShardId, Status};
 
@@ -90,6 +91,8 @@ pub struct ServerHeartbeatRequest {
     pub binary_version: String,
     #[serde(default)]
     pub shard_loads: Vec<ShardLoad>,
+    #[serde(default)]
+    pub partition_loads: Vec<PartitionLoad>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -106,6 +109,12 @@ pub struct ShardLoad {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PartitionLoad {
+    pub shard_id: ShardId,
+    pub partition_info: PartitionInfoStats,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ServerMetaInfo {
     pub server_addr: String,
     pub node_id: u64,
@@ -115,6 +124,8 @@ pub struct ServerMetaInfo {
     pub boot_time_ms: u64,
     pub binary_version: String,
     pub shard_loads: Vec<ShardLoad>,
+    #[serde(default)]
+    pub partition_loads: Vec<PartitionLoad>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -535,6 +546,7 @@ impl SingleNodeMeta {
                 boot_time_ms: 0,
                 binary_version: request.binary_version,
                 shard_loads: Vec::new(),
+                partition_loads: Vec::new(),
             },
         );
         state.topology_version += 1;
@@ -564,6 +576,7 @@ impl SingleNodeMeta {
             server.binary_version = request.binary_version;
         }
         server.shard_loads = request.shard_loads;
+        server.partition_loads = request.partition_loads;
         ServerHeartbeatResponse {
             status: Status::ok(),
             forbid_auto_register: false,
@@ -1203,6 +1216,7 @@ fn ensure_server(state: &mut MetaState, server_addr: &str) {
             boot_time_ms: 0,
             binary_version: String::new(),
             shard_loads: Vec::new(),
+            partition_loads: Vec::new(),
         });
 }
 
@@ -1257,12 +1271,36 @@ mod tests {
                     key_count: 10,
                     memory_bytes: 100,
                 }],
+                partition_loads: vec![PartitionLoad {
+                    shard_id: 7,
+                    partition_info: crate::control::PartitionInfoStats {
+                        shard_id: 7,
+                        loaded: true,
+                        readonly: false,
+                        load_version: 11,
+                        table_name: "tbl".to_string(),
+                        shard_uri: "local://tbl/7".to_string(),
+                        start_routing_slot: 1,
+                        end_routing_slot: 2,
+                        total_records: 10,
+                        storage_bytes: 100,
+                        object_manager: crate::control::ObjectManagerStats {
+                            object_count: 10,
+                            page_ref_count: 10,
+                            dirty_object_count: 1,
+                            dirty_slot_count: 1,
+                            routing_slot_count: 2,
+                        },
+                    },
+                }],
             })
             .status
             .ok
         );
         let server = meta.list_servers().servers.remove(0);
         assert_eq!(server.shard_loads[0].key_count, 10);
+        assert_eq!(server.partition_loads[0].partition_info.table_name, "tbl");
+        assert_eq!(server.partition_loads[0].partition_info.storage_bytes, 100);
         assert_eq!(meta.stats().server_heartbeat_total, 1);
     }
 
@@ -1445,6 +1483,7 @@ mod tests {
                     key_count,
                     memory_bytes,
                 }],
+                partition_loads: Vec::new(),
             });
         }
         meta.add_table(AddTableRequest {
@@ -1491,6 +1530,7 @@ mod tests {
                     key_count,
                     memory_bytes,
                 }],
+                partition_loads: Vec::new(),
             });
         }
         meta.add_table(AddTableRequest {

@@ -1,7 +1,7 @@
 use temporalstore_rust::engine::TemporalEngine;
 use temporalstore_rust::http::{json_response, parse_json, post_json, serve};
 use temporalstore_rust::meta::{
-    AckResponse, RegisterServerRequest, RegisterShardRequest, RegisterShardResponse,
+    AckResponse, PartitionLoad, RegisterServerRequest, RegisterShardRequest, RegisterShardResponse,
     ServerHeartbeatRequest, ServerHeartbeatResponse, ShardLoad,
 };
 use temporalstore_rust::types::{BatchExecuteRequest, ExecuteRequest, ExecuteResponse, Status};
@@ -321,9 +321,9 @@ fn send_heartbeat(
     server_addr: &str,
     binary_version: &str,
 ) -> ServerHeartbeatResponse {
-    let shard_loads = engine
-        .loaded_shard_stats()
-        .into_iter()
+    let stats = engine.loaded_shard_stats();
+    let shard_loads = stats
+        .iter()
         .map(|stats| ShardLoad {
             shard_id: stats.shard_id,
             key_count: (stats.string_records
@@ -336,11 +336,19 @@ fn send_heartbeat(
             memory_bytes: stats.cache.memory_bytes as u64,
         })
         .collect();
+    let partition_loads = stats
+        .into_iter()
+        .map(|stats| PartitionLoad {
+            shard_id: stats.shard_id,
+            partition_info: stats.partition_info,
+        })
+        .collect();
     let request = ServerHeartbeatRequest {
         server_addr: server_addr.to_string(),
         boot_time_ms: 0,
         binary_version: binary_version.to_string(),
         shard_loads,
+        partition_loads,
     };
     post_json::<_, ServerHeartbeatResponse>(meta_addr, "/servers/heartbeat", &request)
         .unwrap_or_else(|err| ServerHeartbeatResponse {

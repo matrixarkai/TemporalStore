@@ -52,7 +52,8 @@ Rust now covers these data-node surfaces:
 - index-log stream read/scan
 - readonly shard rejects writes
 - checked execute/batch execute validates loaded `load_version`
-- server register plus periodic heartbeat/load report to metaserver
+- server register plus periodic heartbeat/load report to metaserver, including per-partition
+  `partition_info` stats
 - metaserver load-finish callback endpoint
 - local page file persistence
 - local index JSON persistence
@@ -104,7 +105,10 @@ The Rust `server` binary now registers itself with the metaserver and periodical
 server_addr, binary_version, shard_id, key_count, cache memory bytes
 ```
 
-This is much smaller than the C++ heartbeat payload, but it gives the Rust metaserver real load signals for placement/rebalance tests.
+The heartbeat now includes both compact `ShardLoad` placement signals and a richer
+`PartitionLoad` payload with the same local `partition_info` shape exposed by `GetStats`.
+That carries table name, shard URI, load version, readonly state, routing-slot range, storage bytes,
+logical object count, page refs, dirty object count, and dirty slot count to the metaserver.
 
 This pass also adds an explicit runtime layer:
 
@@ -168,9 +172,8 @@ Still missing major data-node internals:
 - primary-pull `RemotePartitionStream`
 - retry/refresh logic when primary changes
 - membership finish callbacks to metaserver
-- full heartbeat/load reporting payload parity
-- storage quotas and admission control
-- full per-partition heartbeat/load payload parity beyond local `partition_info` stats
+- full heartbeat/load reporting payload parity beyond local `partition_info` stats
+- storage quotas and admission control beyond local shard `maxmemory_bytes`
 - real readonly replicator loop
 - byteraft data FSM integration
 

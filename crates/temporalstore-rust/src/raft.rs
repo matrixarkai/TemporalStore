@@ -8097,6 +8097,7 @@ mod tests {
             boot_time_ms: 1,
             binary_version: "test".to_string(),
             shard_loads: Vec::new(),
+            partition_loads: Vec::new(),
         }
     }
 
