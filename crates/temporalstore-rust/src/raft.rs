@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex, RwLock,
@@ -2122,6 +2123,48 @@ impl Default for RaftReadOptions {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DataRaftReadMode {
+    Leader,
+    Linearizable,
+    BoundedStale,
+    UnsafeAnyReplica,
+}
+
+impl FromStr for DataRaftReadMode {
+    type Err = RaftError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "leader" => Ok(Self::Leader),
+            "linearizable" => Ok(Self::Linearizable),
+            "bounded_stale" => Ok(Self::BoundedStale),
+            "unsafe_any_replica" => Ok(Self::UnsafeAnyReplica),
+            _ => Err(RaftError::InvalidConfig(format!(
+                "invalid data_raft_read_mode: {value}"
+            ))),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DataRaftReadPolicy {
+    pub mode: DataRaftReadMode,
+    pub bounded_stale_max_index_lag: u64,
+    pub read_index_timeout_ms: u64,
+}
+
+impl Default for DataRaftReadPolicy {
+    fn default() -> Self {
+        Self {
+            mode: DataRaftReadMode::Leader,
+            bounded_stale_max_index_lag: 0,
+            read_index_timeout_ms: 1_000,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RaftConfig {
     pub election_cycle_tick: u32,
@@ -4166,6 +4209,65 @@ impl RaftCluster {
                 })
             }
             RaftReadStrategy::LeaseRead | RaftReadStrategy::ReadIndex => self.read_index(node_id),
+        }
+    }
+
+    pub fn check_data_raft_read_policy(
+        &self,
+        node_id: RaftNodeId,
+        policy: DataRaftReadPolicy,
+    ) -> Result<ReadIndexResponse, RaftError> {
+        match policy.mode {
+            DataRaftReadMode::Leader => self.check_read(node_id, RaftReadOptions::default()),
+            DataRaftReadMode::Linearizable => {
+                if node_id != self.leader_id() {
+                    return Err(RaftError::NotLeader { node_id });
+                }
+                let _timeout_ms = policy.read_index_timeout_ms;
+                self.check_read(
+                    node_id,
+                    RaftReadOptions {
+                        strategy: RaftReadStrategy::ReadIndex,
+                        ..RaftReadOptions::default()
+                    },
+                )
+            }
+            DataRaftReadMode::BoundedStale => {
+                if node_id == self.leader_id() {
+                    return self.check_read(node_id, RaftReadOptions::default());
+                }
+                let inner = self.inner.read().expect("raft cluster lock poisoned");
+                let status = inner.status();
+                let node = inner
+                    .nodes
+                    .get(&node_id)
+                    .ok_or(RaftError::NodeNotFound(node_id))?;
+                if !node.alive || !node.replica_role.can_serve_data() {
+                    return Err(RaftError::NodeNotFound(node_id));
+                }
+                if status.commit_index.saturating_sub(node.commit_index)
+                    > policy.bounded_stale_max_index_lag
+                {
+                    return Err(RaftError::ReplicaLagging {
+                        replica_id: node_id,
+                        replica_commit_index: node.commit_index,
+                        leader_commit_index: status.commit_index,
+                    });
+                }
+                Ok(ReadIndexResponse {
+                    leader_id: status.leader_id,
+                    node_id,
+                    term: status.current_term,
+                    read_index: node.commit_index,
+                })
+            }
+            DataRaftReadMode::UnsafeAnyReplica => self.check_read(
+                node_id,
+                RaftReadOptions {
+                    enable_read_from_follower: true,
+                    ..RaftReadOptions::default()
+                },
+            ),
         }
     }
 
@@ -8008,6 +8110,86 @@ mod tests {
                 RaftReadOptions {
                     strategy: RaftReadStrategy::LeaseRead,
                     ..RaftReadOptions::default()
+                },
+            )
+            .is_ok());
+    }
+
+    #[test]
+    fn data_raft_read_policy_matches_cpp_partition_manager_modes() {
+        let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+        assert_eq!("leader".parse(), Ok(DataRaftReadMode::Leader));
+        assert_eq!("linearizable".parse(), Ok(DataRaftReadMode::Linearizable));
+        assert_eq!("bounded_stale".parse(), Ok(DataRaftReadMode::BoundedStale));
+        assert_eq!(
+            "unsafe_any_replica".parse(),
+            Ok(DataRaftReadMode::UnsafeAnyReplica)
+        );
+        assert!("bad-mode".parse::<DataRaftReadMode>().is_err());
+
+        cluster.set_alive(3, false).unwrap();
+        cluster
+            .propose(Command::StringSet {
+                key: "policy".to_string(),
+                value: b"v1".to_vec(),
+            })
+            .unwrap();
+        cluster.set_alive(3, true).unwrap();
+
+        assert_eq!(
+            cluster.check_data_raft_read_policy(2, DataRaftReadPolicy::default()),
+            Err(RaftError::NotLeader { node_id: 2 })
+        );
+        assert_eq!(
+            cluster.check_data_raft_read_policy(
+                2,
+                DataRaftReadPolicy {
+                    mode: DataRaftReadMode::Linearizable,
+                    ..DataRaftReadPolicy::default()
+                },
+            ),
+            Err(RaftError::NotLeader { node_id: 2 })
+        );
+        assert!(cluster
+            .check_data_raft_read_policy(
+                1,
+                DataRaftReadPolicy {
+                    mode: DataRaftReadMode::Linearizable,
+                    ..DataRaftReadPolicy::default()
+                },
+            )
+            .is_ok());
+        assert_eq!(
+            cluster.check_data_raft_read_policy(
+                3,
+                DataRaftReadPolicy {
+                    mode: DataRaftReadMode::BoundedStale,
+                    bounded_stale_max_index_lag: 0,
+                    ..DataRaftReadPolicy::default()
+                },
+            ),
+            Err(RaftError::ReplicaLagging {
+                replica_id: 3,
+                replica_commit_index: 0,
+                leader_commit_index: 1,
+            })
+        );
+        assert!(cluster
+            .check_data_raft_read_policy(
+                3,
+                DataRaftReadPolicy {
+                    mode: DataRaftReadMode::BoundedStale,
+                    bounded_stale_max_index_lag: 1,
+                    ..DataRaftReadPolicy::default()
+                },
+            )
+            .is_ok());
+        assert!(cluster
+            .check_data_raft_read_policy(
+                3,
+                DataRaftReadPolicy {
+                    mode: DataRaftReadMode::UnsafeAnyReplica,
+                    ..DataRaftReadPolicy::default()
                 },
             )
             .is_ok());

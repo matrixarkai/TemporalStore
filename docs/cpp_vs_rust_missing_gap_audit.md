@@ -139,6 +139,9 @@ This pass closed another ByteRaft/ByteKV `RaftEngine` API/configuration gap:
 - Defaults match the local C++/ByteKV defaults where the C++ source exposed them: election cycle `3`, max memory replicate-log bytes `32 KiB`, max disk replicate-log count `64`, max cache memory bytes `32 MiB`, max apply batch bytes `64 KiB`, raft transport timeout `1000 ms`, max segment bytes `64 MiB`, WAL sync disabled, and max applied-log bytes `1 GiB`.
 - `RaftConfig::validate()` rejects unusable settings before constructing a data-node or metaserver Raft group.
 - `RaftReadOptions` and `RaftReadStrategy` model the C++ `ReadOptions` shape: relaxed read, lease read, read-index, follower-read switch, fill-cache flag, ignore-write-intent flag, and wait timeout.
+- `DataRaftReadPolicy` models the C++ data-node `data_raft_read_mode` gflag surface:
+  `leader`, `linearizable`, `bounded_stale`, and `unsafe_any_replica`, including the
+  bounded-stale max index lag guard for secondary reads.
 - data-node Raft and metaserver Raft now both support fallible constructors with explicit config, `config()` inspection, log-entry size enforcement, leader-only read enforcement, optional follower reads, and election prohibition.
 - data-node Raft WAL now persists in-progress joint-consensus membership and restores it after restart, so a restarted group still requires both old and new majorities before writes or membership commit.
 - WAL-backed data Raft clusters now auto-persist committed writes, leadership changes, membership changes, catch-up, RPC receive state, and snapshot installs; callers no longer need to remember a manual `persist_wal()` call in that mode.

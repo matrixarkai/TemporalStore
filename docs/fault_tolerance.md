@@ -9,6 +9,8 @@ The Rust implementation models the TemporalStore fault-tolerance path locally:
 - writes continue after promotion when quorum remains
 - writes are rejected when quorum is lost
 - lagging followers are rejected for read-index and leader transfer
+- C++ `data_raft_read_mode` policies are modeled for data Raft reads:
+  `leader`, `linearizable`, `bounded_stale`, and `unsafe_any_replica`
 - followers catch up from leader logs after outage
 - new replicas can be added and bootstrapped from current state
 - replicas can be removed while preserving majority
