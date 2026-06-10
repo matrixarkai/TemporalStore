@@ -245,7 +245,6 @@ Still missing major data-node internals:
 - C++-style page rewrite garbage collection with page headers and zone ownership
 - production evicter background tasks and cache admission policy
 - primary-pull `RemotePartitionStream` binary/protobuf parity beyond the current HTTP stream source
-- refresh policy when the metaserver primary route changes while replay is in progress
 - membership finish callback retry/persistence beyond the current best-effort HTTP callback
 - full heartbeat/load reporting payload parity beyond local `partition_info` stats
 - distributed admission control that shares quota counters across data-node processes

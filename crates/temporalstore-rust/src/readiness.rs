@@ -57,7 +57,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
             ],
             missing: vec![
                 "tonic/prost SDK surface for the open-source production API".to_string(),
-                "full C++ partition-set hierarchy, VDC affinity, and drop-percent routing"
+                "full C++ partition-set hierarchy and Neptune-specific routing"
                     .to_string(),
                 "wire-compatible migration layer for existing C++ client callers".to_string(),
             ],
@@ -70,11 +70,12 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "background heartbeat loop and heartbeat auto-register".to_string(),
                 "backend-error route refresh and failure-streak avoidance".to_string(),
+                "namespace/table open path and table-routed proxy execute/batch routes"
+                    .to_string(),
             ],
             missing: vec![
                 "tonic proxy service and streaming/callback request shape".to_string(),
                 "service discovery/registration replacement for consul".to_string(),
-                "namespace/table open path equivalent to the C++ proxy".to_string(),
             ],
         },
         ReadinessArea {
@@ -84,12 +85,19 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "server/proxy inventory, heartbeat, namespace/table topology, meta stats/info"
                     .to_string(),
                 "optional in-process Raft-backed mutation path".to_string(),
-                "load-aware and location-diverse replica placement skeleton".to_string(),
+                "load-aware replica placement skeleton with location and host diversity"
+                    .to_string(),
+                "single-node metabase snapshot export/import and atomic local snapshot save/load"
+                    .to_string(),
+                "HTTP scheduler admin surface can submit, run-next, snapshot, and restore deterministic metaserver tasks"
+                    .to_string(),
+                "optional local scheduler snapshot persistence through TS_META_SCHEDULER_SNAPSHOT"
+                    .to_string(),
             ],
             missing: vec![
                 "networked multi-process metaserver Raft".to_string(),
                 "C++ partition-set/member/version topology model".to_string(),
-                "full scheduler/failure detector loop, cooldowns, safe mode, repair tasks"
+                "full background scheduler loop executing repair tasks against real data-node processes, cooldowns, and safe mode"
                     .to_string(),
                 "durable shard membership changes coupled to data-node Raft groups".to_string(),
             ],
@@ -120,6 +128,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "metaserver topology membership plans can be applied to data-node Raft with joint-consensus catch-up and an applied/no-op report"
                     .to_string(),
+                "raft_node and raft-enabled server expose /raft/membership/apply for networked safe membership changes, and the OS-process harness verifies scale down/up through that route"
+                    .to_string(),
                 "C++-style deterministic metaserver task scheduler model covers priority ordering, retry-later backoff, abort, and UpdateMembership task enqueue"
                     .to_string(),
                 "scheduler task queue can be snapshotted/restored and freezing shard replicas can be repaired into UpdateMembership tasks"
@@ -143,7 +153,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
             ],
             missing: vec![
                 "real OpenRaft or raft-rs data-node FSM/storage implementation".to_string(),
-                "networked metaserver Raft transport and scheduler loop that drives data-node Raft membership apply across real processes and persists task state"
+                "networked metaserver Raft transport and scheduler loop that automatically drives /raft/membership/apply across real data-node processes and persists task state"
                     .to_string(),
                 "external multi-process packet-loss and disk-pressure tests".to_string(),
             ],

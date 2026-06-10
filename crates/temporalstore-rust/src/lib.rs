@@ -21,9 +21,9 @@ pub mod types;
 
 pub use cache::{CacheKey, CacheStats, MultiLayerCache};
 pub use client::{
-    crc64_jones, shard_id_for_key, slot_id_for_key, stable_key_hash, ClientError, ClientOptions,
-    ClientStats, RequestOptions, TableOptions, TemporalStoreClient, TemporalStorePipeline,
-    TemporalStoreTable,
+    crc64_jones, key_is_dropped_by_percent, shard_id_for_key, slot_id_for_key, stable_key_hash,
+    ClientError, ClientOptions, ClientStats, RequestOptions, TableOptions, TemporalStoreClient,
+    TemporalStorePipeline, TemporalStoreTable,
 };
 pub use control::{
     CheckedBatchExecuteRequest, CheckedBatchExecuteResponse, CheckedExecuteRequest,
@@ -50,9 +50,10 @@ pub use meta::{
     ListTablesResponse, LoadFinishRequest, LocalMetaMutationLog, MetaEntityState, MetaInfo,
     MetaMutation, MetaStats, NamespaceMetaInfo, PartitionLoad, ProxyHeartbeatRequest,
     ProxyHeartbeatResponse, ProxyMetaInfo, RegisterProxyRequest, RegisterServerRequest,
-    RegisterShardRequest, RegisterShardResponse, ServerHeartbeatRequest, ServerHeartbeatResponse,
-    ServerMetaInfo, ShardLoad, ShardLocation, SingleNodeMeta, StaleResourceReport,
-    StaleServerReport, StateChangeRequest, TableMetaInfo, TablePartition, TableTopologyResponse,
+    RegisterShardRequest, RegisterShardResponse, ServerEndpoint, ServerHeartbeatRequest,
+    ServerHeartbeatResponse, ServerMetaInfo, ShardLoad, ShardLocation, SingleNodeMeta,
+    StaleResourceReport, StaleServerReport, StateChangeRequest, TableMetaInfo, TablePartition,
+    TableTopologyResponse,
 };
 pub use oplog::{LocalOplogStore, OplogRecord, OplogStats};
 pub use page_store::{LocalPageStore, PageAddress, PageStoreStats};
@@ -61,19 +62,24 @@ pub use partition_id::{
     MAX_PARTITION_SET_INDEX, MAX_TABLE_ID, MIN_SLOTS_PER_PARTITION, PARTITION_INDEX_MASK,
     PARTITION_VERSION_MASK, SLOT_COUNT, SLOT_MASK,
 };
-pub use proxy::{ProxyInfo, ProxyOptions, ProxyService, ProxyStats};
+pub use proxy::{
+    ProxyConfigUpdateReport, ProxyInfo, ProxyOpenTableRequest, ProxyOpenTableResponse,
+    ProxyOptions, ProxyReplicaReadPolicy, ProxyService, ProxyStats, ProxyTableBatchExecuteRequest,
+    ProxyTableExecuteRequest, ProxyTableOptionsView,
+};
 pub use raft::{
-    apply_data_raft_membership_from_topology, distributed_raft_readiness, handle_raft_http,
-    require_production_raft_ready, validate_raft_deployment_mode, AppendEntriesRequest,
-    AppendEntriesResponse, DataRaftConsensusBackend, DataRaftConsensusOptions, DataRaftPeer,
-    DataRaftStatus, DataRaftTopologyApplyReport, DataRaftTopologyMembershipPlan,
-    DistributedRaftCommandResponse, DistributedRaftProposeRequest, DistributedRaftReadRequest,
-    HttpRaftTransport, InstallSnapshotRequest, InstallSnapshotResponse, LocalRaftWal, MetaCommand,
-    MetaRaftCluster, MetaState, ProductionMetaRaftRuntime, ProductionMetaRaftRuntimeOptions,
+    apply_data_raft_membership_from_topology, distributed_raft_readiness,
+    handle_authenticated_raft_http, handle_raft_http, require_production_raft_ready,
+    validate_raft_deployment_mode, AppendEntriesRequest, AppendEntriesResponse,
+    DataRaftConsensusBackend, DataRaftConsensusOptions, DataRaftPeer, DataRaftStatus,
+    DataRaftTopologyApplyReport, DataRaftTopologyMembershipPlan, DistributedRaftCommandResponse,
+    DistributedRaftProposeRequest, DistributedRaftReadRequest, HttpRaftTransport,
+    InstallSnapshotRequest, InstallSnapshotResponse, LocalRaftWal, MetaCommand, MetaRaftCluster,
+    MetaState, ProductionMetaRaftRuntime, ProductionMetaRaftRuntimeOptions,
     ProductionRaftChaosPlan, ProductionRaftEngineKind, ProductionRaftNode,
     ProductionRaftProcessSpec, ProductionRaftRuntime, ProductionRaftRuntimeOptions,
-    ProductionRaftSecurity, ProductionRaftSecurityMode, ProductionRaftTimerHandle,
-    RaftCatchUpReport, RaftCluster, RaftClusterStatus, RaftConfig, RaftConfigError,
+    ProductionRaftSecurity, ProductionRaftSecurityMode, ProductionRaftTimerHandle, RaftApplyHealth,
+    RaftApplyLag, RaftCatchUpReport, RaftCluster, RaftClusterStatus, RaftConfig, RaftConfigError,
     RaftDeploymentMode, RaftDistributedReadiness, RaftError, RaftFailoverReport, RaftHardState,
     RaftMembership, RaftMembershipChangeKind, RaftMembershipChangePlan, RaftMembershipChangeReport,
     RaftNodeId, RaftNodeStatus, RaftProductionReadinessError, RaftReadOptions, RaftReadStrategy,
@@ -85,7 +91,8 @@ pub use readiness::{production_readiness_report, ProductionReadinessReport, Read
 pub use rebalance::{
     MembershipUpdatePeerRequest, MembershipUpdatePeerStatus, MembershipUpdateTaskOptions,
     MembershipUpdateTaskPlan, MembershipUpdateTaskReport, RebalanceController, RebalanceError,
-    RebalanceOptions, RebalanceStep, ShardMovePlan, ShardReplica, ShardReplicaState, ShardRole,
+    RebalanceOptions, RebalanceRoundReport, RebalanceStep, ShardMovePlan, ShardReplica,
+    ShardReplicaState, ShardRole,
 };
 pub use redis::{execute_redis_command, read_command, serve_redis_proxy, RespValue};
 pub use replica_replay::{

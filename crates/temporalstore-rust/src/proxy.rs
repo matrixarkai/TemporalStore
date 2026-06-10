@@ -4,15 +4,18 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::client::{ClientOptions, ClientStats, RequestOptions, TemporalStoreClient};
+use crate::client::{
+    ClientOptions, ClientStats, ReplicaReadPolicy, RequestOptions, TableOptions,
+    TemporalStoreClient,
+};
 use crate::http::{get_json_with_options, post_json_with_options, HttpRequest, HttpRequestOptions};
 use crate::meta::GetShardResponse;
 use crate::meta::{
     AckResponse, ProxyHeartbeatRequest, ProxyHeartbeatResponse, RegisterProxyRequest,
 };
 use crate::types::{
-    BatchExecuteRequest, BatchExecuteResponse, CommandResponse, ExecuteRequest, ExecuteResponse,
-    ShardId, Status,
+    BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,
+    ExecuteResponse, ShardId, Status,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -103,6 +106,92 @@ pub struct ProxyHeartbeatReport {
     pub stats: ProxyStats,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyConfigUpdateReport {
+    pub status: Status,
+    pub applied: bool,
+    pub reason: String,
+    pub previous_namespace: String,
+    pub previous_config_version: u64,
+    pub new_namespace: String,
+    pub new_config_version: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyOpenTableRequest {
+    pub namespace: String,
+    pub table_name: String,
+    #[serde(default)]
+    pub pin_primary: Option<bool>,
+    #[serde(default)]
+    pub replica_read_policy: Option<ProxyReplicaReadPolicy>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyOpenTableResponse {
+    pub status: Status,
+    pub options: Option<ProxyTableOptionsView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyTableExecuteRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub command: Command,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyTableBatchExecuteRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub commands: Vec<Command>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProxyReplicaReadPolicy {
+    PinPrimary,
+    FirstReplica,
+    RoundRobinReplica,
+}
+
+impl From<ProxyReplicaReadPolicy> for ReplicaReadPolicy {
+    fn from(value: ProxyReplicaReadPolicy) -> Self {
+        match value {
+            ProxyReplicaReadPolicy::PinPrimary => ReplicaReadPolicy::PinPrimary,
+            ProxyReplicaReadPolicy::FirstReplica => ReplicaReadPolicy::FirstReplica,
+            ProxyReplicaReadPolicy::RoundRobinReplica => ReplicaReadPolicy::RoundRobinReplica,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyTableOptionsView {
+    pub first_shard_id: ShardId,
+    pub shard_count: u64,
+    pub pin_primary: bool,
+    pub replica_read_policy: ProxyReplicaReadPolicy,
+    pub preferred_location: String,
+    pub drop_percent: u8,
+}
+
+impl From<TableOptions> for ProxyTableOptionsView {
+    fn from(options: TableOptions) -> Self {
+        Self {
+            first_shard_id: options.first_shard_id,
+            shard_count: options.shard_count,
+            pin_primary: options.pin_primary,
+            preferred_location: options.preferred_location,
+            drop_percent: options.drop_percent,
+            replica_read_policy: match options.replica_read_policy {
+                ReplicaReadPolicy::PinPrimary => ProxyReplicaReadPolicy::PinPrimary,
+                ReplicaReadPolicy::FirstReplica => ProxyReplicaReadPolicy::FirstReplica,
+                ReplicaReadPolicy::RoundRobinReplica => ProxyReplicaReadPolicy::RoundRobinReplica,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ProxyService {
     inner: Arc<ProxyInner>,
@@ -146,10 +235,7 @@ impl ProxyService {
                 json_response(200, &options)
             }
             ("POST", "/proxy/config") => match parse_json::<ProxyOptions>(&request.body) {
-                Ok(options) => {
-                    self.update_options(options);
-                    json_response(200, &Status::ok())
-                }
+                Ok(options) => json_response(200, &self.update_options_report(options)),
                 Err(err) => {
                     self.inc_bad_request();
                     json_response(400, &Status::error("bad_request", err.to_string()))
@@ -179,6 +265,39 @@ impl ProxyService {
                     json_response(400, &Status::error("bad_request", err.to_string()))
                 }
             },
+            ("POST", "/proxy/open_table") | ("POST", "/tables/open") => {
+                match parse_json::<ProxyOpenTableRequest>(&request.body) {
+                    Ok(req) => json_response(200, &self.open_table(req)),
+                    Err(err) => {
+                        self.inc_bad_request();
+                        json_response(
+                            400,
+                            &ProxyOpenTableResponse {
+                                status: Status::error("bad_request", err.to_string()),
+                                options: None,
+                            },
+                        )
+                    }
+                }
+            }
+            ("POST", "/proxy/table_execute") | ("POST", "/table_execute") => {
+                match parse_json::<ProxyTableExecuteRequest>(&request.body) {
+                    Ok(req) => json_response(200, &self.table_execute(req)),
+                    Err(err) => {
+                        self.inc_bad_request();
+                        json_response(400, &execute_error("bad_request", err.to_string()))
+                    }
+                }
+            }
+            ("POST", "/proxy/table_batch_execute") | ("POST", "/table_batch_execute") => {
+                match parse_json::<ProxyTableBatchExecuteRequest>(&request.body) {
+                    Ok(req) => json_response(200, &self.table_batch_execute(req)),
+                    Err(err) => {
+                        self.inc_bad_request();
+                        json_response(400, &Status::error("bad_request", err.to_string()))
+                    }
+                }
+            }
             _ => json_response(404, &Status::error("not_found", "unknown proxy route")),
         }
     }
@@ -214,7 +333,116 @@ impl ProxyService {
         response
     }
 
+    pub fn open_table(&self, request: ProxyOpenTableRequest) -> ProxyOpenTableResponse {
+        match self
+            .client()
+            .open_table_from_meta(request.namespace, request.table_name)
+        {
+            Ok(table) => {
+                if request.pin_primary.is_some() || request.replica_read_policy.is_some() {
+                    let mut options = table.options();
+                    if let Some(pin_primary) = request.pin_primary {
+                        options.pin_primary = pin_primary;
+                    }
+                    if let Some(policy) = request.replica_read_policy {
+                        options.replica_read_policy = policy.into();
+                    }
+                    let table = self.client().open_table(
+                        table.namespace().to_string(),
+                        table.table_name().to_string(),
+                        options.clone(),
+                    );
+                    self.sync_client_stats();
+                    return ProxyOpenTableResponse {
+                        status: Status::ok(),
+                        options: Some(table.options().into()),
+                    };
+                }
+                let options = table.options();
+                self.sync_client_stats();
+                ProxyOpenTableResponse {
+                    status: Status::ok(),
+                    options: Some(options.into()),
+                }
+            }
+            Err(err) => {
+                self.sync_client_stats();
+                ProxyOpenTableResponse {
+                    status: Status::error("metaserver_error", err.to_string()),
+                    options: None,
+                }
+            }
+        }
+    }
+
+    pub fn table_execute(&self, request: ProxyTableExecuteRequest) -> ExecuteResponse {
+        self.inner
+            .stats
+            .write()
+            .expect("proxy stats lock poisoned")
+            .execute_requests += 1;
+        let response = self
+            .table_for_request(request.namespace, request.table_name)
+            .and_then(|table| table.execute(request.command))
+            .unwrap_or_else(|err| execute_error("server_error", err.to_string()));
+        self.sync_client_stats();
+        response
+    }
+
+    pub fn table_batch_execute(
+        &self,
+        request: ProxyTableBatchExecuteRequest,
+    ) -> BatchExecuteResponse {
+        self.inner
+            .stats
+            .write()
+            .expect("proxy stats lock poisoned")
+            .batch_execute_requests += 1;
+        let response = self
+            .table_for_request(request.namespace, request.table_name)
+            .and_then(|table| table.batch_execute(request.commands))
+            .unwrap_or_else(|err| BatchExecuteResponse {
+                status: Status::error("server_error", err.to_string()),
+                responses: Vec::new(),
+            });
+        self.sync_client_stats();
+        response
+    }
+
+    fn table_for_request(
+        &self,
+        namespace: String,
+        table_name: String,
+    ) -> Result<crate::client::TemporalStoreTable, crate::client::ClientError> {
+        let client = self.client();
+        client
+            .cached_table(namespace.clone(), table_name.clone())
+            .map(Ok)
+            .unwrap_or_else(|| client.open_table_from_meta(namespace, table_name))
+    }
+
     pub fn update_options(&self, options: ProxyOptions) {
+        let _ = self.update_options_report(options);
+    }
+
+    pub fn update_options_report(&self, options: ProxyOptions) -> ProxyConfigUpdateReport {
+        let previous = self.options();
+        let previous_config_version = proxy_config_version(&previous);
+        let new_config_version = proxy_config_version(&options);
+        let mut report = ProxyConfigUpdateReport {
+            status: Status::ok(),
+            applied: false,
+            reason: "unchanged".to_string(),
+            previous_namespace: previous.namespace.clone(),
+            previous_config_version,
+            new_namespace: options.namespace.clone(),
+            new_config_version,
+        };
+        if previous.namespace == options.namespace && previous_config_version == new_config_version
+        {
+            return report;
+        }
+
         *self
             .inner
             .client
@@ -230,6 +458,9 @@ impl ProxyService {
             .options
             .write()
             .expect("proxy options lock poisoned") = options;
+        report.applied = true;
+        report.reason = "config_changed".to_string();
+        report
     }
 
     pub fn info(&self) -> ProxyInfo {
@@ -453,7 +684,9 @@ mod tests {
     use super::*;
     use crate::engine::TemporalEngine;
     use crate::http::{json_response, parse_json, serve};
-    use crate::meta::ShardLocation;
+    use crate::meta::{
+        AddTableRequest, GetTableTopologyRequest, RegisterShardRequest, ShardLocation,
+    };
     use crate::types::Command;
     use std::time::Instant;
 
@@ -510,6 +743,40 @@ mod tests {
         assert_eq!(heartbeat.route_cache_size, 1);
         assert_eq!(heartbeat.stats.execute_requests, 2);
         assert_ne!(heartbeat.config_version, 0);
+    }
+
+    #[test]
+    fn proxy_config_update_noops_on_same_namespace_and_version_like_cpp() {
+        let options = ProxyOptions {
+            namespace: "ns-a".to_string(),
+            meta_addr: "127.0.0.1:1".to_string(),
+            route_cache_ttl_ms: 60_000,
+            ..ProxyOptions::default()
+        };
+        let proxy = ProxyService::new(options.clone());
+
+        let unchanged = proxy.update_options_report(options.clone());
+        assert!(unchanged.status.ok);
+        assert!(!unchanged.applied);
+        assert_eq!(unchanged.reason, "unchanged");
+        assert_eq!(unchanged.previous_namespace, "ns-a");
+        assert_eq!(unchanged.new_namespace, "ns-a");
+        assert_eq!(
+            unchanged.previous_config_version,
+            unchanged.new_config_version
+        );
+        assert_eq!(proxy.options().route_cache_ttl_ms, 60_000);
+
+        let changed = proxy.update_options_report(ProxyOptions {
+            namespace: "ns-b".to_string(),
+            ..options
+        });
+        assert!(changed.status.ok);
+        assert!(changed.applied);
+        assert_eq!(changed.reason, "config_changed");
+        assert_eq!(changed.previous_namespace, "ns-a");
+        assert_eq!(changed.new_namespace, "ns-b");
+        assert_eq!(proxy.options().namespace, "ns-b");
     }
 
     #[test]
@@ -608,6 +875,125 @@ mod tests {
         assert_eq!(info.stats.continuous_backend_failures, 1);
         assert!(info.stats.route_refreshes >= 1);
         assert!(info.stats.route_cache_hits >= 1);
+    }
+
+    #[test]
+    fn proxy_table_execute_opens_topology_and_routes_by_key() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let engine_a = TemporalEngine::with_local_dirs(
+            1024,
+            dir_a.path().join("cache"),
+            dir_a.path().join("pages"),
+            dir_a.path().join("indexes"),
+        );
+        engine_a.load_shard(1);
+        start_server(test_addr(18_318), engine_a.clone());
+
+        let dir_b = tempfile::tempdir().unwrap();
+        let engine_b = TemporalEngine::with_local_dirs(
+            1024,
+            dir_b.path().join("cache"),
+            dir_b.path().join("pages"),
+            dir_b.path().join("indexes"),
+        );
+        engine_b.load_shard(2);
+        start_server(test_addr(18_319), engine_b.clone());
+
+        let meta = crate::meta::SingleNodeMeta::default();
+        assert!(
+            meta.add_table(AddTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "tbl".to_string(),
+                first_shard_id: 1,
+                shard_count: 2,
+                replica_count: 1,
+                use_cpp_partition_ids: false,
+                partition_version: 0,
+                serving_options: crate::meta::TableServingOptions::default(),
+            })
+            .status
+            .ok
+        );
+        assert!(
+            meta.register(RegisterShardRequest {
+                shard_id: 1,
+                server_addr: test_addr(18_318),
+            })
+            .status
+            .ok
+        );
+        assert!(
+            meta.register(RegisterShardRequest {
+                shard_id: 2,
+                server_addr: test_addr(18_319),
+            })
+            .status
+            .ok
+        );
+        start_meta_service(test_addr(18_320), meta);
+        wait_for_http(&test_addr(18_318));
+        wait_for_http(&test_addr(18_319));
+        wait_for_http(&test_addr(18_320));
+
+        let proxy = ProxyService::new(ProxyOptions {
+            meta_addr: test_addr(18_320),
+            route_cache_ttl_ms: 60_000,
+            ..ProxyOptions::default()
+        });
+        let opened = proxy.open_table(ProxyOpenTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+            pin_primary: None,
+            replica_read_policy: None,
+        });
+        assert!(opened.status.ok);
+        assert_eq!(
+            opened.options,
+            Some(ProxyTableOptionsView {
+                first_shard_id: 1,
+                shard_count: 2,
+                pin_primary: true,
+                replica_read_policy: ProxyReplicaReadPolicy::PinPrimary,
+                preferred_location: String::new(),
+                drop_percent: 0,
+            })
+        );
+
+        let key = key_for_shard(2);
+        assert!(
+            proxy
+                .table_execute(ProxyTableExecuteRequest {
+                    namespace: "ns".to_string(),
+                    table_name: "tbl".to_string(),
+                    command: Command::StringSet {
+                        key: key.clone(),
+                        value: b"v2".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+        assert_eq!(
+            engine_b
+                .execute(ExecuteRequest {
+                    shard_id: 2,
+                    command: Command::StringGet { key: key.clone() },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"v2".to_vec())
+            }
+        );
+        assert_eq!(
+            engine_a
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet { key },
+                })
+                .response,
+            CommandResponse::Bytes { value: None }
+        );
+        assert!(proxy.info().route_cache_size >= 2);
     }
 
     #[test]
@@ -732,6 +1118,38 @@ mod tests {
             })
             .unwrap();
         });
+    }
+
+    fn start_meta_service(addr: String, meta: crate::meta::SingleNodeMeta) {
+        std::thread::spawn(move || {
+            serve(&addr, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    ("GET", path) if path.starts_with("/shards/") => {
+                        let shard_id = path
+                            .trim_start_matches("/shards/")
+                            .parse()
+                            .unwrap_or_default();
+                        json_response(200, &meta.get(shard_id))
+                    }
+                    ("POST", "/tables/topology") => {
+                        let req = parse_json::<GetTableTopologyRequest>(&request.body).unwrap();
+                        json_response(200, &meta.get_table_topology(req))
+                    }
+                    _ => json_response(404, &Status::error("not_found", "not found")),
+                }
+            })
+            .unwrap();
+        });
+    }
+
+    fn key_for_shard(shard_id: ShardId) -> String {
+        for index in 0..10_000 {
+            let key = format!("table-key-{shard_id}-{index}");
+            if crate::client::shard_id_for_key(&key, 1, 2, 1) == shard_id {
+                return key;
+            }
+        }
+        panic!("no key found for shard {shard_id}");
     }
 
     fn test_addr(port: u16) -> String {

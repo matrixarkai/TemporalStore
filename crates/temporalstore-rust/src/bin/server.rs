@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -11,21 +12,25 @@ use temporalstore_rust::http::{
 use temporalstore_rust::meta::{
     AckResponse, GetShardResponse, LoadFinishRequest, PartitionLoad, RegisterServerRequest,
     RegisterShardRequest, RegisterShardResponse, ServerHeartbeatRequest, ServerHeartbeatResponse,
-    ShardLoad,
+    ShardLoad, ShardSnapshotRef,
 };
-use temporalstore_rust::raft::{DataRaftReadMode, DataRaftReadPolicy};
+use temporalstore_rust::raft::{
+    DataRaftCommittedLogApplier, DataRaftReadMode, DataRaftReadPolicy, RaftReplicaBootstrapPlan,
+    RaftSnapshotPublishReport, RaftSnapshotTriggerReport, ReadIndexResponse,
+};
 use temporalstore_rust::types::{BatchExecuteRequest, ExecuteRequest, ExecuteResponse, Status};
 use temporalstore_rust::{
-    handle_raft_http, CheckedBatchExecuteRequest, CheckedExecuteRequest, Command, CommandResponse,
-    CompactionRequest, DataNodeRuntime, DataNodeRuntimeOptions, DistributedRaftCommandResponse,
-    DistributedRaftProposeRequest, DistributedRaftReadRequest, DumpShardRequest, GcRequest,
-    HttpReplicaStreamSource, LoadShardRequest, MembershipUpdateRequest, ProductionRaftEngineKind,
-    ProductionRaftNode, ProductionRaftRuntime, ProductionRaftRuntimeOptions,
-    ProductionRaftSecurity, RaftConfig, RaftFailoverReport, RaftNodeId, RaftRpcRuntimeOptions,
-    RaftTransport, ReplicaReplayLoop, ReplicaReplayOptions, ReplicaReplayRequest,
-    ReplicaReplayResponse, RequestController, ScanStreamRequest, SetConfigRequest,
-    StreamReadRequest, UnloadShardRequest,
+    handle_authenticated_raft_http, CheckedBatchExecuteRequest, CheckedExecuteRequest, Command,
+    CommandResponse, CompactionRequest, DataNodeRuntime, DataNodeRuntimeOptions,
+    DistributedRaftCommandResponse, DistributedRaftProposeRequest, DistributedRaftReadRequest,
+    DumpShardRequest, GcRequest, HttpReplicaStreamSource, LoadShardRequest,
+    MembershipUpdateRequest, ProductionRaftEngineKind, ProductionRaftNode, ProductionRaftRuntime,
+    ProductionRaftRuntimeOptions, ProductionRaftSecurity, RaftConfig, RaftFailoverReport,
+    RaftMembershipChangeReport, RaftNodeId, RaftRpcRuntimeOptions, RaftTransport,
+    ReplicaReplayLoop, ReplicaReplayOptions, ReplicaReplayRequest, ReplicaReplayResponse,
+    RequestController, ScanStreamRequest, SetConfigRequest, StreamReadRequest, UnloadShardRequest,
 };
+use temporalstore_snapshot::{FileObjectStore, S3SnapshotStore};
 
 fn main() {
     let addr = std::env::var("TS_SERVER_BIND_ADDR")
@@ -137,6 +142,7 @@ fn main() {
         binary_version.clone(),
         heartbeat_interval_ms,
     );
+    let data_raft_appliers: Arc<Mutex<BTreeMap<u64, DataRaftCommittedLogApplier>>> = Arc::default();
     let replica_replay_loop = start_replica_replay_loop(
         engine.clone(),
         replica_replay_cursor_dir.clone(),
@@ -151,6 +157,19 @@ fn main() {
 
     println!("temporalstore server listening on {addr}");
     serve(&addr, move |request| {
+        if let Some(response) = handle_ping_route(&request) {
+            return response;
+        }
+        if let Some(response) = handle_cpp_server_service_route(
+            &request,
+            &engine,
+            raft_state.as_ref(),
+            &meta_addr,
+            &advertised_addr,
+            &data_raft_appliers,
+        ) {
+            return response;
+        }
         if let Some(raft_state) = &raft_state {
             if let Some(response) = handle_server_raft_route(raft_state, &request) {
                 return response;
@@ -337,12 +356,172 @@ fn main() {
     .expect("server failed");
 }
 
+fn handle_ping_route(request: &HttpRequest) -> Option<(u16, Vec<u8>)> {
+    match (request.method.as_str(), request.path.as_str()) {
+        ("GET" | "POST", "/ping" | "/ServerService/Ping") => {
+            Some(json_response(200, &Status::ok()))
+        }
+        _ => None,
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ShardIdRouteRequest {
+    shard_id: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ApplyDataRaftLogRouteRequest {
+    partition_id: u64,
+    raft_index: u64,
+    committed_log: Vec<u8>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ApplyDataRaftLogRouteResponse {
+    status: Status,
+    applied_raft_index: u64,
+    applied_oplog_sequence: u64,
+}
+
+fn handle_cpp_server_service_route(
+    request: &HttpRequest,
+    engine: &TemporalEngine,
+    raft_state: Option<&ServerRaftState>,
+    meta_addr: &str,
+    advertised_addr: &str,
+    data_raft_appliers: &Arc<Mutex<BTreeMap<u64, DataRaftCommittedLogApplier>>>,
+) -> Option<(u16, Vec<u8>)> {
+    let response = match (request.method.as_str(), request.path.as_str()) {
+        ("POST", "/ServerService/Load") => match parse_json::<LoadShardRequest>(&request.body) {
+            Ok(req) => json_response(200, &engine.load_shard_with(req)),
+            Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+        },
+        ("POST", "/ServerService/Unload") => {
+            match parse_json::<UnloadShardRequest>(&request.body) {
+                Ok(req) => json_response(200, &engine.unload_shard_with(req)),
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        ("POST", "/ServerService/ExecuteCmd") => {
+            match parse_json::<ExecuteRequest>(&request.body) {
+                Ok(req) => {
+                    if let Some(raft_state) = raft_state {
+                        json_response(200, &execute_via_server_raft(raft_state, req))
+                    } else {
+                        json_response(200, &engine.execute(req))
+                    }
+                }
+                Err(err) => json_response(
+                    400,
+                    &ExecuteResponse {
+                        status: Status::error("bad_request", err.to_string()),
+                        response: temporalstore_rust::CommandResponse::Empty,
+                    },
+                ),
+            }
+        }
+        ("POST", "/ServerService/BatchExecuteCmd") => {
+            match parse_json::<BatchExecuteRequest>(&request.body) {
+                Ok(req) => json_response(200, &engine.batch_execute(req)),
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        ("POST", "/ServerService/ApplyDataRaftLog") => {
+            match parse_json::<ApplyDataRaftLogRouteRequest>(&request.body) {
+                Ok(req) => json_response(
+                    200,
+                    &apply_data_raft_log_route(engine, data_raft_appliers, req),
+                ),
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        ("POST", "/ServerService/SetConfig") => match parse_json::<SetConfigRequest>(&request.body)
+        {
+            Ok(req) => json_response(200, &engine.set_config(req)),
+            Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+        },
+        ("POST", "/ServerService/GetConfig") => {
+            match parse_json::<ShardIdRouteRequest>(&request.body) {
+                Ok(req) => json_response(200, &engine.get_config(req.shard_id)),
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        ("POST", "/ServerService/GetInfo") => {
+            match parse_json::<ShardIdRouteRequest>(&request.body) {
+                Ok(req) => json_response(200, &engine.get_info(req.shard_id)),
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        ("POST", "/ServerService/GetStats") => {
+            match parse_json::<ShardIdRouteRequest>(&request.body) {
+                Ok(req) => json_response(200, &engine.get_stats(req.shard_id)),
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        ("POST", "/ServerService/ReadPartitionStream") => {
+            match parse_json::<StreamReadRequest>(&request.body) {
+                Ok(req) => json_response(200, &engine.read_stream(req)),
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        ("POST", "/ServerService/ScanPartitionStream") => {
+            match parse_json::<ScanStreamRequest>(&request.body) {
+                Ok(req) => json_response(200, &engine.scan_stream(req)),
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        ("POST", "/ServerService/UpdateMembership") => {
+            match parse_json::<MembershipUpdateRequest>(&request.body) {
+                Ok(req) => json_response(
+                    200,
+                    &update_membership_with_finish_callback(
+                        engine,
+                        meta_addr,
+                        advertised_addr,
+                        req,
+                    ),
+                ),
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        _ => return None,
+    };
+    Some(response)
+}
+
+fn apply_data_raft_log_route(
+    engine: &TemporalEngine,
+    data_raft_appliers: &Arc<Mutex<BTreeMap<u64, DataRaftCommittedLogApplier>>>,
+    request: ApplyDataRaftLogRouteRequest,
+) -> ApplyDataRaftLogRouteResponse {
+    let mut appliers = data_raft_appliers
+        .lock()
+        .expect("data raft applier lock poisoned");
+    let applier = appliers
+        .entry(request.partition_id)
+        .or_insert_with(|| DataRaftCommittedLogApplier::new(request.partition_id));
+    match applier.apply(request.raft_index, &request.committed_log, engine) {
+        Ok(_) => ApplyDataRaftLogRouteResponse {
+            status: Status::ok(),
+            applied_raft_index: applier.applied_raft_index(),
+            applied_oplog_sequence: applier.applied_oplog_sequence(),
+        },
+        Err(err) => ApplyDataRaftLogRouteResponse {
+            status: Status::error("invalid_data_raft_log", err.to_string()),
+            applied_raft_index: applier.applied_raft_index(),
+            applied_oplog_sequence: applier.applied_oplog_sequence(),
+        },
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct ReplicaReplayLoopStatus {
     enabled: bool,
     shard_id: u64,
     configured_primary_addr: String,
     last_primary_addr: Option<String>,
+    primary_route_change_total: u64,
     attempts_total: u64,
     success_total: u64,
     failure_total: u64,
@@ -430,6 +609,44 @@ struct RaftAdminWaitAppliedRequest {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+struct RaftAdminBootstrapExternalSnapshotRequest {
+    target_id: RaftNodeId,
+    snapshot: ShardSnapshotRef,
+    object_root: String,
+    local_root: String,
+    #[serde(default = "default_snapshot_cluster_id")]
+    cluster_id: String,
+    #[serde(default = "default_snapshot_bucket")]
+    bucket: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct RaftAdminPublishExternalSnapshotRequest {
+    object_root: String,
+    local_root: String,
+    #[serde(default = "default_snapshot_cluster_id")]
+    cluster_id: String,
+    #[serde(default = "default_snapshot_bucket")]
+    bucket: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RaftApplyHealthRequest {
+    #[serde(default)]
+    max_allowed_apply_lag: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct RaftMembershipApplyRequest {
+    voters: Vec<RaftNodeId>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RaftControlNodeRequest {
+    node_id: RaftNodeId,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 struct RaftAdminLivenessResponse {
     status: Status,
 }
@@ -438,6 +655,58 @@ struct RaftAdminLivenessResponse {
 struct RaftAdminFailoverResponse {
     status: Status,
     report: Option<RaftFailoverReport>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct RaftMembershipApplyResponse {
+    status: Status,
+    report: Option<RaftMembershipChangeReport>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct RaftControlMembershipResponse {
+    status: Status,
+    shard_id: u64,
+    leader_id: RaftNodeId,
+    voters: Vec<RaftNodeId>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct RaftControlSnapshotResponse {
+    status: Status,
+    report: Option<RaftSnapshotTriggerReport>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct RaftControlReadIndexResponse {
+    status: Status,
+    response: Option<ReadIndexResponse>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct RaftAdminBootstrapExternalSnapshotResponse {
+    status: Status,
+    plan: Option<RaftReplicaBootstrapPlan>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct RaftAdminPublishExternalSnapshotResponse {
+    status: Status,
+    report: Option<RaftSnapshotPublishReport>,
+}
+
+fn default_snapshot_cluster_id() -> String {
+    "cluster-a".to_string()
+}
+
+fn default_snapshot_bucket() -> String {
+    "test".to_string()
+}
+
+fn uri_scheme(uri: &str) -> String {
+    uri.split_once("://")
+        .map(|(scheme, _)| scheme.to_string())
+        .unwrap_or_else(|| "file".to_string())
 }
 
 #[derive(Debug, Clone)]
@@ -539,6 +808,112 @@ fn handle_server_raft_route(
 ) -> Option<(u16, Vec<u8>)> {
     let response = match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/raft/status") => json_response(200, &state.runtime.status()),
+        ("POST", "/raft/apply_health") => match parse_json::<RaftApplyHealthRequest>(&request.body)
+        {
+            Ok(req) => json_response(
+                200,
+                &state
+                    .runtime
+                    .cluster()
+                    .apply_health(req.max_allowed_apply_lag),
+            ),
+            Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+        },
+        ("POST", "/raft/membership/apply") => {
+            match parse_json::<RaftMembershipApplyRequest>(&request.body) {
+                Ok(req) => {
+                    let response = match state.runtime.apply_membership_change_safely(req.voters) {
+                        Ok(report) => RaftMembershipApplyResponse {
+                            status: Status::ok(),
+                            report: Some(report),
+                        },
+                        Err(err) => RaftMembershipApplyResponse {
+                            status: Status::error("raft_error", err.to_string()),
+                            report: None,
+                        },
+                    };
+                    json_response(200, &response)
+                }
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        ("GET", "/raft/control/list_membership") | ("POST", "/raft/control/list_membership") => {
+            json_response(200, &server_raft_membership_response(state))
+        }
+        ("POST", "/raft/control/add_node") => {
+            match parse_json::<RaftControlNodeRequest>(&request.body) {
+                Ok(req) => {
+                    let mut voters = state.runtime.cluster().membership().voters;
+                    if !voters.contains(&req.node_id) {
+                        voters.push(req.node_id);
+                        voters.sort_unstable();
+                    }
+                    json_response(200, &server_raft_apply_membership_response(state, voters))
+                }
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        ("POST", "/raft/control/remove_node") => {
+            match parse_json::<RaftControlNodeRequest>(&request.body) {
+                Ok(req) => {
+                    let voters = state
+                        .runtime
+                        .cluster()
+                        .membership()
+                        .voters
+                        .into_iter()
+                        .filter(|node_id| *node_id != req.node_id)
+                        .collect::<Vec<_>>();
+                    json_response(200, &server_raft_apply_membership_response(state, voters))
+                }
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        ("POST", "/raft/control/trigger_snapshot") => {
+            let response = match state.runtime.cluster().maybe_trigger_snapshot() {
+                Ok(report) => RaftControlSnapshotResponse {
+                    status: Status::ok(),
+                    report: Some(report),
+                },
+                Err(err) => RaftControlSnapshotResponse {
+                    status: Status::error("raft_error", err.to_string()),
+                    report: None,
+                },
+            };
+            json_response(200, &response)
+        }
+        ("POST", "/raft/control/read_index") => {
+            match parse_json::<RaftControlNodeRequest>(&request.body) {
+                Ok(req) => {
+                    let response = match state.runtime.cluster().read_index(req.node_id) {
+                        Ok(read_index) => RaftControlReadIndexResponse {
+                            status: Status::ok(),
+                            response: Some(read_index),
+                        },
+                        Err(err) => RaftControlReadIndexResponse {
+                            status: Status::error("raft_error", err.to_string()),
+                            response: None,
+                        },
+                    };
+                    json_response(200, &response)
+                }
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        ("POST", "/raft/control/transfer_leader") => {
+            match parse_json::<RaftControlNodeRequest>(&request.body) {
+                Ok(req) => {
+                    let status = state
+                        .runtime
+                        .cluster()
+                        .transfer_leader(req.node_id)
+                        .map(|_| Status::ok())
+                        .unwrap_or_else(|err| Status::error("raft_error", err.to_string()));
+                    json_response(200, &RaftAdminLivenessResponse { status })
+                }
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
         ("POST", "/raft/admin/liveness") => {
             if !state.local_admin_enabled {
                 return Some(json_response(
@@ -624,6 +999,102 @@ fn handle_server_raft_route(
                         .map(|_| Status::ok())
                         .unwrap_or_else(|err| Status::error("raft_error", err.to_string()));
                     json_response(200, &RaftAdminLivenessResponse { status })
+                }
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        ("POST", "/raft/admin/bootstrap_external_snapshot") => {
+            if !state.local_admin_enabled {
+                return Some(json_response(
+                    403,
+                    &Status::error("forbidden", "local admin disabled"),
+                ));
+            }
+            match parse_json::<RaftAdminBootstrapExternalSnapshotRequest>(&request.body) {
+                Ok(req) => {
+                    let store = Arc::new(FileObjectStore::with_uri_scheme(
+                        PathBuf::from(&req.object_root),
+                        uri_scheme(&req.snapshot.uri),
+                    ));
+                    let snapshot_store = S3SnapshotStore::new(
+                        req.cluster_id,
+                        req.bucket,
+                        PathBuf::from(&req.local_root),
+                        store,
+                    );
+                    let response = match tokio::runtime::Runtime::new()
+                        .map_err(|err| err.to_string())
+                        .and_then(|tokio_runtime| {
+                            tokio_runtime
+                                .block_on(
+                                    state
+                                        .runtime
+                                        .cluster()
+                                        .bootstrap_replica_from_external_snapshot(
+                                            req.target_id,
+                                            &snapshot_store,
+                                            &req.snapshot,
+                                            PathBuf::from(&req.local_root)
+                                                .join(format!("restore-node-{}", req.target_id)),
+                                        ),
+                                )
+                                .map_err(|err| err.to_string())
+                        }) {
+                        Ok(plan) => RaftAdminBootstrapExternalSnapshotResponse {
+                            status: Status::ok(),
+                            plan: Some(plan),
+                        },
+                        Err(err) => RaftAdminBootstrapExternalSnapshotResponse {
+                            status: Status::error("raft_error", err),
+                            plan: None,
+                        },
+                    };
+                    json_response(200, &response)
+                }
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        ("POST", "/raft/admin/publish_external_snapshot") => {
+            if !state.local_admin_enabled {
+                return Some(json_response(
+                    403,
+                    &Status::error("forbidden", "local admin disabled"),
+                ));
+            }
+            match parse_json::<RaftAdminPublishExternalSnapshotRequest>(&request.body) {
+                Ok(req) => {
+                    let store = Arc::new(FileObjectStore::with_uri_scheme(
+                        PathBuf::from(&req.object_root),
+                        "s3",
+                    ));
+                    let snapshot_store = S3SnapshotStore::new(
+                        req.cluster_id,
+                        req.bucket,
+                        PathBuf::from(&req.local_root),
+                        store,
+                    );
+                    let response = match tokio::runtime::Runtime::new()
+                        .map_err(|err| err.to_string())
+                        .and_then(|tokio_runtime| {
+                            tokio_runtime
+                                .block_on(
+                                    state
+                                        .runtime
+                                        .cluster()
+                                        .publish_leader_snapshot_to_store(&snapshot_store),
+                                )
+                                .map_err(|err| err.to_string())
+                        }) {
+                        Ok(report) => RaftAdminPublishExternalSnapshotResponse {
+                            status: Status::ok(),
+                            report: Some(report),
+                        },
+                        Err(err) => RaftAdminPublishExternalSnapshotResponse {
+                            status: Status::error("raft_error", err),
+                            report: None,
+                        },
+                    };
+                    json_response(200, &response)
                 }
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
             }
@@ -724,18 +1195,45 @@ fn handle_server_raft_route(
                     ));
                 }
             }
-            handle_raft_http(
+            handle_authenticated_raft_http(
                 &state.runtime.cluster(),
                 HttpRequest {
                     method: request.method.clone(),
                     path: request.path.clone(),
                     body: request.body.clone(),
                 },
+                state.runtime.peer_auth_token().unwrap_or_default(),
             )
         }
         _ => return None,
     };
     Some(response)
+}
+
+fn server_raft_membership_response(state: &ServerRaftState) -> RaftControlMembershipResponse {
+    let membership = state.runtime.cluster().membership();
+    RaftControlMembershipResponse {
+        status: Status::ok(),
+        shard_id: membership.shard_id,
+        leader_id: membership.leader_id,
+        voters: membership.voters,
+    }
+}
+
+fn server_raft_apply_membership_response(
+    state: &ServerRaftState,
+    voters: Vec<RaftNodeId>,
+) -> RaftMembershipApplyResponse {
+    match state.runtime.apply_membership_change_safely(voters) {
+        Ok(report) => RaftMembershipApplyResponse {
+            status: Status::ok(),
+            report: Some(report),
+        },
+        Err(err) => RaftMembershipApplyResponse {
+            status: Status::error("raft_error", err.to_string()),
+            report: None,
+        },
+    }
 }
 
 fn execute_via_server_raft(state: &ServerRaftState, request: ExecuteRequest) -> ExecuteResponse {
@@ -932,6 +1430,7 @@ fn start_replica_replay_loop(
         shard_id,
         configured_primary_addr: primary_addr.clone(),
         last_primary_addr: None,
+        primary_route_change_total: 0,
         attempts_total: 0,
         success_total: 0,
         failure_total: 0,
@@ -955,6 +1454,16 @@ fn start_replica_replay_loop(
         {
             {
                 let mut status = status.lock().unwrap();
+                let route_changed = status
+                    .last_primary_addr
+                    .as_deref()
+                    .map(|previous| previous != primary_addr)
+                    .unwrap_or(false);
+                if route_changed {
+                    status.primary_route_change_total += 1;
+                    status.consecutive_failures = 0;
+                    status.last_error = None;
+                }
                 status.last_primary_addr = Some(primary_addr.clone());
                 status.attempts_total += 1;
                 status.last_attempt_at_ms = now_ms();
@@ -1097,6 +1606,7 @@ fn append_replica_replay_metrics(out: &mut String, status: &ReplicaReplayLoopSta
         ("success", status.success_total),
         ("failure", status.failure_total),
         ("skipped", status.skipped_total),
+        ("primary_route_change", status.primary_route_change_total),
     ] {
         out.push_str("temporalstore_replica_replay_loop_events_total{shard_id=\"");
         out.push_str(&status.shard_id.to_string());
@@ -1198,7 +1708,9 @@ mod tests {
 
     use tempfile::tempdir;
     use temporalstore_rust::http::get_json_with_options;
+    use temporalstore_rust::raft::{serialize_data_raft_log, DataRaftLogCodecEntry};
     use temporalstore_rust::types::{Command, CommandResponse};
+    use temporalstore_rust::{BatchExecuteResponse, LoadShardResponse, UnloadShardResponse};
 
     use super::*;
 
@@ -1528,6 +2040,97 @@ mod tests {
     }
 
     #[test]
+    fn server_background_replica_replay_loop_resets_on_primary_route_change() {
+        let primary_dir = tempdir().unwrap();
+        let follower_dir = tempdir().unwrap();
+        let cursor_dir = tempdir().unwrap();
+        let primary = TemporalEngine::with_local_dirs(
+            1024,
+            primary_dir.path().join("cache"),
+            primary_dir.path().join("pages"),
+            primary_dir.path().join("index"),
+        );
+        let follower = TemporalEngine::with_local_dirs(
+            1024,
+            follower_dir.path().join("cache"),
+            follower_dir.path().join("pages"),
+            follower_dir.path().join("index"),
+        );
+        primary.load_shard(27);
+        primary.execute(ExecuteRequest {
+            shard_id: 27,
+            command: Command::StringSet {
+                key: "route-change-replay".to_string(),
+                value: b"new-primary".to_vec(),
+            },
+        });
+
+        let bad_primary_addr = free_local_addr();
+        let routed_primary = Arc::new(Mutex::new(bad_primary_addr));
+        let meta_addr = start_dynamic_meta_route_server(27, Arc::clone(&routed_primary));
+        let replay_loop = start_replica_replay_loop(
+            follower.clone(),
+            cursor_dir.path().display().to_string(),
+            meta_addr,
+            "secondary:17002".to_string(),
+            27,
+            String::new(),
+            10,
+            16 * 1024 * 1024,
+            120,
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let status = replay_loop.status();
+            if status.failure_total > 0 {
+                assert!(status.consecutive_failures > 0, "{status:?}");
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "replica replay loop did not observe initial bad primary; status: {:?}",
+                status
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        let good_primary_addr = start_primary_stream_server(primary);
+        *routed_primary.lock().unwrap() = good_primary_addr.clone();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let status = replay_loop.status();
+            let read = follower.execute(ExecuteRequest {
+                shard_id: 27,
+                command: Command::StringGet {
+                    key: "route-change-replay".to_string(),
+                },
+            });
+            if read.response
+                == (CommandResponse::Bytes {
+                    value: Some(b"new-primary".to_vec()),
+                })
+            {
+                assert_eq!(
+                    status.last_primary_addr.as_deref(),
+                    Some(good_primary_addr.as_str())
+                );
+                assert!(status.primary_route_change_total >= 1, "{status:?}");
+                assert_eq!(status.consecutive_failures, 0, "{status:?}");
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "replica replay loop did not recover after primary route change; status: {:?}, read: {:?}",
+                status,
+                read
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
     fn server_background_replica_replay_loop_reports_failures_with_backoff() {
         let follower_dir = tempdir().unwrap();
         let cursor_dir = tempdir().unwrap();
@@ -1660,6 +2263,253 @@ mod tests {
     }
 
     #[test]
+    fn server_ping_routes_match_cpp_ping_rpc() {
+        for (method, path) in [
+            ("GET", "/ping"),
+            ("POST", "/ping"),
+            ("GET", "/ServerService/Ping"),
+            ("POST", "/ServerService/Ping"),
+        ] {
+            let request = HttpRequest {
+                method: method.to_string(),
+                path: path.to_string(),
+                body: Vec::new(),
+            };
+            let (code, body) = handle_ping_route(&request).unwrap();
+            assert_eq!(code, 200, "{method} {path}");
+            let status: Status = serde_json::from_slice(&body).unwrap();
+            assert!(status.ok, "{method} {path}: {status:?}");
+        }
+
+        let unknown = HttpRequest {
+            method: "POST".to_string(),
+            path: "/ServerService/Unknown".to_string(),
+            body: Vec::new(),
+        };
+        assert!(handle_ping_route(&unknown).is_none());
+    }
+
+    #[test]
+    fn cpp_server_service_aliases_cover_partition_manager_surface() {
+        let dir = tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("index"),
+        );
+        let data_raft_appliers: Arc<Mutex<BTreeMap<u64, DataRaftCommittedLogApplier>>> =
+            Arc::default();
+
+        let load = HttpRequest {
+            method: "POST".to_string(),
+            path: "/ServerService/Load".to_string(),
+            body: serde_json::to_vec(&LoadShardRequest {
+                shard_id: 44,
+                load_version: 7,
+                local_node_id: Some(1),
+                shard_uri: "local://cpp-alias/shard-44".to_string(),
+                start_routing_slot: 0,
+                end_routing_slot: u32::MAX,
+                readonly: false,
+                table_name: "cpp_alias".to_string(),
+            })
+            .unwrap(),
+        };
+        let (code, body) = handle_cpp_server_service_route(
+            &load,
+            &engine,
+            None,
+            "",
+            "server-a",
+            &data_raft_appliers,
+        )
+        .unwrap();
+        assert_eq!(code, 200);
+        let status: LoadShardResponse = serde_json::from_slice(&body).unwrap();
+        assert!(status.status.ok, "{status:?}");
+
+        let execute = HttpRequest {
+            method: "POST".to_string(),
+            path: "/ServerService/ExecuteCmd".to_string(),
+            body: serde_json::to_vec(&ExecuteRequest {
+                shard_id: 44,
+                command: Command::StringSet {
+                    key: "cpp-service-key".to_string(),
+                    value: b"via-cpp-name".to_vec(),
+                },
+            })
+            .unwrap(),
+        };
+        let (code, body) = handle_cpp_server_service_route(
+            &execute,
+            &engine,
+            None,
+            "",
+            "server-a",
+            &data_raft_appliers,
+        )
+        .unwrap();
+        assert_eq!(code, 200);
+        let response: ExecuteResponse = serde_json::from_slice(&body).unwrap();
+        assert!(response.status.ok, "{response:?}");
+
+        let batch = HttpRequest {
+            method: "POST".to_string(),
+            path: "/ServerService/BatchExecuteCmd".to_string(),
+            body: serde_json::to_vec(&BatchExecuteRequest {
+                shard_id: 44,
+                commands: vec![Command::StringGet {
+                    key: "cpp-service-key".to_string(),
+                }],
+            })
+            .unwrap(),
+        };
+        let (code, body) = handle_cpp_server_service_route(
+            &batch,
+            &engine,
+            None,
+            "",
+            "server-a",
+            &data_raft_appliers,
+        )
+        .unwrap();
+        assert_eq!(code, 200);
+        let response: BatchExecuteResponse = serde_json::from_slice(&body).unwrap();
+        assert!(response.status.ok, "{response:?}");
+        assert_eq!(
+            response.responses[0].response,
+            CommandResponse::Bytes {
+                value: Some(b"via-cpp-name".to_vec())
+            }
+        );
+
+        for path in [
+            "/ServerService/GetConfig",
+            "/ServerService/GetInfo",
+            "/ServerService/GetStats",
+        ] {
+            let request = HttpRequest {
+                method: "POST".to_string(),
+                path: path.to_string(),
+                body: serde_json::to_vec(&serde_json::json!({ "shard_id": 44 })).unwrap(),
+            };
+            let (code, body) = handle_cpp_server_service_route(
+                &request,
+                &engine,
+                None,
+                "",
+                "server-a",
+                &data_raft_appliers,
+            )
+            .unwrap();
+            assert_eq!(code, 200, "{path}");
+            let status: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(status["status"]["ok"], true, "{path}: {status}");
+        }
+
+        let committed_log = serialize_data_raft_log(&DataRaftLogCodecEntry {
+            shard_id: 44,
+            raft_index: 9,
+            log_id: 10,
+            log_size: 0,
+            oplog_sequence: 21,
+            command: Command::StringSet {
+                key: "cpp-service-raft-key".to_string(),
+                value: b"via-apply-data-raft-log".to_vec(),
+            },
+        })
+        .unwrap();
+        let apply_raft = HttpRequest {
+            method: "POST".to_string(),
+            path: "/ServerService/ApplyDataRaftLog".to_string(),
+            body: serde_json::to_vec(&ApplyDataRaftLogRouteRequest {
+                partition_id: 44,
+                raft_index: 9,
+                committed_log,
+            })
+            .unwrap(),
+        };
+        let (code, body) = handle_cpp_server_service_route(
+            &apply_raft,
+            &engine,
+            None,
+            "",
+            "server-a",
+            &data_raft_appliers,
+        )
+        .unwrap();
+        assert_eq!(code, 200);
+        let response: ApplyDataRaftLogRouteResponse = serde_json::from_slice(&body).unwrap();
+        assert!(response.status.ok, "{response:?}");
+        assert_eq!(response.applied_raft_index, 9);
+        assert_eq!(response.applied_oplog_sequence, 21);
+
+        let duplicate: ApplyDataRaftLogRouteResponse = serde_json::from_slice(
+            &handle_cpp_server_service_route(
+                &apply_raft,
+                &engine,
+                None,
+                "",
+                "server-a",
+                &data_raft_appliers,
+            )
+            .unwrap()
+            .1,
+        )
+        .unwrap();
+        assert!(duplicate.status.ok, "{duplicate:?}");
+        assert_eq!(duplicate.applied_raft_index, 9);
+        assert_eq!(duplicate.applied_oplog_sequence, 21);
+
+        let read = engine.execute(ExecuteRequest {
+            shard_id: 44,
+            command: Command::StringGet {
+                key: "cpp-service-raft-key".to_string(),
+            },
+        });
+        assert_eq!(
+            read.response,
+            CommandResponse::Bytes {
+                value: Some(b"via-apply-data-raft-log".to_vec())
+            }
+        );
+
+        let unload = HttpRequest {
+            method: "POST".to_string(),
+            path: "/ServerService/Unload".to_string(),
+            body: serde_json::to_vec(&UnloadShardRequest { shard_id: 44 }).unwrap(),
+        };
+        let (code, body) = handle_cpp_server_service_route(
+            &unload,
+            &engine,
+            None,
+            "",
+            "server-a",
+            &data_raft_appliers,
+        )
+        .unwrap();
+        assert_eq!(code, 200);
+        let status: UnloadShardResponse = serde_json::from_slice(&body).unwrap();
+        assert!(status.status.ok, "{status:?}");
+
+        let unknown = HttpRequest {
+            method: "POST".to_string(),
+            path: "/ServerService/Unknown".to_string(),
+            body: Vec::new(),
+        };
+        assert!(handle_cpp_server_service_route(
+            &unknown,
+            &engine,
+            None,
+            "",
+            "server-a",
+            &data_raft_appliers
+        )
+        .is_none());
+    }
+
+    #[test]
     fn server_exposes_raft_status_and_admin_routes() {
         let dir = tempdir().unwrap();
         let state = test_server_raft_state(dir.path(), 1, vec![1, 2], true);
@@ -1684,6 +2534,137 @@ mod tests {
         let response: RaftAdminLivenessResponse = serde_json::from_slice(&body).unwrap();
         assert!(response.status.ok, "{response:?}");
         assert_eq!(state.runtime.status().leader_id, 2);
+    }
+
+    #[test]
+    fn server_raft_admin_bootstrap_external_snapshot_installs_downloaded_snapshot() {
+        let dir = tempdir().unwrap();
+        let state = test_server_raft_state(dir.path(), 1, vec![1, 2, 3], true);
+        state.runtime.cluster().set_alive(3, false).unwrap();
+        state
+            .runtime
+            .cluster()
+            .propose(Command::StringSet {
+                key: "server-external-snapshot-key".to_string(),
+                value: b"server-external-snapshot-value".to_vec(),
+            })
+            .unwrap();
+        state.runtime.cluster().set_alive(3, true).unwrap();
+        assert_eq!(
+            state
+                .runtime
+                .cluster()
+                .local_status(3)
+                .unwrap()
+                .commit_index,
+            0
+        );
+
+        let tmp = tempdir().unwrap();
+        let object_root = tmp.path().join("objects");
+        let publish_local_root = tmp.path().join("publish-local");
+        let restore_local_root = tmp.path().join("restore-local");
+        let publish_request = HttpRequest {
+            method: "POST".to_string(),
+            path: "/raft/admin/publish_external_snapshot".to_string(),
+            body: serde_json::to_vec(&RaftAdminPublishExternalSnapshotRequest {
+                object_root: object_root.display().to_string(),
+                local_root: publish_local_root.display().to_string(),
+                cluster_id: "cluster-a".to_string(),
+                bucket: "test".to_string(),
+            })
+            .unwrap(),
+        };
+        let (code, body) = handle_server_raft_route(&state, &publish_request).unwrap();
+        assert_eq!(code, 200);
+        let published: RaftAdminPublishExternalSnapshotResponse =
+            serde_json::from_slice(&body).unwrap();
+        assert!(published.status.ok, "{published:?}");
+        let snapshot_ref = published.report.unwrap().meta_ref;
+
+        let request = HttpRequest {
+            method: "POST".to_string(),
+            path: "/raft/admin/bootstrap_external_snapshot".to_string(),
+            body: serde_json::to_vec(&RaftAdminBootstrapExternalSnapshotRequest {
+                target_id: 3,
+                snapshot: snapshot_ref,
+                object_root: object_root.display().to_string(),
+                local_root: restore_local_root.display().to_string(),
+                cluster_id: "cluster-a".to_string(),
+                bucket: "test".to_string(),
+            })
+            .unwrap(),
+        };
+        let (code, body) = handle_server_raft_route(&state, &request).unwrap();
+        assert_eq!(code, 200);
+        let response: RaftAdminBootstrapExternalSnapshotResponse =
+            serde_json::from_slice(&body).unwrap();
+        assert!(response.status.ok, "{response:?}");
+        assert_eq!(response.plan.unwrap().target_id, 3);
+
+        let read = state
+            .runtime
+            .cluster()
+            .read_local(
+                3,
+                Command::StringGet {
+                    key: "server-external-snapshot-key".to_string(),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            read,
+            CommandResponse::Bytes {
+                value: Some(b"server-external-snapshot-value".to_vec())
+            }
+        );
+    }
+
+    #[test]
+    fn server_exposes_raft_apply_health_route() {
+        let dir = tempdir().unwrap();
+        let state = test_server_raft_state(dir.path(), 1, vec![1, 2], true);
+        state
+            .runtime
+            .cluster()
+            .propose(Command::StringSet {
+                key: "apply-health-route".to_string(),
+                value: b"v".to_vec(),
+            })
+            .unwrap();
+
+        let request = HttpRequest {
+            method: "POST".to_string(),
+            path: "/raft/apply_health".to_string(),
+            body: serde_json::to_vec(&serde_json::json!({ "max_allowed_apply_lag": 0 })).unwrap(),
+        };
+        let (code, body) = handle_server_raft_route(&state, &request).unwrap();
+        assert_eq!(code, 200);
+        let health: temporalstore_rust::RaftApplyHealth = serde_json::from_slice(&body).unwrap();
+        assert!(health.healthy, "{health:?}");
+        assert_eq!(health.leader_commit_index, 1);
+        assert_eq!(health.max_apply_lag, 0);
+    }
+
+    #[test]
+    fn server_exposes_raft_membership_apply_route() {
+        let dir = tempdir().unwrap();
+        let state = test_server_raft_state(dir.path(), 1, vec![1, 2, 3], false);
+
+        let request = HttpRequest {
+            method: "POST".to_string(),
+            path: "/raft/membership/apply".to_string(),
+            body: serde_json::to_vec(&serde_json::json!({ "voters": [1, 2] })).unwrap(),
+        };
+        let (code, body) = handle_server_raft_route(&state, &request).unwrap();
+        assert_eq!(code, 200);
+        let response: RaftMembershipApplyResponse = serde_json::from_slice(&body).unwrap();
+        assert!(response.status.ok, "{response:?}");
+        let report = response
+            .report
+            .expect("membership report should be present");
+        assert_eq!(report.committed_membership.voters, vec![1, 2]);
+        assert_eq!(state.runtime.status().majority, 2);
     }
 
     #[test]
@@ -1788,6 +2769,10 @@ mod tests {
     }
 
     fn start_meta_route_server(shard_id: u64, primary_addr: String) -> String {
+        start_dynamic_meta_route_server(shard_id, Arc::new(Mutex::new(primary_addr)))
+    }
+
+    fn start_dynamic_meta_route_server(shard_id: u64, primary_addr: Arc<Mutex<String>>) -> String {
         let meta_addr = free_local_addr();
         let bind_addr = meta_addr.clone();
         thread::spawn(move || {
@@ -1799,7 +2784,7 @@ mod tests {
                             status: Status::ok(),
                             location: Some(temporalstore_rust::ShardLocation {
                                 shard_id,
-                                server_addr: primary_addr.clone(),
+                                server_addr: primary_addr.lock().unwrap().clone(),
                                 latest_snapshot: None,
                             }),
                         },

@@ -123,6 +123,7 @@ Runtime/control surface:
 - load/unload shard
 - config get/set
 - stats/info
+- metaserver namespace/table create, update, open/topology, close, and delete lifecycle
 - membership update with C++-style stale global/unit version rejection and local active-membership reporting
 - page/index stream read and scan
 - in-process Raft behavior model
@@ -199,8 +200,9 @@ Covered or substantially covered in Rust now:
 Partially covered, but still materially smaller than C++:
 
 - Metaserver namespace/table topology, table partitions, topology versioning, server/proxy
-  inventory, heartbeat, local mutation-log replay, optional in-process Raft-backed mutation path,
-  load-aware/location-diverse replica fill, rebalance model, and scheduler/task models exist. The
+  inventory, heartbeat, guarded table update plus delete/dropped-state lifecycle, local mutation-log
+  replay, optional in-process Raft-backed mutation path, load-aware/location-diverse replica fill,
+  rebalance model, and scheduler/task models exist. The
   full C++ namespace/table/partition-set placement hierarchy and placement-rule chain are still not
   complete.
 - Hot object state is represented by per-type maps of key/field/timestamp to `PageAddress`, with

@@ -432,10 +432,15 @@ impl TemporalEngine {
         if !self.is_shard_loaded(request.shard_id) {
             return Status::error("shard_not_found", "shard is not loaded");
         }
-        self.configs
-            .write()
-            .expect("config lock poisoned")
-            .insert(request.shard_id, request.config);
+        let mut configs = self.configs.write().expect("config lock poisoned");
+        let current = configs.get(&request.shard_id).cloned().unwrap_or_default();
+        if request.config.version < current.version {
+            return Status::error("failed_precondition", "legacy config version");
+        }
+        if request.config.version == current.version {
+            return Status::ok();
+        }
+        configs.insert(request.shard_id, request.config);
         Status::ok()
     }
 
@@ -2535,7 +2540,9 @@ fn sequence_filter_matches(row: &SequenceFeatureRow, filter: &FeatureFilter) -> 
         FeatureFilterOp::Equal => lhs == filter.value,
         FeatureFilterOp::NotEqual => lhs != filter.value,
         FeatureFilterOp::GreaterThan => lhs > filter.value,
+        FeatureFilterOp::GreaterOrEqual => lhs >= filter.value,
         FeatureFilterOp::LessThan => lhs < filter.value,
+        FeatureFilterOp::LessOrEqual => lhs <= filter.value,
     }
 }
 
@@ -3080,6 +3087,18 @@ fn cached_response(
 mod tests {
     use super::*;
     use crate::types::parse_cpp_feature_filters;
+
+    fn wait_for_fresh_admission_second() {
+        loop {
+            let elapsed = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock should be after unix epoch");
+            if elapsed.subsec_millis() < 100 {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
 
     #[test]
     fn live_page_segment_ids_scan_all_index_backed_data_models() {
@@ -3985,6 +4004,23 @@ mod tests {
         assert_eq!(points.len(), 1);
         assert_eq!(points[0].timestamp_ms, 777);
 
+        let filters = parse_cpp_feature_filters(["gid >= 1", "duration <= 3"]).unwrap();
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureQueryFiltered {
+                key: "9".to_string(),
+                start_ms: 0,
+                end_ms: 100_000,
+                count: Some(1_000),
+                filters,
+            },
+        });
+        let CommandResponse::FeaturePoints { points } = response.response else {
+            panic!("expected feature points");
+        };
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].timestamp_ms, 777);
+
         let filters = parse_cpp_feature_filters(["gid = 1", "gid != 1"]).unwrap();
         let response = engine.execute(ExecuteRequest {
             shard_id: 1,
@@ -4003,7 +4039,6 @@ mod tests {
         assert_eq!(points[0].timestamp_ms, 778);
 
         assert!(FeatureFilter::parse_cpp_filter("unknown = 1").is_err());
-        assert!(FeatureFilter::parse_cpp_filter("gid >= 1").is_err());
         assert!(FeatureFilter::parse_cpp_filter("gid = nope").is_err());
     }
 
@@ -4286,12 +4321,12 @@ mod tests {
                 },
                 FeatureFilter {
                     field: "duration".to_string(),
-                    op: FeatureFilterOp::GreaterThan,
+                    op: FeatureFilterOp::GreaterOrEqual,
                     value: 100 + (seed * 29) % 500,
                 },
                 FeatureFilter {
                     field: "author_id".to_string(),
-                    op: FeatureFilterOp::LessThan,
+                    op: FeatureFilterOp::LessOrEqual,
                     value: 560 + (seed * 11) % 30,
                 },
             ];
@@ -4447,6 +4482,30 @@ mod tests {
                     config: Config {
                         version: 2,
                         feature_max_size: 123,
+                        ..Config::default()
+                    },
+                })
+                .ok
+        );
+        assert_eq!(engine.get_config(7).config.feature_max_size, 123);
+        assert_eq!(
+            engine.set_config(SetConfigRequest {
+                shard_id: 7,
+                config: Config {
+                    version: 1,
+                    feature_max_size: 456,
+                    ..Config::default()
+                },
+            }),
+            Status::error("failed_precondition", "legacy config version")
+        );
+        assert!(
+            engine
+                .set_config(SetConfigRequest {
+                    shard_id: 7,
+                    config: Config {
+                        version: 2,
+                        feature_max_size: 456,
                         ..Config::default()
                     },
                 })
@@ -5538,33 +5597,22 @@ mod tests {
     }
 
     #[test]
-    fn maxmemory_config_rejects_new_writes_after_storage_budget_is_reached() {
+    fn maxmemory_config_rejects_writes_when_storage_budget_is_exhausted() {
         let engine = TemporalEngine::default();
         engine.load_shard(1);
         engine.set_config(SetConfigRequest {
             shard_id: 1,
             config: Config {
-                maxmemory_bytes: Some(1),
+                version: 2,
+                maxmemory_bytes: Some(0),
                 ..Config::default()
             },
         });
 
-        assert!(
-            engine
-                .execute(ExecuteRequest {
-                    shard_id: 1,
-                    command: Command::StringSet {
-                        key: "first".to_string(),
-                        value: b"x".to_vec(),
-                    },
-                })
-                .status
-                .ok
-        );
         let rejected = engine.execute(ExecuteRequest {
             shard_id: 1,
             command: Command::StringSet {
-                key: "second".to_string(),
+                key: "first".to_string(),
                 value: b"y".to_vec(),
             },
         });
@@ -5578,10 +5626,12 @@ mod tests {
         engine.set_config(SetConfigRequest {
             shard_id: 1,
             config: Config {
+                version: 2,
                 write_qps: Some(1),
                 ..Config::default()
             },
         });
+        wait_for_fresh_admission_second();
 
         assert!(
             engine
@@ -5625,10 +5675,12 @@ mod tests {
         engine.set_config(SetConfigRequest {
             shard_id: 1,
             config: Config {
+                version: 2,
                 read_qps: Some(1),
                 ..Config::default()
             },
         });
+        wait_for_fresh_admission_second();
 
         assert!(
             engine
@@ -5673,11 +5725,13 @@ mod tests {
             engine.set_config(SetConfigRequest {
                 shard_id,
                 config: Config {
+                    version: 2,
                     table_write_qps: Some(1),
                     ..Config::default()
                 },
             });
         }
+        wait_for_fresh_admission_second();
 
         assert!(
             engine
@@ -5736,12 +5790,14 @@ mod tests {
             engine.set_config(SetConfigRequest {
                 shard_id,
                 config: Config {
+                    version: 2,
                     tenant_name: Some("tenant-a".to_string()),
                     tenant_read_qps: Some(1),
                     ..Config::default()
                 },
             });
         }
+        wait_for_fresh_admission_second();
 
         assert!(
             engine

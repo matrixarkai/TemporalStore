@@ -32,6 +32,12 @@ Rust now has a reusable `ProxyService`:
 - `/health`
 - `/proxy/info`
 - `/proxy/config` get/update
+- C++ `Proxy::UpdateConfig`-style no-op handling when namespace and config version are unchanged,
+  avoiding needless client/cache reset on duplicate heartbeat config
+- `/proxy/open_table`, `/proxy/table_execute`, and `/proxy/table_batch_execute` for namespace/table
+  request bodies
+- table execute paths auto-open table topology from metaserver when the table is not already cached,
+  matching the C++ proxy shape where requests can drive client table opening
 - forwarding delegates through the Rust `TemporalStoreClient`
 - client-owned route cache with TTL
 - client-owned route refresh after backend error
@@ -64,8 +70,7 @@ Rust proxy is still not a C++ proxy drop-in:
 - no brpc server
 - no thrift framed parser
 - no C++ thrift request/response wire compatibility
-- no namespace/table open path in proxy request bodies
-- no full topology/slot router
+- no full C++ partition-set topology/slot router beyond the open-source table topology path
 - no consul registration
 - no proxy location/VDC/CMDB integration
 - no Risk/IPS thrift method coverage

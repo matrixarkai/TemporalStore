@@ -98,7 +98,9 @@ pub enum FeatureFilterOp {
     Equal,
     NotEqual,
     GreaterThan,
+    GreaterOrEqual,
     LessThan,
+    LessOrEqual,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -146,7 +148,9 @@ impl FeatureFilter {
             "=" | "==" => FeatureFilterOp::Equal,
             "!=" => FeatureFilterOp::NotEqual,
             ">" => FeatureFilterOp::GreaterThan,
+            ">=" => FeatureFilterOp::GreaterOrEqual,
             "<" => FeatureFilterOp::LessThan,
+            "<=" => FeatureFilterOp::LessOrEqual,
             _ => return Err(format!("unsupported feature filter op '{op}'")),
         };
         let value = raw_value

@@ -121,6 +121,10 @@ pub struct ServerMetaInfo {
     pub location: String,
     pub state: MetaEntityState,
     pub last_heartbeat_ms: u64,
+    #[serde(default)]
+    pub frozen_since_ms: u64,
+    #[serde(default)]
+    pub freeze_cooldown_until_ms: u64,
     pub boot_time_ms: u64,
     pub binary_version: String,
     pub shard_loads: Vec<ShardLoad>,
@@ -144,6 +148,27 @@ pub struct StaleResourceReport {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FreezeStaleServersRequest {
     pub stale_after_ms: u64,
+    #[serde(default)]
+    pub server_freeze_cooldown_ms: u64,
+    #[serde(default)]
+    pub proxy_freeze_cooldown_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SafeModePolicy {
+    #[serde(default)]
+    pub server_freeze_cooldown_ms: u64,
+    #[serde(default)]
+    pub proxy_freeze_cooldown_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SafeModeReport {
+    pub status: Status,
+    pub blocked_servers: Vec<String>,
+    pub blocked_proxies: Vec<String>,
+    pub server_count: usize,
+    pub proxy_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -186,6 +211,10 @@ pub struct ProxyMetaInfo {
     pub state: MetaEntityState,
     pub config_version: u64,
     pub last_heartbeat_ms: u64,
+    #[serde(default)]
+    pub frozen_since_ms: u64,
+    #[serde(default)]
+    pub freeze_cooldown_until_ms: u64,
     pub binary_version: String,
 }
 
@@ -213,6 +242,97 @@ pub struct AddTableRequest {
     pub use_cpp_partition_ids: bool,
     #[serde(default)]
     pub partition_version: u32,
+    #[serde(default)]
+    pub serving_options: TableServingOptions,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeleteTableRequest {
+    pub namespace: String,
+    pub table_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UpdateTableRequest {
+    pub namespace: String,
+    pub table_name: String,
+    #[serde(default)]
+    pub shard_count: Option<u64>,
+    #[serde(default)]
+    pub replica_count: Option<u64>,
+    #[serde(default)]
+    pub first_shard_id: Option<ShardId>,
+    #[serde(default)]
+    pub use_cpp_partition_ids: Option<bool>,
+    #[serde(default)]
+    pub partition_version: Option<u32>,
+    #[serde(default)]
+    pub serving_options: Option<TableServingOptionsPatch>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TableServingOptions {
+    #[serde(default = "default_pin_primary")]
+    pub pin_primary: bool,
+    #[serde(default = "default_replica_read_policy")]
+    pub replica_read_policy: String,
+    #[serde(default)]
+    pub preferred_location: String,
+    #[serde(default)]
+    pub drop_percent: u8,
+    #[serde(default = "default_max_read_retries")]
+    pub max_read_retries: u32,
+    #[serde(default)]
+    pub max_write_retries: u32,
+    #[serde(default = "default_retry_backoff_ms")]
+    pub retry_backoff_ms: u64,
+    #[serde(default = "default_continuous_failed_time_ms")]
+    pub continuous_failed_time_ms: u64,
+    #[serde(default = "default_table_io_timeout_ms")]
+    pub io_timeout_ms: u64,
+    #[serde(default = "default_table_connect_timeout_ms")]
+    pub connect_timeout_ms: u64,
+}
+
+impl Default for TableServingOptions {
+    fn default() -> Self {
+        Self {
+            pin_primary: default_pin_primary(),
+            replica_read_policy: default_replica_read_policy(),
+            preferred_location: String::new(),
+            drop_percent: 0,
+            max_read_retries: default_max_read_retries(),
+            max_write_retries: 0,
+            retry_backoff_ms: default_retry_backoff_ms(),
+            continuous_failed_time_ms: default_continuous_failed_time_ms(),
+            io_timeout_ms: default_table_io_timeout_ms(),
+            connect_timeout_ms: default_table_connect_timeout_ms(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TableServingOptionsPatch {
+    #[serde(default)]
+    pub pin_primary: Option<bool>,
+    #[serde(default)]
+    pub replica_read_policy: Option<String>,
+    #[serde(default)]
+    pub preferred_location: Option<String>,
+    #[serde(default)]
+    pub drop_percent: Option<u8>,
+    #[serde(default)]
+    pub max_read_retries: Option<u32>,
+    #[serde(default)]
+    pub max_write_retries: Option<u32>,
+    #[serde(default)]
+    pub retry_backoff_ms: Option<u64>,
+    #[serde(default)]
+    pub continuous_failed_time_ms: Option<u64>,
+    #[serde(default)]
+    pub io_timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub connect_timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -237,6 +357,8 @@ pub struct TableMetaInfo {
     pub use_cpp_partition_ids: bool,
     #[serde(default)]
     pub partition_version: u32,
+    #[serde(default)]
+    pub serving_options: TableServingOptions,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -246,6 +368,17 @@ pub struct TablePartition {
     pub end_slot: u64,
     pub primary: Option<String>,
     pub replicas: Vec<String>,
+    #[serde(default)]
+    pub primary_endpoint: Option<ServerEndpoint>,
+    #[serde(default)]
+    pub replica_endpoints: Vec<ServerEndpoint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServerEndpoint {
+    pub server_addr: String,
+    #[serde(default)]
+    pub location: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -283,6 +416,8 @@ pub struct ListProxiesResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StateChangeRequest {
     pub endpoint: String,
+    #[serde(default)]
+    pub freeze_cooldown_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -330,6 +465,8 @@ pub enum MetaMutation {
     RegisterProxy(RegisterProxyRequest),
     AddNamespace(AddNamespaceRequest),
     AddTable(AddTableRequest),
+    DeleteTable(DeleteTableRequest),
+    UpdateTable(UpdateTableRequest),
     FinishLoad(LoadFinishRequest),
     FreezeServer(StateChangeRequest),
     DropServer(StateChangeRequest),
@@ -392,7 +529,7 @@ impl LocalMetaMutationLog {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct MetaCounters {
     register_shard_total: u64,
     get_shard_total: u64,
@@ -406,13 +543,13 @@ struct MetaCounters {
     load_finish_total: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct TableRecord {
     info: TableMetaInfo,
 }
 
-#[derive(Debug, Default)]
-struct MetaState {
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct MetaState {
     shards: HashMap<ShardId, ShardLocation>,
     servers: BTreeMap<String, ServerMetaInfo>,
     proxies: BTreeMap<String, ProxyMetaInfo>,
@@ -421,6 +558,38 @@ struct MetaState {
     counters: MetaCounters,
     next_table_id: u64,
     topology_version: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MetaSnapshot {
+    pub format_version: u32,
+    pub created_at_ms: u64,
+    pub shards: HashMap<ShardId, ShardLocation>,
+    pub servers: BTreeMap<String, ServerMetaInfo>,
+    pub proxies: BTreeMap<String, ProxyMetaInfo>,
+    pub namespaces: BTreeMap<String, MetaEntityState>,
+    pub tables: Vec<TableMetaInfo>,
+    pub stats: MetaStats,
+    pub next_table_id: u64,
+    pub topology_version: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MetaSnapshotFileRequest {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MetaSnapshotResponse {
+    pub status: Status,
+    pub snapshot: Option<MetaSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MetaSnapshotFileResponse {
+    pub status: Status,
+    pub path: String,
+    pub snapshot: Option<MetaSnapshot>,
 }
 
 #[derive(Debug, Clone)]
@@ -454,6 +623,118 @@ impl SingleNodeMeta {
             meta.apply_mutation(mutation);
         }
         Ok(meta)
+    }
+
+    pub fn export_snapshot(&self) -> MetaSnapshot {
+        let state = self.inner.read().expect("meta lock poisoned");
+        MetaSnapshot::from_state(&state)
+    }
+
+    pub(crate) fn state_from_snapshot(snapshot: MetaSnapshot) -> Result<MetaState, Status> {
+        if snapshot.format_version != 1 {
+            return Err(Status::error(
+                "bad_snapshot",
+                "unsupported metaserver snapshot version",
+            ));
+        }
+        let mut tables = BTreeMap::new();
+        let mut next_table_id = snapshot.next_table_id.max(1);
+        for table in snapshot.tables {
+            if table.namespace.is_empty() || table.table_name.is_empty() {
+                return Err(Status::error(
+                    "bad_snapshot",
+                    "snapshot contains invalid table name",
+                ));
+            }
+            next_table_id = next_table_id.max(table.table_id.saturating_add(1));
+            let key = table_key(&table.namespace, &table.table_name);
+            if tables.insert(key, TableRecord { info: table }).is_some() {
+                return Err(Status::error(
+                    "bad_snapshot",
+                    "snapshot contains duplicate table",
+                ));
+            }
+        }
+        Ok(MetaState {
+            shards: snapshot.shards,
+            servers: snapshot.servers,
+            proxies: snapshot.proxies,
+            namespaces: snapshot.namespaces,
+            tables,
+            counters: counters_from_stats(&snapshot.stats),
+            next_table_id,
+            topology_version: snapshot.topology_version,
+        })
+    }
+
+    pub fn install_snapshot(&self, snapshot: MetaSnapshot) -> AckResponse {
+        let state = match Self::state_from_snapshot(snapshot) {
+            Ok(state) => state,
+            Err(status) => return AckResponse { status },
+        };
+        *self.inner.write().expect("meta lock poisoned") = state;
+        AckResponse {
+            status: Status::ok(),
+        }
+    }
+}
+
+impl MetaSnapshot {
+    pub(crate) fn from_state(state: &MetaState) -> Self {
+        MetaSnapshot {
+            format_version: 1,
+            created_at_ms: now_ms(),
+            shards: state.shards.clone(),
+            servers: state.servers.clone(),
+            proxies: state.proxies.clone(),
+            namespaces: state.namespaces.clone(),
+            tables: state
+                .tables
+                .values()
+                .map(|table| table.info.clone())
+                .collect(),
+            stats: stats_from_state(&state),
+            next_table_id: state.next_table_id,
+            topology_version: state.topology_version,
+        }
+    }
+}
+
+impl SingleNodeMeta {
+    pub fn save_snapshot(&self, path: impl AsRef<Path>) -> io::Result<MetaSnapshot> {
+        let path = path.as_ref();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let snapshot = self.export_snapshot();
+        let tmp_path = path.with_extension(format!(
+            "{}.tmp",
+            path.extension()
+                .and_then(|extension| extension.to_str())
+                .unwrap_or("json")
+        ));
+        {
+            let mut file = OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(&tmp_path)?;
+            serde_json::to_writer_pretty(&mut file, &snapshot).map_err(io::Error::other)?;
+            file.write_all(b"\n")?;
+            file.sync_data()?;
+        }
+        fs::rename(&tmp_path, path)?;
+        Ok(snapshot)
+    }
+
+    pub fn load_snapshot_from_file(path: impl AsRef<Path>) -> io::Result<MetaSnapshot> {
+        let file = OpenOptions::new().read(true).open(path)?;
+        serde_json::from_reader(file).map_err(io::Error::other)
+    }
+
+    pub fn install_snapshot_from_file(&self, path: impl AsRef<Path>) -> io::Result<AckResponse> {
+        let snapshot = Self::load_snapshot_from_file(path)?;
+        Ok(self.install_snapshot(snapshot))
     }
 
     pub fn register(&self, request: RegisterShardRequest) -> RegisterShardResponse {
@@ -534,6 +815,15 @@ impl SingleNodeMeta {
     fn apply_register_server(&self, request: RegisterServerRequest) -> AckResponse {
         let mut state = self.inner.write().expect("meta lock poisoned");
         state.counters.server_register_total += 1;
+        if let Some(existing) = state.servers.get(&request.server_addr) {
+            let now = now_ms();
+            if existing.state == MetaEntityState::Frozen && existing.freeze_cooldown_until_ms > now
+            {
+                return AckResponse {
+                    status: Status::error("resource_frozen", "server is in freeze cooldown"),
+                };
+            }
+        }
         let now = now_ms();
         state.servers.insert(
             request.server_addr.clone(),
@@ -543,6 +833,8 @@ impl SingleNodeMeta {
                 location: request.location,
                 state: MetaEntityState::Normal,
                 last_heartbeat_ms: now,
+                frozen_since_ms: 0,
+                freeze_cooldown_until_ms: 0,
                 boot_time_ms: 0,
                 binary_version: request.binary_version,
                 shard_loads: Vec::new(),
@@ -591,6 +883,15 @@ impl SingleNodeMeta {
     fn apply_register_proxy(&self, request: RegisterProxyRequest) -> AckResponse {
         let mut state = self.inner.write().expect("meta lock poisoned");
         state.counters.proxy_register_total += 1;
+        if let Some(existing) = state.proxies.get(&request.proxy_addr) {
+            let now = now_ms();
+            if existing.state == MetaEntityState::Frozen && existing.freeze_cooldown_until_ms > now
+            {
+                return AckResponse {
+                    status: Status::error("resource_frozen", "proxy is in freeze cooldown"),
+                };
+            }
+        }
         state.proxies.insert(
             request.proxy_addr.clone(),
             ProxyMetaInfo {
@@ -600,6 +901,8 @@ impl SingleNodeMeta {
                 state: MetaEntityState::Normal,
                 config_version: request.config_version,
                 last_heartbeat_ms: now_ms(),
+                frozen_since_ms: 0,
+                freeze_cooldown_until_ms: 0,
                 binary_version: request.binary_version,
             },
         );
@@ -689,6 +992,11 @@ impl SingleNodeMeta {
                 };
             }
         }
+        if let Err(err) = validate_serving_options(&request.serving_options) {
+            return AckResponse {
+                status: Status::error("bad_request", err),
+            };
+        }
         let mut state = self.inner.write().expect("meta lock poisoned");
         state.counters.table_create_total += 1;
         state
@@ -735,8 +1043,184 @@ impl SingleNodeMeta {
             replica_count: request.replica_count.max(1),
             use_cpp_partition_ids: request.use_cpp_partition_ids,
             partition_version: request.partition_version,
+            serving_options: request.serving_options,
         };
         state.tables.insert(key, TableRecord { info });
+        AckResponse {
+            status: Status::ok(),
+        }
+    }
+
+    pub fn delete_table(&self, request: DeleteTableRequest) -> AckResponse {
+        self.record_mutation(MetaMutation::DeleteTable(request.clone()));
+        self.apply_delete_table(request)
+    }
+
+    fn apply_delete_table(&self, request: DeleteTableRequest) -> AckResponse {
+        if request.namespace.is_empty() || request.table_name.is_empty() {
+            return AckResponse {
+                status: Status::error("bad_request", "namespace and table_name are required"),
+            };
+        }
+        let mut state = self.inner.write().expect("meta lock poisoned");
+        let key = table_key(&request.namespace, &request.table_name);
+        let Some(current_state) = state.tables.get(&key).map(|table| table.info.state) else {
+            return AckResponse {
+                status: Status::error("table_not_found", "table not found"),
+            };
+        };
+        if current_state == MetaEntityState::Dropped {
+            return AckResponse {
+                status: Status::error("table_not_found", "table already dropped"),
+            };
+        }
+        state.topology_version += 1;
+        let topology_version = state.topology_version;
+        let table = state
+            .tables
+            .get_mut(&key)
+            .expect("table exists after state check");
+        table.info.state = MetaEntityState::Dropped;
+        table.info.topology_version = topology_version;
+        AckResponse {
+            status: Status::ok(),
+        }
+    }
+
+    pub fn update_table(&self, request: UpdateTableRequest) -> AckResponse {
+        self.record_mutation(MetaMutation::UpdateTable(request.clone()));
+        self.apply_update_table(request)
+    }
+
+    fn apply_update_table(&self, request: UpdateTableRequest) -> AckResponse {
+        if request.namespace.is_empty() || request.table_name.is_empty() {
+            return AckResponse {
+                status: Status::error("bad_request", "namespace and table_name are required"),
+            };
+        }
+        if request.shard_count.is_none()
+            && request.replica_count.is_none()
+            && request.first_shard_id.is_none()
+            && request.use_cpp_partition_ids.is_none()
+            && request.partition_version.is_none()
+            && request.serving_options.is_none()
+        {
+            return AckResponse {
+                status: Status::error("bad_request", "at least one table option is required"),
+            };
+        }
+
+        let mut state = self.inner.write().expect("meta lock poisoned");
+        let key = table_key(&request.namespace, &request.table_name);
+        let Some(existing) = state.tables.get(&key).map(|table| table.info.clone()) else {
+            return AckResponse {
+                status: Status::error("table_not_found", "table not found"),
+            };
+        };
+        if existing.state == MetaEntityState::Dropped {
+            return AckResponse {
+                status: Status::error("table_not_found", "table is dropped"),
+            };
+        }
+        if matches!(request.shard_count, Some(0)) {
+            return AckResponse {
+                status: Status::error("bad_request", "shard_count must be > 0"),
+            };
+        }
+        if let Some(shard_count) = request.shard_count {
+            if shard_count < existing.shard_count {
+                return AckResponse {
+                    status: Status::error("bad_request", "shard_count cannot shrink"),
+                };
+            }
+            if existing.use_cpp_partition_ids {
+                if shard_count > u32::MAX as u64 {
+                    return AckResponse {
+                        status: Status::error(
+                            "bad_request",
+                            "shard_count exceeds C++ partition-set range",
+                        ),
+                    };
+                }
+                if let Err(err) = validate_partition_set_count(shard_count as u32) {
+                    return AckResponse {
+                        status: Status::error("bad_request", err.to_string()),
+                    };
+                }
+            }
+        }
+        if let Some(use_cpp_partition_ids) = request.use_cpp_partition_ids {
+            if use_cpp_partition_ids != existing.use_cpp_partition_ids {
+                return AckResponse {
+                    status: Status::error(
+                        "bad_request",
+                        "use_cpp_partition_ids cannot change after table creation",
+                    ),
+                };
+            }
+        }
+        if let Some(partition_version) = request.partition_version {
+            if partition_version != existing.partition_version {
+                return AckResponse {
+                    status: Status::error(
+                        "bad_request",
+                        "partition_version cannot change after table creation",
+                    ),
+                };
+            }
+        }
+        if let Some(first_shard_id) = request.first_shard_id {
+            if existing.use_cpp_partition_ids {
+                return AckResponse {
+                    status: Status::error(
+                        "bad_request",
+                        "first_shard_id is derived for C++ partition-id tables",
+                    ),
+                };
+            }
+            if first_shard_id != existing.first_shard_id {
+                return AckResponse {
+                    status: Status::error(
+                        "bad_request",
+                        "first_shard_id cannot change after table creation",
+                    ),
+                };
+            }
+        }
+
+        let new_shard_count = request.shard_count.unwrap_or(existing.shard_count);
+        let new_replica_count = request
+            .replica_count
+            .map(|replica_count| replica_count.max(1))
+            .unwrap_or(existing.replica_count);
+        let new_serving_options = request
+            .serving_options
+            .as_ref()
+            .map(|patch| apply_serving_options_patch(existing.serving_options.clone(), patch))
+            .unwrap_or_else(|| existing.serving_options.clone());
+        if let Err(err) = validate_serving_options(&new_serving_options) {
+            return AckResponse {
+                status: Status::error("bad_request", err),
+            };
+        }
+        let changed = new_shard_count != existing.shard_count
+            || new_replica_count != existing.replica_count
+            || new_serving_options != existing.serving_options;
+        if !changed {
+            return AckResponse {
+                status: Status::error("not_modified", "table options are unchanged"),
+            };
+        }
+        state.topology_version += 1;
+        let topology_version = state.topology_version;
+        let table = state
+            .tables
+            .get_mut(&key)
+            .expect("table exists after update validation");
+        table.info.shard_count = new_shard_count;
+        table.info.replica_count = new_replica_count;
+        table.info.serving_options = new_serving_options;
+        table.info.topology_version = topology_version;
         AckResponse {
             status: Status::ok(),
         }
@@ -756,6 +1240,14 @@ impl SingleNodeMeta {
                 unchanged: false,
             };
         };
+        if table.info.state == MetaEntityState::Dropped {
+            return TableTopologyResponse {
+                status: Status::error("table_not_found", "table is dropped"),
+                table: Some(table.info.clone()),
+                partitions: Vec::new(),
+                unchanged: false,
+            };
+        }
         if request.old_topology_version >= table.info.topology_version {
             return TableTopologyResponse {
                 status: Status::ok(),
@@ -783,7 +1275,10 @@ impl SingleNodeMeta {
                 table_count: state
                     .tables
                     .values()
-                    .filter(|table| table.info.namespace == *namespace)
+                    .filter(|table| {
+                        table.info.namespace == *namespace
+                            && table.info.state != MetaEntityState::Dropped
+                    })
                     .count(),
                 state: *state_value,
             })
@@ -823,33 +1318,108 @@ impl SingleNodeMeta {
     }
 
     pub fn freeze_stale_resources(&self, stale_after_ms: u64) -> StaleResourceReport {
-        let mut state = self.inner.write().expect("meta lock poisoned");
+        self.freeze_stale_resources_with_policy(
+            stale_after_ms,
+            SafeModePolicy {
+                server_freeze_cooldown_ms: 0,
+                proxy_freeze_cooldown_ms: 0,
+            },
+        )
+    }
+
+    pub fn freeze_stale_resources_with_policy(
+        &self,
+        stale_after_ms: u64,
+        policy: SafeModePolicy,
+    ) -> StaleResourceReport {
         let now = now_ms();
+        let (stale_servers, stale_proxies) = {
+            let state = self.inner.read().expect("meta lock poisoned");
+            let stale_servers = state
+                .servers
+                .values()
+                .filter(|server| {
+                    server.state == MetaEntityState::Normal
+                        && now.saturating_sub(server.last_heartbeat_ms) > stale_after_ms
+                })
+                .map(|server| server.server_addr.clone())
+                .collect::<Vec<_>>();
+            let stale_proxies = state
+                .proxies
+                .values()
+                .filter(|proxy| {
+                    proxy.state == MetaEntityState::Normal
+                        && now.saturating_sub(proxy.last_heartbeat_ms) > stale_after_ms
+                })
+                .map(|proxy| proxy.proxy_addr.clone())
+                .collect::<Vec<_>>();
+            (stale_servers, stale_proxies)
+        };
+
         let mut frozen_servers = Vec::new();
+        for endpoint in stale_servers {
+            let response = self.freeze_server(StateChangeRequest {
+                endpoint: endpoint.clone(),
+                freeze_cooldown_ms: policy.server_freeze_cooldown_ms,
+            });
+            if !response.status.ok {
+                return StaleResourceReport {
+                    status: response.status,
+                    frozen_servers,
+                    frozen_proxies: Vec::new(),
+                };
+            }
+            frozen_servers.push(endpoint);
+        }
+
         let mut frozen_proxies = Vec::new();
-        for server in state.servers.values_mut() {
-            if server.state == MetaEntityState::Normal
-                && now.saturating_sub(server.last_heartbeat_ms) > stale_after_ms
-            {
-                server.state = MetaEntityState::Frozen;
-                frozen_servers.push(server.server_addr.clone());
+        for endpoint in stale_proxies {
+            let response = self.freeze_proxy(StateChangeRequest {
+                endpoint: endpoint.clone(),
+                freeze_cooldown_ms: policy.proxy_freeze_cooldown_ms,
+            });
+            if !response.status.ok {
+                return StaleResourceReport {
+                    status: response.status,
+                    frozen_servers,
+                    frozen_proxies,
+                };
             }
+            frozen_proxies.push(endpoint);
         }
-        for proxy in state.proxies.values_mut() {
-            if proxy.state == MetaEntityState::Normal
-                && now.saturating_sub(proxy.last_heartbeat_ms) > stale_after_ms
-            {
-                proxy.state = MetaEntityState::Frozen;
-                frozen_proxies.push(proxy.proxy_addr.clone());
-            }
-        }
-        if !frozen_servers.is_empty() || !frozen_proxies.is_empty() {
-            state.topology_version += 1;
-        }
+
         StaleResourceReport {
             status: Status::ok(),
             frozen_servers,
             frozen_proxies,
+        }
+    }
+
+    pub fn safe_mode_report(&self) -> SafeModeReport {
+        let state = self.inner.read().expect("meta lock poisoned");
+        let now = now_ms();
+        let blocked_servers = state
+            .servers
+            .values()
+            .filter(|server| {
+                server.state == MetaEntityState::Frozen && server.freeze_cooldown_until_ms > now
+            })
+            .map(|server| server.server_addr.clone())
+            .collect::<Vec<_>>();
+        let blocked_proxies = state
+            .proxies
+            .values()
+            .filter(|proxy| {
+                proxy.state == MetaEntityState::Frozen && proxy.freeze_cooldown_until_ms > now
+            })
+            .map(|proxy| proxy.proxy_addr.clone())
+            .collect::<Vec<_>>();
+        SafeModeReport {
+            status: Status::ok(),
+            blocked_servers,
+            blocked_proxies,
+            server_count: state.servers.len(),
+            proxy_count: state.proxies.len(),
         }
     }
 
@@ -875,19 +1445,19 @@ impl SingleNodeMeta {
     }
 
     pub fn freeze_server(&self, request: StateChangeRequest) -> AckResponse {
-        self.set_server_state(&request.endpoint, MetaEntityState::Frozen)
+        self.set_server_state(request, MetaEntityState::Frozen)
     }
 
     pub fn drop_server(&self, request: StateChangeRequest) -> AckResponse {
-        self.set_server_state(&request.endpoint, MetaEntityState::Dropped)
+        self.set_server_state(request, MetaEntityState::Dropped)
     }
 
     pub fn freeze_proxy(&self, request: StateChangeRequest) -> AckResponse {
-        self.set_proxy_state(&request.endpoint, MetaEntityState::Frozen)
+        self.set_proxy_state(request, MetaEntityState::Frozen)
     }
 
     pub fn drop_proxy(&self, request: StateChangeRequest) -> AckResponse {
-        self.set_proxy_state(&request.endpoint, MetaEntityState::Dropped)
+        self.set_proxy_state(request, MetaEntityState::Dropped)
     }
 
     pub fn finish_load(&self, request: LoadFinishRequest) -> AckResponse {
@@ -933,102 +1503,112 @@ impl SingleNodeMeta {
 
     pub fn stats(&self) -> MetaStats {
         let state = self.inner.read().expect("meta lock poisoned");
-        MetaStats {
-            register_shard_total: state.counters.register_shard_total,
-            get_shard_total: state.counters.get_shard_total,
-            server_register_total: state.counters.server_register_total,
-            server_heartbeat_total: state.counters.server_heartbeat_total,
-            proxy_register_total: state.counters.proxy_register_total,
-            proxy_heartbeat_total: state.counters.proxy_heartbeat_total,
-            namespace_create_total: state.counters.namespace_create_total,
-            table_create_total: state.counters.table_create_total,
-            topology_query_total: state.counters.topology_query_total,
-            load_finish_total: state.counters.load_finish_total,
-            topology_version: state.topology_version,
-            server_count: state.servers.len(),
-            proxy_count: state.proxies.len(),
-            namespace_count: state.namespaces.len(),
-            table_count: state.tables.len(),
-            shard_count: state.shards.len(),
-        }
+        stats_from_state(&state)
     }
 
-    fn set_server_state(&self, endpoint: &str, next: MetaEntityState) -> AckResponse {
+    fn set_server_state(&self, request: StateChangeRequest, next: MetaEntityState) -> AckResponse {
         if !self
             .inner
             .read()
             .expect("meta lock poisoned")
             .servers
-            .contains_key(endpoint)
+            .contains_key(&request.endpoint)
         {
             return AckResponse {
                 status: Status::error("not_found", "server not found"),
             };
         }
-        let request = StateChangeRequest {
-            endpoint: endpoint.to_string(),
-        };
         match next {
             MetaEntityState::Frozen => {
-                self.record_mutation(MetaMutation::FreezeServer(request));
+                self.record_mutation(MetaMutation::FreezeServer(request.clone()));
             }
             MetaEntityState::Dropped => {
-                self.record_mutation(MetaMutation::DropServer(request));
+                self.record_mutation(MetaMutation::DropServer(request.clone()));
             }
             MetaEntityState::Normal => {}
         }
-        self.apply_set_server_state(endpoint, next)
+        self.apply_set_server_state(request, next)
     }
 
-    fn apply_set_server_state(&self, endpoint: &str, next: MetaEntityState) -> AckResponse {
+    fn apply_set_server_state(
+        &self,
+        request: StateChangeRequest,
+        next: MetaEntityState,
+    ) -> AckResponse {
         let mut state = self.inner.write().expect("meta lock poisoned");
-        let Some(server) = state.servers.get_mut(endpoint) else {
+        let Some(server) = state.servers.get_mut(&request.endpoint) else {
             return AckResponse {
                 status: Status::error("not_found", "server not found"),
             };
         };
+        let now = now_ms();
         server.state = next;
+        match next {
+            MetaEntityState::Frozen => {
+                server.frozen_since_ms = now;
+                server.freeze_cooldown_until_ms = now.saturating_add(request.freeze_cooldown_ms);
+            }
+            MetaEntityState::Normal => {
+                server.frozen_since_ms = 0;
+                server.freeze_cooldown_until_ms = 0;
+            }
+            MetaEntityState::Dropped => {}
+        }
         state.topology_version += 1;
         AckResponse {
             status: Status::ok(),
         }
     }
 
-    fn set_proxy_state(&self, endpoint: &str, next: MetaEntityState) -> AckResponse {
+    fn set_proxy_state(&self, request: StateChangeRequest, next: MetaEntityState) -> AckResponse {
         if !self
             .inner
             .read()
             .expect("meta lock poisoned")
             .proxies
-            .contains_key(endpoint)
+            .contains_key(&request.endpoint)
         {
             return AckResponse {
                 status: Status::error("not_found", "proxy not found"),
             };
         }
-        let request = StateChangeRequest {
-            endpoint: endpoint.to_string(),
-        };
         match next {
             MetaEntityState::Frozen => {
-                self.record_mutation(MetaMutation::FreezeProxy(request));
+                self.record_mutation(MetaMutation::FreezeProxy(request.clone()));
             }
             MetaEntityState::Dropped => {
-                self.record_mutation(MetaMutation::DropProxy(request));
+                self.record_mutation(MetaMutation::DropProxy(request.clone()));
             }
             MetaEntityState::Normal => {}
         }
-        self.apply_set_proxy_state(endpoint, next)
+        self.apply_set_proxy_state(request, next)
     }
 
-    fn apply_set_proxy_state(&self, endpoint: &str, next: MetaEntityState) -> AckResponse {
+    fn apply_set_proxy_state(
+        &self,
+        request: StateChangeRequest,
+        next: MetaEntityState,
+    ) -> AckResponse {
         let mut state = self.inner.write().expect("meta lock poisoned");
-        let Some(proxy) = state.proxies.get_mut(endpoint) else {
+        let Some(proxy) = state.proxies.get_mut(&request.endpoint) else {
             return AckResponse {
                 status: Status::error("not_found", "proxy not found"),
             };
         };
+        let now = now_ms();
         proxy.state = next;
+        match next {
+            MetaEntityState::Frozen => {
+                proxy.frozen_since_ms = now;
+                proxy.freeze_cooldown_until_ms = now.saturating_add(request.freeze_cooldown_ms);
+            }
+            MetaEntityState::Normal => {
+                proxy.frozen_since_ms = 0;
+                proxy.freeze_cooldown_until_ms = 0;
+            }
+            MetaEntityState::Dropped => {}
+        }
+        state.topology_version += 1;
         AckResponse {
             status: Status::ok(),
         }
@@ -1051,21 +1631,23 @@ impl SingleNodeMeta {
             MetaMutation::RegisterProxy(request) => self.apply_register_proxy(request).status,
             MetaMutation::AddNamespace(request) => self.apply_add_namespace(request).status,
             MetaMutation::AddTable(request) => self.apply_add_table(request).status,
+            MetaMutation::DeleteTable(request) => self.apply_delete_table(request).status,
+            MetaMutation::UpdateTable(request) => self.apply_update_table(request).status,
             MetaMutation::FinishLoad(request) => self.apply_finish_load(request).status,
             MetaMutation::FreezeServer(request) => {
-                self.apply_set_server_state(&request.endpoint, MetaEntityState::Frozen)
+                self.apply_set_server_state(request, MetaEntityState::Frozen)
                     .status
             }
             MetaMutation::DropServer(request) => {
-                self.apply_set_server_state(&request.endpoint, MetaEntityState::Dropped)
+                self.apply_set_server_state(request, MetaEntityState::Dropped)
                     .status
             }
             MetaMutation::FreezeProxy(request) => {
-                self.apply_set_proxy_state(&request.endpoint, MetaEntityState::Frozen)
+                self.apply_set_proxy_state(request, MetaEntityState::Frozen)
                     .status
             }
             MetaMutation::DropProxy(request) => {
-                self.apply_set_proxy_state(&request.endpoint, MetaEntityState::Dropped)
+                self.apply_set_proxy_state(request, MetaEntityState::Dropped)
                     .status
             }
         }
@@ -1120,12 +1702,14 @@ fn build_partitions(state: &MetaState, table: &TableMetaInfo) -> Vec<TablePartit
         let mut replicas = Vec::new();
         let mut seen_replicas = BTreeSet::new();
         let mut used_locations = BTreeSet::new();
+        let mut used_hosts = BTreeSet::new();
         if let Some(location) = state.shards.get(&shard_id) {
             push_replica(
                 state,
                 &mut replicas,
                 &mut seen_replicas,
                 &mut used_locations,
+                &mut used_hosts,
                 &location.server_addr,
             );
         }
@@ -1139,11 +1723,16 @@ fn build_partitions(state: &MetaState, table: &TableMetaInfo) -> Vec<TablePartit
             if !candidate.location.is_empty() && used_locations.contains(&candidate.location) {
                 continue;
             }
+            let host = server_host(&candidate.server_addr);
+            if !host.is_empty() && used_hosts.contains(&host) {
+                continue;
+            }
             push_replica(
                 state,
                 &mut replicas,
                 &mut seen_replicas,
                 &mut used_locations,
+                &mut used_hosts,
                 &candidate.server_addr,
             );
         }
@@ -1156,6 +1745,7 @@ fn build_partitions(state: &MetaState, table: &TableMetaInfo) -> Vec<TablePartit
                 &mut replicas,
                 &mut seen_replicas,
                 &mut used_locations,
+                &mut used_hosts,
                 &candidate.server_addr,
             );
         }
@@ -1164,12 +1754,21 @@ fn build_partitions(state: &MetaState, table: &TableMetaInfo) -> Vec<TablePartit
             .get(&shard_id)
             .map(|location| location.server_addr.clone())
             .or_else(|| replicas.first().cloned());
+        let primary_endpoint = primary
+            .as_ref()
+            .map(|server_addr| server_endpoint(state, server_addr));
+        let replica_endpoints = replicas
+            .iter()
+            .map(|server_addr| server_endpoint(state, server_addr))
+            .collect();
         partitions.push(TablePartition {
             shard_id,
             start_slot,
             end_slot,
             primary,
             replicas,
+            primary_endpoint,
+            replica_endpoints,
         });
     }
     partitions
@@ -1190,6 +1789,7 @@ fn push_replica(
     replicas: &mut Vec<String>,
     seen_replicas: &mut BTreeSet<String>,
     used_locations: &mut BTreeSet<String>,
+    used_hosts: &mut BTreeSet<String>,
     server_addr: &str,
 ) {
     if !seen_replicas.insert(server_addr.to_string()) {
@@ -1200,7 +1800,41 @@ fn push_replica(
             used_locations.insert(server.location.clone());
         }
     }
+    let host = server_host(server_addr);
+    if !host.is_empty() {
+        used_hosts.insert(host);
+    }
     replicas.push(server_addr.to_string());
+}
+
+fn server_host(server_addr: &str) -> String {
+    if let Some(stripped) = server_addr.strip_prefix('[') {
+        return stripped
+            .split_once(']')
+            .map(|(host, _)| host.to_string())
+            .unwrap_or_else(|| server_addr.to_string());
+    }
+    server_addr
+        .rsplit_once(':')
+        .map(|(host, port)| {
+            if port.chars().all(|ch| ch.is_ascii_digit()) {
+                host.to_string()
+            } else {
+                server_addr.to_string()
+            }
+        })
+        .unwrap_or_else(|| server_addr.to_string())
+}
+
+fn server_endpoint(state: &MetaState, server_addr: &str) -> ServerEndpoint {
+    ServerEndpoint {
+        server_addr: server_addr.to_string(),
+        location: state
+            .servers
+            .get(server_addr)
+            .map(|server| server.location.clone())
+            .unwrap_or_default(),
+    }
 }
 
 fn ensure_server(state: &mut MetaState, server_addr: &str) {
@@ -1213,11 +1847,49 @@ fn ensure_server(state: &mut MetaState, server_addr: &str) {
             location: String::new(),
             state: MetaEntityState::Normal,
             last_heartbeat_ms: now_ms(),
+            frozen_since_ms: 0,
+            freeze_cooldown_until_ms: 0,
             boot_time_ms: 0,
             binary_version: String::new(),
             shard_loads: Vec::new(),
             partition_loads: Vec::new(),
         });
+}
+
+fn stats_from_state(state: &MetaState) -> MetaStats {
+    MetaStats {
+        register_shard_total: state.counters.register_shard_total,
+        get_shard_total: state.counters.get_shard_total,
+        server_register_total: state.counters.server_register_total,
+        server_heartbeat_total: state.counters.server_heartbeat_total,
+        proxy_register_total: state.counters.proxy_register_total,
+        proxy_heartbeat_total: state.counters.proxy_heartbeat_total,
+        namespace_create_total: state.counters.namespace_create_total,
+        table_create_total: state.counters.table_create_total,
+        topology_query_total: state.counters.topology_query_total,
+        load_finish_total: state.counters.load_finish_total,
+        topology_version: state.topology_version,
+        server_count: state.servers.len(),
+        proxy_count: state.proxies.len(),
+        namespace_count: state.namespaces.len(),
+        table_count: state.tables.len(),
+        shard_count: state.shards.len(),
+    }
+}
+
+fn counters_from_stats(stats: &MetaStats) -> MetaCounters {
+    MetaCounters {
+        register_shard_total: stats.register_shard_total,
+        get_shard_total: stats.get_shard_total,
+        server_register_total: stats.server_register_total,
+        server_heartbeat_total: stats.server_heartbeat_total,
+        proxy_register_total: stats.proxy_register_total,
+        proxy_heartbeat_total: stats.proxy_heartbeat_total,
+        namespace_create_total: stats.namespace_create_total,
+        table_create_total: stats.table_create_total,
+        topology_query_total: stats.topology_query_total,
+        load_finish_total: stats.load_finish_total,
+    }
 }
 
 fn table_key(namespace: &str, table_name: &str) -> String {
@@ -1226,6 +1898,90 @@ fn table_key(namespace: &str, table_name: &str) -> String {
 
 fn default_replica_count() -> u64 {
     1
+}
+
+fn default_pin_primary() -> bool {
+    true
+}
+
+fn default_replica_read_policy() -> String {
+    "pin_primary".to_string()
+}
+
+fn default_max_read_retries() -> u32 {
+    1
+}
+
+fn default_retry_backoff_ms() -> u64 {
+    2
+}
+
+fn default_continuous_failed_time_ms() -> u64 {
+    10_000
+}
+
+fn default_table_io_timeout_ms() -> u64 {
+    200
+}
+
+fn default_table_connect_timeout_ms() -> u64 {
+    200
+}
+
+fn validate_serving_options(options: &TableServingOptions) -> Result<(), String> {
+    match options.replica_read_policy.as_str() {
+        "pin_primary" | "first_replica" | "round_robin_replica" => {}
+        _ => {
+            return Err(format!(
+                "unsupported replica_read_policy {:?}",
+                options.replica_read_policy
+            ));
+        }
+    }
+    if options.drop_percent > 100 {
+        return Err("drop_percent must be <= 100".to_string());
+    }
+    if options.io_timeout_ms == 0 || options.connect_timeout_ms == 0 {
+        return Err("io/connect timeout must be > 0".to_string());
+    }
+    Ok(())
+}
+
+fn apply_serving_options_patch(
+    mut options: TableServingOptions,
+    patch: &TableServingOptionsPatch,
+) -> TableServingOptions {
+    if let Some(pin_primary) = patch.pin_primary {
+        options.pin_primary = pin_primary;
+    }
+    if let Some(replica_read_policy) = &patch.replica_read_policy {
+        options.replica_read_policy = replica_read_policy.clone();
+    }
+    if let Some(preferred_location) = &patch.preferred_location {
+        options.preferred_location = preferred_location.clone();
+    }
+    if let Some(drop_percent) = patch.drop_percent {
+        options.drop_percent = drop_percent;
+    }
+    if let Some(max_read_retries) = patch.max_read_retries {
+        options.max_read_retries = max_read_retries;
+    }
+    if let Some(max_write_retries) = patch.max_write_retries {
+        options.max_write_retries = max_write_retries;
+    }
+    if let Some(retry_backoff_ms) = patch.retry_backoff_ms {
+        options.retry_backoff_ms = retry_backoff_ms;
+    }
+    if let Some(continuous_failed_time_ms) = patch.continuous_failed_time_ms {
+        options.continuous_failed_time_ms = continuous_failed_time_ms;
+    }
+    if let Some(io_timeout_ms) = patch.io_timeout_ms {
+        options.io_timeout_ms = io_timeout_ms;
+    }
+    if let Some(connect_timeout_ms) = patch.connect_timeout_ms {
+        options.connect_timeout_ms = connect_timeout_ms;
+    }
+    options
 }
 
 fn now_ms() -> u64 {
@@ -1355,6 +2111,115 @@ mod tests {
     }
 
     #[test]
+    fn metaserver_safe_mode_cooldown_blocks_rejoin_and_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("safe-mode-mutations.jsonl");
+        let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        meta.register_server(RegisterServerRequest {
+            server_addr: "cooldown-server".to_string(),
+            node_id: 1,
+            location: "z".to_string(),
+            binary_version: "v".to_string(),
+        });
+        meta.register_proxy(RegisterProxyRequest {
+            proxy_addr: "cooldown-proxy".to_string(),
+            namespace: "ns".to_string(),
+            location: "z".to_string(),
+            config_version: 1,
+            binary_version: "v".to_string(),
+        });
+        std::thread::sleep(std::time::Duration::from_millis(2));
+
+        let report = meta.freeze_stale_resources_with_policy(
+            0,
+            SafeModePolicy {
+                server_freeze_cooldown_ms: 60_000,
+                proxy_freeze_cooldown_ms: 60_000,
+            },
+        );
+        assert!(report.status.ok);
+        assert_eq!(report.frozen_servers, vec!["cooldown-server".to_string()]);
+        assert_eq!(report.frozen_proxies, vec!["cooldown-proxy".to_string()]);
+
+        let safe_mode = meta.safe_mode_report();
+        assert!(safe_mode.status.ok);
+        assert_eq!(
+            safe_mode.blocked_servers,
+            vec!["cooldown-server".to_string()]
+        );
+        assert_eq!(
+            safe_mode.blocked_proxies,
+            vec!["cooldown-proxy".to_string()]
+        );
+        assert_eq!(
+            meta.register_server(RegisterServerRequest {
+                server_addr: "cooldown-server".to_string(),
+                node_id: 1,
+                location: "z".to_string(),
+                binary_version: "v".to_string(),
+            })
+            .status
+            .code,
+            "resource_frozen"
+        );
+        assert_eq!(
+            meta.register_proxy(RegisterProxyRequest {
+                proxy_addr: "cooldown-proxy".to_string(),
+                namespace: "ns".to_string(),
+                location: "z".to_string(),
+                config_version: 1,
+                binary_version: "v".to_string(),
+            })
+            .status
+            .code,
+            "resource_frozen"
+        );
+
+        let server_heartbeat = meta.server_heartbeat(ServerHeartbeatRequest {
+            server_addr: "cooldown-server".to_string(),
+            boot_time_ms: 1,
+            binary_version: "v".to_string(),
+            shard_loads: Vec::new(),
+            partition_loads: Vec::new(),
+        });
+        assert_eq!(server_heartbeat.status.code, "resource_frozen");
+        assert!(server_heartbeat.forbid_auto_register);
+        assert_eq!(
+            meta.proxy_heartbeat(ProxyHeartbeatRequest {
+                proxy_addr: "cooldown-proxy".to_string(),
+                namespace: "ns".to_string(),
+                config_version: 1,
+                binary_version: "v".to_string(),
+            })
+            .status
+            .code,
+            "resource_frozen"
+        );
+
+        let recovered = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        assert_eq!(
+            recovered.safe_mode_report().blocked_servers,
+            vec!["cooldown-server".to_string()]
+        );
+        assert_eq!(
+            recovered.safe_mode_report().blocked_proxies,
+            vec!["cooldown-proxy".to_string()]
+        );
+
+        let snapshot = meta.export_snapshot();
+        let restored = SingleNodeMeta::default();
+        assert!(restored.install_snapshot(snapshot).status.ok);
+        assert_eq!(
+            restored.safe_mode_report().blocked_servers,
+            vec!["cooldown-server".to_string()]
+        );
+        assert_eq!(
+            restored.safe_mode_report().blocked_proxies,
+            vec!["cooldown-proxy".to_string()]
+        );
+    }
+
+    #[test]
     fn metaserver_serves_table_topology_and_version_not_modified() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
@@ -1385,6 +2250,7 @@ mod tests {
                 replica_count: 2,
                 use_cpp_partition_ids: false,
                 partition_version: 0,
+                serving_options: crate::meta::TableServingOptions::default(),
             })
             .status
             .ok
@@ -1411,6 +2277,242 @@ mod tests {
     }
 
     #[test]
+    fn metaserver_delete_table_marks_dropped_and_rejects_topology() {
+        let meta = SingleNodeMeta::default();
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "ns".to_string(),
+        });
+        assert!(
+            meta.add_table(AddTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "tbl".to_string(),
+                first_shard_id: 10,
+                shard_count: 2,
+                replica_count: 1,
+                use_cpp_partition_ids: false,
+                partition_version: 0,
+                serving_options: crate::meta::TableServingOptions::default(),
+            })
+            .status
+            .ok
+        );
+        let created_version = meta.list_tables().tables[0].topology_version;
+
+        let deleted = meta.delete_table(DeleteTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+        });
+        assert!(deleted.status.ok, "{deleted:?}");
+        let table = meta.list_tables().tables[0].clone();
+        assert_eq!(table.state, MetaEntityState::Dropped);
+        assert!(table.topology_version > created_version);
+        assert_eq!(meta.list_namespaces().namespaces[0].table_count, 0);
+
+        let topology = meta.get_table_topology(GetTableTopologyRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+            old_topology_version: 0,
+        });
+        assert_eq!(topology.status.code, "table_not_found");
+        assert_eq!(topology.table.unwrap().state, MetaEntityState::Dropped);
+        assert!(topology.partitions.is_empty());
+
+        let duplicate = meta.delete_table(DeleteTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+        });
+        assert_eq!(duplicate.status.code, "table_not_found");
+    }
+
+    #[test]
+    fn metaserver_update_table_expands_topology_and_guards_unsafe_changes() {
+        let meta = SingleNodeMeta::default();
+        meta.add_table(AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+            first_shard_id: 100,
+            shard_count: 2,
+            replica_count: 1,
+            use_cpp_partition_ids: false,
+            partition_version: 0,
+            serving_options: crate::meta::TableServingOptions::default(),
+        });
+        let created = meta.list_tables().tables[0].clone();
+
+        let updated = meta.update_table(UpdateTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+            shard_count: Some(4),
+            replica_count: Some(2),
+            first_shard_id: None,
+            use_cpp_partition_ids: None,
+            partition_version: None,
+            serving_options: None,
+        });
+        assert!(updated.status.ok, "{updated:?}");
+        let table = meta.list_tables().tables[0].clone();
+        assert_eq!(table.shard_count, 4);
+        assert_eq!(table.replica_count, 2);
+        assert!(table.topology_version > created.topology_version);
+
+        let topology = meta.get_table_topology(GetTableTopologyRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+            old_topology_version: created.topology_version,
+        });
+        assert!(topology.status.ok, "{topology:?}");
+        assert_eq!(topology.partitions.len(), 4);
+        assert_eq!(topology.partitions[3].shard_id, 103);
+
+        let unchanged = meta.update_table(UpdateTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+            shard_count: Some(4),
+            replica_count: Some(2),
+            first_shard_id: None,
+            use_cpp_partition_ids: None,
+            partition_version: None,
+            serving_options: None,
+        });
+        assert_eq!(unchanged.status.code, "not_modified");
+
+        let shrink = meta.update_table(UpdateTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+            shard_count: Some(1),
+            replica_count: None,
+            first_shard_id: None,
+            use_cpp_partition_ids: None,
+            partition_version: None,
+            serving_options: None,
+        });
+        assert_eq!(shrink.status.code, "bad_request");
+
+        let retarget = meta.update_table(UpdateTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+            shard_count: None,
+            replica_count: None,
+            first_shard_id: Some(200),
+            use_cpp_partition_ids: None,
+            partition_version: None,
+            serving_options: None,
+        });
+        assert_eq!(retarget.status.code, "bad_request");
+
+        assert!(
+            meta.delete_table(DeleteTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "tbl".to_string(),
+            })
+            .status
+            .ok
+        );
+        let dropped_update = meta.update_table(UpdateTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+            shard_count: Some(5),
+            replica_count: None,
+            first_shard_id: None,
+            use_cpp_partition_ids: None,
+            partition_version: None,
+            serving_options: None,
+        });
+        assert_eq!(dropped_update.status.code, "table_not_found");
+    }
+
+    #[test]
+    fn metaserver_table_serving_options_update_and_snapshot_round_trip() {
+        let meta = SingleNodeMeta::default();
+        assert!(
+            meta.add_table(AddTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "opts".to_string(),
+                first_shard_id: 10,
+                shard_count: 1,
+                replica_count: 1,
+                use_cpp_partition_ids: false,
+                partition_version: 0,
+                serving_options: TableServingOptions {
+                    pin_primary: false,
+                    replica_read_policy: "first_replica".to_string(),
+                    preferred_location: "zone-a".to_string(),
+                    drop_percent: 7,
+                    max_read_retries: 3,
+                    max_write_retries: 2,
+                    retry_backoff_ms: 11,
+                    continuous_failed_time_ms: 22,
+                    io_timeout_ms: 333,
+                    connect_timeout_ms: 444,
+                },
+            })
+            .status
+            .ok
+        );
+        assert_eq!(
+            meta.get_table_topology(GetTableTopologyRequest {
+                namespace: "ns".to_string(),
+                table_name: "opts".to_string(),
+                old_topology_version: 0,
+            })
+            .table
+            .unwrap()
+            .serving_options
+            .drop_percent,
+            7
+        );
+
+        let updated = meta.update_table(UpdateTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "opts".to_string(),
+            shard_count: None,
+            replica_count: None,
+            first_shard_id: None,
+            use_cpp_partition_ids: None,
+            partition_version: None,
+            serving_options: Some(TableServingOptionsPatch {
+                replica_read_policy: Some("round_robin_replica".to_string()),
+                drop_percent: Some(19),
+                max_read_retries: Some(4),
+                ..TableServingOptionsPatch::default()
+            }),
+        });
+        assert!(updated.status.ok, "{updated:?}");
+        let table = meta.list_tables().tables[0].clone();
+        assert_eq!(
+            table.serving_options.replica_read_policy,
+            "round_robin_replica"
+        );
+        assert_eq!(table.serving_options.drop_percent, 19);
+        assert_eq!(table.serving_options.max_read_retries, 4);
+        assert_eq!(table.serving_options.max_write_retries, 2);
+
+        let invalid = meta.update_table(UpdateTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "opts".to_string(),
+            shard_count: None,
+            replica_count: None,
+            first_shard_id: None,
+            use_cpp_partition_ids: None,
+            partition_version: None,
+            serving_options: Some(TableServingOptionsPatch {
+                replica_read_policy: Some("unknown_policy".to_string()),
+                ..TableServingOptionsPatch::default()
+            }),
+        });
+        assert_eq!(invalid.status.code, "bad_request");
+
+        let restored = SingleNodeMeta::default();
+        assert!(restored.install_snapshot(meta.export_snapshot()).status.ok);
+        assert_eq!(
+            restored.list_tables().tables[0]
+                .serving_options
+                .drop_percent,
+            19
+        );
+    }
+
+    #[test]
     fn metaserver_can_generate_cpp_compatible_partition_ids_for_table_topology() {
         let meta = SingleNodeMeta::default();
         meta.add_table(AddTableRequest {
@@ -1421,6 +2523,7 @@ mod tests {
             replica_count: 1,
             use_cpp_partition_ids: true,
             partition_version: 17,
+            serving_options: crate::meta::TableServingOptions::default(),
         });
 
         let topo = meta.get_table_topology(GetTableTopologyRequest {
@@ -1494,6 +2597,7 @@ mod tests {
             replica_count: 2,
             use_cpp_partition_ids: false,
             partition_version: 0,
+            serving_options: crate::meta::TableServingOptions::default(),
         });
 
         let topo = meta.get_table_topology(GetTableTopologyRequest {
@@ -1541,6 +2645,7 @@ mod tests {
             replica_count: 2,
             use_cpp_partition_ids: false,
             partition_version: 0,
+            serving_options: crate::meta::TableServingOptions::default(),
         });
 
         let topo = meta.get_table_topology(GetTableTopologyRequest {
@@ -1553,6 +2658,101 @@ mod tests {
             vec!["zone-a-cool".to_string(), "zone-b-hot".to_string()]
         );
         assert_eq!(topo.partitions[0].primary.as_deref(), Some("zone-a-cool"));
+    }
+
+    #[test]
+    fn metaserver_topology_prefers_host_diversity_before_same_host_load() {
+        let meta = SingleNodeMeta::default();
+        for (server_addr, location, key_count, memory_bytes) in [
+            ("10.0.0.1:18001", "zone-a", 10, 10),
+            ("10.0.0.1:18002", "zone-b", 20, 20),
+            ("10.0.0.2:18001", "zone-c", 10_000, 10_000),
+        ] {
+            meta.register_server(RegisterServerRequest {
+                server_addr: server_addr.to_string(),
+                node_id: 0,
+                location: location.to_string(),
+                binary_version: String::new(),
+            });
+            meta.server_heartbeat(ServerHeartbeatRequest {
+                server_addr: server_addr.to_string(),
+                boot_time_ms: 1,
+                binary_version: String::new(),
+                shard_loads: vec![ShardLoad {
+                    shard_id: 1,
+                    key_count,
+                    memory_bytes,
+                }],
+                partition_loads: Vec::new(),
+            });
+        }
+        meta.add_table(AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+            first_shard_id: 300,
+            shard_count: 1,
+            replica_count: 2,
+            use_cpp_partition_ids: false,
+            partition_version: 0,
+            serving_options: crate::meta::TableServingOptions::default(),
+        });
+
+        let topo = meta.get_table_topology(GetTableTopologyRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+            old_topology_version: 0,
+        });
+        assert_eq!(
+            topo.partitions[0].replicas,
+            vec!["10.0.0.1:18001".to_string(), "10.0.0.2:18001".to_string()]
+        );
+    }
+
+    #[test]
+    fn metaserver_topology_fills_same_host_when_distinct_hosts_are_insufficient() {
+        let meta = SingleNodeMeta::default();
+        for (server_addr, location, key_count, memory_bytes) in [
+            ("10.0.0.1:18001", "zone-a", 10, 10),
+            ("10.0.0.1:18002", "zone-b", 20, 20),
+        ] {
+            meta.register_server(RegisterServerRequest {
+                server_addr: server_addr.to_string(),
+                node_id: 0,
+                location: location.to_string(),
+                binary_version: String::new(),
+            });
+            meta.server_heartbeat(ServerHeartbeatRequest {
+                server_addr: server_addr.to_string(),
+                boot_time_ms: 1,
+                binary_version: String::new(),
+                shard_loads: vec![ShardLoad {
+                    shard_id: 1,
+                    key_count,
+                    memory_bytes,
+                }],
+                partition_loads: Vec::new(),
+            });
+        }
+        meta.add_table(AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+            first_shard_id: 301,
+            shard_count: 1,
+            replica_count: 2,
+            use_cpp_partition_ids: false,
+            partition_version: 0,
+            serving_options: crate::meta::TableServingOptions::default(),
+        });
+
+        let topo = meta.get_table_topology(GetTableTopologyRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+            old_topology_version: 0,
+        });
+        assert_eq!(
+            topo.partitions[0].replicas,
+            vec!["10.0.0.1:18001".to_string(), "10.0.0.1:18002".to_string()]
+        );
     }
 
     #[test]
@@ -1632,6 +2832,43 @@ mod tests {
                 replica_count: 1,
                 use_cpp_partition_ids: false,
                 partition_version: 0,
+                serving_options: crate::meta::TableServingOptions::default(),
+            })
+            .status
+            .ok
+        );
+        assert!(
+            meta.update_table(UpdateTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "tbl".to_string(),
+                shard_count: Some(2),
+                replica_count: Some(2),
+                first_shard_id: None,
+                use_cpp_partition_ids: None,
+                partition_version: None,
+                serving_options: None,
+            })
+            .status
+            .ok
+        );
+        assert!(
+            meta.add_table(AddTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "dropped_tbl".to_string(),
+                first_shard_id: 11,
+                shard_count: 1,
+                replica_count: 1,
+                use_cpp_partition_ids: false,
+                partition_version: 0,
+                serving_options: crate::meta::TableServingOptions::default(),
+            })
+            .status
+            .ok
+        );
+        assert!(
+            meta.delete_table(DeleteTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "dropped_tbl".to_string(),
             })
             .status
             .ok
@@ -1639,6 +2876,7 @@ mod tests {
         assert!(
             meta.freeze_proxy(StateChangeRequest {
                 endpoint: "proxy-a".to_string(),
+                freeze_cooldown_ms: 0,
             })
             .status
             .ok
@@ -1648,7 +2886,7 @@ mod tests {
             .unwrap()
             .load()
             .unwrap();
-        assert_eq!(mutations.len(), 6);
+        assert_eq!(mutations.len(), 9);
 
         let recovered = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
         assert_eq!(
@@ -1659,17 +2897,26 @@ mod tests {
                 latest_snapshot: None,
             }
         );
-        assert_eq!(recovered.list_tables().tables.len(), 1);
+        let recovered_tables = recovered.list_tables().tables;
+        assert_eq!(recovered_tables.len(), 2);
         assert_eq!(
-            recovered
-                .get_table_topology(GetTableTopologyRequest {
-                    namespace: "ns".to_string(),
-                    table_name: "tbl".to_string(),
-                    old_topology_version: 0,
-                })
-                .partitions[0]
-                .primary
-                .as_deref(),
+            recovered_tables
+                .iter()
+                .find(|table| table.table_name == "dropped_tbl")
+                .unwrap()
+                .state,
+            MetaEntityState::Dropped
+        );
+        assert_eq!(recovered.list_namespaces().namespaces[0].table_count, 1);
+        let recovered_topology = recovered.get_table_topology(GetTableTopologyRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+            old_topology_version: 0,
+        });
+        assert_eq!(recovered_topology.table.unwrap().replica_count, 2);
+        assert_eq!(recovered_topology.partitions.len(), 2);
+        assert_eq!(
+            recovered_topology.partitions[0].primary.as_deref(),
             Some("server-a")
         );
         assert_eq!(
@@ -1727,6 +2974,106 @@ mod tests {
     }
 
     #[test]
+    fn metaserver_snapshot_round_trips_full_metabase_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let snapshot_path = dir.path().join("meta-snapshot.json");
+        let meta = SingleNodeMeta::default();
+        meta.register_server(RegisterServerRequest {
+            server_addr: "server-a".to_string(),
+            node_id: 1,
+            location: "zone-a".to_string(),
+            binary_version: "v1".to_string(),
+        });
+        meta.register_server(RegisterServerRequest {
+            server_addr: "server-b".to_string(),
+            node_id: 2,
+            location: "zone-b".to_string(),
+            binary_version: "v1".to_string(),
+        });
+        meta.register(RegisterShardRequest {
+            shard_id: 77,
+            server_addr: "server-a".to_string(),
+        });
+        let latest_snapshot = ShardSnapshotRef {
+            uri: "s3://cluster/shards/77/snapshots/2-19/manifest.json".to_string(),
+            checksum: "sha256:meta".to_string(),
+            byte_size: 4096,
+            last_log_index: 19,
+            created_at_ms: 123,
+        };
+        meta.publish_shard_snapshot(PublishShardSnapshotRequest {
+            shard_id: 77,
+            snapshot: latest_snapshot.clone(),
+        });
+        meta.register_proxy(RegisterProxyRequest {
+            proxy_addr: "proxy-a".to_string(),
+            namespace: "ns".to_string(),
+            location: "zone-a".to_string(),
+            config_version: 9,
+            binary_version: "v1".to_string(),
+        });
+        meta.freeze_proxy(StateChangeRequest {
+            endpoint: "proxy-a".to_string(),
+            freeze_cooldown_ms: 0,
+        });
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "ns".to_string(),
+        });
+        assert!(
+            meta.add_table(AddTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "tbl".to_string(),
+                first_shard_id: 77,
+                shard_count: 2,
+                replica_count: 2,
+                use_cpp_partition_ids: false,
+                partition_version: 0,
+                serving_options: crate::meta::TableServingOptions::default(),
+            })
+            .status
+            .ok
+        );
+        let snapshot = meta.save_snapshot(&snapshot_path).unwrap();
+        assert_eq!(snapshot.format_version, 1);
+        assert_eq!(snapshot.stats.server_count, 2);
+        assert_eq!(snapshot.stats.proxy_count, 1);
+        assert_eq!(snapshot.stats.table_count, 1);
+
+        let recovered = SingleNodeMeta::default();
+        assert!(
+            recovered
+                .install_snapshot_from_file(&snapshot_path)
+                .unwrap()
+                .status
+                .ok
+        );
+        assert_eq!(
+            recovered.get(77).location.unwrap().latest_snapshot,
+            Some(latest_snapshot)
+        );
+        assert_eq!(
+            recovered.list_proxies().proxies[0].state,
+            MetaEntityState::Frozen
+        );
+        let topology = recovered.get_table_topology(GetTableTopologyRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+            old_topology_version: 0,
+        });
+        assert!(topology.status.ok);
+        assert_eq!(topology.partitions.len(), 2);
+        assert_eq!(topology.partitions[0].primary.as_deref(), Some("server-a"));
+        assert_eq!(
+            topology.partitions[0].replicas,
+            vec!["server-a".to_string(), "server-b".to_string()]
+        );
+        assert_eq!(
+            recovered.stats().topology_version,
+            snapshot.topology_version
+        );
+    }
+
+    #[test]
     fn metaserver_mutation_log_ignores_failed_state_changes() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("meta-mutations.jsonl");
@@ -1734,9 +3081,11 @@ mod tests {
 
         let missing_server = meta.freeze_server(StateChangeRequest {
             endpoint: "missing-server".to_string(),
+            freeze_cooldown_ms: 0,
         });
         let missing_proxy = meta.drop_proxy(StateChangeRequest {
             endpoint: "missing-proxy".to_string(),
+            freeze_cooldown_ms: 0,
         });
 
         assert!(!missing_server.status.ok);

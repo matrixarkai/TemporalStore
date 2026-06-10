@@ -24,6 +24,12 @@ The Rust code currently has:
 - follower catch-up
 - scale up/down model
 - explicit replication health reports with per-voter lag
+- explicit apply health reports with per-node commit-to-applied lag, slow-applier lists, and
+  Prometheus `temporalstore_raft_node_apply_lag` gauges for data-node and metaserver Raft
+- distributed `POST /raft/apply_health` on standalone `raft_node`, raft-enabled `server`, and
+  local harness nodes so operators and tests can verify commit-to-apply convergence over HTTP
+- networked `POST /raft/membership/apply` on standalone `raft_node` and raft-enabled `server` for
+  safe joint-consensus voter changes
 - catch-up heartbeat helper for recovered live followers
 - safe data-node scale-up that returns only after the new replica is caught up
 - safe data-node scale-down that rejects quorum loss and promotes only a caught-up successor
@@ -39,12 +45,19 @@ The Rust code currently has:
   runtime counters for attempts, successes, failures, retries, inflight requests, and
   backpressure rejections
 - Raft RPC metadata with request id, deadline, and auth token, plus an authenticated transport wrapper
+- receive-side peer RPC auth enforcement on `raft_node`, raft-enabled `server`, and the local
+  distributed harness for AppendEntries, RequestVote, InstallSnapshot, and snapshot chunks
 - randomized heartbeat/election scheduler model
 - external snapshot references on Raft install-snapshot requests, so a leader can attach the
   immutable S3/MinIO snapshot manifest URI, checksum, and byte size while keeping Raft log catch-up
   as the source for recent writes
 - external snapshot bootstrap rejects stale snapshots before download/verify work when the target
   replica already has a higher local commit index
+- operator-triggered external snapshot bootstrap on standalone `raft_node` and raft-enabled
+  `server` through gated `POST /raft/admin/bootstrap_external_snapshot`: the node downloads a
+  S3/MinIO-compatible snapshot ref through the snapshot-store abstraction, verifies manifest,
+  checksum, byte size, shard id, and log index, installs it into the target replica engine state,
+  records the external snapshot ref, and catches up from the leader log
 - durable local metaserver mutation log and replay for HTTP/admin mutations when
   `TS_META_MUTATION_LOG` is set
 - Raft transport message contracts:
@@ -66,6 +79,8 @@ The Rust code currently has:
 - installed Raft snapshot payload and snapshot-index floor persisted into WAL-backed data-node records,
   so restart can recover state even after pre-snapshot log entries are trimmed
 - leader election rejects stale candidates unless their log is up-to-date with a voting majority
+- deterministic ByteRaft-style snapshot trigger reports for data-node and metaserver Raft when
+  applied log bytes since the latest snapshot floor exceed `max_applied_log_bytes`
 - RequestVote receive path updates higher terms and clears prior votes before grant/reject decisions
 - strict shared-store oplog gap rejection
 - partition/heal chaos coverage in the local model
@@ -111,13 +126,21 @@ The production runtime surface is:
 - `ProductionMetaRaftRuntime::validate_ready`
 - `ProductionRaftSecurity::mtls`
 - `ProductionRaftChaosPlan`
-- `raft_node` binary with `/raft/propose`, `/raft/read`, `/raft/status`, gated local-chaos
-  `/raft/admin/*` endpoints, local peer-block chaos controls, and peer `/raft/*` transport endpoints
+- `raft_node` binary with `/raft/propose`, `/raft/read`, `/raft/status`,
+  `/raft/membership/apply`, gated local-chaos `/raft/apply_health`, `/raft/admin/*` endpoints,
+  local peer-block chaos controls, external snapshot bootstrap, and peer `/raft/*` transport
+  endpoints
+- raft-enabled `server` binary exposes the same `/raft/status`, `/raft/apply_health`,
+  `/raft/membership/apply`, `/raft/admin/*`, external snapshot bootstrap, and peer `/raft/*`
+  control/transport surfaces while serving TemporalStore requests
 - `raft_secondary_replication_harness` binary that starts real `raft_node` OS processes, kills and
   restarts a secondary, injects a network partition with stale-read rejection, heals and verifies
   follower catch-up, forces a lagging follower while majority writes continue, heals and verifies
-  catch-up reads, rolling-restarts every voter from its WAL, verifies post-restart replication,
-  kills the original leader, triggers surviving-node failover, and verifies post-failover reads
+  catch-up reads, applies safe membership scale-down and scale-up through `/raft/membership/apply`,
+  sends real TCP `/raft/request_vote` requests for unauthorized-peer rejection, stale-candidate
+  rejection, and caught-up-candidate grant, rolling-restarts every voter from its WAL, verifies
+  post-restart replication, kills the original leader, triggers surviving-node failover, and
+  verifies post-failover reads
 
 Production deployments should use `ProductionRaftSecurity::mtls`. Local chaos tests can use
 `ProductionRaftSecurity::plaintext_for_local_chaos` only when
@@ -126,7 +149,8 @@ Production deployments should use `ProductionRaftSecurity::mtls`. Local chaos te
 ## Required Before Production Ready
 
 - Replace the local consensus model with OpenRaft or raft-rs FSM/storage integration.
-- Wire data-node Raft snapshots to real engine snapshot create/download/install.
+- Wire data-node Raft snapshots to the full production engine freeze/flush/download/install
+  lifecycle.
 - Run external multi-process packet-loss and disk-pressure tests.
 - Add actual mTLS transport implementation, not just config validation and authenticated metadata.
 - Integrate metaserver shard membership changes with networked data-node Raft groups.
@@ -139,12 +163,24 @@ Covered today:
 
 - separate `raft_node` process wrapper
 - HTTP Raft transport endpoints for propose/read/status and peer messages
+- networked `/raft/membership/apply` endpoint for safe add/remove/replace voter changes on
+  standalone raft nodes and raft-enabled data servers, validated by the real OS-process harness for
+  scale down and scale up
+- networked `/raft/admin/bootstrap_external_snapshot` endpoint for operator-driven replica
+  bootstrap from a S3/MinIO-compatible snapshot ref on both standalone raft nodes and raft-enabled
+  data servers
+- distributed harness coverage for process-boundary snapshot publish plus bootstrap: a follower is
+  held behind, the leader publishes a S3/MinIO-compatible snapshot over HTTP, the follower restores
+  through `/raft/admin/bootstrap_external_snapshot`, and the harness verifies the restored value
+  through `/raft/read`
 - local OS-process harness coverage for network partition stale-read rejection, heal, and catch-up
 - local OS-process harness coverage for lagging-follower observation, majority-side writes, heal,
   and catch-up reads
 - local OS-process harness coverage for rolling restart of every voter with WAL recovery and
   post-restart replication
 - local majority commit, catch-up, safe reads, promotion, safe scale up, and safe scale down
+- commit-to-apply lag observability for data-node and metaserver Raft groups, including HTTP
+  apply-health checks in the process/runtime harnesses
 - WAL-backed local model recovery for commits, leadership, and membership
 - local snapshot and chunked snapshot message behavior
 
@@ -152,10 +188,11 @@ Still missing:
 
 - real OpenRaft or raft-rs data-node FSM/storage implementation
 - production OpenRaft/raft-rs durable log-store adapter beyond the local segmented WAL model
-- metaserver-driven networked Raft membership changes for each shard
-- snapshot install wired to `TemporalEngine` freeze, flush, download, verify, and install
+- metaserver scheduler loop that automatically drives `/raft/membership/apply` for each shard and
+  persists task state
 - production engine snapshot install with freeze/flush/download/verify/install lifecycle; the local
-  external snapshot path now has stale-local-state preflight before download
+  external snapshot path now has process-level admin routes, stale-local-state preflight before
+  download, manifest/checksum/size verification, and target replica engine-state install
 - external chaos tests that inject packet loss and disk pressure
 - AWS multi-node validation with real metaserver, proxy, client, and data-node processes
 
@@ -199,7 +236,7 @@ curl -s http://127.0.0.1:19001/raft/propose \
 
 ## Local Data-Node Raft Harnesses
 
-For a one-command local proof that the data-node Raft HTTP transport replicates between three
+For a one-command local proof that the data-node Raft HTTP transport replicates between four
 separate node endpoints and writes local WAL segment files, run:
 
 ```bash
@@ -207,9 +244,11 @@ CARGO_TARGET_DIR=/tmp/temporalstore-rust-target \
 cargo run -p temporalstore-rust --bin distributed_raft_harness
 ```
 
-The harness starts three data-node Raft runtimes on different loopback ports, proposes a write
-through node 1, waits until reads from nodes 1, 2, and 3 return the replicated value, and prints a
-JSON report with each node address, Raft status, replica read result, and WAL files.
+The harness starts four data-node Raft runtimes on different loopback ports, proposes a write
+through node 1, waits until replica reads return the replicated value, rejects a direct follower
+write, transfers leadership, scales voters down and back up, waits for every node's
+`/raft/apply_health` report to reach zero apply lag, and prints a JSON report with each node
+address, Raft status, apply health, replica read result, and WAL files.
 
 For a stronger process-level secondary replication check, build all binaries and run:
 
@@ -226,9 +265,10 @@ writes through the leader, kills secondary node 3, writes while that secondary i
 node 3 with the same local WAL directory, waits until all nodes can read the pre-stop, while-down,
 and after-restart keys, rolling-restarts voters 3, 2, and 1 from their existing WAL directories,
 verifies a fresh replicated write after each restart, injects partition and lagging-follower phases,
-then kills leader node 1, marks it dead in the surviving local-chaos runtimes, triggers failover on
-node 2, writes through the new leader, and verifies the surviving replicas can read the
-post-failover key.
+sends real `/raft/request_vote` messages that reject a wrong-token peer request, reject a stale
+candidate, and grant a caught-up candidate, then kills leader node 1, marks it dead in the
+surviving local-chaos runtimes, triggers failover on node 2, writes through the new leader, and
+verifies the surviving replicas can read the post-failover key.
 
 ## Current Test Coverage
 
@@ -241,6 +281,7 @@ raft_follower_catches_up_after_outage
 raft_rejects_electing_stale_replica_until_it_catches_up
 raft_transport_append_entries_catches_up_lagging_replica
 raft_transport_rejects_stale_append_entries_and_behind_vote
+raft_leader_lease_expiry_blocks_linearizable_reads_and_writes_until_heartbeat
 request_vote_higher_term_resets_prior_vote_before_decision
 request_vote_higher_term_updates_term_even_when_candidate_log_is_behind
 raft_hard_state_membership_and_snapshot_transport_are_exposed
@@ -261,12 +302,14 @@ local_raft_wal_recovers_latest_valid_record_and_truncates_corrupt_tail
 raft_cluster_recovers_committed_state_from_local_wal
 wal_backed_raft_cluster_auto_persists_commits_leadership_and_membership
 wal_backed_raft_cluster_compacts_wal_tail_but_recovers_latest_state
+data_raft_snapshot_trigger_compacts_applied_log_bytes
 distributed_raft_readiness_reports_remaining_production_blockers
 production_raft_mode_is_blocked_until_real_engine_and_chaos_exist
 production_raft_runtime_validates_security_timer_and_chaos_contracts
 production_raft_runtime_replicates_over_separate_http_nodes
 raft_secondary_replication_harness
 metaserver_raft_health_catchup_safe_scale_and_failover_work
+metaserver_raft_snapshot_trigger_compacts_applied_log_bytes
 metaserver_raft_promotes_follower_after_leader_failure_and_keeps_metadata_available
 metaserver_raft_rejects_reads_and_writes_without_majority
 metaserver_mutation_log_recovers_routes_tables_and_state_changes

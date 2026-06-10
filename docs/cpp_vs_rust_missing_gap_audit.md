@@ -17,6 +17,8 @@ The Rust code now covers the local correctness skeleton for TemporalStore-style 
 - local Raft snapshot behavior
 - ByteKV/ByteRaft-style Raft configuration defaults, validation, read options, oversized log rejection, and election prohibition
 - ByteRaft-style local Raft status, local status, read-index guard, leader transfer, and Prometheus raft metrics
+- ByteRaft-style commit-to-apply lag health reports and Prometheus apply-lag metrics for data and
+  metaserver Raft
 - proxy/client/metaserver/server binaries
 - table-aware Rust client with typed string/hash/common methods, pipeline batching, HTTP timeout/retry options, optional direct route refresh, and primary/secondary endpoint selection from metaserver topology
 - proxy wraps the Rust client library for route cache, timeout/retry options, and backend-error route refresh, with stats/config endpoints
@@ -44,6 +46,7 @@ The Rust code now covers the local correctness skeleton for TemporalStore-style 
   routing-slot range, and local node id
 - server membership-update finish callback to metaserver through `/partitions/finish_load` after a
   successful local membership install
+- single-node metaserver metabase snapshot export/import plus atomic local snapshot save/load
 - local shard/table/tenant read/write QPS admission through `Config` quota fields
 - C++ common-module `EXPIRE` missing-key behavior from
   `temporalstore-small/src/extension/common/implement.cc`: engine returns not-found instead of
@@ -88,6 +91,126 @@ This pass closed one of the hard readiness blockers instead of leaving it as a n
     `POST /raft/admin/wait_applied` so local process tests and operators can wait for a follower's
     FSM-applied index over HTTP, matching the C++ data-Raft backend control contract instead of
     requiring direct Rust object access.
+15. The proxy now exposes table-aware serving routes, closing a C++ proxy/client layering gap:
+    `POST /proxy/open_table` syncs namespace/table topology from metaserver, and
+    `POST /proxy/table_execute` plus `POST /proxy/table_batch_execute` route commands through the
+    Rust client library using key-to-shard table routing instead of requiring callers to provide a
+    shard id. A regression test proves a proxy table write lands on the shard selected by the C++
+    CRC64 routing formula.
+16. The client/metaserver topology path now carries location-aware endpoint metadata. Newer clients
+    can set `ClientOptions.local_location` or `TableOptions.preferred_location`; replica-read
+    routing then prefers a same-location secondary before falling back to the configured first
+    replica or round-robin policy. The old address-only topology fields remain intact for
+    compatibility.
+17. The client now has C++-style drop-percent traffic shedding at the table-routing layer:
+    `ClientOptions.drop_percent` seeds `TableOptions.drop_percent`, and table execute/batch paths
+    deterministically reject sampled keys with `traffic_dropped` before contacting a backend.
+18. Distributed Raft now exposes the commit-to-apply health contract over the process/runtime
+    serving surface: standalone `raft_node`, raft-enabled `server`, and the distributed Raft harness
+    all serve `POST /raft/apply_health`. The local four-node harness now waits through that public
+    route until every node reports zero apply lag after leader transfer, voter scale-down, voter
+    scale-up, and replica reads.
+19. The single-node metaserver now has C++-style metabase snapshot coverage: `MetaSnapshot`
+    captures shard routes, latest shard snapshot refs, server/proxy inventory and states,
+    namespaces, tables, counters, next table id, and topology version. `GET /meta/snapshot`,
+    `POST /meta/snapshot[/restore]`, `POST /meta/snapshot/save`, and `POST /meta/snapshot/load`
+    are test-backed.
+20. The metaserver binary now exposes the deterministic scheduler model over HTTP:
+    `GET /meta/scheduler`, `GET /meta/scheduler/snapshot`, `POST /meta/scheduler/submit`,
+    `POST /meta/scheduler/run_next`, and `POST /meta/scheduler/restore`. Route tests cover
+    priority ordering, retry-later backoff, snapshot export, and restore.
+21. The metaserver scheduler can now persist its task snapshot locally with
+    `TS_META_SCHEDULER_SNAPSHOT`; submit/run/restore operations atomically rewrite the scheduler
+    snapshot file and startup reloads it.
+22. Metaserver placement now prefers host diversity before same-host replica fill while preserving
+    the lower-load ordering and falling back to same-host replicas when distinct hosts are
+    insufficient.
+23. Client close-table now matches the C++ `ClientImpl::CloseTable` plus
+    `MetaSyncer::CloseTable` cleanup shape more closely: after unregistering the table from the
+    local meta-sync table cache, Rust evicts cached shard routes so a later open cannot inherit
+    stale routing from a closed table handle.
+24. Client table execute/batch paths now match the C++ `TemporalStoreClient::Impl::WithRetry`
+    status contract for open-source API calls: retryable backend statuses including
+    `retry_later`, `partition_loading`, `meta_changed`, `topom_error`, `unavailable`,
+    `deadline_exceeded`, and `internal` are retried with separate read/write budgets and linear
+    backoff. Defaults mirror the C++ wrapper: one read retry, zero write retries.
+25. Raft now has a deterministic version of the C++ metaserver `TrivialRoutine::MaybeTriggerSnapshot`
+    behavior for both data-node and metaserver Raft: when `can_trigger_snapshot` is enabled and
+    applied log bytes since the latest snapshot floor exceed `max_applied_log_bytes`, Rust reports
+    the trigger reason and installs a compacting snapshot floor.
+26. Proxy config update now matches the C++ `Proxy::UpdateConfig` duplicate-update guard: if the
+    namespace and derived config version are unchanged, Rust returns a no-op report and preserves
+    the current client/cache instead of rebuilding it.
+27. Data-node shard config update now matches C++ `Partition::SetConfig` version semantics: stale
+    config versions are rejected with `failed_precondition`, equal versions are no-ops, and only
+    newer versions replace the active shard config.
+28. Metaserver Raft snapshot admin routes are now wired through the Raft-backed metadata runtime:
+    `GET /meta/snapshot`, `POST /meta/snapshot/save`, `POST /meta/snapshot/load`, and
+    `POST /meta/snapshot/restore` operate on the Raft leader's committed metabase state instead of
+    returning `raft_snapshot_unsupported`.
+29. Data-node distributed Raft now exposes C++ `RaftControlService`-style process endpoints on both
+    `raft_node` and raft-enabled `server`: `/raft/control/list_membership`,
+    `/raft/control/add_node`, `/raft/control/remove_node`, and
+    `/raft/control/trigger_snapshot`. These are backed by the existing safe membership-change path
+    and snapshot trigger routine.
+30. Data-node distributed Raft control now also exposes C++ `DataRaftConsensusBackend`-style
+    `ReadIndex` and `TransferLeader` operations over HTTP: `/raft/control/read_index` and
+    `/raft/control/transfer_leader` are available on both `raft_node` and raft-enabled `server`,
+    with lagging/non-live target rejection delegated to the Raft cluster checks.
+31. Server binary now exposes C++ `ServerService::Ping` parity through `GET/POST /ping` and
+    `GET/POST /ServerService/Ping`, returning the common OK status used by the Rust HTTP surface.
+32. Server binary now also exposes C++ `ServerService`-named JSON aliases for the partition-manager
+    surface already implemented by Rust: `/ServerService/Load`, `/ServerService/Unload`,
+    `/ServerService/ExecuteCmd`, `/ServerService/BatchExecuteCmd`, `/ServerService/SetConfig`,
+    `/ServerService/GetConfig`, `/ServerService/GetInfo`, `/ServerService/GetStats`,
+    `/ServerService/ReadPartitionStream`, `/ServerService/ScanPartitionStream`, and
+    `/ServerService/UpdateMembership`.
+33. The real OS-process `raft_secondary_replication_harness` now exercises the distributed
+    `/raft/request_vote` peer route: it sends an authenticated stale-candidate vote request that
+    must be rejected with `candidate_log_behind`, then sends an authenticated caught-up-candidate
+    request that must be granted.
+34. Server binary now exposes the remaining C++ `ServerService::ApplyDataRaftLog` RPC shape as
+    `POST /ServerService/ApplyDataRaftLog`. The route uses the existing C++-style data-Raft log
+    codec and committed-log applier, tracks per-shard applied raft/oplog indexes, and treats
+    duplicate raft indexes as idempotent no-ops.
+35. Distributed Raft peer receive paths now enforce RPC metadata auth at the process boundary:
+    `raft_node`, raft-enabled `server`, and the local distributed harness use the authenticated
+    HTTP handler for AppendEntries, RequestVote, InstallSnapshot, and snapshot chunks. The
+    OS-process harness now verifies wrong-token `/raft/request_vote` is rejected before normal vote
+    handling.
+36. Metaserver now exposes C++ `MasterService`-named JSON aliases for implemented control-plane
+    operations: `/MasterService/CreateTable`, `/MasterService/OpenTable`,
+    `/MasterService/CloseTable`, `/MasterService/GetTableTopo`,
+    `/MasterService/RegisterServer`, `/MasterService/UnRegisterServer`,
+    `/MasterService/DeleteTable`, and `/MasterService/UpdateTable`. The route test covers
+    C++ host/port registration, table creation via `table_options.partition_num`, open/table-topo
+    version semantics, update-table topology changes, close, unregister, and
+    table delete/open-after-delete semantics.
+37. Readonly replica replay loop now has C++ `Replicator::UpdateRemoteInfo`-style primary route
+    change handling for the implemented HTTP stream path: every loop resolves the metaserver route,
+    records `primary_route_change_total`, clears stale consecutive-failure backoff state when the
+    primary endpoint changes, exposes the counter in Prometheus events, and has a regression test
+    that starts with a bad primary route then recovers after the metaserver points to a healthy
+    primary.
+38. Metaserver table delete lifecycle is now implemented instead of returning an alias-only 404:
+    `DeleteTableRequest` is a durable metadata mutation, `/tables/delete` and
+    `/MasterService/DeleteTable` mark tables as `Dropped`, namespace table counts exclude dropped
+    tables, topology/open calls reject dropped tables with `table_not_found`, and mutation-log plus
+    MetaRaft tests cover replay and replication.
+39. Metaserver table update/alter lifecycle is now implemented for the open-source topology model:
+    `UpdateTableRequest` is a durable metadata mutation, `/tables/update`, `PATCH /tables`,
+    `/MasterService/UpdateTable`, and `/MasterService/AlterTable` can expand shard count and change
+    replica count, bump topology version, replay from the mutation log, and replicate through
+    MetaRaft. Unsafe C++-layout changes such as shrinking shard count or changing derived
+    partition-id fields are rejected.
+40. Data-node Raft external snapshot bootstrap is now exposed at the process boundary:
+    standalone `raft_node` and raft-enabled `server` both provide gated
+    `POST /raft/admin/publish_external_snapshot` and
+    `POST /raft/admin/bootstrap_external_snapshot`, which publish/download S3/MinIO-compatible
+    `ShardSnapshotRef`s through the snapshot-store abstraction, verify manifest/checksum/size and
+    stale-local-state guards, install the snapshot into the target replica engine state, record
+    the external snapshot ref, and catch up from the leader log. Route tests cover both binaries,
+    and the distributed harness now validates HTTP publish -> HTTP bootstrap -> follower read.
 
 This pass compared the Rust RESP layer against the local C++ server Redis command handler in
 `C:\Users\Vincent Jiang\Documents\Codex\temporalstore-small\src\server\redis_service.cc` and
@@ -120,6 +243,19 @@ This pass compared proxy, client, data-node, and metaserver surfaces again and c
 2. Client table topology sync: `TemporalStoreClient::open_table_from_meta()` fetches table topology from metaserver and derives `TableOptions`.
 3. Data-node cancellation surface: `DataNodeRuntime::cancel_job()` reports queued cancellation, in-flight, already-finished, and not-found job states.
 4. Metaserver stale heartbeat detection: `SingleNodeMeta::freeze_stale_servers()` freezes normal servers whose heartbeat age exceeds a threshold, with an HTTP route at `/servers/freeze_stale`.
+5. Metaserver safe-mode cooldown: stale server/proxy freeze now records `frozen_since_ms` and
+   `freeze_cooldown_until_ms`, rejects re-register/heartbeat while the cooldown is active, persists
+   through the local mutation log and metabase snapshots, exposes `GET /meta/safe_mode`, and is
+   available through the Raft-backed metaserver facade.
+6. Table serving-option catalog: metaserver table metadata now stores and patches C++-style serving
+   knobs for pin-primary, replica-read policy, preferred location, deterministic drop percent,
+   read/write retry counts, retry backoff, continuous-failure window, and connect/I/O timeouts.
+   These options are returned in topology, persist through snapshots/mutation paths, are accepted by
+   the `MasterService` `table_options` JSON alias, and are applied by the Rust client when opening a
+   table from metaserver topology.
+7. Feature/sequence filters now cover inclusive C++ boundary operators: typed filters and Redis
+   `FQUERYFILTER`/`FQUERYFILTERSTR` accept `>=`/`<=` plus `GE/GTE/LE/LTE`, and sequence/feature
+   query execution applies those inclusive predicates.
 
 This pass repeated the C++ vs Rust comparison again, focusing on the bigger distributed gaps. It closed eight more test-backed surfaces:
 
@@ -204,6 +340,11 @@ The previous pass closed a ByteRaft/ByteKV `RaftEngine` behavior gap:
 - `local_status(node_id)` matching the shape of ByteRaft's local status inspection
 - `prometheus_metrics()` for data Raft and metaserver Raft with commit index, live voters, majority, lease validity, per-node commit, lag, and liveness
 - tests for data-Raft status/read-index/leader-transfer, lagging replica rejection, and metaserver-Raft status/read-index/leader-transfer
+- `RaftApplyHealth` / `RaftApplyLag` for data-node and metaserver Raft, plus
+  `temporalstore_raft_node_applied_index` and `temporalstore_raft_node_apply_lag` metrics
+- data-Raft nonzero `lease_duration_ms` now has deterministic local-model enforcement: a logical
+  clock can expire the leader lease, `status.leader_lease_valid` flips false, read-index and writes
+  reject with `LeaderUnavailable`, and heartbeat/election/commit renews the lease.
 
 This is still an in-process correctness model, not a replacement for OpenRaft/raft-rs with durable WAL and network transport.
 
@@ -300,22 +441,22 @@ The Rust data node also has a first runtime layer around `TemporalEngine`: worke
 
 | Area | C++ TemporalStore | Rust Today | Missing |
 | --- | --- | --- | --- |
-| Protocol | brpc/thrift/protobuf APIs and extension protos | JSON/HTTP command API plus RESP adapter; brpc/thrift intentionally excluded | tonic/gRPC service definitions, prost message schema, SDK compatibility for the new API |
-| Proxy | brpc/thrift server, C++ client wrapper, MetaSyncer, heartbeat/config, consul registration | HTTP proxy service with `/execute`, `/batch_execute`, `/shards`, `/proxy/info`, `/proxy/config`, `/proxy/heartbeat`; forwarding delegates through `TemporalStoreClient` for route cache, stats sync, retries/timeouts, backend-error route refresh, continuous-failure bypass; background heartbeat loop and heartbeat auto-register helper | tonic proxy service, service discovery/consul, namespace/table open path |
-| Client SDK | C++ `Client`, `Table`, `Pipeline`, `MetaSyncer`, router, backend pool | Rust `TemporalStoreClient`, `TemporalStoreTable`, `TemporalStorePipeline`, typed methods, open/close table cache, stats, retries/timeouts, direct route refresh, per-backend continuous-failure windows, backend error streak tracking, open table from metaserver topology, background topology sync, C++ `crc64 >> 34` slot router, primary routing for writes, optional first-secondary routing for reads | tonic SDK, VDC affinity, full partition-set hierarchy, Neptune/drop-percent routing |
+| Protocol | brpc/thrift/protobuf APIs and extension protos | JSON/HTTP command API plus RESP adapter; C++ `ServerService`-named JSON route aliases for load/unload/execute/batch/apply-data-raft-log/config/info/stats/stream/update-membership/ping; C++ `MasterService`-named JSON route aliases for implemented table/server control-plane operations including table update/delete; brpc/thrift intentionally excluded | tonic/gRPC service definitions, prost message schema, SDK compatibility for the new API |
+| Proxy | brpc/thrift server, C++ client wrapper, MetaSyncer, heartbeat/config, consul registration | HTTP proxy service with `/execute`, `/batch_execute`, `/shards`, `/proxy/info`, `/proxy/config`, `/proxy/heartbeat`, `/proxy/open_table`, `/proxy/table_execute`, and `/proxy/table_batch_execute`; forwarding delegates through `TemporalStoreClient` for route cache, stats sync, retries/timeouts, backend-error route refresh, continuous-failure bypass, table topology sync, key-to-shard routing, and C++-style duplicate config-update no-op handling; background heartbeat loop and heartbeat auto-register helper | tonic proxy service, service discovery/consul |
+| Client SDK | C++ `Client`, `Table`, `Pipeline`, `MetaSyncer`, router, backend pool | Rust `TemporalStoreClient`, `TemporalStoreTable`, `TemporalStorePipeline`, typed methods, open/close table cache, close-table route-cache eviction, stats, timeouts, transport retries, C++-style retryable-status read/write budgets with linear backoff, direct route refresh, per-backend continuous-failure windows, backend error streak tracking, open table from metaserver topology, background topology sync, C++ `crc64 >> 34` slot router, primary routing for writes, optional first-secondary/round-robin secondary routing for reads, location-affine replica preference, and deterministic drop-percent traffic shedding | tonic SDK, full partition-set hierarchy, Neptune-specific routing |
 | Routing | namespace/table/partition-set/slot routing | key-to-shard routing from table options using C++ CRC64 slot formula, explicit `shard_id` request, simple metaserver route, topology-cached primary/replica endpoint choice, C++ `PartitionId` bit layout helper and opt-in C++-encoded table partition ids | full partition-set hierarchy, route versioning, placement hierarchy |
-| Metaserver | full topology, heartbeat, placement, scheduling, Raft-backed metadata | shard route map, namespace/table topology, opt-in C++ `PartitionId` generation for table partitions, load-aware replica fill with location diversity, server/proxy register/list/heartbeat, stale resource failure-detector loop, durable local JSONL mutation log/replay, meta stats, optional Raft-backed HTTP mutation path through `ProductionMetaRaftRuntime`, rebalance model, C++-style update-membership task model with sibling filtering, threshold checks, not-found-as-reboot success, FSM-submit gating, deterministic priority task scheduler model with retry-later backoff and abort handling, scheduler snapshot/restore, freezing-shard repair into UpdateMembership tasks | networked multi-process metaserver Raft transport, full host/cooldown placement rule chain, full background scheduler loop |
-| Data node execution | partition workers, async callbacks, load-version guards | `TemporalEngine` plus `DataNodeRuntime` shard-affine worker lanes, bounded foreground/background queue admission, foreground-over-background scheduler priority, per-shard FIFO single-lane execution, cross-shard parallelism, async jobs, immediate in-flight cancel-request status, cooperative cancellation checkpoints before destructive background phases, dirty tracking, checked execute/batch routes, invalid stream range rejection, background expiry sweep, C++-style duplicate-load/not-found-unload/config-not-found handling, C++-style membership update version guards and local-membership validity reporting, shard/table/tenant scoped QPS admission | tonic streaming/callback shape, preemptive hard cancellation of arbitrary running user work, distributed admission policy shared across data-node processes |
+| Metaserver | full topology, heartbeat, placement, scheduling, Raft-backed metadata | shard route map, namespace/table topology, C++ `MasterService`-named JSON aliases for implemented table/server control-plane operations, table update/delete lifecycle with topology-version bumps, dropped-table state, and topology rejection, table serving-option catalog for client routing/retry/drop/read-policy/timeouts, opt-in C++ `PartitionId` generation for table partitions, load-aware replica fill with location and host diversity, server/proxy register/list/heartbeat, stale resource failure-detector loop with safe-mode cooldown gates for server/proxy rejoin, durable local JSONL mutation log/replay, single-node metabase snapshot export/import and atomic local snapshot save/load, Raft-mode metabase snapshot export/save/load/restore through the metaserver admin routes, meta stats, optional Raft-backed HTTP mutation path through `ProductionMetaRaftRuntime`, rebalance model with C++-style balance partition counts and placement-failure counters, C++-style update-membership task model with sibling filtering, threshold checks, not-found-as-reboot success, FSM-submit gating, deterministic priority task scheduler model with retry-later backoff and abort handling, scheduler HTTP admin surface, scheduler snapshot/restore, optional local scheduler snapshot persistence, freezing-shard repair into UpdateMembership tasks | networked multi-process metaserver Raft transport, full C++ placement rule chain, full background scheduler loop executing tasks against real data-node processes |
+| Data node execution | partition workers, async callbacks, load-version guards | `TemporalEngine` plus `DataNodeRuntime` shard-affine worker lanes, bounded foreground/background queue admission, foreground-over-background scheduler priority, per-shard FIFO single-lane execution, cross-shard parallelism, async jobs, immediate in-flight cancel-request status, cooperative cancellation checkpoints before destructive background phases, dirty tracking, checked execute/batch routes, invalid stream range rejection, background expiry sweep, C++-style duplicate-load/not-found-unload/config-not-found handling, C++-style membership update version guards and local-membership validity reporting, C++ `Partition::SetConfig` stale/equal/newer version semantics, shard/table/tenant scoped QPS admission, readonly replica replay route-change reset and metrics | tonic streaming/callback shape, preemptive hard cancellation of arbitrary running user work, distributed admission policy shared across data-node processes |
 | Hot object model | `ObjectManager`, model objects, dirty slots | per-type maps of key/field/timestamp to `PageAddress` plus C++-style stats for logical object count, page refs, dirty objects, dirty routing slots, and partition info | stable object ids/page ids, dirty-slot dump scheduler, object lifecycle, model-specific memory layout |
 | Oplog | binary mutation log with replay/reclaim semantics | JSONL command oplog with explicit retain-from-sequence GC rewrite | binary/protobuf compatibility, fsync policy, replay into hot object manager |
 | Index log | binary metadata/index log | JSONL index-log with current index metadata and explicit retain-from-sequence GC rewrite | compact incremental deltas, page/object ids, checksums, replay ordering with oplog and page dumps |
 | Page store | slot/page/zone layout, page headers, dump/merge/load | append-only local page segment files plus dump/compact/GC task hooks, local live-page rewrite compaction into fresh segments, and conservative old segment deletion | zones, page headers, checksums, atomic install, C++ merged dump/load policy |
 | Shared store | local/ByteStore stream backends and replica replay | file-backed shared-store checkpoint, sync/async oplog publish, bounded async flush, checksum-enveloped oplog objects, strict gap-rejecting replay, persisted replay cursor, bounded object-store retry and async requeue-on-failure, oplog/checkpoint GC | ByteStore/S3 live object backend integration, automatic lifecycle safety tied to follower cursors/Raft snapshots |
-| Raft | ByteRaft-backed production groups | separate-node data-node Raft runtime wrapper with OpenRaft/raft-rs engine selection, production metaserver Raft runtime wrapper, mTLS config validation, authenticated RPC runtime construction, timer supervisors, metaserver stale-server detection in Raft mode, multi-process chaos plan validation, in-process behavior model plus snapshot semantics, HTTP Raft transport for AppendEntries/Vote/InstallSnapshot/chunked InstallSnapshot, timeout tick election with pre-vote, randomized scheduler model, hard-state/membership inspection, local durable segmented WAL record export/load/recovery with sync, retention, corrupt-tail truncation, and installed-snapshot recovery floor, auto-persisting WAL-backed cluster mode, bounded follower catch-up with replay progress and lag reports, bounded local WAL retention, AppendEntries/Vote/InstallSnapshot local receive behavior, joint-consensus old/new majority safety model, safe add/remove/replace membership-change planner and report, metaserver topology to data-Raft voter-plan bridge with no-op and server-state validation, Raft RPC retry/backpressure/auth/deadline wrapper, local partition/heal chaos coverage, ByteKV/ByteRaft-style config/read options, oversized log guard, election prohibition, status/local-status, read-index guard, leader transfer, raft metrics | OpenRaft/raft-rs FSM/storage integration, actual mTLS transport, real snapshot install, scheduler loop applying membership plans, external multi-process chaos |
-| Snapshots | integrated storage/load pipeline | S3-compatible snapshot crate plus local Raft snapshot model | engine freeze/flush, attach snapshot metadata to Raft, S3 restore into data-node FSM |
+| Raft | ByteRaft-backed production groups | separate-node data-node Raft runtime wrapper with OpenRaft/raft-rs engine selection, production metaserver Raft runtime wrapper, mTLS config validation, authenticated RPC runtime construction plus receive-side peer RPC auth enforcement, timer supervisors, metaserver stale-server detection in Raft mode, multi-process chaos plan validation, in-process behavior model plus snapshot semantics, deterministic applied-log-byte snapshot trigger reports for data and metaserver Raft, HTTP Raft transport for AppendEntries/Vote/InstallSnapshot/chunked InstallSnapshot, timeout tick election with pre-vote, randomized scheduler model, hard-state/membership inspection, local durable segmented WAL record export/load/recovery with sync, retention, corrupt-tail truncation, and installed-snapshot recovery floor, auto-persisting WAL-backed cluster mode, bounded follower catch-up with replay progress and lag reports, commit-to-apply health reports, process-level `/raft/apply_health`, apply-lag metrics, networked `/raft/membership/apply` plus C++-style `/raft/control/{list_membership,add_node,remove_node,trigger_snapshot,read_index,transfer_leader}` on raft_node and raft-enabled server, process-level external snapshot bootstrap route, bounded local WAL retention, AppendEntries/Vote/InstallSnapshot local receive behavior, joint-consensus old/new majority safety model, safe add/remove/replace membership-change planner and report, metaserver topology to data-Raft voter-plan bridge with no-op and server-state validation, Raft RPC retry/backpressure/auth/deadline wrapper, deterministic leader-lease expiry guard for data-Raft reads/writes, local partition/heal chaos coverage, ByteKV/ByteRaft-style config/read options, oversized log guard, election prohibition, status/local-status, read-index guard, leader transfer, raft metrics | OpenRaft/raft-rs FSM/storage integration, actual mTLS transport, production engine snapshot freeze/flush lifecycle, metaserver scheduler loop applying membership plans, external multi-process chaos |
+| Snapshots | integrated storage/load pipeline | S3-compatible snapshot crate plus local Raft snapshot model, external snapshot refs, manifest/checksum/size verification, stale-local-state preflight, and process-level bootstrap restore into data-node Raft engine state | production engine freeze/flush lifecycle and AWS/MinIO E2E validation |
 | Cache | mtcache/blockcache production cache | memory plus local disk block cache with page-address keys, versioned block envelope, zstd compression, metrics, and shard-level GC eviction | CacheLib/SSD cache parity, admission, advanced eviction policy, warmup, pinning |
 | Feature | richer feature proto semantics | append/query/replace/delete/agg, write-policy append, 5k long-sequence coverage | nested point arrays, exact aggregate semantics |
-| Sequence | C++ feature/data-module behavior | typed rows, timestamp ordering, filters, count, batch query | exact C++ filters/options and edge-case policy |
+| Sequence | C++ feature/data-module behavior | typed rows, timestamp ordering, inclusive/equality/inequality filters, count, batch query | exact C++ options and remaining edge-case policy |
 | IPS | rich IPS add/query/remove/load/delete/stat/filter/snap | add, idempotent/dimensional add, query-last, query range, dimension-filtered range, batch query-last, remove timestamp, delete key, count range, load, range snapshot, stats, and named filter; typed client and RESP coverage | production snap metadata and server aggregation |
 | Risk | H/CPC/FOL query/update/manager semantics | increment/count plus precision/TTL increment, sum/min/max/first/last/event aggregation, detail list, H/CPC/FOL family set/query/set-and-get command shape, and local manager summary; typed client and RESP coverage | production CPC/list internals and full manager/debug APIs |
 | Redis | not the main C++ wire API; C++ server also exposes admin commands such as `INFO`, `CONFIG`, `SLAVEOF`, and `PARTITION` | useful RESP compatibility, including `SET NX/XX GET EX/PX`, hash/set commands, feature commands, C++-style `INFO`/`CONFIG`/`SLAVEOF`/`AUTH`/`BGSAVE`/`PARTITION` smoke commands, and CRC64 slot/hash helpers | sorted sets/lists if needed; real partition-manager backing for admin commands |
@@ -332,7 +473,7 @@ These cannot be honestly marked done yet:
 - replace the in-process HTTP metaserver Raft backend with networked multi-process metaserver Raft
 - make shard membership changes durable through metaserver Raft
 - add crash-safe WAL/index/page recovery tests
-- wire engine snapshots into Raft snapshot install
+- wire engine snapshots into the full production freeze/flush/install lifecycle
 - expand heartbeat/load-report payloads beyond local partition stats into the full C++ server
   heartbeat contract
 

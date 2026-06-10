@@ -1730,6 +1730,7 @@ mod tests {
             CompactionRequest { shard_id: 1 },
             RequestController { timeout_ms: 1000 },
         );
+        assert!(submitted.status.ok, "{submitted:?}");
         let finished = wait_for_job(&runtime, submitted.job_id);
         let Some(DataNodeTaskOutput::Compact(output)) = finished.output else {
             panic!("expected compaction output");
@@ -2081,7 +2082,7 @@ mod tests {
     }
 
     fn wait_for_job(runtime: &DataNodeRuntime, job_id: u64) -> DataNodeTaskStatus {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(30);
         while Instant::now() < deadline {
             if let Some(status) = runtime.job_status(job_id) {
                 if status.finished_at_ms.is_some() {

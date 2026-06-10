@@ -10,7 +10,7 @@ use crate::http::{
     HttpRequestOptions,
 };
 use crate::meta::GetShardResponse;
-use crate::meta::{GetTableTopologyRequest, TableTopologyResponse};
+use crate::meta::{GetTableTopologyRequest, ServerEndpoint, TableTopologyResponse};
 use crate::types::{
     parse_cpp_feature_filters, BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse,
     ExecuteRequest, ExecuteResponse, FeatureFilter, FeaturePoint, FeatureWritePolicy, IpsStats,
@@ -40,9 +40,14 @@ pub struct ClientOptions {
     pub connect_timeout_ms: u64,
     pub io_timeout_ms: u64,
     pub max_retries: usize,
+    pub max_read_retries: usize,
+    pub max_write_retries: usize,
+    pub retry_backoff_ms: u64,
     pub route_cache_ttl_ms: u64,
     pub meta_sync_interval_ms: u64,
     pub topo_error_retry_interval_ms: u64,
+    pub local_location: String,
+    pub drop_percent: u8,
 }
 
 impl ClientOptions {
@@ -71,9 +76,14 @@ impl Default for ClientOptions {
             connect_timeout_ms: 200,
             io_timeout_ms: 200,
             max_retries: 0,
+            max_read_retries: 1,
+            max_write_retries: 0,
+            retry_backoff_ms: 2,
             route_cache_ttl_ms: 1_000,
             meta_sync_interval_ms: 10 * 60 * 1_000,
             topo_error_retry_interval_ms: 5_000,
+            local_location: String::new(),
+            drop_percent: 0,
         }
     }
 }
@@ -98,6 +108,11 @@ pub struct TableOptions {
     pub shard_count: u64,
     pub pin_primary: bool,
     pub replica_read_policy: ReplicaReadPolicy,
+    pub preferred_location: String,
+    pub drop_percent: u8,
+    pub max_read_retries: usize,
+    pub max_write_retries: usize,
+    pub retry_backoff_ms: u64,
 }
 
 impl Default for TableOptions {
@@ -110,6 +125,11 @@ impl Default for TableOptions {
             shard_count: 1,
             pin_primary: true,
             replica_read_policy: ReplicaReadPolicy::PinPrimary,
+            preferred_location: String::new(),
+            drop_percent: 0,
+            max_read_retries: 1,
+            max_write_retries: 0,
+            retry_backoff_ms: 2,
         }
     }
 }
@@ -173,6 +193,7 @@ struct ClientInner {
 struct CachedRoute {
     primary_addr: String,
     replica_addrs: Vec<String>,
+    replica_endpoints: Vec<ServerEndpoint>,
     next_replica_index: usize,
     fetched_at: Instant,
 }
@@ -240,6 +261,29 @@ impl TemporalStoreClient {
         Ok(self.open_table(namespace, table_name, options))
     }
 
+    pub fn cached_table(
+        &self,
+        namespace: impl Into<String>,
+        table_name: impl Into<String>,
+    ) -> Option<TemporalStoreTable> {
+        let namespace = namespace.into();
+        let table_name = table_name.into();
+        let options = self
+            .inner
+            .tables
+            .lock()
+            .expect("client table cache lock poisoned")
+            .get(&table_combine_name(&namespace, &table_name))
+            .cloned()?;
+        Some(TemporalStoreTable {
+            client: self.clone(),
+            namespace,
+            table_name,
+            shard_id: self.inner.options.default_shard_id,
+            options,
+        })
+    }
+
     pub fn sync_table_topology(
         &self,
         namespace: impl Into<String>,
@@ -289,9 +333,66 @@ impl TemporalStoreClient {
         let table = topology
             .table
             .ok_or_else(|| ClientError::Status("table topology missing".to_string()))?;
+        let serving_options = table.serving_options.clone();
+        let default_serving_options = crate::meta::TableServingOptions::default();
         let options = TableOptions {
+            io_timeout_ms: if serving_options.io_timeout_ms == default_serving_options.io_timeout_ms
+            {
+                self.inner.options.io_timeout_ms
+            } else {
+                serving_options.io_timeout_ms
+            },
+            connect_timeout_ms: if serving_options.connect_timeout_ms
+                == default_serving_options.connect_timeout_ms
+            {
+                self.inner.options.connect_timeout_ms
+            } else {
+                serving_options.connect_timeout_ms
+            },
+            continuous_failed_time_ms: if serving_options.continuous_failed_time_ms
+                == default_serving_options.continuous_failed_time_ms
+            {
+                TableOptions::default().continuous_failed_time_ms
+            } else {
+                serving_options.continuous_failed_time_ms
+            },
             first_shard_id: table.first_shard_id,
             shard_count: table.shard_count,
+            pin_primary: serving_options.pin_primary,
+            replica_read_policy: replica_read_policy_from_meta(
+                &serving_options.replica_read_policy,
+            ),
+            preferred_location: if serving_options.preferred_location.is_empty() {
+                self.inner.options.local_location.clone()
+            } else {
+                serving_options.preferred_location.clone()
+            },
+            drop_percent: if serving_options.drop_percent == default_serving_options.drop_percent {
+                self.inner.options.drop_percent.min(100)
+            } else {
+                serving_options.drop_percent.min(100)
+            },
+            max_read_retries: if serving_options.max_read_retries
+                == default_serving_options.max_read_retries
+            {
+                self.inner.options.max_read_retries
+            } else {
+                serving_options.max_read_retries as usize
+            },
+            max_write_retries: if serving_options.max_write_retries
+                == default_serving_options.max_write_retries
+            {
+                self.inner.options.max_write_retries
+            } else {
+                serving_options.max_write_retries as usize
+            },
+            retry_backoff_ms: if serving_options.retry_backoff_ms
+                == default_serving_options.retry_backoff_ms
+            {
+                self.inner.options.retry_backoff_ms
+            } else {
+                serving_options.retry_backoff_ms
+            },
             ..TableOptions::default()
         };
         let routes = topology
@@ -307,6 +408,12 @@ impl TemporalStoreClient {
                                 .replicas
                                 .iter()
                                 .filter(|replica| *replica != primary)
+                                .cloned()
+                                .collect(),
+                            replica_endpoints: partition
+                                .replica_endpoints
+                                .iter()
+                                .filter(|endpoint| endpoint.server_addr != *primary)
                                 .cloned()
                                 .collect(),
                             next_replica_index: 0,
@@ -369,6 +476,11 @@ impl TemporalStoreClient {
             .expect("client stats lock poisoned")
             .close_table_calls += 1;
         if removed {
+            self.inner
+                .routes
+                .lock()
+                .expect("client route cache lock poisoned")
+                .clear();
             Ok(())
         } else {
             Err(ClientError::Status("table not found".to_string()))
@@ -398,6 +510,7 @@ impl TemporalStoreClient {
                 CachedRoute {
                     primary_addr: primary_addr.into(),
                     replica_addrs: Vec::new(),
+                    replica_endpoints: Vec::new(),
                     next_replica_index: 0,
                     fetched_at: Instant::now(),
                 },
@@ -521,6 +634,7 @@ impl TemporalStoreClient {
             http_options,
             continuous_failed_time_ms,
             ReplicaReadPolicy::PinPrimary,
+            None,
         )
     }
 
@@ -531,6 +645,7 @@ impl TemporalStoreClient {
         http_options: HttpRequestOptions,
         continuous_failed_time_ms: Option<u64>,
         replica_read_policy: ReplicaReadPolicy,
+        preferred_location: Option<&str>,
     ) -> Result<ExecuteResponse, ClientError> {
         if self.inner.options.meta_addr.is_some() {
             let policy = if force_primary {
@@ -543,6 +658,7 @@ impl TemporalStoreClient {
                 false,
                 continuous_failed_time_ms,
                 policy,
+                preferred_location,
             )?;
             return post_json_with_options(&server_addr, "/execute", &request, http_options)
                 .or_else(|_| {
@@ -561,6 +677,7 @@ impl TemporalStoreClient {
                         true,
                         continuous_failed_time_ms,
                         policy,
+                        preferred_location,
                     )?;
                     let response =
                         post_json_with_options(&refreshed, "/execute", &request, http_options)?;
@@ -640,6 +757,7 @@ impl TemporalStoreClient {
             force_refresh,
             continuous_failed_time_ms,
             ReplicaReadPolicy::PinPrimary,
+            None,
         )
     }
 
@@ -649,6 +767,7 @@ impl TemporalStoreClient {
         force_refresh: bool,
         continuous_failed_time_ms: Option<u64>,
         replica_read_policy: ReplicaReadPolicy,
+        preferred_location: Option<&str>,
     ) -> Result<String, ClientError> {
         let ttl = Duration::from_millis(self.inner.options.route_cache_ttl_ms);
         if !force_refresh {
@@ -659,7 +778,8 @@ impl TemporalStoreClient {
                 .expect("client route cache lock poisoned");
             if let Some(route) = route_cache.get_mut(&shard_id) {
                 if route.fetched_at.elapsed() <= ttl {
-                    let server_addr = choose_cached_route(route, replica_read_policy);
+                    let server_addr =
+                        choose_cached_route(route, replica_read_policy, preferred_location);
                     if self.backend_failure_is_continuous(
                         &server_addr,
                         continuous_failed_time_ms
@@ -714,6 +834,7 @@ impl TemporalStoreClient {
                 CachedRoute {
                     primary_addr: server_addr.clone(),
                     replica_addrs: Vec::new(),
+                    replica_endpoints: Vec::new(),
                     next_replica_index: 0,
                     fetched_at: Instant::now(),
                 },
@@ -801,6 +922,10 @@ impl TemporalStoreTable {
             options.shard_count,
             self.shard_id,
         )
+    }
+
+    pub fn options(&self) -> TableOptions {
+        self.table_options()
     }
 
     fn table_options(&self) -> TableOptions {
@@ -1727,17 +1852,42 @@ impl TemporalStoreTable {
             .execute_requests += 1;
         let shard_id = self.shard_id_for_command(&command);
         let table_options = self.table_options();
-        let force_primary = is_write(&command) || table_options.pin_primary;
-        let response = self.client.execute_routed_with_http_and_policy(
-            ExecuteRequest {
-                shard_id,
-                command: command.clone(),
-            },
-            force_primary,
-            self.http_options(),
-            Some(table_options.continuous_failed_time_ms),
-            table_options.replica_read_policy,
-        )?;
+        if command_is_dropped(&command, table_options.drop_percent) {
+            return Ok(ExecuteResponse {
+                status: Status::error("traffic_dropped", "request dropped by table drop_percent"),
+                response: CommandResponse::Empty,
+            });
+        }
+        let write = is_write(&command);
+        let force_primary = write || table_options.pin_primary;
+        let max_attempts = retry_attempts_for(&table_options, write);
+        let mut response = None;
+        for attempt in 0..max_attempts {
+            let current = self.client.execute_routed_with_http_and_policy(
+                ExecuteRequest {
+                    shard_id,
+                    command: command.clone(),
+                },
+                force_primary,
+                self.http_options(),
+                Some(table_options.continuous_failed_time_ms),
+                table_options.replica_read_policy,
+                if table_options.preferred_location.is_empty() {
+                    None
+                } else {
+                    Some(table_options.preferred_location.as_str())
+                },
+            )?;
+            if current.status.ok
+                || !status_is_cpp_retryable(&current.status)
+                || attempt + 1 == max_attempts
+            {
+                response = Some(current);
+                break;
+            }
+            sleep_before_retry(&table_options, attempt);
+        }
+        let response = response.expect("retry loop must run at least one attempt");
         if !response.status.ok {
             return Err(ClientError::Status(response.status.message));
         }
@@ -1754,6 +1904,22 @@ impl TemporalStoreTable {
             .lock()
             .expect("client stats lock poisoned")
             .batch_execute_requests += 1;
+        let table_options = self.table_options();
+        if let Some(command) = commands
+            .iter()
+            .find(|command| command_is_dropped(command, table_options.drop_percent))
+        {
+            return Ok(BatchExecuteResponse {
+                status: Status::error(
+                    "traffic_dropped",
+                    format!(
+                        "batch command for key {:?} dropped by table drop_percent",
+                        command_key(command)
+                    ),
+                ),
+                responses: Vec::new(),
+            });
+        }
         if self.options.shard_count > 1 {
             return self.batch_execute_grouped_by_shard(commands);
         }
@@ -1761,11 +1927,33 @@ impl TemporalStoreTable {
             shard_id: self.shard_id,
             commands,
         };
-        self.client.batch_execute_with_http(
-            request,
-            self.http_options(),
-            Some(self.table_options().continuous_failed_time_ms),
-        )
+        self.batch_execute_single_shard_with_retry(request, table_options)
+    }
+
+    fn batch_execute_single_shard_with_retry(
+        &self,
+        request: BatchExecuteRequest,
+        table_options: TableOptions,
+    ) -> Result<BatchExecuteResponse, ClientError> {
+        let write = request.commands.iter().any(is_write);
+        let max_attempts = retry_attempts_for(&table_options, write);
+        let mut response = None;
+        for attempt in 0..max_attempts {
+            let current = self.client.batch_execute_with_http(
+                request.clone(),
+                self.http_options(),
+                Some(table_options.continuous_failed_time_ms),
+            )?;
+            if current.status.ok
+                || !status_is_cpp_retryable(&current.status)
+                || attempt + 1 == max_attempts
+            {
+                response = Some(current);
+                break;
+            }
+            sleep_before_retry(&table_options, attempt);
+        }
+        Ok(response.expect("retry loop must run at least one attempt"))
     }
 
     fn batch_execute_grouped_by_shard(
@@ -1785,10 +1973,9 @@ impl TemporalStoreTable {
         for (shard_id, group) in groups {
             let indexes: Vec<usize> = group.iter().map(|(index, _)| *index).collect();
             let commands: Vec<Command> = group.into_iter().map(|(_, command)| command).collect();
-            let response = self.client.batch_execute_with_http(
+            let response = self.batch_execute_single_shard_with_retry(
                 BatchExecuteRequest { shard_id, commands },
-                self.http_options(),
-                Some(self.table_options().continuous_failed_time_ms),
+                self.table_options(),
             )?;
             if !response.status.ok {
                 return Ok(BatchExecuteResponse {
@@ -1846,15 +2033,22 @@ impl TemporalStoreTable {
     }
 }
 
-fn choose_cached_route(route: &mut CachedRoute, replica_read_policy: ReplicaReadPolicy) -> String {
+fn choose_cached_route(
+    route: &mut CachedRoute,
+    replica_read_policy: ReplicaReadPolicy,
+    preferred_location: Option<&str>,
+) -> String {
     match replica_read_policy {
         ReplicaReadPolicy::PinPrimary => route.primary_addr.clone(),
-        ReplicaReadPolicy::FirstReplica => route
-            .replica_addrs
-            .first()
-            .cloned()
-            .unwrap_or_else(|| route.primary_addr.clone()),
+        ReplicaReadPolicy::FirstReplica => {
+            choose_location_affine_replica(route, preferred_location)
+                .or_else(|| route.replica_addrs.first().cloned())
+                .unwrap_or_else(|| route.primary_addr.clone())
+        }
         ReplicaReadPolicy::RoundRobinReplica => {
+            if let Some(replica) = choose_location_affine_replica(route, preferred_location) {
+                return replica;
+            }
             if route.replica_addrs.is_empty() {
                 return route.primary_addr.clone();
             }
@@ -1864,6 +2058,21 @@ fn choose_cached_route(route: &mut CachedRoute, replica_read_policy: ReplicaRead
             replica
         }
     }
+}
+
+fn choose_location_affine_replica(
+    route: &CachedRoute,
+    preferred_location: Option<&str>,
+) -> Option<String> {
+    let preferred_location = preferred_location?.trim();
+    if preferred_location.is_empty() {
+        return None;
+    }
+    route
+        .replica_endpoints
+        .iter()
+        .find(|endpoint| endpoint.location == preferred_location)
+        .map(|endpoint| endpoint.server_addr.clone())
 }
 
 #[derive(Debug, Clone)]
@@ -2012,6 +2221,72 @@ pub fn crc64_jones(bytes: &[u8]) -> u64 {
 
 pub fn stable_key_hash(key: &str) -> u64 {
     crc64_jones(key.as_bytes())
+}
+
+pub fn key_is_dropped_by_percent(key: &str, drop_percent: u8) -> bool {
+    let drop_percent = drop_percent.min(100);
+    drop_percent > 0 && (stable_key_hash(key) % 100) < u64::from(drop_percent)
+}
+
+fn command_is_dropped(command: &Command, drop_percent: u8) -> bool {
+    command_key(command)
+        .map(|key| key_is_dropped_by_percent(key, drop_percent))
+        .unwrap_or(false)
+}
+
+fn retry_attempts_for(options: &TableOptions, write: bool) -> usize {
+    let retries = if write {
+        options.max_write_retries
+    } else {
+        options.max_read_retries
+    };
+    retries.saturating_add(1)
+}
+
+fn replica_read_policy_from_meta(policy: &str) -> ReplicaReadPolicy {
+    match policy {
+        "first_replica" => ReplicaReadPolicy::FirstReplica,
+        "round_robin_replica" => ReplicaReadPolicy::RoundRobinReplica,
+        _ => ReplicaReadPolicy::PinPrimary,
+    }
+}
+
+fn sleep_before_retry(options: &TableOptions, attempt: usize) {
+    if options.retry_backoff_ms == 0 {
+        return;
+    }
+    let multiplier = u64::try_from(attempt.saturating_add(1)).unwrap_or(u64::MAX);
+    let sleep_ms = options.retry_backoff_ms.saturating_mul(multiplier);
+    thread::sleep(Duration::from_millis(sleep_ms));
+}
+
+fn status_is_cpp_retryable(status: &Status) -> bool {
+    if status.ok {
+        return false;
+    }
+    let code = normalize_status_code(&status.code);
+    matches!(
+        code.as_str(),
+        "deadlineexceeded"
+            | "deadline_exceeded"
+            | "unavailable"
+            | "internal"
+            | "retrylater"
+            | "retry_later"
+            | "partitionloading"
+            | "partition_loading"
+            | "metachanged"
+            | "meta_changed"
+            | "topomerror"
+            | "topom_error"
+    )
+}
+
+fn normalize_status_code(code: &str) -> String {
+    code.chars()
+        .filter(|ch| *ch != '-' && *ch != ' ')
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 fn command_key(command: &Command) -> Option<&str> {
@@ -2438,6 +2713,7 @@ mod tests {
             CachedRoute {
                 primary_addr: "127.0.0.1:1".to_string(),
                 replica_addrs: Vec::new(),
+                replica_endpoints: Vec::new(),
                 next_replica_index: 0,
                 fetched_at: Instant::now(),
             },
@@ -2461,8 +2737,8 @@ mod tests {
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
-        let server_addr = test_addr(18_216);
-        let meta_addr = test_addr(18_217);
+        let server_addr = test_addr(18_226);
+        let meta_addr = test_addr(18_227);
         let engine_for_server = engine.clone();
         std::thread::spawn(move || {
             serve(&server_addr, move |request| {
@@ -2476,7 +2752,7 @@ mod tests {
             })
             .unwrap();
         });
-        let live_server = test_addr(18_216);
+        let live_server = test_addr(18_226);
         std::thread::spawn(move || {
             serve(&meta_addr, move |request| {
                 match (request.method.as_str(), request.path.as_str()) {
@@ -2496,12 +2772,12 @@ mod tests {
             })
             .unwrap();
         });
-        wait_for_http(&test_addr(18_217));
+        wait_for_http(&test_addr(18_227));
 
         let bad_server = "127.0.0.1:1".to_string();
         let client = TemporalStoreClient::with_options(ClientOptions {
             proxy_addr: bad_server.clone(),
-            meta_addr: Some(test_addr(18_217)),
+            meta_addr: Some(test_addr(18_227)),
             route_cache_ttl_ms: 60_000,
             connect_timeout_ms: 50,
             io_timeout_ms: 200,
@@ -2512,6 +2788,7 @@ mod tests {
             CachedRoute {
                 primary_addr: bad_server.clone(),
                 replica_addrs: Vec::new(),
+                replica_endpoints: Vec::new(),
                 next_replica_index: 0,
                 fetched_at: Instant::now(),
             },
@@ -2564,6 +2841,7 @@ mod tests {
                                 replica_count: 1,
                                 use_cpp_partition_ids: false,
                                 partition_version: 0,
+                                serving_options: crate::meta::TableServingOptions::default(),
                             }),
                             partitions: Vec::new(),
                             unchanged: false,
@@ -2578,13 +2856,82 @@ mod tests {
 
         let client = TemporalStoreClient::with_options(ClientOptions {
             meta_addr: Some(test_addr(18_214)),
+            drop_percent: 17,
             ..ClientOptions::default()
         });
         let table = client.open_table_from_meta("ns", "tbl").unwrap();
         assert_eq!(table.namespace(), "ns");
         assert_eq!(table.table_name(), "tbl");
+        assert_eq!(table.options().drop_percent, 17);
         let routed = table.shard_id_for_key("routing-key");
         assert!((10..14).contains(&routed));
+    }
+
+    #[test]
+    fn client_applies_metaserver_table_serving_options() {
+        let meta_addr = test_addr(18_215);
+        std::thread::spawn(move || {
+            serve(&meta_addr, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    ("POST", "/tables/topology") => json_response(
+                        200,
+                        &TableTopologyResponse {
+                            status: Status::ok(),
+                            table: Some(crate::meta::TableMetaInfo {
+                                table_id: 1,
+                                namespace: "ns".to_string(),
+                                table_name: "tbl".to_string(),
+                                state: crate::meta::MetaEntityState::Normal,
+                                topology_version: 7,
+                                first_shard_id: 10,
+                                shard_count: 4,
+                                replica_count: 2,
+                                use_cpp_partition_ids: false,
+                                partition_version: 0,
+                                serving_options: crate::meta::TableServingOptions {
+                                    pin_primary: false,
+                                    replica_read_policy: "round_robin_replica".to_string(),
+                                    preferred_location: "zone-b".to_string(),
+                                    drop_percent: 23,
+                                    max_read_retries: 4,
+                                    max_write_retries: 2,
+                                    retry_backoff_ms: 17,
+                                    continuous_failed_time_ms: 19,
+                                    io_timeout_ms: 321,
+                                    connect_timeout_ms: 123,
+                                },
+                            }),
+                            partitions: Vec::new(),
+                            unchanged: false,
+                        },
+                    ),
+                    _ => json_response(404, &Status::error("not_found", "not found")),
+                }
+            })
+            .unwrap();
+        });
+        wait_for_http(&test_addr(18_215));
+
+        let client = TemporalStoreClient::with_options(ClientOptions {
+            meta_addr: Some(test_addr(18_215)),
+            drop_percent: 0,
+            ..ClientOptions::default()
+        });
+        let table = client.open_table_from_meta("ns", "tbl").unwrap();
+        let options = table.options();
+        assert!(!options.pin_primary);
+        assert_eq!(
+            options.replica_read_policy,
+            ReplicaReadPolicy::RoundRobinReplica
+        );
+        assert_eq!(options.preferred_location, "zone-b");
+        assert_eq!(options.drop_percent, 23);
+        assert_eq!(options.max_read_retries, 4);
+        assert_eq!(options.max_write_retries, 2);
+        assert_eq!(options.retry_backoff_ms, 17);
+        assert_eq!(options.continuous_failed_time_ms, 19);
+        assert_eq!(options.io_timeout_ms, 321);
+        assert_eq!(options.connect_timeout_ms, 123);
     }
 
     #[test]
@@ -2676,6 +3023,7 @@ mod tests {
                                 replica_count: 2,
                                 use_cpp_partition_ids: false,
                                 partition_version: 0,
+                                serving_options: crate::meta::TableServingOptions::default(),
                             }),
                             partitions: vec![TablePartition {
                                 shard_id: 1,
@@ -2683,6 +3031,8 @@ mod tests {
                                 end_slot: u64::MAX,
                                 primary: Some(primary_for_meta.clone()),
                                 replicas: vec![primary_for_meta.clone(), replica_for_meta.clone()],
+                                primary_endpoint: None,
+                                replica_endpoints: Vec::new(),
                             }],
                             unchanged: false,
                         },
@@ -2734,34 +3084,215 @@ mod tests {
         let mut route = CachedRoute {
             primary_addr: "primary".to_string(),
             replica_addrs: vec!["replica-a".to_string(), "replica-b".to_string()],
+            replica_endpoints: Vec::new(),
             next_replica_index: 0,
             fetched_at: Instant::now(),
         };
 
         assert_eq!(
-            choose_cached_route(&mut route, ReplicaReadPolicy::RoundRobinReplica),
+            choose_cached_route(&mut route, ReplicaReadPolicy::RoundRobinReplica, None),
             "replica-a"
         );
         assert_eq!(
-            choose_cached_route(&mut route, ReplicaReadPolicy::RoundRobinReplica),
+            choose_cached_route(&mut route, ReplicaReadPolicy::RoundRobinReplica, None),
             "replica-b"
         );
         assert_eq!(
-            choose_cached_route(&mut route, ReplicaReadPolicy::RoundRobinReplica),
+            choose_cached_route(&mut route, ReplicaReadPolicy::RoundRobinReplica, None),
             "replica-a"
         );
         assert_eq!(
-            choose_cached_route(&mut route, ReplicaReadPolicy::PinPrimary),
+            choose_cached_route(&mut route, ReplicaReadPolicy::PinPrimary, None),
             "primary"
         );
     }
 
     #[test]
+    fn client_router_prefers_same_location_replica_when_available() {
+        let mut route = CachedRoute {
+            primary_addr: "primary".to_string(),
+            replica_addrs: vec!["replica-remote".to_string(), "replica-local".to_string()],
+            replica_endpoints: vec![
+                ServerEndpoint {
+                    server_addr: "replica-remote".to_string(),
+                    location: "zone-b".to_string(),
+                },
+                ServerEndpoint {
+                    server_addr: "replica-local".to_string(),
+                    location: "zone-a".to_string(),
+                },
+            ],
+            next_replica_index: 0,
+            fetched_at: Instant::now(),
+        };
+
+        assert_eq!(
+            choose_cached_route(&mut route, ReplicaReadPolicy::FirstReplica, Some("zone-a")),
+            "replica-local"
+        );
+        assert_eq!(
+            choose_cached_route(
+                &mut route,
+                ReplicaReadPolicy::RoundRobinReplica,
+                Some("zone-a")
+            ),
+            "replica-local"
+        );
+        assert_eq!(
+            choose_cached_route(
+                &mut route,
+                ReplicaReadPolicy::FirstReplica,
+                Some("missing-zone")
+            ),
+            "replica-remote"
+        );
+    }
+
+    #[test]
+    fn client_table_drop_percent_rejects_sampled_requests_before_network() {
+        let client = TemporalStoreClient::with_options(ClientOptions {
+            proxy_addr: "127.0.0.1:1".to_string(),
+            ..ClientOptions::default()
+        });
+        let table = client.open_table(
+            "ns",
+            "tbl",
+            TableOptions {
+                drop_percent: 100,
+                ..TableOptions::default()
+            },
+        );
+
+        let response = table
+            .execute(Command::StringGet {
+                key: "always-dropped".to_string(),
+            })
+            .unwrap();
+        assert_eq!(response.status.code, "traffic_dropped");
+
+        let batch = table
+            .batch_execute(vec![Command::StringSet {
+                key: "also-dropped".to_string(),
+                value: b"v".to_vec(),
+            }])
+            .unwrap();
+        assert_eq!(batch.status.code, "traffic_dropped");
+        assert!(batch.responses.is_empty());
+        assert_eq!(client.stats().route_refreshes, 0);
+    }
+
+    #[test]
+    fn client_drop_percent_sampler_is_deterministic_and_bounded() {
+        assert!(!key_is_dropped_by_percent("k", 0));
+        assert!(key_is_dropped_by_percent("k", 100));
+        assert_eq!(
+            key_is_dropped_by_percent("stable-key", 17),
+            key_is_dropped_by_percent("stable-key", 17)
+        );
+        assert_eq!(
+            key_is_dropped_by_percent("k", 255),
+            key_is_dropped_by_percent("k", 100)
+        );
+    }
+
+    #[test]
+    fn client_retries_cpp_retryable_read_status_before_returning() {
+        let proxy_addr = test_addr(18_236);
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let attempts_for_server = attempts.clone();
+        std::thread::spawn(move || {
+            serve(&proxy_addr, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    ("POST", "/execute") => {
+                        let attempt =
+                            attempts_for_server.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        if attempt == 0 {
+                            json_response(
+                                200,
+                                &ExecuteResponse {
+                                    status: Status::error("retry_later", "loading"),
+                                    response: CommandResponse::Empty,
+                                },
+                            )
+                        } else {
+                            json_response(
+                                200,
+                                &ExecuteResponse {
+                                    status: Status::ok(),
+                                    response: CommandResponse::Bytes {
+                                        value: Some(b"ok".to_vec()),
+                                    },
+                                },
+                            )
+                        }
+                    }
+                    _ => json_response(404, &Status::error("not_found", "not found")),
+                }
+            })
+            .unwrap();
+        });
+        wait_for_http(&test_addr(18_236));
+
+        let client = TemporalStoreClient::with_options(ClientOptions {
+            proxy_addr: test_addr(18_236),
+            ..ClientOptions::default()
+        });
+        let table = client.open_table(
+            "ns",
+            "tbl",
+            TableOptions {
+                retry_backoff_ms: 0,
+                ..TableOptions::default()
+            },
+        );
+
+        assert_eq!(table.get("retry-key").unwrap(), Some(b"ok".to_vec()));
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn client_does_not_retry_write_status_without_write_retry_budget() {
+        let proxy_addr = test_addr(18_237);
+        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let attempts_for_server = attempts.clone();
+        std::thread::spawn(move || {
+            serve(&proxy_addr, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    ("POST", "/execute") => {
+                        attempts_for_server.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        json_response(
+                            200,
+                            &ExecuteResponse {
+                                status: Status::error("retry_later", "write loading"),
+                                response: CommandResponse::Empty,
+                            },
+                        )
+                    }
+                    _ => json_response(404, &Status::error("not_found", "not found")),
+                }
+            })
+            .unwrap();
+        });
+        wait_for_http(&test_addr(18_237));
+
+        let client = TemporalStoreClient::with_options(ClientOptions {
+            proxy_addr: test_addr(18_237),
+            ..ClientOptions::default()
+        });
+        let table = client.open_table("ns", "tbl", TableOptions::default());
+
+        let err = table.set("retry-write", b"v".to_vec()).unwrap_err();
+        assert!(err.to_string().contains("write loading"));
+        assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn client_background_meta_sync_updates_existing_table_handle() {
-        let meta_addr = test_addr(18_215);
+        let meta_addr = free_local_addr();
         let first_shard = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(10));
         std::thread::spawn({
             let first_shard = std::sync::Arc::clone(&first_shard);
+            let meta_addr = meta_addr.clone();
             move || {
                 serve(&meta_addr, move |request| {
                     match (request.method.as_str(), request.path.as_str()) {
@@ -2783,6 +3314,8 @@ mod tests {
                                         replica_count: 1,
                                         use_cpp_partition_ids: false,
                                         partition_version: 0,
+                                        serving_options: crate::meta::TableServingOptions::default(
+                                        ),
                                     }),
                                     partitions: Vec::new(),
                                     unchanged: false,
@@ -2795,10 +3328,10 @@ mod tests {
                 .unwrap();
             }
         });
-        wait_for_http(&test_addr(18_215));
+        wait_for_http(&meta_addr);
 
         let client = TemporalStoreClient::with_options(ClientOptions {
-            meta_addr: Some(test_addr(18_215)),
+            meta_addr: Some(meta_addr),
             ..ClientOptions::default()
         });
         let table = client.open_table_from_meta("ns", "tbl").unwrap();
@@ -2936,7 +3469,12 @@ mod tests {
         let stats = client.stats();
         assert!(stats.route_cache_hits > 0);
         assert!(stats.route_refreshes >= 2);
+        assert_eq!(client.route_cache_size(), 2);
         client.close_table(&table).unwrap();
+        assert_eq!(client.route_cache_size(), 0);
+        assert!(client
+            .cached_table("ns".to_string(), "tbl".to_string())
+            .is_none());
     }
 
     fn key_for_shard(table: &TemporalStoreTable, shard_id: ShardId) -> String {
@@ -2948,6 +3486,11 @@ mod tests {
 
     fn test_addr(port: u16) -> String {
         format!("127.0.0.1:{port}")
+    }
+
+    fn free_local_addr() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().to_string()
     }
 
     fn wait_for_http(addr: &str) {

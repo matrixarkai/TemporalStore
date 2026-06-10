@@ -27,6 +27,12 @@ Rust now has:
 - `TemporalStoreClient::open_table`
 - `TemporalStoreClient::close_table`
 - table cache/stats for open/close, execute/batch, route cache hit/miss, route refresh, and backend errors
+- close-table unregisters the table from the local meta-sync table cache and evicts cached routes,
+  avoiding stale table routing after close
+- C++ wrapper-style status retry policy: retryable backend statuses such as `retry_later`,
+  `partition_loading`, `meta_changed`, `topom_error`, `unavailable`, `deadline_exceeded`, and
+  `internal` are retried with separate read/write budgets and linear backoff; reads default to one
+  retry, writes default to zero retries
 - `TemporalStoreTable`
 - `TemporalStorePipeline`
 - typed table methods for common string/hash/set/feature/sequence/IPS/risk flows:
@@ -82,6 +88,12 @@ Rust now has:
 - backend failure pool behavior with per-backend continuous-failure windows from `TableOptions.continuous_failed_time_ms`
 - writes force primary routing; reads stay primary by default and can route to the first secondary
   when `pin_primary = false` and `replica_read_policy = FirstReplica`
+- VDC/location-affinity routing for replica reads: `ClientOptions.local_location` seeds
+  `TableOptions.preferred_location`, and the route cache prefers a matching-location replica when
+  metaserver topology includes endpoint locations
+- deterministic drop-percent traffic shedding: `ClientOptions.drop_percent` seeds
+  `TableOptions.drop_percent`, and table execute/batch paths reject sampled keys with
+  `traffic_dropped` before contacting a backend
 - stats for backend errors, backend error streaks, continuous backend failures, and successful retry recovery
 
 The old `TemporalStoreClient::new(proxy_addr)` API still works and routes through the proxy.
@@ -95,8 +107,7 @@ Rust still does not have C++ client wire parity:
 - no brpc/protobuf wire-compatible backend pool; Rust now uses the C++ slot formula `crc64_signed(0, key) >> 34` for table shard routing
 - no full partition-set hierarchy, but Rust now has primary/secondary endpoint selection from
   metaserver table topology for the open-source route model
-- no VDC-affinity routing
-- no Neptune/drop-percent routing behavior
+- no Neptune-specific routing behavior
 - no async callback API
 - no full internal C++ Risk/IPS proto semantics such as manager/debug APIs, CPC/list-specific behavior, IPS load/snapshot/stat/filter, or server aggregation
 

@@ -19,13 +19,14 @@ use crate::http::{
     json_response, parse_json, post_json_with_options, HttpRequest, HttpRequestOptions,
 };
 use crate::meta::{
-    AckResponse, AddNamespaceRequest, AddTableRequest, GetShardResponse, GetTableTopologyRequest,
-    ListNamespacesResponse, ListProxiesResponse, ListServersResponse, ListTablesResponse,
-    LoadFinishRequest, MetaEntityState, MetaInfo, MetaMutation, MetaStats, ProxyHeartbeatRequest,
-    ProxyHeartbeatResponse, PublishShardSnapshotRequest, RegisterProxyRequest,
-    RegisterServerRequest, RegisterShardRequest, RegisterShardResponse, ServerHeartbeatRequest,
-    ServerHeartbeatResponse, ServerMetaInfo, ShardLocation, ShardSnapshotRef, SingleNodeMeta,
-    StaleServerReport, StateChangeRequest, TableTopologyResponse,
+    AckResponse, AddNamespaceRequest, AddTableRequest, DeleteTableRequest, GetShardResponse,
+    GetTableTopologyRequest, ListNamespacesResponse, ListProxiesResponse, ListServersResponse,
+    ListTablesResponse, LoadFinishRequest, MetaEntityState, MetaInfo, MetaMutation, MetaSnapshot,
+    MetaStats, ProxyHeartbeatRequest, ProxyHeartbeatResponse, PublishShardSnapshotRequest,
+    RegisterProxyRequest, RegisterServerRequest, RegisterShardRequest, RegisterShardResponse,
+    SafeModePolicy, SafeModeReport, ServerHeartbeatRequest, ServerHeartbeatResponse,
+    ServerMetaInfo, ShardLocation, ShardSnapshotRef, SingleNodeMeta, StaleResourceReport,
+    StaleServerReport, StateChangeRequest, TableTopologyResponse, UpdateTableRequest,
 };
 use crate::types::{Command, CommandResponse, ExecuteRequest, ShardId, Status};
 use bytes::Bytes;
@@ -82,6 +83,17 @@ pub struct RaftSnapshot {
     #[serde(default)]
     pub external_snapshot_ref: Option<RaftExternalSnapshotRef>,
     pub entries: Vec<RaftLogEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftSnapshotTriggerReport {
+    pub triggered: bool,
+    pub reason: String,
+    pub leader_id: RaftNodeId,
+    pub applied_index: u64,
+    pub last_snapshot_index: u64,
+    pub applied_log_bytes: u64,
+    pub max_applied_log_bytes: u64,
 }
 
 pub const DATA_RAFT_LOG_MAGIC: u32 = 0x5453_5246; // "TSRF"
@@ -413,6 +425,26 @@ pub struct RaftReplicaLag {
     pub node_id: RaftNodeId,
     pub lag: u64,
     pub alive: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftApplyLag {
+    pub node_id: RaftNodeId,
+    pub commit_index: u64,
+    pub applied_index: u64,
+    pub apply_lag: u64,
+    pub alive: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftApplyHealth {
+    pub leader_id: RaftNodeId,
+    pub leader_commit_index: u64,
+    pub max_allowed_apply_lag: u64,
+    pub max_apply_lag: u64,
+    pub fully_applied_nodes: Vec<RaftNodeId>,
+    pub slow_appliers: Vec<RaftApplyLag>,
+    pub healthy: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1509,20 +1541,7 @@ impl<T> AuthenticatedRaftTransport<T> {
     }
 
     fn check(&self, rpc: &Option<RaftRpcMetadata>) -> Result<(), RaftError> {
-        let Some(rpc) = rpc else {
-            return Err(RaftError::Transport(
-                "missing raft rpc metadata".to_string(),
-            ));
-        };
-        if rpc.auth_token.as_deref() != Some(self.required_token.as_str()) {
-            return Err(RaftError::Transport("raft rpc auth failed".to_string()));
-        }
-        if rpc.deadline_ms.unwrap_or_default() == 0 {
-            return Err(RaftError::Transport(
-                "raft rpc deadline missing".to_string(),
-            ));
-        }
-        Ok(())
+        validate_raft_rpc_metadata(rpc, &self.required_token)
     }
 }
 
@@ -1674,6 +1693,70 @@ pub fn handle_raft_http(cluster: &RaftCluster, request: HttpRequest) -> (u16, Ve
         }
         _ => json_response(404, &"unknown raft route"),
     }
+}
+
+pub fn handle_authenticated_raft_http(
+    cluster: &RaftCluster,
+    request: HttpRequest,
+    required_token: &str,
+) -> (u16, Vec<u8>) {
+    let auth = match raft_rpc_metadata_for_http_request(&request) {
+        Ok(Some(rpc)) => validate_raft_rpc_metadata(&Some(rpc), required_token),
+        Ok(None) => Ok(()),
+        Err(err) => Err(err),
+    };
+    match auth {
+        Ok(()) => handle_raft_http(cluster, request),
+        Err(err) => json_response(403, &err.to_string()),
+    }
+}
+
+fn raft_rpc_metadata_for_http_request(
+    request: &HttpRequest,
+) -> Result<Option<RaftRpcMetadata>, RaftError> {
+    match (request.method.as_str(), request.path.as_str()) {
+        ("POST", "/raft/append_entries") => {
+            let req = parse_json::<AppendEntriesRequest>(&request.body)
+                .map_err(|err| RaftError::Transport(err.to_string()))?;
+            Ok(req.rpc)
+        }
+        ("POST", "/raft/request_vote") => {
+            let req = parse_json::<VoteRequest>(&request.body)
+                .map_err(|err| RaftError::Transport(err.to_string()))?;
+            Ok(req.rpc)
+        }
+        ("POST", "/raft/install_snapshot") => {
+            let req = parse_json::<InstallSnapshotRequest>(&request.body)
+                .map_err(|err| RaftError::Transport(err.to_string()))?;
+            Ok(req.rpc)
+        }
+        ("POST", "/raft/install_snapshot_chunk") => {
+            let req = parse_json::<InstallSnapshotChunkRequest>(&request.body)
+                .map_err(|err| RaftError::Transport(err.to_string()))?;
+            Ok(req.rpc)
+        }
+        _ => Ok(None),
+    }
+}
+
+fn validate_raft_rpc_metadata(
+    rpc: &Option<RaftRpcMetadata>,
+    required_token: &str,
+) -> Result<(), RaftError> {
+    let Some(rpc) = rpc else {
+        return Err(RaftError::Transport(
+            "missing raft rpc metadata".to_string(),
+        ));
+    };
+    if rpc.auth_token.as_deref() != Some(required_token) {
+        return Err(RaftError::Transport("raft rpc auth failed".to_string()));
+    }
+    if rpc.deadline_ms.unwrap_or_default() == 0 {
+        return Err(RaftError::Transport(
+            "raft rpc deadline missing".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1949,6 +2032,10 @@ impl ProductionRaftRuntime {
 
     pub fn cluster(&self) -> RaftCluster {
         self.cluster.clone()
+    }
+
+    pub fn peer_auth_token(&self) -> Option<&str> {
+        self.options.security.auth_token.as_deref()
     }
 
     pub fn transport(&self) -> RaftRpcRuntime<AuthenticatedRaftTransport<HttpRaftTransport>> {
@@ -2466,6 +2553,16 @@ impl RaftConfig {
     }
 }
 
+fn initial_leader_lease_deadline_ms(config: &RaftConfig) -> u64 {
+    if config.lease_duration_ms == 0 {
+        u64::MAX
+    } else if config.assume_lease_when_start {
+        config.lease_duration_ms
+    } else {
+        0
+    }
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum RaftConfigError {
     #[error("invalid raft config value: {0}")]
@@ -2904,6 +3001,8 @@ struct RaftClusterInner {
     nodes: BTreeMap<RaftNodeId, RaftNode>,
     config: RaftConfig,
     wal: Option<LocalRaftWal>,
+    logical_time_ms: u64,
+    leader_lease_deadline_ms: u64,
     election_elapsed_tick: u64,
     joint_membership: Option<JointConsensusMembership>,
     latest_external_snapshot_ref: Option<RaftExternalSnapshotRef>,
@@ -2934,6 +3033,7 @@ impl RaftCluster {
         for node_id in iter {
             nodes.insert(node_id, new_node(node_id, RaftRole::Follower, shard_id));
         }
+        let leader_lease_deadline_ms = initial_leader_lease_deadline_ms(&config);
         Ok(Self {
             inner: Arc::new(RwLock::new(RaftClusterInner {
                 shard_id,
@@ -2941,6 +3041,8 @@ impl RaftCluster {
                 nodes,
                 config,
                 wal: None,
+                logical_time_ms: 0,
+                leader_lease_deadline_ms,
                 election_elapsed_tick: 0,
                 joint_membership: None,
                 latest_external_snapshot_ref: None,
@@ -3032,6 +3134,7 @@ impl RaftCluster {
         if let Some(leader) = nodes.get_mut(&leader_id) {
             leader.role = RaftRole::Leader;
         }
+        let leader_lease_deadline_ms = initial_leader_lease_deadline_ms(&config);
         Ok(Self {
             inner: Arc::new(RwLock::new(RaftClusterInner {
                 shard_id,
@@ -3039,6 +3142,8 @@ impl RaftCluster {
                 nodes,
                 config,
                 wal: Some(wal),
+                logical_time_ms: 0,
+                leader_lease_deadline_ms,
                 election_elapsed_tick: 0,
                 joint_membership,
                 latest_external_snapshot_ref,
@@ -3079,6 +3184,9 @@ impl RaftCluster {
         let live = inner.live_quorum_participants();
         if live < required {
             return Err(RaftError::NoMajority { live, required });
+        }
+        if !inner.leader_lease_valid() {
+            return Err(RaftError::LeaderUnavailable);
         }
 
         let shard_id = inner.shard_id;
@@ -3121,6 +3229,7 @@ impl RaftCluster {
                 }
             }
         }
+        inner.renew_leader_lease();
         inner.persist_configured_wal()?;
         Ok(leader_response)
     }
@@ -3166,6 +3275,9 @@ impl RaftCluster {
             let live = inner.live_quorum_participants();
             if live < required {
                 return Err(RaftError::NoMajority { live, required });
+            }
+            if !inner.leader_lease_valid() {
+                return Err(RaftError::LeaderUnavailable);
             }
             let leader_id = inner.leader_id;
             let shard_id = inner.shard_id;
@@ -3296,6 +3408,7 @@ impl RaftCluster {
             } else {
                 CommandResponse::Empty
             };
+            inner.renew_leader_lease();
             inner.persist_configured_wal()?;
             response
         };
@@ -3398,6 +3511,7 @@ impl RaftCluster {
             .unwrap_or(false)
         {
             inner.election_elapsed_tick = 0;
+            inner.renew_leader_lease();
             return Ok(RaftTickOutcome::LeaderAlive {
                 leader_id: inner.leader_id,
             });
@@ -3923,6 +4037,7 @@ impl RaftCluster {
                     .max(leader_commit.min(leader_last_index));
             }
         }
+        inner.renew_leader_lease();
         inner.persist_configured_wal()?;
         Ok(AppendEntriesResponse {
             term,
@@ -4349,6 +4464,58 @@ impl RaftCluster {
         })
     }
 
+    pub fn maybe_trigger_snapshot(&self) -> Result<RaftSnapshotTriggerReport, RaftError> {
+        let (should_trigger, report) = {
+            let inner = self.inner.read().expect("raft cluster lock poisoned");
+            let leader = inner
+                .nodes
+                .get(&inner.leader_id)
+                .filter(|node| node.alive && node.role == RaftRole::Leader)
+                .ok_or(RaftError::LeaderUnavailable)?;
+            let last_snapshot_index = leader
+                .installed_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.last_included_index)
+                .unwrap_or_default();
+            let applied_log_bytes = raft_log_bytes_after(&leader.log, last_snapshot_index);
+            let mut report = RaftSnapshotTriggerReport {
+                triggered: false,
+                reason: "below_threshold".to_string(),
+                leader_id: inner.leader_id,
+                applied_index: leader.applied_index,
+                last_snapshot_index,
+                applied_log_bytes,
+                max_applied_log_bytes: inner.config.max_applied_log_bytes,
+            };
+            if !inner.config.can_trigger_snapshot {
+                report.reason = "disabled".to_string();
+                return Ok(report);
+            }
+            if leader.applied_index <= last_snapshot_index {
+                report.reason = "no_new_applied_logs".to_string();
+                return Ok(report);
+            }
+            if applied_log_bytes < inner.config.max_applied_log_bytes {
+                return Ok(report);
+            }
+            report.triggered = true;
+            report.reason = "applied_log_bytes_threshold".to_string();
+            (true, report)
+        };
+
+        if should_trigger {
+            let snapshot = self.create_snapshot()?;
+            let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+            for node in inner.nodes.values_mut().filter(|node| node.alive) {
+                if snapshot.last_included_index >= node.commit_index {
+                    install_snapshot_state(node, snapshot.clone());
+                }
+            }
+            inner.persist_configured_wal()?;
+        }
+        Ok(report)
+    }
+
     pub async fn publish_leader_snapshot_to_store<O>(
         &self,
         snapshot_store: &S3SnapshotStore<O>,
@@ -4602,6 +4769,11 @@ impl RaftCluster {
             .leader_id
     }
 
+    pub fn advance_time_ms(&self, elapsed_ms: u64) {
+        let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+        inner.logical_time_ms = inner.logical_time_ms.saturating_add(elapsed_ms);
+    }
+
     pub fn shard_id(&self) -> ShardId {
         self.inner
             .read()
@@ -4751,6 +4923,10 @@ impl RaftCluster {
     pub fn replication_health(&self, max_allowed_lag: u64) -> RaftReplicationHealth {
         let status = self.status();
         replication_health_from_status(status, max_allowed_lag)
+    }
+
+    pub fn apply_health(&self, max_allowed_apply_lag: u64) -> RaftApplyHealth {
+        raft_apply_health_from_status(self.status(), max_allowed_apply_lag)
     }
 
     pub fn scale_change_report(&self) -> RaftScaleChangeReport {
@@ -5211,6 +5387,7 @@ impl RaftClusterInner {
             };
         }
         self.election_elapsed_tick = 0;
+        self.renew_leader_lease();
         Ok(())
     }
 
@@ -5297,6 +5474,19 @@ impl RaftClusterInner {
             .and_then(|membership| joint_majority_failure(&self.nodes, membership))
     }
 
+    fn renew_leader_lease(&mut self) {
+        self.leader_lease_deadline_ms = if self.config.lease_duration_ms == 0 {
+            u64::MAX
+        } else {
+            self.logical_time_ms
+                .saturating_add(self.config.lease_duration_ms)
+        };
+    }
+
+    fn leader_lease_valid(&self) -> bool {
+        self.config.lease_duration_ms == 0 || self.logical_time_ms <= self.leader_lease_deadline_ms
+    }
+
     fn status(&self) -> RaftClusterStatus {
         let commit_index = self.leader_commit_index();
         let current_term = self
@@ -5313,6 +5503,7 @@ impl RaftClusterInner {
                 node.alive && node.role == RaftRole::Leader && node.replica_role.can_be_leader()
             })
             .unwrap_or(false)
+            && self.leader_lease_valid()
             && live_voters >= majority
             && self.joint_majority_failure().is_none();
         RaftClusterStatus {
@@ -5441,6 +5632,43 @@ fn replication_health_from_status(
     }
 }
 
+fn raft_apply_health_from_status(
+    status: RaftClusterStatus,
+    max_allowed_apply_lag: u64,
+) -> RaftApplyHealth {
+    let mut fully_applied_nodes = Vec::new();
+    let mut slow_appliers = Vec::new();
+    let mut max_apply_lag = 0;
+    for node in &status.nodes {
+        if !node.alive {
+            continue;
+        }
+        let apply_lag = node.commit_index.saturating_sub(node.applied_index);
+        max_apply_lag = max_apply_lag.max(apply_lag);
+        if apply_lag <= max_allowed_apply_lag && node.applied_index >= status.commit_index {
+            fully_applied_nodes.push(node.node_id);
+        }
+        if apply_lag > max_allowed_apply_lag {
+            slow_appliers.push(RaftApplyLag {
+                node_id: node.node_id,
+                commit_index: node.commit_index,
+                applied_index: node.applied_index,
+                apply_lag,
+                alive: node.alive,
+            });
+        }
+    }
+    RaftApplyHealth {
+        leader_id: status.leader_id,
+        leader_commit_index: status.commit_index,
+        max_allowed_apply_lag,
+        max_apply_lag,
+        fully_applied_nodes,
+        healthy: slow_appliers.is_empty(),
+        slow_appliers,
+    }
+}
+
 fn new_node(id: RaftNodeId, role: RaftRole, shard_id: ShardId) -> RaftNode {
     let engine = TemporalEngine::default();
     engine.load_shard(shard_id);
@@ -5473,6 +5701,24 @@ fn command_size_bytes(command: &Command) -> u64 {
     serde_json::to_vec(command)
         .map(|bytes| bytes.len() as u64)
         .unwrap_or_default()
+}
+
+fn raft_log_bytes_after(log: &[RaftLogEntry], index: u64) -> u64 {
+    log.iter()
+        .filter(|entry| entry.index > index)
+        .map(|entry| command_size_bytes(&entry.command))
+        .sum()
+}
+
+fn meta_log_bytes_after(log: &[MetaLogEntry], index: u64) -> u64 {
+    log.iter()
+        .filter(|entry| entry.index > index)
+        .map(|entry| {
+            serde_json::to_vec(&entry.command)
+                .map(|bytes| bytes.len() as u64)
+                .unwrap_or_default()
+        })
+        .sum()
 }
 
 fn split_command_for_raft_limit(command: Command, limit: u64) -> Result<Vec<Command>, RaftError> {
@@ -5629,8 +5875,12 @@ fn raft_status_prometheus(kind: &str, status: RaftClusterStatus) -> String {
     );
     out.push_str("# HELP temporalstore_raft_node_commit_index Per-node committed raft index.\n");
     out.push_str("# TYPE temporalstore_raft_node_commit_index gauge\n");
+    out.push_str("# HELP temporalstore_raft_node_applied_index Per-node applied raft index.\n");
+    out.push_str("# TYPE temporalstore_raft_node_applied_index gauge\n");
     out.push_str("# HELP temporalstore_raft_node_lag Per-node raft commit lag behind leader.\n");
     out.push_str("# TYPE temporalstore_raft_node_lag gauge\n");
+    out.push_str("# HELP temporalstore_raft_node_apply_lag Per-node commit-to-apply lag.\n");
+    out.push_str("# TYPE temporalstore_raft_node_apply_lag gauge\n");
     out.push_str("# HELP temporalstore_raft_node_alive Whether a raft node is alive.\n");
     out.push_str("# TYPE temporalstore_raft_node_alive gauge\n");
     for node in status.nodes {
@@ -5645,7 +5895,19 @@ fn raft_status_prometheus(kind: &str, status: RaftClusterStatus) -> String {
             labels,
             node.commit_index,
         );
+        push_raft_metric(
+            &mut out,
+            "temporalstore_raft_node_applied_index",
+            labels,
+            node.applied_index,
+        );
         push_raft_metric(&mut out, "temporalstore_raft_node_lag", labels, node.lag);
+        push_raft_metric(
+            &mut out,
+            "temporalstore_raft_node_apply_lag",
+            labels,
+            node.commit_index.saturating_sub(node.applied_index),
+        );
         push_raft_metric(
             &mut out,
             "temporalstore_raft_node_alive",
@@ -5711,6 +5973,7 @@ struct MetaRaftNode {
     alive: bool,
     log: Vec<MetaLogEntry>,
     applied: BTreeSet<u64>,
+    installed_snapshot_index: u64,
     state: MetaState,
     meta: SingleNodeMeta,
 }
@@ -5828,6 +6091,18 @@ impl MetaRaftCluster {
         }
     }
 
+    pub fn delete_table(&self, request: DeleteTableRequest) -> AckResponse {
+        AckResponse {
+            status: self.mutation_status(MetaMutation::DeleteTable(request)),
+        }
+    }
+
+    pub fn update_table(&self, request: UpdateTableRequest) -> AckResponse {
+        AckResponse {
+            status: self.mutation_status(MetaMutation::UpdateTable(request)),
+        }
+    }
+
     pub fn finish_load(&self, request: LoadFinishRequest) -> AckResponse {
         AckResponse {
             status: self.mutation_status(MetaMutation::FinishLoad(request)),
@@ -5865,12 +6140,39 @@ impl MetaRaftCluster {
     }
 
     pub fn freeze_stale_servers(&self, stale_after_ms: u64) -> StaleServerReport {
+        let report = self.freeze_stale_resources_with_policy(
+            stale_after_ms,
+            SafeModePolicy {
+                server_freeze_cooldown_ms: 0,
+                proxy_freeze_cooldown_ms: 0,
+            },
+        );
+        StaleServerReport {
+            status: report.status,
+            frozen_servers: report.frozen_servers,
+        }
+    }
+
+    pub fn freeze_stale_resources_with_policy(
+        &self,
+        stale_after_ms: u64,
+        policy: SafeModePolicy,
+    ) -> StaleResourceReport {
         let now = current_time_ms();
         let servers = self.list_servers();
         if !servers.status.ok {
-            return StaleServerReport {
+            return StaleResourceReport {
                 status: servers.status,
                 frozen_servers: Vec::new(),
+                frozen_proxies: Vec::new(),
+            };
+        }
+        let proxies = self.list_proxies();
+        if !proxies.status.ok {
+            return StaleResourceReport {
+                status: proxies.status,
+                frozen_servers: Vec::new(),
+                frozen_proxies: Vec::new(),
             };
         }
 
@@ -5881,20 +6183,57 @@ impl MetaRaftCluster {
             {
                 let status = self.freeze_server(StateChangeRequest {
                     endpoint: server.server_addr.clone(),
+                    freeze_cooldown_ms: policy.server_freeze_cooldown_ms,
                 });
                 if !status.status.ok {
-                    return StaleServerReport {
+                    return StaleResourceReport {
                         status: status.status,
                         frozen_servers,
+                        frozen_proxies: Vec::new(),
                     };
                 }
                 frozen_servers.push(server.server_addr);
             }
         }
-        StaleServerReport {
+
+        let mut frozen_proxies = Vec::new();
+        for proxy in proxies.proxies {
+            if proxy.state == MetaEntityState::Normal
+                && now.saturating_sub(proxy.last_heartbeat_ms) > stale_after_ms
+            {
+                let status = self.freeze_proxy(StateChangeRequest {
+                    endpoint: proxy.proxy_addr.clone(),
+                    freeze_cooldown_ms: policy.proxy_freeze_cooldown_ms,
+                });
+                if !status.status.ok {
+                    return StaleResourceReport {
+                        status: status.status,
+                        frozen_servers,
+                        frozen_proxies,
+                    };
+                }
+                frozen_proxies.push(proxy.proxy_addr);
+            }
+        }
+
+        StaleResourceReport {
             status: Status::ok(),
             frozen_servers,
+            frozen_proxies,
         }
+    }
+
+    pub fn safe_mode_report(&self) -> SafeModeReport {
+        self.read_meta().map_or_else(
+            |status| SafeModeReport {
+                status,
+                blocked_servers: Vec::new(),
+                blocked_proxies: Vec::new(),
+                server_count: 0,
+                proxy_count: 0,
+            },
+            |meta| meta.safe_mode_report(),
+        )
     }
 
     pub fn list_servers(&self) -> ListServersResponse {
@@ -6314,6 +6653,108 @@ impl MetaRaftCluster {
         })
     }
 
+    pub fn export_meta_snapshot(&self) -> Result<MetaSnapshot, RaftError> {
+        let inner = self.inner.read().expect("meta raft lock poisoned");
+        let leader = inner
+            .nodes
+            .get(&inner.leader_id)
+            .filter(|node| node.alive && node.role == RaftRole::Leader)
+            .ok_or(RaftError::LeaderUnavailable)?;
+        Ok(leader.meta.export_snapshot())
+    }
+
+    pub fn install_meta_snapshot_on_live_nodes(
+        &self,
+        snapshot: MetaSnapshot,
+    ) -> Result<(), RaftError> {
+        let validated_meta = SingleNodeMeta::default();
+        let status = validated_meta.install_snapshot(snapshot.clone()).status;
+        if !status.ok {
+            return Err(RaftError::InvalidConfig(status.message));
+        }
+        let route_state = MetaState {
+            shards: snapshot
+                .shards
+                .iter()
+                .map(|(id, location)| (*id, location.clone()))
+                .collect(),
+        };
+        let mut inner = self.inner.write().expect("meta raft lock poisoned");
+        let leader = inner
+            .nodes
+            .get(&inner.leader_id)
+            .filter(|node| node.alive && node.role == RaftRole::Leader)
+            .ok_or(RaftError::LeaderUnavailable)?;
+        let raft_snapshot = MetaRaftSnapshot {
+            last_included_term: leader.current_term,
+            last_included_index: leader.commit_index,
+            state: route_state,
+        };
+        for node in inner.nodes.values_mut().filter(|node| node.alive) {
+            install_meta_snapshot_state(node, raft_snapshot.clone());
+            let meta = SingleNodeMeta::default();
+            let status = meta.install_snapshot(snapshot.clone()).status;
+            if !status.ok {
+                return Err(RaftError::InvalidConfig(status.message));
+            }
+            node.meta = meta;
+        }
+        Ok(())
+    }
+
+    pub fn maybe_trigger_snapshot(&self) -> Result<RaftSnapshotTriggerReport, RaftError> {
+        let (should_trigger, report) = {
+            let inner = self.inner.read().expect("meta raft lock poisoned");
+            let leader = inner
+                .nodes
+                .get(&inner.leader_id)
+                .filter(|node| node.alive && node.role == RaftRole::Leader)
+                .ok_or(RaftError::LeaderUnavailable)?;
+            let applied_index = leader
+                .applied
+                .iter()
+                .next_back()
+                .copied()
+                .unwrap_or_default();
+            let applied_log_bytes =
+                meta_log_bytes_after(&leader.log, leader.installed_snapshot_index);
+            let mut report = RaftSnapshotTriggerReport {
+                triggered: false,
+                reason: "below_threshold".to_string(),
+                leader_id: inner.leader_id,
+                applied_index,
+                last_snapshot_index: leader.installed_snapshot_index,
+                applied_log_bytes,
+                max_applied_log_bytes: inner.config.max_applied_log_bytes,
+            };
+            if !inner.config.can_trigger_snapshot {
+                report.reason = "disabled".to_string();
+                return Ok(report);
+            }
+            if applied_index <= leader.installed_snapshot_index {
+                report.reason = "no_new_applied_logs".to_string();
+                return Ok(report);
+            }
+            if applied_log_bytes < inner.config.max_applied_log_bytes {
+                return Ok(report);
+            }
+            report.triggered = true;
+            report.reason = "applied_log_bytes_threshold".to_string();
+            (true, report)
+        };
+
+        if should_trigger {
+            let snapshot = self.create_snapshot()?;
+            let mut inner = self.inner.write().expect("meta raft lock poisoned");
+            for node in inner.nodes.values_mut().filter(|node| node.alive) {
+                if snapshot.last_included_index >= node.commit_index {
+                    install_meta_snapshot_state(node, snapshot.clone());
+                }
+            }
+        }
+        Ok(report)
+    }
+
     pub fn install_snapshot(
         &self,
         node_id: RaftNodeId,
@@ -6337,6 +6778,7 @@ impl MetaRaftCluster {
             .retain(|entry| entry.index > snapshot.last_included_index);
         node.applied.clear();
         node.applied.extend(1..=snapshot.last_included_index);
+        node.installed_snapshot_index = snapshot.last_included_index;
         Ok(())
     }
 
@@ -6406,6 +6848,10 @@ impl MetaRaftCluster {
 
     pub fn replication_health(&self, max_allowed_lag: u64) -> RaftReplicationHealth {
         replication_health_from_status(self.status(), max_allowed_lag)
+    }
+
+    pub fn apply_health(&self, max_allowed_apply_lag: u64) -> RaftApplyHealth {
+        raft_apply_health_from_status(self.status(), max_allowed_apply_lag)
     }
 
     pub fn scale_change_report(&self) -> RaftScaleChangeReport {
@@ -6781,6 +7227,7 @@ fn new_meta_node(id: RaftNodeId, role: RaftRole) -> MetaRaftNode {
         alive: true,
         log: Vec::new(),
         applied: BTreeSet::new(),
+        installed_snapshot_index: 0,
         state: MetaState::default(),
         meta: SingleNodeMeta::default(),
     }
@@ -6863,6 +7310,17 @@ fn apply_meta_committed(node: &mut MetaRaftNode) -> Option<Status> {
         }
     }
     last_status
+}
+
+fn install_meta_snapshot_state(node: &mut MetaRaftNode, snapshot: MetaRaftSnapshot) {
+    node.state = snapshot.state;
+    node.current_term = node.current_term.max(snapshot.last_included_term);
+    node.commit_index = snapshot.last_included_index;
+    node.log
+        .retain(|entry| entry.index > snapshot.last_included_index);
+    node.applied.clear();
+    node.applied.extend(1..=snapshot.last_included_index);
+    node.installed_snapshot_index = snapshot.last_included_index;
 }
 
 #[cfg(test)]
@@ -8443,6 +8901,7 @@ mod tests {
                 replica_count: 3,
                 use_cpp_partition_ids: false,
                 partition_version: 0,
+                serving_options: crate::meta::TableServingOptions::default(),
             }),
             partitions: vec![TablePartition {
                 shard_id,
@@ -8453,6 +8912,8 @@ mod tests {
                     .into_iter()
                     .map(|replica| replica.to_string())
                     .collect(),
+                primary_endpoint: None,
+                replica_endpoints: Vec::new(),
             }],
             unchanged: false,
         }
@@ -8465,6 +8926,8 @@ mod tests {
             location: "zone-a".to_string(),
             state,
             last_heartbeat_ms: 1,
+            frozen_since_ms: 0,
+            freeze_cooldown_until_ms: 0,
             boot_time_ms: 1,
             binary_version: "test".to_string(),
             shard_loads: Vec::new(),
@@ -8664,6 +9127,62 @@ mod tests {
         let metrics = cluster.prometheus_metrics();
         assert!(metrics.contains("temporalstore_raft_cluster_commit_index{kind=\"data\"} 1"));
         assert!(metrics.contains("temporalstore_raft_node_lag"));
+    }
+
+    #[test]
+    fn raft_leader_lease_expiry_blocks_linearizable_reads_and_writes_until_heartbeat() {
+        let cluster = RaftCluster::new_single_shard_with_config(
+            1,
+            [1, 2, 3],
+            RaftConfig {
+                lease_duration_ms: 10,
+                ..RaftConfig::default()
+            },
+        )
+        .unwrap();
+        cluster
+            .propose(Command::StringSet {
+                key: "lease-key".to_string(),
+                value: b"before-expiry".to_vec(),
+            })
+            .unwrap();
+        assert!(cluster.status().leader_lease_valid);
+
+        cluster.advance_time_ms(11);
+        assert!(!cluster.status().leader_lease_valid);
+        assert_eq!(cluster.read_index(1), Err(RaftError::LeaderUnavailable));
+        assert_eq!(
+            cluster.propose(Command::StringSet {
+                key: "lease-key".to_string(),
+                value: b"should-not-commit".to_vec(),
+            }),
+            Err(RaftError::LeaderUnavailable)
+        );
+
+        assert_eq!(
+            cluster.tick_election().unwrap(),
+            RaftTickOutcome::LeaderAlive { leader_id: 1 }
+        );
+        assert!(cluster.status().leader_lease_valid);
+        cluster
+            .propose(Command::StringSet {
+                key: "lease-key".to_string(),
+                value: b"after-heartbeat".to_vec(),
+            })
+            .unwrap();
+        assert_eq!(
+            cluster
+                .read_local(
+                    1,
+                    Command::StringGet {
+                        key: "lease-key".to_string(),
+                    },
+                )
+                .unwrap(),
+            CommandResponse::Bytes {
+                value: Some(b"after-heartbeat".to_vec())
+            }
+        );
     }
 
     #[test]
@@ -8965,6 +9484,72 @@ mod tests {
 
         cluster.catch_up(3).unwrap();
         assert!(cluster.wait_for_applied_index(3, 1, 0).is_ok());
+    }
+
+    #[test]
+    fn raft_apply_health_reports_commit_to_apply_lag() {
+        let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+        cluster
+            .propose(Command::StringSet {
+                key: "apply-health".to_string(),
+                value: b"v".to_vec(),
+            })
+            .unwrap();
+        {
+            let mut inner = cluster.inner.write().expect("raft cluster lock poisoned");
+            let node = inner.nodes.get_mut(&2).unwrap();
+            node.applied_index = 0;
+            node.applied.clear();
+        }
+
+        let health = cluster.apply_health(0);
+        assert!(!health.healthy);
+        assert_eq!(health.leader_commit_index, 1);
+        assert_eq!(health.max_apply_lag, 1);
+        assert_eq!(health.fully_applied_nodes, vec![1, 3]);
+        assert_eq!(
+            health.slow_appliers,
+            vec![RaftApplyLag {
+                node_id: 2,
+                commit_index: 1,
+                applied_index: 0,
+                apply_lag: 1,
+                alive: true,
+            }]
+        );
+        assert!(cluster.prometheus_metrics().contains(
+            "temporalstore_raft_node_apply_lag{kind=\"data\",node_id=\"2\",role=\"follower\"} 1"
+        ));
+
+        cluster.catch_up(2).unwrap();
+        let healthy = cluster.apply_health(0);
+        assert!(healthy.healthy);
+        assert_eq!(healthy.max_apply_lag, 0);
+    }
+
+    #[test]
+    fn raft_apply_health_excludes_dead_replicas_behind_leader_commit() {
+        let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+        cluster
+            .propose(Command::StringSet {
+                key: "before-dead".to_string(),
+                value: b"v1".to_vec(),
+            })
+            .unwrap();
+        cluster.set_alive(3, false).unwrap();
+        cluster
+            .propose(Command::StringSet {
+                key: "after-dead".to_string(),
+                value: b"v2".to_vec(),
+            })
+            .unwrap();
+
+        let health = cluster.apply_health(0);
+        assert!(health.healthy);
+        assert_eq!(health.leader_commit_index, 2);
+        assert_eq!(health.max_apply_lag, 0);
+        assert_eq!(health.fully_applied_nodes, vec![1, 2]);
+        assert!(health.slow_appliers.is_empty());
     }
 
     #[test]
@@ -9601,6 +10186,37 @@ mod tests {
     }
 
     #[test]
+    fn data_raft_snapshot_trigger_compacts_applied_log_bytes() {
+        let cluster = RaftCluster::new_single_shard_with_config(
+            1,
+            [1, 2, 3],
+            RaftConfig {
+                max_applied_log_bytes: 1,
+                ..RaftConfig::default()
+            },
+        )
+        .unwrap();
+        cluster
+            .propose(Command::StringSet {
+                key: "trigger-data-snapshot".to_string(),
+                value: b"value".to_vec(),
+            })
+            .unwrap();
+
+        let report = cluster.maybe_trigger_snapshot().unwrap();
+        assert!(report.triggered);
+        assert_eq!(report.reason, "applied_log_bytes_threshold");
+        assert_eq!(report.applied_index, 1);
+        assert!(report.applied_log_bytes >= 1);
+        assert_eq!(cluster.local_status(1).unwrap().last_log_index, 0);
+
+        let second = cluster.maybe_trigger_snapshot().unwrap();
+        assert!(!second.triggered);
+        assert_eq!(second.reason, "no_new_applied_logs");
+        assert_eq!(second.last_snapshot_index, 1);
+    }
+
+    #[test]
     fn raft_snapshot_cannot_overwrite_newer_data_state() {
         let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
         cluster
@@ -9694,6 +10310,7 @@ mod tests {
                 replica_count: 1,
                 use_cpp_partition_ids: false,
                 partition_version: 0,
+                serving_options: crate::meta::TableServingOptions::default(),
             })
             .status
             .ok
@@ -9721,6 +10338,31 @@ mod tests {
         assert_eq!(topology.partitions.len(), 2);
         assert_eq!(topology.partitions[0].primary.as_deref(), Some("server-a"));
 
+        let updated = meta.update_table(UpdateTableRequest {
+            namespace: "feature".to_string(),
+            table_name: "user_seq".to_string(),
+            shard_count: Some(3),
+            replica_count: Some(2),
+            first_shard_id: None,
+            use_cpp_partition_ids: None,
+            partition_version: None,
+            serving_options: None,
+        });
+        assert!(updated.status.ok, "{updated:?}");
+        for node_id in [10, 11, 12] {
+            assert_eq!(meta.commit_index(node_id).unwrap(), 5);
+        }
+        let updated_topology = meta.get_table_topology(GetTableTopologyRequest {
+            namespace: "feature".to_string(),
+            table_name: "user_seq".to_string(),
+            old_topology_version: 0,
+        });
+        assert!(updated_topology.status.ok, "{updated_topology:?}");
+        let updated_table = updated_topology.table.unwrap();
+        assert_eq!(updated_table.shard_count, 3);
+        assert_eq!(updated_table.replica_count, 2);
+        assert_eq!(updated_topology.partitions.len(), 3);
+
         let duplicate = meta.add_table(AddTableRequest {
             namespace: "feature".to_string(),
             table_name: "user_seq".to_string(),
@@ -9729,9 +10371,29 @@ mod tests {
             replica_count: 1,
             use_cpp_partition_ids: false,
             partition_version: 0,
+            serving_options: crate::meta::TableServingOptions::default(),
         });
         assert!(!duplicate.status.ok);
         assert_eq!(duplicate.status.code, "already_exists");
+
+        let deleted = meta.delete_table(DeleteTableRequest {
+            namespace: "feature".to_string(),
+            table_name: "user_seq".to_string(),
+        });
+        assert!(deleted.status.ok, "{deleted:?}");
+        for node_id in [10, 11, 12] {
+            assert_eq!(meta.commit_index(node_id).unwrap(), 7);
+        }
+        let dropped_topology = meta.get_table_topology(GetTableTopologyRequest {
+            namespace: "feature".to_string(),
+            table_name: "user_seq".to_string(),
+            old_topology_version: 0,
+        });
+        assert_eq!(dropped_topology.status.code, "table_not_found");
+        assert_eq!(
+            dropped_topology.table.unwrap().state,
+            MetaEntityState::Dropped
+        );
     }
 
     #[test]
@@ -9942,6 +10604,43 @@ mod tests {
     }
 
     #[test]
+    fn metaserver_raft_apply_health_reports_commit_to_apply_lag() {
+        let meta = MetaRaftCluster::new([10, 11, 12]);
+        meta.propose(MetaCommand::PutShardLocation(ShardLocation {
+            shard_id: 144,
+            server_addr: "server-meta-apply-health".to_string(),
+            latest_snapshot: None,
+        }))
+        .unwrap();
+        {
+            let mut inner = meta.inner.write().expect("meta raft lock poisoned");
+            let node = inner.nodes.get_mut(&11).unwrap();
+            node.applied.clear();
+        }
+
+        let health = meta.apply_health(0);
+        assert!(!health.healthy);
+        assert_eq!(health.leader_commit_index, 1);
+        assert_eq!(health.max_apply_lag, 1);
+        assert_eq!(
+            health.slow_appliers,
+            vec![RaftApplyLag {
+                node_id: 11,
+                commit_index: 1,
+                applied_index: 0,
+                apply_lag: 1,
+                alive: true,
+            }]
+        );
+        assert!(meta.prometheus_metrics().contains(
+            "temporalstore_raft_node_apply_lag{kind=\"meta\",node_id=\"11\",role=\"follower\"} 1"
+        ));
+
+        meta.catch_up(11).unwrap();
+        assert!(meta.apply_health(0).healthy);
+    }
+
+    #[test]
     fn metaserver_raft_membership_plan_and_apply_match_data_raft_shape() {
         let meta = MetaRaftCluster::new([10, 11, 12]);
         meta.propose(MetaCommand::PutShardLocation(ShardLocation {
@@ -10116,6 +10815,34 @@ mod tests {
             })
         );
         assert_eq!(meta.commit_index(12).unwrap(), 1);
+    }
+
+    #[test]
+    fn metaserver_raft_snapshot_trigger_compacts_applied_log_bytes() {
+        let meta = MetaRaftCluster::new_with_config(
+            [10, 11, 12],
+            RaftConfig {
+                max_applied_log_bytes: 1,
+                ..RaftConfig::default()
+            },
+        )
+        .unwrap();
+        meta.register(RegisterShardRequest {
+            shard_id: 33,
+            server_addr: "server-meta-trigger".to_string(),
+        });
+
+        let report = meta.maybe_trigger_snapshot().unwrap();
+        assert!(report.triggered);
+        assert_eq!(report.reason, "applied_log_bytes_threshold");
+        assert_eq!(report.applied_index, 1);
+        assert!(report.applied_log_bytes >= 1);
+        assert_eq!(meta.local_status(10).unwrap().last_log_index, 0);
+
+        let second = meta.maybe_trigger_snapshot().unwrap();
+        assert!(!second.triggered);
+        assert_eq!(second.reason, "no_new_applied_logs");
+        assert_eq!(second.last_snapshot_index, 1);
     }
 
     #[test]

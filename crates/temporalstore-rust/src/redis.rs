@@ -1408,8 +1408,10 @@ fn parse_feature_filter_op(value: &str) -> Result<FeatureFilterOp, String> {
         "=" | "==" | "EQ" => Ok(FeatureFilterOp::Equal),
         "!=" | "<>" | "NE" => Ok(FeatureFilterOp::NotEqual),
         ">" | "GT" => Ok(FeatureFilterOp::GreaterThan),
+        ">=" | "GE" | "GTE" => Ok(FeatureFilterOp::GreaterOrEqual),
         "<" | "LT" => Ok(FeatureFilterOp::LessThan),
-        _ => Err("ERR filter op must be =, !=, >, or <".to_string()),
+        "<=" | "LE" | "LTE" => Ok(FeatureFilterOp::LessOrEqual),
+        _ => Err("ERR filter op must be =, !=, >, >=, <, or <=".to_string()),
     }
 }
 
@@ -1899,7 +1901,30 @@ mod tests {
                 "10",
                 "gid >= 7",
             ]),
-            RespValue::Error("ERR unsupported feature filter op '>='".to_string())
+            RespValue::Array(vec![
+                RespValue::Array(vec![
+                    RespValue::Integer(10),
+                    RespValue::Bulk(Some(matching.encode_cpp_feature_value())),
+                ]),
+                RespValue::Array(vec![
+                    RespValue::Integer(20),
+                    RespValue::Bulk(Some(other.encode_cpp_feature_value())),
+                ]),
+            ])
+        );
+        assert_eq!(
+            run(vec![
+                "FQUERYFILTERSTR",
+                "feature-pb",
+                "0",
+                "30",
+                "10",
+                "duration <= 5",
+            ]),
+            RespValue::Array(vec![RespValue::Array(vec![
+                RespValue::Integer(10),
+                RespValue::Bulk(Some(matching.encode_cpp_feature_value())),
+            ])])
         );
     }
 

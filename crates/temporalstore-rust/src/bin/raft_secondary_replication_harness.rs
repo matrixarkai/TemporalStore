@@ -7,10 +7,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use temporalstore_rust::http::{get_json_with_options, post_json_with_options, HttpRequestOptions};
+use temporalstore_rust::raft::RaftRpcMetadata;
 use temporalstore_rust::{
     Command, CommandResponse, DistributedRaftCommandResponse, DistributedRaftProposeRequest,
-    DistributedRaftReadRequest, ProductionRaftNode, RaftClusterStatus, RaftFailoverReport,
-    RaftNodeId, Status,
+    DistributedRaftReadRequest, ProductionRaftNode, RaftApplyHealth, RaftClusterStatus,
+    RaftFailoverReport, RaftMembershipChangeReport, RaftNodeId, Status, VoteRequest, VoteResponse,
 };
 
 #[derive(Debug, Clone)]
@@ -28,9 +29,12 @@ struct SecondaryReplicationSummary {
     nodes: Vec<NodeSummary>,
     writes: Vec<WriteSummary>,
     reads_after_restart: Vec<ReadSummary>,
+    membership_scale_down: Vec<MembershipApplySummary>,
+    membership_scale_up: Vec<MembershipApplySummary>,
     restarted_secondary: RaftNodeId,
     partition: PartitionSummary,
     lagging_follower: LaggingFollowerSummary,
+    network_vote: NetworkVoteSummary,
     rolling_restart: RollingRestartSummary,
     crashed_leader: RaftNodeId,
     failover: AdminFailoverResponse,
@@ -43,6 +47,7 @@ struct NodeSummary {
     addr: String,
     wal_dir: String,
     status: RaftClusterStatus,
+    apply_health: RaftApplyHealth,
     wal_files: Vec<String>,
 }
 
@@ -77,10 +82,29 @@ struct LaggingFollowerSummary {
 }
 
 #[derive(Debug, Serialize)]
+struct NetworkVoteSummary {
+    unauthorized_rejection: String,
+    stale_candidate: RaftNodeId,
+    stale_target: RaftNodeId,
+    stale_response: VoteResponse,
+    valid_candidate: RaftNodeId,
+    valid_target: RaftNodeId,
+    valid_response: VoteResponse,
+}
+
+#[derive(Debug, Serialize)]
 struct RollingRestartSummary {
     restarted_nodes: Vec<RaftNodeId>,
     writes_after_each_restart: Vec<WriteSummary>,
     reads_after_each_restart: Vec<ReadSummary>,
+}
+
+#[derive(Debug, Serialize)]
+struct MembershipApplySummary {
+    node_id: RaftNodeId,
+    status: Status,
+    voters: Vec<RaftNodeId>,
+    leader_id: RaftNodeId,
 }
 
 #[derive(Debug, Serialize)]
@@ -114,6 +138,23 @@ struct AdminLivenessResponse {
 struct AdminFailoverResponse {
     status: Status,
     report: Option<RaftFailoverReport>,
+}
+
+#[derive(Debug, Serialize)]
+struct RaftApplyHealthRequest {
+    #[serde(default)]
+    max_allowed_apply_lag: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct RaftMembershipApplyRequest {
+    voters: Vec<RaftNodeId>,
+}
+
+#[derive(Debug, serde::Deserialize, Serialize)]
+struct RaftMembershipApplyResponse {
+    status: Status,
+    report: Option<RaftMembershipChangeReport>,
 }
 
 struct ChildNode {
@@ -233,6 +274,19 @@ fn main() {
         ));
     }
 
+    let membership_scale_down = apply_membership_to_nodes(&nodes, &[1, 2]);
+    writes.push(propose(&nodes[0], "membership-scale-down", "v-scale-down"));
+    wait_for_value(&nodes[0], 1, "membership-scale-down", "v-scale-down");
+    wait_for_value(&nodes[1], 2, "membership-scale-down", "v-scale-down");
+
+    let membership_scale_up = apply_membership_to_nodes(&nodes, &[1, 2, 3]);
+    catch_up_peer(&nodes[0], 3);
+    local_catch_up(&nodes[2], 3);
+    writes.push(propose(&nodes[0], "membership-scale-up", "v-scale-up"));
+    for node in &nodes {
+        wait_for_value(node, node.node_id, "membership-scale-up", "v-scale-up");
+    }
+
     let rolling_restart = run_rolling_restart_phase(
         &mut children,
         &raft_node_bin,
@@ -247,6 +301,7 @@ fn main() {
     writes.push(partition.majority_write.clone());
     let lagging_follower = run_lagging_follower_phase(&nodes);
     writes.extend(lagging_follower.majority_writes.iter().cloned());
+    let network_vote = run_network_vote_phase(&nodes, &options.auth_token, options.shard_id);
 
     let crashed_leader = 1;
     let leader_index = children
@@ -291,6 +346,14 @@ fn main() {
     for node in nodes.iter().filter(|node| node.node_id != crashed_leader) {
         wait_for_cluster_commit(node, writes.len() as u64);
     }
+    wait_for_surviving_apply_health(
+        new_leader,
+        &nodes
+            .iter()
+            .filter(|node| node.node_id != crashed_leader)
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
 
     let node_summaries = nodes
         .iter()
@@ -303,6 +366,15 @@ fn main() {
                 wal_dir: wal_dir.display().to_string(),
                 status: get_json_with_options(&node.addr, "/raft/status", request_options())
                     .expect("status request failed"),
+                apply_health: post_json_with_options(
+                    &node.addr,
+                    "/raft/apply_health",
+                    &RaftApplyHealthRequest {
+                        max_allowed_apply_lag: 0,
+                    },
+                    request_options(),
+                )
+                .expect("apply health request failed"),
                 wal_files: list_files(&wal_dir),
             }
         })
@@ -322,9 +394,12 @@ fn main() {
             nodes: node_summaries,
             writes,
             reads_after_restart,
+            membership_scale_down,
+            membership_scale_up,
             restarted_secondary,
             partition,
             lagging_follower,
+            network_vote,
             rolling_restart,
             crashed_leader,
             failover,
@@ -466,6 +541,127 @@ fn run_lagging_follower_phase(nodes: &[ProductionRaftNode]) -> LaggingFollowerSu
         majority_writes,
         observed_lag,
         catchup_reads,
+    }
+}
+
+fn run_network_vote_phase(
+    nodes: &[ProductionRaftNode],
+    auth_token: &str,
+    shard_id: u64,
+) -> NetworkVoteSummary {
+    initialize_liveness(nodes);
+    let leader = node_by_id(nodes, 1);
+    for node in nodes {
+        elect_leader(node, leader.node_id);
+        if node.node_id != leader.node_id {
+            catch_up_peer(leader, node.node_id);
+            local_catch_up(node, node.node_id);
+        }
+    }
+
+    let target = node_by_id(nodes, 2);
+    let target_status: RaftClusterStatus =
+        get_json_with_options(&target.addr, "/raft/status", request_options())
+            .expect("target status request failed before vote phase");
+    let target_node_status = target_status
+        .nodes
+        .iter()
+        .find(|node| node.node_id == target.node_id)
+        .expect("target status should include local node");
+
+    let stale_candidate = node_by_id(nodes, 3);
+    let unauthorized = post_json_with_options::<_, VoteResponse>(
+        &target.addr,
+        "/raft/request_vote",
+        &VoteRequest {
+            rpc: Some(raft_rpc("wrong-token", "unauthorized-vote")),
+            shard_id,
+            term: target_node_status.current_term + 1,
+            candidate_id: stale_candidate.node_id,
+            target_id: target.node_id,
+            last_log_index: target_status.commit_index,
+            last_log_term: target_node_status.current_term,
+        },
+        request_options(),
+    )
+    .expect_err("unauthorized peer vote should be rejected before vote handling")
+    .to_string();
+    assert!(
+        unauthorized.contains("403") || unauthorized.contains("auth"),
+        "unexpected unauthorized vote error: {unauthorized}"
+    );
+
+    let stale_response: VoteResponse = post_json_with_options(
+        &target.addr,
+        "/raft/request_vote",
+        &VoteRequest {
+            rpc: Some(raft_rpc(auth_token, "stale-vote")),
+            shard_id,
+            term: target_node_status.current_term + 1,
+            candidate_id: stale_candidate.node_id,
+            target_id: target.node_id,
+            last_log_index: 0,
+            last_log_term: 0,
+        },
+        request_options(),
+    )
+    .expect("stale vote request failed");
+    assert!(
+        !stale_response.vote_granted,
+        "stale candidate unexpectedly received vote: {:?}",
+        stale_response
+    );
+    assert_eq!(
+        stale_response.reject_reason.as_deref(),
+        Some("candidate_log_behind")
+    );
+
+    let refreshed_target_status: RaftClusterStatus =
+        get_json_with_options(&target.addr, "/raft/status", request_options())
+            .expect("target status request failed after stale vote");
+    let refreshed_target = refreshed_target_status
+        .nodes
+        .iter()
+        .find(|node| node.node_id == target.node_id)
+        .expect("target status should include local node");
+    let valid_candidate = leader;
+    let valid_response: VoteResponse = post_json_with_options(
+        &target.addr,
+        "/raft/request_vote",
+        &VoteRequest {
+            rpc: Some(raft_rpc(auth_token, "valid-vote")),
+            shard_id,
+            term: refreshed_target.current_term + 1,
+            candidate_id: valid_candidate.node_id,
+            target_id: target.node_id,
+            last_log_index: refreshed_target_status.commit_index,
+            last_log_term: refreshed_target.current_term + 1,
+        },
+        request_options(),
+    )
+    .expect("valid vote request failed");
+    assert!(
+        valid_response.vote_granted,
+        "caught-up candidate did not receive vote: {:?}",
+        valid_response
+    );
+
+    NetworkVoteSummary {
+        unauthorized_rejection: unauthorized,
+        stale_candidate: stale_candidate.node_id,
+        stale_target: target.node_id,
+        stale_response,
+        valid_candidate: valid_candidate.node_id,
+        valid_target: target.node_id,
+        valid_response,
+    }
+}
+
+fn raft_rpc(auth_token: &str, request_id: &str) -> RaftRpcMetadata {
+    RaftRpcMetadata {
+        auth_token: Some(auth_token.to_string()),
+        deadline_ms: Some(30_000),
+        request_id: request_id.to_string(),
     }
 }
 
@@ -822,6 +1018,84 @@ fn local_catch_up(node: &ProductionRaftNode, node_id: RaftNodeId) {
         "local catch-up admin request failed: {:?}",
         response.status
     );
+}
+
+fn apply_membership_to_nodes(
+    nodes: &[ProductionRaftNode],
+    voters: &[RaftNodeId],
+) -> Vec<MembershipApplySummary> {
+    nodes
+        .iter()
+        .map(|node| {
+            let response: RaftMembershipApplyResponse = post_json_with_options(
+                &node.addr,
+                "/raft/membership/apply",
+                &RaftMembershipApplyRequest {
+                    voters: voters.to_vec(),
+                },
+                request_options(),
+            )
+            .expect("membership apply request failed");
+            assert!(
+                response.status.ok,
+                "membership apply on node {} failed: {:?}",
+                node.node_id, response.status
+            );
+            let report = response
+                .report
+                .expect("successful membership apply should include report");
+            assert_eq!(
+                report.committed_membership.voters, voters,
+                "membership apply on node {} committed unexpected voters",
+                node.node_id
+            );
+            MembershipApplySummary {
+                node_id: node.node_id,
+                status: response.status,
+                voters: report.committed_membership.voters,
+                leader_id: report.leader_id,
+            }
+        })
+        .collect()
+}
+
+fn wait_for_surviving_apply_health(leader: &ProductionRaftNode, survivors: &[ProductionRaftNode]) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        for node in survivors {
+            if node.node_id != leader.node_id {
+                catch_up_peer(leader, node.node_id);
+            }
+        }
+        for observer in survivors {
+            for subject in survivors {
+                local_catch_up(observer, subject.node_id);
+            }
+        }
+        let health = survivors
+            .iter()
+            .map(|node| {
+                post_json_with_options::<_, RaftApplyHealth>(
+                    &node.addr,
+                    "/raft/apply_health",
+                    &RaftApplyHealthRequest {
+                        max_allowed_apply_lag: 0,
+                    },
+                    request_options(),
+                )
+                .expect("apply health request failed")
+            })
+            .collect::<Vec<_>>();
+        if health.iter().all(|health| health.healthy) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "surviving raft apply health did not converge: {:?}",
+            health
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
 }
 
 fn trigger_failover(node: &ProductionRaftNode) -> AdminFailoverResponse {

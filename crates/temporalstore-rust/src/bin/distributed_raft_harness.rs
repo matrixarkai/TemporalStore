@@ -4,18 +4,21 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use temporalstore_rust::http::{
     get_json_with_options, json_response, parse_json, post_json_with_options, serve, HttpRequest,
     HttpRequestOptions,
 };
+use temporalstore_rust::meta::ShardSnapshotRef;
+use temporalstore_rust::raft::{RaftReplicaBootstrapPlan, RaftSnapshotPublishReport};
 use temporalstore_rust::{
-    handle_raft_http, Command, CommandResponse, DistributedRaftCommandResponse,
+    handle_authenticated_raft_http, Command, CommandResponse, DistributedRaftCommandResponse,
     DistributedRaftProposeRequest, DistributedRaftReadRequest, ProductionRaftEngineKind,
     ProductionRaftNode, ProductionRaftRuntime, ProductionRaftRuntimeOptions,
-    ProductionRaftSecurity, RaftClusterStatus, RaftConfig, RaftMembershipChangeReport, RaftNodeId,
-    RaftRpcRuntimeOptions, Status,
+    ProductionRaftSecurity, RaftApplyHealth, RaftClusterStatus, RaftConfig,
+    RaftMembershipChangeReport, RaftNodeId, RaftRpcRuntimeOptions, Status,
 };
+use temporalstore_snapshot::{FileObjectStore, S3SnapshotStore};
 
 #[derive(Debug, Clone)]
 struct HarnessOptions {
@@ -42,6 +45,9 @@ struct DistributedRaftSummary {
     scale_up: Vec<MembershipSummary>,
     post_scale_up_write: Status,
     scale_up_reads: Vec<ReplicaReadSummary>,
+    external_snapshot_publish: Status,
+    external_snapshot_bootstrap: Status,
+    external_snapshot_read: ReplicaReadSummary,
 }
 
 #[derive(Debug, Serialize)]
@@ -50,6 +56,7 @@ struct NodeSummary {
     addr: String,
     wal_dir: String,
     status: RaftClusterStatus,
+    apply_health: RaftApplyHealth,
     wal_files: Vec<String>,
 }
 
@@ -66,6 +73,36 @@ struct MembershipSummary {
     status: Status,
     voters: Vec<RaftNodeId>,
     leader_id: RaftNodeId,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct RaftAdminPublishExternalSnapshotRequest {
+    object_root: String,
+    local_root: String,
+    cluster_id: String,
+    bucket: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct RaftAdminPublishExternalSnapshotResponse {
+    status: Status,
+    report: Option<RaftSnapshotPublishReport>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct RaftAdminBootstrapExternalSnapshotRequest {
+    target_id: RaftNodeId,
+    snapshot: ShardSnapshotRef,
+    object_root: String,
+    local_root: String,
+    cluster_id: String,
+    bucket: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct RaftAdminBootstrapExternalSnapshotResponse {
+    status: Status,
+    plan: Option<RaftReplicaBootstrapPlan>,
 }
 
 fn main() {
@@ -123,6 +160,7 @@ fn main() {
         "raft proposal failed: {:?}",
         proposal.status
     );
+    wait_for_distributed_majority(&runtimes, &nodes);
 
     let replica_reads = nodes
         .iter()
@@ -130,16 +168,14 @@ fn main() {
         .collect::<Vec<_>>();
     let follower_write_rejection = reject_direct_follower_write(&nodes[1], &options);
 
+    wait_for_distributed_majority(&runtimes, &nodes);
     for runtime in &runtimes {
-        runtime
-            .cluster()
-            .catch_up_live_followers()
-            .expect("followers should catch up before leader transfer");
         runtime
             .cluster()
             .transfer_leader(2)
             .expect("leader transfer to node 2 should pass");
     }
+    wait_for_distributed_majority(&runtimes, &nodes);
     let post_transfer_write = propose_key(
         &nodes[1],
         "distributed-transfer-leader-key",
@@ -150,8 +186,10 @@ fn main() {
         "post-transfer write failed: {:?}",
         post_transfer_write
     );
+    wait_for_distributed_majority(&runtimes, &nodes);
 
     let scale_down = apply_membership_on_all(&runtimes, &nodes, &[1, 2, 3]);
+    wait_for_distributed_majority(&runtimes, &nodes[..3]);
     let post_scale_down_write =
         propose_key(&nodes[1], "distributed-scale-down-key", b"after-scale-down");
     assert!(
@@ -159,6 +197,7 @@ fn main() {
         "post-scale-down write failed: {:?}",
         post_scale_down_write
     );
+    wait_for_distributed_majority(&runtimes, &nodes[..3]);
     let scale_down_reads = nodes
         .iter()
         .take(3)
@@ -166,16 +205,94 @@ fn main() {
         .collect::<Vec<_>>();
 
     let scale_up = apply_membership_on_all(&runtimes, &nodes, &[1, 2, 3, 4]);
+    wait_for_distributed_majority(&runtimes, &nodes);
     let post_scale_up_write = propose_key(&nodes[1], "distributed-scale-up-key", b"after-scale-up");
     assert!(
         post_scale_up_write.ok,
         "post-scale-up write failed: {:?}",
         post_scale_up_write
     );
+    wait_for_distributed_majority(&runtimes, &nodes);
     let scale_up_reads = nodes
         .iter()
         .map(|node| wait_for_key(node, "distributed-scale-up-key", b"after-scale-up"))
         .collect::<Vec<_>>();
+
+    let snapshot_target_id = 3;
+    for runtime in &runtimes {
+        runtime
+            .cluster()
+            .set_alive(snapshot_target_id, false)
+            .expect("snapshot target should exist");
+    }
+    let external_snapshot_write = propose_key(
+        &nodes[1],
+        "distributed-external-snapshot-key",
+        b"from-external-snapshot",
+    );
+    assert!(
+        external_snapshot_write.ok,
+        "external-snapshot source write failed: {:?}",
+        external_snapshot_write
+    );
+    wait_for_distributed_majority(&runtimes, &nodes[..3]);
+    for runtime in &runtimes {
+        runtime
+            .cluster()
+            .set_alive(snapshot_target_id, true)
+            .expect("snapshot target should exist");
+    }
+    let object_root = options.root.join("snapshot-objects");
+    let publish_local_root = options.root.join("snapshot-publish-local");
+    let restore_local_root = options.root.join("snapshot-restore-local");
+    let published: RaftAdminPublishExternalSnapshotResponse = post_json_with_options(
+        &nodes[1].addr,
+        "/raft/admin/publish_external_snapshot",
+        &RaftAdminPublishExternalSnapshotRequest {
+            object_root: object_root.display().to_string(),
+            local_root: publish_local_root.display().to_string(),
+            cluster_id: "cluster-a".to_string(),
+            bucket: "test".to_string(),
+        },
+        request_options(),
+    )
+    .expect("external snapshot publish request failed");
+    assert!(
+        published.status.ok,
+        "external snapshot publish failed: {:?}",
+        published
+    );
+    let bootstrapped: RaftAdminBootstrapExternalSnapshotResponse = post_json_with_options(
+        &nodes[2].addr,
+        "/raft/admin/bootstrap_external_snapshot",
+        &RaftAdminBootstrapExternalSnapshotRequest {
+            target_id: snapshot_target_id,
+            snapshot: published
+                .report
+                .as_ref()
+                .expect("publish report should be present")
+                .meta_ref
+                .clone(),
+            object_root: object_root.display().to_string(),
+            local_root: restore_local_root.display().to_string(),
+            cluster_id: "cluster-a".to_string(),
+            bucket: "test".to_string(),
+        },
+        request_options(),
+    )
+    .expect("external snapshot bootstrap request failed");
+    assert!(
+        bootstrapped.status.ok,
+        "external snapshot bootstrap failed: {:?}",
+        bootstrapped
+    );
+    let external_snapshot_read = wait_for_key(
+        &nodes[2],
+        "distributed-external-snapshot-key",
+        b"from-external-snapshot",
+    );
+
+    wait_for_distributed_apply_health(&runtimes, &nodes, 0);
 
     let node_summaries = nodes
         .iter()
@@ -187,6 +304,15 @@ fn main() {
                 wal_dir: wal_dir.display().to_string(),
                 status: get_json_with_options(&node.addr, "/raft/status", request_options())
                     .expect("status request failed"),
+                apply_health: post_json_with_options(
+                    &node.addr,
+                    "/raft/apply_health",
+                    &RaftApplyHealthRequest {
+                        max_allowed_apply_lag: 0,
+                    },
+                    request_options(),
+                )
+                .expect("apply health request failed"),
                 wal_files: list_files(&wal_dir),
             }
         })
@@ -209,6 +335,9 @@ fn main() {
             scale_up,
             post_scale_up_write,
             scale_up_reads,
+            external_snapshot_publish: published.status,
+            external_snapshot_bootstrap: bootstrapped.status,
+            external_snapshot_read,
         })
         .expect("summary should serialize")
     );
@@ -218,6 +347,15 @@ fn handle(runtime: &ProductionRaftRuntime, request: HttpRequest) -> (u16, Vec<u8
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/health") => json_response(200, &Status::ok()),
         ("GET", "/raft/status") => json_response(200, &runtime.status()),
+        ("POST", "/raft/apply_health") => {
+            match parse_json::<RaftApplyHealthRequest>(&request.body) {
+                Ok(req) => json_response(
+                    200,
+                    &runtime.cluster().apply_health(req.max_allowed_apply_lag),
+                ),
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
         ("POST", "/raft/propose") => {
             match parse_json::<DistributedRaftProposeRequest>(&request.body) {
                 Ok(req) => json_response(200, &command_response(runtime.propose(req.command))),
@@ -231,8 +369,98 @@ fn handle(runtime: &ProductionRaftRuntime, request: HttpRequest) -> (u16, Vec<u8
             ),
             Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
         },
-        _ => handle_raft_http(&runtime.cluster(), request),
+        ("POST", "/raft/admin/publish_external_snapshot") => {
+            match parse_json::<RaftAdminPublishExternalSnapshotRequest>(&request.body) {
+                Ok(req) => {
+                    let store = std::sync::Arc::new(FileObjectStore::with_uri_scheme(
+                        PathBuf::from(&req.object_root),
+                        "s3",
+                    ));
+                    let snapshot_store = S3SnapshotStore::new(
+                        req.cluster_id,
+                        req.bucket,
+                        PathBuf::from(&req.local_root),
+                        store,
+                    );
+                    let response = match tokio::runtime::Runtime::new()
+                        .map_err(|err| err.to_string())
+                        .and_then(|tokio_runtime| {
+                            tokio_runtime
+                                .block_on(
+                                    runtime
+                                        .cluster()
+                                        .publish_leader_snapshot_to_store(&snapshot_store),
+                                )
+                                .map_err(|err| err.to_string())
+                        }) {
+                        Ok(report) => RaftAdminPublishExternalSnapshotResponse {
+                            status: Status::ok(),
+                            report: Some(report),
+                        },
+                        Err(err) => RaftAdminPublishExternalSnapshotResponse {
+                            status: Status::error("raft_error", err),
+                            report: None,
+                        },
+                    };
+                    json_response(200, &response)
+                }
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        ("POST", "/raft/admin/bootstrap_external_snapshot") => {
+            match parse_json::<RaftAdminBootstrapExternalSnapshotRequest>(&request.body) {
+                Ok(req) => {
+                    let store = std::sync::Arc::new(FileObjectStore::with_uri_scheme(
+                        PathBuf::from(&req.object_root),
+                        uri_scheme(&req.snapshot.uri),
+                    ));
+                    let snapshot_store = S3SnapshotStore::new(
+                        req.cluster_id,
+                        req.bucket,
+                        PathBuf::from(&req.local_root),
+                        store,
+                    );
+                    let response = match tokio::runtime::Runtime::new()
+                        .map_err(|err| err.to_string())
+                        .and_then(|tokio_runtime| {
+                            tokio_runtime
+                                .block_on(
+                                    runtime.cluster().bootstrap_replica_from_external_snapshot(
+                                        req.target_id,
+                                        &snapshot_store,
+                                        &req.snapshot,
+                                        PathBuf::from(&req.local_root)
+                                            .join(format!("restore-node-{}", req.target_id)),
+                                    ),
+                                )
+                                .map_err(|err| err.to_string())
+                        }) {
+                        Ok(plan) => RaftAdminBootstrapExternalSnapshotResponse {
+                            status: Status::ok(),
+                            plan: Some(plan),
+                        },
+                        Err(err) => RaftAdminBootstrapExternalSnapshotResponse {
+                            status: Status::error("raft_error", err),
+                            plan: None,
+                        },
+                    };
+                    json_response(200, &response)
+                }
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        _ => handle_authenticated_raft_http(
+            &runtime.cluster(),
+            request,
+            runtime.peer_auth_token().unwrap_or_default(),
+        ),
     }
+}
+
+#[derive(Debug, Serialize, serde::Deserialize)]
+struct RaftApplyHealthRequest {
+    #[serde(default)]
+    max_allowed_apply_lag: u64,
 }
 
 fn propose_key(node: &ProductionRaftNode, key: &str, value: &[u8]) -> Status {
@@ -291,6 +519,84 @@ fn apply_membership_on_all(
         .collect()
 }
 
+fn wait_for_distributed_majority(
+    runtimes: &[ProductionRaftRuntime],
+    live_nodes: &[ProductionRaftNode],
+) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        for runtime in runtimes {
+            for node in live_nodes {
+                runtime
+                    .cluster()
+                    .set_alive(node.node_id, true)
+                    .expect("harness node should exist in every raft view");
+                runtime
+                    .cluster()
+                    .catch_up(node.node_id)
+                    .expect("harness node should catch up in every raft view");
+            }
+        }
+        let statuses = runtimes
+            .iter()
+            .map(|runtime| runtime.cluster().status())
+            .collect::<Vec<_>>();
+        if statuses
+            .iter()
+            .all(|status| status.has_majority && status.leader_lease_valid)
+        {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "distributed raft majority did not converge: {:?}",
+            statuses
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn wait_for_distributed_apply_health(
+    runtimes: &[ProductionRaftRuntime],
+    nodes: &[ProductionRaftNode],
+    max_allowed_apply_lag: u64,
+) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        for runtime in runtimes {
+            for node in nodes {
+                runtime
+                    .cluster()
+                    .catch_up(node.node_id)
+                    .expect("live node should catch up before final distributed summary");
+            }
+        }
+        let health = nodes
+            .iter()
+            .map(|node| {
+                post_json_with_options::<_, RaftApplyHealth>(
+                    &node.addr,
+                    "/raft/apply_health",
+                    &RaftApplyHealthRequest {
+                        max_allowed_apply_lag,
+                    },
+                    request_options(),
+                )
+                .expect("apply health request failed")
+            })
+            .collect::<Vec<_>>();
+        if health.iter().all(|health| health.healthy) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "distributed raft apply health did not converge: {:?}",
+            health
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
 fn membership_summary(
     node_id: RaftNodeId,
     report: Result<RaftMembershipChangeReport, temporalstore_rust::RaftError>,
@@ -324,6 +630,12 @@ fn command_response(
             response: CommandResponse::Empty,
         },
     }
+}
+
+fn uri_scheme(uri: &str) -> String {
+    uri.split_once("://")
+        .map(|(scheme, _)| scheme.to_string())
+        .unwrap_or_else(|| "file".to_string())
 }
 
 fn wait_for_replica_read(

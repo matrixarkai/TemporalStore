@@ -42,6 +42,8 @@ It implements:
   - all known nodes
   - max moves per round
   - partition count safe gap
+  - C++-style balance metrics report with `balance_partition_count`, `safe_line`,
+    `total_normal`, `placement_fail_count`, and placement failure reasons
   - overloaded source detection
   - least-loaded target selection
   - target deduplication so one node does not host the same shard twice
@@ -69,6 +71,8 @@ The Rust tests cover:
 - membership update and freeze/unload steps
 - lonely primary is not moved
 - target node cannot already host the same shard
+- balance metrics expose per-node partition counts and the computed safe line
+- placement failure metrics count primary-safety skips when overloaded replicas cannot be moved
 
 ## Still Missing Vs C++
 
@@ -90,7 +94,7 @@ The Rust rebalance model is still smaller than C++. Missing production pieces:
 - election policy variants beyond a primary safety guard
 - derived partition versioning
 - partition id bit layout and version/index rollover
-- balance metrics such as `balance_partition_count` and `placement_fail_count`
+- production export of balance metrics to the metaserver metrics endpoint and dashboards
 
 ## Recommended Next Step
 

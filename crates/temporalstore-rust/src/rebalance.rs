@@ -216,6 +216,16 @@ impl Default for RebalanceOptions {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RebalanceRoundReport {
+    pub plans: Vec<ShardMovePlan>,
+    pub balance_partition_count: BTreeMap<RaftNodeId, usize>,
+    pub total_normal: usize,
+    pub safe_line: usize,
+    pub placement_fail_count: usize,
+    pub placement_fail_reasons: BTreeMap<String, usize>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RebalanceController {
     replicas: BTreeMap<u64, ShardReplica>,
     membership_version: u64,
@@ -419,21 +429,39 @@ impl RebalanceController {
         all_node_ids: impl IntoIterator<Item = RaftNodeId>,
         options: RebalanceOptions,
     ) -> Vec<ShardMovePlan> {
-        let all_nodes = all_node_ids.into_iter().collect::<BTreeSet<_>>();
-        if all_nodes.len() < 2 || options.max_moves_per_round == 0 {
-            return Vec::new();
-        }
+        self.plan_rebalance_round_report(all_node_ids, options)
+            .plans
+    }
 
+    pub fn plan_rebalance_round_report(
+        &self,
+        all_node_ids: impl IntoIterator<Item = RaftNodeId>,
+        options: RebalanceOptions,
+    ) -> RebalanceRoundReport {
+        let all_nodes = all_node_ids.into_iter().collect::<BTreeSet<_>>();
         let mut simulated_loads = self.node_loads();
         for node_id in &all_nodes {
             simulated_loads.entry(*node_id).or_default();
         }
         let total_normal = simulated_loads.values().sum::<usize>();
-        if total_normal == 0 {
-            return Vec::new();
+        let safe_line = if all_nodes.is_empty() || total_normal == 0 {
+            0
+        } else {
+            total_normal.div_ceil(all_nodes.len()) + options.partition_count_safe_gap
+        };
+        let mut report = RebalanceRoundReport {
+            balance_partition_count: simulated_loads.clone(),
+            total_normal,
+            safe_line,
+            ..RebalanceRoundReport::default()
+        };
+
+        if all_nodes.len() < 2 || options.max_moves_per_round == 0 {
+            return report;
         }
-        let safe_line = total_normal.div_ceil(all_nodes.len()) + options.partition_count_safe_gap;
-        let mut plans = Vec::new();
+        if total_normal == 0 {
+            return report;
+        }
         let mut next_replica_id = self.next_replica_id;
         let mut candidates = self
             .replicas
@@ -444,7 +472,7 @@ impl RebalanceController {
         candidates.sort_by_key(|replica| (replica.node_id, replica.shard_id, replica.replica_id));
 
         for source in candidates {
-            if plans.len() >= options.max_moves_per_round {
+            if report.plans.len() >= options.max_moves_per_round {
                 break;
             }
             if simulated_loads
@@ -456,6 +484,7 @@ impl RebalanceController {
                 continue;
             }
             if source.role == ShardRole::Primary && !self.has_normal_secondary(source.shard_id) {
+                record_placement_fail(&mut report, "primary_without_normal_secondary");
                 continue;
             }
             let Some(target_node_id) = least_loaded_target(
@@ -464,12 +493,14 @@ impl RebalanceController {
                 source.shard_id,
                 &self.replicas,
             ) else {
+                record_placement_fail(&mut report, "no_target_node");
                 continue;
             };
             if target_node_id == source.node_id {
+                record_placement_fail(&mut report, "target_is_source");
                 continue;
             }
-            plans.push(ShardMovePlan {
+            report.plans.push(ShardMovePlan {
                 shard_id: source.shard_id,
                 source_replica_id: source.replica_id,
                 source_node_id: source.node_id,
@@ -482,7 +513,7 @@ impl RebalanceController {
             *simulated_loads.entry(target_node_id).or_default() += 1;
         }
 
-        plans
+        report
     }
 
     pub fn begin_move(
@@ -818,6 +849,14 @@ fn least_loaded_target(
         .copied()
 }
 
+fn record_placement_fail(report: &mut RebalanceRoundReport, reason: &str) {
+    report.placement_fail_count += 1;
+    *report
+        .placement_fail_reasons
+        .entry(reason.to_string())
+        .or_default() += 1;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -881,6 +920,57 @@ mod tests {
                 .unwrap()
                 .state,
             ShardReplicaState::Frozen
+        );
+    }
+
+    #[test]
+    fn rebalance_round_report_exposes_cpp_balance_metrics() {
+        let controller = RebalanceController::with_replicas([
+            replica(1, 10, 1, ShardRole::Primary),
+            replica(2, 10, 2, ShardRole::Secondary),
+            replica(3, 20, 1, ShardRole::Primary),
+            replica(4, 20, 2, ShardRole::Secondary),
+            replica(5, 30, 1, ShardRole::Primary),
+            replica(6, 30, 2, ShardRole::Secondary),
+        ]);
+
+        let report = controller.plan_rebalance_round_report(
+            [1, 2, 3],
+            RebalanceOptions {
+                max_moves_per_round: 1,
+                partition_count_safe_gap: 0,
+            },
+        );
+        assert_eq!(
+            report.balance_partition_count,
+            BTreeMap::from([(1, 3), (2, 3), (3, 0)])
+        );
+        assert_eq!(report.total_normal, 6);
+        assert_eq!(report.safe_line, 2);
+        assert_eq!(report.placement_fail_count, 0);
+        assert_eq!(report.plans.len(), 1);
+        assert_eq!(report.plans[0].target_node_id, 3);
+    }
+
+    #[test]
+    fn rebalance_round_report_counts_placement_failures() {
+        let controller = RebalanceController::with_replicas([
+            replica(1, 10, 1, ShardRole::Primary),
+            replica(2, 20, 1, ShardRole::Primary),
+        ]);
+
+        let report = controller.plan_rebalance_round_report([1, 2], RebalanceOptions::default());
+        assert!(report.plans.is_empty());
+        assert_eq!(
+            report.balance_partition_count,
+            BTreeMap::from([(1, 2), (2, 0)])
+        );
+        assert_eq!(report.total_normal, 2);
+        assert_eq!(report.safe_line, 1);
+        assert_eq!(report.placement_fail_count, 2);
+        assert_eq!(
+            report.placement_fail_reasons,
+            BTreeMap::from([("primary_without_normal_secondary".to_string(), 2)])
         );
     }
 
