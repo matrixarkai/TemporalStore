@@ -212,6 +212,13 @@ pub enum RiskFamily {
     Fol,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RiskFolType {
+    First,
+    Last,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Command {
@@ -485,6 +492,16 @@ pub enum Command {
         start_ms: u64,
         end_ms: u64,
         aggregator: String,
+    },
+    RiskFolSet {
+        key: String,
+        value: Vec<u8>,
+        occur_time_ms: u64,
+        ttl_ms: u64,
+        fol_type: RiskFolType,
+    },
+    RiskFolQuery {
+        key: String,
     },
     RiskManager {
         key: String,

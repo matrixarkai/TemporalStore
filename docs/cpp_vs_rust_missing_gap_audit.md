@@ -211,6 +211,13 @@ This pass closed one of the hard readiness blockers instead of leaving it as a n
     stale-local-state guards, install the snapshot into the target replica engine state, record
     the external snapshot ref, and catch up from the leader log. Route tests cover both binaries,
     and the distributed harness now validates HTTP publish -> HTTP bootstrap -> follower read.
+41. A direct scan of the C++ risk module closed a concrete FOL gap: Rust now has explicit
+    `RiskFolSet` / `RiskFolQuery` commands and typed client methods for the C++ `FolSet` /
+    `FolQuery` string semantics. `FIRST` keeps the value with the smallest event timestamp,
+    `LAST` keeps the value with the largest event timestamp, TTL/delete/index persistence are wired
+    through the shard state, and RESP now supports `FOLSET key value occur_time_ms ttl_ms
+    FIRST|LAST` plus `FOLQUERY key`. The older numeric `RiskFamily::Fol` shim remains for local
+    compatibility tests.
 
 This pass compared the Rust RESP layer against the local C++ server Redis command handler in
 `C:\Users\Vincent Jiang\Documents\Codex\temporalstore-small\src\server\redis_service.cc` and
@@ -458,7 +465,7 @@ The Rust data node also has a first runtime layer around `TemporalEngine`: worke
 | Feature | richer feature proto semantics | append/query/replace/delete/agg, write-policy append, 5k long-sequence coverage | nested point arrays, exact aggregate semantics |
 | Sequence | C++ feature/data-module behavior | typed rows, timestamp ordering, inclusive/equality/inequality filters, count, batch query | exact C++ options and remaining edge-case policy |
 | IPS | rich IPS add/query/remove/load/delete/stat/filter/snap | add, idempotent/dimensional add, query-last, query range, dimension-filtered range, batch query-last, remove timestamp, delete key, count range, load, range snapshot, stats, and named filter; typed client and RESP coverage | production snap metadata and server aggregation |
-| Risk | H/CPC/FOL query/update/manager semantics | increment/count plus precision/TTL increment, sum/min/max/first/last/event aggregation, detail list, H/CPC/FOL family set/query/set-and-get command shape, and local manager summary; typed client and RESP coverage | production CPC/list internals and full manager/debug APIs |
+| Risk | H/CPC/FOL query/update/manager semantics | increment/count plus precision/TTL increment, sum/min/max/first/last/event aggregation, detail list, H/CPC family set/query/set-and-get command shape, explicit C++-style FOL first/last string selection, and local manager summary; typed client and RESP coverage | production CPC/list internals and full manager/debug APIs |
 | Redis | not the main C++ wire API; C++ server also exposes admin commands such as `INFO`, `CONFIG`, `SLAVEOF`, and `PARTITION` | useful RESP compatibility, including `SET NX/XX GET EX/PX`, hash/set commands, feature commands, C++-style `INFO`/`CONFIG`/`SLAVEOF`/`AUTH`/`BGSAVE`/`PARTITION` smoke commands, and CRC64 slot/hash helpers | sorted sets/lists if needed; real partition-manager backing for admin commands |
 | Metrics | production metrics/logging | Prometheus `/metrics` for shard/cache/page/oplog/runtime/object-manager/partition plus snapshot metric names; local raft metrics renderer | dashboards and alerts |
 | Deployment | internal production environment | Docker and existing-EKS Terraform skeleton | service discovery, autoscale controller, rolling upgrade, runbooks, auth/TLS |

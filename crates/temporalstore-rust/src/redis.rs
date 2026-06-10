@@ -7,7 +7,8 @@ use std::thread;
 use crate::client::{slot_id_for_key, stable_key_hash};
 use crate::types::{
     parse_cpp_feature_filters, Command, CommandResponse, ExecuteRequest, FeatureFilter,
-    FeatureFilterOp, FeaturePoint, FeatureWritePolicy, RiskFamily, ShardId, StringSetCondition,
+    FeatureFilterOp, FeaturePoint, FeatureWritePolicy, RiskFamily, RiskFolType, ShardId,
+    StringSetCondition,
 };
 use crate::TemporalStoreClient;
 
@@ -933,6 +934,31 @@ pub fn execute_redis_command_with_state(
                 amount,
             }))
         }
+        "FOLSET" if args.len() == 6 => {
+            let occur_time_ms = match parse_u64(&args[3], "occur_time_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let ttl_ms = match parse_u64(&args[4], "ttl_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let fol_type = match upper(&args[5]).as_str() {
+                "FIRST" => RiskFolType::First,
+                "LAST" => RiskFolType::Last,
+                value => return RespValue::Error(format!("ERR unsupported fol_type: {value}")),
+            };
+            status_ok(execute(Command::RiskFolSet {
+                key: string_arg(&args[1]),
+                value: args[2].clone(),
+                occur_time_ms,
+                ttl_ms,
+                fol_type,
+            }))
+        }
+        "FOLQUERY" if args.len() == 2 => bytes_response(execute(Command::RiskFolQuery {
+            key: string_arg(&args[1]),
+        })),
         "HQUERY" | "CPCQUERY" | "FOLQUERY" if args.len() == 5 => {
             let start_ms = match parse_u64(&args[2], "start_ms") {
                 Ok(value) => value,
@@ -1820,6 +1846,80 @@ mod tests {
                 RespValue::Bulk(Some(b"fol_sum".to_vec())),
                 RespValue::Bulk(Some(b"11".to_vec())),
             ])
+        );
+        assert_eq!(
+            run(vec![
+                "FOLSET",
+                "risk-fol-str",
+                "middle",
+                "20",
+                "60000",
+                "FIRST"
+            ]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(
+            run(vec![
+                "FOLSET",
+                "risk-fol-str",
+                "first",
+                "10",
+                "60000",
+                "FIRST"
+            ]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(
+            run(vec![
+                "FOLSET",
+                "risk-fol-str",
+                "last",
+                "30",
+                "60000",
+                "FIRST"
+            ]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(
+            run(vec!["FOLQUERY", "risk-fol-str"]),
+            RespValue::Bulk(Some(b"first".to_vec()))
+        );
+        assert_eq!(
+            run(vec![
+                "FOLSET",
+                "risk-fol-last",
+                "middle",
+                "20",
+                "60000",
+                "LAST"
+            ]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(
+            run(vec![
+                "FOLSET",
+                "risk-fol-last",
+                "first",
+                "10",
+                "60000",
+                "LAST"
+            ]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(
+            run(vec![
+                "FOLSET",
+                "risk-fol-last",
+                "last",
+                "30",
+                "60000",
+                "LAST"
+            ]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(
+            run(vec!["FOLQUERY", "risk-fol-last"]),
+            RespValue::Bulk(Some(b"last".to_vec()))
         );
     }
 

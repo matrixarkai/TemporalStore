@@ -14,7 +14,7 @@ use crate::meta::{GetTableTopologyRequest, ServerEndpoint, TableTopologyResponse
 use crate::types::{
     parse_cpp_feature_filters, BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse,
     ExecuteRequest, ExecuteResponse, FeatureFilter, FeaturePoint, FeatureWritePolicy, IpsStats,
-    RiskFamily, SequenceFeatureRow, SequenceQuerySpec, ShardId, Status,
+    RiskFamily, RiskFolType, SequenceFeatureRow, SequenceQuerySpec, ShardId, Status,
 };
 
 #[derive(Debug, Error)]
@@ -1827,6 +1827,36 @@ impl TemporalStoreTable {
         }
     }
 
+    pub fn risk_fol_set(
+        &self,
+        key: impl Into<String>,
+        value: impl Into<Vec<u8>>,
+        occur_time_ms: u64,
+        ttl_ms: u64,
+        fol_type: RiskFolType,
+    ) -> Result<(), ClientError> {
+        self.expect_empty(Command::RiskFolSet {
+            key: key.into(),
+            value: value.into(),
+            occur_time_ms,
+            ttl_ms,
+            fol_type,
+        })
+    }
+
+    pub fn risk_fol_query(&self, key: impl Into<String>) -> Result<Option<Vec<u8>>, ClientError> {
+        match self
+            .execute(Command::RiskFolQuery { key: key.into() })?
+            .response
+        {
+            CommandResponse::Bytes { value } => Ok(value),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "risk_fol_query",
+                response,
+            }),
+        }
+    }
+
     pub fn risk_manager(
         &self,
         key: impl Into<String>,
@@ -2180,6 +2210,7 @@ fn is_write(command: &Command) -> bool {
             | Command::RiskIncrementWithOptions { .. }
             | Command::RiskSet { .. }
             | Command::RiskSetAndGet { .. }
+            | Command::RiskFolSet { .. }
     )
 }
 
@@ -2340,6 +2371,8 @@ fn command_key(command: &Command) -> Option<&str> {
         | Command::RiskSet { key, .. }
         | Command::RiskSetAndGet { key, .. }
         | Command::RiskFamilyQuery { key, .. }
+        | Command::RiskFolSet { key, .. }
+        | Command::RiskFolQuery { key }
         | Command::RiskManager { key } => Some(key),
         Command::IpsBatchQueryLast { .. } | Command::SequenceBatchQuery { .. } => None,
     }
@@ -2626,6 +2659,68 @@ mod tests {
                 .risk_family_query(RiskFamily::Fol, "risk-cpp", 0, 30, "sum")
                 .unwrap(),
             11
+        );
+        table
+            .risk_fol_set(
+                "risk-fol-first",
+                b"middle".to_vec(),
+                20,
+                60_000,
+                RiskFolType::First,
+            )
+            .unwrap();
+        table
+            .risk_fol_set(
+                "risk-fol-first",
+                b"first".to_vec(),
+                10,
+                60_000,
+                RiskFolType::First,
+            )
+            .unwrap();
+        table
+            .risk_fol_set(
+                "risk-fol-first",
+                b"last".to_vec(),
+                30,
+                60_000,
+                RiskFolType::First,
+            )
+            .unwrap();
+        assert_eq!(
+            table.risk_fol_query("risk-fol-first").unwrap(),
+            Some(b"first".to_vec())
+        );
+        table
+            .risk_fol_set(
+                "risk-fol-last",
+                b"middle".to_vec(),
+                20,
+                60_000,
+                RiskFolType::Last,
+            )
+            .unwrap();
+        table
+            .risk_fol_set(
+                "risk-fol-last",
+                b"first".to_vec(),
+                10,
+                60_000,
+                RiskFolType::Last,
+            )
+            .unwrap();
+        table
+            .risk_fol_set(
+                "risk-fol-last",
+                b"last".to_vec(),
+                30,
+                60_000,
+                RiskFolType::Last,
+            )
+            .unwrap();
+        assert_eq!(
+            table.risk_fol_query("risk-fol-last").unwrap(),
+            Some(b"last".to_vec())
         );
         assert_eq!(
             table.risk_manager("risk-cpp").unwrap(),

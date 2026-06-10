@@ -21,7 +21,8 @@ use crate::page_store::{LocalPageStore, PageAddress};
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,
     ExecuteResponse, FeatureFilter, FeatureFilterOp, FeaturePoint, FeatureWritePolicy, IpsStats,
-    RiskFamily, SequenceFeatureRow, SequenceQuerySpec, ShardId, Status, StringSetCondition,
+    RiskFamily, RiskFolType, SequenceFeatureRow, SequenceQuerySpec, ShardId, Status,
+    StringSetCondition,
 };
 
 #[derive(Debug, Clone)]
@@ -57,8 +58,17 @@ struct ShardState {
     #[serde(default)]
     ips_request_ids: HashMap<String, BTreeSet<String>>,
     risk: HashMap<String, BTreeMap<u64, i64>>,
+    #[serde(default)]
+    risk_fol: HashMap<String, RiskFolValue>,
     #[serde(skip)]
     dirty_objects: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RiskFolValue {
+    occur_time_ms: u64,
+    value: Vec<u8>,
+    fol_type: RiskFolType,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -2362,6 +2372,52 @@ fn execute_on_shard(
                 value: aggregate_risk_values(&values, &aggregator),
             }
         }
+        Command::RiskFolSet {
+            key,
+            value,
+            occur_time_ms,
+            ttl_ms,
+            fol_type,
+        } => {
+            remove_if_expired(shard, &key);
+            let should_store = shard
+                .risk_fol
+                .get(&key)
+                .map(|existing| match fol_type {
+                    RiskFolType::First => occur_time_ms < existing.occur_time_ms,
+                    RiskFolType::Last => occur_time_ms > existing.occur_time_ms,
+                })
+                .unwrap_or(true);
+            if should_store {
+                shard.risk_fol.insert(
+                    key.clone(),
+                    RiskFolValue {
+                        occur_time_ms,
+                        value,
+                        fol_type,
+                    },
+                );
+            }
+            if ttl_ms > 0 {
+                shard
+                    .expires_at_ms
+                    .insert(key, now_ms().saturating_add(ttl_ms));
+            }
+            mutated = true;
+            CommandResponse::Empty
+        }
+        Command::RiskFolQuery { key } => {
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+                return ExecuteOutcome {
+                    response: CommandResponse::Bytes { value: None },
+                    mutated,
+                };
+            }
+            CommandResponse::Bytes {
+                value: shard.risk_fol.get(&key).map(|stored| stored.value.clone()),
+            }
+        }
         Command::RiskManager { key } => {
             if remove_if_expired(shard, &key) {
                 mutated = true;
@@ -2387,6 +2443,20 @@ fn execute_on_shard(
                 entries.push((
                     format!("{}_sum", risk_family_name(family)),
                     values.iter().sum::<i64>().to_string().into_bytes(),
+                ));
+            }
+            if let Some(fol) = shard.risk_fol.get(&key) {
+                entries.push(("fol_value".to_string(), fol.value.clone()));
+                entries.push((
+                    "fol_occur_time_ms".to_string(),
+                    fol.occur_time_ms.to_string().into_bytes(),
+                ));
+                entries.push((
+                    "fol_type".to_string(),
+                    match fol.fol_type {
+                        RiskFolType::First => b"first".to_vec(),
+                        RiskFolType::Last => b"last".to_vec(),
+                    },
                 ));
             }
             CommandResponse::HashEntries { entries }
@@ -2437,6 +2507,7 @@ fn delete_record(shard: &mut ShardState, key: &str) -> bool {
     removed |= shard.ips_meta.remove(key).is_some();
     removed |= shard.ips_request_ids.remove(key).is_some();
     removed |= shard.risk.remove(key).is_some();
+    removed |= shard.risk_fol.remove(key).is_some();
     removed
 }
 
@@ -2825,7 +2896,8 @@ fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::IpsRemove { key, .. }
         | Command::IpsDelete { key }
         | Command::RiskIncrement { key, .. }
-        | Command::RiskIncrementWithOptions { key, .. } => vec![key.clone()],
+        | Command::RiskIncrementWithOptions { key, .. }
+        | Command::RiskFolSet { key, .. } => vec![key.clone()],
         Command::RiskSet { family, key, .. } | Command::RiskSetAndGet { family, key, .. } => {
             vec![risk_family_key(*family, key)]
         }
@@ -2854,6 +2926,7 @@ fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::RiskQuery { .. }
         | Command::RiskDetail { .. }
         | Command::RiskFamilyQuery { .. }
+        | Command::RiskFolQuery { .. }
         | Command::RiskManager { .. } => Vec::new(),
     }
 }
@@ -2887,6 +2960,7 @@ fn is_write_command(command: &Command) -> bool {
             | Command::RiskIncrementWithOptions { .. }
             | Command::RiskSet { .. }
             | Command::RiskSetAndGet { .. }
+            | Command::RiskFolSet { .. }
     )
 }
 
@@ -5343,6 +5417,72 @@ mod tests {
                     ("fol_events".to_string(), b"1".to_vec()),
                     ("fol_sum".to_string(), b"11".to_vec()),
                 ],
+            }
+        );
+    }
+
+    #[test]
+    fn risk_fol_matches_cpp_first_last_string_semantics() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+
+        for (occur_time_ms, value) in [(20, "middle"), (10, "first"), (30, "last")] {
+            assert!(
+                engine
+                    .execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::RiskFolSet {
+                            key: "risk-fol-first".to_string(),
+                            value: value.as_bytes().to_vec(),
+                            occur_time_ms,
+                            ttl_ms: 60_000,
+                            fol_type: RiskFolType::First,
+                        },
+                    })
+                    .status
+                    .ok
+            );
+            assert!(
+                engine
+                    .execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::RiskFolSet {
+                            key: "risk-fol-last".to_string(),
+                            value: value.as_bytes().to_vec(),
+                            occur_time_ms,
+                            ttl_ms: 60_000,
+                            fol_type: RiskFolType::Last,
+                        },
+                    })
+                    .status
+                    .ok
+            );
+        }
+
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::RiskFolQuery {
+                        key: "risk-fol-first".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"first".to_vec()),
+            }
+        );
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::RiskFolQuery {
+                        key: "risk-fol-last".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"last".to_vec()),
             }
         );
     }
