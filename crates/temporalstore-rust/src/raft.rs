@@ -1915,15 +1915,12 @@ impl ProductionRaftSecurity {
         }
         match self.mode {
             ProductionRaftSecurityMode::Mtls => {
-                if self.cert_path.as_deref().unwrap_or_default().is_empty()
-                    || self.key_path.as_deref().unwrap_or_default().is_empty()
-                    || self.ca_cert_path.as_deref().unwrap_or_default().is_empty()
-                {
-                    return Err(RaftError::InvalidConfig(
-                        "production raft mTLS requires cert_path, key_path, and ca_cert_path"
-                            .to_string(),
-                    ));
-                }
+                validate_nonempty_file(self.cert_path.as_deref().unwrap_or_default(), "cert_path")?;
+                validate_nonempty_file(self.key_path.as_deref().unwrap_or_default(), "key_path")?;
+                validate_nonempty_file(
+                    self.ca_cert_path.as_deref().unwrap_or_default(),
+                    "ca_cert_path",
+                )?;
             }
             ProductionRaftSecurityMode::PlaintextForLocalChaos
                 if !allow_plaintext_for_local_chaos =>
@@ -1936,6 +1933,31 @@ impl ProductionRaftSecurity {
         }
         Ok(())
     }
+}
+
+fn validate_nonempty_file(path: &str, label: &str) -> Result<(), RaftError> {
+    let path = path.trim();
+    if path.is_empty() {
+        return Err(RaftError::InvalidConfig(format!(
+            "production raft mTLS requires {label}"
+        )));
+    }
+    let metadata = fs::metadata(path).map_err(|err| {
+        RaftError::InvalidConfig(format!(
+            "production raft mTLS {label} is not readable at {path}: {err}"
+        ))
+    })?;
+    if !metadata.is_file() {
+        return Err(RaftError::InvalidConfig(format!(
+            "production raft mTLS {label} must point to a file: {path}"
+        )));
+    }
+    if metadata.len() == 0 {
+        return Err(RaftError::InvalidConfig(format!(
+            "production raft mTLS {label} must not be empty: {path}"
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1970,6 +1992,33 @@ impl ProductionRaftRuntimeOptions {
                 "production raft requires at least one node".to_string(),
             ));
         }
+        let mut node_ids = BTreeSet::new();
+        let mut node_addrs = BTreeSet::new();
+        for node in &self.nodes {
+            if node.node_id == 0 {
+                return Err(RaftError::InvalidConfig(
+                    "production raft node_id must be non-zero".to_string(),
+                ));
+            }
+            if node.addr.trim().is_empty() {
+                return Err(RaftError::InvalidConfig(format!(
+                    "production raft node {} requires a non-empty addr",
+                    node.node_id
+                )));
+            }
+            if !node_ids.insert(node.node_id) {
+                return Err(RaftError::InvalidConfig(format!(
+                    "production raft node_id {} is duplicated",
+                    node.node_id
+                )));
+            }
+            if !node_addrs.insert(node.addr.trim().to_string()) {
+                return Err(RaftError::InvalidConfig(format!(
+                    "production raft addr {} is duplicated",
+                    node.addr
+                )));
+            }
+        }
         if !self
             .nodes
             .iter()
@@ -1979,7 +2028,7 @@ impl ProductionRaftRuntimeOptions {
                 "local_node_id must be present in production raft nodes".to_string(),
             ));
         }
-        if self.wal_dir.is_empty() {
+        if self.wal_dir.trim().is_empty() {
             return Err(RaftError::InvalidConfig(
                 "production raft requires wal_dir".to_string(),
             ));
@@ -8734,9 +8783,59 @@ mod tests {
         invalid.max_catchup_entries_per_heartbeat = 0;
         assert!(invalid.validate().is_err());
 
+        let mut invalid = options.clone();
+        invalid.nodes[1].node_id = invalid.nodes[0].node_id;
+        assert!(invalid.validate().is_err());
+
+        let mut invalid = options.clone();
+        invalid.nodes[1].addr = " ".to_string();
+        assert!(invalid.validate().is_err());
+
+        let mut invalid = options.clone();
+        invalid.nodes[1].addr = invalid.nodes[0].addr.clone();
+        assert!(invalid.validate().is_err());
+
         let mut invalid = options;
         invalid.allow_plaintext_for_local_chaos = false;
         assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn production_raft_mtls_requires_readable_nonempty_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert = dir.path().join("node.crt");
+        let key = dir.path().join("node.key");
+        let ca = dir.path().join("ca.crt");
+        fs::write(&cert, "cert").unwrap();
+        fs::write(&key, "key").unwrap();
+        fs::write(&ca, "ca").unwrap();
+
+        let security = ProductionRaftSecurity::mtls(
+            "token",
+            cert.display().to_string(),
+            key.display().to_string(),
+            ca.display().to_string(),
+        );
+        security.validate(false).unwrap();
+
+        let empty_key = dir.path().join("empty.key");
+        fs::write(&empty_key, "").unwrap();
+        let security = ProductionRaftSecurity::mtls(
+            "token",
+            cert.display().to_string(),
+            empty_key.display().to_string(),
+            ca.display().to_string(),
+        );
+        assert!(security.validate(false).is_err());
+
+        let missing_ca = dir.path().join("missing-ca.crt");
+        let security = ProductionRaftSecurity::mtls(
+            "token",
+            cert.display().to_string(),
+            key.display().to_string(),
+            missing_ca.display().to_string(),
+        );
+        assert!(security.validate(false).is_err());
     }
 
     #[test]
