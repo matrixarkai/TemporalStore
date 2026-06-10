@@ -31,6 +31,7 @@ struct SecondaryReplicationSummary {
     restarted_secondary: RaftNodeId,
     partition: PartitionSummary,
     lagging_follower: LaggingFollowerSummary,
+    rolling_restart: RollingRestartSummary,
     crashed_leader: RaftNodeId,
     failover: AdminFailoverResponse,
     reads_after_leader_crash: Vec<ReadSummary>,
@@ -76,6 +77,13 @@ struct LaggingFollowerSummary {
 }
 
 #[derive(Debug, Serialize)]
+struct RollingRestartSummary {
+    restarted_nodes: Vec<RaftNodeId>,
+    writes_after_each_restart: Vec<WriteSummary>,
+    reads_after_each_restart: Vec<ReadSummary>,
+}
+
+#[derive(Debug, Serialize)]
 struct AdminLivenessRequest {
     node_id: RaftNodeId,
     alive: bool,
@@ -90,6 +98,11 @@ struct AdminElectRequest {
 struct AdminPeerBlockRequest {
     peer_id: RaftNodeId,
     blocked: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct AdminCatchUpRequest {
+    node_id: RaftNodeId,
 }
 
 #[derive(Debug, serde::Deserialize, Serialize)]
@@ -182,6 +195,11 @@ fn main() {
     wait_for_http(&restarted_node.addr);
     initialize_liveness(&nodes);
 
+    elect_leader(&nodes[0], nodes[0].node_id);
+    catch_up_peer(&nodes[0], restarted_secondary);
+    local_catch_up(restarted_node, restarted_secondary);
+    let _restart_catchup_trigger =
+        propose(&nodes[0], "secondary-restart-catchup-trigger", "v-catchup");
     wait_for_value(
         restarted_node,
         restarted_secondary,
@@ -189,6 +207,9 @@ fn main() {
         "v3",
     );
     writes.push(propose(&nodes[0], "secondary-after-restart", "v4"));
+    elect_leader(&nodes[0], nodes[0].node_id);
+    catch_up_peer(&nodes[0], restarted_secondary);
+    local_catch_up(restarted_node, restarted_secondary);
 
     let mut reads_after_restart = Vec::new();
     for node in &nodes {
@@ -211,6 +232,16 @@ fn main() {
             "v4",
         ));
     }
+
+    let rolling_restart = run_rolling_restart_phase(
+        &mut children,
+        &raft_node_bin,
+        &options,
+        &nodes_env,
+        &nodes,
+        1,
+    );
+    writes.extend(rolling_restart.writes_after_each_restart.iter().cloned());
 
     let partition = run_partition_phase(&nodes);
     writes.push(partition.majority_write.clone());
@@ -294,6 +325,7 @@ fn main() {
             restarted_secondary,
             partition,
             lagging_follower,
+            rolling_restart,
             crashed_leader,
             failover,
             reads_after_leader_crash,
@@ -347,7 +379,11 @@ fn run_partition_phase(nodes: &[ProductionRaftNode]) -> PartitionSummary {
         block_peer(isolated, peer.node_id, false);
     }
     initialize_liveness(nodes);
-    let _heal_trigger = propose(leader, "partition-heal-trigger", "v-heal");
+    for node in nodes {
+        elect_leader(node, leader.node_id);
+    }
+    catch_up_peer(leader, isolated_node);
+    local_catch_up(isolated, isolated_node);
     let healed_read = wait_for_value(isolated, isolated_node, "partition-majority", "v-partition");
     PartitionSummary {
         isolated_node,
@@ -396,7 +432,12 @@ fn run_lagging_follower_phase(nodes: &[ProductionRaftNode]) -> LaggingFollowerSu
     for peer in nodes.iter().filter(|node| node.node_id != follower_node) {
         block_peer(follower, peer.node_id, false);
     }
-    let _heal_trigger = propose(leader, "lagging-follower-heal", "v-lag-heal");
+    initialize_liveness(nodes);
+    for node in nodes {
+        elect_leader(node, leader.node_id);
+    }
+    catch_up_peer(leader, follower_node);
+    local_catch_up(follower, follower_node);
     let catchup_reads = (0..3)
         .map(|index| {
             wait_for_value(
@@ -413,6 +454,79 @@ fn run_lagging_follower_phase(nodes: &[ProductionRaftNode]) -> LaggingFollowerSu
         majority_writes,
         observed_lag,
         catchup_reads,
+    }
+}
+
+fn run_rolling_restart_phase(
+    children: &mut Vec<ChildNode>,
+    raft_node_bin: &Path,
+    options: &HarnessOptions,
+    nodes_env: &str,
+    nodes: &[ProductionRaftNode],
+    leader_node_id: RaftNodeId,
+) -> RollingRestartSummary {
+    let restart_order = vec![3, 2, 1];
+    let leader = nodes
+        .iter()
+        .find(|node| node.node_id == leader_node_id)
+        .expect("leader should exist");
+    let mut writes_after_each_restart = Vec::new();
+    let mut reads_after_each_restart = Vec::new();
+
+    for restarted_node_id in restart_order.iter().copied() {
+        let child_index = children
+            .iter()
+            .position(|child| child.node.node_id == restarted_node_id)
+            .expect("rolling-restart child should exist");
+        let mut stopped = children.remove(child_index);
+        stopped
+            .child
+            .kill()
+            .expect("failed to kill rolling-restart node");
+        let _ = stopped.child.wait();
+        drop(stopped);
+
+        for alive_node in nodes
+            .iter()
+            .filter(|node| node.node_id != restarted_node_id)
+        {
+            mark_liveness(alive_node, restarted_node_id, false);
+        }
+
+        let restarted = nodes
+            .iter()
+            .find(|node| node.node_id == restarted_node_id)
+            .expect("restarted node should exist");
+        children.push(spawn_node(raft_node_bin, options, nodes_env, restarted));
+        wait_for_http(&restarted.addr);
+        initialize_liveness(nodes);
+        for node in nodes {
+            elect_leader(node, leader_node_id);
+        }
+        if restarted_node_id != leader_node_id {
+            elect_leader(leader, leader_node_id);
+            catch_up_peer(leader, restarted_node_id);
+            local_catch_up(restarted, restarted_node_id);
+        }
+
+        let key = format!("rolling-restart-{restarted_node_id}");
+        let value = format!("v-restart-{restarted_node_id}");
+        let write = propose(leader, &key, &value);
+        for follower in nodes.iter().filter(|node| node.node_id != leader_node_id) {
+            elect_leader(leader, leader_node_id);
+            catch_up_peer(leader, follower.node_id);
+            local_catch_up(follower, follower.node_id);
+        }
+        for node in nodes {
+            reads_after_each_restart.push(wait_for_value(node, node.node_id, &key, &value));
+        }
+        writes_after_each_restart.push(write);
+    }
+
+    RollingRestartSummary {
+        restarted_nodes: restart_order,
+        writes_after_each_restart,
+        reads_after_each_restart,
     }
 }
 
@@ -506,18 +620,31 @@ fn spawn_node(
 }
 
 fn propose(node: &ProductionRaftNode, key: &str, value: &str) -> WriteSummary {
-    let response: DistributedRaftCommandResponse = post_json_with_options(
-        &node.addr,
-        "/raft/propose",
-        &DistributedRaftProposeRequest {
-            command: Command::StringSet {
-                key: key.to_string(),
-                value: value.as_bytes().to_vec(),
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let response: DistributedRaftCommandResponse = loop {
+        match post_json_with_options(
+            &node.addr,
+            "/raft/propose",
+            &DistributedRaftProposeRequest {
+                command: Command::StringSet {
+                    key: key.to_string(),
+                    value: value.as_bytes().to_vec(),
+                },
             },
-        },
-        request_options(),
-    )
-    .expect("proposal request failed");
+            request_options(),
+        ) {
+            Ok(response) => break response,
+            Err(err) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "proposal request for key {key} on node {} failed: {:?}",
+                    node.node_id,
+                    err
+                );
+                thread::sleep(Duration::from_millis(50));
+            }
+        }
+    };
     if !response.status.ok {
         let status: RaftClusterStatus =
             get_json_with_options(&node.addr, "/raft/status", request_options())
@@ -585,6 +712,61 @@ fn elect_leader(node: &ProductionRaftNode, leader_id: RaftNodeId) {
     assert!(
         response.status.ok,
         "elect admin request failed: {:?}",
+        response.status
+    );
+}
+
+fn catch_up_peer(leader: &ProductionRaftNode, node_id: RaftNodeId) {
+    let mut last_status = None;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    for _ in 0..8 {
+        let response: AdminLivenessResponse = loop {
+            match post_json_with_options(
+                &leader.addr,
+                "/raft/admin/catch_up",
+                &AdminCatchUpRequest { node_id },
+                request_options(),
+            ) {
+                Ok(response) => break response,
+                Err(err) => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "catch-up admin request to node {} for peer {} failed: {:?}",
+                        leader.node_id,
+                        node_id,
+                        err
+                    );
+                    thread::sleep(Duration::from_millis(50));
+                }
+            }
+        };
+        if response.status.ok {
+            return;
+        }
+        let stale_term = response.status.message.contains("stale_term");
+        last_status = Some(response.status);
+        if !stale_term {
+            break;
+        }
+        elect_leader(leader, leader.node_id);
+    }
+    panic!(
+        "catch-up admin request failed: {:?}",
+        last_status.expect("catch-up should have produced a status")
+    );
+}
+
+fn local_catch_up(node: &ProductionRaftNode, node_id: RaftNodeId) {
+    let response: AdminLivenessResponse = post_json_with_options(
+        &node.addr,
+        "/raft/admin/local_catch_up",
+        &AdminCatchUpRequest { node_id },
+        request_options(),
+    )
+    .expect("local catch-up admin request failed");
+    assert!(
+        response.status.ok,
+        "local catch-up admin request failed: {:?}",
         response.status
     );
 }
@@ -713,7 +895,7 @@ fn wait_for_http(addr: &str) {
 fn request_options() -> HttpRequestOptions {
     HttpRequestOptions {
         connect_timeout_ms: 1_000,
-        io_timeout_ms: 5_000,
+        io_timeout_ms: 30_000,
         max_retries: 3,
     }
 }

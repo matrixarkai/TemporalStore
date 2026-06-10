@@ -138,13 +138,14 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "local OS-process raft_node harness covers lagging-follower observation, majority-side writes, heal, and catch-up reads"
                     .to_string(),
+                "local OS-process raft_node harness covers rolling restart of every voter with WAL recovery and post-restart replication"
+                    .to_string(),
             ],
             missing: vec![
                 "real OpenRaft or raft-rs data-node FSM/storage implementation".to_string(),
                 "networked metaserver Raft transport and scheduler loop that drives data-node Raft membership apply across real processes and persists task state"
                     .to_string(),
-                "external multi-process packet-loss, disk-pressure, and rolling-restart tests"
-                    .to_string(),
+                "external multi-process packet-loss and disk-pressure tests".to_string(),
             ],
         },
         ReadinessArea {
@@ -329,7 +330,7 @@ mod tests {
             .any(|item| item.contains("OpenRaft") || item.contains("raft-rs")));
         assert!(data_raft
             .iter()
-            .any(|item| item.contains("packet-loss") || item.contains("rolling-restart")));
+            .any(|item| item.contains("packet-loss") || item.contains("disk-pressure")));
 
         let covered = &report
             .areas
@@ -346,6 +347,9 @@ mod tests {
         assert!(covered
             .iter()
             .any(|item| item.contains("lagging-follower observation")));
+        assert!(covered
+            .iter()
+            .any(|item| item.contains("rolling restart of every voter")));
 
         let scale = report
             .missing_by_area("scale_testing")

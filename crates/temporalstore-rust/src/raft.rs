@@ -1737,7 +1737,7 @@ pub fn distributed_raft_readiness() -> RaftDistributedReadiness {
     let missing = vec![
         "replace local consensus model with OpenRaft or raft-rs FSM/storage integration"
             .to_string(),
-        "run external packet-loss, disk-pressure, and rolling restart tests".to_string(),
+        "run external packet-loss and disk-pressure tests".to_string(),
         "add production mTLS transport implementation instead of validation-only config"
             .to_string(),
         "integrate metaserver shard membership changes with networked Raft groups".to_string(),
@@ -3202,6 +3202,59 @@ impl RaftCluster {
                 _ => failed_targets.push(target_id),
             }
         }
+        for target_id in failed_targets {
+            if transport
+                .install_snapshot(self.build_install_snapshot_request(target_id)?)
+                .map(|response| response.success)
+                .unwrap_or(false)
+            {
+                let retry_request = {
+                    let inner = self.inner.read().expect("raft cluster lock poisoned");
+                    let leader = inner
+                        .nodes
+                        .get(&leader_id)
+                        .ok_or(RaftError::LeaderUnavailable)?;
+                    let prev_log_index = entry.index.saturating_sub(1);
+                    let prev_log_term = leader
+                        .log
+                        .iter()
+                        .find(|log_entry| log_entry.index == prev_log_index)
+                        .map(|log_entry| log_entry.term)
+                        .unwrap_or_default();
+                    AppendEntriesRequest {
+                        rpc: None,
+                        shard_id: entry.shard_id,
+                        term: entry.term,
+                        leader_id,
+                        target_id,
+                        prev_log_index,
+                        prev_log_term,
+                        entries: vec![entry.clone()],
+                        leader_commit: entry.index,
+                    }
+                };
+                if transport
+                    .append_entries(retry_request)
+                    .map(|response| response.success && response.match_index >= entry.index)
+                    .unwrap_or(false)
+                {
+                    let counts_for_quorum = self
+                        .inner
+                        .read()
+                        .expect("raft cluster lock poisoned")
+                        .nodes
+                        .get(&target_id)
+                        .map(|node| node.replica_role.participates_in_quorum())
+                        .unwrap_or(false);
+                    if counts_for_quorum {
+                        replicated += 1;
+                    }
+                    let _ = self.catch_up(target_id);
+                    successful_targets.push(target_id);
+                }
+            }
+        }
+
         if replicated < required {
             return Err(RaftError::NoMajority {
                 live: replicated,
@@ -3225,17 +3278,6 @@ impl RaftCluster {
             response
         };
 
-        for target_id in failed_targets {
-            if transport
-                .install_snapshot(self.build_install_snapshot_request(target_id)?)
-                .map(|response| response.success)
-                .unwrap_or(false)
-            {
-                let _ = self.catch_up(target_id);
-                successful_targets.push(target_id);
-            }
-        }
-
         for target_id in &successful_targets {
             let request = AppendEntriesRequest {
                 rpc: None,
@@ -3248,7 +3290,14 @@ impl RaftCluster {
                 entries: Vec::new(),
                 leader_commit: entry.index,
             };
-            let _ = transport.append_entries(request);
+            let committed = transport
+                .append_entries(request)
+                .map(|response| response.success)
+                .unwrap_or(false);
+            if !committed {
+                let _ =
+                    transport.install_snapshot(self.build_install_snapshot_request(*target_id)?);
+            }
             let _ = self.catch_up(*target_id);
         }
 
@@ -3776,7 +3825,13 @@ impl RaftCluster {
                 .log
                 .iter()
                 .find(|entry| entry.index == request.prev_log_index)
-                .map(|entry| entry.term);
+                .map(|entry| entry.term)
+                .or_else(|| {
+                    node.installed_snapshot
+                        .as_ref()
+                        .filter(|snapshot| snapshot.last_included_index == request.prev_log_index)
+                        .map(|snapshot| snapshot.last_included_term)
+                });
             if prev_term != Some(request.prev_log_term) {
                 return Ok(AppendEntriesResponse {
                     term: node.current_term,

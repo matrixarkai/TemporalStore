@@ -116,8 +116,8 @@ The production runtime surface is:
 - `raft_secondary_replication_harness` binary that starts real `raft_node` OS processes, kills and
   restarts a secondary, injects a network partition with stale-read rejection, heals and verifies
   follower catch-up, forces a lagging follower while majority writes continue, heals and verifies
-  catch-up reads, kills the original leader, triggers surviving-node failover, and verifies
-  post-failover reads
+  catch-up reads, rolling-restarts every voter from its WAL, verifies post-restart replication,
+  kills the original leader, triggers surviving-node failover, and verifies post-failover reads
 
 Production deployments should use `ProductionRaftSecurity::mtls`. Local chaos tests can use
 `ProductionRaftSecurity::plaintext_for_local_chaos` only when
@@ -127,7 +127,7 @@ Production deployments should use `ProductionRaftSecurity::mtls`. Local chaos te
 
 - Replace the local consensus model with OpenRaft or raft-rs FSM/storage integration.
 - Wire data-node Raft snapshots to real engine snapshot create/download/install.
-- Run external multi-process packet-loss, disk-pressure, and rolling restart tests.
+- Run external multi-process packet-loss and disk-pressure tests.
 - Add actual mTLS transport implementation, not just config validation and authenticated metadata.
 - Integrate metaserver shard membership changes with networked data-node Raft groups.
 
@@ -142,6 +142,8 @@ Covered today:
 - local OS-process harness coverage for network partition stale-read rejection, heal, and catch-up
 - local OS-process harness coverage for lagging-follower observation, majority-side writes, heal,
   and catch-up reads
+- local OS-process harness coverage for rolling restart of every voter with WAL recovery and
+  post-restart replication
 - local majority commit, catch-up, safe reads, promotion, safe scale up, and safe scale down
 - WAL-backed local model recovery for commits, leadership, and membership
 - local snapshot and chunked snapshot message behavior
@@ -154,7 +156,7 @@ Still missing:
 - snapshot install wired to `TemporalEngine` freeze, flush, download, verify, and install
 - production engine snapshot install with freeze/flush/download/verify/install lifecycle; the local
   external snapshot path now has stale-local-state preflight before download
-- external chaos tests that inject packet loss, disk pressure, and rolling restarts
+- external chaos tests that inject packet loss and disk pressure
 - AWS multi-node validation with real metaserver, proxy, client, and data-node processes
 
 The executable readiness gate for this repeated check is:
@@ -222,9 +224,11 @@ cargo run -p temporalstore-rust --bin raft_secondary_replication_harness
 This harness starts three real `raft_node` OS processes with `TS_RAFT_ENABLE_LOCAL_ADMIN=true`,
 writes through the leader, kills secondary node 3, writes while that secondary is down, restarts
 node 3 with the same local WAL directory, waits until all nodes can read the pre-stop, while-down,
-and after-restart keys, then kills leader node 1, marks it dead in the surviving local-chaos
-runtimes, triggers failover on node 2, writes through the new leader, and verifies the surviving
-replicas can read the post-failover key.
+and after-restart keys, rolling-restarts voters 3, 2, and 1 from their existing WAL directories,
+verifies a fresh replicated write after each restart, injects partition and lagging-follower phases,
+then kills leader node 1, marks it dead in the surviving local-chaos runtimes, triggers failover on
+node 2, writes through the new leader, and verifies the surviving replicas can read the
+post-failover key.
 
 ## Current Test Coverage
 

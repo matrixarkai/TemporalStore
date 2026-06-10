@@ -7,7 +7,8 @@ use temporalstore_rust::{
     handle_raft_http, CommandResponse, DistributedRaftCommandResponse,
     DistributedRaftProposeRequest, DistributedRaftReadRequest, ProductionRaftEngineKind,
     ProductionRaftNode, ProductionRaftRuntime, ProductionRaftRuntimeOptions,
-    ProductionRaftSecurity, RaftConfig, RaftFailoverReport, RaftRpcRuntimeOptions, Status,
+    ProductionRaftSecurity, RaftConfig, RaftFailoverReport, RaftRpcRuntimeOptions, RaftTransport,
+    Status,
 };
 
 #[derive(Debug, Deserialize)]
@@ -25,6 +26,11 @@ struct RaftAdminElectRequest {
 struct RaftAdminPeerBlockRequest {
     peer_id: u64,
     blocked: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct RaftAdminCatchUpRequest {
+    node_id: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -119,6 +125,49 @@ fn handle(
                 },
             };
             json_response(200, &response)
+        }
+        ("POST", "/raft/admin/catch_up") => {
+            if !local_admin_enabled {
+                return json_response(403, &Status::error("forbidden", "local admin disabled"));
+            }
+            match parse_json::<RaftAdminCatchUpRequest>(&request.body) {
+                Ok(req) => {
+                    let cluster = runtime.cluster();
+                    let status = cluster
+                        .build_install_snapshot_request(req.node_id)
+                        .and_then(|snapshot| {
+                            let response = runtime.transport().install_snapshot(snapshot)?;
+                            if response.success {
+                                cluster.catch_up(req.node_id)
+                            } else {
+                                Err(temporalstore_rust::RaftError::Transport(format!(
+                                    "snapshot install rejected by node {}: {:?}",
+                                    req.node_id, response.reject_reason
+                                )))
+                            }
+                        })
+                        .map(|_| Status::ok())
+                        .unwrap_or_else(|err| Status::error("raft_error", err.to_string()));
+                    json_response(200, &RaftAdminLivenessResponse { status })
+                }
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        ("POST", "/raft/admin/local_catch_up") => {
+            if !local_admin_enabled {
+                return json_response(403, &Status::error("forbidden", "local admin disabled"));
+            }
+            match parse_json::<RaftAdminCatchUpRequest>(&request.body) {
+                Ok(req) => {
+                    let status = runtime
+                        .cluster()
+                        .catch_up(req.node_id)
+                        .map(|_| Status::ok())
+                        .unwrap_or_else(|err| Status::error("raft_error", err.to_string()));
+                    json_response(200, &RaftAdminLivenessResponse { status })
+                }
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
         }
         ("POST", "/raft/admin/block_peer") => {
             if !local_admin_enabled {
