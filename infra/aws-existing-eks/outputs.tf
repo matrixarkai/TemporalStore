@@ -17,3 +17,9 @@ output "proxy_internal_addr" {
 output "redis_internal_addr" {
   value = "${local.redis_service_name}.${var.namespace}.svc.cluster.local:16379"
 }
+
+output "validation_job_names" {
+  value = var.enable_validation_jobs ? {
+    for key, job in kubernetes_job_v1.validation : key => job.metadata[0].name
+  } : {}
+}

@@ -10,6 +10,7 @@ Components:
 - `proxy` on port `17000`
 - `redis_proxy` on port `16379`
 - one PVC for server page-store, index, and cache files
+- optional validation jobs for distributed Raft, shared-store/local-WAL storage modes, and write/read QPS
 
 Build and push the image:
 
@@ -19,6 +20,14 @@ aws ecr get-login-password --region <region> \
   | docker login --username AWS --password-stdin <account>.dkr.ecr.<region>.amazonaws.com
 docker push <account>.dkr.ecr.<region>.amazonaws.com/temporalstore-rust:<tag>
 ```
+
+The image includes service binaries and validation harness binaries:
+
+- `distributed_raft_harness`
+- `scale_harness`
+- `client_scale_harness`
+- `raft_secondary_replication_harness`
+- `storage_modes_harness`
 
 Validate Terraform:
 
@@ -39,7 +48,8 @@ terraform plan \
 terraform apply \
   -var aws_region=<region> \
   -var eks_cluster_name=<cluster-name> \
-  -var image=<account>.dkr.ecr.<region>.amazonaws.com/temporalstore-rust:<tag>
+  -var image=<account>.dkr.ecr.<region>.amazonaws.com/temporalstore-rust:<tag> \
+  -var enable_validation_jobs=true
 ```
 
 Validation after apply:
@@ -82,12 +92,61 @@ The scale script:
 - runs `tools/redis_scale_load.py` with concurrent `SET`/`GET` traffic
 - prints QPS and p50/p95/p99 latency
 
-Replica-read/shared-store comparison:
+Full deploy and validation:
 
-The current Terraform deploys one stateful server replica, so it cannot measure data-node
-replica-read latency or shared-store follower lag inside Kubernetes yet. Use the in-process scale
-harness on an EC2 instance or EKS job image to compare Raft replica reads against shared-store
-sync/async replay:
+```bash
+export AWS_REGION=<region>
+export TS_EKS_CLUSTER_NAME=<cluster-name>
+export TS_IMAGE=<account>.dkr.ecr.<region>.amazonaws.com/temporalstore-rust:<tag>
+
+# Optional if the image is not already built and pushed.
+export TS_BUILD_IMAGE=1
+export TS_PUSH_IMAGE=1
+
+# Applies Terraform, waits for services, waits for validation jobs, prints logs, then runs Redis QPS.
+tools/deploy_and_test_aws_existing_eks.sh
+```
+
+Validation jobs:
+
+- `temporalstore-raft-validation`: runs `distributed_raft_harness` in EKS. It validates
+  separate-node Raft HTTP replication, follower write rejection, leader transfer, scale down/up,
+  apply-health convergence, WAL file creation, and external snapshot bootstrap/read.
+- `temporalstore-scale-validation`: runs `scale_harness`. It prints write/read QPS, p50/p95/p99
+  replica-read latency, failover count, scale events, replication lag, and shared-store sync/async
+  comparison.
+- `temporalstore-storage-validation`: runs `storage_modes_harness`. It validates sync storage,
+  async storage flush/replay, and Raft local-file WAL restore.
+
+You can tune the QPS/latency job without editing Terraform:
+
+```bash
+export TS_TERRAFORM_EXTRA_ARGS='
+  -var scale_validation_args=[
+    "--nodes","5",
+    "--string-ops","10000",
+    "--hash-ops","2000",
+    "--sequence-keys","8",
+    "--sequence-len","1000",
+    "--scale-events","4",
+    "--failover-every","500",
+    "--read-sample-every","50",
+    "--compare-shared-store","true",
+    "--shared-store-ops","10000",
+    "--shared-store-flush-every","50"
+  ]'
+```
+
+The scale harness JSON includes:
+
+- `write_ops_per_sec`
+- `raft_replica_read_latency.p50_us/p95_us/p99_us`
+- `max_replica_lag`
+- `shared_store.sync_replica_read_latency`
+- `shared_store.async_replica_read_latency`
+- `shared_store.async_max_lag`
+
+Manual harness command, useful on EC2 or inside an EKS debug pod:
 
 ```bash
 CARGO_TARGET_DIR=/tmp/temporalstore-target \
@@ -109,7 +168,7 @@ Notes:
 
 - The current Rust server is still a single-shard/single-server runtime. The Terraform deploys one
   server replica intentionally because the local page/index files are on one PVC.
-- Raft and autoscale behavior are modeled in tests, but this EKS Terraform is not yet a distributed
-  multi-shard production topology.
+- The EKS validation jobs exercise distributed Raft and replication behavior in separate pods/jobs,
+  while the always-on service deployment remains a conservative single-server topology.
 - Use `ClusterIP` instead of `LoadBalancer` for `proxy_service_type` and `redis_service_type` if you
   only want port-forwarded validation and no external AWS load balancers.

@@ -15,6 +15,24 @@ locals {
   meta_addr             = "${local.meta_service_name}.${var.namespace}.svc.cluster.local:17001"
   server_advertise_addr = "${local.server_service_name}.${var.namespace}.svc.cluster.local:17002"
   proxy_addr            = "${local.proxy_service_name}.${var.namespace}.svc.cluster.local:17000"
+
+  validation_jobs = {
+    raft = {
+      name    = "temporalstore-raft-validation"
+      command = ["/usr/local/bin/distributed_raft_harness"]
+      args    = var.raft_validation_args
+    }
+    scale = {
+      name    = "temporalstore-scale-validation"
+      command = ["/usr/local/bin/scale_harness"]
+      args    = var.scale_validation_args
+    }
+    storage = {
+      name    = "temporalstore-storage-validation"
+      command = ["/usr/local/bin/storage_modes_harness"]
+      args    = var.storage_validation_args
+    }
+  }
 }
 
 resource "kubernetes_namespace_v1" "temporalstore" {
@@ -346,4 +364,61 @@ resource "kubernetes_service_v1" "redis_proxy" {
       target_port = "resp"
     }
   }
+}
+
+resource "kubernetes_job_v1" "validation" {
+  for_each = var.enable_validation_jobs ? local.validation_jobs : {}
+
+  metadata {
+    name      = each.value.name
+    namespace = kubernetes_namespace_v1.temporalstore.metadata[0].name
+    labels = merge(
+      local.labels,
+      {
+        "app.kubernetes.io/component" = "validation"
+        "temporalstore.io/test"       = each.key
+      },
+    )
+  }
+
+  spec {
+    backoff_limit              = var.validation_backoff_limit
+    ttl_seconds_after_finished = var.validation_ttl_seconds_after_finished
+
+    template {
+      metadata {
+        labels = merge(
+          local.labels,
+          {
+            "app.kubernetes.io/component" = "validation"
+            "temporalstore.io/test"       = each.key
+          },
+        )
+      }
+
+      spec {
+        restart_policy = "Never"
+
+        container {
+          name              = each.key
+          image             = var.image
+          image_pull_policy = var.image_pull_policy
+          command           = each.value.command
+          args              = each.value.args
+
+          env {
+            name  = "RUST_BACKTRACE"
+            value = "1"
+          }
+        }
+      }
+    }
+  }
+
+  depends_on = [
+    kubernetes_deployment_v1.metaserver,
+    kubernetes_deployment_v1.server,
+    kubernetes_deployment_v1.proxy,
+    kubernetes_deployment_v1.redis_proxy,
+  ]
 }

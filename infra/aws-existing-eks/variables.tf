@@ -84,3 +84,51 @@ variable "labels" {
   type        = map(string)
   default     = {}
 }
+
+variable "enable_validation_jobs" {
+  description = "Create one-shot EKS jobs that run TemporalStore Rust raft, storage, and QPS validation harnesses."
+  type        = bool
+  default     = false
+}
+
+variable "validation_backoff_limit" {
+  description = "Backoff limit for validation jobs."
+  type        = number
+  default     = 0
+}
+
+variable "validation_ttl_seconds_after_finished" {
+  description = "TTL for completed validation jobs. Set null to keep jobs."
+  type        = number
+  default     = 3600
+}
+
+variable "raft_validation_args" {
+  description = "Arguments passed to distributed_raft_harness."
+  type        = list(string)
+  default     = []
+}
+
+variable "scale_validation_args" {
+  description = "Arguments passed to scale_harness for write/read QPS, latency, failover, and shared-store comparison."
+  type        = list(string)
+  default = [
+    "--nodes", "5",
+    "--string-ops", "5000",
+    "--hash-ops", "1000",
+    "--sequence-keys", "8",
+    "--sequence-len", "1000",
+    "--scale-events", "4",
+    "--failover-every", "500",
+    "--read-sample-every", "50",
+    "--compare-shared-store", "true",
+    "--shared-store-ops", "5000",
+    "--shared-store-flush-every", "50",
+  ]
+}
+
+variable "storage_validation_args" {
+  description = "Arguments passed to storage_modes_harness."
+  type        = list(string)
+  default     = []
+}
