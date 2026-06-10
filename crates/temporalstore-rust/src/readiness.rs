@@ -174,12 +174,12 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "local partition_info and object-manager stats report logical objects, page refs, dirty objects, dirty routing slots, and storage bytes"
                     .to_string(),
-                "local per-shard read/write QPS admission is enforced from Config.read_qps and Config.write_qps"
+                "local shard/table/tenant read/write QPS admission is enforced from Config quota fields"
                     .to_string(),
             ],
             missing: vec![
                 "tonic/gRPC data-node service and streaming callbacks".to_string(),
-                "full production tenant-level quotas and distributed admission policy".to_string(),
+                "distributed admission policy shared across data-node processes".to_string(),
                 "crash-safe recovery tests for oplog + index-log + page stream".to_string(),
             ],
         },

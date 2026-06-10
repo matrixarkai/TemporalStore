@@ -10,8 +10,18 @@ use crate::types::{ShardId, Status};
 pub struct Config {
     pub version: u64,
     pub maxmemory_bytes: Option<u64>,
+    #[serde(default)]
+    pub tenant_name: Option<String>,
     pub read_qps: Option<u64>,
     pub write_qps: Option<u64>,
+    #[serde(default)]
+    pub table_read_qps: Option<u64>,
+    #[serde(default)]
+    pub table_write_qps: Option<u64>,
+    #[serde(default)]
+    pub tenant_read_qps: Option<u64>,
+    #[serde(default)]
+    pub tenant_write_qps: Option<u64>,
     pub feature_max_size: usize,
     pub async_storage: bool,
 }
@@ -21,8 +31,13 @@ impl Default for Config {
         Self {
             version: 1,
             maxmemory_bytes: None,
+            tenant_name: None,
             read_qps: None,
             write_qps: None,
+            table_read_qps: None,
+            table_write_qps: None,
+            tenant_read_qps: None,
+            tenant_write_qps: None,
             feature_max_size: 5000,
             async_storage: true,
         }

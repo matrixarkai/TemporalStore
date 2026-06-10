@@ -34,7 +34,7 @@ pub struct TemporalEngine {
     index_dir: PathBuf,
     configs: Arc<RwLock<HashMap<ShardId, Config>>>,
     infos: Arc<RwLock<HashMap<ShardId, ShardInfo>>>,
-    admissions: Arc<RwLock<HashMap<ShardId, AdmissionState>>>,
+    admissions: Arc<RwLock<HashMap<AdmissionScope, AdmissionState>>>,
 }
 
 impl Default for TemporalEngine {
@@ -66,6 +66,19 @@ struct AdmissionState {
     window_epoch_sec: u64,
     read_count: u64,
     write_count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum AdmissionScope {
+    Shard(ShardId),
+    Table(String),
+    Tenant(String),
+}
+
+struct AdmissionLimit {
+    scope: AdmissionScope,
+    limit: u64,
+    label: &'static str,
 }
 
 const FEATURE_ADD_HARD_MAX_SIZE: usize = 100_000;
@@ -197,7 +210,7 @@ impl TemporalEngine {
         self.admissions
             .write()
             .expect("admission lock poisoned")
-            .entry(request.shard_id)
+            .entry(AdmissionScope::Shard(request.shard_id))
             .or_default();
         self.infos.write().expect("info lock poisoned").insert(
             request.shard_id,
@@ -255,7 +268,7 @@ impl TemporalEngine {
         self.admissions
             .write()
             .expect("admission lock poisoned")
-            .remove(&request.shard_id);
+            .remove(&AdmissionScope::Shard(request.shard_id));
         UnloadShardResponse {
             status: Status::ok(),
         }
@@ -291,8 +304,14 @@ impl TemporalEngine {
             .get(&request.shard_id)
             .cloned()
             .unwrap_or_default();
+        let info = self
+            .infos
+            .read()
+            .expect("info lock poisoned")
+            .get(&request.shard_id)
+            .cloned();
         let write_command = is_write_command(&command);
-        if let Err(status) = self.check_admission(request.shard_id, write_command, &config) {
+        if let Err(status) = self.check_admission(request.shard_id, write_command, &config, &info) {
             return ExecuteResponse {
                 status,
                 response: CommandResponse::Empty,
@@ -376,49 +395,36 @@ impl TemporalEngine {
         shard_id: ShardId,
         write_command: bool,
         config: &Config,
+        info: &Option<ShardInfo>,
     ) -> Result<(), Status> {
-        let limit = if write_command {
-            config.write_qps
-        } else {
-            config.read_qps
-        };
-        let Some(limit) = limit else {
+        let limits = admission_limits(shard_id, write_command, config, info);
+        if limits.is_empty() {
             return Ok(());
-        };
-        if limit == 0 {
-            return Err(Status::error(
-                "admission_rejected",
-                if write_command {
-                    "write_qps is zero"
-                } else {
-                    "read_qps is zero"
-                },
-            ));
         }
         let now_sec = now_epoch_seconds();
         let mut admissions = self.admissions.write().expect("admission lock poisoned");
-        let admission = admissions.entry(shard_id).or_default();
-        if admission.window_epoch_sec != now_sec {
-            admission.window_epoch_sec = now_sec;
-            admission.read_count = 0;
-            admission.write_count = 0;
+        for limit in &limits {
+            if limit.limit == 0 {
+                return Err(Status::error(
+                    "admission_rejected",
+                    format!("{} is zero", limit.label),
+                ));
+            }
+            let admission = admissions.entry(limit.scope.clone()).or_default();
+            reset_admission_window(admission, now_sec);
+            let count = admission_count(admission, write_command);
+            if *count >= limit.limit {
+                return Err(Status::error(
+                    "admission_rejected",
+                    format!("{} limit exceeded", limit.label),
+                ));
+            }
         }
-        let count = if write_command {
-            &mut admission.write_count
-        } else {
-            &mut admission.read_count
-        };
-        if *count >= limit {
-            return Err(Status::error(
-                "admission_rejected",
-                if write_command {
-                    "write_qps limit exceeded"
-                } else {
-                    "read_qps limit exceeded"
-                },
-            ));
+        for limit in limits {
+            let admission = admissions.entry(limit.scope).or_default();
+            reset_admission_window(admission, now_sec);
+            *admission_count(admission, write_command) += 1;
         }
-        *count += 1;
         Ok(())
     }
 
@@ -2875,6 +2881,90 @@ fn is_write_command(command: &Command) -> bool {
             | Command::RiskSet { .. }
             | Command::RiskSetAndGet { .. }
     )
+}
+
+fn admission_limits(
+    shard_id: ShardId,
+    write_command: bool,
+    config: &Config,
+    info: &Option<ShardInfo>,
+) -> Vec<AdmissionLimit> {
+    let mut limits = Vec::new();
+    if let Some(limit) = if write_command {
+        config.write_qps
+    } else {
+        config.read_qps
+    } {
+        limits.push(AdmissionLimit {
+            scope: AdmissionScope::Shard(shard_id),
+            limit,
+            label: if write_command {
+                "write_qps"
+            } else {
+                "read_qps"
+            },
+        });
+    }
+    if let Some(table_name) = info
+        .as_ref()
+        .map(|info| info.table_name.trim())
+        .filter(|table_name| !table_name.is_empty())
+    {
+        if let Some(limit) = if write_command {
+            config.table_write_qps
+        } else {
+            config.table_read_qps
+        } {
+            limits.push(AdmissionLimit {
+                scope: AdmissionScope::Table(table_name.to_string()),
+                limit,
+                label: if write_command {
+                    "table_write_qps"
+                } else {
+                    "table_read_qps"
+                },
+            });
+        }
+    }
+    if let Some(tenant_name) = config
+        .tenant_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|tenant_name| !tenant_name.is_empty())
+    {
+        if let Some(limit) = if write_command {
+            config.tenant_write_qps
+        } else {
+            config.tenant_read_qps
+        } {
+            limits.push(AdmissionLimit {
+                scope: AdmissionScope::Tenant(tenant_name.to_string()),
+                limit,
+                label: if write_command {
+                    "tenant_write_qps"
+                } else {
+                    "tenant_read_qps"
+                },
+            });
+        }
+    }
+    limits
+}
+
+fn reset_admission_window(admission: &mut AdmissionState, now_sec: u64) {
+    if admission.window_epoch_sec != now_sec {
+        admission.window_epoch_sec = now_sec;
+        admission.read_count = 0;
+        admission.write_count = 0;
+    }
+}
+
+fn admission_count(admission: &mut AdmissionState, write_command: bool) -> &mut u64 {
+    if write_command {
+        &mut admission.write_count
+    } else {
+        &mut admission.read_count
+    }
 }
 
 fn now_epoch_seconds() -> u64 {
@@ -5559,6 +5649,119 @@ mod tests {
         });
         assert_eq!(rejected.status.code, "admission_rejected");
         assert_eq!(rejected.status.message, "read_qps limit exceeded");
+    }
+
+    #[test]
+    fn table_write_qps_config_is_shared_across_loaded_table_shards() {
+        let engine = TemporalEngine::default();
+        for shard_id in [1, 2] {
+            assert!(
+                engine
+                    .load_shard_with(LoadShardRequest {
+                        shard_id,
+                        load_version: 1,
+                        local_node_id: Some(1),
+                        shard_uri: format!("local://feature_table/{shard_id}"),
+                        start_routing_slot: 0,
+                        end_routing_slot: u32::MAX,
+                        readonly: false,
+                        table_name: "feature_table".to_string(),
+                    })
+                    .status
+                    .ok
+            );
+            engine.set_config(SetConfigRequest {
+                shard_id,
+                config: Config {
+                    table_write_qps: Some(1),
+                    ..Config::default()
+                },
+            });
+        }
+
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: "first".to_string(),
+                        value: b"x".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+        let rejected = engine.execute(ExecuteRequest {
+            shard_id: 2,
+            command: Command::StringSet {
+                key: "second".to_string(),
+                value: b"y".to_vec(),
+            },
+        });
+        assert_eq!(rejected.status.code, "admission_rejected");
+        assert_eq!(rejected.status.message, "table_write_qps limit exceeded");
+    }
+
+    #[test]
+    fn tenant_read_qps_config_is_shared_across_tables() {
+        let engine = TemporalEngine::default();
+        for (shard_id, table_name, key) in [(1, "feature_table", "k1"), (2, "risk_table", "k2")] {
+            assert!(
+                engine
+                    .load_shard_with(LoadShardRequest {
+                        shard_id,
+                        load_version: 1,
+                        local_node_id: Some(1),
+                        shard_uri: format!("local://{table_name}/{shard_id}"),
+                        start_routing_slot: 0,
+                        end_routing_slot: u32::MAX,
+                        readonly: false,
+                        table_name: table_name.to_string(),
+                    })
+                    .status
+                    .ok
+            );
+            assert!(
+                engine
+                    .execute(ExecuteRequest {
+                        shard_id,
+                        command: Command::StringSet {
+                            key: key.to_string(),
+                            value: b"value".to_vec(),
+                        },
+                    })
+                    .status
+                    .ok
+            );
+            engine.set_config(SetConfigRequest {
+                shard_id,
+                config: Config {
+                    tenant_name: Some("tenant-a".to_string()),
+                    tenant_read_qps: Some(1),
+                    ..Config::default()
+                },
+            });
+        }
+
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "k1".to_string(),
+                    },
+                })
+                .status
+                .ok
+        );
+        let rejected = engine.execute(ExecuteRequest {
+            shard_id: 2,
+            command: Command::StringGet {
+                key: "k2".to_string(),
+            },
+        });
+        assert_eq!(rejected.status.code, "admission_rejected");
+        assert_eq!(rejected.status.message, "tenant_read_qps limit exceeded");
     }
 
     #[test]

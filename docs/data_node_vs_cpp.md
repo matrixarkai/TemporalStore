@@ -53,7 +53,7 @@ Rust now covers these data-node surfaces:
 - index-log stream read/scan
 - readonly shard rejects writes
 - checked execute/batch execute validates loaded `load_version`
-- per-shard read/write QPS admission through existing `read_qps` and `write_qps` config fields
+- shard/table/tenant read/write QPS admission through the local `Config` quota fields
 - server register plus periodic heartbeat/load report to metaserver, including per-partition
   `partition_info` stats
 - startup shard load options for table name, shard URI, load version, routing-slot range,
@@ -248,7 +248,7 @@ Still missing major data-node internals:
 - refresh policy when the metaserver primary route changes while replay is in progress
 - membership finish callback retry/persistence beyond the current best-effort HTTP callback
 - full heartbeat/load reporting payload parity beyond local `partition_info` stats
-- production tenant-level quotas and distributed admission control beyond local per-shard
+- distributed admission control that shares quota counters across data-node processes
   `maxmemory_bytes` / QPS admission
 - real readonly replicator loop
 - byteraft data FSM integration

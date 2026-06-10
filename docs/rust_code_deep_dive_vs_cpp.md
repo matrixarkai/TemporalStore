@@ -339,8 +339,8 @@ P1, required for production-like parity:
   load reporting
 - production ByteStore stream backend; current shared-store work covers local file/object-store
   checkpoint, page, index, and oplog flows
-- tenant-level/distributed quota and admission plus kill switch wiring across real services; local
-  shard `maxmemory_bytes`, `read_qps`, and `write_qps` admission already exists
+- distributed quota and admission plus kill switch wiring across real services; local
+  shard/table/tenant QPS admission and shard `maxmemory_bytes` admission already exist
 
 P2, required for launch quality:
 
