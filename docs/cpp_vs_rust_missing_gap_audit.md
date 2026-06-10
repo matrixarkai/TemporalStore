@@ -80,6 +80,10 @@ This pass closed one of the hard readiness blockers instead of leaving it as a n
     include worker-pool limits, `shard_worker_info()` reports `shard_id % worker_threads`, the
     server exposes `/server/shard_worker/<shard_id>` and `/server/queued_shard_workers`, and queued
     or in-flight jobs can be canceled through `POST /jobs/<job_id>/cancel`.
+13. The Rust Raft local/prod wrapper now exposes the C++ `DataRaftConsensusBackend`
+    `WaitForAppliedIndex(index, timeout_ms)` contract as `wait_for_applied_index(node_id, index,
+    timeout_ms)`, using applied FSM index rather than only commit index. Tests cover immediate
+    success, timeout on a lagging follower, and success after catch-up.
 
 This pass compared the Rust RESP layer against the local C++ server Redis command handler in
 `C:\Users\Vincent Jiang\Documents\Codex\temporalstore-small\src\server\redis_service.cc` and

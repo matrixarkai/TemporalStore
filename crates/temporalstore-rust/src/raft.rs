@@ -1999,6 +1999,16 @@ impl ProductionRaftRuntime {
         self.cluster.read_from_replica(node_id, command)
     }
 
+    pub fn wait_for_applied_index(
+        &self,
+        node_id: RaftNodeId,
+        index: u64,
+        timeout_ms: u64,
+    ) -> Result<(), RaftError> {
+        self.cluster
+            .wait_for_applied_index(node_id, index, timeout_ms)
+    }
+
     pub fn start_timer_loop(&self) -> ProductionRaftTimerHandle {
         let cluster = self.cluster.clone();
         let local_node_id = self.options.local_node_id;
@@ -2511,6 +2521,13 @@ pub enum RaftError {
         replica_id: RaftNodeId,
         replica_commit_index: u64,
         leader_commit_index: u64,
+    },
+    #[error("node {node_id} did not apply raft index {target_index} within {timeout_ms}ms: applied={applied_index}")]
+    AppliedIndexTimeout {
+        node_id: RaftNodeId,
+        applied_index: u64,
+        target_index: u64,
+        timeout_ms: u64,
     },
     #[error("snapshot shard mismatch: snapshot={snapshot_shard_id}, cluster={cluster_shard_id}")]
     SnapshotShardMismatch {
@@ -3688,6 +3705,37 @@ impl RaftCluster {
             caught_up_voters: health.caught_up_voters,
             lagging_voters: health.lagging_voters,
         })
+    }
+
+    pub fn wait_for_applied_index(
+        &self,
+        node_id: RaftNodeId,
+        index: u64,
+        timeout_ms: u64,
+    ) -> Result<(), RaftError> {
+        let deadline = InstantCompat::now();
+        loop {
+            let applied_index = {
+                let inner = self.inner.read().expect("raft cluster lock poisoned");
+                inner
+                    .nodes
+                    .get(&node_id)
+                    .ok_or(RaftError::NodeNotFound(node_id))?
+                    .applied_index
+            };
+            if applied_index >= index {
+                return Ok(());
+            }
+            if deadline.elapsed() >= Duration::from_millis(timeout_ms) {
+                return Err(RaftError::AppliedIndexTimeout {
+                    node_id,
+                    applied_index,
+                    target_index: index,
+                    timeout_ms,
+                });
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
     }
 
     pub fn hard_state(&self, node_id: RaftNodeId) -> Result<RaftHardState, RaftError> {
@@ -8890,6 +8938,33 @@ mod tests {
         cluster.catch_up(3).unwrap();
         assert!(cluster.read_index(3).is_ok());
         assert!(cluster.transfer_leader(3).is_ok());
+    }
+
+    #[test]
+    fn raft_wait_for_applied_index_matches_cpp_backend_contract() {
+        let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+        cluster.set_alive(3, false).unwrap();
+        cluster
+            .propose(Command::StringSet {
+                key: "wait-applied".to_string(),
+                value: b"v".to_vec(),
+            })
+            .unwrap();
+        cluster.set_alive(3, true).unwrap();
+
+        assert!(cluster.wait_for_applied_index(1, 1, 0).is_ok());
+        assert_eq!(
+            cluster.wait_for_applied_index(3, 1, 1),
+            Err(RaftError::AppliedIndexTimeout {
+                node_id: 3,
+                applied_index: 0,
+                target_index: 1,
+                timeout_ms: 1,
+            })
+        );
+
+        cluster.catch_up(3).unwrap();
+        assert!(cluster.wait_for_applied_index(3, 1, 0).is_ok());
     }
 
     #[test]
