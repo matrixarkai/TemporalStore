@@ -112,6 +112,16 @@ JSON logs with `tools/validate_aws_validation_log.py`. It fails if replica reads
 Raft apply health is unhealthy, follower writes are accepted, write QPS is zero, replica lag is
 non-zero, shared-store sync lag is non-zero, or local-WAL restore cannot read back committed data.
 
+End-to-end parity gate:
+
+```bash
+# Local only: full Rust tests, C++ compatibility tests, Raft harness, storage harness, QPS harness.
+tools/run_temporalstore_parity_gate.sh --local-only
+
+# Local gate plus AWS/EKS deploy and validation.
+tools/run_temporalstore_parity_gate.sh --aws
+```
+
 Validation jobs:
 
 - `temporalstore-raft-validation`: runs `distributed_raft_harness` in EKS. It validates

@@ -3362,11 +3362,12 @@ mod tests {
         );
         engine.load_shard(1);
         engine.load_shard(2);
-        let server_addr = test_addr(18_220);
-        let meta_addr = test_addr(18_221);
+        let server_addr = free_local_addr();
+        let meta_addr = free_local_addr();
         let engine_for_server = engine.clone();
+        let server_addr_for_thread = server_addr.clone();
         std::thread::spawn(move || {
-            serve(&server_addr, move |request| {
+            serve(&server_addr_for_thread, move |request| {
                 match (request.method.as_str(), request.path.as_str()) {
                     ("POST", "/execute") => {
                         let req = parse_json::<ExecuteRequest>(&request.body).unwrap();
@@ -3381,9 +3382,10 @@ mod tests {
             })
             .unwrap();
         });
-        let server_addr_for_meta = test_addr(18_220);
+        let server_addr_for_meta = server_addr.clone();
+        let meta_addr_for_thread = meta_addr.clone();
         std::thread::spawn(move || {
-            serve(&meta_addr, move |request| {
+            serve(&meta_addr_for_thread, move |request| {
                 match (request.method.as_str(), request.path.as_str()) {
                     ("GET", "/shards/1") | ("GET", "/shards/2") => {
                         let shard_id = request.path.trim_start_matches("/shards/").parse().unwrap();
@@ -3404,11 +3406,12 @@ mod tests {
             })
             .unwrap();
         });
-        wait_for_http(&test_addr(18_221));
+        wait_for_http(&server_addr);
+        wait_for_http(&meta_addr);
 
         let client = TemporalStoreClient::with_options(ClientOptions {
             proxy_addr: "127.0.0.1:1".to_string(),
-            meta_addr: Some(test_addr(18_221)),
+            meta_addr: Some(meta_addr),
             route_cache_ttl_ms: 60_000,
             ..ClientOptions::default()
         });
