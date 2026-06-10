@@ -336,6 +336,22 @@ fn main() {
 
 fn run_partition_phase(nodes: &[ProductionRaftNode]) -> PartitionSummary {
     let isolated_node = 3;
+    let leader = nodes
+        .iter()
+        .find(|node| node.node_id == 1)
+        .expect("leader should exist");
+    initialize_liveness(nodes);
+    for node in nodes {
+        elect_leader(node, leader.node_id);
+    }
+    for follower in nodes
+        .iter()
+        .filter(|node| node.node_id != leader.node_id && node.node_id != isolated_node)
+    {
+        catch_up_peer(leader, follower.node_id);
+        local_catch_up(follower, follower.node_id);
+    }
+
     for majority in nodes.iter().filter(|node| node.node_id != isolated_node) {
         mark_liveness(majority, isolated_node, false);
         for peer in nodes.iter().filter(|node| node.node_id != isolated_node) {
@@ -354,10 +370,6 @@ fn run_partition_phase(nodes: &[ProductionRaftNode]) -> PartitionSummary {
     }
     mark_liveness(isolated, isolated_node, true);
 
-    let leader = nodes
-        .iter()
-        .find(|node| node.node_id == 1)
-        .expect("leader should exist");
     let majority_write = propose(leader, "partition-majority", "v-partition");
     for majority in nodes.iter().filter(|node| node.node_id != isolated_node) {
         wait_for_value(
@@ -777,11 +789,19 @@ fn catch_up_peer(leader: &ProductionRaftNode, node_id: RaftNodeId) {
             return;
         }
         let stale_term = response.status.message.contains("stale_term");
+        let transient_transport = response.status.message.contains("raft transport error")
+            || response
+                .status
+                .message
+                .contains("Resource temporarily unavailable")
+            || response.status.message.contains("timed out")
+            || response.status.message.contains("connection refused");
         last_status = Some(response.status);
-        if !stale_term {
+        if !(stale_term || transient_transport) {
             break;
         }
         elect_leader(leader, leader.node_id);
+        thread::sleep(Duration::from_millis(100));
     }
     panic!(
         "catch-up admin request failed: {:?}",

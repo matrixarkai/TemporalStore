@@ -13,8 +13,8 @@ use temporalstore_rust::{
     handle_raft_http, Command, CommandResponse, DistributedRaftCommandResponse,
     DistributedRaftProposeRequest, DistributedRaftReadRequest, ProductionRaftEngineKind,
     ProductionRaftNode, ProductionRaftRuntime, ProductionRaftRuntimeOptions,
-    ProductionRaftSecurity, RaftClusterStatus, RaftConfig, RaftNodeId, RaftRpcRuntimeOptions,
-    Status,
+    ProductionRaftSecurity, RaftClusterStatus, RaftConfig, RaftMembershipChangeReport, RaftNodeId,
+    RaftRpcRuntimeOptions, Status,
 };
 
 #[derive(Debug, Clone)]
@@ -33,6 +33,15 @@ struct DistributedRaftSummary {
     nodes: Vec<NodeSummary>,
     proposal_status: Status,
     replica_reads: Vec<ReplicaReadSummary>,
+    follower_write_rejection: Status,
+    transfer_leader_to_node: RaftNodeId,
+    post_transfer_write: Status,
+    scale_down: Vec<MembershipSummary>,
+    post_scale_down_write: Status,
+    scale_down_reads: Vec<ReplicaReadSummary>,
+    scale_up: Vec<MembershipSummary>,
+    post_scale_up_write: Status,
+    scale_up_reads: Vec<ReplicaReadSummary>,
 }
 
 #[derive(Debug, Serialize)]
@@ -51,6 +60,14 @@ struct ReplicaReadSummary {
     value: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+struct MembershipSummary {
+    node_id: RaftNodeId,
+    status: Status,
+    voters: Vec<RaftNodeId>,
+    leader_id: RaftNodeId,
+}
+
 fn main() {
     let options = parse_options();
     fs::create_dir_all(&options.root).expect("failed to create harness root");
@@ -65,6 +82,10 @@ fn main() {
         },
         ProductionRaftNode {
             node_id: 3,
+            addr: free_local_addr(),
+        },
+        ProductionRaftNode {
+            node_id: 4,
             addr: free_local_addr(),
         },
     ];
@@ -107,6 +128,55 @@ fn main() {
         .iter()
         .map(|node| wait_for_replica_read(node, &options))
         .collect::<Vec<_>>();
+    let follower_write_rejection = reject_direct_follower_write(&nodes[1], &options);
+
+    for runtime in &runtimes {
+        runtime
+            .cluster()
+            .catch_up_live_followers()
+            .expect("followers should catch up before leader transfer");
+        runtime
+            .cluster()
+            .transfer_leader(2)
+            .expect("leader transfer to node 2 should pass");
+    }
+    let post_transfer_write = propose_key(
+        &nodes[1],
+        "distributed-transfer-leader-key",
+        b"after-transfer",
+    );
+    assert!(
+        post_transfer_write.ok,
+        "post-transfer write failed: {:?}",
+        post_transfer_write
+    );
+
+    let scale_down = apply_membership_on_all(&runtimes, &nodes, &[1, 2, 3]);
+    let post_scale_down_write =
+        propose_key(&nodes[1], "distributed-scale-down-key", b"after-scale-down");
+    assert!(
+        post_scale_down_write.ok,
+        "post-scale-down write failed: {:?}",
+        post_scale_down_write
+    );
+    let scale_down_reads = nodes
+        .iter()
+        .take(3)
+        .map(|node| wait_for_key(node, "distributed-scale-down-key", b"after-scale-down"))
+        .collect::<Vec<_>>();
+
+    let scale_up = apply_membership_on_all(&runtimes, &nodes, &[1, 2, 3, 4]);
+    let post_scale_up_write = propose_key(&nodes[1], "distributed-scale-up-key", b"after-scale-up");
+    assert!(
+        post_scale_up_write.ok,
+        "post-scale-up write failed: {:?}",
+        post_scale_up_write
+    );
+    let scale_up_reads = nodes
+        .iter()
+        .map(|node| wait_for_key(node, "distributed-scale-up-key", b"after-scale-up"))
+        .collect::<Vec<_>>();
+
     let node_summaries = nodes
         .iter()
         .map(|node| {
@@ -130,6 +200,15 @@ fn main() {
             nodes: node_summaries,
             proposal_status: proposal.status,
             replica_reads,
+            follower_write_rejection,
+            transfer_leader_to_node: 2,
+            post_transfer_write,
+            scale_down,
+            post_scale_down_write,
+            scale_down_reads,
+            scale_up,
+            post_scale_up_write,
+            scale_up_reads,
         })
         .expect("summary should serialize")
     );
@@ -156,6 +235,82 @@ fn handle(runtime: &ProductionRaftRuntime, request: HttpRequest) -> (u16, Vec<u8
     }
 }
 
+fn propose_key(node: &ProductionRaftNode, key: &str, value: &[u8]) -> Status {
+    let response: DistributedRaftCommandResponse = post_json_with_options(
+        &node.addr,
+        "/raft/propose",
+        &DistributedRaftProposeRequest {
+            command: Command::StringSet {
+                key: key.to_string(),
+                value: value.to_vec(),
+            },
+        },
+        request_options(),
+    )
+    .expect("raft proposal request failed");
+    response.status
+}
+
+fn reject_direct_follower_write(node: &ProductionRaftNode, options: &HarnessOptions) -> Status {
+    let response: DistributedRaftCommandResponse = post_json_with_options(
+        &node.addr,
+        "/raft/propose",
+        &DistributedRaftProposeRequest {
+            command: Command::StringSet {
+                key: format!("{}-follower-reject", options.key),
+                value: b"must-not-commit-from-follower".to_vec(),
+            },
+        },
+        request_options(),
+    )
+    .expect("follower proposal request failed");
+    assert!(
+        !response.status.ok,
+        "direct follower write should be rejected: {:?}",
+        response.status
+    );
+    response.status
+}
+
+fn apply_membership_on_all(
+    runtimes: &[ProductionRaftRuntime],
+    nodes: &[ProductionRaftNode],
+    voters: &[RaftNodeId],
+) -> Vec<MembershipSummary> {
+    runtimes
+        .iter()
+        .zip(nodes.iter())
+        .map(|(runtime, node)| {
+            runtime
+                .cluster()
+                .catch_up_live_followers()
+                .expect("followers should catch up before membership change");
+            let report = runtime.apply_membership_change_safely(voters.iter().copied());
+            membership_summary(node.node_id, report)
+        })
+        .collect()
+}
+
+fn membership_summary(
+    node_id: RaftNodeId,
+    report: Result<RaftMembershipChangeReport, temporalstore_rust::RaftError>,
+) -> MembershipSummary {
+    match report {
+        Ok(report) => MembershipSummary {
+            node_id,
+            status: Status::ok(),
+            voters: report.committed_membership.voters,
+            leader_id: report.leader_id,
+        },
+        Err(err) => MembershipSummary {
+            node_id,
+            status: Status::error("raft_error", err.to_string()),
+            voters: Vec::new(),
+            leader_id: 0,
+        },
+    }
+}
+
 fn command_response(
     result: Result<CommandResponse, temporalstore_rust::RaftError>,
 ) -> DistributedRaftCommandResponse {
@@ -175,6 +330,10 @@ fn wait_for_replica_read(
     node: &ProductionRaftNode,
     options: &HarnessOptions,
 ) -> ReplicaReadSummary {
+    wait_for_key(node, &options.key, &options.value)
+}
+
+fn wait_for_key(node: &ProductionRaftNode, key: &str, expected: &[u8]) -> ReplicaReadSummary {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         let response: DistributedRaftCommandResponse = post_json_with_options(
@@ -183,7 +342,7 @@ fn wait_for_replica_read(
             &DistributedRaftReadRequest {
                 node_id: node.node_id,
                 command: Command::StringGet {
-                    key: options.key.clone(),
+                    key: key.to_string(),
                 },
             },
             request_options(),
@@ -195,7 +354,7 @@ fn wait_for_replica_read(
             }
             _ => None,
         };
-        if value.as_deref() == Some(String::from_utf8_lossy(&options.value).as_ref()) {
+        if value.as_deref() == Some(String::from_utf8_lossy(expected).as_ref()) {
             return ReplicaReadSummary {
                 node_id: node.node_id,
                 status: response.status,

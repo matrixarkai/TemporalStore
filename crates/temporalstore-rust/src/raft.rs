@@ -1974,6 +1974,11 @@ impl ProductionRaftRuntime {
     }
 
     pub fn propose(&self, command: Command) -> Result<CommandResponse, RaftError> {
+        if self.cluster.leader_id() != self.options.local_node_id {
+            return Err(RaftError::NotLeader {
+                node_id: self.options.local_node_id,
+            });
+        }
         let transport = self.transport();
         self.cluster.propose_distributed(command, &transport)
     }
