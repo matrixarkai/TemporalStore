@@ -1,10 +1,12 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use temporalstore_rust::engine::TemporalEngine;
 use temporalstore_rust::http::{
-    get_json_with_options, json_response, parse_json, post_json, serve, HttpRequestOptions,
+    get_json_with_options, json_response, parse_json, post_json, serve, HttpRequest,
+    HttpRequestOptions,
 };
 use temporalstore_rust::meta::{
     AckResponse, GetShardResponse, LoadFinishRequest, PartitionLoad, RegisterServerRequest,
@@ -13,9 +15,13 @@ use temporalstore_rust::meta::{
 };
 use temporalstore_rust::types::{BatchExecuteRequest, ExecuteRequest, ExecuteResponse, Status};
 use temporalstore_rust::{
-    CheckedBatchExecuteRequest, CheckedExecuteRequest, CompactionRequest, DataNodeRuntime,
-    DataNodeRuntimeOptions, DumpShardRequest, GcRequest, HttpReplicaStreamSource, LoadShardRequest,
-    MembershipUpdateRequest, ReplicaReplayLoop, ReplicaReplayOptions, ReplicaReplayRequest,
+    handle_raft_http, CheckedBatchExecuteRequest, CheckedExecuteRequest, Command, CommandResponse,
+    CompactionRequest, DataNodeRuntime, DataNodeRuntimeOptions, DistributedRaftCommandResponse,
+    DistributedRaftProposeRequest, DistributedRaftReadRequest, DumpShardRequest, GcRequest,
+    HttpReplicaStreamSource, LoadShardRequest, MembershipUpdateRequest, ProductionRaftEngineKind,
+    ProductionRaftNode, ProductionRaftRuntime, ProductionRaftRuntimeOptions,
+    ProductionRaftSecurity, RaftConfig, RaftFailoverReport, RaftNodeId, RaftRpcRuntimeOptions,
+    RaftTransport, ReplicaReplayLoop, ReplicaReplayOptions, ReplicaReplayRequest,
     ReplicaReplayResponse, RequestController, ScanStreamRequest, SetConfigRequest,
     StreamReadRequest, UnloadShardRequest,
 };
@@ -81,6 +87,7 @@ fn main() {
         "TS_REPLICA_REPLAY_MAX_BACKOFF_MS",
         replica_replay_interval_ms.saturating_mul(16).max(30_000),
     );
+    let raft_state = start_server_raft_from_env(shard_id, node_id, &advertised_addr);
 
     let server_registration = RegisterServerRequest {
         server_addr: advertised_addr.clone(),
@@ -143,6 +150,11 @@ fn main() {
 
     println!("temporalstore server listening on {addr}");
     serve(&addr, move |request| {
+        if let Some(raft_state) = &raft_state {
+            if let Some(response) = handle_server_raft_route(raft_state, &request) {
+                return response;
+            }
+        }
         match (request.method.as_str(), request.path.as_str()) {
             ("GET", "/health") => json_response(200, &Status::ok()),
             ("GET", "/metrics") => {
@@ -177,7 +189,13 @@ fn main() {
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
             },
             ("POST", "/execute") => match parse_json::<ExecuteRequest>(&request.body) {
-                Ok(req) => json_response(200, &engine.execute(req)),
+                Ok(req) => {
+                    if let Some(raft_state) = &raft_state {
+                        json_response(200, &execute_via_server_raft(raft_state, req))
+                    } else {
+                        json_response(200, &engine.execute(req))
+                    }
+                }
                 Err(err) => json_response(
                     400,
                     &ExecuteResponse {
@@ -360,6 +378,385 @@ fn env_bool(name: &str, default: bool) -> bool {
         .ok()
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
         .unwrap_or(default)
+}
+
+#[derive(Debug, Deserialize)]
+struct RaftAdminLivenessRequest {
+    node_id: RaftNodeId,
+    alive: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct RaftAdminElectRequest {
+    node_id: RaftNodeId,
+}
+
+#[derive(Debug, Deserialize)]
+struct RaftAdminPeerBlockRequest {
+    peer_id: RaftNodeId,
+    blocked: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct RaftAdminCatchUpRequest {
+    node_id: RaftNodeId,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct RaftAdminLivenessResponse {
+    status: Status,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct RaftAdminFailoverResponse {
+    status: Status,
+    report: Option<RaftFailoverReport>,
+}
+
+#[derive(Debug, Clone)]
+struct ServerRaftState {
+    runtime: ProductionRaftRuntime,
+    local_admin_enabled: bool,
+    blocked_peers: Arc<Mutex<BTreeSet<RaftNodeId>>>,
+}
+
+fn start_server_raft_from_env(
+    shard_id: u64,
+    node_id: u64,
+    advertised_addr: &str,
+) -> Option<ServerRaftState> {
+    if !env_bool("TS_SERVER_RAFT", false) {
+        return None;
+    }
+    let local_node_id = env_u64("TS_RAFT_NODE_ID", if node_id == 0 { 1 } else { node_id });
+    let raft_shard_id = env_u64("TS_RAFT_SHARD_ID", shard_id);
+    let nodes = parse_raft_nodes(advertised_addr, local_node_id);
+    let wal_dir = std::env::var("TS_RAFT_WAL_DIR")
+        .unwrap_or_else(|_| format!("target/temporalstore-server-raft/node-{local_node_id}"));
+    let auth_token =
+        std::env::var("TS_RAFT_AUTH_TOKEN").unwrap_or_else(|_| "local-raft-token".to_string());
+    let runtime = ProductionRaftRuntime::start(ProductionRaftRuntimeOptions {
+        engine: ProductionRaftEngineKind::OpenRaft,
+        shard_id: raft_shard_id,
+        local_node_id,
+        nodes,
+        wal_dir,
+        config: RaftConfig::default(),
+        rpc: RaftRpcRuntimeOptions {
+            max_retries: env_usize("TS_RAFT_RPC_RETRIES", 2),
+            deadline_ms: env_u64("TS_RAFT_RPC_DEADLINE_MS", 1_000),
+            ..RaftRpcRuntimeOptions::default()
+        },
+        security: ProductionRaftSecurity::plaintext_for_local_chaos(auth_token),
+        heartbeat_interval_ms: env_u64("TS_RAFT_HEARTBEAT_INTERVAL_MS", 100),
+        election_tick_ms: env_u64("TS_RAFT_ELECTION_TICK_MS", 50),
+        max_catchup_entries_per_heartbeat: env_u64(
+            "TS_RAFT_MAX_CATCHUP_ENTRIES_PER_HEARTBEAT",
+            256,
+        ),
+        allow_plaintext_for_local_chaos: env_bool("TS_RAFT_ALLOW_PLAINTEXT", true),
+    })
+    .expect("failed to start server raft runtime");
+    let _timer = runtime.start_timer_loop();
+    Some(ServerRaftState {
+        runtime,
+        local_admin_enabled: env_bool("TS_RAFT_ENABLE_LOCAL_ADMIN", false),
+        blocked_peers: Arc::new(Mutex::new(BTreeSet::new())),
+    })
+}
+
+fn parse_raft_nodes(advertised_addr: &str, local_node_id: RaftNodeId) -> Vec<ProductionRaftNode> {
+    std::env::var("TS_RAFT_NODES")
+        .ok()
+        .map(|value| {
+            value
+                .split(',')
+                .filter_map(|part| {
+                    let (id, addr) = part.split_once('=')?;
+                    Some(ProductionRaftNode {
+                        node_id: id.trim().parse().ok()?,
+                        addr: addr.trim().to_string(),
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .filter(|nodes| !nodes.is_empty())
+        .unwrap_or_else(|| {
+            BTreeMap::from([(local_node_id, advertised_addr.to_string())])
+                .into_iter()
+                .map(|(node_id, addr)| ProductionRaftNode { node_id, addr })
+                .collect()
+        })
+}
+
+fn handle_server_raft_route(
+    state: &ServerRaftState,
+    request: &HttpRequest,
+) -> Option<(u16, Vec<u8>)> {
+    let response = match (request.method.as_str(), request.path.as_str()) {
+        ("GET", "/raft/status") => json_response(200, &state.runtime.status()),
+        ("POST", "/raft/admin/liveness") => {
+            if !state.local_admin_enabled {
+                return Some(json_response(
+                    403,
+                    &Status::error("forbidden", "local admin disabled"),
+                ));
+            }
+            match parse_json::<RaftAdminLivenessRequest>(&request.body) {
+                Ok(req) => {
+                    let status = state
+                        .runtime
+                        .cluster()
+                        .set_alive(req.node_id, req.alive)
+                        .map(|_| Status::ok())
+                        .unwrap_or_else(|err| Status::error("raft_error", err.to_string()));
+                    json_response(200, &RaftAdminLivenessResponse { status })
+                }
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        ("POST", "/raft/admin/elect") => {
+            if !state.local_admin_enabled {
+                return Some(json_response(
+                    403,
+                    &Status::error("forbidden", "local admin disabled"),
+                ));
+            }
+            match parse_json::<RaftAdminElectRequest>(&request.body) {
+                Ok(req) => {
+                    let cluster = state.runtime.cluster();
+                    let status = cluster
+                        .catch_up(req.node_id)
+                        .and_then(|_| cluster.elect_leader(req.node_id))
+                        .map(|_| Status::ok())
+                        .unwrap_or_else(|err| Status::error("raft_error", err.to_string()));
+                    json_response(200, &RaftAdminLivenessResponse { status })
+                }
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        ("POST", "/raft/admin/failover") => {
+            if !state.local_admin_enabled {
+                return Some(json_response(
+                    403,
+                    &Status::error("forbidden", "local admin disabled"),
+                ));
+            }
+            let response = match state.runtime.cluster().failover_primary() {
+                Ok(report) => RaftAdminFailoverResponse {
+                    status: Status::ok(),
+                    report: Some(report),
+                },
+                Err(err) => RaftAdminFailoverResponse {
+                    status: Status::error("raft_error", err.to_string()),
+                    report: None,
+                },
+            };
+            json_response(200, &response)
+        }
+        ("POST", "/raft/admin/catch_up") => {
+            if !state.local_admin_enabled {
+                return Some(json_response(
+                    403,
+                    &Status::error("forbidden", "local admin disabled"),
+                ));
+            }
+            match parse_json::<RaftAdminCatchUpRequest>(&request.body) {
+                Ok(req) => {
+                    let cluster = state.runtime.cluster();
+                    let status = cluster
+                        .build_install_snapshot_request(req.node_id)
+                        .and_then(|snapshot| {
+                            let response = state.runtime.transport().install_snapshot(snapshot)?;
+                            if response.success {
+                                cluster.catch_up(req.node_id)
+                            } else {
+                                Err(temporalstore_rust::RaftError::Transport(format!(
+                                    "snapshot install rejected by node {}: {:?}",
+                                    req.node_id, response.reject_reason
+                                )))
+                            }
+                        })
+                        .map(|_| Status::ok())
+                        .unwrap_or_else(|err| Status::error("raft_error", err.to_string()));
+                    json_response(200, &RaftAdminLivenessResponse { status })
+                }
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        ("POST", "/raft/admin/local_catch_up") => {
+            if !state.local_admin_enabled {
+                return Some(json_response(
+                    403,
+                    &Status::error("forbidden", "local admin disabled"),
+                ));
+            }
+            match parse_json::<RaftAdminCatchUpRequest>(&request.body) {
+                Ok(req) => {
+                    let status = state
+                        .runtime
+                        .cluster()
+                        .catch_up(req.node_id)
+                        .map(|_| Status::ok())
+                        .unwrap_or_else(|err| Status::error("raft_error", err.to_string()));
+                    json_response(200, &RaftAdminLivenessResponse { status })
+                }
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        ("POST", "/raft/admin/block_peer") => {
+            if !state.local_admin_enabled {
+                return Some(json_response(
+                    403,
+                    &Status::error("forbidden", "local admin disabled"),
+                ));
+            }
+            match parse_json::<RaftAdminPeerBlockRequest>(&request.body) {
+                Ok(req) => {
+                    let mut blocked = state
+                        .blocked_peers
+                        .lock()
+                        .expect("blocked peer lock poisoned");
+                    if req.blocked {
+                        blocked.insert(req.peer_id);
+                    } else {
+                        blocked.remove(&req.peer_id);
+                    }
+                    json_response(
+                        200,
+                        &RaftAdminLivenessResponse {
+                            status: Status::ok(),
+                        },
+                    )
+                }
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        ("POST", "/raft/propose") => {
+            match parse_json::<DistributedRaftProposeRequest>(&request.body) {
+                Ok(req) => {
+                    json_response(200, &command_response(state.runtime.propose(req.command)))
+                }
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        ("POST", "/raft/read") => match parse_json::<DistributedRaftReadRequest>(&request.body) {
+            Ok(req) => json_response(
+                200,
+                &command_response(state.runtime.read_local(req.node_id, req.command)),
+            ),
+            Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+        },
+        _ if request.path.starts_with("/raft/") => {
+            if let Some(peer_id) = incoming_raft_peer_id(request) {
+                if state
+                    .blocked_peers
+                    .lock()
+                    .expect("blocked peer lock poisoned")
+                    .contains(&peer_id)
+                {
+                    return Some(json_response(
+                        503,
+                        &Status::error("raft_peer_blocked", "local chaos peer block active"),
+                    ));
+                }
+            }
+            handle_raft_http(
+                &state.runtime.cluster(),
+                HttpRequest {
+                    method: request.method.clone(),
+                    path: request.path.clone(),
+                    body: request.body.clone(),
+                },
+            )
+        }
+        _ => return None,
+    };
+    Some(response)
+}
+
+fn execute_via_server_raft(state: &ServerRaftState, request: ExecuteRequest) -> ExecuteResponse {
+    let result = if is_raft_read_command(&request.command) {
+        state
+            .runtime
+            .read_local(state.runtime.status().leader_id, request.command)
+    } else {
+        state.runtime.propose(request.command)
+    };
+    match result {
+        Ok(response) => ExecuteResponse {
+            status: Status::ok(),
+            response,
+        },
+        Err(err) => ExecuteResponse {
+            status: Status::error("raft_error", err.to_string()),
+            response: CommandResponse::Empty,
+        },
+    }
+}
+
+fn command_response(
+    result: Result<CommandResponse, temporalstore_rust::RaftError>,
+) -> DistributedRaftCommandResponse {
+    match result {
+        Ok(response) => DistributedRaftCommandResponse {
+            status: Status::ok(),
+            response,
+        },
+        Err(err) => DistributedRaftCommandResponse {
+            status: Status::error("raft_error", err.to_string()),
+            response: CommandResponse::Empty,
+        },
+    }
+}
+
+fn incoming_raft_peer_id(request: &HttpRequest) -> Option<RaftNodeId> {
+    match request.path.as_str() {
+        "/raft/append_entries" | "/raft/install_snapshot" | "/raft/install_snapshot_chunk" => {
+            serde_json::from_slice::<serde_json::Value>(&request.body)
+                .ok()?
+                .get("leader_id")?
+                .as_u64()
+        }
+        "/raft/request_vote" => serde_json::from_slice::<serde_json::Value>(&request.body)
+            .ok()?
+            .get("candidate_id")?
+            .as_u64(),
+        _ => None,
+    }
+}
+
+fn is_raft_read_command(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::CommonTtl { .. }
+            | Command::CommonExists { .. }
+            | Command::StringGet { .. }
+            | Command::HashGet { .. }
+            | Command::HashMultiGet { .. }
+            | Command::HashGetAll { .. }
+            | Command::HashLen { .. }
+            | Command::SetMembers { .. }
+            | Command::FeatureQuery { .. }
+            | Command::FeatureQueryFiltered { .. }
+            | Command::FeatureAggQuery { .. }
+            | Command::SequenceQuery { .. }
+            | Command::SequenceBatchQuery { .. }
+            | Command::IpsQueryLast { .. }
+            | Command::IpsQueryRange { .. }
+            | Command::IpsBatchQueryLast { .. }
+            | Command::IpsCount { .. }
+            | Command::IpsQueryRangeWithOptions { .. }
+            | Command::IpsSnapshot { .. }
+            | Command::IpsStat { .. }
+            | Command::IpsFilter { .. }
+            | Command::RiskCount { .. }
+            | Command::RiskQuery { .. }
+            | Command::RiskDetail { .. }
+            | Command::RiskSetAndGet { .. }
+            | Command::RiskFamilyQuery { .. }
+            | Command::RiskManager { .. }
+    )
 }
 
 fn startup_load_shard_request(shard_id: u64, node_id: u64) -> LoadShardRequest {
@@ -1097,6 +1494,102 @@ mod tests {
         }
     }
 
+    #[test]
+    fn server_raft_execute_uses_consensus_state_for_writes_and_reads() {
+        let dir = tempdir().unwrap();
+        let state = test_server_raft_state(dir.path(), 1, vec![1], false);
+
+        let write = execute_via_server_raft(
+            &state,
+            ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "server-raft".to_string(),
+                    value: b"ok".to_vec(),
+                },
+            },
+        );
+        assert!(write.status.ok, "{write:?}");
+
+        let read = execute_via_server_raft(
+            &state,
+            ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: "server-raft".to_string(),
+                },
+            },
+        );
+        assert_eq!(
+            read.response,
+            CommandResponse::Bytes {
+                value: Some(b"ok".to_vec())
+            }
+        );
+    }
+
+    #[test]
+    fn server_raft_execute_rejects_follower_writes() {
+        let dir = tempdir().unwrap();
+        let state = test_server_raft_state(dir.path(), 2, vec![1, 2], false);
+
+        let response = execute_via_server_raft(
+            &state,
+            ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "follower-write".to_string(),
+                    value: b"blocked".to_vec(),
+                },
+            },
+        );
+        assert_eq!(response.status.code, "raft_error");
+        assert!(response.status.message.contains("not leader"));
+    }
+
+    #[test]
+    fn server_exposes_raft_status_and_admin_routes() {
+        let dir = tempdir().unwrap();
+        let state = test_server_raft_state(dir.path(), 1, vec![1, 2], true);
+
+        let status_request = HttpRequest {
+            method: "GET".to_string(),
+            path: "/raft/status".to_string(),
+            body: Vec::new(),
+        };
+        let (code, body) = handle_server_raft_route(&state, &status_request).unwrap();
+        assert_eq!(code, 200);
+        let status: temporalstore_rust::RaftClusterStatus = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status.leader_id, 1);
+
+        let elect_request = HttpRequest {
+            method: "POST".to_string(),
+            path: "/raft/admin/elect".to_string(),
+            body: serde_json::to_vec(&serde_json::json!({ "node_id": 2 })).unwrap(),
+        };
+        let (code, body) = handle_server_raft_route(&state, &elect_request).unwrap();
+        assert_eq!(code, 200);
+        let response: RaftAdminLivenessResponse = serde_json::from_slice(&body).unwrap();
+        assert!(response.status.ok, "{response:?}");
+        assert_eq!(state.runtime.status().leader_id, 2);
+    }
+
+    #[test]
+    fn server_raft_admin_routes_can_be_disabled() {
+        let dir = tempdir().unwrap();
+        let state = test_server_raft_state(dir.path(), 1, vec![1], false);
+
+        let request = HttpRequest {
+            method: "POST".to_string(),
+            path: "/raft/admin/failover".to_string(),
+            body: b"{}".to_vec(),
+        };
+        let (code, body) = handle_server_raft_route(&state, &request).unwrap();
+        assert_eq!(code, 403);
+        let status: Status = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status.code, "forbidden");
+    }
+
     fn start_primary_stream_server(primary: TemporalEngine) -> String {
         let primary_addr = free_local_addr();
         let primary_for_server = primary.clone();
@@ -1215,6 +1708,48 @@ mod tests {
                 "primary stream server did not start"
             );
             thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    fn test_server_raft_state(
+        root: &std::path::Path,
+        local_node_id: RaftNodeId,
+        voters: Vec<RaftNodeId>,
+        local_admin_enabled: bool,
+    ) -> ServerRaftState {
+        let nodes = voters
+            .into_iter()
+            .map(|node_id| ProductionRaftNode {
+                node_id,
+                addr: free_local_addr(),
+            })
+            .collect::<Vec<_>>();
+        let runtime = ProductionRaftRuntime::start(ProductionRaftRuntimeOptions {
+            engine: ProductionRaftEngineKind::OpenRaft,
+            shard_id: 1,
+            local_node_id,
+            nodes,
+            wal_dir: root
+                .join(format!("server-raft-node-{local_node_id}"))
+                .display()
+                .to_string(),
+            config: RaftConfig::default(),
+            rpc: RaftRpcRuntimeOptions {
+                max_retries: 1,
+                deadline_ms: 100,
+                ..RaftRpcRuntimeOptions::default()
+            },
+            security: ProductionRaftSecurity::plaintext_for_local_chaos("test-token"),
+            heartbeat_interval_ms: 20,
+            election_tick_ms: 10,
+            max_catchup_entries_per_heartbeat: 32,
+            allow_plaintext_for_local_chaos: true,
+        })
+        .unwrap();
+        ServerRaftState {
+            runtime,
+            local_admin_enabled,
+            blocked_peers: Arc::new(Mutex::new(BTreeSet::new())),
         }
     }
 }
