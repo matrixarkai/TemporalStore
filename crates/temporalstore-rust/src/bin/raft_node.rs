@@ -33,6 +33,13 @@ struct RaftAdminCatchUpRequest {
     node_id: u64,
 }
 
+#[derive(Debug, Deserialize)]
+struct RaftAdminWaitAppliedRequest {
+    node_id: u64,
+    index: u64,
+    timeout_ms: u64,
+}
+
 #[derive(Debug, Serialize)]
 struct RaftAdminLivenessResponse {
     status: Status,
@@ -162,6 +169,21 @@ fn handle(
                     let status = runtime
                         .cluster()
                         .catch_up(req.node_id)
+                        .map(|_| Status::ok())
+                        .unwrap_or_else(|err| Status::error("raft_error", err.to_string()));
+                    json_response(200, &RaftAdminLivenessResponse { status })
+                }
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        ("POST", "/raft/admin/wait_applied") => {
+            if !local_admin_enabled {
+                return json_response(403, &Status::error("forbidden", "local admin disabled"));
+            }
+            match parse_json::<RaftAdminWaitAppliedRequest>(&request.body) {
+                Ok(req) => {
+                    let status = runtime
+                        .wait_for_applied_index(req.node_id, req.index, req.timeout_ms)
                         .map(|_| Status::ok())
                         .unwrap_or_else(|err| Status::error("raft_error", err.to_string()));
                     json_response(200, &RaftAdminLivenessResponse { status })

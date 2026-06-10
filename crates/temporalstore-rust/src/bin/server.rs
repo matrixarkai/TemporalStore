@@ -422,6 +422,13 @@ struct RaftAdminCatchUpRequest {
     node_id: RaftNodeId,
 }
 
+#[derive(Debug, Deserialize)]
+struct RaftAdminWaitAppliedRequest {
+    node_id: RaftNodeId,
+    index: u64,
+    timeout_ms: u64,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 struct RaftAdminLivenessResponse {
     status: Status,
@@ -634,6 +641,25 @@ fn handle_server_raft_route(
                         .runtime
                         .cluster()
                         .catch_up(req.node_id)
+                        .map(|_| Status::ok())
+                        .unwrap_or_else(|err| Status::error("raft_error", err.to_string()));
+                    json_response(200, &RaftAdminLivenessResponse { status })
+                }
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        ("POST", "/raft/admin/wait_applied") => {
+            if !state.local_admin_enabled {
+                return Some(json_response(
+                    403,
+                    &Status::error("forbidden", "local admin disabled"),
+                ));
+            }
+            match parse_json::<RaftAdminWaitAppliedRequest>(&request.body) {
+                Ok(req) => {
+                    let status = state
+                        .runtime
+                        .wait_for_applied_index(req.node_id, req.index, req.timeout_ms)
                         .map(|_| Status::ok())
                         .unwrap_or_else(|err| Status::error("raft_error", err.to_string()));
                     json_response(200, &RaftAdminLivenessResponse { status })
@@ -1658,6 +1684,58 @@ mod tests {
         let response: RaftAdminLivenessResponse = serde_json::from_slice(&body).unwrap();
         assert!(response.status.ok, "{response:?}");
         assert_eq!(state.runtime.status().leader_id, 2);
+    }
+
+    #[test]
+    fn server_raft_admin_wait_applied_reports_lag_and_success_after_catchup() {
+        let dir = tempdir().unwrap();
+        let state = test_server_raft_state(dir.path(), 1, vec![1, 2, 3], true);
+        let cluster = state.runtime.cluster();
+        cluster.set_alive(3, false).unwrap();
+        cluster
+            .propose(Command::StringSet {
+                key: "wait-applied-route".to_string(),
+                value: b"v".to_vec(),
+            })
+            .unwrap();
+        cluster.set_alive(3, true).unwrap();
+
+        let wait_request = HttpRequest {
+            method: "POST".to_string(),
+            path: "/raft/admin/wait_applied".to_string(),
+            body: serde_json::to_vec(
+                &serde_json::json!({ "node_id": 3, "index": 1, "timeout_ms": 1 }),
+            )
+            .unwrap(),
+        };
+        let (code, body) = handle_server_raft_route(&state, &wait_request).unwrap();
+        assert_eq!(code, 200);
+        let response: RaftAdminLivenessResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(response.status.code, "raft_error");
+        assert!(response.status.message.contains("did not apply raft index"));
+
+        let catchup_request = HttpRequest {
+            method: "POST".to_string(),
+            path: "/raft/admin/local_catch_up".to_string(),
+            body: serde_json::to_vec(&serde_json::json!({ "node_id": 3 })).unwrap(),
+        };
+        let (code, body) = handle_server_raft_route(&state, &catchup_request).unwrap();
+        assert_eq!(code, 200);
+        let response: RaftAdminLivenessResponse = serde_json::from_slice(&body).unwrap();
+        assert!(response.status.ok, "{response:?}");
+
+        let wait_request = HttpRequest {
+            method: "POST".to_string(),
+            path: "/raft/admin/wait_applied".to_string(),
+            body: serde_json::to_vec(
+                &serde_json::json!({ "node_id": 3, "index": 1, "timeout_ms": 0 }),
+            )
+            .unwrap(),
+        };
+        let (code, body) = handle_server_raft_route(&state, &wait_request).unwrap();
+        assert_eq!(code, 200);
+        let response: RaftAdminLivenessResponse = serde_json::from_slice(&body).unwrap();
+        assert!(response.status.ok, "{response:?}");
     }
 
     #[test]
