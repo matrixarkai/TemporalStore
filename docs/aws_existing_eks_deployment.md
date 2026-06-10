@@ -107,6 +107,11 @@ export TS_PUSH_IMAGE=1
 tools/deploy_and_test_aws_existing_eks.sh
 ```
 
+The script deletes stale validation jobs before apply, waits for fresh job completion, and parses the
+JSON logs with `tools/validate_aws_validation_log.py`. It fails if replica reads return wrong values,
+Raft apply health is unhealthy, follower writes are accepted, write QPS is zero, replica lag is
+non-zero, shared-store sync lag is non-zero, or local-WAL restore cannot read back committed data.
+
 Validation jobs:
 
 - `temporalstore-raft-validation`: runs `distributed_raft_harness` in EKS. It validates

@@ -14,6 +14,12 @@ PUSH_IMAGE="${TS_PUSH_IMAGE:-0}"
 APPLY="${TS_TERRAFORM_APPLY:-1}"
 ENABLE_JOBS="${TS_ENABLE_VALIDATION_JOBS:-1}"
 WAIT_TIMEOUT="${TS_VALIDATION_WAIT_TIMEOUT:-900s}"
+VALIDATION_JOBS=(
+  temporalstore-raft-validation
+  temporalstore-scale-validation
+  temporalstore-storage-validation
+)
+export AWS_EC2_METADATA_DISABLED="${AWS_EC2_METADATA_DISABLED:-true}"
 
 require() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -25,6 +31,7 @@ require() {
 require aws
 require terraform
 require kubectl
+require python3
 if [[ "${BUILD_IMAGE}" == "1" || "${PUSH_IMAGE}" == "1" ]]; then
   require docker
 fi
@@ -48,6 +55,16 @@ fi
 
 echo "== kubeconfig =="
 aws eks update-kubeconfig --region "${AWS_REGION}" --name "${TS_EKS_CLUSTER_NAME}"
+kubectl auth can-i get pods -n "${NAMESPACE}" >/dev/null
+if [[ "${ENABLE_JOBS}" == "1" || "${ENABLE_JOBS}" == "true" ]]; then
+  kubectl auth can-i create jobs -n "${NAMESPACE}" >/dev/null
+  kubectl auth can-i delete jobs -n "${NAMESPACE}" >/dev/null
+fi
+
+if [[ "${ENABLE_JOBS}" == "1" || "${ENABLE_JOBS}" == "true" ]]; then
+  echo "== remove old validation jobs =="
+  kubectl -n "${NAMESPACE}" delete jobs "${VALIDATION_JOBS[@]}" --ignore-not-found=true >/dev/null 2>&1 || true
+fi
 
 echo "== terraform init/validate =="
 cd "${TF_DIR}"
@@ -85,11 +102,18 @@ kubectl -n "${NAMESPACE}" rollout status deploy/temporalstore-redis --timeout=18
 kubectl -n "${NAMESPACE}" get pods,svc,pvc,jobs -o wide
 
 if [[ "${ENABLE_JOBS}" == "1" || "${ENABLE_JOBS}" == "true" ]]; then
-  for job in temporalstore-raft-validation temporalstore-scale-validation temporalstore-storage-validation; do
+  for job in "${VALIDATION_JOBS[@]}"; do
     echo "== wait job/${job} =="
-    kubectl -n "${NAMESPACE}" wait --for=condition=complete "job/${job}" --timeout="${WAIT_TIMEOUT}"
+    if ! kubectl -n "${NAMESPACE}" wait --for=condition=complete "job/${job}" --timeout="${WAIT_TIMEOUT}"; then
+      kubectl -n "${NAMESPACE}" describe "job/${job}" >&2 || true
+      kubectl -n "${NAMESPACE}" logs "job/${job}" --all-containers=true >&2 || true
+      echo "validation job ${job} did not complete" >&2
+      exit 1
+    fi
     echo "== logs job/${job} =="
-    kubectl -n "${NAMESPACE}" logs "job/${job}" --all-containers=true
+    log_file="/tmp/${job}.log"
+    kubectl -n "${NAMESPACE}" logs "job/${job}" --all-containers=true | tee "${log_file}"
+    python3 "${ROOT}/tools/validate_aws_validation_log.py" --job "${job}" --log "${log_file}"
   done
 fi
 
