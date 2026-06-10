@@ -466,14 +466,13 @@ fn run_rolling_restart_phase(
     leader_node_id: RaftNodeId,
 ) -> RollingRestartSummary {
     let restart_order = vec![3, 2, 1];
-    let leader = nodes
-        .iter()
-        .find(|node| node.node_id == leader_node_id)
-        .expect("leader should exist");
+    let original_leader = node_by_id(nodes, leader_node_id);
+    let mut active_leader_id = leader_node_id;
     let mut writes_after_each_restart = Vec::new();
     let mut reads_after_each_restart = Vec::new();
 
     for restarted_node_id in restart_order.iter().copied() {
+        let restarting_active_leader = restarted_node_id == active_leader_id;
         let child_index = children
             .iter()
             .position(|child| child.node.node_id == restarted_node_id)
@@ -492,35 +491,62 @@ fn run_rolling_restart_phase(
         {
             mark_liveness(alive_node, restarted_node_id, false);
         }
+        if restarting_active_leader {
+            let promoted_leader_id = nodes
+                .iter()
+                .find(|node| node.node_id != restarted_node_id)
+                .expect("rolling restart should have a surviving leader candidate")
+                .node_id;
+            active_leader_id = promoted_leader_id;
+            for survivor in nodes
+                .iter()
+                .filter(|node| node.node_id != restarted_node_id)
+            {
+                elect_leader(survivor, promoted_leader_id);
+            }
+            let failover = trigger_failover(node_by_id(nodes, promoted_leader_id));
+            assert!(
+                failover.status.ok,
+                "rolling restart failover to node {} failed: {:?}",
+                promoted_leader_id, failover.status
+            );
+        }
 
-        let restarted = nodes
-            .iter()
-            .find(|node| node.node_id == restarted_node_id)
-            .expect("restarted node should exist");
+        let restarted = node_by_id(nodes, restarted_node_id);
         children.push(spawn_node(raft_node_bin, options, nodes_env, restarted));
         wait_for_http(&restarted.addr);
         initialize_liveness(nodes);
+        let active_leader = node_by_id(nodes, active_leader_id);
         for node in nodes {
-            elect_leader(node, leader_node_id);
+            elect_leader(node, active_leader_id);
         }
-        if restarted_node_id != leader_node_id {
-            elect_leader(leader, leader_node_id);
-            catch_up_peer(leader, restarted_node_id);
+        if restarted_node_id != active_leader_id {
+            elect_leader(active_leader, active_leader_id);
+            catch_up_peer(active_leader, restarted_node_id);
             local_catch_up(restarted, restarted_node_id);
         }
 
         let key = format!("rolling-restart-{restarted_node_id}");
         let value = format!("v-restart-{restarted_node_id}");
-        let write = propose(leader, &key, &value);
-        for follower in nodes.iter().filter(|node| node.node_id != leader_node_id) {
-            elect_leader(leader, leader_node_id);
-            catch_up_peer(leader, follower.node_id);
+        let write = propose(active_leader, &key, &value);
+        for follower in nodes.iter().filter(|node| node.node_id != active_leader_id) {
+            elect_leader(active_leader, active_leader_id);
+            catch_up_peer(active_leader, follower.node_id);
             local_catch_up(follower, follower.node_id);
         }
         for node in nodes {
             reads_after_each_restart.push(wait_for_value(node, node.node_id, &key, &value));
         }
         writes_after_each_restart.push(write);
+
+        if restarting_active_leader && active_leader_id != leader_node_id {
+            catch_up_peer(active_leader, leader_node_id);
+            local_catch_up(original_leader, leader_node_id);
+            for node in nodes {
+                elect_leader(node, leader_node_id);
+            }
+            active_leader_id = leader_node_id;
+        }
     }
 
     RollingRestartSummary {
@@ -528,6 +554,13 @@ fn run_rolling_restart_phase(
         writes_after_each_restart,
         reads_after_each_restart,
     }
+}
+
+fn node_by_id(nodes: &[ProductionRaftNode], node_id: RaftNodeId) -> &ProductionRaftNode {
+    nodes
+        .iter()
+        .find(|node| node.node_id == node_id)
+        .unwrap_or_else(|| panic!("node {node_id} should exist"))
 }
 
 fn validate_surviving_cluster(
