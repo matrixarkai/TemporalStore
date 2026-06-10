@@ -68,6 +68,11 @@ This pass closed one of the hard readiness blockers instead of leaving it as a n
 7. The metaserver binary can now run with an in-process Raft-backed metadata backend using `TS_META_RAFT=1` or `TS_META_RAFT_NODES=1,2,3`.
 8. In Raft mode, HTTP mutations for shard registration, server/proxy registration, namespace/table creation, load-finish, and freeze/drop actions are proposed through `MetaRaftCluster`.
 9. The Raft metaserver path is test-backed for full table-topology metadata replication, stale-server freeze as a replicated mutation, and no-majority mutation rejection.
+10. The server binary now exposes C++-style data-Raft read-policy controls through
+    `TS_DATA_RAFT_READ_MODE`, `TS_DATA_RAFT_BOUNDED_STALE_MAX_INDEX_LAG`, and
+    `TS_DATA_RAFT_READ_INDEX_TIMEOUT_MS`. In raft server mode, `/execute` can route reads through
+    leader/linearizable behavior or local bounded-stale replica reads instead of always forcing
+    leader reads.
 
 This pass compared the Rust RESP layer against the local C++ server Redis command handler in
 `C:\Users\Vincent Jiang\Documents\Codex\temporalstore-small\src\server\redis_service.cc` and

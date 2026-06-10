@@ -13,6 +13,7 @@ use temporalstore_rust::meta::{
     RegisterShardRequest, RegisterShardResponse, ServerHeartbeatRequest, ServerHeartbeatResponse,
     ShardLoad,
 };
+use temporalstore_rust::raft::{DataRaftReadMode, DataRaftReadPolicy};
 use temporalstore_rust::types::{BatchExecuteRequest, ExecuteRequest, ExecuteResponse, Status};
 use temporalstore_rust::{
     handle_raft_http, CheckedBatchExecuteRequest, CheckedExecuteRequest, Command, CommandResponse,
@@ -416,6 +417,8 @@ struct RaftAdminFailoverResponse {
 #[derive(Debug, Clone)]
 struct ServerRaftState {
     runtime: ProductionRaftRuntime,
+    local_node_id: RaftNodeId,
+    read_policy: DataRaftReadPolicy,
     local_admin_enabled: bool,
     blocked_peers: Arc<Mutex<BTreeSet<RaftNodeId>>>,
 }
@@ -460,9 +463,24 @@ fn start_server_raft_from_env(
     let _timer = runtime.start_timer_loop();
     Some(ServerRaftState {
         runtime,
+        local_node_id,
+        read_policy: data_raft_read_policy_from_env(),
         local_admin_enabled: env_bool("TS_RAFT_ENABLE_LOCAL_ADMIN", false),
         blocked_peers: Arc::new(Mutex::new(BTreeSet::new())),
     })
+}
+
+fn data_raft_read_policy_from_env() -> DataRaftReadPolicy {
+    let mode = std::env::var("TS_DATA_RAFT_READ_MODE")
+        .or_else(|_| std::env::var("TS_SERVER_RAFT_READ_MODE"))
+        .unwrap_or_else(|_| "leader".to_string())
+        .parse::<DataRaftReadMode>()
+        .unwrap_or_else(|err| panic!("invalid TS_DATA_RAFT_READ_MODE: {err}"));
+    DataRaftReadPolicy {
+        mode,
+        bounded_stale_max_index_lag: env_u64("TS_DATA_RAFT_BOUNDED_STALE_MAX_INDEX_LAG", 0),
+        read_index_timeout_ms: env_u64("TS_DATA_RAFT_READ_INDEX_TIMEOUT_MS", 1_000),
+    }
 }
 
 fn parse_raft_nodes(advertised_addr: &str, local_node_id: RaftNodeId) -> Vec<ProductionRaftNode> {
@@ -677,9 +695,7 @@ fn handle_server_raft_route(
 
 fn execute_via_server_raft(state: &ServerRaftState, request: ExecuteRequest) -> ExecuteResponse {
     let result = if is_raft_read_command(&request.command) {
-        state
-            .runtime
-            .read_local(state.runtime.status().leader_id, request.command)
+        read_via_server_raft(state, request.command)
     } else {
         state.runtime.propose(request.command)
     };
@@ -693,6 +709,21 @@ fn execute_via_server_raft(state: &ServerRaftState, request: ExecuteRequest) -> 
             response: CommandResponse::Empty,
         },
     }
+}
+
+fn read_via_server_raft(
+    state: &ServerRaftState,
+    command: Command,
+) -> Result<CommandResponse, temporalstore_rust::RaftError> {
+    let target_node_id = match state.read_policy.mode {
+        DataRaftReadMode::Leader | DataRaftReadMode::Linearizable => {
+            state.runtime.status().leader_id
+        }
+        DataRaftReadMode::BoundedStale | DataRaftReadMode::UnsafeAnyReplica => state.local_node_id,
+    };
+    let cluster = state.runtime.cluster();
+    cluster.check_data_raft_read_policy(target_node_id, state.read_policy)?;
+    cluster.read_from_replica(target_node_id, command)
 }
 
 fn command_response(
@@ -1548,6 +1579,42 @@ mod tests {
     }
 
     #[test]
+    fn server_raft_bounded_stale_read_policy_reads_local_replica() {
+        let dir = tempdir().unwrap();
+        let mut state = test_server_raft_state(dir.path(), 2, vec![1, 2], false);
+        state.read_policy = DataRaftReadPolicy {
+            mode: DataRaftReadMode::BoundedStale,
+            bounded_stale_max_index_lag: 0,
+            read_index_timeout_ms: 100,
+        };
+        state
+            .runtime
+            .cluster()
+            .propose(Command::StringSet {
+                key: "bounded-stale".to_string(),
+                value: b"local-replica".to_vec(),
+            })
+            .unwrap();
+
+        let read = execute_via_server_raft(
+            &state,
+            ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: "bounded-stale".to_string(),
+                },
+            },
+        );
+        assert!(read.status.ok, "{read:?}");
+        assert_eq!(
+            read.response,
+            CommandResponse::Bytes {
+                value: Some(b"local-replica".to_vec())
+            }
+        );
+    }
+
+    #[test]
     fn server_exposes_raft_status_and_admin_routes() {
         let dir = tempdir().unwrap();
         let state = test_server_raft_state(dir.path(), 1, vec![1, 2], true);
@@ -1748,6 +1815,8 @@ mod tests {
         .unwrap();
         ServerRaftState {
             runtime,
+            local_node_id,
+            read_policy: DataRaftReadPolicy::default(),
             local_admin_enabled,
             blocked_peers: Arc::new(Mutex::new(BTreeSet::new())),
         }
