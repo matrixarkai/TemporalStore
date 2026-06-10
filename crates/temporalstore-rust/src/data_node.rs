@@ -68,6 +68,9 @@ pub struct DataNodeTaskStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DataNodeRuntimeStats {
+    pub worker_threads: usize,
+    pub max_queue_depth: usize,
+    pub max_background_queue_depth: usize,
     pub submitted_total: u64,
     pub completed_total: u64,
     pub rejected_total: u64,
@@ -85,6 +88,13 @@ pub struct DataNodeRuntimeStats {
     pub dump_runs: u64,
     pub compaction_runs: u64,
     pub gc_runs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShardWorkerInfo {
+    pub shard_id: ShardId,
+    pub worker_index: usize,
+    pub worker_threads: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -637,6 +647,33 @@ impl DataNodeRuntime {
         dirty_shards(&self.inner.dirty)
     }
 
+    pub fn shard_worker_info(&self, shard_id: ShardId) -> ShardWorkerInfo {
+        let worker_threads = self.inner.options.worker_threads.max(1);
+        ShardWorkerInfo {
+            shard_id,
+            worker_index: shard_id as usize % worker_threads,
+            worker_threads,
+        }
+    }
+
+    pub fn queued_shard_worker_infos(&self) -> Vec<ShardWorkerInfo> {
+        let queue = self
+            .inner
+            .queue
+            .lock()
+            .expect("runtime queue lock poisoned");
+        let worker_threads = self.inner.options.worker_threads.max(1);
+        queue
+            .by_shard
+            .keys()
+            .map(|shard_id| ShardWorkerInfo {
+                shard_id: *shard_id,
+                worker_index: *shard_id as usize % worker_threads,
+                worker_threads,
+            })
+            .collect()
+    }
+
     pub fn schedule_dirty_shard_dumps(
         &self,
         controller: RequestController,
@@ -741,6 +778,9 @@ impl DataNodeRuntime {
             .collect::<BTreeSet<_>>()
             .len();
         DataNodeRuntimeStats {
+            worker_threads: self.inner.options.worker_threads,
+            max_queue_depth: self.inner.options.max_queue_depth,
+            max_background_queue_depth: self.inner.options.max_background_queue_depth,
             submitted_total: stats.submitted_total,
             completed_total: stats.completed_total,
             rejected_total: stats.rejected_total,
@@ -1386,6 +1426,31 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_reports_cpp_style_shard_worker_ownership() {
+        let runtime = DataNodeRuntime::new(
+            TemporalEngine::default(),
+            DataNodeRuntimeOptions {
+                worker_threads: 4,
+                max_queue_depth: 16,
+                max_background_queue_depth: 8,
+            },
+        );
+
+        let stats = runtime.stats();
+        assert_eq!(stats.worker_threads, 4);
+        assert_eq!(stats.max_queue_depth, 16);
+        assert_eq!(stats.max_background_queue_depth, 8);
+        assert_eq!(
+            runtime.shard_worker_info(7),
+            ShardWorkerInfo {
+                shard_id: 7,
+                worker_index: 3,
+                worker_threads: 4,
+            }
+        );
+    }
 
     #[test]
     fn runtime_executes_async_tracks_dirty_and_dump_clears_it() {

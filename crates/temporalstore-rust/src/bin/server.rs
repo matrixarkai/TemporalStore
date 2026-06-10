@@ -167,6 +167,9 @@ fn main() {
             ("GET", "/server/info") => json_response(200, &engine.loaded_shard_stats()),
             ("GET", "/server/runtime_stats") => json_response(200, &runtime.stats()),
             ("GET", "/server/dirty_objects") => json_response(200, &runtime.dirty_objects()),
+            ("GET", "/server/queued_shard_workers") => {
+                json_response(200, &runtime.queued_shard_worker_infos())
+            }
             ("GET", "/server/replica_replay_status") => {
                 json_response(200, &replica_replay_loop.status())
             }
@@ -180,6 +183,22 @@ fn main() {
                     .parse()
                     .unwrap_or_default();
                 json_response(200, &runtime.job_status(job_id))
+            }
+            ("POST", path) if path.starts_with("/jobs/") && path.ends_with("/cancel") => {
+                let job_id = path
+                    .trim_start_matches("/jobs/")
+                    .trim_end_matches("/cancel")
+                    .trim_end_matches('/')
+                    .parse()
+                    .unwrap_or_default();
+                json_response(200, &runtime.cancel_job(job_id))
+            }
+            ("GET", path) if path.starts_with("/server/shard_worker/") => {
+                let shard_id = path
+                    .trim_start_matches("/server/shard_worker/")
+                    .parse()
+                    .unwrap_or_default();
+                json_response(200, &runtime.shard_worker_info(shard_id))
             }
             ("POST", "/load") => match parse_json::<LoadShardRequest>(&request.body) {
                 Ok(req) => json_response(200, &engine.load_shard_with(req)),

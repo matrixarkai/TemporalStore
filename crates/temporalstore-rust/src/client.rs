@@ -118,6 +118,7 @@ impl Default for TableOptions {
 pub enum ReplicaReadPolicy {
     PinPrimary,
     FirstReplica,
+    RoundRobinReplica,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -172,6 +173,7 @@ struct ClientInner {
 struct CachedRoute {
     primary_addr: String,
     replica_addrs: Vec<String>,
+    next_replica_index: usize,
     fetched_at: Instant,
 }
 
@@ -307,6 +309,7 @@ impl TemporalStoreClient {
                                 .filter(|replica| *replica != primary)
                                 .cloned()
                                 .collect(),
+                            next_replica_index: 0,
                             fetched_at: Instant::now(),
                         },
                     )
@@ -395,6 +398,7 @@ impl TemporalStoreClient {
                 CachedRoute {
                     primary_addr: primary_addr.into(),
                     replica_addrs: Vec::new(),
+                    next_replica_index: 0,
                     fetched_at: Instant::now(),
                 },
             );
@@ -648,16 +652,14 @@ impl TemporalStoreClient {
     ) -> Result<String, ClientError> {
         let ttl = Duration::from_millis(self.inner.options.route_cache_ttl_ms);
         if !force_refresh {
-            if let Some(route) = self
+            let mut route_cache = self
                 .inner
                 .routes
                 .lock()
-                .expect("client route cache lock poisoned")
-                .get(&shard_id)
-                .cloned()
-            {
+                .expect("client route cache lock poisoned");
+            if let Some(route) = route_cache.get_mut(&shard_id) {
                 if route.fetched_at.elapsed() <= ttl {
-                    let server_addr = choose_cached_route(&route, replica_read_policy);
+                    let server_addr = choose_cached_route(route, replica_read_policy);
                     if self.backend_failure_is_continuous(
                         &server_addr,
                         continuous_failed_time_ms
@@ -712,6 +714,7 @@ impl TemporalStoreClient {
                 CachedRoute {
                     primary_addr: server_addr.clone(),
                     replica_addrs: Vec::new(),
+                    next_replica_index: 0,
                     fetched_at: Instant::now(),
                 },
             );
@@ -1843,7 +1846,7 @@ impl TemporalStoreTable {
     }
 }
 
-fn choose_cached_route(route: &CachedRoute, replica_read_policy: ReplicaReadPolicy) -> String {
+fn choose_cached_route(route: &mut CachedRoute, replica_read_policy: ReplicaReadPolicy) -> String {
     match replica_read_policy {
         ReplicaReadPolicy::PinPrimary => route.primary_addr.clone(),
         ReplicaReadPolicy::FirstReplica => route
@@ -1851,6 +1854,15 @@ fn choose_cached_route(route: &CachedRoute, replica_read_policy: ReplicaReadPoli
             .first()
             .cloned()
             .unwrap_or_else(|| route.primary_addr.clone()),
+        ReplicaReadPolicy::RoundRobinReplica => {
+            if route.replica_addrs.is_empty() {
+                return route.primary_addr.clone();
+            }
+            let replica =
+                route.replica_addrs[route.next_replica_index % route.replica_addrs.len()].clone();
+            route.next_replica_index = (route.next_replica_index + 1) % route.replica_addrs.len();
+            replica
+        }
     }
 }
 
@@ -2426,6 +2438,7 @@ mod tests {
             CachedRoute {
                 primary_addr: "127.0.0.1:1".to_string(),
                 replica_addrs: Vec::new(),
+                next_replica_index: 0,
                 fetched_at: Instant::now(),
             },
         );
@@ -2499,6 +2512,7 @@ mod tests {
             CachedRoute {
                 primary_addr: bad_server.clone(),
                 replica_addrs: Vec::new(),
+                next_replica_index: 0,
                 fetched_at: Instant::now(),
             },
         );
@@ -2713,6 +2727,33 @@ mod tests {
             10 + (0x3a71_b645 % 4)
         );
         assert_eq!(stable_key_hash("123456789"), crc64_jones(b"123456789"));
+    }
+
+    #[test]
+    fn client_router_round_robins_secondary_reads_like_cpp_router() {
+        let mut route = CachedRoute {
+            primary_addr: "primary".to_string(),
+            replica_addrs: vec!["replica-a".to_string(), "replica-b".to_string()],
+            next_replica_index: 0,
+            fetched_at: Instant::now(),
+        };
+
+        assert_eq!(
+            choose_cached_route(&mut route, ReplicaReadPolicy::RoundRobinReplica),
+            "replica-a"
+        );
+        assert_eq!(
+            choose_cached_route(&mut route, ReplicaReadPolicy::RoundRobinReplica),
+            "replica-b"
+        );
+        assert_eq!(
+            choose_cached_route(&mut route, ReplicaReadPolicy::RoundRobinReplica),
+            "replica-a"
+        );
+        assert_eq!(
+            choose_cached_route(&mut route, ReplicaReadPolicy::PinPrimary),
+            "primary"
+        );
     }
 
     #[test]

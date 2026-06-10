@@ -73,6 +73,13 @@ This pass closed one of the hard readiness blockers instead of leaving it as a n
     `TS_DATA_RAFT_READ_INDEX_TIMEOUT_MS`. In raft server mode, `/execute` can route reads through
     leader/linearizable behavior or local bounded-stale replica reads instead of always forcing
     leader reads.
+11. The Rust client router now has a C++ `RouterV1`-style read-replica round-robin policy via
+    `ReplicaReadPolicy::RoundRobinReplica`; `FirstReplica` remains available for deterministic
+    smoke tests and primary pinning still forces writes to the primary.
+12. The data-node/server runtime now exposes C++ partition-thread ownership parity: runtime stats
+    include worker-pool limits, `shard_worker_info()` reports `shard_id % worker_threads`, the
+    server exposes `/server/shard_worker/<shard_id>` and `/server/queued_shard_workers`, and queued
+    or in-flight jobs can be canceled through `POST /jobs/<job_id>/cancel`.
 
 This pass compared the Rust RESP layer against the local C++ server Redis command handler in
 `C:\Users\Vincent Jiang\Documents\Codex\temporalstore-small\src\server\redis_service.cc` and
