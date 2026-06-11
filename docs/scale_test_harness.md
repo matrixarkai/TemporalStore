@@ -80,7 +80,16 @@ The JSON output includes:
 - `max_replica_lag`: final Raft replica lag, expected to be `0`
 - `shared_store.sync_replica_read_latency`: latency after sync shared-store publish and replay
 - `shared_store.async_replica_read_latency`: latency for reads after async flush/replay windows
+- `shared_store.async_storage_enqueue_latency`: response-path cost to queue async shared-store work
+- `shared_store.async_storage_flush_latency`: background flush cost to publish queued async oplog entries
 - `shared_store.sync_max_lag` and `shared_store.async_max_lag`: max oplog lag observed while replaying
+
+For `storage_async=true` parity with the C++ path, do not read
+`async_storage_enqueue_latency` as durable-storage latency. C++ `Partition::OnExecuteCmdDone`
+returns before `op_logger_->Commit` for `PERSISTENT_ASYNC` when `FLAGS_storage_async=true`, so the
+client-visible write latency mostly covers command execution plus async enqueue/scheduling. Durable
+shared-store cost is paid by the background commit/flush path. The Rust harness therefore reports
+both the enqueue-side latency and the actual async flush latency.
 
 ## Client Scale Harness
 

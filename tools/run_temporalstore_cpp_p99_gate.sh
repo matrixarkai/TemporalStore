@@ -92,6 +92,13 @@ if summary["max_replica_lag"] != 0:
 if summary["shared_store"]["sync_max_lag"] != 0:
     failures.append(("shared_store.sync_max_lag", summary["shared_store"]["sync_max_lag"], 0))
 
+flush = summary["shared_store"].get("async_storage_flush_latency")
+if flush:
+    print(
+        "INFO shared_store.async_storage_flush_latency.p99_us: "
+        f"actual={flush['p99_us']}us samples={flush['samples']}"
+    )
+
 if failures:
     print("\nC++ p99 gate failed:")
     for metric, actual, limit in failures:

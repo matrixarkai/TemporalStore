@@ -164,7 +164,7 @@ Sync storage write latency:
 | p99 | 1012 us |
 | max | 4543 us |
 
-Async storage enqueue/write latency:
+Async storage enqueue latency:
 
 | Metric | Value |
 |---|---:|
@@ -173,6 +173,11 @@ Async storage enqueue/write latency:
 | p95 | 0 us |
 | p99 | 1 us |
 | max | 1 us |
+
+This is the response-path async queue cost, not durable shared-store publish latency. In the C++
+path, `Partition::OnExecuteCmdDone` returns before `op_logger_->Commit` when
+`PERSISTENT_ASYNC && FLAGS_storage_async`, so the directly comparable client-visible metric is
+`async_primary_write_latency`; durable async publish/flush must be measured separately.
 
 Replica read latency through shared-store modes:
 

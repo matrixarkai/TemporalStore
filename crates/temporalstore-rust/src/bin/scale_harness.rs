@@ -86,6 +86,8 @@ struct SharedStoreComparisonSummary {
     async_primary_write_latency: LatencySummary,
     sync_storage_write_latency: LatencySummary,
     async_storage_write_latency: LatencySummary,
+    async_storage_enqueue_latency: LatencySummary,
+    async_storage_flush_latency: LatencySummary,
     sync_replica_read_latency: LatencySummary,
     async_replica_read_latency: LatencySummary,
     sync_max_lag: u64,
@@ -386,6 +388,8 @@ fn run_shared_store_comparison(options: &HarnessOptions) -> SharedStoreCompariso
             async_primary_write_latency: async_report.primary_write_latency,
             sync_storage_write_latency: sync.storage_write_latency,
             async_storage_write_latency: async_report.storage_write_latency,
+            async_storage_enqueue_latency: async_report.storage_write_latency,
+            async_storage_flush_latency: async_report.flush_latency,
             sync_replica_read_latency: sync.read_latency,
             async_replica_read_latency: async_report.read_latency,
             sync_max_lag: sync.max_lag,
@@ -399,6 +403,7 @@ fn run_shared_store_comparison(options: &HarnessOptions) -> SharedStoreCompariso
 struct SharedStoreModeReport {
     primary_write_latency: LatencySummary,
     storage_write_latency: LatencySummary,
+    flush_latency: LatencySummary,
     read_latency: LatencySummary,
     max_lag: u64,
 }
@@ -444,6 +449,7 @@ where
     let mut read_latencies = Vec::new();
     let mut primary_write_latencies = Vec::new();
     let mut storage_write_latencies = Vec::new();
+    let mut flush_latencies = Vec::new();
 
     for i in 0..ops {
         let key = format!("shared:{shard_id}:{i}");
@@ -467,10 +473,12 @@ where
         primary_write_latencies.push(primary_write_start.elapsed());
         last_written = report.oplog_index;
         if mode == SharedStoreStorageMode::Async && (i + 1) % flush_every == 0 {
+            let flush_start = Instant::now();
             writer
                 .flush_pending(flush_every)
                 .await
                 .expect("shared-store async flush should publish");
+            flush_latencies.push(flush_start.elapsed());
         }
         let replay = replicator
             .replay_oplog(shard_id, last_replayed, &follower)
@@ -489,10 +497,14 @@ where
         }
     }
 
-    writer
-        .flush_pending(usize::MAX)
-        .await
-        .expect("final shared-store async flush should publish");
+    if mode == SharedStoreStorageMode::Async || writer.queued_len() > 0 {
+        let flush_start = Instant::now();
+        writer
+            .flush_pending(usize::MAX)
+            .await
+            .expect("final shared-store async flush should publish");
+        flush_latencies.push(flush_start.elapsed());
+    }
     let replay = replicator
         .replay_oplog(shard_id, last_replayed, &follower)
         .await
@@ -503,6 +515,7 @@ where
     SharedStoreModeReport {
         primary_write_latency: summarize_latencies(&primary_write_latencies),
         storage_write_latency: summarize_latencies(&storage_write_latencies),
+        flush_latency: summarize_latencies(&flush_latencies),
         read_latency: summarize_latencies(&read_latencies),
         max_lag,
     }
