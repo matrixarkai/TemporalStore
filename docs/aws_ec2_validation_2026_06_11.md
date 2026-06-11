@@ -191,6 +191,57 @@ Secondary lag:
 
 The async shared-store lag is expected from `--shared-store-flush-every 20`; writes are queued and flushed in batches.
 
+## C++ p99 Target Gate
+
+Result: passed.
+
+The C++ baseline used here is the data-type smoke report in
+`benchmarks/data-type-trace-2026-05-27-r2/README.md` from the C++ TemporalStore tree. That report is
+a small local smoke measurement with 5 operations per case, primary-pinned reads, 2 metaservers, 2
+data servers, replica count 2, and local file storage. It is not a saturation benchmark.
+
+To compare Rust against that p99 level without mixing in deliberate failover/scale events, the EC2
+node ran a steady-state profile:
+
+```text
+--nodes 3
+--string-ops 2000
+--hash-ops 250
+--sequence-keys 2
+--sequence-len 500
+--scale-events 0
+--failover-every 0
+--read-sample-every 1
+--compare-shared-store true
+--shared-store-ops 2000
+--shared-store-flush-every 20
+```
+
+Output was saved on the EC2 node at:
+
+```text
+/tmp/temporalstore-aws-validation/cpp_p99_gate_steady.json
+```
+
+Comparison against the C++ p99 rows:
+
+| Rust metric | Rust p99 | C++ p99 target | Result |
+|---|---:|---:|---|
+| Raft replica read latency | 266 us | 1593 us | pass |
+| Shared-store sync primary write latency | 12783 us | 15695 us | pass |
+| Shared-store async primary write latency | 14135 us | 15695 us | pass |
+| Shared-store sync replica read latency | 295 us | 1353 us | pass |
+| Shared-store async replica read latency | 306 us | 1353 us | pass |
+
+Additional steady-state values:
+
+- Samples: `2002` Raft replica reads, `2000` sync shared-store ops, `2000` async shared-store ops
+- Raft max replica lag: `0`
+- Sync shared-store max lag: `0`
+- Async shared-store max lag: `19`, expected from `--shared-store-flush-every 20`
+- Raft read max was `12391 us`; p99 stayed low, but this max shows the EC2 `t3.small` still has
+  occasional scheduler/IO outliers.
+
 ## Storage Modes Harness
 
 Result: passed.
@@ -308,4 +359,3 @@ This is expected: the killed node did not receive the post-crash write.
 - The distributed harnesses run multiple local processes/listeners on the EC2 host; they do not yet prove multi-host cross-EC2 network behavior.
 - The node type was `t3.small`, so QPS is a sanity/functional signal, not a production capacity number.
 - EFS/EBS multi-node comparison was not run because only one EC2 instance was active.
-

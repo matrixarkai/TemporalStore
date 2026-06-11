@@ -155,6 +155,43 @@ cargo run -p temporalstore-rust --bin scale_harness -- \
 
 The harness prints a JSON summary and exits non-zero if final replication health fails.
 
+## C++ p99 Gate
+
+Use `tools/run_temporalstore_cpp_p99_gate.sh` when validating Rust steady-state serving latency
+against the C++ data-type smoke document from
+`benchmarks/data-type-trace-2026-05-27-r2/README.md`.
+
+The C++ document reports local smoke measurements with only 5 operations per case, primary-pinned
+reads, 2 metaservers, 2 data servers, replica count 2, and local file storage. To keep the comparison
+apples-to-apples, the Rust gate runs the scale harness in steady state by default:
+
+- `--scale-events 0`
+- `--failover-every 0`
+- `--read-sample-every 1`
+- shared-store comparison enabled
+
+Default p99 targets are copied from the C++ table:
+
+| Rust metric | C++ row used | Target |
+|---|---|---:|
+| `raft_replica_read_latency.p99_us` | `FEATURE query_window_one_point` | `1593 us` |
+| `shared_store.sync_primary_write_latency.p99_us` | `STRING ingest_set` | `15695 us` |
+| `shared_store.async_primary_write_latency.p99_us` | `STRING ingest_set` | `15695 us` |
+| `shared_store.sync_replica_read_latency.p99_us` | `STRING query_get` | `1353 us` |
+| `shared_store.async_replica_read_latency.p99_us` | `STRING query_get` | `1353 us` |
+
+The Raft read target uses the C++ feature-query p99 because the Rust aggregate includes both string
+replica reads and sequence-filter replica reads. Override thresholds with:
+
+```bash
+TS_CPP_P99_RAFT_READ_US=1593 \
+TS_CPP_P99_SYNC_WRITE_US=15695 \
+TS_CPP_P99_ASYNC_WRITE_US=15695 \
+TS_CPP_P99_SYNC_READ_US=1353 \
+TS_CPP_P99_ASYNC_READ_US=1353 \
+tools/run_temporalstore_cpp_p99_gate.sh
+```
+
 On the Windows-mounted local workspace, the in-process Raft/engine model is intentionally
 correctness-heavy and writes local page/index data. Treat the output as a local regression signal
 for scale/failover behavior, not as production throughput.
