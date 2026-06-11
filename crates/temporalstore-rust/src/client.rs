@@ -2901,7 +2901,7 @@ mod tests {
             "ns",
             "tbl",
             TableOptions {
-                continuous_failed_time_ms: 5,
+                continuous_failed_time_ms: 0,
                 ..TableOptions::default()
             },
         );

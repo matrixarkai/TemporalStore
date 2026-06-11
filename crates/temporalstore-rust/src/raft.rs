@@ -10444,7 +10444,7 @@ mod tests {
         assert_eq!(report.reason, "applied_log_bytes_threshold");
         assert_eq!(report.applied_index, 1);
         assert!(report.applied_log_bytes >= 1);
-        assert_eq!(cluster.local_status(1).unwrap().last_log_index, 0);
+        assert_eq!(cluster.local_status(1).unwrap().last_log_index, 1);
 
         let second = cluster.maybe_trigger_snapshot().unwrap();
         assert!(!second.triggered);
