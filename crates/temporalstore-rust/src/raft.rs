@@ -4033,7 +4033,7 @@ impl RaftCluster {
             return Ok(AppendEntriesResponse {
                 term: node.current_term,
                 success: false,
-                match_index: node.log.last().map(|entry| entry.index).unwrap_or_default(),
+                match_index: node_last_log_or_snapshot_index(node),
                 reject_reason: Some("stale_term".to_string()),
             });
         }
@@ -4053,7 +4053,7 @@ impl RaftCluster {
                 return Ok(AppendEntriesResponse {
                     term: node.current_term,
                     success: false,
-                    match_index: node.log.last().map(|entry| entry.index).unwrap_or_default(),
+                    match_index: node_last_log_or_snapshot_index(node),
                     reject_reason: Some("log_mismatch".to_string()),
                 });
             }
@@ -4063,7 +4063,7 @@ impl RaftCluster {
         for entry in entries.iter().cloned() {
             append_entry(node, entry);
         }
-        let last_index = node.log.last().map(|entry| entry.index).unwrap_or_default();
+        let last_index = node_last_log_or_snapshot_index(node);
         node.commit_index = leader_commit.min(last_index);
         if node.replica_role.can_serve_data() {
             apply_committed(node);
@@ -4077,11 +4077,7 @@ impl RaftCluster {
                 for entry in entries {
                     append_entry(leader, entry);
                 }
-                let leader_last_index = leader
-                    .log
-                    .last()
-                    .map(|entry| entry.index)
-                    .unwrap_or_default();
+                let leader_last_index = node_last_log_or_snapshot_index(leader);
                 leader.commit_index = leader
                     .commit_index
                     .max(leader_commit.min(leader_last_index));
@@ -5066,7 +5062,7 @@ impl RaftClusterInner {
             .min_by_key(|node| {
                 (
                     std::cmp::Reverse(node.commit_index),
-                    std::cmp::Reverse(node.log.last().map(|entry| entry.index).unwrap_or_default()),
+                    std::cmp::Reverse(node_last_log_or_snapshot_index(node)),
                     node.id,
                 )
             })
@@ -5086,7 +5082,7 @@ impl RaftClusterInner {
             .min_by_key(|node| {
                 (
                     std::cmp::Reverse(node.commit_index),
-                    std::cmp::Reverse(node.log.last().map(|entry| entry.index).unwrap_or_default()),
+                    std::cmp::Reverse(node_last_log_or_snapshot_index(node)),
                     node.id,
                 )
             })
@@ -5110,7 +5106,7 @@ impl RaftClusterInner {
             .filter(|node| node.alive && node.id != leader_id)
         {
             if node.commit_index < leader_commit_index
-                || node.log.last().map(|entry| entry.index).unwrap_or_default()
+                || node_last_log_or_snapshot_index(node)
                     < leader_log
                         .last()
                         .map(|entry| entry.index)
@@ -5648,11 +5644,23 @@ fn node_status(node: &RaftNode, leader_commit_index: u64) -> RaftNodeStatus {
         replica_role: node.replica_role,
         current_term: node.current_term,
         commit_index: node.commit_index,
-        last_log_index: node.log.last().map(|entry| entry.index).unwrap_or_default(),
+        last_log_index: node_last_log_or_snapshot_index(node),
         applied_index: node.applied_index,
         alive: node.alive,
         lag: leader_commit_index.saturating_sub(node.commit_index),
     }
+}
+
+fn node_last_log_or_snapshot_index(node: &RaftNode) -> u64 {
+    node.log
+        .last()
+        .map(|entry| entry.index)
+        .or_else(|| {
+            node.installed_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.last_included_index)
+        })
+        .unwrap_or_default()
 }
 
 fn replication_health_from_status(
@@ -10362,6 +10370,53 @@ mod tests {
                 .unwrap(),
             CommandResponse::Bytes {
                 value: Some(b"post-snapshot-log".to_vec())
+            }
+        );
+    }
+
+    #[test]
+    fn raft_snapshot_only_replica_keeps_commit_index_after_empty_heartbeat() {
+        let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+        cluster.set_alive(3, false).unwrap();
+        cluster
+            .propose(Command::StringSet {
+                key: "snapshot-only".to_string(),
+                value: b"snapshot-value".to_vec(),
+            })
+            .unwrap();
+        let snapshot = cluster.create_snapshot().unwrap();
+
+        cluster.set_alive(3, true).unwrap();
+        cluster.install_snapshot(3, snapshot).unwrap();
+        assert_eq!(cluster.commit_index(3).unwrap(), 1);
+        assert_eq!(cluster.local_status(3).unwrap().last_log_index, 1);
+
+        let heartbeat = AppendEntriesRequest {
+            rpc: None,
+            shard_id: 1,
+            term: 1,
+            leader_id: 1,
+            target_id: 3,
+            prev_log_index: 1,
+            prev_log_term: 1,
+            entries: Vec::new(),
+            leader_commit: 1,
+        };
+        let response = cluster.receive_append_entries(heartbeat).unwrap();
+        assert!(response.success);
+        assert_eq!(response.match_index, 1);
+        assert_eq!(cluster.commit_index(3).unwrap(), 1);
+        assert_eq!(
+            cluster
+                .read_from_replica(
+                    3,
+                    Command::StringGet {
+                        key: "snapshot-only".to_string()
+                    },
+                )
+                .unwrap(),
+            CommandResponse::Bytes {
+                value: Some(b"snapshot-value".to_vec())
             }
         );
     }
