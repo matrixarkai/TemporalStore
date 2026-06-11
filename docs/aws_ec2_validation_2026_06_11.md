@@ -405,6 +405,97 @@ Fix:
 
 After the fix, the same EC2 process-level harness passed.
 
+## AWS Revalidation After 7-Node Profile
+
+Result: passed after one harness fix.
+
+The latest Rust code was rebuilt into a fresh release bundle and validated on the existing EC2 node:
+
+```text
+Instance: i-05f55360d92c43908
+Bundle: /tmp/temporalstore-aws-bundle-b013a35-v3
+```
+
+The validation ran:
+
+- `distributed_raft_harness`
+- `scale_harness` with 7 in-process data-node replicas
+- `storage_modes_harness`
+- `raft_secondary_replication_harness`
+
+The first combined AWS attempt exposed two outstanding issues:
+
+- Packaging issue: the secondary harness requires the sibling `raft_node` binary. The first bundle
+  only included the harness binaries, so `raft_secondary_replication_harness` failed before starting.
+- Timing issue: after the leader-crash phase, a surviving follower could be alive but still behind
+  the new leader. The post-crash write was attempted too soon and correctly failed with:
+  `not enough live replicas for majority`.
+
+Fix:
+
+- Include `raft_node` in the AWS validation bundle.
+- In `raft_secondary_replication_harness`, converge surviving replicas before the post-crash write.
+- Retry transient proposal errors for temporary `not enough live replicas` and
+  `behind leader commit index` states.
+
+Final AWS results:
+
+Distributed Raft harness:
+
+- Passed.
+- 4-node group reached commit index `5`.
+- All nodes reported apply health `healthy=true`.
+- Replica reads, follower-write rejection, leader transfer, scale-down, scale-up, and external
+  snapshot bootstrap all passed.
+
+7-node scale/lag harness:
+
+```text
+final_nodes: [2, 5, 6, 7, 8, 9, 10]
+leader_id: 2
+commit_index: 2512
+failovers: 7
+scale_events: 6
+replication_healthy: true
+max_replica_lag: 0
+```
+
+Raft replica-read latency:
+
+| Metric | Value |
+|---|---:|
+| samples | 204 |
+| p50 | 147 us |
+| p95 | 211 us |
+| p99 | 1881 us |
+| max | 3977 us |
+
+Shared-store metrics in the same run:
+
+| Metric | Value |
+|---|---:|
+| sync replica read p99 | 245 us |
+| async replica read p99 | 272 us |
+| sync max lag | 0 |
+| async max lag | 19 |
+| async enqueue p99 | 0 us |
+| async flush p99 | 18913 us |
+
+Storage modes harness:
+
+- Sync shared-store replay read `sync-value`.
+- Async shared-store replay read `async-value`.
+- Raft local-file WAL restore read `wal-value`.
+
+Secondary/failover harness:
+
+- Passed after the catch-up fix.
+- Surviving live voters: `2`.
+- New leader: node `2`.
+- Commit index: `15`.
+- Surviving nodes 2 and 3 had apply lag `0`.
+- Both surviving nodes read `after-leader-crash=v5`.
+
 Post-fix result:
 
 - Surviving nodes: `2`, `3`

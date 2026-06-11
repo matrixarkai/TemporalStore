@@ -372,19 +372,18 @@ fn main() {
         "leader failover failed: {:?}",
         failover.status
     );
+    let survivors = nodes
+        .iter()
+        .filter(|node| node.node_id != crashed_leader)
+        .cloned()
+        .collect::<Vec<_>>();
+    wait_for_surviving_apply_health(new_leader, &survivors);
     writes.push(propose(new_leader, "after-leader-crash", "v5"));
 
     for node in nodes.iter().filter(|node| node.node_id != crashed_leader) {
         wait_for_cluster_commit(node, writes.len() as u64);
     }
-    wait_for_surviving_apply_health(
-        new_leader,
-        &nodes
-            .iter()
-            .filter(|node| node.node_id != crashed_leader)
-            .cloned()
-            .collect::<Vec<_>>(),
-    );
+    wait_for_surviving_apply_health(new_leader, &survivors);
 
     let mut reads_after_leader_crash = Vec::new();
     for node in nodes.iter().filter(|node| node.node_id != crashed_leader) {
@@ -904,7 +903,7 @@ fn spawn_node(
 fn propose(node: &ProductionRaftNode, key: &str, value: &str) -> WriteSummary {
     let deadline = Instant::now() + Duration::from_secs(60);
     let response: DistributedRaftCommandResponse = loop {
-        match post_json_with_options(
+        let response: DistributedRaftCommandResponse = match post_json_with_options(
             &node.addr,
             "/raft/propose",
             &DistributedRaftProposeRequest {
@@ -915,7 +914,7 @@ fn propose(node: &ProductionRaftNode, key: &str, value: &str) -> WriteSummary {
             },
             request_options(),
         ) {
-            Ok(response) => break response,
+            Ok(response) => response,
             Err(err) => {
                 assert!(
                     Instant::now() < deadline,
@@ -924,8 +923,19 @@ fn propose(node: &ProductionRaftNode, key: &str, value: &str) -> WriteSummary {
                     err
                 );
                 thread::sleep(Duration::from_millis(50));
+                continue;
             }
+        };
+        if response.status.ok || !is_transient_proposal_error(&response.status) {
+            break response;
         }
+        assert!(
+            Instant::now() < deadline,
+            "proposal for key {key} on node {} stayed transiently unavailable: {:?}",
+            node.node_id,
+            response.status
+        );
+        thread::sleep(Duration::from_millis(50));
     };
     if !response.status.ok {
         let status: RaftClusterStatus =
@@ -940,6 +950,12 @@ fn propose(node: &ProductionRaftNode, key: &str, value: &str) -> WriteSummary {
         key: key.to_string(),
         status: response.status,
     }
+}
+
+fn is_transient_proposal_error(status: &Status) -> bool {
+    status.code == "raft_error"
+        && (status.message.contains("not enough live replicas")
+            || status.message.contains("behind leader commit index"))
 }
 
 fn mark_liveness(node: &ProductionRaftNode, target_id: RaftNodeId, alive: bool) {
