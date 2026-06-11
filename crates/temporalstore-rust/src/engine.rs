@@ -1714,6 +1714,7 @@ fn execute_on_shard(
                 .map(|series| {
                     series
                         .range(start_ms..=end_ms)
+                        .take(limit)
                         .filter_map(|(timestamp_ms, address)| {
                             read_page_bytes(cache, page_store, shard_id, address).and_then(
                                 |value| {
@@ -1731,7 +1732,6 @@ fn execute_on_shard(
                                 },
                             )
                         })
-                        .take(limit)
                         .collect()
                 })
                 .unwrap_or_default();
@@ -1847,6 +1847,7 @@ fn execute_on_shard(
                 .map(|series| {
                     series
                         .range(start_ms..=end_ms)
+                        .take(count)
                         .filter_map(|(_, address)| {
                             read_sequence_row(cache, page_store, shard_id, address)
                         })
@@ -1855,7 +1856,6 @@ fn execute_on_shard(
                                 .iter()
                                 .all(|filter| sequence_filter_matches(row, filter))
                         })
-                        .take(count)
                         .collect()
                 })
                 .unwrap_or_default();
@@ -2669,13 +2669,13 @@ fn sequence_rows_in_range(
         .map(|series| {
             series
                 .range(start_ms..=end_ms)
+                .take(count)
                 .filter_map(|(_, address)| read_sequence_row(cache, page_store, shard_id, address))
                 .filter(|row| {
                     filters
                         .iter()
                         .all(|filter| sequence_filter_matches(row, filter))
                 })
-                .take(count)
                 .collect()
         })
         .unwrap_or_default()
@@ -4467,12 +4467,12 @@ mod tests {
                 .iter()
                 .filter(|row| row.timestamp_ms >= base_ts + start_offset)
                 .filter(|row| row.timestamp_ms <= base_ts + end_offset)
+                .take(count)
                 .filter(|row| {
                     filters
                         .iter()
                         .all(|filter| sequence_filter_matches(row, filter))
                 })
-                .take(count)
                 .cloned()
                 .collect::<Vec<_>>();
 

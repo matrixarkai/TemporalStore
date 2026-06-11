@@ -1,9 +1,12 @@
 use std::sync::{Arc, Mutex};
 
 use temporalstore_rust::{
-    execute_redis_command, Command, CommandResponse, EndToEndWorkflow, ExecuteRequest,
-    FeaturePoint, RespValue, ScanStreamRequest, SharedStoreOplogEntry, SharedStoreReplicator,
-    StreamKind, StreamReadRequest, TemporalEngine,
+    execute_redis_command, Command, CommandResponse, Config, EndToEndWorkflow, ExecuteRequest,
+    FeaturePoint, RespValue, ScanStreamRequest, SetConfigRequest, SharedStoreOplogEntry,
+    SharedStoreReplicator, StreamKind, StreamReadRequest, TemporalEngine,
+};
+use temporalstore_rust::types::{
+    FeatureFilter, FeatureFilterOp, FeatureWritePolicy, SequenceFeatureRow, SequenceQuerySpec,
 };
 use temporalstore_snapshot::object_store::FileObjectStore;
 
@@ -385,6 +388,522 @@ fn feature_module_smoke_matches_temporal_feature_flow() {
 }
 
 #[test]
+fn cxx_feature_module_simple_missing_truncate_policy_replace_and_delete() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    assert!(engine
+        .set_config(SetConfigRequest {
+            shard_id: 1,
+            config: Config {
+                version: 2,
+                feature_max_size: 5,
+                ..Config::default()
+            },
+        })
+        .ok);
+
+    assert_eq!(
+        execute(
+            &engine,
+            Command::FeatureQuery {
+                key: "missing-key".to_string(),
+                start_ms: 0,
+                end_ms: 1_000,
+                count: Some(100),
+            },
+        ),
+        CommandResponse::FeaturePoints { points: Vec::new() }
+    );
+
+    let points = (0..8_u64)
+        .map(|offset| FeaturePoint {
+            timestamp_ms: 10_000 + offset,
+            value: (10_000 + offset).to_string().into_bytes(),
+        })
+        .collect::<Vec<_>>();
+    execute(
+        &engine,
+        Command::FeatureAppend {
+            key: "key1".to_string(),
+            points,
+        },
+    );
+
+    let CommandResponse::FeaturePoints { points } = execute(
+        &engine,
+        Command::FeatureQuery {
+            key: "key1".to_string(),
+            start_ms: 0,
+            end_ms: u64::MAX,
+            count: Some(100),
+        },
+    ) else {
+        panic!("expected feature points");
+    };
+    assert_eq!(points.len(), 5);
+    assert_eq!(
+        points
+            .iter()
+            .map(|point| point.timestamp_ms)
+            .collect::<Vec<_>>(),
+        vec![10_003, 10_004, 10_005, 10_006, 10_007]
+    );
+
+    assert_eq!(
+        execute(
+            &engine,
+            Command::FeatureAppendWithPolicy {
+                key: "key1".to_string(),
+                points: vec![FeaturePoint {
+                    timestamp_ms: 10_007,
+                    value: b"ignored".to_vec(),
+                }],
+                policy: FeatureWritePolicy::InsertIfAbsent,
+            },
+        ),
+        CommandResponse::Integer { value: 0 }
+    );
+    assert_eq!(
+        execute(
+            &engine,
+            Command::FeatureAppendWithPolicy {
+                key: "key1".to_string(),
+                points: vec![FeaturePoint {
+                    timestamp_ms: 10_007,
+                    value: b"replaced-existing".to_vec(),
+                }],
+                policy: FeatureWritePolicy::ReplaceExisting,
+            },
+        ),
+        CommandResponse::Integer { value: 1 }
+    );
+    assert_eq!(
+        execute(
+            &engine,
+            Command::FeatureQuery {
+                key: "key1".to_string(),
+                start_ms: 10_007,
+                end_ms: 10_007,
+                count: Some(1),
+            },
+        ),
+        CommandResponse::FeaturePoints {
+            points: vec![FeaturePoint {
+                timestamp_ms: 10_007,
+                value: b"replaced-existing".to_vec(),
+            }]
+        }
+    );
+
+    execute(
+        &engine,
+        Command::FeatureReplace {
+            key: "key1".to_string(),
+            start_ms: 10_004,
+            end_ms: 10_006,
+            points: vec![FeaturePoint {
+                timestamp_ms: 10_004,
+                value: b"replacement-window".to_vec(),
+            }],
+        },
+    );
+    let CommandResponse::FeaturePoints { points } = execute(
+        &engine,
+        Command::FeatureQuery {
+            key: "key1".to_string(),
+            start_ms: 0,
+            end_ms: u64::MAX,
+            count: Some(100),
+        },
+    ) else {
+        panic!("expected feature points");
+    };
+    assert_eq!(
+        points
+            .iter()
+            .map(|point| (point.timestamp_ms, point.value.clone()))
+            .collect::<Vec<_>>(),
+        vec![
+            (10_003, b"10003".to_vec()),
+            (10_004, b"replacement-window".to_vec()),
+            (10_007, b"replaced-existing".to_vec()),
+        ]
+    );
+
+    execute(
+        &engine,
+        Command::FeatureDelete {
+            key: "key1".to_string(),
+        },
+    );
+    assert_eq!(
+        execute(
+            &engine,
+            Command::FeatureQuery {
+                key: "key1".to_string(),
+                start_ms: 0,
+                end_ms: u64::MAX,
+                count: Some(100),
+            },
+        ),
+        CommandResponse::FeaturePoints { points: Vec::new() }
+    );
+}
+
+#[test]
+fn cxx_feature_filter_count_is_scan_bound_before_filtering() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let rows = (0..6_u64)
+        .map(|offset| SequenceFeatureRow {
+            timestamp_ms: 1_000 + offset,
+            gid: 100 + offset,
+            action_type: if offset >= 3 { 3 } else { 1 },
+            duration: 10 + offset as u32,
+            author_id: 7,
+        })
+        .collect::<Vec<_>>();
+    execute(
+        &engine,
+        Command::FeatureAppend {
+            key: "feature-sequence".to_string(),
+            points: rows
+                .iter()
+                .map(|row| FeaturePoint {
+                    timestamp_ms: row.timestamp_ms,
+                    value: row.encode_cpp_feature_value(),
+                })
+                .collect(),
+        },
+    );
+
+    assert_eq!(
+        execute(
+            &engine,
+            Command::FeatureQueryFiltered {
+                key: "feature-sequence".to_string(),
+                start_ms: 1_000,
+                end_ms: 2_000,
+                count: Some(3),
+                filters: vec![FeatureFilter {
+                    field: "action_type".to_string(),
+                    op: FeatureFilterOp::Equal,
+                    value: 3,
+                }],
+            },
+        ),
+        CommandResponse::FeaturePoints { points: Vec::new() }
+    );
+
+    let CommandResponse::FeaturePoints { points } = execute(
+        &engine,
+        Command::FeatureQueryFiltered {
+            key: "feature-sequence".to_string(),
+            start_ms: 1_000,
+            end_ms: 2_000,
+            count: Some(6),
+            filters: vec![
+                FeatureFilter {
+                    field: "action_type".to_string(),
+                    op: FeatureFilterOp::Equal,
+                    value: 3,
+                },
+                FeatureFilter {
+                    field: "duration".to_string(),
+                    op: FeatureFilterOp::GreaterOrEqual,
+                    value: 14,
+                },
+            ],
+        },
+    ) else {
+        panic!("expected feature points");
+    };
+    assert_eq!(
+        points
+            .iter()
+            .map(|point| point.timestamp_ms)
+            .collect::<Vec<_>>(),
+        vec![1_004, 1_005]
+    );
+}
+
+#[test]
+fn cxx_sequence_feature_sdk_filters_batch_and_count_scan_bound() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let key = "cpp:user:42:sequence".to_string();
+    let rows = vec![
+        SequenceFeatureRow {
+            timestamp_ms: 1_700_000_000_000,
+            gid: 900,
+            action_type: 1,
+            duration: 31,
+            author_id: 7_000,
+        },
+        SequenceFeatureRow {
+            timestamp_ms: 1_700_000_001_000,
+            gid: 901,
+            action_type: 3,
+            duration: 120,
+            author_id: 7_001,
+        },
+        SequenceFeatureRow {
+            timestamp_ms: 1_700_000_002_000,
+            gid: 902,
+            action_type: 3,
+            duration: 40,
+            author_id: 7_002,
+        },
+    ];
+    execute(
+        &engine,
+        Command::SequenceAdd {
+            key: key.clone(),
+            rows: vec![rows[2].clone(), rows[0].clone(), rows[1].clone()],
+        },
+    );
+
+    assert_eq!(
+        execute(
+            &engine,
+            Command::SequenceQuery {
+                key: key.clone(),
+                start_ms: 1_700_000_000_000,
+                end_ms: 1_700_000_003_000,
+                count: 1,
+                filters: vec![FeatureFilter {
+                    field: "action_type".to_string(),
+                    op: FeatureFilterOp::Equal,
+                    value: 3,
+                }],
+            },
+        ),
+        CommandResponse::SequenceRows { rows: Vec::new() }
+    );
+    assert_eq!(
+        execute(
+            &engine,
+            Command::SequenceQuery {
+                key: key.clone(),
+                start_ms: 1_700_000_000_000,
+                end_ms: 1_700_000_003_000,
+                count: 3,
+                filters: vec![FeatureFilter {
+                    field: "action_type".to_string(),
+                    op: FeatureFilterOp::Equal,
+                    value: 3,
+                }],
+            },
+        ),
+        CommandResponse::SequenceRows {
+            rows: vec![rows[1].clone(), rows[2].clone()]
+        }
+    );
+
+    assert_eq!(
+        execute(
+            &engine,
+            Command::SequenceBatchQuery {
+                queries: vec![
+                    SequenceQuerySpec {
+                        key: key.clone(),
+                        start_ms: 1_700_000_000_000,
+                        end_ms: 1_700_000_003_000,
+                        count: 3,
+                        filters: vec![FeatureFilter {
+                            field: "duration".to_string(),
+                            op: FeatureFilterOp::GreaterThan,
+                            value: 50,
+                        }],
+                    },
+                    SequenceQuerySpec {
+                        key: "missing-sequence".to_string(),
+                        start_ms: 0,
+                        end_ms: u64::MAX,
+                        count: 10,
+                        filters: Vec::new(),
+                    },
+                ],
+            },
+        ),
+        CommandResponse::SequenceRowGroups {
+            groups: vec![
+                (key, vec![rows[1].clone()]),
+                ("missing-sequence".to_string(), Vec::new()),
+            ]
+        }
+    );
+}
+
+#[test]
+fn cxx_long_sequence_feature_5k_ordered_windows_and_random_filters() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let key = "cpp-long-sequence".to_string();
+    let base_ts = 1_700_000_000_000_u64;
+    let rows = (0..5_000_u64)
+        .map(|offset| SequenceFeatureRow {
+            timestamp_ms: base_ts + offset,
+            gid: 1_000_000 + (offset % 4096),
+            action_type: (offset % 5) as u32,
+            duration: ((offset * 17) % 300) as u32,
+            author_id: 500_000 + (offset % 113),
+        })
+        .collect::<Vec<_>>();
+    let shuffled = (0..rows.len())
+        .map(|i| rows[(i * 2_919) % rows.len()].clone())
+        .collect::<Vec<_>>();
+    execute(
+        &engine,
+        Command::SequenceAdd {
+            key: key.clone(),
+            rows: shuffled,
+        },
+    );
+
+    for seed in 0..16_u64 {
+        let start_offset = (seed * 313) % 4_400;
+        let window_rows = 100 + ((seed * 97) % 900);
+        let count = window_rows as usize;
+        let end_offset = (start_offset + window_rows).min(4_999);
+        let filters = vec![
+            FeatureFilter {
+                field: "action_type".to_string(),
+                op: FeatureFilterOp::NotEqual,
+                value: seed % 5,
+            },
+            FeatureFilter {
+                field: "duration".to_string(),
+                op: FeatureFilterOp::GreaterThan,
+                value: 80 + (seed * 13) % 120,
+            },
+            FeatureFilter {
+                field: "gid".to_string(),
+                op: FeatureFilterOp::LessThan,
+                value: 1_003_500 + seed * 17,
+            },
+        ];
+        let CommandResponse::SequenceRows { rows: actual } = execute(
+            &engine,
+            Command::SequenceQuery {
+                key: key.clone(),
+                start_ms: base_ts + start_offset,
+                end_ms: base_ts + end_offset,
+                count,
+                filters: filters.clone(),
+            },
+        ) else {
+            panic!("expected sequence rows");
+        };
+        let expected = rows
+            .iter()
+            .filter(|row| row.timestamp_ms >= base_ts + start_offset)
+            .filter(|row| row.timestamp_ms <= base_ts + end_offset)
+            .take(count)
+            .filter(|row| filters.iter().all(|filter| test_sequence_filter_matches(row, filter)))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+        assert!(actual.windows(2).all(|pair| pair[0].timestamp_ms < pair[1].timestamp_ms));
+    }
+}
+
+#[test]
+fn cxx_redis_feature_commands_cover_module_flow() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let run = |args: Vec<Vec<u8>>| {
+        execute_redis_command(args, 1, |command| {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command,
+            });
+            if response.status.ok {
+                Ok(response.response)
+            } else {
+                Err(response.status.message)
+            }
+        })
+    };
+    let s = |value: &str| value.as_bytes().to_vec();
+
+    assert_eq!(
+        run(vec![s("FAPPEND"), s("rf"), s("100"), s("2")]),
+        RespValue::SimpleString("OK".to_string())
+    );
+    assert_eq!(
+        run(vec![s("FAPPEND"), s("rf"), s("200"), s("3")]),
+        RespValue::SimpleString("OK".to_string())
+    );
+    assert_eq!(
+        run(vec![s("FAGG"), s("rf"), s("0"), s("300"), s("sum")]),
+        RespValue::Integer(5)
+    );
+    assert_eq!(
+        run(vec![s("FQUERY"), s("rf"), s("0"), s("300"), s("10")]),
+        RespValue::Array(vec![
+            RespValue::Array(vec![RespValue::Integer(100), RespValue::Bulk(Some(s("2")))]),
+            RespValue::Array(vec![RespValue::Integer(200), RespValue::Bulk(Some(s("3")))]),
+        ])
+    );
+
+    let encoded = SequenceFeatureRow {
+        timestamp_ms: 300,
+        gid: 42,
+        action_type: 3,
+        duration: 90,
+        author_id: 7,
+    }
+    .encode_cpp_feature_value();
+    assert_eq!(
+        run(vec![s("FAPPEND"), s("rf"), s("300"), encoded.clone()]),
+        RespValue::SimpleString("OK".to_string())
+    );
+    assert_eq!(
+        run(vec![
+            s("FQUERYFILTERSTR"),
+            s("rf"),
+            s("0"),
+            s("400"),
+            s("10"),
+            s("action_type = 3"),
+            s("duration > 80"),
+        ]),
+        RespValue::Array(vec![RespValue::Array(vec![
+            RespValue::Integer(300),
+            RespValue::Bulk(Some(encoded)),
+        ])])
+    );
+
+    assert_eq!(
+        run(vec![
+            s("FAPPENDPOLICY"),
+            s("rf"),
+            s("300"),
+            s("ignored"),
+            s("insert_if_absent"),
+        ]),
+        RespValue::Integer(0)
+    );
+    assert_eq!(
+        run(vec![s("FREPLACE"), s("rf"), s("0"), s("250"), s("150"), s("10")]),
+        RespValue::SimpleString("OK".to_string())
+    );
+    assert_eq!(
+        run(vec![s("FAGG"), s("rf"), s("0"), s("400"), s("sum")]),
+        RespValue::Integer(10)
+    );
+    assert_eq!(
+        run(vec![s("FDEL"), s("rf")]),
+        RespValue::SimpleString("OK".to_string())
+    );
+    assert_eq!(
+        run(vec![s("FQUERY"), s("rf"), s("0"), s("400"), s("10")]),
+        RespValue::Array(Vec::new())
+    );
+}
+
+#[test]
 fn cxx_stream_random_size_reopen_and_scan_matches_stream_test() {
     let dir = tempfile::tempdir().unwrap();
     let page_dir = dir.path().join("pages");
@@ -705,4 +1224,22 @@ fn deterministic_bytes(seed: u64, len: usize) -> Vec<u8> {
             (x & 0xff) as u8
         })
         .collect()
+}
+
+fn test_sequence_filter_matches(row: &SequenceFeatureRow, filter: &FeatureFilter) -> bool {
+    let lhs = match filter.field.as_str() {
+        "gid" => row.gid,
+        "action_type" => row.action_type as u64,
+        "duration" => row.duration as u64,
+        "author_id" => row.author_id,
+        _ => return false,
+    };
+    match filter.op {
+        FeatureFilterOp::Equal => lhs == filter.value,
+        FeatureFilterOp::NotEqual => lhs != filter.value,
+        FeatureFilterOp::GreaterThan => lhs > filter.value,
+        FeatureFilterOp::GreaterOrEqual => lhs >= filter.value,
+        FeatureFilterOp::LessThan => lhs < filter.value,
+        FeatureFilterOp::LessOrEqual => lhs <= filter.value,
+    }
 }

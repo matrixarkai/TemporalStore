@@ -13,6 +13,11 @@ Representative C++ files inspected:
 
 - `test/smoketest/basic_smoketest.cc`
 - `test/smoketest/consistency_bench.cc`
+- `src/extension/feature/test.cc`
+- `src/model/test/feature_model_test.cc`
+- `sdk/cpp/examples/sequence_features.cc`
+- `src/client/example/feature_sequence_benchmark.cc`
+- `docs/feature_sequence_benchmark.md`
 - `src/partition/storage/test/data_raft_replication_test.cc`
 - `src/stream/test/stream_test.cc`
 - `src/stream/test/log_based_stream_test.cc`
@@ -33,6 +38,21 @@ Representative C++ files inspected:
 
 - C++ stream random-size, reopen, scan, and cross-block large records:
   `cargo test -p temporalstore-rust --test temporalstore_compat cxx_stream`
+
+- C++ feature module simple/missing/truncation/policy/replace/delete flow:
+  `cargo test -p temporalstore-rust --test temporalstore_compat cxx_feature_module`
+
+- C++ FeatureModel/feature sequence filtered query semantics:
+  `cargo test -p temporalstore-rust --test temporalstore_compat cxx_feature_filter_count_is_scan_bound_before_filtering`
+
+- C++ SDK sequence feature add/query/batch shape:
+  `cargo test -p temporalstore-rust --test temporalstore_compat cxx_sequence_feature_sdk`
+
+- C++ long sequence feature benchmark shape with 5K rows and filters:
+  `cargo test -p temporalstore-rust --test temporalstore_compat cxx_long_sequence_feature_5k`
+
+- C++ Redis/module-style feature command path:
+  `cargo test -p temporalstore-rust --test temporalstore_compat cxx_redis_feature_commands`
 
 - C++ DataRaft serialization, corrupt payload rejection, fail-closed backend:
   `cargo test -p temporalstore-rust cpp_data_raft`
@@ -65,3 +85,8 @@ tools/run_temporalstore_cpp_like_tests.sh
 
 The runner executes the compatibility tests, selected unit tests, distributed
 Raft harness, scale/failover/shared-store harness, and storage-mode harness.
+The compatibility target now includes the C++ feature-module behaviors around
+missing keys, ordered windows, `feature_max_size` truncation, insert/replace
+write policies, range replacement, delete, protobuf-compatible sequence row
+filters, scan-bound `count` behavior, 5K-row long sequence windows, batch
+sequence queries, and RESP feature commands.
