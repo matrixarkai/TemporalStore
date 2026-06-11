@@ -247,6 +247,97 @@ Additional steady-state values:
 - Raft read max was `12391 us`; p99 stayed low, but this max shows the EC2 `t3.small` still has
   occasional scheduler/IO outliers.
 
+## More Data-Node Replica Test
+
+Result: passed.
+
+This run used the existing single EC2 node but increased the in-process Raft data-node replica count
+to 7. It is useful for secondary lag, replica-read, failover, and scale-up/scale-down coverage, but
+it is still not a true multi-EC2 network test.
+
+Updated release binary:
+
+```text
+/tmp/temporalstore-more-nodes-a0cc2fd/bin/scale_harness
+```
+
+Output was saved on the EC2 node at:
+
+```text
+/tmp/temporalstore-aws-validation/more_data_nodes_7node.json
+```
+
+Command:
+
+```text
+--nodes 7
+--string-ops 2000
+--hash-ops 500
+--sequence-keys 4
+--sequence-len 1000
+--scale-events 6
+--failover-every 250
+--read-sample-every 10
+--compare-shared-store true
+--shared-store-ops 1000
+--shared-store-flush-every 20
+```
+
+Top-level result:
+
+```text
+final_nodes: [2, 5, 6, 7, 8, 9, 10]
+leader_id: 2
+commit_index: 2512
+failovers: 7
+scale_events: 6
+replication_healthy: true
+max_replica_lag: 0
+```
+
+Raft replica read latency with 7 data-node replicas:
+
+| Metric | Value |
+|---|---:|
+| samples | 204 |
+| p50 | 149 us |
+| p95 | 268 us |
+| p99 | 2249 us |
+| max | 3766 us |
+
+Per-node Raft status:
+
+| Node | Role | Commit | Applied | Lag | Alive |
+|---:|---|---:|---:|---:|---|
+| 2 | leader | 2512 | 2512 | 0 | true |
+| 5 | follower | 2512 | 2512 | 0 | true |
+| 6 | follower | 2512 | 2512 | 0 | true |
+| 7 | follower | 2512 | 2512 | 0 | true |
+| 8 | follower | 2512 | 2512 | 0 | true |
+| 9 | follower | 2512 | 2512 | 0 | true |
+| 10 | follower | 2512 | 2512 | 0 | true |
+
+Shared-store comparison during the same run:
+
+| Metric | Value |
+|---|---:|
+| sync replica read p99 | 248 us |
+| async replica read p99 | 272 us |
+| sync max lag | 0 |
+| async max lag | 19 |
+| async storage enqueue p99 | 1 us |
+| async storage flush p99 | 24170 us |
+
+Interpretation:
+
+- The Raft path caught all final secondaries up to the leader before exit; every live voter had
+  `lag=0` and matching commit/applied index.
+- Replica reads stayed low at p50/p95. The p99 was higher than the steady-state C++ p99 gate because
+  this run intentionally mixed failovers, leader transfer, scale-up/scale-down, long sequence writes,
+  and shared-store work on a `t3.small`.
+- Async shared-store lag stayed bounded by the configured batch size: `--shared-store-flush-every 20`
+  produced `async_max_lag=19`.
+
 ## Storage Modes Harness
 
 Result: passed.

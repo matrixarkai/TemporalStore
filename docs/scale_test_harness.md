@@ -78,6 +78,8 @@ The JSON output includes:
 
 - `raft_replica_read_latency`: p50/p95/p99/max latency for reads served by Raft replicas
 - `max_replica_lag`: final Raft replica lag, expected to be `0`
+- `raft_node_statuses`: per-node role, replica role, commit index, applied index, alive state, and
+  lag against the leader commit index
 - `shared_store.sync_replica_read_latency`: latency after sync shared-store publish and replay
 - `shared_store.async_replica_read_latency`: latency for reads after async flush/replay windows
 - `shared_store.async_storage_enqueue_latency`: response-path cost to queue async shared-store work
@@ -90,6 +92,54 @@ returns before `op_logger_->Commit` for `PERSISTENT_ASYNC` when `FLAGS_storage_a
 client-visible write latency mostly covers command execution plus async enqueue/scheduling. Durable
 shared-store cost is paid by the background commit/flush path. The Rust harness therefore reports
 both the enqueue-side latency and the actual async flush latency.
+
+## More Data-Node Replica Profile
+
+Use this profile when testing secondary lag, replica-read latency, leader transfer, failover, safe
+scale-up, and safe scale-down with more Raft data-node replicas:
+
+```bash
+tools/run_temporalstore_more_data_nodes.sh
+```
+
+Defaults:
+
+- `TS_MORE_NODES=7`
+- `TS_MORE_NODES_STRING_OPS=2000`
+- `TS_MORE_NODES_HASH_OPS=500`
+- `TS_MORE_NODES_SEQUENCE_KEYS=4`
+- `TS_MORE_NODES_SEQUENCE_LEN=1000`
+- `TS_MORE_NODES_SCALE_EVENTS=6`
+- `TS_MORE_NODES_FAILOVER_EVERY=250`
+- `TS_MORE_NODES_READ_SAMPLE_EVERY=10`
+- `TS_MORE_NODES_COMPARE_SHARED_STORE=true`
+- `TS_MORE_NODES_SHARED_STORE_OPS=2000`
+- `TS_MORE_NODES_SHARED_STORE_FLUSH_EVERY=20`
+
+For a larger local or EC2-hosted in-process run:
+
+```bash
+TS_MORE_NODES=9 \
+TS_MORE_NODES_STRING_OPS=5000 \
+TS_MORE_NODES_HASH_OPS=1000 \
+TS_MORE_NODES_SEQUENCE_KEYS=8 \
+TS_MORE_NODES_SEQUENCE_LEN=1000 \
+TS_MORE_NODES_SCALE_EVENTS=10 \
+tools/run_temporalstore_more_data_nodes.sh
+```
+
+The important fields to inspect are:
+
+- `raft_node_statuses[*].lag`
+- `raft_node_statuses[*].commit_index`
+- `raft_node_statuses[*].applied_index`
+- `raft_replica_read_latency`
+- `shared_store.async_max_lag`
+- `shared_store.async_storage_flush_latency`
+
+This is still an in-process data-node replica test. It is useful for Raft correctness, secondary lag,
+and replica-read regression coverage, but it does not replace a true multi-EC2 data-node test with
+real network, EBS, and EFS paths.
 
 ## Client Scale Harness
 

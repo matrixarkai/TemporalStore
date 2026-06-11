@@ -4,7 +4,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use temporalstore_rust::control::{Config, SetConfigRequest};
 use temporalstore_rust::engine::TemporalEngine;
-use temporalstore_rust::raft::{RaftCluster, RaftConfig};
+use temporalstore_rust::raft::{RaftCluster, RaftConfig, RaftNodeStatus};
 use temporalstore_rust::shared_store::{SharedStoreReplicator, SharedStoreStorageMode};
 use temporalstore_rust::types::{
     Command, CommandResponse, ExecuteRequest, FeatureFilter, FeatureFilterOp, SequenceFeatureRow,
@@ -66,6 +66,7 @@ struct HarnessSummary {
     write_ops_per_sec: f64,
     replication_healthy: bool,
     max_replica_lag: u64,
+    raft_node_statuses: Vec<RaftNodeStatus>,
     max_log_entry_bytes: u64,
 }
 
@@ -259,6 +260,7 @@ fn main() {
         write_ops_per_sec,
         replication_healthy: health.healthy,
         max_replica_lag: health.max_lag,
+        raft_node_statuses: status.nodes.clone(),
         max_log_entry_bytes: options.max_log_entry_bytes,
     };
 
