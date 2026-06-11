@@ -34,6 +34,8 @@ Rust now has a reusable `ProxyService`:
 - `/proxy/config` get/update
 - C++ `Proxy::UpdateConfig`-style no-op handling when namespace and config version are unchanged,
   avoiding needless client/cache reset on duplicate heartbeat config
+- C++ heartbeat-control-loop behavior for the open-source config model: when metaserver heartbeat
+  returns a newer namespace/config version, the proxy adopts it and rebuilds the underlying client
 - `/proxy/open_table`, `/proxy/table_execute`, and `/proxy/table_batch_execute` for namespace/table
   request bodies
 - C++ service-name JSON aliases for open-source migration tests:
@@ -61,6 +63,7 @@ Rust now has a reusable `ProxyService`:
 The Rust `proxy` binary now delegates to `ProxyService` and supports:
 
 - `TS_PROXY_ROUTE_CACHE_TTL_MS`
+- `TS_PROXY_CONFIG_VERSION`
 - `TS_PROXY_CONNECT_TIMEOUT_MS`
 - `TS_PROXY_IO_TIMEOUT_MS`
 - `TS_PROXY_MAX_RETRIES`

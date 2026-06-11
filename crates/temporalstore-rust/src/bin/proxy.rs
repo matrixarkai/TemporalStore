@@ -9,6 +9,7 @@ fn main() {
     let options = ProxyOptions {
         meta_addr,
         proxy_addr: std::env::var("TS_PROXY_ADVERTISED_ADDR").unwrap_or_else(|_| addr.clone()),
+        config_version: env_u64("TS_PROXY_CONFIG_VERSION", 0),
         namespace: std::env::var("TS_PROXY_NAMESPACE").unwrap_or_default(),
         location: std::env::var("TS_PROXY_LOCATION").unwrap_or_default(),
         binary_version: std::env::var("TS_PROXY_BINARY_VERSION")

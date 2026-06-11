@@ -24,6 +24,8 @@ pub struct ProxyOptions {
     #[serde(default = "default_proxy_addr")]
     pub proxy_addr: String,
     #[serde(default)]
+    pub config_version: u64,
+    #[serde(default)]
     pub namespace: String,
     #[serde(default)]
     pub location: String,
@@ -59,6 +61,7 @@ impl Default for ProxyOptions {
         Self {
             meta_addr: "127.0.0.1:17001".to_string(),
             proxy_addr: "127.0.0.1:17000".to_string(),
+            config_version: 0,
             namespace: String::new(),
             location: String::new(),
             binary_version: String::new(),
@@ -517,10 +520,13 @@ impl ProxyService {
             &request,
             options.http_options(),
         ) {
-            Ok(response) if response.status.ok => response,
+            Ok(response) if response.status.ok => {
+                self.apply_heartbeat_config(&response);
+                response
+            }
             Ok(response) if response.status.code == "not_found" => {
                 if self.auto_register_proxy(&options).status.ok {
-                    post_json_with_options::<_, ProxyHeartbeatResponse>(
+                    let response = post_json_with_options::<_, ProxyHeartbeatResponse>(
                         &options.meta_addr,
                         "/proxies/heartbeat",
                         &request,
@@ -531,7 +537,11 @@ impl ProxyService {
                         config_changed: false,
                         namespace: String::new(),
                         config_version: 0,
-                    })
+                    });
+                    if response.status.ok {
+                        self.apply_heartbeat_config(&response);
+                    }
+                    response
                 } else {
                     response
                 }
@@ -576,6 +586,20 @@ impl ProxyService {
         .unwrap_or_else(|err| AckResponse {
             status: Status::error("metaserver_error", err.to_string()),
         })
+    }
+
+    fn apply_heartbeat_config(&self, response: &ProxyHeartbeatResponse) {
+        if !response.config_changed {
+            return;
+        }
+        let mut options = self.options();
+        if !response.namespace.is_empty() {
+            options.namespace = response.namespace.clone();
+        }
+        if response.config_version != 0 {
+            options.config_version = response.config_version;
+        }
+        let _ = self.update_options_report(options);
     }
 
     fn get_shard(&self, shard_id: ShardId, count_error: bool) -> Result<GetShardResponse, Status> {
@@ -683,12 +707,43 @@ fn proxy_client_from_options(options: &ProxyOptions) -> TemporalStoreClient {
 }
 
 fn proxy_config_version(options: &ProxyOptions) -> u64 {
+    if options.config_version != 0 {
+        return options.config_version;
+    }
     let mut version = 1469598103934665603u64;
-    for byte in serde_json::to_vec(options).unwrap_or_default() {
+    let view = ProxyConfigHashView {
+        meta_addr: &options.meta_addr,
+        proxy_addr: &options.proxy_addr,
+        namespace: &options.namespace,
+        location: &options.location,
+        binary_version: &options.binary_version,
+        route_cache_ttl_ms: options.route_cache_ttl_ms,
+        connect_timeout_ms: options.connect_timeout_ms,
+        io_timeout_ms: options.io_timeout_ms,
+        max_retries: options.max_retries,
+        refresh_route_on_backend_error: options.refresh_route_on_backend_error,
+        backend_continuous_failed_time_ms: options.backend_continuous_failed_time_ms,
+    };
+    for byte in serde_json::to_vec(&view).unwrap_or_default() {
         version ^= byte as u64;
         version = version.wrapping_mul(1099511628211);
     }
     version
+}
+
+#[derive(Serialize)]
+struct ProxyConfigHashView<'a> {
+    meta_addr: &'a str,
+    proxy_addr: &'a str,
+    namespace: &'a str,
+    location: &'a str,
+    binary_version: &'a str,
+    route_cache_ttl_ms: u64,
+    connect_timeout_ms: u64,
+    io_timeout_ms: u64,
+    max_retries: usize,
+    refresh_route_on_backend_error: bool,
+    backend_continuous_failed_time_ms: u64,
 }
 
 #[cfg(test)]
@@ -1130,6 +1185,53 @@ mod tests {
         let info = proxy.info();
         assert_eq!(info.stats.heartbeat_total, 1);
         assert_eq!(info.stats.auto_register_total, 1);
+    }
+
+    #[test]
+    fn proxy_heartbeat_applies_metaserver_config_version_like_cpp() {
+        let meta = crate::meta::SingleNodeMeta::default();
+        meta.register_proxy(RegisterProxyRequest {
+            proxy_addr: "proxy-config".to_string(),
+            namespace: "serving-ns".to_string(),
+            location: "zone-a".to_string(),
+            config_version: 9,
+            binary_version: "v-meta".to_string(),
+        });
+        let meta_addr = test_addr(18_326);
+        std::thread::spawn({
+            let meta = meta.clone();
+            move || {
+                serve(&meta_addr, move |request| {
+                    match (request.method.as_str(), request.path.as_str()) {
+                        ("POST", "/proxies/heartbeat") => {
+                            let req = parse_json::<ProxyHeartbeatRequest>(&request.body).unwrap();
+                            json_response(200, &meta.proxy_heartbeat(req))
+                        }
+                        _ => json_response(404, &Status::error("not_found", "not found")),
+                    }
+                })
+                .unwrap();
+            }
+        });
+        wait_for_http(&test_addr(18_326));
+
+        let proxy = ProxyService::new(ProxyOptions {
+            meta_addr: test_addr(18_326),
+            proxy_addr: "proxy-config".to_string(),
+            namespace: "stale-ns".to_string(),
+            config_version: 1,
+            route_cache_ttl_ms: 60_000,
+            ..ProxyOptions::default()
+        });
+        let response = proxy.heartbeat_to_meta();
+        assert!(response.status.ok);
+        assert!(response.config_changed);
+
+        let options = proxy.options();
+        assert_eq!(options.namespace, "serving-ns");
+        assert_eq!(options.config_version, 9);
+        assert_eq!(proxy_config_version(&options), 9);
+        assert_eq!(proxy.info().stats.heartbeat_total, 1);
     }
 
     #[test]
