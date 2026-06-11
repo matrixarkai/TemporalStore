@@ -1,12 +1,12 @@
 use std::sync::{Arc, Mutex};
 
+use temporalstore_rust::types::{
+    FeatureFilter, FeatureFilterOp, FeatureWritePolicy, SequenceFeatureRow, SequenceQuerySpec,
+};
 use temporalstore_rust::{
     execute_redis_command, Command, CommandResponse, Config, EndToEndWorkflow, ExecuteRequest,
     FeaturePoint, RespValue, ScanStreamRequest, SetConfigRequest, SharedStoreOplogEntry,
     SharedStoreReplicator, StreamKind, StreamReadRequest, TemporalEngine,
-};
-use temporalstore_rust::types::{
-    FeatureFilter, FeatureFilterOp, FeatureWritePolicy, SequenceFeatureRow, SequenceQuerySpec,
 };
 use temporalstore_snapshot::object_store::FileObjectStore;
 
@@ -391,16 +391,18 @@ fn feature_module_smoke_matches_temporal_feature_flow() {
 fn cxx_feature_module_simple_missing_truncate_policy_replace_and_delete() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
-    assert!(engine
-        .set_config(SetConfigRequest {
-            shard_id: 1,
-            config: Config {
-                version: 2,
-                feature_max_size: 5,
-                ..Config::default()
-            },
-        })
-        .ok);
+    assert!(
+        engine
+            .set_config(SetConfigRequest {
+                shard_id: 1,
+                config: Config {
+                    version: 2,
+                    feature_max_size: 5,
+                    ..Config::default()
+                },
+            })
+            .ok
+    );
 
     assert_eq!(
         execute(
@@ -800,11 +802,17 @@ fn cxx_long_sequence_feature_5k_ordered_windows_and_random_filters() {
             .filter(|row| row.timestamp_ms >= base_ts + start_offset)
             .filter(|row| row.timestamp_ms <= base_ts + end_offset)
             .take(count)
-            .filter(|row| filters.iter().all(|filter| test_sequence_filter_matches(row, filter)))
+            .filter(|row| {
+                filters
+                    .iter()
+                    .all(|filter| test_sequence_filter_matches(row, filter))
+            })
             .cloned()
             .collect::<Vec<_>>();
         assert_eq!(actual, expected);
-        assert!(actual.windows(2).all(|pair| pair[0].timestamp_ms < pair[1].timestamp_ms));
+        assert!(actual
+            .windows(2)
+            .all(|pair| pair[0].timestamp_ms < pair[1].timestamp_ms));
     }
 }
 
@@ -886,7 +894,14 @@ fn cxx_redis_feature_commands_cover_module_flow() {
         RespValue::Integer(0)
     );
     assert_eq!(
-        run(vec![s("FREPLACE"), s("rf"), s("0"), s("250"), s("150"), s("10")]),
+        run(vec![
+            s("FREPLACE"),
+            s("rf"),
+            s("0"),
+            s("250"),
+            s("150"),
+            s("10")
+        ]),
         RespValue::SimpleString("OK".to_string())
     );
     assert_eq!(
@@ -940,12 +955,7 @@ fn cxx_stream_random_size_reopen_and_scan_matches_stream_test() {
     reopened.load_shard(1);
     for (key, value) in &expected {
         assert_eq!(
-            execute(
-                &reopened,
-                Command::StringGet {
-                    key: key.clone(),
-                },
-            ),
+            execute(&reopened, Command::StringGet { key: key.clone() },),
             CommandResponse::Bytes {
                 value: Some(value.clone())
             }

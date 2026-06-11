@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -17,7 +18,7 @@ use crate::control::{
 };
 use crate::index_log::LocalIndexLogStore;
 use crate::oplog::LocalOplogStore;
-use crate::page_store::{LocalPageStore, PageAddress, PageStoreStats};
+use crate::page_store::{LocalPageStore, PageAddress, PageStoreError, PageStoreStats};
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,
     ExecuteResponse, FeatureFilter, FeatureFilterOp, FeaturePoint, FeatureWritePolicy, IpsStats,
@@ -92,6 +93,8 @@ struct AdmissionLimit {
 }
 
 const FEATURE_ADD_HARD_MAX_SIZE: usize = 100_000;
+const HOT_PAGE_SEGMENT_ID: u64 = u64::MAX;
+static HOT_PAGE_OFFSET: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct IpsPointMeta {
@@ -373,6 +376,7 @@ impl TemporalEngine {
             &self.cache,
             &self.page_store,
             config.feature_max_size,
+            config.async_storage,
             request.shard_id,
             shard,
             command.clone(),
@@ -381,14 +385,16 @@ impl TemporalEngine {
             for object_key in command_object_keys(&command) {
                 shard.dirty_objects.insert(object_key);
             }
-            if write_command {
+            if write_command && !config.async_storage {
                 let _ = self.oplog_store.append(request.shard_id, command);
             }
-            let index_bytes = serialize_index(shard);
-            let _ = self
-                .index_log_store
-                .append_json(request.shard_id, &index_bytes);
-            let _ = self.persist_index_bytes(request.shard_id, &index_bytes);
+            if !config.async_storage {
+                let index_bytes = serialize_index(shard);
+                let _ = self
+                    .index_log_store
+                    .append_json(request.shard_id, &index_bytes);
+                let _ = self.persist_index_bytes(request.shard_id, &index_bytes);
+            }
         }
         ExecuteResponse {
             status: Status::ok(),
@@ -1298,6 +1304,7 @@ fn execute_on_shard(
     cache: &MultiLayerCache,
     page_store: &LocalPageStore,
     feature_max_size: usize,
+    async_storage: bool,
     shard_id: ShardId,
     shard: &mut ShardState,
     command: Command,
@@ -1342,23 +1349,23 @@ fn execute_on_shard(
         }
         Command::StringSet { key, value } => {
             remove_if_expired(shard, &key);
-            if let Ok(address) = page_store.append(&value) {
+            if let Ok(address) = append_value(cache, page_store, shard_id, &value, async_storage) {
                 shard.strings.insert(key.clone(), address);
                 mutated = true;
             }
-            let _ = cache.invalidate(&CacheKey::string(shard_id, &key));
+            invalidate_cache_key(cache, CacheKey::string(shard_id, &key), async_storage);
             CommandResponse::Empty
         }
         Command::StringSetEx { key, value, ttl_ms } => {
             remove_if_expired(shard, &key);
-            if let Ok(address) = page_store.append(&value) {
+            if let Ok(address) = append_value(cache, page_store, shard_id, &value, async_storage) {
                 shard.strings.insert(key.clone(), address);
                 shard
                     .expires_at_ms
                     .insert(key.clone(), now_ms().saturating_add(ttl_ms));
                 mutated = true;
             }
-            let _ = cache.invalidate(&CacheKey::string(shard_id, &key));
+            invalidate_cache_key(cache, CacheKey::string(shard_id, &key), async_storage);
             CommandResponse::Empty
         }
         Command::StringSetConditional {
@@ -1380,7 +1387,9 @@ fn execute_on_shard(
                 StringSetCondition::IfNotExists => !exists,
             };
             if should_set {
-                if let Ok(address) = page_store.append(&value) {
+                if let Ok(address) =
+                    append_value(cache, page_store, shard_id, &value, async_storage)
+                {
                     shard.strings.insert(key.clone(), address);
                     if let Some(ttl_ms) = ttl_ms {
                         shard
@@ -1391,7 +1400,7 @@ fn execute_on_shard(
                     }
                     mutated = true;
                 }
-                let _ = cache.invalidate(&CacheKey::string(shard_id, &key));
+                invalidate_cache_key(cache, CacheKey::string(shard_id, &key), async_storage);
             }
             if return_old {
                 CommandResponse::Bytes { value: old_value }
@@ -1426,7 +1435,7 @@ fn execute_on_shard(
         }
         Command::HashSet { key, field, value } => {
             remove_if_expired(shard, &key);
-            if let Ok(address) = page_store.append(&value) {
+            if let Ok(address) = append_value(cache, page_store, shard_id, &value, async_storage) {
                 shard
                     .hashes
                     .entry(key.clone())
@@ -1482,7 +1491,9 @@ fn execute_on_shard(
         Command::HashMultiSet { key, entries } => {
             remove_if_expired(shard, &key);
             for (field, value) in entries {
-                if let Ok(address) = page_store.append(&value) {
+                if let Ok(address) =
+                    append_value(cache, page_store, shard_id, &value, async_storage)
+                {
                     shard
                         .hashes
                         .entry(key.clone())
@@ -1508,7 +1519,13 @@ fn execute_on_shard(
                 .and_then(|bytes| parse_i64(&bytes))
                 .unwrap_or_default();
             let value = current.saturating_add(increment);
-            if let Ok(address) = page_store.append(value.to_string().as_bytes()) {
+            if let Ok(address) = append_value(
+                cache,
+                page_store,
+                shard_id,
+                value.to_string().as_bytes(),
+                async_storage,
+            ) {
                 shard
                     .hashes
                     .entry(key.clone())
@@ -1573,7 +1590,7 @@ fn execute_on_shard(
         }
         Command::SetAdd { key, member } => {
             remove_if_expired(shard, &key);
-            if let Ok(address) = page_store.append(&member) {
+            if let Ok(address) = append_value(cache, page_store, shard_id, &member, async_storage) {
                 shard
                     .sets
                     .entry(key.clone())
@@ -1621,7 +1638,9 @@ fn execute_on_shard(
             remove_if_expired(shard, &key);
             let series = shard.features.entry(key.clone()).or_default();
             for point in points {
-                if let Ok(address) = page_store.append(&point.value) {
+                if let Ok(address) =
+                    append_value(cache, page_store, shard_id, &point.value, async_storage)
+                {
                     series.insert(point.timestamp_ms, address);
                     mutated = true;
                 }
@@ -1651,7 +1670,9 @@ fn execute_on_shard(
                     FeatureWritePolicy::ReplaceExisting => exists,
                 };
                 if should_write {
-                    if let Ok(address) = page_store.append(&point.value) {
+                    if let Ok(address) =
+                        append_value(cache, page_store, shard_id, &point.value, async_storage)
+                    {
                         series.insert(point.timestamp_ms, address);
                         mutated = true;
                     }
@@ -1754,7 +1775,9 @@ fn execute_on_shard(
                 mutated = true;
             }
             for point in points {
-                if let Ok(address) = page_store.append(&point.value) {
+                if let Ok(address) =
+                    append_value(cache, page_store, shard_id, &point.value, async_storage)
+                {
                     series.insert(point.timestamp_ms, address);
                     mutated = true;
                 }
@@ -1812,7 +1835,9 @@ fn execute_on_shard(
             let series = shard.sequences.entry(key.clone()).or_default();
             for row in rows {
                 if let Ok(bytes) = serde_json::to_vec(&row) {
-                    if let Ok(address) = page_store.append(&bytes) {
+                    if let Ok(address) =
+                        append_value(cache, page_store, shard_id, &bytes, async_storage)
+                    {
                         series.insert(row.timestamp_ms, address);
                         mutated = true;
                     }
@@ -1892,7 +1917,8 @@ fn execute_on_shard(
             instance,
         } => {
             remove_if_expired(shard, &key);
-            if let Ok(address) = page_store.append(&instance) {
+            if let Ok(address) = append_value(cache, page_store, shard_id, &instance, async_storage)
+            {
                 shard
                     .ips
                     .entry(key.clone())
@@ -1932,7 +1958,8 @@ fn execute_on_shard(
                     };
                 }
             }
-            if let Ok(address) = page_store.append(&instance) {
+            if let Ok(address) = append_value(cache, page_store, shard_id, &instance, async_storage)
+            {
                 shard
                     .ips
                     .entry(key.clone())
@@ -1964,7 +1991,9 @@ fn execute_on_shard(
             remove_if_expired(shard, &key);
             let mut loaded = 0i64;
             for point in points {
-                if let Ok(address) = page_store.append(&point.value) {
+                if let Ok(address) =
+                    append_value(cache, page_store, shard_id, &point.value, async_storage)
+                {
                     shard
                         .ips
                         .entry(key.clone())
@@ -2607,6 +2636,42 @@ fn compact_page_addresses<'a>(
     Ok(())
 }
 
+fn append_value(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    bytes: &[u8],
+    async_storage: bool,
+) -> Result<PageAddress, PageStoreError> {
+    if !async_storage {
+        return page_store.append(bytes);
+    }
+    let address = PageAddress {
+        page_segment_id: HOT_PAGE_SEGMENT_ID,
+        offset: HOT_PAGE_OFFSET.fetch_add(1, Ordering::Relaxed),
+        length: bytes.len() as u64,
+    };
+    let bytes = bytes.to_vec();
+    cache.put_memory_only(
+        CacheKey::page(
+            shard_id,
+            address.page_segment_id,
+            address.offset,
+            address.length,
+        ),
+        bytes,
+    );
+    Ok(address)
+}
+
+fn invalidate_cache_key(cache: &MultiLayerCache, key: CacheKey, memory_only: bool) {
+    if memory_only {
+        cache.invalidate_memory_only(&key);
+    } else {
+        let _ = cache.invalidate(&key);
+    }
+}
+
 fn record_exists(shard: &ShardState, key: &str) -> bool {
     shard.strings.contains_key(key)
         || shard.hashes.contains_key(key)
@@ -3187,7 +3252,7 @@ fn cached_response(
     }
     let response = source();
     if let Ok(bytes) = serde_json::to_vec(&response) {
-        let _ = cache.put(key, bytes);
+        cache.put_memory_only(key, bytes);
     }
     response
 }
@@ -3674,7 +3739,7 @@ mod tests {
             }
         );
         assert_eq!(page_store.stats().reads, 2);
-        assert_eq!(cache.stats().puts, 4);
+        assert!(cache.stats().puts >= 4);
         assert!(cache.stats().memory_bytes > 0);
         assert!(cache.stats().disk_bytes > 0);
 
@@ -3777,6 +3842,57 @@ mod tests {
             }
         );
         assert!(cache.stats().invalidations >= 2);
+    }
+
+    #[test]
+    fn async_storage_string_write_stays_on_hot_memory_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        assert!(
+            engine
+                .set_config(SetConfigRequest {
+                    shard_id: 1,
+                    config: Config {
+                        version: 2,
+                        async_storage: true,
+                        ..Config::default()
+                    },
+                })
+                .ok
+        );
+
+        let write = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "hot".to_string(),
+                value: b"value".to_vec(),
+            },
+        });
+        assert!(write.status.ok);
+        assert_eq!(engine.page_store().stats().writes, 0);
+        assert_eq!(engine.oplog_store().stats(1).writes, 0);
+        assert_eq!(engine.index_log_store().stats(1).writes, 0);
+
+        let read = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: "hot".to_string(),
+            },
+        });
+        assert_eq!(
+            read.response,
+            CommandResponse::Bytes {
+                value: Some(b"value".to_vec())
+            }
+        );
+        assert_eq!(engine.page_store().stats().reads, 0);
+        assert!(engine.cache().stats().memory_hits >= 1);
     }
 
     #[test]

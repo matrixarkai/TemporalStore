@@ -236,11 +236,18 @@ impl MultiLayerCache {
             inner.stats.compressed_puts += 1;
             inner.stats.compression_bytes_saved += value.len().saturating_sub(block.len()) as u64;
         }
+        let block_len = block.len();
         fs::write(path, block)?;
         inner.stats.puts += 1;
-        inner.stats.disk_bytes = dir_size(&inner.disk_dir).unwrap_or(inner.stats.disk_bytes);
+        inner.stats.disk_bytes = inner.stats.disk_bytes.saturating_add(block_len as u64);
         inner.put_memory(key, value);
         Ok(())
+    }
+
+    pub fn put_memory_only(&self, key: CacheKey, value: Vec<u8>) {
+        let mut inner = self.inner.write().expect("cache lock poisoned");
+        inner.stats.puts += 1;
+        inner.put_memory(key, value);
     }
 
     pub fn invalidate(&self, key: &CacheKey) -> Result<(), CacheError> {
@@ -251,8 +258,16 @@ impl MultiLayerCache {
         let _ = fs::remove_file(inner.disk_path(key));
         inner.stats.invalidations += 1;
         inner.stats.memory_bytes = inner.memory_bytes as u64;
-        inner.stats.disk_bytes = dir_size(&inner.disk_dir).unwrap_or(inner.stats.disk_bytes);
         Ok(())
+    }
+
+    pub fn invalidate_memory_only(&self, key: &CacheKey) {
+        let mut inner = self.inner.write().expect("cache lock poisoned");
+        if let Some(value) = inner.memory.remove(key) {
+            inner.memory_bytes = inner.memory_bytes.saturating_sub(value.len());
+        }
+        inner.stats.invalidations += 1;
+        inner.stats.memory_bytes = inner.memory_bytes as u64;
     }
 
     pub fn invalidate_record(
@@ -305,7 +320,7 @@ impl MultiLayerCache {
         }
         inner.stats.invalidations += memory_entries_removed as u64;
         inner.stats.memory_bytes = inner.memory_bytes as u64;
-        inner.stats.disk_bytes = dir_size(&inner.disk_dir).unwrap_or(inner.stats.disk_bytes);
+        inner.stats.disk_bytes = inner.stats.disk_bytes.saturating_sub(disk_bytes_before);
         Ok(CacheGcReport {
             shard_id,
             memory_entries_removed,

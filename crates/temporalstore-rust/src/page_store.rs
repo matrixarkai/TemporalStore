@@ -13,7 +13,7 @@ pub enum PageStoreError {
     Io(#[from] std::io::Error),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PageAddress {
     pub page_segment_id: u64,
     pub offset: u64,
@@ -88,7 +88,6 @@ impl LocalPageStore {
             length: bytes.len() as u64,
         };
         file.write_all(bytes)?;
-        file.flush()?;
         inner.write_offset += address.length;
         inner.stats.writes += 1;
         inner.stats.bytes_written += address.length;

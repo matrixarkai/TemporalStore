@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
+use temporalstore_rust::control::{Config, SetConfigRequest};
 use temporalstore_rust::engine::TemporalEngine;
 use temporalstore_rust::raft::{RaftCluster, RaftConfig};
 use temporalstore_rust::shared_store::{SharedStoreReplicator, SharedStoreStorageMode};
@@ -81,6 +82,10 @@ struct LatencySummary {
 struct SharedStoreComparisonSummary {
     sync_ops: usize,
     async_ops: usize,
+    sync_primary_write_latency: LatencySummary,
+    async_primary_write_latency: LatencySummary,
+    sync_storage_write_latency: LatencySummary,
+    async_storage_write_latency: LatencySummary,
     sync_replica_read_latency: LatencySummary,
     async_replica_read_latency: LatencySummary,
     sync_max_lag: u64,
@@ -377,6 +382,10 @@ fn run_shared_store_comparison(options: &HarnessOptions) -> SharedStoreCompariso
         SharedStoreComparisonSummary {
             sync_ops: options.shared_store_ops,
             async_ops: options.shared_store_ops,
+            sync_primary_write_latency: sync.primary_write_latency,
+            async_primary_write_latency: async_report.primary_write_latency,
+            sync_storage_write_latency: sync.storage_write_latency,
+            async_storage_write_latency: async_report.storage_write_latency,
             sync_replica_read_latency: sync.read_latency,
             async_replica_read_latency: async_report.read_latency,
             sync_max_lag: sync.max_lag,
@@ -388,6 +397,8 @@ fn run_shared_store_comparison(options: &HarnessOptions) -> SharedStoreCompariso
 
 #[derive(Debug)]
 struct SharedStoreModeReport {
+    primary_write_latency: LatencySummary,
+    storage_write_latency: LatencySummary,
     read_latency: LatencySummary,
     max_lag: u64,
 }
@@ -406,12 +417,33 @@ where
     let follower = TemporalEngine::default();
     primary.load_shard(shard_id);
     follower.load_shard(shard_id);
+    if mode == SharedStoreStorageMode::Async {
+        let config = Config {
+            async_storage: true,
+            ..Config::default()
+        };
+        assert!(
+            primary
+                .set_config(SetConfigRequest {
+                    shard_id,
+                    config: config.clone(),
+                })
+                .ok
+        );
+        assert!(
+            follower
+                .set_config(SetConfigRequest { shard_id, config })
+                .ok
+        );
+    }
     let writer = replicator.storage_writer(mode, 1);
     let flush_every = flush_every.max(1);
     let mut last_written = 0;
     let mut last_replayed = 0;
     let mut max_lag = 0;
     let mut read_latencies = Vec::new();
+    let mut primary_write_latencies = Vec::new();
+    let mut storage_write_latencies = Vec::new();
 
     for i in 0..ops {
         let key = format!("shared:{shard_id}:{i}");
@@ -420,15 +452,19 @@ where
             key: key.clone(),
             value: value.clone(),
         };
+        let primary_write_start = Instant::now();
         let response = primary.execute(ExecuteRequest {
             shard_id,
             command: command.clone(),
         });
         assert!(response.status.ok, "primary shared-store write failed");
+        let storage_write_start = Instant::now();
         let report = writer
             .write(shard_id, command)
             .await
             .expect("shared-store write should publish or queue");
+        storage_write_latencies.push(storage_write_start.elapsed());
+        primary_write_latencies.push(primary_write_start.elapsed());
         last_written = report.oplog_index;
         if mode == SharedStoreStorageMode::Async && (i + 1) % flush_every == 0 {
             writer
@@ -465,6 +501,8 @@ where
     max_lag = max_lag.max(last_written.saturating_sub(last_replayed));
 
     SharedStoreModeReport {
+        primary_write_latency: summarize_latencies(&primary_write_latencies),
+        storage_write_latency: summarize_latencies(&storage_write_latencies),
         read_latency: summarize_latencies(&read_latencies),
         max_lag,
     }

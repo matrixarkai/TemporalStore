@@ -44,7 +44,7 @@ impl Default for Config {
             tenant_write_qps: None,
             extend_config: BTreeMap::new(),
             feature_max_size: 5000,
-            async_storage: true,
+            async_storage: false,
         }
     }
 }

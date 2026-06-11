@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
@@ -53,6 +54,7 @@ pub struct LocalOplogStore {
 struct OplogInner {
     root: PathBuf,
     stats: OplogStats,
+    last_sequence_by_shard: HashMap<ShardId, u64>,
 }
 
 impl LocalOplogStore {
@@ -63,6 +65,7 @@ impl LocalOplogStore {
             inner: Arc::new(Mutex::new(OplogInner {
                 root,
                 stats: OplogStats::default(),
+                last_sequence_by_shard: HashMap::new(),
             })),
         }
     }
@@ -70,7 +73,15 @@ impl LocalOplogStore {
     pub fn append(&self, shard_id: ShardId, command: Command) -> Result<OplogRecord, OplogError> {
         let mut inner = self.inner.lock().expect("oplog lock poisoned");
         fs::create_dir_all(&inner.root)?;
-        let next_sequence = last_sequence_at(&inner.root, shard_id)?.saturating_add(1);
+        let last_sequence = match inner.last_sequence_by_shard.get(&shard_id).copied() {
+            Some(sequence) => sequence,
+            None => {
+                let sequence = last_sequence_at(&inner.root, shard_id)?;
+                inner.last_sequence_by_shard.insert(shard_id, sequence);
+                sequence
+            }
+        };
+        let next_sequence = last_sequence.saturating_add(1);
         let record = OplogRecord {
             shard_id,
             sequence: next_sequence,
@@ -83,10 +94,10 @@ impl LocalOplogStore {
             .append(true)
             .open(oplog_path(&inner.root, shard_id))?;
         file.write_all(&bytes)?;
-        file.flush()?;
         inner.stats.writes += 1;
         inner.stats.bytes_written += bytes.len() as u64;
         inner.stats.last_sequence = next_sequence;
+        inner.last_sequence_by_shard.insert(shard_id, next_sequence);
         Ok(record)
     }
 
