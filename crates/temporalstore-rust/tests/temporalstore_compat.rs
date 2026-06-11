@@ -2,7 +2,8 @@ use std::sync::{Arc, Mutex};
 
 use temporalstore_rust::{
     execute_redis_command, Command, CommandResponse, EndToEndWorkflow, ExecuteRequest,
-    FeaturePoint, RespValue, SharedStoreOplogEntry, SharedStoreReplicator, TemporalEngine,
+    FeaturePoint, RespValue, ScanStreamRequest, SharedStoreOplogEntry, SharedStoreReplicator,
+    StreamKind, StreamReadRequest, TemporalEngine,
 };
 use temporalstore_snapshot::object_store::FileObjectStore;
 
@@ -383,6 +384,151 @@ fn feature_module_smoke_matches_temporal_feature_flow() {
     );
 }
 
+#[test]
+fn cxx_stream_random_size_reopen_and_scan_matches_stream_test() {
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        8 * 1024 * 1024,
+        dir.path().join("cache-a"),
+        &page_dir,
+        &index_dir,
+    );
+    engine.load_shard(1);
+
+    let mut expected = Vec::new();
+    for i in 0..24usize {
+        let len = 1 + ((i * 7919) % 32_768);
+        let value = deterministic_bytes(i as u64, len);
+        let key = format!("stream-random-{i:03}");
+        execute(
+            &engine,
+            Command::StringSet {
+                key: key.clone(),
+                value: value.clone(),
+            },
+        );
+        expected.push((key, value));
+    }
+
+    let reopened = TemporalEngine::with_local_dirs(
+        8 * 1024 * 1024,
+        dir.path().join("cache-b"),
+        &page_dir,
+        &index_dir,
+    );
+    reopened.load_shard(1);
+    for (key, value) in &expected {
+        assert_eq!(
+            execute(
+                &reopened,
+                Command::StringGet {
+                    key: key.clone(),
+                },
+            ),
+            CommandResponse::Bytes {
+                value: Some(value.clone())
+            }
+        );
+    }
+
+    let page = reopened.read_stream(StreamReadRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::Page,
+        page_segment_id: 0,
+        offset: 0,
+        size: 1024 * 1024,
+    });
+    assert!(page.status.ok, "{}", page.status.message);
+    assert!(!page.data.is_empty());
+    for (_, value) in expected.iter().take(8) {
+        assert!(
+            page.data.windows(value.len()).any(|window| window == value),
+            "page stream should contain deterministic value of len {}",
+            value.len()
+        );
+    }
+
+    let scan = reopened.scan_stream(ScanStreamRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::Page,
+        page_segment_id: 0,
+        start_offset: 0,
+        end_offset: u64::MAX,
+        max_bytes: 1024 * 1024,
+    });
+    assert!(scan.status.ok, "{}", scan.status.message);
+    assert!(!scan.records.is_empty());
+    assert!(scan.end_of_stream);
+}
+
+#[test]
+fn cxx_stream_cross_block_large_values_survive_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache-a"),
+        &page_dir,
+        &index_dir,
+    );
+    engine.load_shard(1);
+
+    let large = deterministic_bytes(42, 512 * 1024);
+    for i in 0..3 {
+        execute(
+            &engine,
+            Command::StringSet {
+                key: format!("stream-cross-block-{i}"),
+                value: large.clone(),
+            },
+        );
+    }
+
+    let reopened = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache-b"),
+        &page_dir,
+        &index_dir,
+    );
+    reopened.load_shard(1);
+    for i in 0..3 {
+        assert_eq!(
+            execute(
+                &reopened,
+                Command::StringGet {
+                    key: format!("stream-cross-block-{i}"),
+                },
+            ),
+            CommandResponse::Bytes {
+                value: Some(large.clone())
+            }
+        );
+    }
+
+    let first_chunk = reopened.read_stream(StreamReadRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::Page,
+        page_segment_id: 0,
+        offset: 0,
+        size: 256 * 1024,
+    });
+    assert!(first_chunk.status.ok, "{}", first_chunk.status.message);
+    assert_eq!(first_chunk.data, large[..256 * 1024].to_vec());
+
+    let second_chunk = reopened.read_stream(StreamReadRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::Page,
+        page_segment_id: 0,
+        offset: 256 * 1024,
+        size: 256 * 1024,
+    });
+    assert!(second_chunk.status.ok, "{}", second_chunk.status.message);
+    assert_eq!(second_chunk.data, large[256 * 1024..].to_vec());
+}
+
 #[tokio::test]
 async fn cxx_shared_store_replication_bootstrap_and_oplog_replay_matches_primary_pull_model() {
     let dir = tempfile::tempdir().unwrap();
@@ -547,4 +693,16 @@ impl SimpleKvChecker {
     fn finish_read(&self, value: u64) -> bool {
         value > 0 && value <= self.committed
     }
+}
+
+fn deterministic_bytes(seed: u64, len: usize) -> Vec<u8> {
+    let mut x = seed ^ 0x9e37_79b9_7f4a_7c15;
+    (0..len)
+        .map(|_| {
+            x ^= x << 7;
+            x ^= x >> 9;
+            x ^= x << 8;
+            (x & 0xff) as u8
+        })
+        .collect()
 }

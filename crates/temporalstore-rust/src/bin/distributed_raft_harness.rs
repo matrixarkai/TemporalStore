@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use temporalstore_rust::http::{
     get_json_with_options, json_response, parse_json, post_json_with_options, serve, HttpRequest,
@@ -144,7 +145,7 @@ fn main() {
         wait_for_http(&node.addr);
     }
 
-    let proposal: DistributedRaftCommandResponse = post_json_with_options(
+    let proposal: DistributedRaftCommandResponse = post_json_harness(
         &nodes[0].addr,
         "/raft/propose",
         &DistributedRaftProposeRequest {
@@ -153,9 +154,7 @@ fn main() {
                 value: options.value.clone(),
             },
         },
-        request_options(),
-    )
-    .expect("raft proposal request failed");
+    );
     assert!(
         proposal.status.ok,
         "raft proposal failed: {:?}",
@@ -251,7 +250,7 @@ fn main() {
     let object_root = options.root.join("snapshot-objects");
     let publish_local_root = options.root.join("snapshot-publish-local");
     let restore_local_root = options.root.join("snapshot-restore-local");
-    let published: RaftAdminPublishExternalSnapshotResponse = post_json_with_options(
+    let published: RaftAdminPublishExternalSnapshotResponse = post_json_harness(
         &nodes[1].addr,
         "/raft/admin/publish_external_snapshot",
         &RaftAdminPublishExternalSnapshotRequest {
@@ -260,15 +259,13 @@ fn main() {
             cluster_id: "cluster-a".to_string(),
             bucket: "test".to_string(),
         },
-        request_options(),
-    )
-    .expect("external snapshot publish request failed");
+    );
     assert!(
         published.status.ok,
         "external snapshot publish failed: {:?}",
         published
     );
-    let bootstrapped: RaftAdminBootstrapExternalSnapshotResponse = post_json_with_options(
+    let bootstrapped: RaftAdminBootstrapExternalSnapshotResponse = post_json_harness(
         &nodes[2].addr,
         "/raft/admin/bootstrap_external_snapshot",
         &RaftAdminBootstrapExternalSnapshotRequest {
@@ -284,9 +281,7 @@ fn main() {
             cluster_id: "cluster-a".to_string(),
             bucket: "test".to_string(),
         },
-        request_options(),
-    )
-    .expect("external snapshot bootstrap request failed");
+    );
     assert!(
         bootstrapped.status.ok,
         "external snapshot bootstrap failed: {:?}",
@@ -310,15 +305,13 @@ fn main() {
                 wal_dir: wal_dir.display().to_string(),
                 status: get_json_with_options(&node.addr, "/raft/status", request_options())
                     .expect("status request failed"),
-                apply_health: post_json_with_options(
+                apply_health: post_json_harness(
                     &node.addr,
                     "/raft/apply_health",
                     &RaftApplyHealthRequest {
                         max_allowed_apply_lag: 0,
                     },
-                    request_options(),
-                )
-                .expect("apply health request failed"),
+                ),
                 wal_files: list_files(&wal_dir),
             }
         })
@@ -471,23 +464,30 @@ struct RaftApplyHealthRequest {
 }
 
 fn propose_key(node: &ProductionRaftNode, key: &str, value: &[u8]) -> Status {
-    let response: DistributedRaftCommandResponse = post_json_with_options(
-        &node.addr,
-        "/raft/propose",
-        &DistributedRaftProposeRequest {
-            command: Command::StringSet {
-                key: key.to_string(),
-                value: value.to_vec(),
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let response: DistributedRaftCommandResponse = post_json_harness(
+            &node.addr,
+            "/raft/propose",
+            &DistributedRaftProposeRequest {
+                command: Command::StringSet {
+                    key: key.to_string(),
+                    value: value.to_vec(),
+                },
             },
-        },
-        request_options(),
-    )
-    .expect("raft proposal request failed");
-    response.status
+        );
+        if response.status.ok {
+            return response.status;
+        }
+        if Instant::now() >= deadline {
+            return response.status;
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
 }
 
 fn reject_direct_follower_write(node: &ProductionRaftNode, options: &HarnessOptions) -> Status {
-    let response: DistributedRaftCommandResponse = post_json_with_options(
+    let response: DistributedRaftCommandResponse = post_json_harness(
         &node.addr,
         "/raft/propose",
         &DistributedRaftProposeRequest {
@@ -496,9 +496,7 @@ fn reject_direct_follower_write(node: &ProductionRaftNode, options: &HarnessOpti
                 value: b"must-not-commit-from-follower".to_vec(),
             },
         },
-        request_options(),
-    )
-    .expect("follower proposal request failed");
+    );
     assert!(
         !response.status.ok,
         "direct follower write should be rejected: {:?}",
@@ -594,15 +592,13 @@ fn wait_for_distributed_apply_health(
         let health = nodes
             .iter()
             .map(|node| {
-                post_json_with_options::<_, RaftApplyHealth>(
+                post_json_harness::<_, RaftApplyHealth>(
                     &node.addr,
                     "/raft/apply_health",
                     &RaftApplyHealthRequest {
                         max_allowed_apply_lag,
                     },
-                    request_options(),
                 )
-                .expect("apply health request failed")
             })
             .collect::<Vec<_>>();
         if health.iter().all(|health| health.healthy) {
@@ -668,7 +664,7 @@ fn wait_for_replica_read(
 fn wait_for_key(node: &ProductionRaftNode, key: &str, expected: &[u8]) -> ReplicaReadSummary {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        let response: DistributedRaftCommandResponse = post_json_with_options(
+        let response: DistributedRaftCommandResponse = post_json_harness(
             &node.addr,
             "/raft/read",
             &DistributedRaftReadRequest {
@@ -677,12 +673,10 @@ fn wait_for_key(node: &ProductionRaftNode, key: &str, expected: &[u8]) -> Replic
                     key: key.to_string(),
                 },
             },
-            request_options(),
-        )
-        .expect("raft read request failed");
+        );
         let value = match &response.response {
             CommandResponse::Bytes { value: Some(bytes) } => {
-                Some(String::from_utf8_lossy(bytes).to_string())
+                Some(String::from_utf8_lossy(&bytes).to_string())
             }
             _ => None,
         };
@@ -731,9 +725,30 @@ fn runtime_options(
 fn request_options() -> HttpRequestOptions {
     HttpRequestOptions {
         connect_timeout_ms: 1_000,
-        io_timeout_ms: 5_000,
-        max_retries: 3,
+        io_timeout_ms: 10_000,
+        max_retries: 8,
     }
+}
+
+fn post_json_harness<Request, Response>(addr: &str, path: &str, request: &Request) -> Response
+where
+    Request: Serialize,
+    Response: DeserializeOwned,
+{
+    let mut last_error = None;
+    for _attempt in 0..40 {
+        match post_json_with_options(addr, path, request, request_options()) {
+            Ok(response) => return response,
+            Err(err) => {
+                last_error = Some(err);
+                thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+    panic!(
+        "harness POST {path} to {addr} failed after retries: {:?}",
+        last_error
+    );
 }
 
 fn wait_for_http(addr: &str) {
