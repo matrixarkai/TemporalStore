@@ -2087,6 +2087,15 @@ impl ProductionRaftRuntime {
         self.options.security.auth_token.as_deref()
     }
 
+    pub fn local_node_id(&self) -> RaftNodeId {
+        self.options.local_node_id
+    }
+
+    pub fn local_apply_health(&self, max_allowed_apply_lag: u64) -> RaftApplyHealth {
+        self.cluster
+            .observer_apply_health(self.options.local_node_id, max_allowed_apply_lag)
+    }
+
     pub fn transport(&self) -> RaftRpcRuntime<AuthenticatedRaftTransport<HttpRaftTransport>> {
         let http_options = HttpRequestOptions {
             connect_timeout_ms: self.options.rpc.deadline_ms,
@@ -4037,50 +4046,60 @@ impl RaftCluster {
         let leader_id = request.leader_id;
         let term = request.term;
         let leader_commit = request.leader_commit;
-        let node = inner
-            .nodes
-            .get_mut(&target_id)
-            .ok_or(RaftError::NodeNotFound(target_id))?;
-        if term < node.current_term {
-            return Ok(AppendEntriesResponse {
-                term: node.current_term,
-                success: false,
-                match_index: node_last_log_or_snapshot_index(node),
-                reject_reason: Some("stale_term".to_string()),
-            });
-        }
-        if request.prev_log_index > 0 {
-            let prev_term = node
-                .log
-                .iter()
-                .find(|entry| entry.index == request.prev_log_index)
-                .map(|entry| entry.term)
-                .or_else(|| {
-                    node.installed_snapshot
-                        .as_ref()
-                        .filter(|snapshot| snapshot.last_included_index == request.prev_log_index)
-                        .map(|snapshot| snapshot.last_included_term)
-                });
-            if prev_term != Some(request.prev_log_term) {
+        let (term, last_index) = {
+            let node = inner
+                .nodes
+                .get_mut(&target_id)
+                .ok_or(RaftError::NodeNotFound(target_id))?;
+            if term < node.current_term {
                 return Ok(AppendEntriesResponse {
                     term: node.current_term,
                     success: false,
                     match_index: node_last_log_or_snapshot_index(node),
-                    reject_reason: Some("log_mismatch".to_string()),
+                    reject_reason: Some("stale_term".to_string()),
                 });
             }
+            if request.prev_log_index > 0 {
+                let prev_term = node
+                    .log
+                    .iter()
+                    .find(|entry| entry.index == request.prev_log_index)
+                    .map(|entry| entry.term)
+                    .or_else(|| {
+                        node.installed_snapshot
+                            .as_ref()
+                            .filter(|snapshot| {
+                                snapshot.last_included_index == request.prev_log_index
+                            })
+                            .map(|snapshot| snapshot.last_included_term)
+                    });
+                if prev_term != Some(request.prev_log_term) {
+                    return Ok(AppendEntriesResponse {
+                        term: node.current_term,
+                        success: false,
+                        match_index: node_last_log_or_snapshot_index(node),
+                        reject_reason: Some("log_mismatch".to_string()),
+                    });
+                }
+            }
+            node.current_term = term;
+            node.role = RaftRole::Follower;
+            for entry in entries.iter().cloned() {
+                append_entry(node, entry);
+            }
+            let last_index = node_last_log_or_snapshot_index(node);
+            node.commit_index = leader_commit.min(last_index);
+            if node.replica_role.can_serve_data() {
+                apply_committed(node);
+            }
+            (node.current_term, last_index)
+        };
+        inner.leader_id = leader_id;
+        for (node_id, peer) in inner.nodes.iter_mut() {
+            if *node_id != leader_id && peer.role == RaftRole::Leader {
+                peer.role = RaftRole::Follower;
+            }
         }
-        node.current_term = term;
-        node.role = RaftRole::Follower;
-        for entry in entries.iter().cloned() {
-            append_entry(node, entry);
-        }
-        let last_index = node_last_log_or_snapshot_index(node);
-        node.commit_index = leader_commit.min(last_index);
-        if node.replica_role.can_serve_data() {
-            apply_committed(node);
-        }
-        let term = node.current_term;
         if leader_id != target_id {
             if let Some(leader) = inner.nodes.get_mut(&leader_id) {
                 leader.alive = true;
@@ -4999,6 +5018,15 @@ impl RaftCluster {
         raft_apply_health_from_status(self.status(), max_allowed_apply_lag)
     }
 
+    pub fn observer_apply_health(
+        &self,
+        observer_node_id: RaftNodeId,
+        max_allowed_apply_lag: u64,
+    ) -> RaftApplyHealth {
+        let status = self.status();
+        raft_observer_apply_health_from_status(status, observer_node_id, max_allowed_apply_lag)
+    }
+
     pub fn scale_change_report(&self) -> RaftScaleChangeReport {
         self.inner
             .read()
@@ -5747,6 +5775,61 @@ fn raft_apply_health_from_status(
         max_apply_lag,
         fully_applied_nodes,
         healthy: slow_appliers.is_empty(),
+        slow_appliers,
+    }
+}
+
+fn raft_observer_apply_health_from_status(
+    status: RaftClusterStatus,
+    observer_node_id: RaftNodeId,
+    max_allowed_apply_lag: u64,
+) -> RaftApplyHealth {
+    let Some(node) = status
+        .nodes
+        .iter()
+        .find(|node| node.node_id == observer_node_id)
+    else {
+        return RaftApplyHealth {
+            leader_id: status.leader_id,
+            leader_commit_index: status.commit_index,
+            max_allowed_apply_lag,
+            max_apply_lag: status.commit_index,
+            fully_applied_nodes: Vec::new(),
+            slow_appliers: vec![RaftApplyLag {
+                node_id: observer_node_id,
+                commit_index: status.commit_index,
+                applied_index: 0,
+                apply_lag: status.commit_index,
+                alive: false,
+            }],
+            healthy: false,
+        };
+    };
+    let apply_lag = node.commit_index.saturating_sub(node.applied_index);
+    let fully_applied =
+        node.alive && apply_lag <= max_allowed_apply_lag && node.applied_index >= node.commit_index;
+    let slow_appliers = if fully_applied {
+        Vec::new()
+    } else {
+        vec![RaftApplyLag {
+            node_id: node.node_id,
+            commit_index: node.commit_index,
+            applied_index: node.applied_index,
+            apply_lag,
+            alive: node.alive,
+        }]
+    };
+    RaftApplyHealth {
+        leader_id: status.leader_id,
+        leader_commit_index: status.commit_index,
+        max_allowed_apply_lag,
+        max_apply_lag: apply_lag,
+        fully_applied_nodes: if fully_applied {
+            vec![node.node_id]
+        } else {
+            Vec::new()
+        },
+        healthy: fully_applied && status.has_majority && status.leader_lease_valid,
         slow_appliers,
     }
 }
@@ -7949,6 +8032,76 @@ mod tests {
             vote_response.reject_reason.as_deref(),
             Some("candidate_log_behind")
         );
+    }
+
+    #[test]
+    fn append_entries_updates_observed_leader_for_standalone_node_status() {
+        let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+        assert_eq!(cluster.status().leader_id, 1);
+
+        let response = cluster
+            .receive_append_entries(AppendEntriesRequest {
+                rpc: None,
+                shard_id: 1,
+                term: 2,
+                leader_id: 2,
+                target_id: 3,
+                prev_log_index: 0,
+                prev_log_term: 0,
+                entries: Vec::new(),
+                leader_commit: 0,
+            })
+            .unwrap();
+
+        assert!(response.success);
+        let status = cluster.status();
+        assert_eq!(status.leader_id, 2);
+        assert_eq!(
+            status
+                .nodes
+                .iter()
+                .find(|node| node.node_id == 2)
+                .unwrap()
+                .role,
+            RaftRole::Leader
+        );
+        assert_eq!(
+            status
+                .nodes
+                .iter()
+                .find(|node| node.node_id == 1)
+                .unwrap()
+                .role,
+            RaftRole::Follower
+        );
+    }
+
+    #[test]
+    fn observer_apply_health_reports_local_replica_without_remote_false_lag() {
+        let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+        cluster
+            .propose(Command::StringSet {
+                key: "observer-health".to_string(),
+                value: b"v".to_vec(),
+            })
+            .unwrap();
+        {
+            let mut inner = cluster.inner.write().expect("raft cluster lock poisoned");
+            let node = inner.nodes.get_mut(&2).unwrap();
+            node.applied_index = 0;
+            node.applied.clear();
+        }
+
+        assert!(!cluster.apply_health(0).healthy);
+
+        let local = cluster.observer_apply_health(1, 0);
+        assert!(local.healthy);
+        assert_eq!(local.fully_applied_nodes, vec![1]);
+        assert!(local.slow_appliers.is_empty());
+
+        let stale_observer = cluster.observer_apply_health(2, 0);
+        assert!(!stale_observer.healthy);
+        assert_eq!(stale_observer.slow_appliers[0].node_id, 2);
     }
 
     #[test]

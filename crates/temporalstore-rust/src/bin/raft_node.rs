@@ -185,10 +185,9 @@ fn handle(
         ("GET", "/raft/status") => json_response(200, &runtime.status()),
         ("POST", "/raft/apply_health") => {
             match parse_json::<RaftApplyHealthRequest>(&request.body) {
-                Ok(req) => json_response(
-                    200,
-                    &runtime.cluster().apply_health(req.max_allowed_apply_lag),
-                ),
+                Ok(req) => {
+                    json_response(200, &runtime.local_apply_health(req.max_allowed_apply_lag))
+                }
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
             }
         }

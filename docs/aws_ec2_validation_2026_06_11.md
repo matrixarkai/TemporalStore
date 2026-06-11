@@ -682,6 +682,48 @@ Remaining after the fix:
   lag `0` and both nodes serve correct reads. That is an observability/control-state convergence gap
   to fix separately.
 
+### Post-Fix Multi-EC2 Control Convergence Validation
+
+Fix under test:
+
+- Successful AppendEntries now updates the receiver's observed `leader_id`.
+- Successful AppendEntries demotes stale local leaders in the receiver's node table.
+- Standalone `raft_node` `/raft/apply_health` now reports local-observer apply health instead of
+  treating locally stale remote process state as authoritative.
+
+Fresh temporary EC2 data-node instances:
+
+| Node | Instance | Private IP |
+|---:|---|---|
+| 1 | `i-0777f7691c52fe8a9` | `10.70.1.122` |
+| 2 | `i-037dcfd9ff0818bcb` | `10.70.1.166` |
+| 3 | `i-0f77587f41763a06a` | `10.70.1.135` |
+
+Control-convergence result:
+
+- Initial leader: node `1`.
+- `20` seed writes through node `1` succeeded.
+- Transfer/election target: node `2`.
+- All three nodes converged to top-level `leader_id=2`.
+- Post-transfer write through node `2` succeeded.
+- Replica reads from nodes `1`, `2`, and `3` all returned `aws-controlfix-after-transfer`.
+- `/raft/apply_health` returned `healthy=true` from all three standalone nodes.
+- Final commit index: `21`.
+
+Final apply-health response shape:
+
+| Node | Reported Leader | Fully Applied Nodes | Healthy |
+|---:|---:|---|---|
+| 1 | 2 | `[1]` | `true` |
+| 2 | 2 | `[2]` | `true` |
+| 3 | 2 | `[3]` | `true` |
+
+One expected detail remains: asking every process to execute `/raft/control/transfer_leader` is not
+the production control flow. Node `3` returned a local `replica 2 is behind` error for that direct
+admin mutation because its local model had not yet observed node `2` catch-up. The authoritative
+result is the leader's transfer plus replicated AppendEntries: after heartbeats, all nodes reported
+leader `2`, writes through node `2` worked, and all local apply-health endpoints were healthy.
+
 Post-fix result:
 
 - Surviving nodes: `2`, `3`
