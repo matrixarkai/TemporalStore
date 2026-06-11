@@ -374,15 +374,6 @@ fn main() {
     );
     writes.push(propose(new_leader, "after-leader-crash", "v5"));
 
-    let mut reads_after_leader_crash = Vec::new();
-    for node in nodes.iter().filter(|node| node.node_id != crashed_leader) {
-        reads_after_leader_crash.push(wait_for_value(
-            node,
-            node.node_id,
-            "after-leader-crash",
-            "v5",
-        ));
-    }
     for node in nodes.iter().filter(|node| node.node_id != crashed_leader) {
         wait_for_cluster_commit(node, writes.len() as u64);
     }
@@ -394,6 +385,16 @@ fn main() {
             .cloned()
             .collect::<Vec<_>>(),
     );
+
+    let mut reads_after_leader_crash = Vec::new();
+    for node in nodes.iter().filter(|node| node.node_id != crashed_leader) {
+        reads_after_leader_crash.push(wait_for_value(
+            node,
+            node.node_id,
+            "after-leader-crash",
+            "v5",
+        ));
+    }
 
     let node_summaries = nodes
         .iter()
