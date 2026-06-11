@@ -2668,6 +2668,101 @@ mod tests {
     }
 
     #[test]
+    fn server_raft_control_scale_up_down_preserves_serving() {
+        let dir = tempdir().unwrap();
+        let state = test_server_raft_state(dir.path(), 1, vec![1, 2, 3, 4], false);
+        for node_id in [2, 3, 4] {
+            state.runtime.cluster().set_alive(node_id, true).unwrap();
+            state.runtime.cluster().catch_up(node_id).unwrap();
+        }
+
+        let remove_request = HttpRequest {
+            method: "POST".to_string(),
+            path: "/raft/control/remove_node".to_string(),
+            body: serde_json::to_vec(&serde_json::json!({ "node_id": 4 })).unwrap(),
+        };
+        let (code, body) = handle_server_raft_route(&state, &remove_request).unwrap();
+        assert_eq!(code, 200);
+        let removed: RaftMembershipApplyResponse = serde_json::from_slice(&body).unwrap();
+        assert!(removed.status.ok, "{removed:?}");
+        assert_eq!(state.runtime.cluster().membership().voters, vec![1, 2, 3]);
+        for node_id in [2, 3] {
+            state.runtime.cluster().set_alive(node_id, true).unwrap();
+            state.runtime.cluster().catch_up(node_id).unwrap();
+        }
+
+        state
+            .runtime
+            .cluster()
+            .propose(Command::StringSet {
+                key: "server-scale-down".to_string(),
+                value: b"after-scale-down".to_vec(),
+            })
+            .unwrap();
+        for node_id in [1, 2, 3] {
+            let read = state
+                .runtime
+                .read_local(
+                    node_id,
+                    Command::StringGet {
+                        key: "server-scale-down".to_string(),
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                read,
+                CommandResponse::Bytes {
+                    value: Some(b"after-scale-down".to_vec())
+                }
+            );
+        }
+
+        let add_request = HttpRequest {
+            method: "POST".to_string(),
+            path: "/raft/control/add_node".to_string(),
+            body: serde_json::to_vec(&serde_json::json!({ "node_id": 4 })).unwrap(),
+        };
+        let (code, body) = handle_server_raft_route(&state, &add_request).unwrap();
+        assert_eq!(code, 200);
+        let added: RaftMembershipApplyResponse = serde_json::from_slice(&body).unwrap();
+        assert!(added.status.ok, "{added:?}");
+        assert_eq!(
+            state.runtime.cluster().membership().voters,
+            vec![1, 2, 3, 4]
+        );
+        for node_id in [2, 3, 4] {
+            state.runtime.cluster().set_alive(node_id, true).unwrap();
+            state.runtime.cluster().catch_up(node_id).unwrap();
+        }
+
+        state
+            .runtime
+            .cluster()
+            .propose(Command::StringSet {
+                key: "server-scale-up".to_string(),
+                value: b"after-scale-up".to_vec(),
+            })
+            .unwrap();
+        for node_id in [1, 2, 3, 4] {
+            let read = state
+                .runtime
+                .read_local(
+                    node_id,
+                    Command::StringGet {
+                        key: "server-scale-up".to_string(),
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                read,
+                CommandResponse::Bytes {
+                    value: Some(b"after-scale-up".to_vec())
+                }
+            );
+        }
+    }
+
+    #[test]
     fn server_raft_admin_wait_applied_reports_lag_and_success_after_catchup() {
         let dir = tempdir().unwrap();
         let state = test_server_raft_state(dir.path(), 1, vec![1, 2, 3], true);

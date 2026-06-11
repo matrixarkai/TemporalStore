@@ -736,6 +736,10 @@ mod tests {
     #[test]
     fn raft_control_routes_list_add_remove_and_trigger_snapshot() {
         let runtime = test_runtime();
+        for node_id in [2, 3, 4] {
+            runtime.cluster().set_alive(node_id, true).unwrap();
+            runtime.cluster().catch_up(node_id).unwrap();
+        }
 
         let listed: RaftControlMembershipResponse = serde_json::from_slice(&route(
             &runtime,
@@ -757,6 +761,35 @@ mod tests {
         .unwrap();
         assert!(removed.status.ok);
         assert_eq!(runtime.cluster().membership().voters, vec![1, 2, 3]);
+        for node_id in [2, 3] {
+            runtime.cluster().set_alive(node_id, true).unwrap();
+            runtime.cluster().catch_up(node_id).unwrap();
+        }
+
+        runtime
+            .cluster()
+            .propose(Command::StringSet {
+                key: "route-scale-down".to_string(),
+                value: b"after-scale-down".to_vec(),
+            })
+            .unwrap();
+        for node_id in [1, 2, 3] {
+            let read = runtime
+                .cluster()
+                .read_from_replica(
+                    node_id,
+                    Command::StringGet {
+                        key: "route-scale-down".to_string(),
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                read,
+                CommandResponse::Bytes {
+                    value: Some(b"after-scale-down".to_vec())
+                }
+            );
+        }
 
         let added: RaftMembershipApplyResponse = serde_json::from_slice(&route(
             &runtime,
@@ -767,6 +800,35 @@ mod tests {
         .unwrap();
         assert!(added.status.ok);
         assert_eq!(runtime.cluster().membership().voters, vec![1, 2, 3, 4]);
+        for node_id in [2, 3, 4] {
+            runtime.cluster().set_alive(node_id, true).unwrap();
+            runtime.cluster().catch_up(node_id).unwrap();
+        }
+
+        runtime
+            .cluster()
+            .propose(Command::StringSet {
+                key: "route-scale-up".to_string(),
+                value: b"after-scale-up".to_vec(),
+            })
+            .unwrap();
+        for node_id in [1, 2, 3, 4] {
+            let read = runtime
+                .cluster()
+                .read_from_replica(
+                    node_id,
+                    Command::StringGet {
+                        key: "route-scale-up".to_string(),
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                read,
+                CommandResponse::Bytes {
+                    value: Some(b"after-scale-up".to_vec())
+                }
+            );
+        }
 
         let snapshot: RaftControlSnapshotResponse = serde_json::from_slice(&route(
             &runtime,

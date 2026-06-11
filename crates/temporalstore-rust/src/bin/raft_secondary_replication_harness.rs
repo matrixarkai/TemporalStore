@@ -275,14 +275,18 @@ fn main() {
     }
 
     let membership_scale_down = apply_membership_to_nodes(&nodes, &[1, 2]);
+    initialize_liveness(&nodes);
     writes.push(propose(&nodes[0], "membership-scale-down", "v-scale-down"));
     wait_for_value(&nodes[0], 1, "membership-scale-down", "v-scale-down");
     wait_for_value(&nodes[1], 2, "membership-scale-down", "v-scale-down");
 
     let membership_scale_up = apply_membership_to_nodes(&nodes, &[1, 2, 3]);
+    initialize_liveness(&nodes);
     catch_up_peer(&nodes[0], 3);
     local_catch_up(&nodes[2], 3);
     writes.push(propose(&nodes[0], "membership-scale-up", "v-scale-up"));
+    catch_up_peer(&nodes[0], 3);
+    local_catch_up(&nodes[2], 3);
     for node in &nodes {
         wait_for_value(node, node.node_id, "membership-scale-up", "v-scale-up");
     }

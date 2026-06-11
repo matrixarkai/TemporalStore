@@ -3385,55 +3385,57 @@ impl RaftCluster {
                 _ => failed_targets.push(target_id),
             }
         }
-        for target_id in failed_targets {
-            if transport
-                .install_snapshot(self.build_install_snapshot_request(target_id)?)
-                .map(|response| response.success)
-                .unwrap_or(false)
-            {
-                let retry_request = {
-                    let inner = self.inner.read().expect("raft cluster lock poisoned");
-                    let leader = inner
-                        .nodes
-                        .get(&leader_id)
-                        .ok_or(RaftError::LeaderUnavailable)?;
-                    let prev_log_index = entry.index.saturating_sub(1);
-                    let prev_log_term = leader
-                        .log
-                        .iter()
-                        .find(|log_entry| log_entry.index == prev_log_index)
-                        .map(|log_entry| log_entry.term)
-                        .unwrap_or_default();
-                    AppendEntriesRequest {
-                        rpc: None,
-                        shard_id: entry.shard_id,
-                        term: entry.term,
-                        leader_id,
-                        target_id,
-                        prev_log_index,
-                        prev_log_term,
-                        entries: vec![entry.clone()],
-                        leader_commit: entry.index,
-                    }
-                };
+        if replicated < required {
+            for target_id in failed_targets {
                 if transport
-                    .append_entries(retry_request)
-                    .map(|response| response.success && response.match_index >= entry.index)
+                    .install_snapshot(self.build_install_snapshot_request(target_id)?)
+                    .map(|response| response.success)
                     .unwrap_or(false)
                 {
-                    let counts_for_quorum = self
-                        .inner
-                        .read()
-                        .expect("raft cluster lock poisoned")
-                        .nodes
-                        .get(&target_id)
-                        .map(|node| node.replica_role.participates_in_quorum())
-                        .unwrap_or(false);
-                    if counts_for_quorum {
-                        replicated += 1;
+                    let retry_request = {
+                        let inner = self.inner.read().expect("raft cluster lock poisoned");
+                        let leader = inner
+                            .nodes
+                            .get(&leader_id)
+                            .ok_or(RaftError::LeaderUnavailable)?;
+                        let prev_log_index = entry.index.saturating_sub(1);
+                        let prev_log_term = leader
+                            .log
+                            .iter()
+                            .find(|log_entry| log_entry.index == prev_log_index)
+                            .map(|log_entry| log_entry.term)
+                            .unwrap_or_default();
+                        AppendEntriesRequest {
+                            rpc: None,
+                            shard_id: entry.shard_id,
+                            term: entry.term,
+                            leader_id,
+                            target_id,
+                            prev_log_index,
+                            prev_log_term,
+                            entries: vec![entry.clone()],
+                            leader_commit: entry.index,
+                        }
+                    };
+                    if transport
+                        .append_entries(retry_request)
+                        .map(|response| response.success && response.match_index >= entry.index)
+                        .unwrap_or(false)
+                    {
+                        let counts_for_quorum = self
+                            .inner
+                            .read()
+                            .expect("raft cluster lock poisoned")
+                            .nodes
+                            .get(&target_id)
+                            .map(|node| node.replica_role.participates_in_quorum())
+                            .unwrap_or(false);
+                        if counts_for_quorum {
+                            replicated += 1;
+                        }
+                        let _ = self.catch_up(target_id);
+                        successful_targets.push(target_id);
                     }
-                    let _ = self.catch_up(target_id);
-                    successful_targets.push(target_id);
                 }
             }
         }
@@ -8670,6 +8672,75 @@ mod tests {
         ) -> Result<InstallSnapshotChunkResponse, RaftError> {
             self.cluster.receive_install_snapshot_chunk(request)
         }
+    }
+
+    #[derive(Debug, Clone)]
+    struct OneFailedFollowerTransport {
+        cluster: RaftCluster,
+        failed_target: RaftNodeId,
+        snapshot_attempts: Arc<Mutex<usize>>,
+    }
+
+    impl RaftTransport for OneFailedFollowerTransport {
+        fn append_entries(
+            &self,
+            request: AppendEntriesRequest,
+        ) -> Result<AppendEntriesResponse, RaftError> {
+            if request.target_id == self.failed_target {
+                return Err(RaftError::Transport("target unavailable".to_string()));
+            }
+            self.cluster.receive_append_entries(request)
+        }
+
+        fn request_vote(&self, request: VoteRequest) -> Result<VoteResponse, RaftError> {
+            self.cluster.receive_vote_request(request)
+        }
+
+        fn install_snapshot(
+            &self,
+            request: InstallSnapshotRequest,
+        ) -> Result<InstallSnapshotResponse, RaftError> {
+            *self
+                .snapshot_attempts
+                .lock()
+                .expect("snapshot attempts lock poisoned") += 1;
+            self.cluster.receive_install_snapshot(request)
+        }
+
+        fn install_snapshot_chunk(
+            &self,
+            request: InstallSnapshotChunkRequest,
+        ) -> Result<InstallSnapshotChunkResponse, RaftError> {
+            self.cluster.receive_install_snapshot_chunk(request)
+        }
+    }
+
+    #[test]
+    fn distributed_propose_does_not_wait_for_failed_followers_after_quorum() {
+        let cluster =
+            RaftCluster::new_single_shard_with_config(7, vec![1, 2, 3], RaftConfig::default())
+                .unwrap();
+        let snapshot_attempts = Arc::new(Mutex::new(0usize));
+        let transport = OneFailedFollowerTransport {
+            cluster: cluster.clone(),
+            failed_target: 3,
+            snapshot_attempts: Arc::clone(&snapshot_attempts),
+        };
+
+        let response = cluster
+            .propose_distributed(
+                Command::StringSet {
+                    key: "quorum-fast-path".to_string(),
+                    value: b"ok".to_vec(),
+                },
+                &transport,
+            )
+            .unwrap();
+        assert_eq!(response, CommandResponse::Empty);
+        assert_eq!(*snapshot_attempts.lock().unwrap(), 0);
+        assert_eq!(cluster.commit_index(1).unwrap(), 1);
+        assert_eq!(cluster.commit_index(2).unwrap(), 1);
+        assert_eq!(cluster.commit_index(3).unwrap(), 0);
     }
 
     #[test]
