@@ -14,6 +14,8 @@ use temporalstore_snapshot::object_store::FileObjectStore;
 #[derive(Debug, Clone)]
 struct HarnessOptions {
     root: PathBuf,
+    shared_store_root: Option<PathBuf>,
+    raft_wal_root: Option<PathBuf>,
     async_flush_limit: usize,
 }
 
@@ -63,7 +65,12 @@ struct RaftLocalFileSummary {
 async fn main() {
     let options = parse_options();
     fs::create_dir_all(&options.root).expect("failed to create harness root");
-    let store = Arc::new(FileObjectStore::new(options.root.join("shared-store")));
+    let shared_store_root = options
+        .shared_store_root
+        .clone()
+        .unwrap_or_else(|| options.root.join("shared-store"));
+    fs::create_dir_all(&shared_store_root).expect("failed to create shared-store root");
+    let store = Arc::new(FileObjectStore::new(shared_store_root));
     let replicator = SharedStoreReplicator::new("storage-modes-harness", store);
 
     let sync = run_shared_store_mode(
@@ -84,7 +91,11 @@ async fn main() {
         options.async_flush_limit,
     )
     .await;
-    let raft_local_file = run_raft_local_file(options.root.join("raft-wal"));
+    let raft_wal_root = options
+        .raft_wal_root
+        .clone()
+        .unwrap_or_else(|| options.root.join("raft-wal"));
+    let raft_local_file = run_raft_local_file(raft_wal_root);
 
     println!(
         "{}",
@@ -248,6 +259,8 @@ fn unique_child(prefix: &str) -> PathBuf {
 
 fn parse_options() -> HarnessOptions {
     let mut root = std::env::temp_dir().join(format!("temporalstore-storage-modes-{}", now_ms()));
+    let mut shared_store_root = None;
+    let mut raft_wal_root = None;
     let mut async_flush_limit = 1usize;
     let mut args = std::env::args().skip(1);
     while let Some(key) = args.next() {
@@ -256,12 +269,16 @@ fn parse_options() -> HarnessOptions {
         };
         match key.as_str() {
             "--root" => root = PathBuf::from(value),
+            "--shared-store-root" => shared_store_root = Some(PathBuf::from(value)),
+            "--raft-wal-root" => raft_wal_root = Some(PathBuf::from(value)),
             "--async-flush-limit" => async_flush_limit = parse(&value, &key),
             _ => usage_and_exit(),
         }
     }
     HarnessOptions {
         root,
+        shared_store_root,
+        raft_wal_root,
         async_flush_limit,
     }
 }
@@ -274,7 +291,9 @@ fn parse<T: std::str::FromStr>(value: &str, key: &str) -> T {
 }
 
 fn usage_and_exit() -> ! {
-    eprintln!("usage: storage_modes_harness [--root <path>] [--async-flush-limit <n>]");
+    eprintln!(
+        "usage: storage_modes_harness [--root <path>] [--shared-store-root <path>] [--raft-wal-root <path>] [--async-flush-limit <n>]"
+    );
     std::process::exit(2);
 }
 

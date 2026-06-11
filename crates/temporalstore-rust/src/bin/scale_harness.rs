@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -11,7 +12,7 @@ use temporalstore_rust::types::{
 };
 use temporalstore_snapshot::object_store::FileObjectStore;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct HarnessOptions {
     shard_id: u64,
     nodes: u64,
@@ -26,6 +27,7 @@ struct HarnessOptions {
     compare_shared_store: bool,
     shared_store_ops: usize,
     shared_store_flush_every: usize,
+    shared_store_root: Option<PathBuf>,
 }
 
 impl Default for HarnessOptions {
@@ -44,6 +46,7 @@ impl Default for HarnessOptions {
             compare_shared_store: false,
             shared_store_ops: 1_000,
             shared_store_flush_every: 25,
+            shared_store_root: None,
         }
     }
 }
@@ -94,6 +97,7 @@ struct SharedStoreComparisonSummary {
     sync_max_lag: u64,
     async_max_lag: u64,
     async_flush_every: usize,
+    shared_store_root: String,
 }
 
 fn main() {
@@ -299,6 +303,7 @@ fn parse_options() -> HarnessOptions {
             }
             "--shared-store-ops" => options.shared_store_ops = parse(value, key),
             "--shared-store-flush-every" => options.shared_store_flush_every = parse(value, key),
+            "--shared-store-root" => options.shared_store_root = Some(PathBuf::from(value)),
             "--help" | "-h" => usage_and_exit(),
             other => {
                 eprintln!("unknown option: {other}");
@@ -335,6 +340,7 @@ fn usage_and_exit() -> ! {
     eprintln!("  --compare-shared-store <bool> default false");
     eprintln!("  --shared-store-ops <n> default 1000");
     eprintln!("  --shared-store-flush-every <n> default 25");
+    eprintln!("  --shared-store-root <path> default temp dir");
     std::process::exit(2);
 }
 
@@ -361,8 +367,9 @@ fn choose_live_replica(cluster: &RaftCluster, rng: &mut Lcg) -> u64 {
 fn run_shared_store_comparison(options: &HarnessOptions) -> SharedStoreComparisonSummary {
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime should start");
     runtime.block_on(async {
-        let root =
-            std::env::temp_dir().join(format!("temporalstore-shared-store-scale-{}", now_ms()));
+        let root = options.shared_store_root.clone().unwrap_or_else(|| {
+            std::env::temp_dir().join(format!("temporalstore-shared-store-scale-{}", now_ms()))
+        });
         let store = Arc::new(FileObjectStore::new(root.join("objects")));
         let replicator = SharedStoreReplicator::new("scale-harness", store);
 
@@ -397,6 +404,7 @@ fn run_shared_store_comparison(options: &HarnessOptions) -> SharedStoreCompariso
             sync_max_lag: sync.max_lag,
             async_max_lag: async_report.max_lag,
             async_flush_every: options.shared_store_flush_every.max(1),
+            shared_store_root: root.display().to_string(),
         }
     })
 }

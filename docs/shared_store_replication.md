@@ -103,6 +103,16 @@ The harness validates three local paths in one run:
 - async shared-store storage queues entries, flushes them with a bounded limit, then replays them
 - Raft writes committed entries to local WAL segment files and restores the shard from those files
 
+For AWS, point shared-store paths at EFS and keep Raft WAL roots on local disk. Example:
+
+```bash
+cargo run --release -p temporalstore-rust --bin storage_modes_harness -- \
+  --root /tmp/temporalstore-storage-modes \
+  --shared-store-root /mnt/temporalstore-shared/rust-storage-modes/shared-store-$(date +%s) \
+  --raft-wal-root /tmp/temporalstore-storage-modes/raft-wal \
+  --async-flush-limit 1
+```
+
 The output is JSON and includes per-write publish/queue status, async flush progress, replay
 position, restored read value, and the local WAL segment files used by each Raft replica.
 

@@ -496,6 +496,62 @@ Secondary/failover harness:
 - Surviving nodes 2 and 3 had apply lag `0`.
 - Both surviving nodes read `after-leader-crash=v5`.
 
+## EFS Shared-Store Validation Attempt
+
+Result: blocked by AWS environment, after code fix.
+
+The harness code now supports the intended storage split:
+
+- sync shared-store and async shared-store use an explicit shared-store root
+- on AWS, that shared-store root should be EFS-backed
+- Raft WAL/local-file persistence remains on local disk
+
+Code paths changed:
+
+- `scale_harness` accepts `--shared-store-root` and reports `shared_store.shared_store_root`.
+- `storage_modes_harness` accepts `--shared-store-root` and `--raft-wal-root` separately.
+- `tools/run_temporalstore_scale_harness.sh` accepts `TS_SCALE_SHARED_STORE_ROOT`.
+- `tools/run_temporalstore_more_data_nodes.sh` accepts `TS_MORE_NODES_SHARED_STORE_ROOT`.
+
+Local validation passed with split paths:
+
+```text
+storage_modes_harness:
+  shared store root: /tmp/ts-shared-local
+  raft WAL root: /tmp/ts-raft-local
+  sync read: sync-value
+  async read: async-value
+  raft WAL restore read: wal-value
+
+scale_harness:
+  shared_store.shared_store_root: /tmp/ts-scale-shared-local
+  sync_max_lag: 0
+```
+
+AWS test attempted to use:
+
+```text
+shared store: /mnt/temporalstore-shared/rust-validation/<run_id>
+raft WAL: /tmp/temporalstore-raft-local/<run_id>
+```
+
+The EFS preflight failed before the harness ran:
+
+```text
+timeout 15 mkdir -p "$SHARED_ROOT"
+exit status: 124
+```
+
+Follow-up AWS discovery found no EFS filesystem in account `657817560042`, region `us-west-2`:
+
+```text
+aws efs describe-file-systems --region us-west-2
+```
+
+returned an empty filesystem list. The active EC2 node is in `us-west-2`, so the current reused EC2
+environment cannot honestly run EFS-backed shared-store validation until an EFS filesystem is
+created/mounted or the old EFS mount is restored.
+
 Post-fix result:
 
 - Surviving nodes: `2`, `3`

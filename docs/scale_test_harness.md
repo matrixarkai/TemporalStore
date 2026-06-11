@@ -105,6 +105,7 @@ tools/run_temporalstore_more_data_nodes.sh
 Defaults:
 
 - `TS_MORE_NODES=7`
+- `TS_MORE_NODES_SHARED_STORE_ROOT` unset, so the harness uses a temp local root
 - `TS_MORE_NODES_STRING_OPS=2000`
 - `TS_MORE_NODES_HASH_OPS=500`
 - `TS_MORE_NODES_SEQUENCE_KEYS=4`
@@ -140,6 +141,23 @@ The important fields to inspect are:
 This is still an in-process data-node replica test. It is useful for Raft correctness, secondary lag,
 and replica-read regression coverage, but it does not replace a true multi-EC2 data-node test with
 real network, EBS, and EFS paths.
+
+For AWS shared-store testing, set the shared-store root to an EFS-backed path. Raft WAL/local-file
+tests should remain on the local filesystem:
+
+```bash
+TS_MORE_NODES_SHARED_STORE_ROOT=/mnt/temporalstore-shared/rust-scale/shared-store-$(date +%s) \
+tools/run_temporalstore_more_data_nodes.sh
+```
+
+Direct scale harness equivalent:
+
+```bash
+cargo run --release -p temporalstore-rust --bin scale_harness -- \
+  --nodes 7 \
+  --compare-shared-store true \
+  --shared-store-root /mnt/temporalstore-shared/rust-scale/shared-store-$(date +%s)
+```
 
 ## Client Scale Harness
 

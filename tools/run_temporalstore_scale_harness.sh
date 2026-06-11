@@ -15,6 +15,11 @@ fi
 
 cd "$ROOT"
 
+EXTRA_ARGS=()
+if [[ -n "${TS_SCALE_SHARED_STORE_ROOT:-}" ]]; then
+  EXTRA_ARGS+=(--shared-store-root "${TS_SCALE_SHARED_STORE_ROOT}")
+fi
+
 "${CARGO_PREFIX[@]}" cargo run "${PROFILE_FLAG[@]}" -p temporalstore-rust --bin scale_harness -- \
   --nodes "${TS_SCALE_NODES:-3}" \
   --string-ops "${TS_SCALE_STRING_OPS:-40}" \
@@ -27,4 +32,5 @@ cd "$ROOT"
   --max-log-entry-bytes "${TS_SCALE_MAX_LOG_ENTRY_BYTES:-32768}" \
   --compare-shared-store "${TS_SCALE_COMPARE_SHARED_STORE:-false}" \
   --shared-store-ops "${TS_SCALE_SHARED_STORE_OPS:-1000}" \
-  --shared-store-flush-every "${TS_SCALE_SHARED_STORE_FLUSH_EVERY:-25}"
+  --shared-store-flush-every "${TS_SCALE_SHARED_STORE_FLUSH_EVERY:-25}" \
+  "${EXTRA_ARGS[@]}"
