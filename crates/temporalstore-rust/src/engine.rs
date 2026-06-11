@@ -304,6 +304,18 @@ impl TemporalEngine {
     }
 
     pub fn execute(&self, request: ExecuteRequest) -> ExecuteResponse {
+        self.execute_with_storage_override(request, None)
+    }
+
+    pub fn execute_durable(&self, request: ExecuteRequest) -> ExecuteResponse {
+        self.execute_with_storage_override(request, Some(false))
+    }
+
+    fn execute_with_storage_override(
+        &self,
+        request: ExecuteRequest,
+        async_storage_override: Option<bool>,
+    ) -> ExecuteResponse {
         let mut shards = self.shards.write().expect("engine lock poisoned");
         let Some(shard) = shards.get_mut(&request.shard_id) else {
             return ExecuteResponse {
@@ -326,13 +338,16 @@ impl TemporalEngine {
                 response: CommandResponse::Empty,
             };
         }
-        let config = self
+        let mut config = self
             .configs
             .read()
             .expect("config lock poisoned")
             .get(&request.shard_id)
             .cloned()
             .unwrap_or_default();
+        if let Some(async_storage) = async_storage_override {
+            config.async_storage = async_storage;
+        }
         let info = self
             .infos
             .read()
@@ -3893,6 +3908,55 @@ mod tests {
         );
         assert_eq!(engine.page_store().stats().reads, 0);
         assert!(engine.cache().stats().memory_hits >= 1);
+    }
+
+    #[test]
+    fn durable_execute_overrides_async_storage_for_raft_local_file_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        assert!(
+            engine
+                .set_config(SetConfigRequest {
+                    shard_id: 1,
+                    config: Config {
+                        version: 2,
+                        async_storage: true,
+                        ..Config::default()
+                    },
+                })
+                .ok
+        );
+
+        let write = engine.execute_durable(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "raft".to_string(),
+                value: b"value".to_vec(),
+            },
+        });
+        assert!(write.status.ok);
+        assert_eq!(engine.page_store().stats().writes, 1);
+        assert_eq!(engine.oplog_store().stats(1).writes, 1);
+        assert_eq!(engine.index_log_store().stats(1).writes, 1);
+
+        let read = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: "raft".to_string(),
+            },
+        });
+        assert_eq!(
+            read.response,
+            CommandResponse::Bytes {
+                value: Some(b"value".to_vec())
+            }
+        );
     }
 
     #[test]

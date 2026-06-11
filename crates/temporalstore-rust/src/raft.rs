@@ -322,7 +322,7 @@ impl DataRaftCommittedLogApplier {
                 entry.raft_index, raft_index
             )));
         }
-        let response = engine.execute(ExecuteRequest {
+        let response = engine.execute_durable(ExecuteRequest {
             shard_id: entry.shard_id,
             command: entry.command,
         });
@@ -4737,7 +4737,7 @@ impl RaftCluster {
             let engine = TemporalEngine::default();
             engine.load_shard(shard_id);
             for entry in &snapshot.entries {
-                engine.execute(ExecuteRequest {
+                engine.execute_durable(ExecuteRequest {
                     shard_id: entry.shard_id,
                     command: entry.command.clone(),
                 });
@@ -5860,7 +5860,7 @@ fn apply_committed(node: &mut RaftNode) -> Option<CommandResponse> {
         if node.applied.insert(entry.index) {
             let response = node
                 .engine
-                .execute(ExecuteRequest {
+                .execute_durable(ExecuteRequest {
                     shard_id: entry.shard_id,
                     command: entry.command.clone(),
                 })
@@ -5876,7 +5876,7 @@ fn install_snapshot_state(node: &mut RaftNode, snapshot: RaftSnapshot) {
     let engine = TemporalEngine::default();
     engine.load_shard(snapshot.shard_id);
     for entry in &snapshot.entries {
-        engine.execute(ExecuteRequest {
+        engine.execute_durable(ExecuteRequest {
             shard_id: entry.shard_id,
             command: entry.command.clone(),
         });
@@ -7396,6 +7396,7 @@ fn install_meta_snapshot_state(node: &mut MetaRaftNode, snapshot: MetaRaftSnapsh
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::control::{Config, SetConfigRequest};
     use crate::http::{
         json_response, parse_json, post_json_with_options, serve, HttpRequestOptions,
     };
@@ -7693,6 +7694,64 @@ mod tests {
             applier.apply(12, &wrong_shard, &engine),
             Err(RaftError::InvalidDataRaftLog(_))
         ));
+    }
+
+    #[test]
+    fn committed_data_raft_applier_forces_durable_storage_when_async_storage_enabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(7);
+        assert!(
+            engine
+                .set_config(SetConfigRequest {
+                    shard_id: 7,
+                    config: Config {
+                        version: 2,
+                        async_storage: true,
+                        ..Config::default()
+                    },
+                })
+                .ok
+        );
+        let committed = serialize_data_raft_log(&DataRaftLogCodecEntry {
+            shard_id: 7,
+            raft_index: 11,
+            log_id: 13,
+            log_size: 0,
+            oplog_sequence: 17,
+            command: Command::StringSet {
+                key: "raft".to_string(),
+                value: b"durable".to_vec(),
+            },
+        })
+        .unwrap();
+        let mut applier = DataRaftCommittedLogApplier::new(7);
+
+        assert_eq!(
+            applier.apply(11, &committed, &engine).unwrap(),
+            Some(CommandResponse::Empty)
+        );
+        assert_eq!(engine.page_store().stats().writes, 1);
+        assert_eq!(engine.oplog_store().stats(7).writes, 1);
+        assert_eq!(engine.index_log_store().stats(7).writes, 1);
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 7,
+                    command: Command::StringGet {
+                        key: "raft".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"durable".to_vec())
+            }
+        );
     }
 
     #[test]
