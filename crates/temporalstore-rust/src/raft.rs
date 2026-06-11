@@ -2196,7 +2196,6 @@ impl ProductionRaftRuntime {
                                 .map(|response| response.success)
                                 .unwrap_or(false)
                             {
-                                let _ = cluster.catch_up(*target_id);
                                 sent += entry_count.max(1);
                             }
                         }
