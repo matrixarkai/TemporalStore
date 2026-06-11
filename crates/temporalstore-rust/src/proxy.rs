@@ -251,21 +251,27 @@ impl ProxyService {
                     Err(status) => json_response(502, &status),
                 }
             }
-            ("POST", "/execute") => match parse_json::<ExecuteRequest>(&request.body) {
-                Ok(req) => json_response(200, &self.execute(req)),
-                Err(err) => {
-                    self.inc_bad_request();
-                    json_response(400, &execute_error("bad_request", err.to_string()))
+            ("POST", "/execute") | ("POST", "/ProxyService/ExecuteCmd") => {
+                match parse_json::<ExecuteRequest>(&request.body) {
+                    Ok(req) => json_response(200, &self.execute(req)),
+                    Err(err) => {
+                        self.inc_bad_request();
+                        json_response(400, &execute_error("bad_request", err.to_string()))
+                    }
                 }
-            },
-            ("POST", "/batch_execute") => match parse_json::<BatchExecuteRequest>(&request.body) {
-                Ok(req) => json_response(200, &self.batch_execute(req)),
-                Err(err) => {
-                    self.inc_bad_request();
-                    json_response(400, &Status::error("bad_request", err.to_string()))
+            }
+            ("POST", "/batch_execute") | ("POST", "/ProxyService/BatchExecuteCmd") => {
+                match parse_json::<BatchExecuteRequest>(&request.body) {
+                    Ok(req) => json_response(200, &self.batch_execute(req)),
+                    Err(err) => {
+                        self.inc_bad_request();
+                        json_response(400, &Status::error("bad_request", err.to_string()))
+                    }
                 }
-            },
-            ("POST", "/proxy/open_table") | ("POST", "/tables/open") => {
+            }
+            ("POST", "/proxy/open_table")
+            | ("POST", "/tables/open")
+            | ("POST", "/ProxyService/OpenTable") => {
                 match parse_json::<ProxyOpenTableRequest>(&request.body) {
                     Ok(req) => json_response(200, &self.open_table(req)),
                     Err(err) => {
@@ -280,7 +286,10 @@ impl ProxyService {
                     }
                 }
             }
-            ("POST", "/proxy/table_execute") | ("POST", "/table_execute") => {
+            ("POST", "/proxy/table_execute")
+            | ("POST", "/table_execute")
+            | ("POST", "/ProxyService/TableExecuteCmd")
+            | ("POST", "/ProxyService/ExecuteTableCmd") => {
                 match parse_json::<ProxyTableExecuteRequest>(&request.body) {
                     Ok(req) => json_response(200, &self.table_execute(req)),
                     Err(err) => {
@@ -289,7 +298,10 @@ impl ProxyService {
                     }
                 }
             }
-            ("POST", "/proxy/table_batch_execute") | ("POST", "/table_batch_execute") => {
+            ("POST", "/proxy/table_batch_execute")
+            | ("POST", "/table_batch_execute")
+            | ("POST", "/ProxyService/TableBatchExecuteCmd")
+            | ("POST", "/ProxyService/BatchExecuteTableCmd") => {
                 match parse_json::<ProxyTableBatchExecuteRequest>(&request.body) {
                     Ok(req) => json_response(200, &self.table_batch_execute(req)),
                     Err(err) => {
@@ -743,6 +755,90 @@ mod tests {
         assert_eq!(heartbeat.route_cache_size, 1);
         assert_eq!(heartbeat.stats.execute_requests, 2);
         assert_ne!(heartbeat.config_version, 0);
+    }
+
+    #[test]
+    fn proxy_cpp_service_aliases_delegate_to_client_execution_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        start_server(test_addr(18_321), engine.clone());
+        start_meta(test_addr(18_322), test_addr(18_321));
+        wait_for_http(&test_addr(18_321));
+        wait_for_http(&test_addr(18_322));
+
+        let proxy = ProxyService::new(ProxyOptions {
+            meta_addr: test_addr(18_322),
+            route_cache_ttl_ms: 60_000,
+            ..ProxyOptions::default()
+        });
+        let (code, body) = proxy.handle(HttpRequest {
+            method: "POST".to_string(),
+            path: "/ProxyService/ExecuteCmd".to_string(),
+            body: serde_json::to_vec(&ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "cpp-proxy-alias".to_string(),
+                    value: b"via-proxy-service".to_vec(),
+                },
+            })
+            .unwrap(),
+        });
+        assert_eq!(code, 200);
+        let response = parse_json::<ExecuteResponse>(&body).unwrap();
+        assert!(response.status.ok);
+
+        let (code, body) = proxy.handle(HttpRequest {
+            method: "POST".to_string(),
+            path: "/ProxyService/BatchExecuteCmd".to_string(),
+            body: serde_json::to_vec(&BatchExecuteRequest {
+                shard_id: 1,
+                commands: vec![
+                    Command::StringGet {
+                        key: "cpp-proxy-alias".to_string(),
+                    },
+                    Command::HashSet {
+                        key: "cpp-proxy-hash".to_string(),
+                        field: "field".to_string(),
+                        value: b"value".to_vec(),
+                    },
+                    Command::HashGet {
+                        key: "cpp-proxy-hash".to_string(),
+                        field: "field".to_string(),
+                    },
+                ],
+            })
+            .unwrap(),
+        });
+        assert_eq!(code, 200);
+        let response = parse_json::<BatchExecuteResponse>(&body).unwrap();
+        assert!(response.status.ok);
+        assert!(response.responses.iter().all(|item| item.status.ok));
+        assert_eq!(
+            response
+                .responses
+                .into_iter()
+                .map(|item| item.response)
+                .collect::<Vec<_>>(),
+            vec![
+                CommandResponse::Bytes {
+                    value: Some(b"via-proxy-service".to_vec())
+                },
+                CommandResponse::Empty,
+                CommandResponse::Bytes {
+                    value: Some(b"value".to_vec())
+                },
+            ]
+        );
+        let info = proxy.info();
+        assert_eq!(info.stats.execute_requests, 1);
+        assert_eq!(info.stats.batch_execute_requests, 1);
+        assert!(info.stats.route_cache_hits >= 1);
     }
 
     #[test]

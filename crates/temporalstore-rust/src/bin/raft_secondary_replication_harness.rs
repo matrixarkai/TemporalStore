@@ -7,7 +7,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use temporalstore_rust::http::{get_json_with_options, post_json_with_options, HttpRequestOptions};
-use temporalstore_rust::raft::RaftRpcMetadata;
+use temporalstore_rust::meta::ShardSnapshotRef;
+use temporalstore_rust::raft::{
+    RaftReplicaBootstrapPlan, RaftRpcMetadata, RaftSnapshotPublishReport,
+};
 use temporalstore_rust::{
     Command, CommandResponse, DistributedRaftCommandResponse, DistributedRaftProposeRequest,
     DistributedRaftReadRequest, ProductionRaftNode, RaftApplyHealth, RaftClusterStatus,
@@ -157,6 +160,36 @@ struct RaftMembershipApplyResponse {
     report: Option<RaftMembershipChangeReport>,
 }
 
+#[derive(Debug, Serialize)]
+struct PublishExternalSnapshotRequest {
+    object_root: String,
+    local_root: String,
+    cluster_id: String,
+    bucket: String,
+}
+
+#[derive(Debug, serde::Deserialize, Serialize)]
+struct PublishExternalSnapshotResponse {
+    status: Status,
+    report: Option<RaftSnapshotPublishReport>,
+}
+
+#[derive(Debug, Serialize)]
+struct BootstrapExternalSnapshotRequest {
+    target_id: RaftNodeId,
+    snapshot: ShardSnapshotRef,
+    object_root: String,
+    local_root: String,
+    cluster_id: String,
+    bucket: String,
+}
+
+#[derive(Debug, serde::Deserialize, Serialize)]
+struct BootstrapExternalSnapshotResponse {
+    status: Status,
+    plan: Option<RaftReplicaBootstrapPlan>,
+}
+
 struct ChildNode {
     node: ProductionRaftNode,
     child: Child,
@@ -207,6 +240,7 @@ fn main() {
     }
     let mut writes = writes;
     writes.push(propose(&nodes[0], "secondary-before-stop", "v2"));
+    wait_for_value(&nodes[0], 1, "secondary-before-stop", "v2");
     wait_for_value(&nodes[1], 2, "secondary-before-stop", "v2");
     wait_for_value(&nodes[2], 3, "secondary-before-stop", "v2");
 
@@ -275,15 +309,17 @@ fn main() {
     }
 
     let membership_scale_down = apply_membership_to_nodes(&nodes, &[1, 2]);
-    initialize_liveness(&nodes);
+    initialize_liveness(&nodes[..2]);
     writes.push(propose(&nodes[0], "membership-scale-down", "v-scale-down"));
     wait_for_value(&nodes[0], 1, "membership-scale-down", "v-scale-down");
     wait_for_value(&nodes[1], 2, "membership-scale-down", "v-scale-down");
 
     let membership_scale_up = apply_membership_to_nodes(&nodes, &[1, 2, 3]);
     initialize_liveness(&nodes);
-    catch_up_peer(&nodes[0], 3);
-    local_catch_up(&nodes[2], 3);
+    bootstrap_external_snapshot(&nodes[0], &nodes[2], &options);
+    wait_for_value(&nodes[2], 3, "secondary-before-restart", "v1");
+    wait_for_value(&nodes[2], 3, "secondary-before-stop", "v2");
+    wait_for_value(&nodes[2], 3, "membership-scale-down", "v-scale-down");
     writes.push(propose(&nodes[0], "membership-scale-up", "v-scale-up"));
     catch_up_peer(&nodes[0], 3);
     local_catch_up(&nodes[2], 3);
@@ -1110,6 +1146,66 @@ fn trigger_failover(node: &ProductionRaftNode) -> AdminFailoverResponse {
         request_options(),
     )
     .expect("failover admin request failed")
+}
+
+fn bootstrap_external_snapshot(
+    leader: &ProductionRaftNode,
+    target: &ProductionRaftNode,
+    options: &HarnessOptions,
+) {
+    let object_root = options.root.join("external-snapshot-objects");
+    let publish_local_root = options.root.join("external-snapshot-publish-local");
+    let restore_local_root = options
+        .root
+        .join(format!("external-snapshot-restore-node-{}", target.node_id));
+    let cluster_id = "raft-secondary-harness".to_string();
+    let bucket = "raft".to_string();
+
+    let published: PublishExternalSnapshotResponse = post_json_with_options(
+        &leader.addr,
+        "/raft/admin/publish_external_snapshot",
+        &PublishExternalSnapshotRequest {
+            object_root: object_root.display().to_string(),
+            local_root: publish_local_root.display().to_string(),
+            cluster_id: cluster_id.clone(),
+            bucket: bucket.clone(),
+        },
+        request_options(),
+    )
+    .expect("publish external snapshot admin request failed");
+    assert!(
+        published.status.ok,
+        "publish external snapshot failed: {:?}",
+        published.status
+    );
+    let snapshot = published
+        .report
+        .expect("published snapshot response should include report")
+        .meta_ref;
+
+    let bootstrapped: BootstrapExternalSnapshotResponse = post_json_with_options(
+        &target.addr,
+        "/raft/admin/bootstrap_external_snapshot",
+        &BootstrapExternalSnapshotRequest {
+            target_id: target.node_id,
+            snapshot,
+            object_root: object_root.display().to_string(),
+            local_root: restore_local_root.display().to_string(),
+            cluster_id,
+            bucket,
+        },
+        request_options(),
+    )
+    .expect("bootstrap external snapshot admin request failed");
+    assert!(
+        bootstrapped.status.ok,
+        "bootstrap external snapshot failed: {:?}",
+        bootstrapped.status
+    );
+    assert!(
+        bootstrapped.plan.is_some(),
+        "bootstrap external snapshot response should include plan"
+    );
 }
 
 fn wait_for_value(

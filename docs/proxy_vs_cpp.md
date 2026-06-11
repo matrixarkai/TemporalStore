@@ -36,6 +36,10 @@ Rust now has a reusable `ProxyService`:
   avoiding needless client/cache reset on duplicate heartbeat config
 - `/proxy/open_table`, `/proxy/table_execute`, and `/proxy/table_batch_execute` for namespace/table
   request bodies
+- C++ service-name JSON aliases for open-source migration tests:
+  `/ProxyService/ExecuteCmd`, `/ProxyService/BatchExecuteCmd`, `/ProxyService/OpenTable`,
+  `/ProxyService/TableExecuteCmd`, `/ProxyService/ExecuteTableCmd`,
+  `/ProxyService/TableBatchExecuteCmd`, and `/ProxyService/BatchExecuteTableCmd`
 - table execute paths auto-open table topology from metaserver when the table is not already cached,
   matching the C++ proxy shape where requests can drive client table opening
 - forwarding delegates through the Rust `TemporalStoreClient`
@@ -70,9 +74,10 @@ Rust proxy is still not a C++ proxy drop-in:
 - no brpc server
 - no thrift framed parser
 - no C++ thrift request/response wire compatibility
+- no command-specific thrift method aliases such as `Get`, `Set`, `FeatureAdd`, `RiskHset`,
+  `HMGet`, `HMSet`, `HGetAll`, and `HLen`
 - no full C++ partition-set topology/slot router beyond the open-source table topology path
 - no consul registration
 - no proxy location/VDC/CMDB integration
-- no Risk/IPS thrift method coverage
 
 The current Rust proxy is an HTTP/JSON proxy that wraps the Rust client library for routing/cache/retry behavior. It is suitable for the open-source Rust path, but not yet a wire-compatible replacement for the internal C++ proxy.

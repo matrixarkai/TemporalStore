@@ -4496,12 +4496,24 @@ impl RaftCluster {
             .get(&inner.leader_id)
             .filter(|node| node.alive && node.role == RaftRole::Leader)
             .ok_or(RaftError::LeaderUnavailable)?;
-        let entries = leader
+        let mut entries_by_index = BTreeMap::new();
+        if let Some(snapshot) = &leader.installed_snapshot {
+            for entry in snapshot
+                .entries
+                .iter()
+                .filter(|entry| entry.index <= leader.commit_index)
+            {
+                entries_by_index.insert(entry.index, entry.clone());
+            }
+        }
+        for entry in leader
             .log
             .iter()
             .filter(|entry| entry.index <= leader.commit_index)
-            .cloned()
-            .collect::<Vec<_>>();
+        {
+            entries_by_index.insert(entry.index, entry.clone());
+        }
+        let entries = entries_by_index.into_values().collect::<Vec<_>>();
         let last_included_term = entries
             .last()
             .map(|entry| entry.term)

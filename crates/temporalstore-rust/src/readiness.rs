@@ -72,9 +72,13 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "backend-error route refresh and failure-streak avoidance".to_string(),
                 "namespace/table open path and table-routed proxy execute/batch routes"
                     .to_string(),
+                "C++ service-name JSON aliases for ExecuteCmd, BatchExecuteCmd, OpenTable, and table execute/batch execute"
+                    .to_string(),
             ],
             missing: vec![
                 "tonic proxy service and streaming/callback request shape".to_string(),
+                "brpc/thrift wire-compatible command-specific proxy methods such as Get, Set, FeatureAdd, RiskHset, HMGet, HMSet, HGetAll, and HLen"
+                    .to_string(),
                 "service discovery/registration replacement for consul".to_string(),
             ],
         },

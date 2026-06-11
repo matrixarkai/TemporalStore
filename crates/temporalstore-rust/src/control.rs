@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::cache::CacheStats;
@@ -22,6 +24,8 @@ pub struct Config {
     pub tenant_read_qps: Option<u64>,
     #[serde(default)]
     pub tenant_write_qps: Option<u64>,
+    #[serde(default)]
+    pub extend_config: BTreeMap<String, String>,
     pub feature_max_size: usize,
     pub async_storage: bool,
 }
@@ -38,6 +42,7 @@ impl Default for Config {
             table_write_qps: None,
             tenant_read_qps: None,
             tenant_write_qps: None,
+            extend_config: BTreeMap::new(),
             feature_max_size: 5000,
             async_storage: true,
         }

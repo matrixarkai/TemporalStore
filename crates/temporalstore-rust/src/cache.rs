@@ -93,6 +93,7 @@ pub struct CacheStats {
     pub misses: u64,
     pub puts: u64,
     pub invalidations: u64,
+    pub memory_evictions: u64,
     pub compressed_puts: u64,
     pub compressed_hits: u64,
     pub compression_bytes_saved: u64,
@@ -442,6 +443,7 @@ impl CacheInner {
             };
             if let Some(old_value) = self.memory.remove(&oldest) {
                 self.memory_bytes = self.memory_bytes.saturating_sub(old_value.len());
+                self.stats.memory_evictions += 1;
             }
         }
         self.stats.memory_bytes = self.memory_bytes as u64;
@@ -498,6 +500,23 @@ mod tests {
         assert_eq!(cache.stats().disk_hits, 1);
         assert_eq!(cache.get_memory(&key), Some(b"value".to_vec()));
         assert_eq!(cache.stats().memory_hits, 1);
+    }
+
+    #[test]
+    fn memory_cache_evicts_oldest_entries_but_keeps_disk_blocks() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = MultiLayerCache::new(8, dir.path());
+        let first = CacheKey::string(1, "first");
+        let second = CacheKey::string(1, "second");
+
+        cache.put(first.clone(), b"12345".to_vec()).unwrap();
+        cache.put(second.clone(), b"abcde".to_vec()).unwrap();
+
+        assert_eq!(cache.get_memory(&first), None);
+        assert_eq!(cache.get_memory(&second), Some(b"abcde".to_vec()));
+        assert_eq!(cache.get(&first).unwrap(), Some(b"12345".to_vec()));
+        assert_eq!(cache.stats().disk_hits, 1);
+        assert!(cache.stats().memory_evictions >= 1);
     }
 
     #[test]

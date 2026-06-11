@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::cache::{CacheKey, MultiLayerCache};
+use crate::cache::{CacheKey, CacheStats, MultiLayerCache};
 use crate::control::{
     CheckedBatchExecuteRequest, CheckedBatchExecuteResponse, CheckedExecuteRequest,
     CheckedExecuteResponse, Config, GetConfigResponse, GetInfoResponse, GetStatsResponse,
@@ -17,7 +17,7 @@ use crate::control::{
 };
 use crate::index_log::LocalIndexLogStore;
 use crate::oplog::LocalOplogStore;
-use crate::page_store::{LocalPageStore, PageAddress};
+use crate::page_store::{LocalPageStore, PageAddress, PageStoreStats};
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,
     ExecuteResponse, FeatureFilter, FeatureFilterOp, FeaturePoint, FeatureWritePolicy, IpsStats,
@@ -119,6 +119,22 @@ pub struct ShardCompactionReport {
 pub struct ShardExpirySweepReport {
     pub shard_id: ShardId,
     pub expired_records_removed: usize,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RustStorageObservation {
+    pub shard_id: ShardId,
+    pub cache: CacheStats,
+    pub page_store: PageStoreStats,
+    pub observed_memory_hit: bool,
+    pub observed_block_cache_hit: bool,
+    pub observed_local_file_read: bool,
+    pub observed_cache_invalidation: bool,
+    pub observed_memory_eviction: bool,
+    pub cache_memory_bytes: u64,
+    pub cache_disk_bytes: u64,
+    pub local_page_bytes_written: u64,
+    pub local_page_bytes_read: u64,
 }
 
 impl TemporalEngine {
@@ -545,6 +561,24 @@ impl TemporalEngine {
         }
     }
 
+    pub fn rust_storage_observation(&self, shard_id: ShardId) -> Option<RustStorageObservation> {
+        self.shard_stats(shard_id)
+            .map(|stats| RustStorageObservation {
+                shard_id,
+                observed_memory_hit: stats.cache.memory_hits > 0,
+                observed_block_cache_hit: stats.cache.disk_hits > 0,
+                observed_local_file_read: stats.page_store.reads > 0,
+                observed_cache_invalidation: stats.cache.invalidations > 0,
+                observed_memory_eviction: stats.cache.memory_evictions > 0,
+                cache_memory_bytes: stats.cache.memory_bytes,
+                cache_disk_bytes: stats.cache.disk_bytes,
+                local_page_bytes_written: stats.page_store.bytes_written,
+                local_page_bytes_read: stats.page_store.bytes_read,
+                cache: stats.cache,
+                page_store: stats.page_store,
+            })
+    }
+
     pub fn loaded_shard_stats(&self) -> Vec<ShardStats> {
         self.loaded_shard_ids()
             .into_iter()
@@ -664,6 +698,7 @@ impl TemporalEngine {
                 ("misses", stats.cache.misses),
                 ("puts", stats.cache.puts),
                 ("invalidations", stats.cache.invalidations),
+                ("memory_evictions", stats.cache.memory_evictions),
                 ("compressed_puts", stats.cache.compressed_puts),
                 ("compressed_hits", stats.cache.compressed_hits),
             ] {
@@ -3642,6 +3677,16 @@ mod tests {
         assert_eq!(cache.stats().puts, 4);
         assert!(cache.stats().memory_bytes > 0);
         assert!(cache.stats().disk_bytes > 0);
+
+        let observation = engine.rust_storage_observation(1).unwrap();
+        assert!(observation.observed_memory_hit);
+        assert!(observation.observed_block_cache_hit);
+        assert!(observation.observed_local_file_read);
+        assert!(observation.observed_cache_invalidation);
+        assert!(observation.cache_memory_bytes > 0);
+        assert!(observation.cache_disk_bytes > 0);
+        assert!(observation.local_page_bytes_written > 0);
+        assert!(observation.local_page_bytes_read > 0);
     }
 
     #[test]
@@ -4556,12 +4601,23 @@ mod tests {
                     config: Config {
                         version: 2,
                         feature_max_size: 123,
+                        maxmemory_bytes: Some(3000),
+                        extend_config: BTreeMap::from([(
+                            "test_config".to_string(),
+                            "test_value".to_string(),
+                        )]),
                         ..Config::default()
                     },
                 })
                 .ok
         );
-        assert_eq!(engine.get_config(7).config.feature_max_size, 123);
+        let config = engine.get_config(7).config;
+        assert_eq!(config.feature_max_size, 123);
+        assert_eq!(config.maxmemory_bytes, Some(3000));
+        assert_eq!(
+            config.extend_config.get("test_config"),
+            Some(&"test_value".to_string())
+        );
         assert_eq!(
             engine.set_config(SetConfigRequest {
                 shard_id: 7,
@@ -6092,6 +6148,9 @@ mod tests {
         let metrics = engine.prometheus_metrics();
         assert!(metrics.contains("temporalstore_shard_records{shard_id=\"1\",kind=\"string\"} 1"));
         assert!(metrics.contains("temporalstore_cache_operations_total"));
+        assert!(metrics.contains(
+            "temporalstore_cache_operations_total{shard_id=\"1\",kind=\"memory_evictions\"}"
+        ));
         assert!(metrics.contains("temporalstore_page_store_operations_total"));
         assert!(metrics.contains("temporalstore_oplog_records_total{shard_id=\"1\"} 1"));
         assert!(metrics.contains("temporalstore_object_manager_objects{shard_id=\"1\"} 1"));

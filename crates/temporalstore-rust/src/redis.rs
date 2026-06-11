@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
@@ -154,6 +154,12 @@ pub fn execute_redis_command_with_state(
                 .map(|value| String::from_utf8_lossy(value).to_string())
                 .unwrap_or_else(|| "PONG".to_string()),
         ),
+        "ECHO" if args.len() == 2 => RespValue::Bulk(Some(args[1].clone())),
+        "SELECT" if args.len() == 2 => match parse_u64(&args[1], "db") {
+            Ok(0) => RespValue::SimpleString("OK".to_string()),
+            Ok(_) => RespValue::Error("ERR DB index is out of range".to_string()),
+            Err(err) => RespValue::Error(err),
+        },
         "BGSAVE" if args.len() == 1 || args.len() == 2 => {
             RespValue::SimpleString("Background saving started".to_string())
         }
@@ -218,6 +224,22 @@ pub fn execute_redis_command_with_state(
                 Err(err) => RespValue::Error(format!("ERR {err}")),
             }
         }
+        "GETSET" if args.len() == 3 => {
+            let key = string_arg(&args[1]);
+            match execute(Command::StringGet { key: key.clone() }) {
+                Ok(CommandResponse::Bytes { value }) => {
+                    if let Err(err) = execute(Command::StringSet {
+                        key,
+                        value: args[2].clone(),
+                    }) {
+                        return RespValue::Error(format!("ERR {err}"));
+                    }
+                    RespValue::Bulk(value)
+                }
+                Ok(_) => RespValue::Error("ERR invalid getset response".to_string()),
+                Err(err) => RespValue::Error(format!("ERR {err}")),
+            }
+        }
         "SET" if args.len() >= 3 => {
             let key = string_arg(&args[1]);
             let value = args[2].clone();
@@ -241,6 +263,18 @@ pub fn execute_redis_command_with_state(
                 Err(err) => RespValue::Error(format!("ERR {err}")),
             }
         }
+        "SETNX" if args.len() == 3 => match execute(Command::StringSetConditional {
+            key: string_arg(&args[1]),
+            value: args[2].clone(),
+            ttl_ms: None,
+            condition: StringSetCondition::IfNotExists,
+            return_old: false,
+        }) {
+            Ok(CommandResponse::Integer { value }) => RespValue::Integer(value),
+            Ok(CommandResponse::Bytes { value: None }) => RespValue::Integer(0),
+            Ok(_) => RespValue::Error("ERR invalid setnx response".to_string()),
+            Err(err) => RespValue::Error(format!("ERR {err}")),
+        },
         "MSET" if args.len() >= 3 && args.len() % 2 == 1 => {
             for pair in args[1..].chunks(2) {
                 if let Err(err) = execute(Command::StringSet {
@@ -251,6 +285,29 @@ pub fn execute_redis_command_with_state(
                 }
             }
             RespValue::SimpleString("OK".to_string())
+        }
+        "MSETNX" if args.len() >= 3 && args.len() % 2 == 1 => {
+            for pair in args[1..].chunks(2) {
+                match execute(Command::CommonExists {
+                    key: string_arg(&pair[0]),
+                }) {
+                    Ok(CommandResponse::Integer { value }) if value > 0 => {
+                        return RespValue::Integer(0);
+                    }
+                    Ok(CommandResponse::Integer { .. }) => {}
+                    Ok(_) => return RespValue::Error("ERR invalid exists response".to_string()),
+                    Err(err) => return RespValue::Error(format!("ERR {err}")),
+                }
+            }
+            for pair in args[1..].chunks(2) {
+                if let Err(err) = execute(Command::StringSet {
+                    key: string_arg(&pair[0]),
+                    value: pair[1].clone(),
+                }) {
+                    return RespValue::Error(format!("ERR {err}"));
+                }
+            }
+            RespValue::Integer(1)
         }
         "SETEX" if args.len() == 4 => match parse_u64(&args[2], "seconds") {
             Ok(seconds) => status_ok(execute(Command::StringSetEx {
@@ -312,11 +369,68 @@ pub fn execute_redis_command_with_state(
         "PTTL" if args.len() == 2 => integer_response(execute(Command::CommonTtl {
             key: string_arg(&args[1]),
         })),
-        "HSET" if args.len() == 4 => integer_ok(execute(Command::HashSet {
+        "STRLEN" if args.len() == 2 => match execute(Command::StringGet {
             key: string_arg(&args[1]),
-            field: string_arg(&args[2]),
-            value: args[3].clone(),
-        })),
+        }) {
+            Ok(CommandResponse::Bytes { value }) => {
+                RespValue::Integer(value.map(|value| value.len() as i64).unwrap_or_default())
+            }
+            Ok(_) => RespValue::Error("ERR invalid strlen response".to_string()),
+            Err(err) => RespValue::Error(format!("ERR {err}")),
+        },
+        "APPEND" if args.len() == 3 => {
+            let key = string_arg(&args[1]);
+            match execute(Command::StringGet { key: key.clone() }) {
+                Ok(CommandResponse::Bytes { value }) => {
+                    let mut new_value = value.unwrap_or_default();
+                    new_value.extend_from_slice(&args[2]);
+                    let new_len = new_value.len() as i64;
+                    if let Err(err) = execute(Command::StringSet {
+                        key,
+                        value: new_value,
+                    }) {
+                        return RespValue::Error(format!("ERR {err}"));
+                    }
+                    RespValue::Integer(new_len)
+                }
+                Ok(_) => RespValue::Error("ERR invalid append response".to_string()),
+                Err(err) => RespValue::Error(format!("ERR {err}")),
+            }
+        }
+        "INCR" if args.len() == 2 => string_increment_response(&args[1], 1, &mut execute),
+        "DECR" if args.len() == 2 => string_increment_response(&args[1], -1, &mut execute),
+        "INCRBY" if args.len() == 3 => match parse_i64_arg(&args[2], "increment") {
+            Ok(increment) => string_increment_response(&args[1], increment, &mut execute),
+            Err(err) => RespValue::Error(err),
+        },
+        "DECRBY" if args.len() == 3 => match parse_i64_arg(&args[2], "decrement") {
+            Ok(decrement) => string_increment_response(&args[1], -decrement, &mut execute),
+            Err(err) => RespValue::Error(err),
+        },
+        "HSET" if args.len() >= 4 && args.len() % 2 == 0 => {
+            let key = string_arg(&args[1]);
+            let mut added = 0;
+            for pair in args[2..].chunks(2) {
+                let field = string_arg(&pair[0]);
+                match execute(Command::HashGet {
+                    key: key.clone(),
+                    field,
+                }) {
+                    Ok(CommandResponse::Bytes { value: None }) => added += 1,
+                    Ok(CommandResponse::Bytes { value: Some(_) }) => {}
+                    Ok(_) => return RespValue::Error("ERR invalid hget response".to_string()),
+                    Err(err) => return RespValue::Error(format!("ERR {err}")),
+                }
+            }
+            let entries = args[2..]
+                .chunks(2)
+                .map(|pair| (string_arg(&pair[0]), pair[1].clone()))
+                .collect();
+            match execute(Command::HashMultiSet { key, entries }) {
+                Ok(_) => RespValue::Integer(added),
+                Err(err) => RespValue::Error(format!("ERR {err}")),
+            }
+        }
         "HMSET" if args.len() >= 4 && args.len() % 2 == 0 => {
             let entries = args[2..]
                 .chunks(2)
@@ -371,14 +485,54 @@ pub fn execute_redis_command_with_state(
         "HLEN" if args.len() == 2 => integer_response(execute(Command::HashLen {
             key: string_arg(&args[1]),
         })),
-        "HDEL" if args.len() == 3 => integer_ok(execute(Command::HashDelete {
-            key: string_arg(&args[1]),
-            field: string_arg(&args[2]),
-        })),
-        "SADD" if args.len() == 3 => integer_ok(execute(Command::SetAdd {
-            key: string_arg(&args[1]),
-            member: args[2].clone(),
-        })),
+        "HDEL" if args.len() >= 3 => {
+            let key = string_arg(&args[1]);
+            let mut removed = 0;
+            for field in args.iter().skip(2) {
+                let field = string_arg(field);
+                match execute(Command::HashGet {
+                    key: key.clone(),
+                    field: field.clone(),
+                }) {
+                    Ok(CommandResponse::Bytes { value: Some(_) }) => {
+                        if let Err(err) = execute(Command::HashDelete {
+                            key: key.clone(),
+                            field,
+                        }) {
+                            return RespValue::Error(format!("ERR {err}"));
+                        }
+                        removed += 1;
+                    }
+                    Ok(CommandResponse::Bytes { value: None }) => {}
+                    Ok(_) => return RespValue::Error("ERR invalid hget response".to_string()),
+                    Err(err) => return RespValue::Error(format!("ERR {err}")),
+                }
+            }
+            RespValue::Integer(removed)
+        }
+        "SADD" if args.len() >= 3 => {
+            let key = string_arg(&args[1]);
+            let mut existing = match execute(Command::SetMembers { key: key.clone() }) {
+                Ok(CommandResponse::Members { members }) => {
+                    members.into_iter().collect::<HashSet<_>>()
+                }
+                Ok(_) => return RespValue::Error("ERR invalid smembers response".to_string()),
+                Err(err) => return RespValue::Error(format!("ERR {err}")),
+            };
+            let mut added = 0;
+            for member in args.iter().skip(2) {
+                if existing.insert(member.clone()) {
+                    if let Err(err) = execute(Command::SetAdd {
+                        key: key.clone(),
+                        member: member.clone(),
+                    }) {
+                        return RespValue::Error(format!("ERR {err}"));
+                    }
+                    added += 1;
+                }
+            }
+            RespValue::Integer(added)
+        }
         "SMEMBERS" if args.len() == 2 => match execute(Command::SetMembers {
             key: string_arg(&args[1]),
         }) {
@@ -391,10 +545,60 @@ pub fn execute_redis_command_with_state(
             Ok(_) => RespValue::Error("ERR invalid smembers response".to_string()),
             Err(err) => RespValue::Error(format!("ERR {err}")),
         },
-        "SREM" if args.len() == 3 => integer_ok(execute(Command::SetRemove {
+        "SCARD" if args.len() == 2 => match execute(Command::SetMembers {
             key: string_arg(&args[1]),
-            member: args[2].clone(),
-        })),
+        }) {
+            Ok(CommandResponse::Members { members }) => RespValue::Integer(members.len() as i64),
+            Ok(_) => RespValue::Error("ERR invalid smembers response".to_string()),
+            Err(err) => RespValue::Error(format!("ERR {err}")),
+        },
+        "SISMEMBER" if args.len() == 3 => match execute(Command::SetMembers {
+            key: string_arg(&args[1]),
+        }) {
+            Ok(CommandResponse::Members { members }) => {
+                RespValue::Integer(i64::from(members.iter().any(|member| member == &args[2])))
+            }
+            Ok(_) => RespValue::Error("ERR invalid smembers response".to_string()),
+            Err(err) => RespValue::Error(format!("ERR {err}")),
+        },
+        "SMISMEMBER" if args.len() >= 3 => match execute(Command::SetMembers {
+            key: string_arg(&args[1]),
+        }) {
+            Ok(CommandResponse::Members { members }) => {
+                let existing = members.into_iter().collect::<HashSet<_>>();
+                RespValue::Array(
+                    args.iter()
+                        .skip(2)
+                        .map(|member| RespValue::Integer(i64::from(existing.contains(member))))
+                        .collect(),
+                )
+            }
+            Ok(_) => RespValue::Error("ERR invalid smembers response".to_string()),
+            Err(err) => RespValue::Error(format!("ERR {err}")),
+        },
+        "SREM" if args.len() >= 3 => {
+            let key = string_arg(&args[1]);
+            let mut existing = match execute(Command::SetMembers { key: key.clone() }) {
+                Ok(CommandResponse::Members { members }) => {
+                    members.into_iter().collect::<HashSet<_>>()
+                }
+                Ok(_) => return RespValue::Error("ERR invalid smembers response".to_string()),
+                Err(err) => return RespValue::Error(format!("ERR {err}")),
+            };
+            let mut removed = 0;
+            for member in args.iter().skip(2) {
+                if existing.remove(member) {
+                    if let Err(err) = execute(Command::SetRemove {
+                        key: key.clone(),
+                        member: member.clone(),
+                    }) {
+                        return RespValue::Error(format!("ERR {err}"));
+                    }
+                    removed += 1;
+                }
+            }
+            RespValue::Integer(removed)
+        }
         "FAPPEND" if args.len() == 4 => match parse_u64(&args[2], "timestamp_ms") {
             Ok(timestamp_ms) => status_ok(execute(Command::FeatureAppend {
                 key: string_arg(&args[1]),
@@ -1260,6 +1464,33 @@ fn expire_response(
     }
 }
 
+fn string_increment_response(
+    key: &[u8],
+    increment: i64,
+    execute: &mut impl FnMut(Command) -> Result<CommandResponse, String>,
+) -> RespValue {
+    let key = string_arg(key);
+    let current = match execute(Command::StringGet { key: key.clone() }) {
+        Ok(CommandResponse::Bytes { value: None }) => 0,
+        Ok(CommandResponse::Bytes { value: Some(value) }) => match parse_i64_arg(&value, "value") {
+            Ok(value) => value,
+            Err(_) => return RespValue::Error("ERR value is not an integer".to_string()),
+        },
+        Ok(_) => return RespValue::Error("ERR invalid incr response".to_string()),
+        Err(err) => return RespValue::Error(format!("ERR {err}")),
+    };
+    let Some(next) = current.checked_add(increment) else {
+        return RespValue::Error("ERR increment or decrement would overflow".to_string());
+    };
+    if let Err(err) = execute(Command::StringSet {
+        key,
+        value: next.to_string().into_bytes(),
+    }) {
+        return RespValue::Error(format!("ERR {err}"));
+    }
+    RespValue::Integer(next)
+}
+
 fn bytes_response(result: Result<CommandResponse, String>) -> RespValue {
     match result {
         Ok(CommandResponse::Bytes { value }) => RespValue::Bulk(value),
@@ -1279,13 +1510,6 @@ fn integer_response(result: Result<CommandResponse, String>) -> RespValue {
 fn status_ok(result: Result<CommandResponse, String>) -> RespValue {
     match result {
         Ok(_) => RespValue::SimpleString("OK".to_string()),
-        Err(err) => RespValue::Error(format!("ERR {err}")),
-    }
-}
-
-fn integer_ok(result: Result<CommandResponse, String>) -> RespValue {
-    match result {
-        Ok(_) => RespValue::Integer(1),
         Err(err) => RespValue::Error(format!("ERR {err}")),
     }
 }
@@ -1521,6 +1745,41 @@ mod tests {
             RespValue::SimpleString("OK".to_string())
         );
         assert_eq!(run(vec!["GET", "k"]), RespValue::Bulk(Some(b"v2".to_vec())));
+        assert_eq!(run(vec!["SETNX", "k", "nope"]), RespValue::Integer(0));
+        assert_eq!(run(vec!["SETNX", "nx", "yes"]), RespValue::Integer(1));
+        assert_eq!(
+            run(vec!["GETSET", "nx", "after"]),
+            RespValue::Bulk(Some(b"yes".to_vec()))
+        );
+        assert_eq!(
+            run(vec!["MSETNX", "nx", "blocked", "msetnx-new", "v"]),
+            RespValue::Integer(0)
+        );
+        assert_eq!(
+            run(vec!["MSETNX", "msetnx-a", "a", "msetnx-b", "b"]),
+            RespValue::Integer(1)
+        );
+        assert_eq!(
+            run(vec!["APPEND", "append", "hello"]),
+            RespValue::Integer(5)
+        );
+        assert_eq!(
+            run(vec!["APPEND", "append", "-world"]),
+            RespValue::Integer(11)
+        );
+        assert_eq!(run(vec!["STRLEN", "append"]), RespValue::Integer(11));
+        assert_eq!(run(vec!["INCR", "counter"]), RespValue::Integer(1));
+        assert_eq!(run(vec!["INCRBY", "counter", "4"]), RespValue::Integer(5));
+        assert_eq!(run(vec!["DECR", "counter"]), RespValue::Integer(4));
+        assert_eq!(run(vec!["DECRBY", "counter", "2"]), RespValue::Integer(2));
+        assert_eq!(
+            run(vec!["SET", "not-int", "abc"]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(
+            run(vec!["INCR", "not-int"]),
+            RespValue::Error("ERR value is not an integer".to_string())
+        );
         assert_eq!(
             run(vec!["MSET", "k1", "v1", "k2", "v2"]),
             RespValue::SimpleString("OK".to_string())
@@ -1553,6 +1812,23 @@ mod tests {
             run(vec!["HGET", "h", "f"]),
             RespValue::Bulk(Some(b"x".to_vec()))
         );
+        assert_eq!(
+            run(vec!["HSET", "h", "f", "x2", "f2", "y"]),
+            RespValue::Integer(1)
+        );
+        assert_eq!(
+            run(vec!["HMGET", "h", "f", "f2", "missing"]),
+            RespValue::Array(vec![
+                RespValue::Bulk(Some(b"x2".to_vec())),
+                RespValue::Bulk(Some(b"y".to_vec())),
+                RespValue::Bulk(None),
+            ])
+        );
+        assert_eq!(
+            run(vec!["HDEL", "h", "missing", "f2"]),
+            RespValue::Integer(1)
+        );
+        assert_eq!(run(vec!["HLEN", "h"]), RespValue::Integer(1));
         assert_eq!(run(vec!["HINCRBY", "h", "n", "3"]), RespValue::Integer(3));
         assert_eq!(run(vec!["HINCRBY", "h", "n", "-1"]), RespValue::Integer(2));
         assert_eq!(run(vec!["HSET", "h", "bad", "abc"]), RespValue::Integer(1));
@@ -1560,10 +1836,28 @@ mod tests {
             run(vec!["HINCRBY", "h", "bad", "1"]),
             RespValue::Error("ERR hash value is not an integer".to_string())
         );
-        assert_eq!(run(vec!["SADD", "s", "m"]), RespValue::Integer(1));
+        assert_eq!(run(vec!["SADD", "s", "m", "m2"]), RespValue::Integer(2));
+        assert_eq!(run(vec!["SADD", "s", "m", "m3"]), RespValue::Integer(1));
+        assert_eq!(run(vec!["SCARD", "s"]), RespValue::Integer(3));
+        assert_eq!(run(vec!["SISMEMBER", "s", "m2"]), RespValue::Integer(1));
+        assert_eq!(
+            run(vec!["SMISMEMBER", "s", "m", "missing", "m3"]),
+            RespValue::Array(vec![
+                RespValue::Integer(1),
+                RespValue::Integer(0),
+                RespValue::Integer(1),
+            ])
+        );
+        assert_eq!(
+            run(vec!["SREM", "s", "missing", "m2"]),
+            RespValue::Integer(1)
+        );
         assert_eq!(
             run(vec!["SMEMBERS", "s"]),
-            RespValue::Array(vec![RespValue::Bulk(Some(b"m".to_vec()))])
+            RespValue::Array(vec![
+                RespValue::Bulk(Some(b"m".to_vec())),
+                RespValue::Bulk(Some(b"m3".to_vec())),
+            ])
         );
         assert_eq!(
             run(vec!["FAPPEND", "feature", "10", "2"]),
@@ -2062,6 +2356,18 @@ mod tests {
             RespValue::SimpleString("OK".to_string())
         );
         assert!(state.authenticated);
+        assert_eq!(
+            run(&mut state, vec!["ECHO", "hello"]),
+            RespValue::Bulk(Some(b"hello".to_vec()))
+        );
+        assert_eq!(
+            run(&mut state, vec!["SELECT", "0"]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(
+            run(&mut state, vec!["SELECT", "1"]),
+            RespValue::Error("ERR DB index is out of range".to_string())
+        );
 
         assert_eq!(
             run(&mut state, vec!["SLAVEOF", "127.0.0.1", "18001"]),

@@ -43,6 +43,7 @@ struct DistributedRaftSummary {
     post_scale_down_write: Status,
     scale_down_reads: Vec<ReplicaReadSummary>,
     scale_up: Vec<MembershipSummary>,
+    scale_up_bootstrap_reads: Vec<ReplicaReadSummary>,
     post_scale_up_write: Status,
     scale_up_reads: Vec<ReplicaReadSummary>,
     external_snapshot_publish: Status,
@@ -205,7 +206,12 @@ fn main() {
         .collect::<Vec<_>>();
 
     let scale_up = apply_membership_on_all(&runtimes, &nodes, &[1, 2, 3, 4]);
+    bootstrap_voter_from_leader_snapshot(&runtimes, 4);
     wait_for_distributed_majority(&runtimes, &nodes);
+    let scale_up_bootstrap_reads = nodes
+        .iter()
+        .map(|node| wait_for_key(node, "distributed-scale-down-key", b"after-scale-down"))
+        .collect::<Vec<_>>();
     let post_scale_up_write = propose_key(&nodes[1], "distributed-scale-up-key", b"after-scale-up");
     assert!(
         post_scale_up_write.ok,
@@ -333,6 +339,7 @@ fn main() {
             post_scale_down_write,
             scale_down_reads,
             scale_up,
+            scale_up_bootstrap_reads,
             post_scale_up_write,
             scale_up_reads,
             external_snapshot_publish: published.status,
@@ -517,6 +524,19 @@ fn apply_membership_on_all(
             membership_summary(node.node_id, report)
         })
         .collect()
+}
+
+fn bootstrap_voter_from_leader_snapshot(runtimes: &[ProductionRaftRuntime], node_id: RaftNodeId) {
+    for runtime in runtimes {
+        let snapshot = runtime
+            .cluster()
+            .create_snapshot()
+            .expect("leader snapshot should be available for scale-up bootstrap");
+        runtime
+            .cluster()
+            .install_snapshot(node_id, snapshot)
+            .expect("new voter should install leader snapshot");
+    }
 }
 
 fn wait_for_distributed_majority(
