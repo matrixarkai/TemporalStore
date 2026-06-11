@@ -552,6 +552,136 @@ returned an empty filesystem list. The active EC2 node is in `us-west-2`, so the
 environment cannot honestly run EFS-backed shared-store validation until an EFS filesystem is
 created/mounted or the old EFS mount is restored.
 
+## Multi-EC2 Data-Node Raft Validation
+
+Result: partially passed, with two production findings.
+
+This run launched three new EC2 data-node instances in the existing TemporalStore VPC/subnet/security
+group and ran one standalone `raft_node` process per instance. The existing metaserver EC2 drove the
+test over private IPs, so the test exercised real cross-EC2 network traffic rather than only
+same-host loopback listeners.
+
+Temporary data-node EC2 instances:
+
+| Node | Instance | Private IP | Process |
+|---:|---|---|---|
+| 1 | `i-03a294b9428c914cb` | `10.70.1.214` | `raft_node :19001` |
+| 2 | `i-024df97e01d43523c` | `10.70.1.40` | `raft_node :19001` |
+| 3 | `i-0c139d94d153fd21b` | `10.70.1.155` | `raft_node :19001` |
+
+Bundle under test:
+
+```text
+s3://temporalstore-test-artifacts-657817560042-us-west-2/temporalstore-aws-bundle-multiec2-4611a6a.tar.gz
+```
+
+Happy-path replication:
+
+- Three data-node EC2 processes started and answered `/health`.
+- Initial leader: node `1`.
+- `60` writes through node `1` succeeded.
+- Replica reads from nodes `1`, `2`, and `3` returned the written values.
+- Read failure count: `0`.
+
+Happy-path latency:
+
+| Metric | p50 | p95 | p99 | Max |
+|---|---:|---:|---:|---:|
+| Raft write via leader node 1 | `503073 us` | `1132164 us` | `1253259 us` | `1311653 us` |
+| Replica read node 1 | `909 us` | `3232 us` | `4943 us` | `5677 us` |
+| Replica read node 2 | `1004 us` | `2097 us` | `9035 us` | `123987 us` |
+| Replica read node 3 | `2021 us` | `5500 us` | `39110 us` | `184872 us` |
+
+Leader-transfer finding:
+
+- Applying `/raft/control/transfer_leader` only on node `1` made node `1` report leader `2`, but
+  nodes `2` and `3` did not converge to the same top-level `leader_id`.
+- Applying the transfer to all three nodes still left node `3` with a stale top-level `leader_id`
+  for more than `20s`, even though its per-node status table showed node `2` as leader.
+- This shows a real production control-plane gap in the standalone `raft_node` path: leadership and
+  membership control changes still need a single authoritative replicated control flow, not
+  per-process local admin mutation.
+
+Node-down surviving-majority test:
+
+- Node `1` process was killed with SSM.
+- Nodes `2` and `3` marked node `1` not alive.
+- Node `2` was elected leader in the surviving runtimes.
+- `40` writes through node `2` succeeded.
+- Replica reads from nodes `2` and `3` returned all written values.
+- Read failure count: `0`.
+- Final leader: node `2`.
+- Final commit index on live nodes: `100`.
+- Live-node lag from node `2` status: `0` for nodes `2` and `3`.
+
+Node-down latency:
+
+| Metric | p50 | p95 | p99 | Max |
+|---|---:|---:|---:|---:|
+| Raft write via surviving leader node 2 | `1034646 us` | `1179792 us` | `1191108 us` | `1191108 us` |
+| Replica read node 2 | `961 us` | `2829 us` | `4164 us` | `4164 us` |
+| Replica read node 3 | `2595 us` | `7388 us` | `298038 us` | `298038 us` |
+
+Write-latency finding:
+
+- Cross-EC2 replica reads are mostly low millisecond or sub-millisecond.
+- Raft writes are too slow for production. The degraded write p50 is approximately the configured
+  `TS_RAFT_RPC_DEADLINE_MS=1000`.
+- The current write path still attempts follower RPCs sequentially and can wait on a dead or slow
+  follower before returning, instead of committing/returning as soon as a live majority has
+  acknowledged.
+- Production fix: parallelize AppendEntries RPCs, stop waiting after majority success, and move slow
+  follower catch-up to the background heartbeat/snapshot path.
+
+### Post-Fix Multi-EC2 Degraded Write Validation
+
+Fix commit under test locally before push:
+
+- `RaftCluster::propose_distributed_one` now orders live followers before known-dead followers.
+- The leader response path now stops sending foreground AppendEntries after quorum success.
+- Dead or lagging follower catch-up remains for the heartbeat/snapshot path.
+
+Fresh temporary EC2 data-node instances:
+
+| Node | Instance | Private IP | Process |
+|---:|---|---|---|
+| 1 | `i-0bc810c6ebceaa298` | `10.70.1.165` | killed before degraded write phase |
+| 2 | `i-0cd976af2ba8f77a1` | `10.70.1.182` | surviving leader |
+| 3 | `i-09be93ca1be7be9ff` | `10.70.1.236` | surviving follower |
+
+Degraded-majority result after the fix:
+
+- Node `1` process was killed.
+- Nodes `2` and `3` marked node `1` not alive.
+- Node `2` was elected leader.
+- `40` writes through node `2` succeeded.
+- Replica reads from nodes `2` and `3` returned all written values.
+- Write failure count: `0`.
+- Read failure count: `0`.
+- Final commit index on live nodes: `40`.
+- Live-node lag from node `2` status: `0` for nodes `2` and `3`.
+
+Latency improvement:
+
+| Metric | Before Fix | After Fix |
+|---|---:|---:|
+| Degraded Raft write p50 | `1034646 us` | `115178 us` |
+| Degraded Raft write p95 | `1179792 us` | `134956 us` |
+| Degraded Raft write p99 | `1191108 us` | `148500 us` |
+| Degraded Raft write max | `1191108 us` | `148500 us` |
+| Replica read node 2 p99 | `4164 us` | `6929 us` |
+| Replica read node 3 p99 | `298038 us` | `28170 us` |
+
+Remaining after the fix:
+
+- The degraded write path is no longer pinned to the dead follower's `1s` RPC deadline.
+- The write p50 is still around `115 ms`, so the next optimization is parallel AppendEntries and
+  less synchronous foreground work on the leader path.
+- Node `3` can still report local `apply_health.healthy=false` because its local status model sees
+  node `2`'s applied index as stale, even while node `2` status shows both live nodes applied with
+  lag `0` and both nodes serve correct reads. That is an observability/control-state convergence gap
+  to fix separately.
+
 Post-fix result:
 
 - Surviving nodes: `2`, `3`
@@ -587,6 +717,12 @@ This is expected: the killed node did not receive the post-crash write.
 ## Conclusions
 
 - Raft distributed behavior passed on the existing EC2 node for local multi-node process simulation.
+- Multi-EC2 data-node replication now has a real AWS validation run across three separate EC2
+  instances.
+- Multi-EC2 data writes and replica reads passed functionally in happy-path and node-1-down
+  surviving-majority scenarios.
+- Multi-EC2 validation exposed two remaining production gaps: non-authoritative per-process
+  leadership control updates, and write latency caused by sequential follower RPC timeout behavior.
 - Replica reads passed after convergence.
 - Leader transfer, scale down, scale up, external snapshot bootstrap, and failover paths passed.
 - Raft max replica lag in the scale test was `0`.
@@ -598,7 +734,8 @@ This is expected: the killed node did not receive the post-crash write.
 
 ## Limitations
 
-- This used the currently running EC2 node only. The previous data ASG nodes were terminated.
-- The distributed harnesses run multiple local processes/listeners on the EC2 host; they do not yet prove multi-host cross-EC2 network behavior.
+- Earlier validation used the currently running EC2 node only. The multi-EC2 run above launched
+  three temporary data-node EC2 instances and did prove cross-EC2 `raft_node` traffic.
 - The node type was `t3.small`, so QPS is a sanity/functional signal, not a production capacity number.
-- EFS/EBS multi-node comparison was not run because only one EC2 instance was active.
+- EFS-backed shared-store comparison still was not run because the reused AWS environment has no
+  usable EFS filesystem mounted at `/mnt/temporalstore-shared`.

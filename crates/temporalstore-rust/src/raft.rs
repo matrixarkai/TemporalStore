@@ -3345,12 +3345,21 @@ impl RaftCluster {
                 .get_mut(&leader_id)
                 .ok_or(RaftError::LeaderUnavailable)?;
             append_entry(leader, entry.clone());
-            let target_ids = inner
+            let (mut live_target_ids, fallback_target_ids): (Vec<_>, Vec<_>) = inner
                 .nodes
-                .keys()
-                .copied()
-                .filter(|node_id| *node_id != leader_id)
+                .iter()
+                .filter(|(node_id, _)| **node_id != leader_id)
+                .map(|(node_id, node)| (*node_id, node.alive))
+                .partition(|(_, alive)| *alive);
+            let fallback_target_ids = fallback_target_ids
+                .into_iter()
+                .map(|(node_id, _)| node_id)
                 .collect::<Vec<_>>();
+            let mut target_ids = live_target_ids
+                .drain(..)
+                .map(|(node_id, _)| node_id)
+                .collect::<Vec<_>>();
+            target_ids.extend(fallback_target_ids);
             (entry, leader_id, target_ids, required)
         };
 
@@ -3365,6 +3374,9 @@ impl RaftCluster {
         let mut successful_targets = Vec::new();
         let mut failed_targets = Vec::new();
         for target_id in target_ids {
+            if replicated >= required {
+                break;
+            }
             let request = self.build_append_entries_request(target_id)?;
             match transport.append_entries(request) {
                 Ok(response) if response.success && response.match_index >= entry.index => {
