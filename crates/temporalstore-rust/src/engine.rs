@@ -3879,6 +3879,101 @@ mod tests {
     }
 
     #[test]
+    fn restarted_engine_refills_tiny_memory_cache_from_persistent_block_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let page_dir = dir.path().join("pages");
+        let index_dir = dir.path().join("indexes");
+        let original =
+            TemporalEngine::with_local_dirs(32, dir.path().join("cache-a"), &page_dir, &index_dir);
+        original.load_shard(1);
+        let target_value = b"restart-target-value-0123456789".to_vec();
+        let write = original.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "target".to_string(),
+                value: target_value.clone(),
+            },
+        });
+        assert!(write.status.ok, "{write:?}");
+        assert_eq!(original.page_store().stats().writes, 1);
+
+        let restarted =
+            TemporalEngine::with_local_dirs(32, dir.path().join("cache-b"), &page_dir, &index_dir);
+        restarted.load_shard(1);
+        let restarted_cache = restarted.cache();
+        let restarted_page_store = restarted.page_store();
+        let target_page_key = {
+            let shards = restarted.shards.read().expect("shards lock poisoned");
+            let address = shards
+                .get(&1)
+                .expect("shard should exist after index replay")
+                .strings
+                .get("target")
+                .expect("target address should be restored from index")
+                .clone();
+            CacheKey::page(1, address.page_segment_id, address.offset, address.length)
+        };
+
+        let first_read = restarted.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: "target".to_string(),
+            },
+        });
+        assert_eq!(
+            first_read.response,
+            CommandResponse::Bytes {
+                value: Some(target_value.clone())
+            }
+        );
+        assert_eq!(
+            restarted_page_store.stats().reads,
+            1,
+            "restart should miss memory and load the persisted page once"
+        );
+        assert_eq!(
+            restarted_cache.get_memory(&target_page_key),
+            Some(target_value.clone()),
+            "persistent page read should refill the memory cache"
+        );
+        assert!(
+            restarted_cache.stats().disk_bytes > 0,
+            "persistent page read should also write the disk block cache"
+        );
+
+        restarted_cache.clear_memory_for_test();
+        assert_eq!(restarted_cache.get_memory(&target_page_key), None);
+        let disk_hits_before = restarted_cache.stats().disk_hits;
+        let page_reads_before = restarted_page_store.stats().reads;
+        let second_read = restarted.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: "target".to_string(),
+            },
+        });
+        assert_eq!(
+            second_read.response,
+            CommandResponse::Bytes {
+                value: Some(target_value.clone())
+            }
+        );
+        assert_eq!(
+            restarted_page_store.stats().reads,
+            page_reads_before,
+            "memory miss after restart should use the disk block cache"
+        );
+        assert!(
+            restarted_cache.stats().disk_hits > disk_hits_before,
+            "disk block cache should serve the second read"
+        );
+        assert_eq!(
+            restarted_cache.get_memory(&target_page_key),
+            Some(target_value),
+            "disk block hit should promote the page block back into memory"
+        );
+    }
+
+    #[test]
     fn page_reads_fill_compressed_block_cache() {
         let dir = tempfile::tempdir().unwrap();
         let cache = MultiLayerCache::with_block_options(
