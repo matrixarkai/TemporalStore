@@ -8,7 +8,7 @@ use std::sync::{
     mpsc, Arc, Mutex, RwLock,
 };
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -1863,6 +1863,17 @@ pub fn require_production_raft_ready() -> Result<(), RaftProductionReadinessErro
     validate_raft_deployment_mode(RaftDeploymentMode::ProductionDistributed).map(|_| ())
 }
 
+fn is_transient_raft_transport_error(err: &RaftError) -> bool {
+    let RaftError::Transport(message) = err else {
+        return false;
+    };
+    message.contains("Resource temporarily unavailable")
+        || message.contains("timed out")
+        || message.contains("connection refused")
+        || message.contains("connection reset")
+        || message.contains("temporarily unavailable")
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ProductionRaftEngineKind {
@@ -2145,6 +2156,46 @@ impl ProductionRaftRuntime {
         new_voters: impl IntoIterator<Item = RaftNodeId>,
     ) -> Result<RaftMembershipChangeReport, RaftError> {
         self.cluster.apply_membership_change_safely(new_voters)
+    }
+
+    pub fn catch_up_peer_with_retry(&self, target_id: RaftNodeId) -> Result<(), RaftError> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut last_error = None;
+        while Instant::now() < deadline {
+            let cluster = self.cluster();
+            let transport = self.transport();
+            let result = cluster
+                .build_append_entries_request(target_id)
+                .and_then(|append| {
+                    let response = transport.append_entries(append)?;
+                    if response.success {
+                        return cluster.catch_up(target_id);
+                    }
+                    let snapshot = cluster.build_install_snapshot_request(target_id)?;
+                    let response = transport.install_snapshot(snapshot)?;
+                    if response.success {
+                        cluster.catch_up(target_id)
+                    } else {
+                        Err(RaftError::Transport(format!(
+                            "snapshot install rejected by node {}: {:?}",
+                            target_id, response.reject_reason
+                        )))
+                    }
+                });
+            match result {
+                Ok(()) => return Ok(()),
+                Err(err) if is_transient_raft_transport_error(&err) => {
+                    last_error = Some(err);
+                    thread::sleep(Duration::from_millis(50));
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Err(last_error.unwrap_or_else(|| {
+            RaftError::Transport(format!(
+                "catch-up retry deadline expired for node {target_id}"
+            ))
+        }))
     }
 
     pub fn transfer_leader(&self, target_id: RaftNodeId) -> Result<(), RaftError> {

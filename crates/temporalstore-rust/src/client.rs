@@ -2395,11 +2395,13 @@ mod tests {
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
-        let server_addr = test_addr(18_210);
-        let proxy_addr = test_addr(18_211);
+        let server_addr = free_local_addr();
+        let proxy_addr = free_local_addr();
+        let server_bind_addr = server_addr.clone();
+        let proxy_bind_addr = proxy_addr.clone();
         let engine_for_server = engine.clone();
         std::thread::spawn(move || {
-            serve(&server_addr, move |request| {
+            serve(&server_bind_addr, move |request| {
                 match (request.method.as_str(), request.path.as_str()) {
                     ("POST", "/execute") => {
                         let req = parse_json::<ExecuteRequest>(&request.body).unwrap();
@@ -2414,9 +2416,9 @@ mod tests {
             })
             .unwrap();
         });
-        let server_addr_for_proxy = test_addr(18_210);
+        let server_addr_for_proxy = server_addr.clone();
         std::thread::spawn(move || {
-            serve(&proxy_addr, move |request| {
+            serve(&proxy_bind_addr, move |request| {
                 match (request.method.as_str(), request.path.as_str()) {
                     ("GET", "/shards/1") => json_response(
                         200,
@@ -2446,10 +2448,10 @@ mod tests {
             })
             .unwrap();
         });
-        wait_for_http(&test_addr(18_211));
+        wait_for_http(&proxy_addr);
 
         let client = TemporalStoreClient::with_options(ClientOptions {
-            proxy_addr: test_addr(18_211),
+            proxy_addr: proxy_addr.clone(),
             max_retries: 1,
             ..ClientOptions::default()
         });
@@ -2758,11 +2760,13 @@ mod tests {
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
-        let server_addr = test_addr(18_212);
-        let meta_addr = test_addr(18_213);
+        let server_addr = free_local_addr();
+        let meta_addr = free_local_addr();
+        let server_bind_addr = server_addr.clone();
+        let meta_bind_addr = meta_addr.clone();
         let engine_for_server = engine.clone();
         std::thread::spawn(move || {
-            serve(&server_addr, move |request| {
+            serve(&server_bind_addr, move |request| {
                 match (request.method.as_str(), request.path.as_str()) {
                     ("POST", "/execute") => {
                         let req = parse_json::<ExecuteRequest>(&request.body).unwrap();
@@ -2773,9 +2777,9 @@ mod tests {
             })
             .unwrap();
         });
-        let live_server = test_addr(18_212);
+        let live_server = server_addr.clone();
         std::thread::spawn(move || {
-            serve(&meta_addr, move |request| {
+            serve(&meta_bind_addr, move |request| {
                 match (request.method.as_str(), request.path.as_str()) {
                     ("GET", "/shards/1") => json_response(
                         200,
@@ -2793,11 +2797,11 @@ mod tests {
             })
             .unwrap();
         });
-        wait_for_http(&test_addr(18_213));
+        wait_for_http(&meta_addr);
 
         let client = TemporalStoreClient::with_options(ClientOptions {
             proxy_addr: "127.0.0.1:1".to_string(),
-            meta_addr: Some(test_addr(18_213)),
+            meta_addr: Some(meta_addr.clone()),
             route_cache_ttl_ms: 60_000,
             connect_timeout_ms: 50,
             io_timeout_ms: 200,
@@ -2832,11 +2836,13 @@ mod tests {
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
-        let server_addr = test_addr(18_226);
-        let meta_addr = test_addr(18_227);
+        let server_addr = free_local_addr();
+        let meta_addr = free_local_addr();
+        let server_bind_addr = server_addr.clone();
+        let meta_bind_addr = meta_addr.clone();
         let engine_for_server = engine.clone();
         std::thread::spawn(move || {
-            serve(&server_addr, move |request| {
+            serve(&server_bind_addr, move |request| {
                 match (request.method.as_str(), request.path.as_str()) {
                     ("POST", "/execute") => {
                         let req = parse_json::<ExecuteRequest>(&request.body).unwrap();
@@ -2847,9 +2853,9 @@ mod tests {
             })
             .unwrap();
         });
-        let live_server = test_addr(18_226);
+        let live_server = server_addr.clone();
         std::thread::spawn(move || {
-            serve(&meta_addr, move |request| {
+            serve(&meta_bind_addr, move |request| {
                 match (request.method.as_str(), request.path.as_str()) {
                     ("GET", "/shards/1") => json_response(
                         200,
@@ -2867,12 +2873,12 @@ mod tests {
             })
             .unwrap();
         });
-        wait_for_http(&test_addr(18_227));
+        wait_for_http(&meta_addr);
 
         let bad_server = "127.0.0.1:1".to_string();
         let client = TemporalStoreClient::with_options(ClientOptions {
             proxy_addr: bad_server.clone(),
-            meta_addr: Some(test_addr(18_227)),
+            meta_addr: Some(meta_addr.clone()),
             route_cache_ttl_ms: 60_000,
             connect_timeout_ms: 50,
             io_timeout_ms: 200,
@@ -3292,11 +3298,12 @@ mod tests {
 
     #[test]
     fn client_retries_cpp_retryable_read_status_before_returning() {
-        let proxy_addr = test_addr(18_236);
+        let proxy_addr = free_local_addr();
+        let proxy_bind_addr = proxy_addr.clone();
         let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let attempts_for_server = attempts.clone();
         std::thread::spawn(move || {
-            serve(&proxy_addr, move |request| {
+            serve(&proxy_bind_addr, move |request| {
                 match (request.method.as_str(), request.path.as_str()) {
                     ("POST", "/execute") => {
                         let attempt =
@@ -3326,10 +3333,10 @@ mod tests {
             })
             .unwrap();
         });
-        wait_for_http(&test_addr(18_236));
+        wait_for_http(&proxy_addr);
 
         let client = TemporalStoreClient::with_options(ClientOptions {
-            proxy_addr: test_addr(18_236),
+            proxy_addr: proxy_addr.clone(),
             ..ClientOptions::default()
         });
         let table = client.open_table(
@@ -3347,11 +3354,12 @@ mod tests {
 
     #[test]
     fn client_does_not_retry_write_status_without_write_retry_budget() {
-        let proxy_addr = test_addr(18_237);
+        let proxy_addr = free_local_addr();
+        let proxy_bind_addr = proxy_addr.clone();
         let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let attempts_for_server = attempts.clone();
         std::thread::spawn(move || {
-            serve(&proxy_addr, move |request| {
+            serve(&proxy_bind_addr, move |request| {
                 match (request.method.as_str(), request.path.as_str()) {
                     ("POST", "/execute") => {
                         attempts_for_server.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -3368,10 +3376,10 @@ mod tests {
             })
             .unwrap();
         });
-        wait_for_http(&test_addr(18_237));
+        wait_for_http(&proxy_addr);
 
         let client = TemporalStoreClient::with_options(ClientOptions {
-            proxy_addr: test_addr(18_237),
+            proxy_addr: proxy_addr.clone(),
             ..ClientOptions::default()
         });
         let table = client.open_table("ns", "tbl", TableOptions::default());

@@ -78,6 +78,7 @@ impl ObjectStore for FileObjectStore {
         let mut file = tokio::fs::File::create(path).await?;
         file.write_all(&bytes).await?;
         file.flush().await?;
+        file.sync_all().await?;
         Ok(())
     }
 
@@ -140,4 +141,29 @@ async fn collect_files(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn file_object_store_put_is_reopen_readable_after_durable_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FileObjectStore::new(dir.path().join("objects"));
+
+        store
+            .put("shards/1/oplog/0001.json", Bytes::from_static(b"durable"))
+            .await
+            .unwrap();
+
+        let reopened = tokio::fs::read(dir.path().join("objects/shards/1/oplog/0001.json"))
+            .await
+            .unwrap();
+        assert_eq!(reopened, b"durable");
+        assert_eq!(
+            store.get("shards/1/oplog/0001.json").await.unwrap(),
+            Bytes::from_static(b"durable")
+        );
+    }
 }

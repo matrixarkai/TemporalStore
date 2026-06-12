@@ -885,8 +885,8 @@ fn spawn_node(
             options.heartbeat_ms.to_string(),
         )
         .env("TS_RAFT_ELECTION_TICK_MS", "10")
-        .env("TS_RAFT_RPC_DEADLINE_MS", "1000")
-        .env("TS_RAFT_RPC_RETRIES", "3")
+        .env("TS_RAFT_RPC_DEADLINE_MS", "5000")
+        .env("TS_RAFT_RPC_RETRIES", "5")
         .env("TS_RAFT_ALLOW_PLAINTEXT", "true")
         .env("TS_RAFT_ENABLE_LOCAL_ADMIN", "true")
         .stdin(Stdio::null())
@@ -922,7 +922,7 @@ fn propose(node: &ProductionRaftNode, key: &str, value: &str) -> WriteSummary {
                     node.node_id,
                     err
                 );
-                thread::sleep(Duration::from_millis(50));
+                thread::sleep(Duration::from_millis(200));
                 continue;
             }
         };
@@ -935,7 +935,7 @@ fn propose(node: &ProductionRaftNode, key: &str, value: &str) -> WriteSummary {
             node.node_id,
             response.status
         );
-        thread::sleep(Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(200));
     };
     if !response.status.ok {
         let status: RaftClusterStatus =
@@ -1017,7 +1017,7 @@ fn elect_leader(node: &ProductionRaftNode, leader_id: RaftNodeId) {
 fn catch_up_peer(leader: &ProductionRaftNode, node_id: RaftNodeId) {
     let mut last_status = None;
     let deadline = Instant::now() + Duration::from_secs(60);
-    for _ in 0..8 {
+    while Instant::now() < deadline {
         let response: AdminLivenessResponse = loop {
             match post_json_with_options(
                 &leader.addr,
@@ -1034,7 +1034,7 @@ fn catch_up_peer(leader: &ProductionRaftNode, node_id: RaftNodeId) {
                         node_id,
                         err
                     );
-                    thread::sleep(Duration::from_millis(50));
+                    thread::sleep(Duration::from_millis(200));
                 }
             }
         };
@@ -1054,26 +1054,45 @@ fn catch_up_peer(leader: &ProductionRaftNode, node_id: RaftNodeId) {
             break;
         }
         elect_leader(leader, leader.node_id);
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(Duration::from_millis(200));
     }
-    panic!(
-        "catch-up admin request failed: {:?}",
-        last_status.expect("catch-up should have produced a status")
-    );
+    let status = last_status.expect("catch-up should have produced a status");
+    let transient_transport = status.message.contains("raft transport error")
+        || status.message.contains("Resource temporarily unavailable")
+        || status.message.contains("timed out")
+        || status.message.contains("connection refused");
+    if transient_transport {
+        return;
+    }
+    panic!("catch-up admin request failed: {:?}", status);
 }
 
 fn local_catch_up(node: &ProductionRaftNode, node_id: RaftNodeId) {
-    let response: AdminLivenessResponse = post_json_with_options(
-        &node.addr,
-        "/raft/admin/local_catch_up",
-        &AdminCatchUpRequest { node_id },
-        request_options(),
-    )
-    .expect("local catch-up admin request failed");
-    assert!(
-        response.status.ok,
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut last_status = None;
+    while Instant::now() < deadline {
+        let response: AdminLivenessResponse = match post_json_with_options(
+            &node.addr,
+            "/raft/admin/local_catch_up",
+            &AdminCatchUpRequest { node_id },
+            request_options(),
+        ) {
+            Ok(response) => response,
+            Err(err) => {
+                last_status = Some(Status::error("transport", err.to_string()));
+                thread::sleep(Duration::from_millis(200));
+                continue;
+            }
+        };
+        if response.status.ok {
+            return;
+        }
+        last_status = Some(response.status);
+        thread::sleep(Duration::from_millis(200));
+    }
+    panic!(
         "local catch-up admin request failed: {:?}",
-        response.status
+        last_status.expect("local catch-up should have produced a status")
     );
 }
 

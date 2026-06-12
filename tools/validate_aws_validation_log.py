@@ -11,9 +11,13 @@ def require(condition, message):
 def load_summary(path):
     text = open(path, "r", encoding="utf-8").read()
     start = text.find("{")
-    end = text.rfind("}")
-    require(start >= 0 and end > start, f"{path}: no JSON summary found")
-    return json.loads(text[start : end + 1])
+    require(start >= 0, f"{path}: no JSON summary found")
+    decoder = json.JSONDecoder()
+    try:
+        summary, _ = decoder.raw_decode(text[start:])
+    except json.JSONDecodeError as err:
+        raise SystemExit(f"{path}: invalid JSON summary: {err}") from err
+    return summary
 
 
 def validate_raft(job, summary):

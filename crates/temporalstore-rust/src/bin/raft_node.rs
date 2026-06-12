@@ -14,7 +14,7 @@ use temporalstore_rust::{
     DistributedRaftProposeRequest, DistributedRaftReadRequest, ProductionRaftEngineKind,
     ProductionRaftNode, ProductionRaftRuntime, ProductionRaftRuntimeOptions,
     ProductionRaftSecurity, RaftConfig, RaftControlLeadershipRequest, RaftFailoverReport,
-    RaftMembershipChangeReport, RaftNodeId, RaftRpcRuntimeOptions, RaftTransport, Status,
+    RaftMembershipChangeReport, RaftNodeId, RaftRpcRuntimeOptions, Status,
 };
 use temporalstore_snapshot::{FileObjectStore, S3SnapshotStore};
 
@@ -361,20 +361,8 @@ fn handle(
             }
             match parse_json::<RaftAdminCatchUpRequest>(&request.body) {
                 Ok(req) => {
-                    let cluster = runtime.cluster();
-                    let status = cluster
-                        .build_install_snapshot_request(req.node_id)
-                        .and_then(|snapshot| {
-                            let response = runtime.transport().install_snapshot(snapshot)?;
-                            if response.success {
-                                cluster.catch_up(req.node_id)
-                            } else {
-                                Err(temporalstore_rust::RaftError::Transport(format!(
-                                    "snapshot install rejected by node {}: {:?}",
-                                    req.node_id, response.reject_reason
-                                )))
-                            }
-                        })
+                    let status = runtime
+                        .catch_up_peer_with_retry(req.node_id)
                         .map(|_| Status::ok())
                         .unwrap_or_else(|err| Status::error("raft_error", err.to_string()));
                     json_response(200, &RaftAdminLivenessResponse { status })
