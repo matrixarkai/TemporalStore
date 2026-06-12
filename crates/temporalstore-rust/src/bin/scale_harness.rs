@@ -61,7 +61,10 @@ struct HarnessSummary {
     hash_ops: usize,
     sequence_rows: usize,
     sampled_reads: usize,
+    raft_write_latency: LatencySummary,
     raft_replica_read_latency: LatencySummary,
+    raft_write_qps: ThroughputSummary,
+    raft_read_qps: ThroughputSummary,
     shared_store: Option<SharedStoreComparisonSummary>,
     failovers: usize,
     scale_events: usize,
@@ -82,6 +85,13 @@ struct LatencySummary {
     max_us: u128,
 }
 
+#[derive(Debug, Default, Clone, Copy, Serialize)]
+struct ThroughputSummary {
+    ops: usize,
+    elapsed_ms: u128,
+    ops_per_sec: f64,
+}
+
 #[derive(Debug, Serialize)]
 struct SharedStoreComparisonSummary {
     sync_ops: usize,
@@ -94,6 +104,10 @@ struct SharedStoreComparisonSummary {
     async_storage_flush_latency: LatencySummary,
     sync_replica_read_latency: LatencySummary,
     async_replica_read_latency: LatencySummary,
+    sync_primary_write_qps: ThroughputSummary,
+    async_primary_write_qps: ThroughputSummary,
+    sync_replica_read_qps: ThroughputSummary,
+    async_replica_read_qps: ThroughputSummary,
     sync_max_lag: u64,
     async_max_lag: u64,
     async_flush_every: usize,
@@ -121,6 +135,7 @@ fn main() {
     .expect("raft config should be valid");
 
     let mut sampled_reads = 0usize;
+    let mut raft_write_latencies = Vec::new();
     let mut raft_read_latencies = Vec::new();
     let mut failovers = 0usize;
     let mut rng = Lcg::new(0x5eed_cafe);
@@ -128,12 +143,14 @@ fn main() {
     for i in 0..options.string_ops {
         let key = format!("scale:string:{i}");
         let value = format!("value-{i}").into_bytes();
+        let write_start = Instant::now();
         cluster
             .propose(Command::StringSet {
                 key: key.clone(),
                 value: value.clone(),
             })
             .expect("string write should commit");
+        raft_write_latencies.push(write_start.elapsed());
 
         if options.read_sample_every > 0 && i % options.read_sample_every == 0 {
             sampled_reads += 1;
@@ -155,6 +172,7 @@ fn main() {
     }
 
     for i in 0..options.hash_ops {
+        let write_start = Instant::now();
         cluster
             .propose(Command::HashSet {
                 key: format!("scale:hash:{}", i % 128),
@@ -162,6 +180,7 @@ fn main() {
                 value: i.to_le_bytes().to_vec(),
             })
             .expect("hash write should commit");
+        raft_write_latencies.push(write_start.elapsed());
     }
 
     for key_id in 0..options.sequence_keys {
@@ -175,12 +194,14 @@ fn main() {
             })
             .collect::<Vec<_>>();
         let key = format!("scale:sequence:{key_id}");
+        let write_start = Instant::now();
         cluster
             .propose(Command::SequenceAdd {
                 key: key.clone(),
                 rows,
             })
             .expect("sequence write should commit");
+        raft_write_latencies.push(write_start.elapsed());
         let read_start = Instant::now();
         let response = cluster
             .read_from_replica(
@@ -256,7 +277,10 @@ fn main() {
         hash_ops: options.hash_ops,
         sequence_rows: options.sequence_keys * options.sequence_len,
         sampled_reads,
+        raft_write_latency: summarize_latencies(&raft_write_latencies),
         raft_replica_read_latency: summarize_latencies(&raft_read_latencies),
+        raft_write_qps: summarize_throughput(raft_write_latencies.len(), elapsed_ms),
+        raft_read_qps: summarize_throughput(raft_read_latencies.len(), elapsed_ms),
         shared_store,
         failovers,
         scale_events: completed_scale_events,
@@ -401,6 +425,10 @@ fn run_shared_store_comparison(options: &HarnessOptions) -> SharedStoreCompariso
             async_storage_flush_latency: async_report.flush_latency,
             sync_replica_read_latency: sync.read_latency,
             async_replica_read_latency: async_report.read_latency,
+            sync_primary_write_qps: sync.primary_write_qps,
+            async_primary_write_qps: async_report.primary_write_qps,
+            sync_replica_read_qps: sync.replica_read_qps,
+            async_replica_read_qps: async_report.replica_read_qps,
             sync_max_lag: sync.max_lag,
             async_max_lag: async_report.max_lag,
             async_flush_every: options.shared_store_flush_every.max(1),
@@ -416,6 +444,8 @@ struct SharedStoreModeReport {
     durable_write_latency: LatencySummary,
     flush_latency: LatencySummary,
     read_latency: LatencySummary,
+    primary_write_qps: ThroughputSummary,
+    replica_read_qps: ThroughputSummary,
     max_lag: u64,
 }
 
@@ -462,6 +492,7 @@ where
     let mut storage_write_latencies = Vec::new();
     let mut durable_write_latencies = Vec::new();
     let mut flush_latencies = Vec::new();
+    let started = Instant::now();
 
     for i in 0..ops {
         let key = format!("shared:{shard_id}:{i}");
@@ -537,6 +568,11 @@ where
         durable_write_latency: summarize_latencies(&durable_write_latencies),
         flush_latency: summarize_latencies(&flush_latencies),
         read_latency: summarize_latencies(&read_latencies),
+        primary_write_qps: summarize_throughput(
+            primary_write_latencies.len(),
+            started.elapsed().as_millis(),
+        ),
+        replica_read_qps: summarize_throughput(read_latencies.len(), started.elapsed().as_millis()),
         max_lag,
     }
 }
@@ -569,6 +605,19 @@ fn summarize_latencies(values: &[Duration]) -> LatencySummary {
         p95_us: percentile(&micros, 95),
         p99_us: percentile(&micros, 99),
         max_us: *micros.last().unwrap_or(&0),
+    }
+}
+
+fn summarize_throughput(ops: usize, elapsed_ms: u128) -> ThroughputSummary {
+    let ops_per_sec = if elapsed_ms == 0 {
+        ops as f64
+    } else {
+        ops as f64 / (elapsed_ms as f64 / 1_000.0)
+    };
+    ThroughputSummary {
+        ops,
+        elapsed_ms,
+        ops_per_sec,
     }
 }
 
