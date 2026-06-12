@@ -58,6 +58,24 @@ brpc and Thrift are intentionally not part of the Rust target. The Rust open-sou
 
 ## What Was Closed In The Latest Pass
 
+This pass repeated the Raft distributed replication and failover comparison three times against the
+C++ Raft control protocol artifacts and the Rust standalone/integrated data-node Raft surfaces:
+
+1. The raft-enabled `server` binary now exposes `POST /raft/control/accept_leadership`, matching
+   the standalone `raft_node` control route.
+2. The route rejects requests for another node id, catches up the local node, and transfers
+   leadership to that local node.
+3. A server-route regression test covers wrong-node rejection and successful local leadership
+   acceptance.
+4. The repeated review is captured in
+   `docs/three_pass_raft_distributed_parity_2026_06_12.md`.
+
+This closes a process-boundary control-route parity gap. It does not change the remaining
+production caveat: the Rust Raft path is still a local-model/open-source control-plane parity layer,
+not yet real OpenRaft/raft-rs FSM/storage with production mTLS and external chaos validation.
+
+## What Was Closed In The Previous Pass
+
 This pass repeated the client/proxy/data-node/metaserver comparison six times and closed one
 practical local testing gap:
 

@@ -25,10 +25,11 @@ use temporalstore_rust::{
     DistributedRaftCommandResponse, DistributedRaftProposeRequest, DistributedRaftReadRequest,
     DumpShardRequest, GcRequest, HttpReplicaStreamSource, LoadShardRequest,
     MembershipUpdateRequest, ProductionRaftEngineKind, ProductionRaftNode, ProductionRaftRuntime,
-    ProductionRaftRuntimeOptions, ProductionRaftSecurity, RaftConfig, RaftFailoverReport,
-    RaftMembershipChangeReport, RaftNodeId, RaftRpcRuntimeOptions, RaftTransport,
-    ReplicaReplayLoop, ReplicaReplayOptions, ReplicaReplayRequest, ReplicaReplayResponse,
-    RequestController, ScanStreamRequest, SetConfigRequest, StreamReadRequest, UnloadShardRequest,
+    ProductionRaftRuntimeOptions, ProductionRaftSecurity, RaftConfig, RaftControlLeadershipRequest,
+    RaftFailoverReport, RaftMembershipChangeReport, RaftNodeId, RaftRpcRuntimeOptions,
+    RaftTransport, ReplicaReplayLoop, ReplicaReplayOptions, ReplicaReplayRequest,
+    ReplicaReplayResponse, RequestController, ScanStreamRequest, SetConfigRequest,
+    StreamReadRequest, UnloadShardRequest,
 };
 use temporalstore_snapshot::{FileObjectStore, S3SnapshotStore};
 
@@ -907,6 +908,31 @@ fn handle_server_raft_route(
                         .map(|_| Status::ok())
                         .unwrap_or_else(|err| Status::error("raft_error", err.to_string()));
                     json_response(200, &RaftAdminLivenessResponse { status })
+                }
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        ("POST", "/raft/control/accept_leadership") => {
+            match parse_json::<RaftControlLeadershipRequest>(&request.body) {
+                Ok(req) => {
+                    let status = if req.node_id != state.local_node_id {
+                        Status::error(
+                            "bad_request",
+                            format!(
+                                "node {} cannot accept leadership for node {}",
+                                state.local_node_id, req.node_id
+                            ),
+                        )
+                    } else {
+                        state
+                            .runtime
+                            .cluster()
+                            .catch_up(req.node_id)
+                            .and_then(|_| state.runtime.cluster().transfer_leader(req.node_id))
+                            .map(|_| Status::ok())
+                            .unwrap_or_else(|err| Status::error("raft_error", err.to_string()))
+                    };
+                    json_response(200, &status)
                 }
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
             }
@@ -2759,6 +2785,38 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn server_raft_control_accept_leadership_matches_raft_node_route() {
+        let dir = tempdir().unwrap();
+        let state = test_server_raft_state(dir.path(), 2, vec![1, 2, 3], false);
+        assert_eq!(state.runtime.status().leader_id, 1);
+        state.runtime.cluster().set_alive(2, true).unwrap();
+        state.runtime.cluster().catch_up(2).unwrap();
+
+        let wrong_node_request = HttpRequest {
+            method: "POST".to_string(),
+            path: "/raft/control/accept_leadership".to_string(),
+            body: serde_json::to_vec(&RaftControlLeadershipRequest { node_id: 3 }).unwrap(),
+        };
+        let (code, body) = handle_server_raft_route(&state, &wrong_node_request).unwrap();
+        assert_eq!(code, 200);
+        let wrong_node_status: Status = serde_json::from_slice(&body).unwrap();
+        assert!(!wrong_node_status.ok);
+        assert_eq!(wrong_node_status.code, "bad_request");
+        assert_eq!(state.runtime.status().leader_id, 1);
+
+        let accept_request = HttpRequest {
+            method: "POST".to_string(),
+            path: "/raft/control/accept_leadership".to_string(),
+            body: serde_json::to_vec(&RaftControlLeadershipRequest { node_id: 2 }).unwrap(),
+        };
+        let (code, body) = handle_server_raft_route(&state, &accept_request).unwrap();
+        assert_eq!(code, 200);
+        let status: Status = serde_json::from_slice(&body).unwrap();
+        assert!(status.ok, "{status:?}");
+        assert_eq!(state.runtime.status().leader_id, 2);
     }
 
     #[test]
