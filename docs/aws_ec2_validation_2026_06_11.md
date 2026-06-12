@@ -1158,6 +1158,110 @@ Validation commands passed:
   instances.
 - Multi-EC2 data writes and replica reads passed functionally in happy-path and node-1-down
   surviving-majority scenarios.
+
+### AWS Retest After Durable Shared-Store Sync Writes
+
+Code under test:
+
+- AWS artifact commit: `d71e37b`
+- Pushed rebased commit: `e5ac6e4`
+- Date: `2026-06-12 01:31:39 -07:00`
+- Instance: `i-05f55360d92c43908`
+- SSM command: `df686100-d832-458f-8c29-0b0d2a967d22`
+- Artifact:
+  `s3://temporalstore-test-artifacts-657817560042-us-west-2/aws-durable-sync-20260612012325-d71e37b.tar.gz`
+- Output directory:
+  `/tmp/temporalstore-aws-validation/aws-durable-sync-20260612012325-d71e37b`
+
+Fixes validated:
+
+- `FileObjectStore::put` now calls `sync_all()` after writing object bytes. Sync shared-store writes
+  now measure a durable file write instead of only buffered userspace/kernel write completion.
+- `sync_storage_write_latency` is reported separately and is included in `sync_primary_write_latency`.
+- Raft catch-up admin flow retries transient TCP/OS transport errors and tries append catch-up before
+  falling back to snapshot install.
+- Client parity tests that used fixed localhost ports now use dynamic ports, avoiding stale listener
+  collisions during repeated local parity runs.
+
+AWS storage note:
+
+- `aws efs describe-file-systems --region us-west-2` returned no file systems for this account/region.
+- This run therefore validates durable local file/EBS-backed shared-store semantics on the existing
+  EC2 node, not true EFS latency. The p99 is expected to be lower than a real EFS mount. A direct
+  C++ EFS comparison still requires provisioning or mounting an EFS filesystem and pointing
+  `--shared-store-root` at that mount.
+
+Validation commands passed:
+
+- `distributed_raft_harness`
+- `storage_modes_harness`
+- `raft_secondary_replication_harness`
+- `scale_harness` with 3 in-process Raft data nodes
+- `scale_harness` with 7 in-process Raft data nodes
+
+3-node durable shared-store result:
+
+| Metric | Value |
+|---|---:|
+| commit index | `201` |
+| replication healthy | `true` |
+| max Raft replica lag | `0` |
+| Raft write p50 | `1304 us` |
+| Raft write p99 | `3472 us` |
+| Raft write max | `12433 us` |
+| Raft write QPS | `73.79` |
+| Raft replica read p50 | `99 us` |
+| Raft replica read p99 | `163 us` |
+| Raft read QPS | `15.05` |
+| sync primary write p50 | `3943 us` |
+| sync primary write p99 | `8227 us` |
+| sync primary write max | `9358 us` |
+| sync storage write p50 | `3507 us` |
+| sync storage write p99 | `7557 us` |
+| sync storage write max | `8052 us` |
+| sync primary write QPS | `174.29` |
+| sync replica read p99 | `155 us` |
+| sync shared-store lag | `0` |
+| async primary write p50 | `370 us` |
+| async primary write p99 | `682 us` |
+| async enqueue p99 | `1 us` |
+| async durable per-entry write p50 | `3790 us` |
+| async durable per-entry write p99 | `6004 us` |
+| async flush batch p50 | `75816 us` |
+| async flush batch p99 | `84781 us` |
+| async shared-store lag | `19` |
+
+7-node durable shared-store result:
+
+| Metric | Value |
+|---|---:|
+| commit index | `151` |
+| replication healthy | `true` |
+| max Raft replica lag | `0` |
+| Raft write p50 | `2339 us` |
+| Raft write p99 | `3923 us` |
+| Raft write max | `17934 us` |
+| Raft write QPS | `55.72` |
+| Raft replica read p50 | `108 us` |
+| Raft replica read p99 | `184 us` |
+| Raft read QPS | `11.44` |
+| sync primary write p50 | `3898 us` |
+| sync primary write p99 | `8157 us` |
+| sync primary write max | `13613 us` |
+| sync storage write p50 | `3479 us` |
+| sync storage write p99 | `8019 us` |
+| sync storage write max | `13388 us` |
+| sync primary write QPS | `176.73` |
+| sync replica read p99 | `141 us` |
+| sync shared-store lag | `0` |
+| async primary write p50 | `363 us` |
+| async primary write p99 | `1539 us` |
+| async enqueue p99 | `4 us` |
+| async durable per-entry write p50 | `5773 us` |
+| async durable per-entry write p99 | `6417 us` |
+| async flush batch p50 | `115460 us` |
+| async flush batch p99 | `126134 us` |
+| async shared-store lag | `19` |
 - Multi-EC2 validation exposed two remaining production gaps: non-authoritative per-process
   leadership control updates, and write latency caused by sequential follower RPC timeout behavior.
 - Replica reads passed after convergence.
