@@ -60,6 +60,8 @@ struct ShardState {
     ips_request_ids: HashMap<String, BTreeSet<String>>,
     risk: HashMap<String, BTreeMap<u64, i64>>,
     #[serde(default)]
+    risk_changes: HashMap<String, BTreeMap<u64, BTreeSet<Vec<u8>>>>,
+    #[serde(default)]
     risk_fol: HashMap<String, RiskFolValue>,
     #[serde(skip)]
     dirty_objects: BTreeSet<String>,
@@ -1203,7 +1205,7 @@ impl TemporalEngine {
             let feature_records = state.features.len();
             let sequence_records = state.sequences.len();
             let ips_records = state.ips.len();
-            let risk_records = state.risk.len();
+            let risk_records = state.risk.len() + state.risk_changes.len();
             let total_records = string_records
                 + hash_records
                 + set_records
@@ -2303,6 +2305,33 @@ fn execute_on_shard(
             mutated = true;
             CommandResponse::Empty
         }
+        Command::RiskChangeAdd {
+            key,
+            timestamp_ms,
+            value,
+            precision_ms,
+            ttl_ms,
+        } => {
+            remove_if_expired(shard, &key);
+            let bucket_ms = precision_ms
+                .filter(|precision_ms| *precision_ms > 0)
+                .map(|precision_ms| timestamp_ms - timestamp_ms % precision_ms)
+                .unwrap_or(timestamp_ms);
+            shard
+                .risk_changes
+                .entry(key.clone())
+                .or_default()
+                .entry(bucket_ms)
+                .or_default()
+                .insert(value);
+            if let Some(ttl_ms) = ttl_ms {
+                shard
+                    .expires_at_ms
+                    .insert(key, now_ms().saturating_add(ttl_ms));
+            }
+            mutated = true;
+            CommandResponse::Empty
+        }
         Command::RiskCount {
             key,
             start_ms,
@@ -2340,18 +2369,24 @@ fn execute_on_shard(
                     mutated,
                 };
             }
-            let values = shard
-                .risk
-                .get(&key)
-                .map(|series| {
-                    series
-                        .range(start_ms..=end_ms)
-                        .map(|(_, value)| *value)
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            CommandResponse::Integer {
-                value: aggregate_risk_values(&values, &aggregator),
+            if is_risk_change_aggregator(&aggregator) {
+                CommandResponse::Integer {
+                    value: count_risk_changes(shard, &key, start_ms, end_ms),
+                }
+            } else {
+                let values = shard
+                    .risk
+                    .get(&key)
+                    .map(|series| {
+                        series
+                            .range(start_ms..=end_ms)
+                            .map(|(_, value)| *value)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                CommandResponse::Integer {
+                    value: aggregate_risk_values(&values, &aggregator),
+                }
             }
         }
         Command::RiskDetail {
@@ -2437,18 +2472,24 @@ fn execute_on_shard(
                 };
             }
             let key = risk_family_key(family, &key);
-            let values = shard
-                .risk
-                .get(&key)
-                .map(|series| {
-                    series
-                        .range(start_ms..=end_ms)
-                        .map(|(_, value)| *value)
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            CommandResponse::Integer {
-                value: aggregate_risk_values(&values, &aggregator),
+            if is_risk_change_aggregator(&aggregator) {
+                CommandResponse::Integer {
+                    value: count_risk_changes(shard, &key, start_ms, end_ms),
+                }
+            } else {
+                let values = shard
+                    .risk
+                    .get(&key)
+                    .map(|series| {
+                        series
+                            .range(start_ms..=end_ms)
+                            .map(|(_, value)| *value)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                CommandResponse::Integer {
+                    value: aggregate_risk_values(&values, &aggregator),
+                }
             }
         }
         Command::RiskFolSet {
@@ -2586,6 +2627,7 @@ fn delete_record(shard: &mut ShardState, key: &str) -> bool {
     removed |= shard.ips_meta.remove(key).is_some();
     removed |= shard.ips_request_ids.remove(key).is_some();
     removed |= shard.risk.remove(key).is_some();
+    removed |= shard.risk_changes.remove(key).is_some();
     removed |= shard.risk_fol.remove(key).is_some();
     removed
 }
@@ -2695,6 +2737,7 @@ fn record_exists(shard: &ShardState, key: &str) -> bool {
         || shard.sequences.contains_key(key)
         || shard.ips.contains_key(key)
         || shard.risk.contains_key(key)
+        || shard.risk_changes.contains_key(key)
 }
 
 fn invalidate_record_all(cache: &MultiLayerCache, shard_id: ShardId, key: &str) {
@@ -2789,6 +2832,20 @@ fn aggregate_risk_values(values: &[i64], aggregator: &str) -> i64 {
         "last" => values.last().copied().unwrap_or_default(),
         _ => values.iter().sum(),
     }
+}
+
+fn is_risk_change_aggregator(aggregator: &str) -> bool {
+    aggregator.eq_ignore_ascii_case("change")
+}
+
+fn count_risk_changes(shard: &ShardState, key: &str, start_ms: u64, end_ms: u64) -> i64 {
+    let mut unique = BTreeSet::new();
+    if let Some(series) = shard.risk_changes.get(key) {
+        for (_, values) in series.range(start_ms..=end_ms) {
+            unique.extend(values.iter().cloned());
+        }
+    }
+    unique.len() as i64
 }
 
 fn risk_family_key(family: RiskFamily, key: &str) -> String {
@@ -3012,6 +3069,7 @@ fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::IpsDelete { key }
         | Command::RiskIncrement { key, .. }
         | Command::RiskIncrementWithOptions { key, .. }
+        | Command::RiskChangeAdd { key, .. }
         | Command::RiskFolSet { key, .. } => vec![key.clone()],
         Command::RiskSet { family, key, .. } | Command::RiskSetAndGet { family, key, .. } => {
             vec![risk_family_key(*family, key)]
@@ -3073,6 +3131,7 @@ fn is_write_command(command: &Command) -> bool {
             | Command::IpsDelete { .. }
             | Command::RiskIncrement { .. }
             | Command::RiskIncrementWithOptions { .. }
+            | Command::RiskChangeAdd { .. }
             | Command::RiskSet { .. }
             | Command::RiskSetAndGet { .. }
             | Command::RiskFolSet { .. }
@@ -5723,6 +5782,68 @@ mod tests {
                 CommandResponse::Integer { value: expected }
             );
         }
+    }
+
+    #[test]
+    fn risk_change_matches_cpp_distinct_field_semantics() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        for (timestamp_ms, value) in [(10, "device-a"), (20, "device-a"), (30, "device-b")] {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::RiskChangeAdd {
+                    key: "risk-change".to_string(),
+                    timestamp_ms,
+                    value: value.as_bytes().to_vec(),
+                    precision_ms: Some(10),
+                    ttl_ms: None,
+                },
+            });
+            assert!(response.status.ok, "{response:?}");
+        }
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::RiskQuery {
+                        key: "risk-change".to_string(),
+                        start_ms: 0,
+                        end_ms: 40,
+                        aggregator: "change".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Integer { value: 2 }
+        );
+
+        for (timestamp_ms, value) in [(10, "buyer-1"), (20, "buyer-1"), (30, "buyer-2")] {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::RiskChangeAdd {
+                    key: risk_family_key(RiskFamily::H, "risk-change"),
+                    timestamp_ms,
+                    value: value.as_bytes().to_vec(),
+                    precision_ms: None,
+                    ttl_ms: None,
+                },
+            });
+            assert!(response.status.ok, "{response:?}");
+        }
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::RiskFamilyQuery {
+                        family: RiskFamily::H,
+                        key: "risk-change".to_string(),
+                        start_ms: 0,
+                        end_ms: 40,
+                        aggregator: "change".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Integer { value: 2 }
+        );
     }
 
     #[test]

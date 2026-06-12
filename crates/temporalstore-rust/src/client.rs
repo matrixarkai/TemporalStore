@@ -1686,6 +1686,23 @@ impl TemporalStoreTable {
         })
     }
 
+    pub fn risk_change_add(
+        &self,
+        key: impl Into<String>,
+        timestamp_ms: u64,
+        value: impl Into<Vec<u8>>,
+        precision_ms: Option<u64>,
+        ttl_ms: Option<u64>,
+    ) -> Result<(), ClientError> {
+        self.expect_empty(Command::RiskChangeAdd {
+            key: key.into(),
+            timestamp_ms,
+            value: value.into(),
+            precision_ms,
+            ttl_ms,
+        })
+    }
+
     pub fn risk_count(
         &self,
         key: impl Into<String>,
@@ -2208,6 +2225,7 @@ fn is_write(command: &Command) -> bool {
             | Command::IpsDelete { .. }
             | Command::RiskIncrement { .. }
             | Command::RiskIncrementWithOptions { .. }
+            | Command::RiskChangeAdd { .. }
             | Command::RiskSet { .. }
             | Command::RiskSetAndGet { .. }
             | Command::RiskFolSet { .. }
@@ -2365,6 +2383,7 @@ fn command_key(command: &Command) -> Option<&str> {
         | Command::IpsCount { key, .. }
         | Command::RiskIncrement { key, .. }
         | Command::RiskIncrementWithOptions { key, .. }
+        | Command::RiskChangeAdd { key, .. }
         | Command::RiskCount { key, .. }
         | Command::RiskQuery { key, .. }
         | Command::RiskDetail { key, .. }

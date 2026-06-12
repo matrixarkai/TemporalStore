@@ -484,6 +484,34 @@ The Rust data node also has a first runtime layer around `TemporalEngine`: worke
 
 ## Detailed Gap Matrix
 
+## June 12 LOC Comparison Note
+
+The Rust tree is smaller because it does not yet include the full first-party
+C++ service surface or the vendored dependency surface.
+
+Measured locally against `/root/src/github-services/TemporalStore-main-no-deps`
+and the Rust `rust-main` branch:
+
+- C++ TemporalStore first-party service code: about 96,293 LOC across 566
+  C/C++/proto/thrift files.
+- C++ byteraft dependency: about 37,629 LOC.
+- C++ byte dependency: about 65,828 LOC.
+- Rust TemporalStore code: about 47,034 total Rust LOC, with about 23,971
+  non-test Rust LOC after subtracting test/harness code.
+
+The largest C++ first-party areas are partition/storage, model modules,
+metaserver, client, stream, server, and extensions. The Rust implementation has
+substantial local models for those areas, but still omits large production
+pieces such as full ByteRaft/byte integration, object-manager/page-layout
+internals, production model internals, brpc/thrift SDKs, dashboards, and
+deployment automation.
+
+This pass closed one concrete Risk module gap from the C++ `HSET`/`HQUERY`
+`CHANGE` path. C++ stores a caller-supplied value as a distinct field and query
+counts unique fields over a window. Rust now has `RiskChangeAdd`, typed client
+support, RESP `RISKCHANGE`/`HCHANGE`, and `RiskQuery`/`RiskFamilyQuery` with
+aggregator `change` counting unique values across the requested window.
+
 | Area | C++ TemporalStore | Rust Today | Missing |
 | --- | --- | --- | --- |
 | Protocol | brpc/thrift/protobuf APIs and extension protos | JSON/HTTP command API plus RESP adapter; C++ `ServerService`-named JSON route aliases for load/unload/execute/batch/apply-data-raft-log/config/info/stats/stream/update-membership/ping; C++ `MasterService`-named JSON route aliases for implemented table/server control-plane operations including table update/delete; brpc/thrift intentionally excluded | tonic/gRPC service definitions, prost message schema, SDK compatibility for the new API |
@@ -503,7 +531,7 @@ The Rust data node also has a first runtime layer around `TemporalEngine`: worke
 | Feature | richer feature proto semantics | append/query/replace/delete/agg, write-policy append, 5k long-sequence coverage | nested point arrays, exact aggregate semantics |
 | Sequence | C++ feature/data-module behavior | typed rows, timestamp ordering, inclusive/equality/inequality filters, count, batch query | exact C++ options and remaining edge-case policy |
 | IPS | rich IPS add/query/remove/load/delete/stat/filter/snap | add, idempotent/dimensional add, query-last, query range, dimension-filtered range, batch query-last, remove timestamp, delete key, count range, load, range snapshot, stats, and named filter; typed client and RESP coverage | production snap metadata and server aggregation |
-| Risk | H/CPC/FOL query/update/manager semantics | increment/count plus precision/TTL increment, sum/min/max/first/last/event aggregation, detail list, H/CPC family set/query/set-and-get command shape, explicit C++-style FOL first/last string selection, and local manager summary; typed client and RESP coverage | production CPC/list internals and full manager/debug APIs |
+| Risk | H/CPC/FOL query/update/manager semantics | increment/count plus precision/TTL increment, sum/min/max/first/last/event aggregation, C++-style `CHANGE` distinct-field counting, detail list, H/CPC family set/query/set-and-get command shape, explicit C++-style FOL first/last string selection, and local manager summary; typed client and RESP coverage | production CPC/list internals and full manager/debug APIs |
 | Redis | not the main C++ wire API; C++ server also exposes admin commands such as `INFO`, `CONFIG`, `SLAVEOF`, and `PARTITION` | useful RESP compatibility, including `SET NX/XX GET EX/PX`, hash/set commands, feature commands, C++-style `INFO`/`CONFIG`/`SLAVEOF`/`AUTH`/`BGSAVE`/`PARTITION` smoke commands, and CRC64 slot/hash helpers | sorted sets/lists if needed; real partition-manager backing for admin commands |
 | Metrics | production metrics/logging | Prometheus `/metrics` for shard/cache/page/oplog/runtime/object-manager/partition plus snapshot metric names; local raft metrics renderer | dashboards and alerts |
 | Deployment | internal production environment | Docker and existing-EKS Terraform skeleton | service discovery, autoscale controller, rolling upgrade, runbooks, auth/TLS |

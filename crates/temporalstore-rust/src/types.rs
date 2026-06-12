@@ -453,6 +453,15 @@ pub enum Command {
         #[serde(default)]
         ttl_ms: Option<u64>,
     },
+    RiskChangeAdd {
+        key: String,
+        timestamp_ms: u64,
+        value: Vec<u8>,
+        #[serde(default)]
+        precision_ms: Option<u64>,
+        #[serde(default)]
+        ttl_ms: Option<u64>,
+    },
     RiskCount {
         key: String,
         start_ms: u64,

@@ -1068,6 +1068,37 @@ pub fn execute_redis_command_with_state(
                 ttl_ms: Some(ttl_ms),
             }))
         }
+        "RISKCHANGE" | "HCHANGE" if args.len() == 4 || args.len() == 6 => {
+            let timestamp_ms = match parse_u64(&args[2], "timestamp_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let (precision_ms, ttl_ms) = if args.len() == 6 {
+                let precision_ms = match parse_u64(&args[4], "precision_ms") {
+                    Ok(value) => value,
+                    Err(err) => return RespValue::Error(err),
+                };
+                let ttl_ms = match parse_u64(&args[5], "ttl_ms") {
+                    Ok(value) => value,
+                    Err(err) => return RespValue::Error(err),
+                };
+                (Some(precision_ms), Some(ttl_ms))
+            } else {
+                (None, None)
+            };
+            let key = if command == "HCHANGE" {
+                risk_family_key_for_resp(RiskFamily::H, &string_arg(&args[1]))
+            } else {
+                string_arg(&args[1])
+            };
+            status_ok(execute(Command::RiskChangeAdd {
+                key,
+                timestamp_ms,
+                value: args[3].clone(),
+                precision_ms,
+                ttl_ms,
+            }))
+        }
         "RISKCOUNT" if args.len() == 4 => {
             let start_ms = match parse_u64(&args[2], "start_ms") {
                 Ok(value) => value,
@@ -1222,6 +1253,15 @@ fn risk_family_for_command(command: &str) -> RiskFamily {
     } else {
         RiskFamily::H
     }
+}
+
+fn risk_family_key_for_resp(family: RiskFamily, key: &str) -> String {
+    let family_name = match family {
+        RiskFamily::H => "h",
+        RiskFamily::Cpc => "cpc",
+        RiskFamily::Fol => "fol",
+    };
+    format!("risk:{family_name}:{key}")
 }
 
 fn redis_config_response(args: &[Vec<u8>], state: &mut RedisCommandState) -> RespValue {
@@ -2093,8 +2133,47 @@ mod tests {
             ])])
         );
         assert_eq!(
+            run(vec!["RISKCHANGE", "risk-change", "10", "device-a"]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(
+            run(vec!["RISKCHANGE", "risk-change", "20", "device-a"]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(
+            run(vec![
+                "RISKCHANGE",
+                "risk-change",
+                "30",
+                "device-b",
+                "10",
+                "60000",
+            ]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(
+            run(vec!["RISKQUERY", "risk-change", "0", "40", "change"]),
+            RespValue::Integer(2)
+        );
+        assert_eq!(
             run(vec!["RISKHSET", "risk-cpp", "10", "5"]),
             RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(
+            run(vec!["HCHANGE", "risk-cpp", "10", "buyer-a"]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(
+            run(vec!["HCHANGE", "risk-cpp", "20", "buyer-a"]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(
+            run(vec!["HCHANGE", "risk-cpp", "30", "buyer-b"]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(
+            run(vec!["HQUERY", "risk-cpp", "0", "40", "change"]),
+            RespValue::Integer(2)
         );
         assert_eq!(
             run(vec!["HSETANDGET", "risk-cpp", "20", "7", "0", "30", "sum"]),
