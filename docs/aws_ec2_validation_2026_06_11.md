@@ -816,6 +816,91 @@ Node `1` was intentionally killed as the old leader:
 
 This is expected: the killed node did not receive the post-crash write.
 
+### AWS Retest After Durable Async Latency Fix
+
+Code under test:
+
+- Commit: `32cb710`
+- Instance: `i-05f55360d92c43908`
+- Artifact:
+  `s3://temporalstore-test-artifacts-657817560042-us-west-2/temporalstore-aws-retest-20260611185411-32cb710.tar.gz`
+- Output directory:
+  `/tmp/temporalstore-aws-validation/aws-retest-20260611185411-32cb710`
+
+Scope:
+
+- `distributed_raft_harness`
+- `scale_harness` with 3 in-process Raft data nodes
+- `scale_harness` with 7 in-process Raft data nodes
+- `storage_modes_harness`
+
+The reused EC2 environment still had no usable EFS mount, so shared-store testing used the local
+file-backed shared-store path on the EC2 host. This validates the corrected metric semantics and
+local-file object-store behavior, but it is not an EFS latency measurement.
+
+3-node scale result:
+
+| Metric | Value |
+|---|---:|
+| commit index | `962` |
+| leader | `1` |
+| replication healthy | `true` |
+| max Raft replica lag | `0` |
+| Raft replica read p50 | `109 us` |
+| Raft replica read p95 | `153 us` |
+| Raft replica read p99 | `1783 us` |
+| Raft replica read max | `1808 us` |
+| sync primary write p99 | `7490 us` |
+| async primary write p99 | `4579 us` |
+| sync storage write p99 | `4950 us` |
+| async durable storage write p99 | `23953 us` |
+| async enqueue p99 | `1 us` |
+| async flush p99 | `23953 us` |
+| sync replica read p99 | `216 us` |
+| async replica read p99 | `207 us` |
+| sync shared-store lag | `0` |
+| async shared-store lag | `19` |
+
+7-node scale result:
+
+| Metric | Value |
+|---|---:|
+| commit index | `2512` |
+| leader | `2` |
+| replication healthy | `true` |
+| max Raft replica lag | `0` |
+| Raft replica read p50 | `146 us` |
+| Raft replica read p95 | `216 us` |
+| Raft replica read p99 | `2048 us` |
+| Raft replica read max | `3760 us` |
+| sync primary write p99 | `8489 us` |
+| async primary write p99 | `13664 us` |
+| sync storage write p99 | `4501 us` |
+| async durable storage write p99 | `31637 us` |
+| async enqueue p99 | `1 us` |
+| async flush p99 | `31637 us` |
+| sync replica read p99 | `259 us` |
+| async replica read p99 | `315 us` |
+| sync shared-store lag | `0` |
+| async shared-store lag | `19` |
+
+Storage modes result:
+
+- Async shared-store replay applied `2` entries.
+- Async flushes were ordered and bounded:
+  - first flush: `flushed=1`, `remaining=1`, `last_oplog_index=1`
+  - second flush: `flushed=1`, `remaining=0`, `last_oplog_index=2`
+
+Interpretation:
+
+- The previous near-zero async storage number was queue latency, not EFS/shared-store durability.
+- After the fix, `async_storage_write_latency` equals durable async flush latency.
+- The retest shows the expected split:
+  - client-visible async enqueue p99: `1 us`
+  - durable async shared-store write/flush p99: `23953 us` to `31637 us`
+- Raft replication stayed healthy with max replica lag `0` in both 3-node and 7-node runs.
+- Shared-store async lag stayed bounded at `19`, matching `--shared-store-flush-every 20`.
+
 ## Conclusions
 
 - Raft distributed behavior passed on the existing EC2 node for local multi-node process simulation.
