@@ -3444,15 +3444,14 @@ impl RaftCluster {
         let mut failed_targets = Vec::new();
         let mut fallback_targets = Vec::new();
         let mut live_requests = Vec::new();
+        let mut live_target_ids = Vec::new();
         for (target_id, alive) in target_ids {
-            if replicated >= required {
-                break;
-            }
             if !alive {
                 fallback_targets.push(target_id);
                 continue;
             }
             let request = self.build_append_entries_request(target_id)?;
+            live_target_ids.push(target_id);
             live_requests.push((target_id, request));
         }
         let (tx, rx) = mpsc::channel();
@@ -3484,6 +3483,20 @@ impl RaftCluster {
                     successful_targets.push(target_id);
                 }
                 _ => failed_targets.push(target_id),
+            }
+        }
+        while let Ok((target_id, result)) = rx.try_recv() {
+            match result {
+                Ok(response) if response.success && response.match_index >= entry.index => {
+                    if !successful_targets.contains(&target_id) {
+                        successful_targets.push(target_id);
+                    }
+                }
+                _ => {
+                    if !failed_targets.contains(&target_id) {
+                        failed_targets.push(target_id);
+                    }
+                }
             }
         }
         failed_targets.extend(fallback_targets);
@@ -3566,7 +3579,7 @@ impl RaftCluster {
             response
         };
 
-        for target_id in &successful_targets {
+        for target_id in &live_target_ids {
             let request = AppendEntriesRequest {
                 rpc: None,
                 shard_id: entry.shard_id,
@@ -3582,11 +3595,9 @@ impl RaftCluster {
                 .append_entries(request)
                 .map(|response| response.success)
                 .unwrap_or(false);
-            if !committed {
-                let _ =
-                    transport.install_snapshot(self.build_install_snapshot_request(*target_id)?);
+            if committed {
+                let _ = self.catch_up(*target_id);
             }
-            let _ = self.catch_up(*target_id);
         }
 
         Ok(leader_response)

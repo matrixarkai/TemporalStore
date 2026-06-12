@@ -46,9 +46,51 @@ def validate_scale(job, summary):
     require(summary["replication_healthy"], f"{job}: replication health is false")
     require(summary["max_replica_lag"] == 0, f"{job}: max replica lag is {summary['max_replica_lag']}")
     require(summary["write_ops_per_sec"] > 0, f"{job}: write_ops_per_sec is not positive")
+    require(
+        summary["raft_write_latency"]["samples"] > 0,
+        f"{job}: no raft write latency samples",
+    )
     require(summary["raft_replica_read_latency"]["samples"] > 0, f"{job}: no raft replica read samples")
+    require(
+        summary["raft_write_qps"]["ops"] > 0 and summary["raft_write_qps"]["ops_per_sec"] > 0,
+        f"{job}: raft write qps is not positive: {summary.get('raft_write_qps')}",
+    )
+    require(
+        summary["raft_read_qps"]["ops"] > 0 and summary["raft_read_qps"]["ops_per_sec"] > 0,
+        f"{job}: raft read qps is not positive: {summary.get('raft_read_qps')}",
+    )
     require(summary["shared_store"] is not None, f"{job}: shared-store comparison missing")
-    require(summary["shared_store"]["sync_max_lag"] == 0, f"{job}: sync shared-store lag is non-zero")
+    shared = summary["shared_store"]
+    require(shared["sync_max_lag"] == 0, f"{job}: sync shared-store lag is non-zero")
+    require(
+        shared["sync_primary_write_qps"]["ops"] > 0
+        and shared["sync_primary_write_qps"]["ops_per_sec"] > 0,
+        f"{job}: sync primary write qps is not positive: {shared.get('sync_primary_write_qps')}",
+    )
+    require(
+        shared["async_primary_write_qps"]["ops"] > 0
+        and shared["async_primary_write_qps"]["ops_per_sec"] > 0,
+        f"{job}: async primary write qps is not positive: {shared.get('async_primary_write_qps')}",
+    )
+    require(
+        shared["sync_replica_read_qps"]["ops"] > 0
+        and shared["sync_replica_read_qps"]["ops_per_sec"] > 0,
+        f"{job}: sync replica read qps is not positive: {shared.get('sync_replica_read_qps')}",
+    )
+    require(
+        shared["async_replica_read_qps"]["ops"] > 0
+        and shared["async_replica_read_qps"]["ops_per_sec"] > 0,
+        f"{job}: async replica read qps is not positive: {shared.get('async_replica_read_qps')}",
+    )
+    require(
+        shared["sync_primary_write_latency"]["p99_us"] >= shared["sync_storage_write_latency"]["p50_us"],
+        f"{job}: sync primary p99 is unexpectedly below sync storage p50",
+    )
+    flush_every = max(1, shared["async_flush_every"])
+    require(
+        shared["async_max_lag"] <= flush_every - 1,
+        f"{job}: async shared-store lag {shared['async_max_lag']} exceeds flush window {flush_every}",
+    )
 
 
 def validate_storage(job, summary):

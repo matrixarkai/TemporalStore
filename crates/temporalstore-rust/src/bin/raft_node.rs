@@ -695,11 +695,15 @@ mod tests {
     use temporalstore_rust::Command;
 
     fn test_runtime() -> ProductionRaftRuntime {
+        test_runtime_for_node(1)
+    }
+
+    fn test_runtime_for_node(local_node_id: RaftNodeId) -> ProductionRaftRuntime {
         let dir = tempfile::tempdir().unwrap().into_path();
         ProductionRaftRuntime::start(ProductionRaftRuntimeOptions {
             engine: ProductionRaftEngineKind::OpenRaft,
             shard_id: 55,
-            local_node_id: 1,
+            local_node_id,
             nodes: vec![
                 ProductionRaftNode {
                     node_id: 1,
@@ -754,6 +758,17 @@ mod tests {
         );
         assert_eq!(code, 200);
         body
+    }
+
+    fn wait_for_http(addr: &str) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            if std::net::TcpStream::connect(addr).is_ok() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("raft node test server {addr} did not start");
     }
 
     #[test]
@@ -876,6 +891,18 @@ mod tests {
         assert!(read_index.status.ok);
         assert_eq!(read_index.response.unwrap().node_id, 2);
 
+        let target_addr = "127.0.0.1:19102".to_string();
+        let target_runtime = test_runtime_for_node(2);
+        let target_blocked = Arc::new(Mutex::new(BTreeSet::new()));
+        let target_blocked_for_server = Arc::clone(&target_blocked);
+        std::thread::spawn(move || {
+            serve(&target_addr, move |request| {
+                handle(&target_runtime, false, &target_blocked_for_server, request)
+            })
+            .unwrap()
+        });
+        wait_for_http("127.0.0.1:19102");
+
         let transfer: RaftAdminLivenessResponse = serde_json::from_slice(&route(
             &runtime,
             "POST",
@@ -883,7 +910,7 @@ mod tests {
             serde_json::to_vec(&RaftControlNodeRequest { node_id: 2 }).unwrap(),
         ))
         .unwrap();
-        assert!(transfer.status.ok);
+        assert!(transfer.status.ok, "{:?}", transfer.status);
         assert_eq!(runtime.cluster().leader_id(), 2);
     }
 
