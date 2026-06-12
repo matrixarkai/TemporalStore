@@ -1334,9 +1334,12 @@ fn execute_on_shard(
             CommandResponse::Empty
         }
         Command::CommonExpire { key, ttl_ms } => {
-            shard
-                .expires_at_ms
-                .insert(key.clone(), now_ms().saturating_add(ttl_ms));
+            let expires_at = now_ms().saturating_add(ttl_ms);
+            for record_key in associated_record_keys(&key) {
+                if record_exists_exact(shard, &record_key) {
+                    shard.expires_at_ms.insert(record_key, expires_at);
+                }
+            }
             mutated = true;
             invalidate_record_all(cache, shard_id, &key);
             CommandResponse::Empty
@@ -2596,26 +2599,42 @@ fn ttl_ms(shard: &mut ShardState, key: &str) -> i64 {
     if remove_if_expired(shard, key) {
         return -2;
     }
-    shard
-        .expires_at_ms
-        .get(key)
+    if !record_exists(shard, key) {
+        return -2;
+    }
+    associated_record_keys(key)
+        .into_iter()
+        .filter_map(|record_key| shard.expires_at_ms.get(&record_key).copied())
         .map(|expires_at| expires_at.saturating_sub(now_ms()) as i64)
+        .min()
         .unwrap_or(-1)
 }
 
 fn remove_if_expired(shard: &mut ShardState, key: &str) -> bool {
-    if shard
-        .expires_at_ms
-        .get(key)
-        .map(|expires_at| *expires_at <= now_ms())
-        .unwrap_or(false)
-    {
-        return delete_record(shard, key);
+    let now = now_ms();
+    let mut removed = false;
+    for record_key in associated_record_keys(key) {
+        if shard
+            .expires_at_ms
+            .get(&record_key)
+            .map(|expires_at| *expires_at <= now)
+            .unwrap_or(false)
+        {
+            removed |= delete_record_exact(shard, &record_key);
+        }
     }
-    false
+    removed
 }
 
 fn delete_record(shard: &mut ShardState, key: &str) -> bool {
+    let mut removed = false;
+    for record_key in associated_record_keys(key) {
+        removed |= delete_record_exact(shard, &record_key);
+    }
+    removed
+}
+
+fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     let mut removed = false;
     removed |= shard.expires_at_ms.remove(key).is_some();
     removed |= shard.strings.remove(key).is_some();
@@ -2630,6 +2649,18 @@ fn delete_record(shard: &mut ShardState, key: &str) -> bool {
     removed |= shard.risk_changes.remove(key).is_some();
     removed |= shard.risk_fol.remove(key).is_some();
     removed
+}
+
+fn associated_record_keys(key: &str) -> Vec<String> {
+    if key.starts_with("risk:") {
+        return vec![key.to_string()];
+    }
+    let mut keys = Vec::with_capacity(4);
+    keys.push(key.to_string());
+    for family in [RiskFamily::H, RiskFamily::Cpc, RiskFamily::Fol] {
+        keys.push(risk_family_key(family, key));
+    }
+    keys
 }
 
 fn collect_live_page_segment_ids(shard: &ShardState) -> BTreeSet<u64> {
@@ -2730,6 +2761,12 @@ fn invalidate_cache_key(cache: &MultiLayerCache, key: CacheKey, memory_only: boo
 }
 
 fn record_exists(shard: &ShardState, key: &str) -> bool {
+    associated_record_keys(key)
+        .iter()
+        .any(|record_key| record_exists_exact(shard, record_key))
+}
+
+fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
     shard.strings.contains_key(key)
         || shard.hashes.contains_key(key)
         || shard.sets.contains_key(key)
@@ -2738,6 +2775,7 @@ fn record_exists(shard: &ShardState, key: &str) -> bool {
         || shard.ips.contains_key(key)
         || shard.risk.contains_key(key)
         || shard.risk_changes.contains_key(key)
+        || shard.risk_fol.contains_key(key)
 }
 
 fn invalidate_record_all(cache: &MultiLayerCache, shard_id: ShardId, key: &str) {
@@ -4744,6 +4782,68 @@ mod tests {
     }
 
     #[test]
+    fn common_delete_removes_cpp_risk_family_records_for_logical_key() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        for (family, amount) in [
+            (RiskFamily::H, 5),
+            (RiskFamily::Cpc, 7),
+            (RiskFamily::Fol, 11),
+        ] {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::RiskSet {
+                    family,
+                    key: "risk-cpp".to_string(),
+                    timestamp_ms: 10,
+                    amount,
+                },
+            });
+            assert!(response.status.ok, "{response:?}");
+        }
+
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::CommonExists {
+                        key: "risk-cpp".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Integer { value: 1 }
+        );
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::CommonDelete {
+                        key: "risk-cpp".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Empty
+        );
+        for family in [RiskFamily::H, RiskFamily::Cpc, RiskFamily::Fol] {
+            assert_eq!(
+                engine
+                    .execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::RiskFamilyQuery {
+                            family,
+                            key: "risk-cpp".to_string(),
+                            start_ms: 0,
+                            end_ms: 20,
+                            aggregator: "sum".to_string(),
+                        },
+                    })
+                    .response,
+                CommandResponse::Integer { value: 0 }
+            );
+        }
+    }
+
+    #[test]
     fn common_expire_and_ttl_work() {
         let engine = TemporalEngine::default();
         engine.load_shard(1);
@@ -4786,6 +4886,72 @@ mod tests {
             },
         });
         assert_eq!(response.status.code, "not_found");
+    }
+
+    #[test]
+    fn common_expire_and_ttl_cover_cpp_risk_family_records_for_logical_key() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::RiskSet {
+                family: RiskFamily::Cpc,
+                key: "risk-expire".to_string(),
+                timestamp_ms: 10,
+                amount: 3,
+            },
+        });
+        assert!(response.status.ok, "{response:?}");
+
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::CommonTtl {
+                        key: "risk-expire".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Integer { value: -1 }
+        );
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::CommonExpire {
+                        key: "risk-expire".to_string(),
+                        ttl_ms: 0,
+                    },
+                })
+                .status
+                .ok
+        );
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::CommonTtl {
+                        key: "risk-expire".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Integer { value: -2 }
+        );
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::RiskFamilyQuery {
+                        family: RiskFamily::Cpc,
+                        key: "risk-expire".to_string(),
+                        start_ms: 0,
+                        end_ms: 20,
+                        aggregator: "sum".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Integer { value: 0 }
+        );
     }
 
     #[test]
