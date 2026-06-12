@@ -724,6 +724,61 @@ admin mutation because its local model had not yet observed node `2` catch-up. T
 result is the leader's transfer plus replicated AppendEntries: after heartbeats, all nodes reported
 leader `2`, writes through node `2` worked, and all local apply-health endpoints were healthy.
 
+### Outstanding Raft Control Fix Validation
+
+Outstanding issues fixed in this pass:
+
+- Foreground Raft writes now fan out live follower AppendEntries in parallel and return after quorum
+  instead of waiting behind a slow or dead follower RPC path.
+- `/raft/control/transfer_leader` is now leader-authoritative. Followers return a clean not-leader
+  result instead of mutating stale local control state.
+- Standalone `raft_node` now exposes `/raft/control/accept_leadership`, so the current leader can
+  catch up the target process and make the target node accept the transferred leadership locally.
+
+Local validation before AWS:
+
+- `cargo test -p temporalstore-rust raft_transport --lib`
+- `cargo test -p temporalstore-rust append_entries_updates_observed_leader_for_standalone_node_status --lib`
+- `cargo build --release -p temporalstore-rust --bin raft_node`
+
+The first AWS attempt reproduced the real stale-control bug: after leader transfer, node `1`
+reported top-level `leader_id=2`, but nodes `2` and `3` still reported top-level `leader_id=1`.
+Data replication was not accepted as sufficient evidence because the control plane view had not
+converged across processes.
+
+Second AWS attempt after the fix:
+
+| Node | Instance | Private IP |
+|---:|---|---|
+| 1 | `i-059b6c78a4476144c` | `10.70.1.136` |
+| 2 | `i-0d5ec2b1d38a3772d` | `10.70.1.152` |
+| 3 | `i-0b14d779b36b92b94` | `10.70.1.217` |
+
+Result:
+
+- Follower pre-transfer control call returned clean not-leader:
+  `node 3 is not leader`.
+- `80` seed writes through node `1` succeeded.
+- Leader transfer to node `2` succeeded.
+- All three standalone nodes converged to top-level `leader_id=2`.
+- Follower post-transfer transfer-to-current-leader calls returned success as no-ops.
+- `40` post-transfer writes through node `2` succeeded.
+- Replica reads from nodes `1`, `2`, and `3` all returned the latest post-transfer value.
+- `/raft/apply_health` returned `healthy=true` from all three nodes.
+
+Latency from the AWS control-fix run:
+
+| Path | p50 | p95 | p99 | Max |
+|---|---:|---:|---:|---:|
+| Seed writes through node 1 | `131545 us` | `214616 us` | `229631 us` | `234450 us` |
+| Post-transfer writes through node 2 | `367367 us` | `493878 us` | `1015299 us` | `1015299 us` |
+
+Remaining observation:
+
+- Per-process remote node tables can still show stale remote lag from another process's local view.
+  The authoritative checks for this run were top-level leader convergence, local observer
+  `/raft/apply_health`, successful post-transfer writes, and replica-read correctness.
+
 Post-fix result:
 
 - Surviving nodes: `2`, `3`

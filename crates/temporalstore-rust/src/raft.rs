@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, Mutex, RwLock,
+    mpsc, Arc, Mutex, RwLock,
 };
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -1770,6 +1770,11 @@ pub struct DistributedRaftReadRequest {
     pub command: Command,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftControlLeadershipRequest {
+    pub node_id: RaftNodeId,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DistributedRaftCommandResponse {
     pub status: Status,
@@ -2056,6 +2061,13 @@ impl ProductionRaftRuntimeOptions {
             .collect()
     }
 
+    fn node_addr(&self, node_id: RaftNodeId) -> Option<&str> {
+        self.nodes
+            .iter()
+            .find(|node| node.node_id == node_id)
+            .map(|node| node.addr.as_str())
+    }
+
     fn voter_ids(&self) -> Vec<RaftNodeId> {
         self.nodes.iter().map(|node| node.node_id).collect()
     }
@@ -2133,6 +2145,55 @@ impl ProductionRaftRuntime {
         new_voters: impl IntoIterator<Item = RaftNodeId>,
     ) -> Result<RaftMembershipChangeReport, RaftError> {
         self.cluster.apply_membership_change_safely(new_voters)
+    }
+
+    pub fn transfer_leader(&self, target_id: RaftNodeId) -> Result<(), RaftError> {
+        if self.cluster.leader_id() == target_id {
+            return Ok(());
+        }
+        if self.cluster.leader_id() != self.options.local_node_id {
+            return Err(RaftError::NotLeader {
+                node_id: self.options.local_node_id,
+            });
+        }
+        let transport = self.transport();
+        let append = self.cluster.build_append_entries_request(target_id)?;
+        match transport.append_entries(append) {
+            Ok(response) if response.success => {}
+            _ => {
+                let snapshot = self.cluster.build_install_snapshot_request(target_id)?;
+                let response = transport.install_snapshot(snapshot)?;
+                if !response.success {
+                    return Err(RaftError::Transport(format!(
+                        "snapshot install rejected by node {target_id}: {:?}",
+                        response.reject_reason
+                    )));
+                }
+            }
+        }
+        self.cluster.catch_up(target_id)?;
+        self.cluster.transfer_leader(target_id)?;
+        if target_id != self.options.local_node_id {
+            let addr = self
+                .options
+                .node_addr(target_id)
+                .ok_or(RaftError::NodeNotFound(target_id))?;
+            let status: Status = post_json_with_options(
+                addr,
+                "/raft/control/accept_leadership",
+                &RaftControlLeadershipRequest { node_id: target_id },
+                HttpRequestOptions {
+                    connect_timeout_ms: self.options.rpc.deadline_ms,
+                    io_timeout_ms: self.options.rpc.deadline_ms,
+                    max_retries: self.options.rpc.max_retries,
+                },
+            )
+            .map_err(|err| RaftError::Transport(err.to_string()))?;
+            if !status.ok {
+                return Err(RaftError::Transport(status.message));
+            }
+        }
+        Ok(())
     }
 
     pub fn read_local(
@@ -3291,11 +3352,14 @@ impl RaftCluster {
         Ok(leader_response)
     }
 
-    pub fn propose_distributed<T: RaftTransport>(
+    pub fn propose_distributed<T>(
         &self,
         command: Command,
         transport: &T,
-    ) -> Result<CommandResponse, RaftError> {
+    ) -> Result<CommandResponse, RaftError>
+    where
+        T: RaftTransport + Clone + Send + 'static,
+    {
         let limit = self
             .inner
             .read()
@@ -3310,11 +3374,14 @@ impl RaftCluster {
         Ok(last_response)
     }
 
-    fn propose_distributed_one<T: RaftTransport>(
+    fn propose_distributed_one<T>(
         &self,
         command: Command,
         transport: &T,
-    ) -> Result<CommandResponse, RaftError> {
+    ) -> Result<CommandResponse, RaftError>
+    where
+        T: RaftTransport + Clone + Send + 'static,
+    {
         let (entry, leader_id, target_ids, required) = {
             let mut inner = self.inner.write().expect("raft cluster lock poisoned");
             inner.ensure_live_leader()?;
@@ -3354,20 +3421,13 @@ impl RaftCluster {
                 .get_mut(&leader_id)
                 .ok_or(RaftError::LeaderUnavailable)?;
             append_entry(leader, entry.clone());
-            let (mut live_target_ids, fallback_target_ids): (Vec<_>, Vec<_>) = inner
+            let (live_target_ids, fallback_target_ids): (Vec<_>, Vec<_>) = inner
                 .nodes
                 .iter()
                 .filter(|(node_id, _)| **node_id != leader_id)
                 .map(|(node_id, node)| (*node_id, node.alive))
                 .partition(|(_, alive)| *alive);
-            let fallback_target_ids = fallback_target_ids
-                .into_iter()
-                .map(|(node_id, _)| node_id)
-                .collect::<Vec<_>>();
-            let mut target_ids = live_target_ids
-                .drain(..)
-                .map(|(node_id, _)| node_id)
-                .collect::<Vec<_>>();
+            let mut target_ids = live_target_ids;
             target_ids.extend(fallback_target_ids);
             (entry, leader_id, target_ids, required)
         };
@@ -3382,12 +3442,33 @@ impl RaftCluster {
         };
         let mut successful_targets = Vec::new();
         let mut failed_targets = Vec::new();
-        for target_id in target_ids {
+        let mut fallback_targets = Vec::new();
+        let mut live_requests = Vec::new();
+        for (target_id, alive) in target_ids {
             if replicated >= required {
                 break;
             }
+            if !alive {
+                fallback_targets.push(target_id);
+                continue;
+            }
             let request = self.build_append_entries_request(target_id)?;
-            match transport.append_entries(request) {
+            live_requests.push((target_id, request));
+        }
+        let (tx, rx) = mpsc::channel();
+        for (target_id, request) in live_requests {
+            let transport = transport.clone();
+            let tx = tx.clone();
+            thread::spawn(move || {
+                let _ = tx.send((target_id, transport.append_entries(request)));
+            });
+        }
+        drop(tx);
+        while replicated < required {
+            let Ok((target_id, result)) = rx.recv() else {
+                break;
+            };
+            match result {
                 Ok(response) if response.success && response.match_index >= entry.index => {
                     let counts_for_quorum = self
                         .inner
@@ -3405,6 +3486,7 @@ impl RaftCluster {
                 _ => failed_targets.push(target_id),
             }
         }
+        failed_targets.extend(fallback_targets);
         if replicated < required {
             for target_id in failed_targets {
                 if transport

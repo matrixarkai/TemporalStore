@@ -13,8 +13,8 @@ use temporalstore_rust::{
     handle_authenticated_raft_http, CommandResponse, DistributedRaftCommandResponse,
     DistributedRaftProposeRequest, DistributedRaftReadRequest, ProductionRaftEngineKind,
     ProductionRaftNode, ProductionRaftRuntime, ProductionRaftRuntimeOptions,
-    ProductionRaftSecurity, RaftConfig, RaftFailoverReport, RaftMembershipChangeReport, RaftNodeId,
-    RaftRpcRuntimeOptions, RaftTransport, Status,
+    ProductionRaftSecurity, RaftConfig, RaftControlLeadershipRequest, RaftFailoverReport,
+    RaftMembershipChangeReport, RaftNodeId, RaftRpcRuntimeOptions, RaftTransport, Status,
 };
 use temporalstore_snapshot::{FileObjectStore, S3SnapshotStore};
 
@@ -275,11 +275,35 @@ fn handle(
             match parse_json::<RaftControlNodeRequest>(&request.body) {
                 Ok(req) => {
                     let status = runtime
-                        .cluster()
                         .transfer_leader(req.node_id)
                         .map(|_| Status::ok())
                         .unwrap_or_else(|err| Status::error("raft_error", err.to_string()));
                     json_response(200, &RaftAdminLivenessResponse { status })
+                }
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        ("POST", "/raft/control/accept_leadership") => {
+            match parse_json::<RaftControlLeadershipRequest>(&request.body) {
+                Ok(req) => {
+                    let status = if req.node_id != runtime.local_node_id() {
+                        Status::error(
+                            "bad_request",
+                            format!(
+                                "node {} cannot accept leadership for node {}",
+                                runtime.local_node_id(),
+                                req.node_id
+                            ),
+                        )
+                    } else {
+                        runtime
+                            .cluster()
+                            .catch_up(req.node_id)
+                            .and_then(|_| runtime.cluster().transfer_leader(req.node_id))
+                            .map(|_| Status::ok())
+                            .unwrap_or_else(|err| Status::error("raft_error", err.to_string()))
+                    };
+                    json_response(200, &status)
                 }
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
             }
