@@ -1083,6 +1083,74 @@ Replication comparison:
   corrected Rust metric semantics and local object-store behavior. A direct C++ EFS latency
   comparison still needs the reused EC2 cluster to mount an EFS filesystem at the shared-store root.
 
+### AWS Retest After Distributed Raft Fan-Out Fix
+
+Code under test:
+
+- Commit: `15207b0`
+- Instance: `i-05f55360d92c43908`
+- SSM command: `668a21ed-dae8-46fa-97c7-3ea97ec9e5ec`
+- Artifact:
+  `s3://temporalstore-test-artifacts-657817560042-us-west-2/aws-raft-parity-20260611222619-15207b0.tar.gz`
+- Output directory:
+  `/tmp/temporalstore-aws-validation/aws-raft-parity-20260611222619-15207b0`
+
+Fixes validated:
+
+- Distributed Raft propose now sends AppendEntries to every live follower instead of stopping after
+  the first quorum follower. The foreground write still commits at quorum, but live secondaries get
+  the log entry immediately, reducing avoidable read-after-write lag.
+- Post-commit follower catch-up is best-effort and no longer installs snapshots on the successful
+  quorum write response path for a failed follower.
+- `raft_node` control-route tests now exercise the real target-process
+  `/raft/control/accept_leadership` path during leader transfer.
+- The AWS validator now fails if Raft write latency/QPS, Raft read QPS, shared-store QPS, or bounded
+  async lag metrics are missing or invalid.
+
+Validation commands passed:
+
+- `distributed_raft_harness`
+- `scale_harness`
+- `storage_modes_harness`
+- `raft_secondary_replication_harness`
+
+3-node AWS scale result:
+
+| Metric | Value |
+|---|---:|
+| commit index | `602` |
+| replication healthy | `true` |
+| max Raft replica lag | `0` |
+| Raft write p50 | `2818 us` |
+| Raft write p99 | `6851 us` |
+| Raft write max | `11897 us` |
+| Raft write QPS | `85.82` |
+| Raft replica read p50 | `117 us` |
+| Raft replica read p99 | `1697 us` |
+| Raft replica read max | `1790 us` |
+| Raft read QPS | `3.85` |
+| sync primary write p50 | `952 us` |
+| sync primary write p99 | `2389 us` |
+| sync primary write max | `5940 us` |
+| sync primary write QPS | `346.50` |
+| sync storage write p50 | `116 us` |
+| sync storage write p99 | `1200 us` |
+| sync storage write max | `5793 us` |
+| sync replica read QPS | `346.50` |
+| async primary write p50 | `824 us` |
+| async primary write p99 | `1817 us` |
+| async primary write max | `4553 us` |
+| async primary write QPS | `175.44` |
+| async enqueue p99 | `1 us` |
+| async durable per-entry write p50 | `80 us` |
+| async durable per-entry write p99 | `774 us` |
+| async flush batch p50 | `1573 us` |
+| async flush batch p99 | `1879 us` |
+| async flush batch max | `15485 us` |
+| async replica read QPS | `8.77` |
+| sync shared-store lag | `0` |
+| async shared-store lag | `19` |
+
 ## Conclusions
 
 - Raft distributed behavior passed on the existing EC2 node for local multi-node process simulation.
