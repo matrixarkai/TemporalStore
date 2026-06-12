@@ -2738,6 +2738,7 @@ fn append_value(
         page_segment_id: HOT_PAGE_SEGMENT_ID,
         offset: HOT_PAGE_OFFSET.fetch_add(1, Ordering::Relaxed),
         length: bytes.len() as u64,
+        sha256: None,
     };
     let bytes = bytes.to_vec();
     cache.put_memory_only(
@@ -3395,6 +3396,7 @@ mod tests {
                 page_segment_id: 7,
                 offset: 0,
                 length: 1,
+                sha256: None,
             },
         );
         shard.hashes.entry("hash".to_string()).or_default().insert(
@@ -3403,6 +3405,7 @@ mod tests {
                 page_segment_id: 8,
                 offset: 0,
                 length: 1,
+                sha256: None,
             },
         );
         shard.sets.entry("set".to_string()).or_default().insert(
@@ -3411,6 +3414,7 @@ mod tests {
                 page_segment_id: 9,
                 offset: 0,
                 length: 1,
+                sha256: None,
             },
         );
         shard
@@ -3423,6 +3427,7 @@ mod tests {
                     page_segment_id: 10,
                     offset: 0,
                     length: 1,
+                    sha256: None,
                 },
             );
         shard
@@ -3435,6 +3440,7 @@ mod tests {
                     page_segment_id: 11,
                     offset: 0,
                     length: 1,
+                    sha256: None,
                 },
             );
         shard.ips.entry("ips".to_string()).or_default().insert(
@@ -3443,6 +3449,7 @@ mod tests {
                 page_segment_id: 12,
                 offset: 0,
                 length: 1,
+                sha256: None,
             },
         );
         shard.ips_meta.entry("ips".to_string()).or_default().insert(
@@ -3452,6 +3459,7 @@ mod tests {
                     page_segment_id: 13,
                     offset: 0,
                     length: 1,
+                    sha256: None,
                 },
                 action_type: Some(1),
                 table_id: Some(2),

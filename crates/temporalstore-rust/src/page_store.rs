@@ -5,12 +5,23 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum PageStoreError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error(
+        "page checksum mismatch for segment {page_segment_id} offset {offset} length {length}: expected {expected}, got {actual}"
+    )]
+    ChecksumMismatch {
+        page_segment_id: u64,
+        offset: u64,
+        length: u64,
+        expected: String,
+        actual: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -18,6 +29,8 @@ pub struct PageAddress {
     pub page_segment_id: u64,
     pub offset: u64,
     pub length: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,8 +99,11 @@ impl LocalPageStore {
             page_segment_id: inner.page_segment_id,
             offset: inner.write_offset,
             length: bytes.len() as u64,
+            sha256: Some(sha256_hex(bytes)),
         };
         file.write_all(bytes)?;
+        file.flush()?;
+        file.sync_data()?;
         inner.write_offset += address.length;
         inner.stats.writes += 1;
         inner.stats.bytes_written += address.length;
@@ -120,6 +136,18 @@ impl LocalPageStore {
         file.seek(SeekFrom::Start(address.offset))?;
         let mut bytes = vec![0; address.length as usize];
         file.read_exact(&mut bytes)?;
+        if let Some(expected) = &address.sha256 {
+            let actual = sha256_hex(&bytes);
+            if &actual != expected {
+                return Err(PageStoreError::ChecksumMismatch {
+                    page_segment_id: address.page_segment_id,
+                    offset: address.offset,
+                    length: address.length,
+                    expected: expected.clone(),
+                    actual,
+                });
+            }
+        }
         inner.stats.reads += 1;
         inner.stats.bytes_read += address.length;
         Ok(bytes)
@@ -160,7 +188,21 @@ impl LocalPageStore {
     ) -> Result<(), PageStoreError> {
         let mut inner = self.inner.lock().expect("page store lock poisoned");
         fs::create_dir_all(&inner.root)?;
-        fs::write(segment_path(&inner.root, page_segment_id), bytes)?;
+        let path = segment_path(&inner.root, page_segment_id);
+        let temp_path = path.with_extension(format!(
+            "seg.tmp.{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        ));
+        {
+            let mut temp = File::create(&temp_path)?;
+            temp.write_all(bytes)?;
+            temp.flush()?;
+            temp.sync_all()?;
+        }
+        fs::rename(&temp_path, &path)?;
         if page_segment_id == inner.page_segment_id {
             inner.write_offset = bytes.len() as u64;
         }
@@ -256,6 +298,10 @@ fn segment_path(root: &std::path::Path, page_segment_id: u64) -> PathBuf {
     root.join(format!("page_segment_{page_segment_id:020}.seg"))
 }
 
+fn sha256_hex(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
+}
+
 fn segment_ids_at(root: &std::path::Path) -> Result<Vec<u64>, PageStoreError> {
     let mut ids = Vec::new();
     if !root.exists() {
@@ -326,6 +372,41 @@ mod tests {
         assert_eq!(second.offset, 0);
         assert_eq!(store.read(&first).unwrap(), b"first");
         assert_eq!(store.read(&second).unwrap(), b"second");
+    }
+
+    #[test]
+    fn page_address_checksum_rejects_corrupt_segment_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalPageStore::new(dir.path());
+        let address = store.append(b"verified-page").unwrap();
+        assert_eq!(address.sha256, Some(sha256_hex(b"verified-page")));
+        assert_eq!(store.read(&address).unwrap(), b"verified-page");
+
+        fs::write(
+            segment_path(dir.path(), address.page_segment_id),
+            b"corrupted-page",
+        )
+        .unwrap();
+        let err = store.read(&address).unwrap_err();
+        assert!(matches!(err, PageStoreError::ChecksumMismatch { .. }));
+    }
+
+    #[test]
+    fn page_address_without_checksum_keeps_legacy_read_compatibility() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalPageStore::new(dir.path());
+        let address = store.append(b"legacy-page").unwrap();
+        let legacy_address = PageAddress {
+            sha256: None,
+            ..address
+        };
+        fs::write(
+            segment_path(dir.path(), legacy_address.page_segment_id),
+            b"alteredpage",
+        )
+        .unwrap();
+
+        assert_eq!(store.read(&legacy_address).unwrap(), b"alteredpage");
     }
 
     #[test]
