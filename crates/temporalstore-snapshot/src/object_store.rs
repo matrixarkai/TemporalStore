@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use bytes::Bytes;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use tokio::io::AsyncWriteExt;
 
@@ -27,6 +29,7 @@ pub trait ObjectStore: Send + Sync {
 pub struct FileObjectStore {
     root: PathBuf,
     uri_scheme: String,
+    created_dirs: Arc<Mutex<HashSet<PathBuf>>>,
 }
 
 impl FileObjectStore {
@@ -34,6 +37,7 @@ impl FileObjectStore {
         Self {
             root: root.into(),
             uri_scheme: "file".to_string(),
+            created_dirs: Arc::default(),
         }
     }
 
@@ -41,6 +45,7 @@ impl FileObjectStore {
         Self {
             root: root.into(),
             uri_scheme: uri_scheme.into(),
+            created_dirs: Arc::default(),
         }
     }
 
@@ -59,7 +64,16 @@ impl ObjectStore for FileObjectStore {
     async fn put(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
         let path = self.resolve(key)?;
         if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
+            let should_create = {
+                let mut created = self
+                    .created_dirs
+                    .lock()
+                    .expect("object-store dir cache poisoned");
+                created.insert(parent.to_path_buf())
+            };
+            if should_create {
+                tokio::fs::create_dir_all(parent).await?;
+            }
         }
         let mut file = tokio::fs::File::create(path).await?;
         file.write_all(&bytes).await?;

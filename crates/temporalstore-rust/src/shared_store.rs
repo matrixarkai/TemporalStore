@@ -186,13 +186,13 @@ where
         entry: SharedStoreOplogEntry,
     ) -> Result<(), SharedStoreReplicationError> {
         let key = self.oplog_key(entry.shard_id, entry.oplog_index);
-        let entry_bytes = serde_json::to_vec_pretty(&entry)?;
+        let entry_bytes = serde_json::to_vec(&entry)?;
         let object = SharedStoreOplogObject {
             entry,
             entry_byte_size: entry_bytes.len() as u64,
             entry_sha256: sha256_hex(&entry_bytes),
         };
-        self.put_with_retry(&key, Bytes::from(serde_json::to_vec_pretty(&object)?))
+        self.put_with_retry(&key, Bytes::from(serde_json::to_vec(&object)?))
             .await?;
         Ok(())
     }
@@ -610,7 +610,7 @@ where
     ) -> Result<SharedStoreOplogEntry, SharedStoreReplicationError> {
         let bytes = self.object_store.get(key).await?;
         if let Ok(object) = serde_json::from_slice::<SharedStoreOplogObject>(&bytes) {
-            let entry_bytes = serde_json::to_vec_pretty(&object.entry)?;
+            let entry_bytes = serde_json::to_vec(&object.entry)?;
             verify_checksum(
                 key,
                 &entry_bytes,
