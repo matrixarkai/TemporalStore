@@ -109,12 +109,16 @@ if async_durable:
         "INFO shared_store.async_storage_write_latency.p99_us: "
         f"actual={async_durable['p99_us']}us samples={async_durable['samples']}"
     )
-    if async_durable != flush:
+    if async_durable["samples"] == 0:
+        failures.append(("shared_store.async_storage_write_latency.samples", 0, ">0"))
+    elif async_durable["p99_us"] == 0:
+        failures.append(("shared_store.async_storage_write_latency.p99_us", 0, ">0"))
+    if flush and async_durable["p99_us"] > flush["p99_us"]:
         failures.append(
             (
                 "shared_store.async_storage_write_latency",
                 async_durable.get("p99_us"),
-                "same as async_storage_flush_latency",
+                "<= async_storage_flush_latency batch p99",
             )
         )
 

@@ -179,10 +179,11 @@ path, `Partition::OnExecuteCmdDone` returns before `op_logger_->Commit` when
 `PERSISTENT_ASYNC && FLAGS_storage_async`, so the directly comparable client-visible metric is
 `async_primary_write_latency`; durable async publish/flush must be measured separately.
 
-After the follow-up fix, the Rust scale harness reports durable async shared-store publish latency
-under `async_storage_write_latency` and keeps queue-only latency under
-`async_storage_enqueue_latency`. For EFS-backed AWS runs, compare EFS/shared-store durability with
-`async_storage_write_latency` or `async_storage_flush_latency`, not enqueue latency.
+After the follow-up fixes, the Rust scale harness reports async shared-store latency as three
+separate values: queue-only latency under `async_storage_enqueue_latency`, amortized per-entry
+durable publish latency under `async_storage_write_latency`, and whole-batch flush latency under
+`async_storage_flush_latency`. For EFS-backed AWS runs, compare per-write sync storage latency with
+`async_storage_write_latency`, not enqueue latency or whole-batch flush latency.
 
 Replica read latency through shared-store modes:
 
@@ -853,7 +854,7 @@ local-file object-store behavior, but it is not an EFS latency measurement.
 | sync primary write p99 | `7490 us` |
 | async primary write p99 | `4579 us` |
 | sync storage write p99 | `4950 us` |
-| async durable storage write p99 | `23953 us` |
+| async durable storage write p99, batch metric before follow-up | `23953 us` |
 | async enqueue p99 | `1 us` |
 | async flush p99 | `23953 us` |
 | sync replica read p99 | `216 us` |
@@ -876,7 +877,7 @@ local-file object-store behavior, but it is not an EFS latency measurement.
 | sync primary write p99 | `8489 us` |
 | async primary write p99 | `13664 us` |
 | sync storage write p99 | `4501 us` |
-| async durable storage write p99 | `31637 us` |
+| async durable storage write p99, batch metric before follow-up | `31637 us` |
 | async enqueue p99 | `1 us` |
 | async flush p99 | `31637 us` |
 | sync replica read p99 | `259 us` |
@@ -894,7 +895,10 @@ Storage modes result:
 Interpretation:
 
 - The previous near-zero async storage number was queue latency, not EFS/shared-store durability.
-- After the fix, `async_storage_write_latency` equals durable async flush latency.
+- This run was before the amortized-per-entry metric fix, so `async_storage_write_latency` still
+  equaled whole-batch durable async flush latency in these tables.
+- After the follow-up fix, `async_storage_write_latency` is the amortized per-entry durable async
+  write cost and `async_storage_flush_latency` remains the whole-batch flush cost.
 - The retest shows the expected split:
   - client-visible async enqueue p99: `1 us`
   - durable async shared-store write/flush p99: `23953 us` to `31637 us`

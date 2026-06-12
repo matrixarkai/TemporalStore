@@ -812,10 +812,7 @@ fn handle_server_raft_route(
         {
             Ok(req) => json_response(
                 200,
-                &state
-                    .runtime
-                    .cluster()
-                    .apply_health(req.max_allowed_apply_lag),
+                &state.runtime.local_apply_health(req.max_allowed_apply_lag),
             ),
             Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
         },
@@ -2641,7 +2638,9 @@ mod tests {
         let (code, body) = handle_server_raft_route(&state, &request).unwrap();
         assert_eq!(code, 200);
         let health: temporalstore_rust::RaftApplyHealth = serde_json::from_slice(&body).unwrap();
+        let expected = state.runtime.local_apply_health(0);
         assert!(health.healthy, "{health:?}");
+        assert_eq!(health, expected);
         assert_eq!(health.leader_commit_index, 1);
         assert_eq!(health.max_apply_lag, 0);
     }
