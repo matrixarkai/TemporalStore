@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -98,6 +98,8 @@ impl LocalIndexLogStore {
             .append(true)
             .open(index_log_path(&inner.root, shard_id))?;
         file.write_all(&bytes)?;
+        file.flush()?;
+        file.sync_data()?;
         inner.stats.writes += 1;
         inner.stats.bytes_written += bytes.len() as u64;
         inner.stats.last_sequence = next_sequence;
@@ -198,8 +200,10 @@ impl LocalIndexLogStore {
                 temp.write_all(b"\n")?;
             }
             temp.flush()?;
+            temp.sync_all()?;
         }
         fs::rename(&temp_path, &path)?;
+        sync_parent_dir(&path)?;
         let bytes_after = path.metadata()?.len();
         Ok(IndexLogGcReport {
             shard_id,
@@ -227,11 +231,11 @@ impl Default for LocalIndexLogStore {
     }
 }
 
-fn index_log_path(root: &std::path::Path, shard_id: ShardId) -> PathBuf {
+fn index_log_path(root: &Path, shard_id: ShardId) -> PathBuf {
     root.join(format!("shard-{shard_id}.indexlog.jsonl"))
 }
 
-fn last_sequence_at(root: &std::path::Path, shard_id: ShardId) -> Result<u64, IndexLogError> {
+fn last_sequence_at(root: &Path, shard_id: ShardId) -> Result<u64, IndexLogError> {
     let path = index_log_path(root, shard_id);
     if !path.exists() {
         return Ok(0);
@@ -248,6 +252,15 @@ fn last_sequence_at(root: &std::path::Path, shard_id: ShardId) -> Result<u64, In
         last = last.max(record.sequence);
     }
     Ok(last)
+}
+
+fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        if let Ok(dir) = File::open(parent) {
+            dir.sync_all()?;
+        }
+    }
+    Ok(())
 }
 
 fn unique_temp_path(kind: &str) -> PathBuf {
@@ -282,6 +295,9 @@ mod tests {
         assert_eq!(report.records_after, 2);
         assert_eq!(report.records_removed, 1);
         assert_eq!(store.stats(5).last_sequence, 3);
+        let reopened = LocalIndexLogStore::new(dir.path());
+        assert_eq!(reopened.stats(5).last_sequence, 3);
+        assert_eq!(reopened.scan(5, 0, u64::MAX, u64::MAX).unwrap().len(), 2);
         store.append_json(5, b"{\"value\":4}").unwrap();
         assert_eq!(store.stats(5).last_sequence, 4);
     }

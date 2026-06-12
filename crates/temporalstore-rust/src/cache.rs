@@ -1,6 +1,7 @@
 use std::collections::{HashMap, VecDeque};
-use std::fs;
+use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
@@ -237,7 +238,7 @@ impl MultiLayerCache {
             inner.stats.compression_bytes_saved += value.len().saturating_sub(block.len()) as u64;
         }
         let block_len = block.len();
-        fs::write(path, block)?;
+        write_cache_block_atomic(&path, &block)?;
         inner.stats.puts += 1;
         inner.stats.disk_bytes = inner.stats.disk_bytes.saturating_add(block_len as u64);
         inner.put_memory(key, value);
@@ -383,6 +384,34 @@ fn encode_cache_block(value: &[u8], options: CacheBlockOptions) -> Result<Vec<u8
     block.extend_from_slice(&(payload.len() as u64).to_le_bytes());
     block.extend_from_slice(&payload);
     Ok(block)
+}
+
+fn write_cache_block_atomic(path: &Path, block: &[u8]) -> Result<(), CacheError> {
+    let temp_path = path.with_extension(format!(
+        "cache_block.tmp.{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default()
+    ));
+    {
+        let mut temp = File::create(&temp_path)?;
+        temp.write_all(block)?;
+        temp.flush()?;
+        temp.sync_all()?;
+    }
+    fs::rename(&temp_path, path)?;
+    sync_parent_dir(path)?;
+    Ok(())
+}
+
+fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        if let Ok(dir) = File::open(parent) {
+            dir.sync_all()?;
+        }
+    }
+    Ok(())
 }
 
 fn decode_cache_block(block: &[u8]) -> Result<Vec<u8>, CacheError> {

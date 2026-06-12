@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -94,6 +94,8 @@ impl LocalOplogStore {
             .append(true)
             .open(oplog_path(&inner.root, shard_id))?;
         file.write_all(&bytes)?;
+        file.flush()?;
+        file.sync_data()?;
         inner.stats.writes += 1;
         inner.stats.bytes_written += bytes.len() as u64;
         inner.stats.last_sequence = next_sequence;
@@ -194,8 +196,10 @@ impl LocalOplogStore {
                 temp.write_all(b"\n")?;
             }
             temp.flush()?;
+            temp.sync_all()?;
         }
         fs::rename(&temp_path, &path)?;
+        sync_parent_dir(&path)?;
         let bytes_after = path.metadata()?.len();
         Ok(OplogGcReport {
             shard_id,
@@ -223,11 +227,11 @@ impl Default for LocalOplogStore {
     }
 }
 
-fn oplog_path(root: &std::path::Path, shard_id: ShardId) -> PathBuf {
+fn oplog_path(root: &Path, shard_id: ShardId) -> PathBuf {
     root.join(format!("shard-{shard_id}.oplog.jsonl"))
 }
 
-fn last_sequence_at(root: &std::path::Path, shard_id: ShardId) -> Result<u64, OplogError> {
+fn last_sequence_at(root: &Path, shard_id: ShardId) -> Result<u64, OplogError> {
     let path = oplog_path(root, shard_id);
     if !path.exists() {
         return Ok(0);
@@ -244,6 +248,15 @@ fn last_sequence_at(root: &std::path::Path, shard_id: ShardId) -> Result<u64, Op
         last = last.max(record.sequence);
     }
     Ok(last)
+}
+
+fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        if let Ok(dir) = File::open(parent) {
+            dir.sync_all()?;
+        }
+    }
+    Ok(())
 }
 
 fn unique_temp_path(kind: &str) -> PathBuf {
@@ -285,6 +298,9 @@ mod tests {
         assert_eq!(report.records_after, 1);
         assert_eq!(report.records_removed, 2);
         assert_eq!(store.stats(7).last_sequence, 3);
+        let reopened = LocalOplogStore::new(dir.path());
+        assert_eq!(reopened.stats(7).last_sequence, 3);
+        assert_eq!(reopened.scan(7, 0, u64::MAX, u64::MAX).unwrap().len(), 1);
         store
             .append(
                 7,

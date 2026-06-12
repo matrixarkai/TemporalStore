@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -122,7 +122,10 @@ impl LocalPageStore {
             .unwrap_or_default();
         inner.page_segment_id = next_from_current.max(next_from_disk);
         inner.write_offset = 0;
-        File::create(segment_path(&inner.root, inner.page_segment_id))?;
+        let path = segment_path(&inner.root, inner.page_segment_id);
+        let file = File::create(&path)?;
+        file.sync_all()?;
+        sync_parent_dir(&path)?;
         Ok(PageStoreRollReport {
             previous_page_segment_id,
             new_page_segment_id: inner.page_segment_id,
@@ -203,6 +206,7 @@ impl LocalPageStore {
             temp.sync_all()?;
         }
         fs::rename(&temp_path, &path)?;
+        sync_parent_dir(&path)?;
         if page_segment_id == inner.page_segment_id {
             inner.write_offset = bytes.len() as u64;
         }
@@ -294,7 +298,7 @@ impl Default for LocalPageStore {
     }
 }
 
-fn segment_path(root: &std::path::Path, page_segment_id: u64) -> PathBuf {
+fn segment_path(root: &Path, page_segment_id: u64) -> PathBuf {
     root.join(format!("page_segment_{page_segment_id:020}.seg"))
 }
 
@@ -302,7 +306,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
-fn segment_ids_at(root: &std::path::Path) -> Result<Vec<u64>, PageStoreError> {
+fn segment_ids_at(root: &Path) -> Result<Vec<u64>, PageStoreError> {
     let mut ids = Vec::new();
     if !root.exists() {
         return Ok(ids);
@@ -322,6 +326,15 @@ fn segment_ids_at(root: &std::path::Path) -> Result<Vec<u64>, PageStoreError> {
     }
     ids.sort_unstable();
     Ok(ids)
+}
+
+fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        if let Ok(dir) = File::open(parent) {
+            dir.sync_all()?;
+        }
+    }
+    Ok(())
 }
 
 fn unique_temp_path(kind: &str) -> PathBuf {
