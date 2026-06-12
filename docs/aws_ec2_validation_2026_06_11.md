@@ -905,6 +905,66 @@ Interpretation:
 - Raft replication stayed healthy with max replica lag `0` in both 3-node and 7-node runs.
 - Shared-store async lag stayed bounded at `19`, matching `--shared-store-flush-every 20`.
 
+### AWS Retest After Production Hardening
+
+Code under test:
+
+- Commit: `f5c277a`
+- Instance: `i-05f55360d92c43908`
+- Artifact:
+  `s3://temporalstore-test-artifacts-657817560042-us-west-2/temporalstore-aws-prod-hardening3-20260611193206-f5c277a.tar.gz`
+- Output directory:
+  `/tmp/temporalstore-aws-validation/aws-prod-hardening3-20260611193206-f5c277a`
+
+Scope:
+
+- `distributed_raft_harness`
+- `raft_secondary_replication_harness`
+- `scale_harness` with 3 in-process Raft data nodes
+- `storage_modes_harness`
+
+Fixes validated:
+
+- The raft-enabled `server` `/raft/apply_health` endpoint now reports local-observer apply health,
+  matching standalone `raft_node` and avoiding stale remote-table false negatives.
+- `scale_harness` now reports async shared-store latency as:
+  - `async_storage_enqueue_latency`: queue-only client response cost
+  - `async_storage_write_latency`: amortized per-entry durable async publish cost
+  - `async_storage_flush_latency`: whole-batch flush cost
+- `distributed_raft_harness` now refreshes quorum before retrying writes after leader transfer and
+  membership changes, avoiding EC2 timing races where timer health marks peers stale between the
+  convergence wait and the write.
+
+3-node AWS scale result:
+
+| Metric | Value |
+|---|---:|
+| commit index | `962` |
+| leader | `1` |
+| replication healthy | `true` |
+| max Raft replica lag | `0` |
+| Raft replica read p50 | `114 us` |
+| Raft replica read p95 | `174 us` |
+| Raft replica read p99 | `1648 us` |
+| Raft replica read max | `1704 us` |
+| sync storage write p99 | `4191 us` |
+| async durable per-entry write p99 | `1079 us` |
+| async enqueue p99 | `1 us` |
+| async flush batch p99 | `15280 us` |
+| sync shared-store lag | `0` |
+| async shared-store lag | `19` |
+
+Validation checks:
+
+- `async_storage_write_latency.p99_us <= sync_storage_write_latency.p99_us`
+- `async_storage_flush_latency.p99_us >= async_storage_write_latency.p99_us`
+- Raft max replica lag stayed `0`
+- Sync shared-store lag stayed `0`
+- Async shared-store lag stayed within `flush_every - 1`
+- Storage modes replay applied `2` async entries with ordered bounded flush:
+  - first flush: `flushed=1`, `remaining=1`, `last_oplog_index=1`
+  - second flush: `flushed=1`, `remaining=0`, `last_oplog_index=2`
+
 ## Conclusions
 
 - Raft distributed behavior passed on the existing EC2 node for local multi-node process simulation.
