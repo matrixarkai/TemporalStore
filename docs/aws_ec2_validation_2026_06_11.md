@@ -179,6 +179,11 @@ path, `Partition::OnExecuteCmdDone` returns before `op_logger_->Commit` when
 `PERSISTENT_ASYNC && FLAGS_storage_async`, so the directly comparable client-visible metric is
 `async_primary_write_latency`; durable async publish/flush must be measured separately.
 
+After the follow-up fix, the Rust scale harness reports durable async shared-store publish latency
+under `async_storage_write_latency` and keeps queue-only latency under
+`async_storage_enqueue_latency`. For EFS-backed AWS runs, compare EFS/shared-store durability with
+`async_storage_write_latency` or `async_storage_flush_latency`, not enqueue latency.
+
 Replica read latency through shared-store modes:
 
 | Mode | Samples | p50 | p95 | p99 | max |
@@ -826,7 +831,10 @@ This is expected: the killed node did not receive the post-crash write.
 - Process-level failover showed a real timing bug in the harness, not in strict read safety; the fix was pushed.
 - Shared-store sync path showed no lag.
 - Shared-store async path showed bounded lag of `19`, matching the configured flush interval of `20`.
-- Async storage enqueue/write latency was effectively zero in this run: p99 `1 us`.
+- Async storage enqueue latency was effectively zero in this run: p99 `1 us`. That is the
+  client-visible async response path, not durable shared-store/EFS completion. Durable async
+  storage latency is now reported separately as `async_storage_write_latency` and
+  `async_storage_flush_latency`.
 - Raft local-file WAL restore passed, confirming the async/sync storage changes did not break local Raft persistence.
 
 ## Limitations

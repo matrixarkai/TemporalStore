@@ -98,6 +98,25 @@ if flush:
         "INFO shared_store.async_storage_flush_latency.p99_us: "
         f"actual={flush['p99_us']}us samples={flush['samples']}"
     )
+    if flush["samples"] == 0:
+        failures.append(("shared_store.async_storage_flush_latency.samples", 0, ">0"))
+    elif flush["p99_us"] == 0:
+        failures.append(("shared_store.async_storage_flush_latency.p99_us", 0, ">0"))
+
+async_durable = summary["shared_store"].get("async_storage_write_latency")
+if async_durable:
+    print(
+        "INFO shared_store.async_storage_write_latency.p99_us: "
+        f"actual={async_durable['p99_us']}us samples={async_durable['samples']}"
+    )
+    if async_durable != flush:
+        failures.append(
+            (
+                "shared_store.async_storage_write_latency",
+                async_durable.get("p99_us"),
+                "same as async_storage_flush_latency",
+            )
+        )
 
 if failures:
     print("\nC++ p99 gate failed:")

@@ -396,7 +396,7 @@ fn run_shared_store_comparison(options: &HarnessOptions) -> SharedStoreCompariso
             sync_primary_write_latency: sync.primary_write_latency,
             async_primary_write_latency: async_report.primary_write_latency,
             sync_storage_write_latency: sync.storage_write_latency,
-            async_storage_write_latency: async_report.storage_write_latency,
+            async_storage_write_latency: async_report.flush_latency,
             async_storage_enqueue_latency: async_report.storage_write_latency,
             async_storage_flush_latency: async_report.flush_latency,
             sync_replica_read_latency: sync.read_latency,
