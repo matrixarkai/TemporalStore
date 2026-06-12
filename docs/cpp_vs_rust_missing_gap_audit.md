@@ -58,6 +58,26 @@ brpc and Thrift are intentionally not part of the Rust target. The Rust open-sou
 
 ## What Was Closed In The Latest Pass
 
+This pass repeated the client/proxy/data-node/metaserver comparison six times and closed one
+practical local testing gap:
+
+1. The Rust `client` binary now exposes direct commands for more implemented C++/Redis-style
+   families: `exists`, `sdel`, `setnx`, `setxx`, `hmset`, `hmget`, `hincrby`, `hgetall`,
+   `hlen`, `hdel`, `fappendnx`, `fappendxx`, `ipsrange`, `ipsremove`, `ipsdel`, `ipscount`,
+   `riskquery`, `riskdetail`, `riskhset`, `cpcset`, `folset`, `folquery`, and `riskmanager`.
+2. The Rust `client` binary now also supports `json '<command-json>'`, so local parity and scale
+   tests can drive every implemented `Command` enum variant without waiting for a dedicated CLI
+   subcommand.
+3. The repeated review is captured in
+   `docs/six_pass_client_proxy_datanode_meta_parity_2026_06_12.md`, with explicit remaining gaps
+   for client, proxy, data-node, metaserver, Redis/function reachability, and scale validation.
+
+These changes improve local Rust parity validation. They do not change the remaining production
+gap statement: brpc/Thrift wire compatibility, tonic/prost service definitions, production storage
+lifecycle, real OpenRaft/raft-rs FSM/storage, and multi-process operational workflows remain open.
+
+## What Was Closed In The Previous Pass
+
 This pass closed one of the hard readiness blockers instead of leaving it as a note:
 
 1. `SingleNodeMeta::with_mutation_log(path)` now replays a durable JSONL metaserver mutation log.
