@@ -176,7 +176,9 @@ fn main() {
             .expect("leader transfer to node 2 should pass");
     }
     wait_for_distributed_majority(&runtimes, &nodes);
-    let post_transfer_write = propose_key(
+    let post_transfer_write = propose_key_after_majority(
+        &runtimes,
+        &nodes,
         &nodes[1],
         "distributed-transfer-leader-key",
         b"after-transfer",
@@ -190,8 +192,13 @@ fn main() {
 
     let scale_down = apply_membership_on_all(&runtimes, &nodes, &[1, 2, 3]);
     wait_for_distributed_majority(&runtimes, &nodes[..3]);
-    let post_scale_down_write =
-        propose_key(&nodes[1], "distributed-scale-down-key", b"after-scale-down");
+    let post_scale_down_write = propose_key_after_majority(
+        &runtimes,
+        &nodes[..3],
+        &nodes[1],
+        "distributed-scale-down-key",
+        b"after-scale-down",
+    );
     assert!(
         post_scale_down_write.ok,
         "post-scale-down write failed: {:?}",
@@ -211,7 +218,13 @@ fn main() {
         .iter()
         .map(|node| wait_for_key(node, "distributed-scale-down-key", b"after-scale-down"))
         .collect::<Vec<_>>();
-    let post_scale_up_write = propose_key(&nodes[1], "distributed-scale-up-key", b"after-scale-up");
+    let post_scale_up_write = propose_key_after_majority(
+        &runtimes,
+        &nodes,
+        &nodes[1],
+        "distributed-scale-up-key",
+        b"after-scale-up",
+    );
     assert!(
         post_scale_up_write.ok,
         "post-scale-up write failed: {:?}",
@@ -483,6 +496,24 @@ fn propose_key(node: &ProductionRaftNode, key: &str, value: &[u8]) -> Status {
             return response.status;
         }
         thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn propose_key_after_majority(
+    runtimes: &[ProductionRaftRuntime],
+    live_nodes: &[ProductionRaftNode],
+    node: &ProductionRaftNode,
+    key: &str,
+    value: &[u8],
+) -> Status {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        wait_for_distributed_majority(runtimes, live_nodes);
+        let last = propose_key(node, key, value);
+        if last.ok || Instant::now() >= deadline {
+            return last;
+        }
+        thread::sleep(Duration::from_millis(50));
     }
 }
 
