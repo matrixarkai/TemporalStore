@@ -3770,6 +3770,115 @@ mod tests {
     }
 
     #[test]
+    fn tiny_memory_cache_eviction_refills_from_persistence_then_block_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            32,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        let cache = engine.cache();
+        let page_store = engine.page_store();
+        engine.load_shard(1);
+
+        let target_value = b"target-value-0123456789".to_vec();
+        for (key, value) in [
+            ("target", target_value.clone()),
+            ("evict-a", b"eviction-value-a-0123456789".to_vec()),
+            ("evict-b", b"eviction-value-b-0123456789".to_vec()),
+        ] {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: key.to_string(),
+                    value,
+                },
+            });
+            assert!(response.status.ok, "{response:?}");
+        }
+        let first_read = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: "target".to_string(),
+            },
+        });
+        assert_eq!(
+            first_read.response,
+            CommandResponse::Bytes {
+                value: Some(target_value.clone())
+            }
+        );
+        assert_eq!(page_store.stats().reads, 1);
+
+        for key in ["evict-a", "evict-b"] {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: key.to_string(),
+                },
+            });
+            assert!(
+                response.status.ok,
+                "eviction pressure read should pass: {response:?}"
+            );
+        }
+        assert!(
+            cache.stats().memory_evictions > 0,
+            "reading multiple persisted blocks through a tiny memory cache should evict older blocks"
+        );
+        assert!(
+            cache.stats().disk_bytes > 0,
+            "persistent page read should populate block-cache files"
+        );
+
+        let target_page_key = {
+            let shards = engine.shards.read().expect("shards lock poisoned");
+            let address = shards
+                .get(&1)
+                .expect("shard should exist")
+                .strings
+                .get("target")
+                .expect("target address should exist");
+            CacheKey::page(1, address.page_segment_id, address.offset, address.length)
+        };
+        assert_eq!(
+            cache.get_memory(&target_page_key),
+            None,
+            "target page block should have been evicted from memory"
+        );
+
+        let disk_hits_before = cache.stats().disk_hits;
+        let file_reads_before_block_hit = page_store.stats().reads;
+        let second_read = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: "target".to_string(),
+            },
+        });
+        assert_eq!(
+            second_read.response,
+            CommandResponse::Bytes {
+                value: Some(target_value.clone())
+            }
+        );
+        assert_eq!(
+            page_store.stats().reads,
+            file_reads_before_block_hit,
+            "memory miss should hit disk block cache instead of rereading page store"
+        );
+        assert!(
+            cache.stats().disk_hits > disk_hits_before,
+            "block cache should serve the read and promote it to memory"
+        );
+        assert_eq!(
+            cache.get_memory(&target_page_key),
+            Some(target_value),
+            "disk block hit should promote the page block into memory"
+        );
+    }
+
+    #[test]
     fn page_reads_fill_compressed_block_cache() {
         let dir = tempfile::tempdir().unwrap();
         let cache = MultiLayerCache::with_block_options(
