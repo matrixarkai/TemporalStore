@@ -1013,6 +1013,76 @@ Interpretation:
 - This still used the local file-backed shared-store path on EC2 because the reused AWS environment
   has no mounted EFS filesystem.
 
+### AWS Retest With Explicit QPS And Primary/Storage Metrics
+
+Code under test:
+
+- Commit: `3c9ec6b`
+- Instance: `i-05f55360d92c43908`
+- Artifact:
+  `s3://temporalstore-test-artifacts-657817560042-us-west-2/temporalstore-aws-qps-latency-20260611204120-3c9ec6b.tar.gz`
+- Output directory:
+  `/tmp/temporalstore-aws-validation/aws-qps-latency-20260611204120-3c9ec6b`
+
+Metric semantics:
+
+- `sync_primary_write_latency` is the foreground primary write path. It includes primary engine
+  work plus synchronous shared-store publish.
+- `sync_storage_write_latency` is only the synchronous shared-store publish subspan.
+- Therefore `sync_primary_write_latency` should normally be greater than or equal to the storage
+  subspan. This run shows that expected ordering: primary write p99 `5549 us` vs storage write p99
+  `3431 us`.
+- `async_primary_write_latency` is the foreground primary write path with async shared-store queueing.
+- `async_storage_enqueue_latency` is only queueing cost, matching the C++ async response-path idea.
+- `async_storage_write_latency` is amortized durable async publish cost per entry.
+- `async_storage_flush_latency` is the whole durable batch flush cost.
+
+3-node AWS scale result:
+
+| Metric | Value |
+|---|---:|
+| commit index | `962` |
+| replication healthy | `true` |
+| max Raft replica lag | `0` |
+| Raft write p50 | `4358 us` |
+| Raft write p99 | `8773 us` |
+| Raft write max | `21874 us` |
+| Raft write QPS | `50.83` |
+| Raft replica read p50 | `113 us` |
+| Raft replica read p99 | `1687 us` |
+| Raft replica read QPS | `4.33` |
+| sync primary write p50 | `1461 us` |
+| sync primary write p99 | `5549 us` |
+| sync primary write max | `10423 us` |
+| sync primary write QPS | `200.4` |
+| sync storage write p50 | `135 us` |
+| sync storage write p99 | `3431 us` |
+| sync storage write max | `8501 us` |
+| sync replica read QPS | `200.4` |
+| async primary write p50 | `1484 us` |
+| async primary write p99 | `4062 us` |
+| async primary write max | `6127 us` |
+| async primary write QPS | `92.24` |
+| async enqueue p99 | `1 us` |
+| async durable per-entry write p50 | `85 us` |
+| async durable per-entry write p99 | `658 us` |
+| async flush batch p50 | `1718 us` |
+| async flush batch p99 | `10997 us` |
+| async replica read QPS | `4.61` |
+| sync shared-store lag | `0` |
+| async shared-store lag | `19` |
+
+Replication comparison:
+
+- Raft secondary lag: `0`. Raft writes replicate to quorum before success and secondaries served
+  reads after convergence.
+- Sync shared-store lag: `0`. The write is durable in the shared store before the primary returns,
+  and the replica replay path can catch the exact committed index.
+- Async shared-store lag: `19`, matching `flush_every - 1` for `--shared-store-flush-every 20`.
+- This run still used the local file-backed shared-store path on EC2, not EFS. It validates the
+  corrected Rust metric semantics and local object-store behavior. A direct C++ EFS latency
+  comparison still needs the reused EC2 cluster to mount an EFS filesystem at the shared-store root.
+
 ## Conclusions
 
 - Raft distributed behavior passed on the existing EC2 node for local multi-node process simulation.
