@@ -965,6 +965,54 @@ Validation checks:
   - first flush: `flushed=1`, `remaining=1`, `last_oplog_index=1`
   - second flush: `flushed=1`, `remaining=0`, `last_oplog_index=2`
 
+### AWS Retest After Shared-Store Hot-Path Trim
+
+Code under test:
+
+- Commit: `eb1c4c0`
+- Instance: `i-05f55360d92c43908`
+- Artifact:
+  `s3://temporalstore-test-artifacts-657817560042-us-west-2/temporalstore-aws-sharedstore-latency-20260611202602-eb1c4c0.tar.gz`
+- Output directory:
+  `/tmp/temporalstore-aws-validation/aws-sharedstore-latency-20260611202602-eb1c4c0`
+
+Fixes validated:
+
+- Shared-store oplog publish now uses compact JSON instead of pretty JSON.
+- The file-backed object store caches created parent directories, avoiding repeated `create_dir_all`
+  calls for each object under the same shard oplog prefix.
+
+3-node AWS scale result:
+
+| Metric | Value |
+|---|---:|
+| commit index | `962` |
+| leader | `1` |
+| replication healthy | `true` |
+| max Raft replica lag | `0` |
+| Raft replica read p50 | `118 us` |
+| Raft replica read p95 | `175 us` |
+| Raft replica read p99 | `1693 us` |
+| Raft replica read max | `1719 us` |
+| sync primary write p99 | `9840 us` |
+| async primary write p99 | `4018 us` |
+| sync storage write p99 | `6582 us` |
+| async durable per-entry write p99 | `1316 us` |
+| async enqueue p99 | `1 us` |
+| async flush batch p99 | `19040 us` |
+| sync shared-store lag | `0` |
+| async shared-store lag | `19` |
+
+Interpretation:
+
+- Async response-path latency is lower than sync response-path latency.
+- Async durable per-entry publish cost is lower than sync per-entry publish cost because the async
+  path publishes in batches.
+- The whole-batch flush number remains larger than per-entry sync storage because it covers up to
+  `20` oplog entries in one flush.
+- This still used the local file-backed shared-store path on EC2 because the reused AWS environment
+  has no mounted EFS filesystem.
+
 ## Conclusions
 
 - Raft distributed behavior passed on the existing EC2 node for local multi-node process simulation.
