@@ -81,7 +81,7 @@ impl LocalPageStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         let root = root.into();
         let _ = fs::create_dir_all(&root);
-        let page_segment_id = 0;
+        let page_segment_id = latest_segment_id_at(&root).unwrap_or_default();
         let write_offset = segment_path(&root, page_segment_id)
             .metadata()
             .map(|metadata| metadata.len())
@@ -230,7 +230,8 @@ impl LocalPageStore {
         }
         fs::rename(&temp_path, &path)?;
         sync_parent_dir(&path)?;
-        if page_segment_id == inner.page_segment_id {
+        if page_segment_id >= inner.page_segment_id {
+            inner.page_segment_id = page_segment_id;
             inner.write_offset = bytes.len() as u64;
         }
         Ok(())
@@ -532,6 +533,10 @@ fn segment_ids_at(root: &Path) -> Result<Vec<u64>, PageStoreError> {
     Ok(ids)
 }
 
+fn latest_segment_id_at(root: &Path) -> Result<u64, PageStoreError> {
+    Ok(segment_ids_at(root)?.into_iter().max().unwrap_or_default())
+}
+
 fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         if let Ok(dir) = File::open(parent) {
@@ -567,11 +572,11 @@ mod tests {
         store.install_segment(2, b"keep").unwrap();
 
         let report = store.gc_segments_before(2).unwrap();
-        assert_eq!(report.removed_page_segment_ids, vec![1]);
-        assert_eq!(report.retained_page_segment_ids, vec![0, 2]);
-        assert_eq!(report.retained_current_page_segment_ids, vec![0]);
+        assert_eq!(report.removed_page_segment_ids, vec![0, 1]);
+        assert_eq!(report.retained_page_segment_ids, vec![2]);
+        assert!(report.retained_current_page_segment_ids.is_empty());
         assert!(report.retained_live_page_segment_ids.is_empty());
-        assert_eq!(store.segment_ids().unwrap(), vec![0, 2]);
+        assert_eq!(store.segment_ids().unwrap(), vec![2]);
     }
 
     #[test]
@@ -589,6 +594,38 @@ mod tests {
         assert_eq!(second.offset, 0);
         assert_eq!(store.read(&first).unwrap(), b"first");
         assert_eq!(store.read(&second).unwrap(), b"second");
+    }
+
+    #[test]
+    fn reopened_store_appends_to_latest_existing_segment() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalPageStore::new(dir.path());
+        let first = store.append(b"first").unwrap();
+        let roll = store.roll_segment().unwrap();
+        let second = store.append(b"second").unwrap();
+        assert_eq!(roll.new_page_segment_id, second.page_segment_id);
+
+        let reopened = LocalPageStore::new(dir.path());
+        let third = reopened.append(b"third").unwrap();
+
+        assert_eq!(third.page_segment_id, second.page_segment_id);
+        assert!(third.offset > second.offset);
+        assert_eq!(reopened.read(&first).unwrap(), b"first");
+        assert_eq!(reopened.read(&second).unwrap(), b"second");
+        assert_eq!(reopened.read(&third).unwrap(), b"third");
+    }
+
+    #[test]
+    fn installed_higher_segment_becomes_current_for_future_appends() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalPageStore::new(dir.path());
+        store.install_segment(3, b"restored-segment").unwrap();
+
+        let next = store.append(b"after-restore").unwrap();
+
+        assert_eq!(next.page_segment_id, 3);
+        assert_eq!(next.offset, b"restored-segment".len() as u64);
+        assert_eq!(store.read(&next).unwrap(), b"after-restore");
     }
 
     #[test]
@@ -673,10 +710,10 @@ mod tests {
         store.install_segment(3, b"keep").unwrap();
 
         let report = store.gc_segments_before_with_live_refs(3, [1_u64]).unwrap();
-        assert_eq!(report.removed_page_segment_ids, vec![2]);
-        assert_eq!(report.retained_page_segment_ids, vec![0, 1, 3]);
-        assert_eq!(report.retained_current_page_segment_ids, vec![0]);
+        assert_eq!(report.removed_page_segment_ids, vec![0, 2]);
+        assert_eq!(report.retained_page_segment_ids, vec![1, 3]);
+        assert!(report.retained_current_page_segment_ids.is_empty());
         assert_eq!(report.retained_live_page_segment_ids, vec![1]);
-        assert_eq!(store.segment_ids().unwrap(), vec![0, 1, 3]);
+        assert_eq!(store.segment_ids().unwrap(), vec![1, 3]);
     }
 }

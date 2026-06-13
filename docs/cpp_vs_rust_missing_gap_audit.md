@@ -564,6 +564,33 @@ eight smaller loops:
    object manager. Rust checkpoints restore index/pages and replay oplog tails,
    but the full freeze/flush/load lifecycle is still a P0 gap.
 
+Production-readiness storage pass repeated the comparison in ten narrower loops:
+
+1. C++ `PageStore::UpdateZones` reopens existing zones from index metadata.
+   Rust now reopens the highest existing local page segment instead of always
+   selecting segment `0`.
+2. C++ restore/open flows keep the writable stream aligned with restored zone
+   state. Rust `install_segment` now treats an installed higher segment as the
+   writable current segment and resumes appends at that segment length.
+3. C++ page stream bytes carry headers. Rust now writes a lightweight envelope
+   for new pages while keeping logical page-stream reads payload-offset based.
+4. C++ raw stream tooling can still inspect stream bytes. Rust keeps
+   `read_range` and `read_segment` as physical byte reads for checkpoint/debug
+   callers.
+5. C++ page reads reject malformed page metadata. Rust rejects corrupt envelope
+   headers and payload checksum mismatches.
+6. C++ storage reopen is validated by stream tests. Rust now has tests for
+   reopen-after-roll appends and cross-record logical page-stream reads.
+7. C++ page restore is tied to zone state. Rust now tests that restored higher
+   segments become the future append target.
+8. C++ object manager is still slot/object-id aware. Rust remains map/address
+   based and still lacks stable object/page ids.
+9. C++ storage GC is utility/delay based. Rust still only has conservative local
+   segment retention by floor/current/live refs.
+10. C++ production readiness still depends on integrated freeze/flush/load,
+    ByteStore/S3 streams, operational metrics, and crash/fault validation; Rust
+    is improved locally but should not be called fully production-ready yet.
+
 | Area | C++ TemporalStore | Rust Today | Missing |
 | --- | --- | --- | --- |
 | Protocol | brpc/thrift/protobuf APIs and extension protos | JSON/HTTP command API plus RESP adapter; C++ `ServerService`-named JSON route aliases for load/unload/execute/batch/apply-data-raft-log/config/info/stats/stream/update-membership/ping; C++ `MasterService`-named JSON route aliases for implemented table/server control-plane operations including table update/delete; brpc/thrift intentionally excluded | tonic/gRPC service definitions, prost message schema, SDK compatibility for the new API |
@@ -575,7 +602,7 @@ eight smaller loops:
 | Hot object model | `ObjectManager`, model objects, dirty slots | per-type maps of key/field/timestamp to `PageAddress` plus C++-style stats for logical object count, page refs, dirty objects, dirty routing slots, and partition info | stable object ids/page ids, dirty-slot dump scheduler, object lifecycle, model-specific memory layout |
 | Oplog | binary mutation log with replay/reclaim semantics | JSONL command oplog with synced append, explicit retain-from-sequence GC rewrite, synced temp-file GC rewrite, and reopen-after-GC tests | binary/protobuf compatibility, replay into hot object manager |
 | Index log | binary metadata/index log | JSONL index-log with current index metadata, synced append, explicit retain-from-sequence GC rewrite, synced temp-file GC rewrite, and reopen-after-GC tests | compact incremental deltas, page/object ids, checksums, replay ordering with oplog and page dumps |
-| Page store | slot/page/zone layout, protobuf page headers, dump/merge/load | append-only local page segment files plus dump/compact/GC task hooks, local live-page rewrite compaction into fresh segments, conservative old segment deletion, self-describing page record envelopes with magic/version/length/SHA-256 fields for new appends, logical page-stream reads that skip Rust envelopes across record boundaries, SHA-256 checksums on newly written page addresses, checksum verification on reads, legacy raw/no-checksum read compatibility, synced appends, synced segment roll, parent-dir sync for segment creation/install, and atomic segment install through temp-file rename | zones, protobuf page headers with object/page ids, compression policy, utility-based zone GC, delayed destroy, full C++ merged dump/load policy |
+| Page store | slot/page/zone layout, protobuf page headers, dump/merge/load | append-only local page segment files plus dump/compact/GC task hooks, local live-page rewrite compaction into fresh segments, conservative old segment deletion, self-describing page record envelopes with magic/version/length/SHA-256 fields for new appends, logical page-stream reads that skip Rust envelopes across record boundaries, highest-segment reopen for future appends, restored higher segment install becomes the current append target, SHA-256 checksums on newly written page addresses, checksum verification on reads, legacy raw/no-checksum read compatibility, synced appends, synced segment roll, parent-dir sync for segment creation/install, and atomic segment install through temp-file rename | zones, protobuf page headers with object/page ids, compression policy, utility-based zone GC, delayed destroy, full C++ merged dump/load policy |
 | Shared store | local/ByteStore stream backends and replica replay | file-backed shared-store checkpoint, sync/async oplog publish, bounded async flush, checksum-enveloped oplog objects, strict gap-rejecting replay, persisted replay cursor, bounded object-store retry and async requeue-on-failure, oplog/checkpoint GC | ByteStore/S3 live object backend integration, automatic lifecycle safety tied to follower cursors/Raft snapshots |
 | Raft | ByteRaft-backed production groups | separate-node data-node Raft runtime wrapper with OpenRaft/raft-rs engine selection, production metaserver Raft runtime wrapper, mTLS config validation, authenticated RPC runtime construction plus receive-side peer RPC auth enforcement, timer supervisors, metaserver stale-server detection in Raft mode, multi-process chaos plan validation, in-process behavior model plus snapshot semantics, deterministic applied-log-byte snapshot trigger reports for data and metaserver Raft, HTTP Raft transport for AppendEntries/Vote/InstallSnapshot/chunked InstallSnapshot, timeout tick election with pre-vote, randomized scheduler model, hard-state/membership inspection, local durable segmented WAL record export/load/recovery with sync, retention, corrupt-tail truncation, and installed-snapshot recovery floor, auto-persisting WAL-backed cluster mode, bounded follower catch-up with replay progress and lag reports, commit-to-apply health reports, process-level `/raft/apply_health`, apply-lag metrics, networked `/raft/membership/apply` plus C++-style `/raft/control/{list_membership,add_node,remove_node,trigger_snapshot,read_index,transfer_leader}` on raft_node and raft-enabled server, process-level external snapshot bootstrap route, bounded local WAL retention, AppendEntries/Vote/InstallSnapshot local receive behavior, joint-consensus old/new majority safety model, safe add/remove/replace membership-change planner and report, metaserver topology to data-Raft voter-plan bridge with no-op and server-state validation, Raft RPC retry/backpressure/auth/deadline wrapper, deterministic leader-lease expiry guard for data-Raft reads/writes, local partition/heal chaos coverage, ByteKV/ByteRaft-style config/read options, oversized log guard, election prohibition, status/local-status, read-index guard, leader transfer, raft metrics | OpenRaft/raft-rs FSM/storage integration, actual mTLS transport, production engine snapshot freeze/flush lifecycle, metaserver scheduler loop applying membership plans, external multi-process chaos |
 | Snapshots | integrated storage/load pipeline | S3-compatible snapshot crate plus local Raft snapshot model, external snapshot refs, manifest/checksum/size verification, stale-local-state preflight, and process-level bootstrap restore into data-node Raft engine state | production engine freeze/flush lifecycle and AWS/MinIO E2E validation |
