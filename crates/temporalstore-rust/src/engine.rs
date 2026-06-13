@@ -2738,6 +2738,7 @@ fn append_value(
         page_segment_id: HOT_PAGE_SEGMENT_ID,
         offset: HOT_PAGE_OFFSET.fetch_add(1, Ordering::Relaxed),
         length: bytes.len() as u64,
+        page_id: None,
         sha256: None,
     };
     let bytes = bytes.to_vec();
@@ -3396,6 +3397,7 @@ mod tests {
                 page_segment_id: 7,
                 offset: 0,
                 length: 1,
+                page_id: None,
                 sha256: None,
             },
         );
@@ -3405,6 +3407,7 @@ mod tests {
                 page_segment_id: 8,
                 offset: 0,
                 length: 1,
+                page_id: None,
                 sha256: None,
             },
         );
@@ -3414,6 +3417,7 @@ mod tests {
                 page_segment_id: 9,
                 offset: 0,
                 length: 1,
+                page_id: None,
                 sha256: None,
             },
         );
@@ -3427,6 +3431,7 @@ mod tests {
                     page_segment_id: 10,
                     offset: 0,
                     length: 1,
+                    page_id: None,
                     sha256: None,
                 },
             );
@@ -3440,6 +3445,7 @@ mod tests {
                     page_segment_id: 11,
                     offset: 0,
                     length: 1,
+                    page_id: None,
                     sha256: None,
                 },
             );
@@ -3449,6 +3455,7 @@ mod tests {
                 page_segment_id: 12,
                 offset: 0,
                 length: 1,
+                page_id: None,
                 sha256: None,
             },
         );
@@ -3459,6 +3466,7 @@ mod tests {
                     page_segment_id: 13,
                     offset: 0,
                     length: 1,
+                    page_id: None,
                     sha256: None,
                 },
                 action_type: Some(1),
