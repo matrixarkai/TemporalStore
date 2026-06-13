@@ -38,6 +38,8 @@ pub struct PageAddress {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
 }
 
@@ -102,17 +104,26 @@ impl LocalPageStore {
     }
 
     pub fn append(&self, bytes: &[u8]) -> Result<PageAddress, PageStoreError> {
+        self.append_with_object_id(bytes, None)
+    }
+
+    pub fn append_with_object_id(
+        &self,
+        bytes: &[u8],
+        object_id: Option<u64>,
+    ) -> Result<PageAddress, PageStoreError> {
         let mut inner = self.inner.lock().expect("page store lock poisoned");
         fs::create_dir_all(&inner.root)?;
         let path = segment_path(&inner.root, inner.page_segment_id);
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
         let page_id = inner.next_page_id;
-        let record = encode_page_record(bytes, page_id);
+        let record = encode_page_record(bytes, page_id, object_id);
         let address = PageAddress {
             page_segment_id: inner.page_segment_id,
             offset: inner.write_offset,
             length: record.len() as u64,
             page_id: Some(page_id),
+            object_id,
             sha256: Some(sha256_hex(bytes)),
         };
         file.write_all(&record)?;
@@ -338,9 +349,10 @@ fn segment_path(root: &Path, page_segment_id: u64) -> PathBuf {
 }
 
 const PAGE_RECORD_MAGIC: &[u8; 8] = b"TSPAGE01";
-const PAGE_RECORD_VERSION: u8 = 2;
+const PAGE_RECORD_VERSION: u8 = 3;
 const PAGE_RECORD_V1_HEADER_LEN: usize = 8 + 1 + 1 + 2 + 8 + 8 + 32;
-const PAGE_RECORD_HEADER_LEN: usize = PAGE_RECORD_V1_HEADER_LEN + 8;
+const PAGE_RECORD_V2_HEADER_LEN: usize = PAGE_RECORD_V1_HEADER_LEN + 8;
+const PAGE_RECORD_HEADER_LEN: usize = PAGE_RECORD_V2_HEADER_LEN + 8;
 
 #[derive(Debug, Clone, Copy)]
 struct PageRecordHeader {
@@ -348,9 +360,10 @@ struct PageRecordHeader {
     payload_len: usize,
     expected_sha256: [u8; 32],
     page_id: Option<u64>,
+    object_id: Option<u64>,
 }
 
-fn encode_page_record(payload: &[u8], page_id: u64) -> Vec<u8> {
+fn encode_page_record(payload: &[u8], page_id: u64, object_id: Option<u64>) -> Vec<u8> {
     let digest = Sha256::digest(payload);
     let mut record = Vec::with_capacity(PAGE_RECORD_HEADER_LEN + payload.len());
     record.extend_from_slice(PAGE_RECORD_MAGIC);
@@ -361,6 +374,7 @@ fn encode_page_record(payload: &[u8], page_id: u64) -> Vec<u8> {
     record.extend_from_slice(&(payload.len() as u64).to_le_bytes());
     record.extend_from_slice(&digest);
     record.extend_from_slice(&page_id.to_le_bytes());
+    record.extend_from_slice(&object_id.unwrap_or_default().to_le_bytes());
     record.extend_from_slice(payload);
     record
 }
@@ -378,6 +392,17 @@ fn decode_page_record(record: &[u8], address: &PageAddress) -> Result<Vec<u8>, P
             return Err(corrupt_page_envelope(
                 address,
                 format!("page id mismatch: address {address_page_id}, record {record_page_id}"),
+            ));
+        }
+    }
+    if let (Some(address_object_id), Some(record_object_id)) = (address.object_id, header.object_id)
+    {
+        if address_object_id != record_object_id {
+            return Err(corrupt_page_envelope(
+                address,
+                format!(
+                    "object id mismatch: address {address_object_id}, record {record_object_id}"
+                ),
             ));
         }
     }
@@ -424,6 +449,7 @@ fn logical_range_from_segment(
             offset: physical_offset as u64,
             length: 0,
             page_id: None,
+            object_id: None,
             sha256: None,
         };
         if !remaining.starts_with(PAGE_RECORD_MAGIC) {
@@ -447,6 +473,7 @@ fn logical_range_from_segment(
         let address = PageAddress {
             length: record_len as u64,
             page_id: header.page_id,
+            object_id: header.object_id,
             ..address
         };
         verify_page_record_checksum(payload, &header.expected_sha256, &address)?;
@@ -472,7 +499,7 @@ fn parse_page_record_header(
     address: &PageAddress,
 ) -> Result<PageRecordHeader, PageStoreError> {
     let version = record[8];
-    if !matches!(version, 1 | PAGE_RECORD_VERSION) {
+    if !matches!(version, 1..=PAGE_RECORD_VERSION) {
         return Err(corrupt_page_envelope(
             address,
             format!("unsupported version {version}"),
@@ -485,6 +512,8 @@ fn parse_page_record_header(
     ) as usize;
     let expected_header_len = if version == 1 {
         PAGE_RECORD_V1_HEADER_LEN
+    } else if version == 2 {
+        PAGE_RECORD_V2_HEADER_LEN
     } else {
         PAGE_RECORD_HEADER_LEN
     };
@@ -522,11 +551,22 @@ fn parse_page_record_header(
     } else {
         None
     };
+    let object_id = if version >= 3 {
+        let object_id = u64::from_le_bytes(
+            record[68..76]
+                .try_into()
+                .expect("page envelope object id slice"),
+        );
+        (object_id != 0).then_some(object_id)
+    } else {
+        None
+    };
     Ok(PageRecordHeader {
         header_len,
         payload_len,
         expected_sha256,
         page_id,
+        object_id,
     })
 }
 
@@ -616,6 +656,7 @@ fn max_page_id_in_segment(
             offset: physical_offset as u64,
             length: 0,
             page_id: None,
+            object_id: None,
             sha256: None,
         };
         if !remaining.starts_with(PAGE_RECORD_MAGIC) {
@@ -808,6 +849,22 @@ mod tests {
     }
 
     #[test]
+    fn object_ids_are_persisted_and_checked_in_page_envelopes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalPageStore::new(dir.path());
+        let mut address = store
+            .append_with_object_id(b"object-page", Some(42))
+            .unwrap();
+
+        assert_eq!(address.object_id, Some(42));
+        assert_eq!(store.read(&address).unwrap(), b"object-page");
+
+        address.object_id = Some(43);
+        let err = store.read(&address).unwrap_err();
+        assert!(matches!(err, PageStoreError::CorruptPageEnvelope { .. }));
+    }
+
+    #[test]
     fn logical_page_range_skips_record_envelopes_across_pages() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalPageStore::new(dir.path());
@@ -841,6 +898,7 @@ mod tests {
             offset: 0,
             length: b"alteredpage".len() as u64,
             page_id: None,
+            object_id: None,
             sha256: None,
         };
         fs::write(
