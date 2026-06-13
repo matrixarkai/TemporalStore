@@ -395,6 +395,12 @@ impl TemporalEngine {
             config.feature_max_size,
             config.async_storage,
             request.shard_id,
+            info.as_ref()
+                .map(|info| info.start_routing_slot)
+                .unwrap_or_default(),
+            info.as_ref()
+                .map(|info| info.end_routing_slot)
+                .unwrap_or(u32::MAX),
             shard,
             command.clone(),
         );
@@ -1323,6 +1329,8 @@ fn execute_on_shard(
     feature_max_size: usize,
     async_storage: bool,
     shard_id: ShardId,
+    start_routing_slot: u32,
+    end_routing_slot: u32,
     shard: &mut ShardState,
     command: Command,
 ) -> ExecuteOutcome {
@@ -1370,12 +1378,14 @@ fn execute_on_shard(
         Command::StringSet { key, value } => {
             remove_if_expired(shard, &key);
             let object_id = stable_page_object_id(shard_id, "string", &key, None);
+            let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             if let Ok(address) = append_value(
                 cache,
                 page_store,
                 shard_id,
                 &value,
                 Some(object_id),
+                Some(routing_slot),
                 async_storage,
             ) {
                 shard.strings.insert(key.clone(), address);
@@ -1387,12 +1397,14 @@ fn execute_on_shard(
         Command::StringSetEx { key, value, ttl_ms } => {
             remove_if_expired(shard, &key);
             let object_id = stable_page_object_id(shard_id, "string", &key, None);
+            let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             if let Ok(address) = append_value(
                 cache,
                 page_store,
                 shard_id,
                 &value,
                 Some(object_id),
+                Some(routing_slot),
                 async_storage,
             ) {
                 shard.strings.insert(key.clone(), address);
@@ -1424,12 +1436,14 @@ fn execute_on_shard(
             };
             if should_set {
                 let object_id = stable_page_object_id(shard_id, "string", &key, None);
+                let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
                 if let Ok(address) = append_value(
                     cache,
                     page_store,
                     shard_id,
                     &value,
                     Some(object_id),
+                    Some(routing_slot),
                     async_storage,
                 ) {
                     shard.strings.insert(key.clone(), address);
@@ -1478,12 +1492,14 @@ fn execute_on_shard(
         Command::HashSet { key, field, value } => {
             remove_if_expired(shard, &key);
             let object_id = stable_page_object_id(shard_id, "hash", &key, Some(&field));
+            let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             if let Ok(address) = append_value(
                 cache,
                 page_store,
                 shard_id,
                 &value,
                 Some(object_id),
+                Some(routing_slot),
                 async_storage,
             ) {
                 shard
@@ -1540,6 +1556,7 @@ fn execute_on_shard(
         }
         Command::HashMultiSet { key, entries } => {
             remove_if_expired(shard, &key);
+            let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             for (field, value) in entries {
                 let object_id = stable_page_object_id(shard_id, "hash", &key, Some(&field));
                 if let Ok(address) = append_value(
@@ -1548,6 +1565,7 @@ fn execute_on_shard(
                     shard_id,
                     &value,
                     Some(object_id),
+                    Some(routing_slot),
                     async_storage,
                 ) {
                     shard
@@ -1581,6 +1599,11 @@ fn execute_on_shard(
                 shard_id,
                 value.to_string().as_bytes(),
                 Some(stable_page_object_id(shard_id, "hash", &key, Some(&field))),
+                Some(page_routing_slot(
+                    &key,
+                    start_routing_slot,
+                    end_routing_slot,
+                )),
                 async_storage,
             ) {
                 shard
@@ -1649,12 +1672,14 @@ fn execute_on_shard(
             remove_if_expired(shard, &key);
             let member_component = hex::encode(&member);
             let object_id = stable_page_object_id(shard_id, "set", &key, Some(&member_component));
+            let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             if let Ok(address) = append_value(
                 cache,
                 page_store,
                 shard_id,
                 &member,
                 Some(object_id),
+                Some(routing_slot),
                 async_storage,
             ) {
                 shard
@@ -1703,6 +1728,7 @@ fn execute_on_shard(
         Command::FeatureAppend { key, points } => {
             remove_if_expired(shard, &key);
             let series = shard.features.entry(key.clone()).or_default();
+            let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             for point in points {
                 let timestamp = point.timestamp_ms.to_string();
                 let object_id = stable_page_object_id(shard_id, "feature", &key, Some(&timestamp));
@@ -1712,6 +1738,7 @@ fn execute_on_shard(
                     shard_id,
                     &point.value,
                     Some(object_id),
+                    Some(routing_slot),
                     async_storage,
                 ) {
                     series.insert(point.timestamp_ms, address);
@@ -1735,6 +1762,7 @@ fn execute_on_shard(
         } => {
             remove_if_expired(shard, &key);
             let series = shard.features.entry(key.clone()).or_default();
+            let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             for point in points {
                 let exists = series.contains_key(&point.timestamp_ms);
                 let should_write = match policy {
@@ -1752,6 +1780,7 @@ fn execute_on_shard(
                         shard_id,
                         &point.value,
                         Some(object_id),
+                        Some(routing_slot),
                         async_storage,
                     ) {
                         series.insert(point.timestamp_ms, address);
@@ -1847,6 +1876,7 @@ fn execute_on_shard(
         } => {
             remove_if_expired(shard, &key);
             let series = shard.features.entry(key.clone()).or_default();
+            let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             let replaced = series
                 .range(start_ms..=end_ms)
                 .map(|(timestamp_ms, _)| *timestamp_ms)
@@ -1864,6 +1894,7 @@ fn execute_on_shard(
                     shard_id,
                     &point.value,
                     Some(object_id),
+                    Some(routing_slot),
                     async_storage,
                 ) {
                     series.insert(point.timestamp_ms, address);
@@ -1921,6 +1952,7 @@ fn execute_on_shard(
         Command::SequenceAdd { key, rows } => {
             remove_if_expired(shard, &key);
             let series = shard.sequences.entry(key.clone()).or_default();
+            let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             for row in rows {
                 if let Ok(bytes) = serde_json::to_vec(&row) {
                     let timestamp = row.timestamp_ms.to_string();
@@ -1932,6 +1964,7 @@ fn execute_on_shard(
                         shard_id,
                         &bytes,
                         Some(object_id),
+                        Some(routing_slot),
                         async_storage,
                     ) {
                         series.insert(row.timestamp_ms, address);
@@ -2015,12 +2048,14 @@ fn execute_on_shard(
             remove_if_expired(shard, &key);
             let timestamp = timestamp_ms.to_string();
             let object_id = stable_page_object_id(shard_id, "ips", &key, Some(&timestamp));
+            let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             if let Ok(address) = append_value(
                 cache,
                 page_store,
                 shard_id,
                 &instance,
                 Some(object_id),
+                Some(routing_slot),
                 async_storage,
             ) {
                 shard
@@ -2064,12 +2099,14 @@ fn execute_on_shard(
             }
             let timestamp = timestamp_ms.to_string();
             let object_id = stable_page_object_id(shard_id, "ips", &key, Some(&timestamp));
+            let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             if let Ok(address) = append_value(
                 cache,
                 page_store,
                 shard_id,
                 &instance,
                 Some(object_id),
+                Some(routing_slot),
                 async_storage,
             ) {
                 shard
@@ -2102,6 +2139,7 @@ fn execute_on_shard(
         Command::IpsLoad { key, points } => {
             remove_if_expired(shard, &key);
             let mut loaded = 0i64;
+            let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             for point in points {
                 let timestamp = point.timestamp_ms.to_string();
                 let object_id = stable_page_object_id(shard_id, "ips", &key, Some(&timestamp));
@@ -2111,6 +2149,7 @@ fn execute_on_shard(
                     shard_id,
                     &point.value,
                     Some(object_id),
+                    Some(routing_slot),
                     async_storage,
                 ) {
                     shard
@@ -2829,10 +2868,11 @@ fn append_value(
     shard_id: ShardId,
     bytes: &[u8],
     object_id: Option<u64>,
+    routing_slot: Option<u32>,
     async_storage: bool,
 ) -> Result<PageAddress, PageStoreError> {
     if !async_storage {
-        return page_store.append_with_object_id(bytes, object_id);
+        return page_store.append_with_page_metadata(bytes, object_id, routing_slot);
     }
     let address = PageAddress {
         page_segment_id: HOT_PAGE_SEGMENT_ID,
@@ -2840,6 +2880,7 @@ fn append_value(
         length: bytes.len() as u64,
         page_id: None,
         object_id,
+        routing_slot,
         sha256: None,
     };
     let bytes = bytes.to_vec();
@@ -3193,6 +3234,14 @@ fn stable_page_object_id(shard_id: ShardId, kind: &str, key: &str, component: Op
     stable_object_hash(&identity)
 }
 
+fn page_routing_slot(key: &str, start_routing_slot: u32, end_routing_slot: u32) -> u32 {
+    slot_for_object(
+        key,
+        start_routing_slot,
+        routing_slot_count(start_routing_slot, end_routing_slot),
+    )
+}
+
 fn command_object_keys(command: &Command) -> Vec<String> {
     match command {
         Command::CommonDelete { key }
@@ -3509,6 +3558,7 @@ mod tests {
                 length: 1,
                 page_id: None,
                 object_id: None,
+                routing_slot: None,
                 sha256: None,
             },
         );
@@ -3520,6 +3570,7 @@ mod tests {
                 length: 1,
                 page_id: None,
                 object_id: None,
+                routing_slot: None,
                 sha256: None,
             },
         );
@@ -3531,6 +3582,7 @@ mod tests {
                 length: 1,
                 page_id: None,
                 object_id: None,
+                routing_slot: None,
                 sha256: None,
             },
         );
@@ -3546,6 +3598,7 @@ mod tests {
                     length: 1,
                     page_id: None,
                     object_id: None,
+                    routing_slot: None,
                     sha256: None,
                 },
             );
@@ -3561,6 +3614,7 @@ mod tests {
                     length: 1,
                     page_id: None,
                     object_id: None,
+                    routing_slot: None,
                     sha256: None,
                 },
             );
@@ -3572,6 +3626,7 @@ mod tests {
                 length: 1,
                 page_id: None,
                 object_id: None,
+                routing_slot: None,
                 sha256: None,
             },
         );
@@ -3584,6 +3639,7 @@ mod tests {
                     length: 1,
                     page_id: None,
                     object_id: None,
+                    routing_slot: None,
                     sha256: None,
                 },
                 action_type: Some(1),
@@ -3723,7 +3779,21 @@ mod tests {
     #[test]
     fn durable_writes_stamp_stable_object_ids_on_page_addresses() {
         let engine = TemporalEngine::default();
-        engine.load_shard(1);
+        assert!(
+            engine
+                .load_shard_with(LoadShardRequest {
+                    shard_id: 1,
+                    table_name: "table".to_string(),
+                    shard_uri: "local://1".to_string(),
+                    start_routing_slot: 10,
+                    end_routing_slot: 20,
+                    readonly: false,
+                    load_version: 1,
+                    local_node_id: None,
+                })
+                .status
+                .ok
+        );
         assert!(
             engine
                 .execute(ExecuteRequest {
@@ -3764,8 +3834,16 @@ mod tests {
             Some(stable_page_object_id(1, "string", "k", None))
         );
         assert_eq!(
+            string_address.routing_slot,
+            Some(page_routing_slot("k", 10, 20))
+        );
+        assert_eq!(
             hash_address.object_id,
             Some(stable_page_object_id(1, "hash", "h", Some("f")))
+        );
+        assert_eq!(
+            hash_address.routing_slot,
+            Some(page_routing_slot("h", 10, 20))
         );
         assert_ne!(string_address.object_id, hash_address.object_id);
     }

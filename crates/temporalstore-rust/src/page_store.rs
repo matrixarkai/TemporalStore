@@ -40,6 +40,8 @@ pub struct PageAddress {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub object_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing_slot: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
 }
 
@@ -112,18 +114,28 @@ impl LocalPageStore {
         bytes: &[u8],
         object_id: Option<u64>,
     ) -> Result<PageAddress, PageStoreError> {
+        self.append_with_page_metadata(bytes, object_id, None)
+    }
+
+    pub fn append_with_page_metadata(
+        &self,
+        bytes: &[u8],
+        object_id: Option<u64>,
+        routing_slot: Option<u32>,
+    ) -> Result<PageAddress, PageStoreError> {
         let mut inner = self.inner.lock().expect("page store lock poisoned");
         fs::create_dir_all(&inner.root)?;
         let path = segment_path(&inner.root, inner.page_segment_id);
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
         let page_id = inner.next_page_id;
-        let record = encode_page_record(bytes, page_id, object_id);
+        let record = encode_page_record(bytes, page_id, object_id, routing_slot);
         let address = PageAddress {
             page_segment_id: inner.page_segment_id,
             offset: inner.write_offset,
             length: record.len() as u64,
             page_id: Some(page_id),
             object_id,
+            routing_slot,
             sha256: Some(sha256_hex(bytes)),
         };
         file.write_all(&record)?;
@@ -349,10 +361,11 @@ fn segment_path(root: &Path, page_segment_id: u64) -> PathBuf {
 }
 
 const PAGE_RECORD_MAGIC: &[u8; 8] = b"TSPAGE01";
-const PAGE_RECORD_VERSION: u8 = 3;
+const PAGE_RECORD_VERSION: u8 = 4;
 const PAGE_RECORD_V1_HEADER_LEN: usize = 8 + 1 + 1 + 2 + 8 + 8 + 32;
 const PAGE_RECORD_V2_HEADER_LEN: usize = PAGE_RECORD_V1_HEADER_LEN + 8;
-const PAGE_RECORD_HEADER_LEN: usize = PAGE_RECORD_V2_HEADER_LEN + 8;
+const PAGE_RECORD_V3_HEADER_LEN: usize = PAGE_RECORD_V2_HEADER_LEN + 8;
+const PAGE_RECORD_HEADER_LEN: usize = PAGE_RECORD_V3_HEADER_LEN + 8;
 
 #[derive(Debug, Clone, Copy)]
 struct PageRecordHeader {
@@ -361,9 +374,15 @@ struct PageRecordHeader {
     expected_sha256: [u8; 32],
     page_id: Option<u64>,
     object_id: Option<u64>,
+    routing_slot: Option<u32>,
 }
 
-fn encode_page_record(payload: &[u8], page_id: u64, object_id: Option<u64>) -> Vec<u8> {
+fn encode_page_record(
+    payload: &[u8],
+    page_id: u64,
+    object_id: Option<u64>,
+    routing_slot: Option<u32>,
+) -> Vec<u8> {
     let digest = Sha256::digest(payload);
     let mut record = Vec::with_capacity(PAGE_RECORD_HEADER_LEN + payload.len());
     record.extend_from_slice(PAGE_RECORD_MAGIC);
@@ -375,6 +394,9 @@ fn encode_page_record(payload: &[u8], page_id: u64, object_id: Option<u64>) -> V
     record.extend_from_slice(&digest);
     record.extend_from_slice(&page_id.to_le_bytes());
     record.extend_from_slice(&object_id.unwrap_or_default().to_le_bytes());
+    record.push(u8::from(routing_slot.is_some()));
+    record.extend_from_slice(&[0, 0, 0]);
+    record.extend_from_slice(&routing_slot.unwrap_or_default().to_le_bytes());
     record.extend_from_slice(payload);
     record
 }
@@ -402,6 +424,18 @@ fn decode_page_record(record: &[u8], address: &PageAddress) -> Result<Vec<u8>, P
                 address,
                 format!(
                     "object id mismatch: address {address_object_id}, record {record_object_id}"
+                ),
+            ));
+        }
+    }
+    if let (Some(address_routing_slot), Some(record_routing_slot)) =
+        (address.routing_slot, header.routing_slot)
+    {
+        if address_routing_slot != record_routing_slot {
+            return Err(corrupt_page_envelope(
+                address,
+                format!(
+                    "routing slot mismatch: address {address_routing_slot}, record {record_routing_slot}"
                 ),
             ));
         }
@@ -450,6 +484,7 @@ fn logical_range_from_segment(
             length: 0,
             page_id: None,
             object_id: None,
+            routing_slot: None,
             sha256: None,
         };
         if !remaining.starts_with(PAGE_RECORD_MAGIC) {
@@ -474,6 +509,7 @@ fn logical_range_from_segment(
             length: record_len as u64,
             page_id: header.page_id,
             object_id: header.object_id,
+            routing_slot: header.routing_slot,
             ..address
         };
         verify_page_record_checksum(payload, &header.expected_sha256, &address)?;
@@ -514,6 +550,8 @@ fn parse_page_record_header(
         PAGE_RECORD_V1_HEADER_LEN
     } else if version == 2 {
         PAGE_RECORD_V2_HEADER_LEN
+    } else if version == 3 {
+        PAGE_RECORD_V3_HEADER_LEN
     } else {
         PAGE_RECORD_HEADER_LEN
     };
@@ -561,12 +599,26 @@ fn parse_page_record_header(
     } else {
         None
     };
+    let routing_slot = if version >= 4 {
+        if record[76] == 1 {
+            Some(u32::from_le_bytes(
+                record[80..84]
+                    .try_into()
+                    .expect("page envelope routing slot slice"),
+            ))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     Ok(PageRecordHeader {
         header_len,
         payload_len,
         expected_sha256,
         page_id,
         object_id,
+        routing_slot,
     })
 }
 
@@ -657,6 +709,7 @@ fn max_page_id_in_segment(
             length: 0,
             page_id: None,
             object_id: None,
+            routing_slot: None,
             sha256: None,
         };
         if !remaining.starts_with(PAGE_RECORD_MAGIC) {
@@ -853,13 +906,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalPageStore::new(dir.path());
         let mut address = store
-            .append_with_object_id(b"object-page", Some(42))
+            .append_with_page_metadata(b"object-page", Some(42), Some(7))
             .unwrap();
 
         assert_eq!(address.object_id, Some(42));
+        assert_eq!(address.routing_slot, Some(7));
         assert_eq!(store.read(&address).unwrap(), b"object-page");
 
         address.object_id = Some(43);
+        let err = store.read(&address).unwrap_err();
+        assert!(matches!(err, PageStoreError::CorruptPageEnvelope { .. }));
+
+        address.object_id = Some(42);
+        address.routing_slot = Some(8);
         let err = store.read(&address).unwrap_err();
         assert!(matches!(err, PageStoreError::CorruptPageEnvelope { .. }));
     }
@@ -899,6 +958,7 @@ mod tests {
             length: b"alteredpage".len() as u64,
             page_id: None,
             object_id: None,
+            routing_slot: None,
             sha256: None,
         };
         fs::write(
