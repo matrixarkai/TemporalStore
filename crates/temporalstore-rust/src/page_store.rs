@@ -22,6 +22,12 @@ pub enum PageStoreError {
         expected: String,
         actual: String,
     },
+    #[error("corrupt page envelope for segment {page_segment_id} offset {offset}: {reason}")]
+    CorruptPageEnvelope {
+        page_segment_id: u64,
+        offset: u64,
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -95,13 +101,14 @@ impl LocalPageStore {
         fs::create_dir_all(&inner.root)?;
         let path = segment_path(&inner.root, inner.page_segment_id);
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+        let record = encode_page_record(bytes);
         let address = PageAddress {
             page_segment_id: inner.page_segment_id,
             offset: inner.write_offset,
-            length: bytes.len() as u64,
+            length: record.len() as u64,
             sha256: Some(sha256_hex(bytes)),
         };
-        file.write_all(bytes)?;
+        file.write_all(&record)?;
         file.flush()?;
         file.sync_data()?;
         inner.write_offset += address.length;
@@ -139,6 +146,7 @@ impl LocalPageStore {
         file.seek(SeekFrom::Start(address.offset))?;
         let mut bytes = vec![0; address.length as usize];
         file.read_exact(&mut bytes)?;
+        let bytes = decode_page_record(&bytes, address)?;
         if let Some(expected) = &address.sha256 {
             let actual = sha256_hex(&bytes);
             if &actual != expected {
@@ -171,6 +179,21 @@ impl LocalPageStore {
         bytes.truncate(read);
         inner.stats.reads += 1;
         inner.stats.bytes_read += read as u64;
+        Ok(bytes)
+    }
+
+    pub fn read_logical_range(
+        &self,
+        page_segment_id: u64,
+        offset: u64,
+        size: u64,
+    ) -> Result<Vec<u8>, PageStoreError> {
+        let mut inner = self.inner.lock().expect("page store lock poisoned");
+        let path = segment_path(&inner.root, page_segment_id);
+        let segment = fs::read(path)?;
+        let bytes = logical_range_from_segment(&segment, page_segment_id, offset, size)?;
+        inner.stats.reads += 1;
+        inner.stats.bytes_read += bytes.len() as u64;
         Ok(bytes)
     }
 
@@ -302,6 +325,187 @@ fn segment_path(root: &Path, page_segment_id: u64) -> PathBuf {
     root.join(format!("page_segment_{page_segment_id:020}.seg"))
 }
 
+const PAGE_RECORD_MAGIC: &[u8; 8] = b"TSPAGE01";
+const PAGE_RECORD_VERSION: u8 = 1;
+const PAGE_RECORD_HEADER_LEN: usize = 8 + 1 + 1 + 2 + 8 + 8 + 32;
+
+fn encode_page_record(payload: &[u8]) -> Vec<u8> {
+    let digest = Sha256::digest(payload);
+    let mut record = Vec::with_capacity(PAGE_RECORD_HEADER_LEN + payload.len());
+    record.extend_from_slice(PAGE_RECORD_MAGIC);
+    record.push(PAGE_RECORD_VERSION);
+    record.push(0);
+    record.extend_from_slice(&(PAGE_RECORD_HEADER_LEN as u16).to_le_bytes());
+    record.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+    record.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+    record.extend_from_slice(&digest);
+    record.extend_from_slice(payload);
+    record
+}
+
+fn decode_page_record(record: &[u8], address: &PageAddress) -> Result<Vec<u8>, PageStoreError> {
+    if !record.starts_with(PAGE_RECORD_MAGIC) {
+        return Ok(record.to_vec());
+    }
+    if record.len() < PAGE_RECORD_HEADER_LEN {
+        return Err(corrupt_page_envelope(address, "short header"));
+    }
+    let (header_len, payload_len, expected_sha256) = parse_page_record_header(record, address)?;
+    if record.len() != header_len + payload_len {
+        return Err(corrupt_page_envelope(
+            address,
+            "payload length mismatch".to_string(),
+        ));
+    }
+    let payload = &record[header_len..];
+    verify_page_record_checksum(payload, &expected_sha256, address)?;
+    Ok(payload.to_vec())
+}
+
+fn logical_range_from_segment(
+    segment: &[u8],
+    page_segment_id: u64,
+    offset: u64,
+    size: u64,
+) -> Result<Vec<u8>, PageStoreError> {
+    if size == 0 {
+        return Ok(Vec::new());
+    }
+    if !segment.starts_with(PAGE_RECORD_MAGIC) {
+        let start = offset as usize;
+        let end = start.saturating_add(size as usize).min(segment.len());
+        return Ok(if start >= segment.len() {
+            Vec::new()
+        } else {
+            segment[start..end].to_vec()
+        });
+    }
+
+    let requested_start = offset as usize;
+    let requested_end = requested_start.saturating_add(size as usize);
+    let mut physical_offset = 0usize;
+    let mut logical_offset = 0usize;
+    let mut out = Vec::with_capacity(size as usize);
+
+    while physical_offset < segment.len() && out.len() < size as usize {
+        let remaining = &segment[physical_offset..];
+        let address = PageAddress {
+            page_segment_id,
+            offset: physical_offset as u64,
+            length: 0,
+            sha256: None,
+        };
+        if !remaining.starts_with(PAGE_RECORD_MAGIC) {
+            return Err(corrupt_page_envelope(
+                &address,
+                "mixed raw bytes after page envelope",
+            ));
+        }
+        if remaining.len() < PAGE_RECORD_HEADER_LEN {
+            return Err(corrupt_page_envelope(&address, "short header"));
+        }
+        let (header_len, payload_len, expected_sha256) =
+            parse_page_record_header(remaining, &address)?;
+        let record_len = header_len.saturating_add(payload_len);
+        if remaining.len() < record_len {
+            return Err(corrupt_page_envelope(
+                &address,
+                "payload length mismatch".to_string(),
+            ));
+        }
+        let payload = &remaining[header_len..record_len];
+        let address = PageAddress {
+            length: record_len as u64,
+            ..address
+        };
+        verify_page_record_checksum(payload, &expected_sha256, &address)?;
+
+        let logical_end = logical_offset.saturating_add(payload_len);
+        let overlap_start = requested_start.max(logical_offset);
+        let overlap_end = requested_end.min(logical_end);
+        if overlap_start < overlap_end {
+            let payload_start = overlap_start - logical_offset;
+            let payload_end = overlap_end - logical_offset;
+            out.extend_from_slice(&payload[payload_start..payload_end]);
+        }
+
+        physical_offset = physical_offset.saturating_add(record_len);
+        logical_offset = logical_end;
+    }
+
+    Ok(out)
+}
+
+fn parse_page_record_header(
+    record: &[u8],
+    address: &PageAddress,
+) -> Result<(usize, usize, [u8; 32]), PageStoreError> {
+    let version = record[8];
+    if version != PAGE_RECORD_VERSION {
+        return Err(corrupt_page_envelope(
+            address,
+            format!("unsupported version {version}"),
+        ));
+    }
+    let header_len = u16::from_le_bytes(
+        record[10..12]
+            .try_into()
+            .expect("page envelope header length slice"),
+    ) as usize;
+    if header_len != PAGE_RECORD_HEADER_LEN {
+        return Err(corrupt_page_envelope(
+            address,
+            format!("unexpected header length {header_len}"),
+        ));
+    }
+    let payload_len = u64::from_le_bytes(
+        record[12..20]
+            .try_into()
+            .expect("page envelope payload length slice"),
+    ) as usize;
+    let raw_len = u64::from_le_bytes(
+        record[20..28]
+            .try_into()
+            .expect("page envelope raw length slice"),
+    ) as usize;
+    if raw_len != payload_len {
+        return Err(corrupt_page_envelope(
+            address,
+            format!("raw length {raw_len} does not match payload length {payload_len}"),
+        ));
+    }
+    let expected_sha256 = record[28..60]
+        .try_into()
+        .expect("page envelope sha256 slice");
+    Ok((header_len, payload_len, expected_sha256))
+}
+
+fn verify_page_record_checksum(
+    payload: &[u8],
+    expected_sha256: &[u8; 32],
+    address: &PageAddress,
+) -> Result<(), PageStoreError> {
+    let actual_sha256 = Sha256::digest(payload);
+    if &actual_sha256[..] != expected_sha256 {
+        return Err(PageStoreError::ChecksumMismatch {
+            page_segment_id: address.page_segment_id,
+            offset: address.offset,
+            length: address.length,
+            expected: hex::encode(expected_sha256),
+            actual: hex::encode(actual_sha256),
+        });
+    }
+    Ok(())
+}
+
+fn corrupt_page_envelope(address: &PageAddress, reason: impl Into<String>) -> PageStoreError {
+    PageStoreError::CorruptPageEnvelope {
+        page_segment_id: address.page_segment_id,
+        offset: address.offset,
+        reason: reason.into(),
+    }
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
@@ -395,23 +599,60 @@ mod tests {
         assert_eq!(address.sha256, Some(sha256_hex(b"verified-page")));
         assert_eq!(store.read(&address).unwrap(), b"verified-page");
 
-        fs::write(
-            segment_path(dir.path(), address.page_segment_id),
-            b"corrupted-page",
-        )
-        .unwrap();
+        let path = segment_path(dir.path(), address.page_segment_id);
+        let mut segment = fs::read(&path).unwrap();
+        *segment.last_mut().unwrap() ^= 0xff;
+        fs::write(path, segment).unwrap();
         let err = store.read(&address).unwrap_err();
         assert!(matches!(err, PageStoreError::ChecksumMismatch { .. }));
+    }
+
+    #[test]
+    fn page_segment_records_have_self_describing_envelope() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalPageStore::new(dir.path());
+        let address = store.append(b"enveloped-page").unwrap();
+        let raw = store.read_segment(address.page_segment_id).unwrap();
+
+        assert!(raw.starts_with(PAGE_RECORD_MAGIC));
+        assert_eq!(raw[8], PAGE_RECORD_VERSION);
+        assert_eq!(store.read(&address).unwrap(), b"enveloped-page");
+    }
+
+    #[test]
+    fn logical_page_range_skips_record_envelopes_across_pages() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalPageStore::new(dir.path());
+        store.append(b"abc").unwrap();
+        store.append(b"def").unwrap();
+
+        assert_eq!(store.read_logical_range(0, 1, 4).unwrap(), b"bcde");
+    }
+
+    #[test]
+    fn page_envelope_rejects_corrupt_header_lengths() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalPageStore::new(dir.path());
+        let address = store.append(b"header-checked-page").unwrap();
+        let path = segment_path(dir.path(), address.page_segment_id);
+        let mut segment = fs::read(&path).unwrap();
+        segment[10] = 1;
+        segment[11] = 0;
+        fs::write(path, segment).unwrap();
+
+        let err = store.read(&address).unwrap_err();
+        assert!(matches!(err, PageStoreError::CorruptPageEnvelope { .. }));
     }
 
     #[test]
     fn page_address_without_checksum_keeps_legacy_read_compatibility() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalPageStore::new(dir.path());
-        let address = store.append(b"legacy-page").unwrap();
         let legacy_address = PageAddress {
+            page_segment_id: 0,
+            offset: 0,
+            length: b"alteredpage".len() as u64,
             sha256: None,
-            ..address
         };
         fs::write(
             segment_path(dir.path(), legacy_address.page_segment_id),

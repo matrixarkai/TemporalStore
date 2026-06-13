@@ -828,7 +828,7 @@ impl TemporalEngine {
         let data: Result<Vec<u8>, String> = match request.stream_kind {
             StreamKind::Page => self
                 .page_store
-                .read_range(request.page_segment_id, request.offset, request.size)
+                .read_logical_range(request.page_segment_id, request.offset, request.size)
                 .map_err(|err| err.to_string()),
             StreamKind::Index => fs::read(self.index_path(request.shard_id))
                 .map_err(|err| err.to_string())

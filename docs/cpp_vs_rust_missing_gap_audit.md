@@ -521,13 +521,18 @@ delete, expire, and TTL handling, so lifecycle operations do not leave hidden
 
 The storage pass compared C++ `src/partition/storage`, `src/partition/index`,
 `src/stream`, and `src/blockcache` with the Rust page/oplog/index/shared-store
-modules. It closed one page-store integrity gap: new Rust `PageAddress` records
-now carry optional SHA-256 checksums, durable page reads verify the checksum when
-present, old index entries without checksums remain readable, appends flush and
-sync the segment data, and segment installation writes through a synced temp
-file before atomic rename. This is still much smaller than C++ zones, page
-headers, object-manager metadata, and block-cache integration, but it prevents
-silent local page corruption for newly written Rust pages.
+modules. It closed page-store integrity gaps: new Rust `PageAddress` records now
+carry optional SHA-256 checksums, newly appended page bytes are wrapped in a
+self-describing segment record envelope with magic/version/length/checksum
+fields, durable page reads verify the envelope and checksum when present, old
+raw segment entries remain readable, appends flush and sync the segment data,
+and segment installation writes through a synced temp file before atomic rename.
+This is still much smaller than C++ zones, protobuf page headers,
+object-manager metadata, and block-cache integration, but it prevents silent
+local page corruption for newly written Rust pages and lets raw segment scans
+identify Rust page record boundaries. Engine page-stream reads preserve the
+existing C++-compat logical payload-offset contract by walking those envelopes
+and returning payload bytes.
 
 Follow-up storage parity passes compared the remaining C++ storage surface in
 eight smaller loops:
@@ -542,8 +547,9 @@ eight smaller loops:
    cache remains simpler, but disk block writes now use a synced temp file and
    atomic rename so readers do not observe partial block files.
 4. C++ page format includes protobuf `PageHeader` metadata with model/object/page
-   ids and optional compression. Rust still stores raw page bytes plus address
-   metadata and checksums; the header/object-id format remains missing.
+   ids and optional compression. Rust now stores a lightweight page record
+   envelope in the segment bytes, but the protobuf header/object-id format and
+   compression policy remain missing.
 5. C++ `ObjectManager::Load` replays committed oplog records into hot slot/object
    state after loading dumped pages. Rust has shared-store replay and strict gap
    rejection, but not the same slot-aware hot object replay pipeline.
@@ -569,7 +575,7 @@ eight smaller loops:
 | Hot object model | `ObjectManager`, model objects, dirty slots | per-type maps of key/field/timestamp to `PageAddress` plus C++-style stats for logical object count, page refs, dirty objects, dirty routing slots, and partition info | stable object ids/page ids, dirty-slot dump scheduler, object lifecycle, model-specific memory layout |
 | Oplog | binary mutation log with replay/reclaim semantics | JSONL command oplog with synced append, explicit retain-from-sequence GC rewrite, synced temp-file GC rewrite, and reopen-after-GC tests | binary/protobuf compatibility, replay into hot object manager |
 | Index log | binary metadata/index log | JSONL index-log with current index metadata, synced append, explicit retain-from-sequence GC rewrite, synced temp-file GC rewrite, and reopen-after-GC tests | compact incremental deltas, page/object ids, checksums, replay ordering with oplog and page dumps |
-| Page store | slot/page/zone layout, page headers, dump/merge/load | append-only local page segment files plus dump/compact/GC task hooks, local live-page rewrite compaction into fresh segments, conservative old segment deletion, SHA-256 checksums on newly written page addresses, checksum verification on reads, legacy no-checksum read compatibility, synced appends, synced segment roll, parent-dir sync for segment creation/install, and atomic segment install through temp-file rename | zones, page headers/object ids, utility-based zone GC, delayed destroy, full C++ merged dump/load policy |
+| Page store | slot/page/zone layout, protobuf page headers, dump/merge/load | append-only local page segment files plus dump/compact/GC task hooks, local live-page rewrite compaction into fresh segments, conservative old segment deletion, self-describing page record envelopes with magic/version/length/SHA-256 fields for new appends, logical page-stream reads that skip Rust envelopes across record boundaries, SHA-256 checksums on newly written page addresses, checksum verification on reads, legacy raw/no-checksum read compatibility, synced appends, synced segment roll, parent-dir sync for segment creation/install, and atomic segment install through temp-file rename | zones, protobuf page headers with object/page ids, compression policy, utility-based zone GC, delayed destroy, full C++ merged dump/load policy |
 | Shared store | local/ByteStore stream backends and replica replay | file-backed shared-store checkpoint, sync/async oplog publish, bounded async flush, checksum-enveloped oplog objects, strict gap-rejecting replay, persisted replay cursor, bounded object-store retry and async requeue-on-failure, oplog/checkpoint GC | ByteStore/S3 live object backend integration, automatic lifecycle safety tied to follower cursors/Raft snapshots |
 | Raft | ByteRaft-backed production groups | separate-node data-node Raft runtime wrapper with OpenRaft/raft-rs engine selection, production metaserver Raft runtime wrapper, mTLS config validation, authenticated RPC runtime construction plus receive-side peer RPC auth enforcement, timer supervisors, metaserver stale-server detection in Raft mode, multi-process chaos plan validation, in-process behavior model plus snapshot semantics, deterministic applied-log-byte snapshot trigger reports for data and metaserver Raft, HTTP Raft transport for AppendEntries/Vote/InstallSnapshot/chunked InstallSnapshot, timeout tick election with pre-vote, randomized scheduler model, hard-state/membership inspection, local durable segmented WAL record export/load/recovery with sync, retention, corrupt-tail truncation, and installed-snapshot recovery floor, auto-persisting WAL-backed cluster mode, bounded follower catch-up with replay progress and lag reports, commit-to-apply health reports, process-level `/raft/apply_health`, apply-lag metrics, networked `/raft/membership/apply` plus C++-style `/raft/control/{list_membership,add_node,remove_node,trigger_snapshot,read_index,transfer_leader}` on raft_node and raft-enabled server, process-level external snapshot bootstrap route, bounded local WAL retention, AppendEntries/Vote/InstallSnapshot local receive behavior, joint-consensus old/new majority safety model, safe add/remove/replace membership-change planner and report, metaserver topology to data-Raft voter-plan bridge with no-op and server-state validation, Raft RPC retry/backpressure/auth/deadline wrapper, deterministic leader-lease expiry guard for data-Raft reads/writes, local partition/heal chaos coverage, ByteKV/ByteRaft-style config/read options, oversized log guard, election prohibition, status/local-status, read-index guard, leader transfer, raft metrics | OpenRaft/raft-rs FSM/storage integration, actual mTLS transport, production engine snapshot freeze/flush lifecycle, metaserver scheduler loop applying membership plans, external multi-process chaos |
 | Snapshots | integrated storage/load pipeline | S3-compatible snapshot crate plus local Raft snapshot model, external snapshot refs, manifest/checksum/size verification, stale-local-state preflight, and process-level bootstrap restore into data-node Raft engine state | production engine freeze/flush lifecycle and AWS/MinIO E2E validation |
