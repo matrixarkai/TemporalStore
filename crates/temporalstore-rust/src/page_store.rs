@@ -42,6 +42,8 @@ pub struct PageAddress {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routing_slot: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zone_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
 }
 
@@ -128,7 +130,8 @@ impl LocalPageStore {
         let path = segment_path(&inner.root, inner.page_segment_id);
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
         let page_id = inner.next_page_id;
-        let record = encode_page_record(bytes, page_id, object_id, routing_slot);
+        let zone_id = zone_id_for_segment(inner.page_segment_id);
+        let record = encode_page_record(bytes, page_id, object_id, routing_slot, zone_id);
         let address = PageAddress {
             page_segment_id: inner.page_segment_id,
             offset: inner.write_offset,
@@ -136,6 +139,7 @@ impl LocalPageStore {
             page_id: Some(page_id),
             object_id,
             routing_slot,
+            zone_id: Some(zone_id),
             sha256: Some(sha256_hex(bytes)),
         };
         file.write_all(&record)?;
@@ -360,12 +364,17 @@ fn segment_path(root: &Path, page_segment_id: u64) -> PathBuf {
     root.join(format!("page_segment_{page_segment_id:020}.seg"))
 }
 
+fn zone_id_for_segment(page_segment_id: u64) -> u64 {
+    page_segment_id
+}
+
 const PAGE_RECORD_MAGIC: &[u8; 8] = b"TSPAGE01";
-const PAGE_RECORD_VERSION: u8 = 4;
+const PAGE_RECORD_VERSION: u8 = 5;
 const PAGE_RECORD_V1_HEADER_LEN: usize = 8 + 1 + 1 + 2 + 8 + 8 + 32;
 const PAGE_RECORD_V2_HEADER_LEN: usize = PAGE_RECORD_V1_HEADER_LEN + 8;
 const PAGE_RECORD_V3_HEADER_LEN: usize = PAGE_RECORD_V2_HEADER_LEN + 8;
-const PAGE_RECORD_HEADER_LEN: usize = PAGE_RECORD_V3_HEADER_LEN + 8;
+const PAGE_RECORD_V4_HEADER_LEN: usize = PAGE_RECORD_V3_HEADER_LEN + 8;
+const PAGE_RECORD_HEADER_LEN: usize = PAGE_RECORD_V4_HEADER_LEN + 8;
 
 #[derive(Debug, Clone, Copy)]
 struct PageRecordHeader {
@@ -375,6 +384,7 @@ struct PageRecordHeader {
     page_id: Option<u64>,
     object_id: Option<u64>,
     routing_slot: Option<u32>,
+    zone_id: Option<u64>,
 }
 
 fn encode_page_record(
@@ -382,6 +392,7 @@ fn encode_page_record(
     page_id: u64,
     object_id: Option<u64>,
     routing_slot: Option<u32>,
+    zone_id: u64,
 ) -> Vec<u8> {
     let digest = Sha256::digest(payload);
     let mut record = Vec::with_capacity(PAGE_RECORD_HEADER_LEN + payload.len());
@@ -397,6 +408,7 @@ fn encode_page_record(
     record.push(u8::from(routing_slot.is_some()));
     record.extend_from_slice(&[0, 0, 0]);
     record.extend_from_slice(&routing_slot.unwrap_or_default().to_le_bytes());
+    record.extend_from_slice(&zone_id.to_le_bytes());
     record.extend_from_slice(payload);
     record
 }
@@ -437,6 +449,14 @@ fn decode_page_record(record: &[u8], address: &PageAddress) -> Result<Vec<u8>, P
                 format!(
                     "routing slot mismatch: address {address_routing_slot}, record {record_routing_slot}"
                 ),
+            ));
+        }
+    }
+    if let (Some(address_zone_id), Some(record_zone_id)) = (address.zone_id, header.zone_id) {
+        if address_zone_id != record_zone_id {
+            return Err(corrupt_page_envelope(
+                address,
+                format!("zone id mismatch: address {address_zone_id}, record {record_zone_id}"),
             ));
         }
     }
@@ -485,6 +505,7 @@ fn logical_range_from_segment(
             page_id: None,
             object_id: None,
             routing_slot: None,
+            zone_id: None,
             sha256: None,
         };
         if !remaining.starts_with(PAGE_RECORD_MAGIC) {
@@ -510,6 +531,7 @@ fn logical_range_from_segment(
             page_id: header.page_id,
             object_id: header.object_id,
             routing_slot: header.routing_slot,
+            zone_id: header.zone_id,
             ..address
         };
         verify_page_record_checksum(payload, &header.expected_sha256, &address)?;
@@ -552,6 +574,8 @@ fn parse_page_record_header(
         PAGE_RECORD_V2_HEADER_LEN
     } else if version == 3 {
         PAGE_RECORD_V3_HEADER_LEN
+    } else if version == 4 {
+        PAGE_RECORD_V4_HEADER_LEN
     } else {
         PAGE_RECORD_HEADER_LEN
     };
@@ -612,6 +636,15 @@ fn parse_page_record_header(
     } else {
         None
     };
+    let zone_id = if version >= 5 {
+        Some(u64::from_le_bytes(
+            record[84..92]
+                .try_into()
+                .expect("page envelope zone id slice"),
+        ))
+    } else {
+        None
+    };
     Ok(PageRecordHeader {
         header_len,
         payload_len,
@@ -619,6 +652,7 @@ fn parse_page_record_header(
         page_id,
         object_id,
         routing_slot,
+        zone_id,
     })
 }
 
@@ -710,6 +744,7 @@ fn max_page_id_in_segment(
             page_id: None,
             object_id: None,
             routing_slot: None,
+            zone_id: None,
             sha256: None,
         };
         if !remaining.starts_with(PAGE_RECORD_MAGIC) {
@@ -911,6 +946,7 @@ mod tests {
 
         assert_eq!(address.object_id, Some(42));
         assert_eq!(address.routing_slot, Some(7));
+        assert_eq!(address.zone_id, Some(0));
         assert_eq!(store.read(&address).unwrap(), b"object-page");
 
         address.object_id = Some(43);
@@ -921,6 +957,25 @@ mod tests {
         address.routing_slot = Some(8);
         let err = store.read(&address).unwrap_err();
         assert!(matches!(err, PageStoreError::CorruptPageEnvelope { .. }));
+
+        address.routing_slot = Some(7);
+        address.zone_id = Some(1);
+        let err = store.read(&address).unwrap_err();
+        assert!(matches!(err, PageStoreError::CorruptPageEnvelope { .. }));
+    }
+
+    #[test]
+    fn rolled_segments_stamp_new_zone_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalPageStore::new(dir.path());
+        let first = store.append(b"first-zone").unwrap();
+        let roll = store.roll_segment().unwrap();
+        let second = store.append(b"second-zone").unwrap();
+
+        assert_eq!(first.zone_id, Some(first.page_segment_id));
+        assert_eq!(second.zone_id, Some(second.page_segment_id));
+        assert_eq!(second.zone_id, Some(roll.new_page_segment_id));
+        assert_ne!(first.zone_id, second.zone_id);
     }
 
     #[test]
@@ -959,6 +1014,7 @@ mod tests {
             page_id: None,
             object_id: None,
             routing_slot: None,
+            zone_id: None,
             sha256: None,
         };
         fs::write(

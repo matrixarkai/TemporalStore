@@ -2881,6 +2881,7 @@ fn append_value(
         page_id: None,
         object_id,
         routing_slot,
+        zone_id: None,
         sha256: None,
     };
     let bytes = bytes.to_vec();
@@ -3559,6 +3560,7 @@ mod tests {
                 page_id: None,
                 object_id: None,
                 routing_slot: None,
+                zone_id: None,
                 sha256: None,
             },
         );
@@ -3571,6 +3573,7 @@ mod tests {
                 page_id: None,
                 object_id: None,
                 routing_slot: None,
+                zone_id: None,
                 sha256: None,
             },
         );
@@ -3583,6 +3586,7 @@ mod tests {
                 page_id: None,
                 object_id: None,
                 routing_slot: None,
+                zone_id: None,
                 sha256: None,
             },
         );
@@ -3599,6 +3603,7 @@ mod tests {
                     page_id: None,
                     object_id: None,
                     routing_slot: None,
+                    zone_id: None,
                     sha256: None,
                 },
             );
@@ -3615,6 +3620,7 @@ mod tests {
                     page_id: None,
                     object_id: None,
                     routing_slot: None,
+                    zone_id: None,
                     sha256: None,
                 },
             );
@@ -3627,6 +3633,7 @@ mod tests {
                 page_id: None,
                 object_id: None,
                 routing_slot: None,
+                zone_id: None,
                 sha256: None,
             },
         );
@@ -3640,6 +3647,7 @@ mod tests {
                     page_id: None,
                     object_id: None,
                     routing_slot: None,
+                    zone_id: None,
                     sha256: None,
                 },
                 action_type: Some(1),
@@ -3837,6 +3845,7 @@ mod tests {
             string_address.routing_slot,
             Some(page_routing_slot("k", 10, 20))
         );
+        assert_eq!(string_address.zone_id, Some(string_address.page_segment_id));
         assert_eq!(
             hash_address.object_id,
             Some(stable_page_object_id(1, "hash", "h", Some("f")))
@@ -3845,6 +3854,7 @@ mod tests {
             hash_address.routing_slot,
             Some(page_routing_slot("h", 10, 20))
         );
+        assert_eq!(hash_address.zone_id, Some(hash_address.page_segment_id));
         assert_ne!(string_address.object_id, hash_address.object_id);
     }
 
