@@ -122,6 +122,40 @@ pub struct PageStoreGcUtilityCandidate {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PageStoreGcPolicy {
+    #[serde(default)]
+    pub max_destroy_segments: usize,
+    #[serde(default)]
+    pub max_destroy_physical_bytes: u64,
+    #[serde(default)]
+    pub max_utility_score: Option<u64>,
+    #[serde(default)]
+    pub min_age_ms: Option<u64>,
+}
+
+impl PageStoreGcPolicy {
+    pub fn max_segments(max_destroy_segments: usize) -> Self {
+        Self {
+            max_destroy_segments,
+            max_destroy_physical_bytes: 0,
+            max_utility_score: None,
+            min_age_ms: None,
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PageStoreGcPolicyPlan {
+    pub retain_from_page_segment_id: u64,
+    pub selected_page_segment_ids: Vec<u64>,
+    pub selected_physical_bytes: u64,
+    pub candidate_count: usize,
+    pub skipped_by_policy_count: usize,
+    pub skipped_by_budget_count: usize,
+    pub candidates: Vec<PageStoreGcUtilityCandidate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PageStoreDelayedDestroySegmentReport {
     pub page_segment_id: u64,
     pub physical_bytes: u64,
@@ -590,15 +624,38 @@ impl LocalPageStore {
         max_destroy_segments: usize,
         delayed_destroy: bool,
     ) -> Result<PageStoreGcReport, PageStoreError> {
+        if max_destroy_segments == 0 {
+            return self.gc_segments_before_with_live_refs_selected(
+                retain_from_page_segment_id,
+                live_page_segment_ids,
+                delayed_destroy,
+                Some(BTreeSet::new()),
+            );
+        }
+        self.gc_segments_before_with_live_refs_policy(
+            retain_from_page_segment_id,
+            live_page_segment_ids,
+            PageStoreGcPolicy::max_segments(max_destroy_segments),
+            delayed_destroy,
+        )
+    }
+
+    pub fn gc_segments_before_with_live_refs_policy(
+        &self,
+        retain_from_page_segment_id: u64,
+        live_page_segment_ids: impl IntoIterator<Item = u64>,
+        policy: PageStoreGcPolicy,
+        delayed_destroy: bool,
+    ) -> Result<PageStoreGcReport, PageStoreError> {
         let live_page_segment_ids = live_page_segment_ids.into_iter().collect::<BTreeSet<_>>();
         let selected = self
-            .gc_utility_candidates(
+            .gc_policy_plan(
                 retain_from_page_segment_id,
                 live_page_segment_ids.iter().copied(),
+                &policy,
             )?
+            .selected_page_segment_ids
             .into_iter()
-            .take(max_destroy_segments)
-            .map(|candidate| candidate.page_segment_id)
             .collect::<BTreeSet<_>>();
         self.gc_segments_before_with_live_refs_selected(
             retain_from_page_segment_id,
@@ -606,6 +663,62 @@ impl LocalPageStore {
             delayed_destroy,
             Some(selected),
         )
+    }
+
+    pub fn gc_policy_plan(
+        &self,
+        retain_from_page_segment_id: u64,
+        live_page_segment_ids: impl IntoIterator<Item = u64>,
+        policy: &PageStoreGcPolicy,
+    ) -> Result<PageStoreGcPolicyPlan, PageStoreError> {
+        let candidates =
+            self.gc_utility_candidates(retain_from_page_segment_id, live_page_segment_ids)?;
+        let mut selected_page_segment_ids = Vec::new();
+        let mut selected_physical_bytes = 0_u64;
+        let mut skipped_by_policy_count = 0_usize;
+        let mut skipped_by_budget_count = 0_usize;
+
+        for candidate in &candidates {
+            let utility_allowed = policy
+                .max_utility_score
+                .map(|max_score| candidate.utility_score <= max_score)
+                .unwrap_or(true);
+            let age_allowed = policy
+                .min_age_ms
+                .map(|min_age| candidate.age_ms.unwrap_or_default() >= min_age)
+                .unwrap_or(true);
+            if !utility_allowed || !age_allowed {
+                skipped_by_policy_count += 1;
+                continue;
+            }
+
+            if policy.max_destroy_segments > 0
+                && selected_page_segment_ids.len() >= policy.max_destroy_segments
+            {
+                skipped_by_budget_count += 1;
+                continue;
+            }
+            if policy.max_destroy_physical_bytes > 0
+                && selected_physical_bytes.saturating_add(candidate.bytes)
+                    > policy.max_destroy_physical_bytes
+            {
+                skipped_by_budget_count += 1;
+                continue;
+            }
+
+            selected_page_segment_ids.push(candidate.page_segment_id);
+            selected_physical_bytes = selected_physical_bytes.saturating_add(candidate.bytes);
+        }
+
+        Ok(PageStoreGcPolicyPlan {
+            retain_from_page_segment_id,
+            selected_page_segment_ids,
+            selected_physical_bytes,
+            candidate_count: candidates.len(),
+            skipped_by_policy_count,
+            skipped_by_budget_count,
+            candidates,
+        })
     }
 
     pub fn gc_utility_candidates(
@@ -2637,5 +2750,45 @@ mod tests {
             b"largest-stale-segment".len() as u64
         );
         assert!(delayed_reports[0].modified_unix_ms.is_some());
+    }
+
+    #[test]
+    fn policy_gc_plans_and_applies_byte_bounded_destroy() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalPageStore::new(dir.path());
+        store.install_segment(0, b"small").unwrap();
+        store.install_segment(1, b"largest-stale-segment").unwrap();
+        store.install_segment(2, b"live-segment").unwrap();
+        store.install_segment(3, b"current-segment").unwrap();
+
+        let policy = PageStoreGcPolicy {
+            max_destroy_segments: 2,
+            max_destroy_physical_bytes: b"small".len() as u64,
+            max_utility_score: Some(0),
+            min_age_ms: Some(0),
+        };
+        let plan = store.gc_policy_plan(3, [2_u64], &policy).unwrap();
+        assert_eq!(plan.retain_from_page_segment_id, 3);
+        assert_eq!(plan.candidate_count, 2);
+        assert_eq!(plan.selected_page_segment_ids, vec![0]);
+        assert_eq!(plan.selected_physical_bytes, b"small".len() as u64);
+        assert_eq!(plan.skipped_by_policy_count, 0);
+        assert_eq!(plan.skipped_by_budget_count, 1);
+        assert_eq!(
+            plan.candidates
+                .iter()
+                .map(|candidate| candidate.page_segment_id)
+                .collect::<Vec<_>>(),
+            vec![1, 0]
+        );
+
+        let report = store
+            .gc_segments_before_with_live_refs_policy(3, [2_u64], policy, true)
+            .unwrap();
+        assert_eq!(report.removed_page_segment_ids, vec![0]);
+        assert_eq!(report.delayed_destroy_page_segment_ids, vec![0]);
+        assert_eq!(report.retained_page_segment_ids, vec![1, 2, 3]);
+        assert_eq!(store.segment_ids().unwrap(), vec![1, 2, 3]);
+        assert_eq!(store.delayed_destroy_segment_ids().unwrap(), vec![0]);
     }
 }
