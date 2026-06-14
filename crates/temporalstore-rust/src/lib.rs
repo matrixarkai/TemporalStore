@@ -42,7 +42,7 @@ pub use e2e::{
     AsyncStorageJournal, EndToEndWorkflow, KillSwitches, ReplicaReadPolicy, RoutingClient,
     TemporalStoreClientOptions, WorkflowError, WorkflowProxy,
 };
-pub use engine::{RustStorageObservation, TemporalEngine};
+pub use engine::{RustStorageObservation, StorageRecoveryReport, TemporalEngine};
 pub use index_log::{IndexLogRecord, IndexLogStats, LocalIndexLogStore};
 pub use meta::{
     AckResponse, AddNamespaceRequest, AddTableRequest, FreezeStaleServersRequest, GetShardResponse,

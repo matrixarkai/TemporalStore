@@ -865,6 +865,20 @@ Production-readiness grouped pass focused on metadata-log corrupt-tail recovery:
 5. This narrows local crash recovery, but still does not replace external
    process crash testing or full object/page/slot replay from binary C++ logs.
 
+Production-readiness grouped pass focused on process-level storage crash recovery:
+
+1. C++ storage recovery must survive real process loss, not just in-process
+   reopens. Rust now has a `storage_crash_harness` binary that writes durable
+   data, rolls the page segment, then aborts the OS process.
+2. The recovery side runs in a separate process over the same cache/page/index
+   directories and verifies both values through the normal engine read path.
+3. The integration test asserts the recovered storage report across index bytes,
+   oplog count, index-log count, active page segments, live page segments,
+   readable page refs, and zone descriptors.
+4. This closes a local single-node process-abort recovery gap. It still does
+   not replace multi-process Raft/data-node chaos, disk-fault injection, or full
+   C++ object/page/slot replay.
+
 | Area | C++ TemporalStore | Rust Today | Missing |
 | --- | --- | --- | --- |
 | Protocol | brpc/thrift/protobuf APIs and extension protos | JSON/HTTP command API plus RESP adapter; C++ `ServerService`-named JSON route aliases for load/unload/execute/batch/apply-data-raft-log/config/info/stats/stream/update-membership/ping; C++ `MasterService`-named JSON route aliases for implemented table/server control-plane operations including table update/delete; brpc/thrift intentionally excluded from the Rust parity target | SDK compatibility for the supported Rust HTTP/RESP API; no brpc/thrift parity target now |
@@ -888,7 +902,7 @@ Production-readiness grouped pass focused on metadata-log corrupt-tail recovery:
 | Redis | not the main C++ wire API; C++ server also exposes admin commands such as `INFO`, `CONFIG`, `SLAVEOF`, and `PARTITION` | useful RESP compatibility, including `SET NX/XX GET EX/PX`, hash/set commands, feature commands, C++-style `INFO`/`CONFIG`/`SLAVEOF`/`AUTH`/`BGSAVE`/`PARTITION` smoke commands, and CRC64 slot/hash helpers | sorted sets/lists if needed; real partition-manager backing for admin commands |
 | Metrics | production metrics/logging | Prometheus `/metrics` for shard/cache/page/oplog/runtime/object-manager/partition plus snapshot metric names; local raft metrics renderer | dashboards and alerts |
 | Deployment | internal production environment | Docker and existing-EKS Terraform skeleton | service discovery, autoscale controller, rolling upgrade, runbooks, auth/TLS |
-| Testing | mature internal tests and production history | local unit/integration/compat tests, storage recovery report tests covering oplog/index-log/page stream/zone manifest reopen and missing-manifest rebuild | multi-process chaos, broader crash recovery, perf benchmarks, C++ golden corpus |
+| Testing | mature internal tests and production history | local unit/integration/compat tests, storage recovery report tests covering oplog/index-log/page stream/zone manifest reopen and missing-manifest rebuild, process-level local storage abort/recover harness | multi-process chaos, disk-fault crash recovery, perf benchmarks, C++ golden corpus |
 
 ## P0 Still Missing Before Distributed Alpha
 
@@ -897,7 +911,7 @@ These cannot be honestly marked done yet:
 - replace local Raft consensus model with OpenRaft or raft-rs FSM/storage integration
 - replace the in-process HTTP metaserver Raft backend with networked multi-process metaserver Raft
 - make shard membership changes durable through metaserver Raft
-- broaden crash-safe WAL/index/page/zone recovery tests across external process crashes
+- broaden crash-safe WAL/index/page/zone recovery tests across disk faults and multi-process cluster crashes
 - wire engine snapshots into the full production freeze/flush/install lifecycle
 - expand heartbeat/load-report payloads beyond local partition stats into the full C++ server
   heartbeat contract
@@ -920,7 +934,7 @@ Do not claim full C++ parity yet.
 The next best implementation chunks are:
 
 1. Extend the new durable zone manifest into a full object/page/slot storage lifecycle and merged dump/load policy.
-2. Broaden durable WAL/recovery tests around oplog + index-log + page stream + zone manifest into process-level crash/fault cases.
+2. Broaden durable WAL/recovery tests around oplog + index-log + page stream + zone manifest into disk-fault and multi-process cluster crash cases.
 3. Replace the local Raft model with OpenRaft or raft-rs.
 4. Connect metaserver table topology and data-node heartbeat reports to real placement/rebalance workflows.
 5. Port IPS and Risk semantics from the C++ protos as separate modules.
