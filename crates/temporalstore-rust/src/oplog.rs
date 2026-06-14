@@ -129,6 +129,7 @@ impl LocalOplogStore {
         max_bytes: u64,
     ) -> Result<Vec<(u64, Vec<u8>)>, OplogError> {
         let mut inner = self.inner.lock().expect("oplog lock poisoned");
+        let _ = last_sequence_at(&inner.root, shard_id)?;
         let path = oplog_path(&inner.root, shard_id);
         let mut file = File::open(path)?;
         file.seek(SeekFrom::Start(start_offset))?;
@@ -172,6 +173,7 @@ impl LocalOplogStore {
         }
 
         let bytes_before = path.metadata()?.len();
+        let _ = last_sequence_at(&inner.root, shard_id)?;
         let file = File::open(&path)?;
         let reader = BufReader::new(file);
         let mut records_before = 0usize;
@@ -236,16 +238,35 @@ fn last_sequence_at(root: &Path, shard_id: ShardId) -> Result<u64, OplogError> {
     if !path.exists() {
         return Ok(0);
     }
-    let file = File::open(path)?;
-    let reader = BufReader::new(file);
+    let file = OpenOptions::new().read(true).write(true).open(&path)?;
+    let mut reader = BufReader::new(file.try_clone()?);
     let mut last = 0;
-    for line in reader.lines() {
-        let line = line?;
-        if line.trim().is_empty() {
+    let mut offset = 0_u64;
+    let mut good_offset = 0_u64;
+    loop {
+        let mut line = Vec::new();
+        let read = reader.read_until(b'\n', &mut line)?;
+        if read == 0 {
+            break;
+        }
+        offset = offset.saturating_add(read as u64);
+        if !line.ends_with(b"\n") {
+            break;
+        }
+        if line.iter().all(|byte| byte.is_ascii_whitespace()) {
+            good_offset = offset;
             continue;
         }
-        let record: OplogRecord = serde_json::from_str(&line)?;
+        let Ok(record) = serde_json::from_slice::<OplogRecord>(&line) else {
+            break;
+        };
         last = last.max(record.sequence);
+        good_offset = offset;
+    }
+    if good_offset < offset || good_offset < file.metadata()?.len() {
+        file.set_len(good_offset)?;
+        file.sync_all()?;
+        sync_parent_dir(&path)?;
     }
     Ok(last)
 }
@@ -311,5 +332,52 @@ mod tests {
             )
             .unwrap();
         assert_eq!(store.stats(7).last_sequence, 4);
+    }
+
+    #[test]
+    fn corrupt_tail_is_truncated_and_append_resumes_after_last_valid_oplog_sequence() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalOplogStore::new(dir.path());
+        store
+            .append(
+                7,
+                Command::StringSet {
+                    key: "a".to_string(),
+                    value: b"a".to_vec(),
+                },
+            )
+            .unwrap();
+        store
+            .append(
+                7,
+                Command::StringSet {
+                    key: "b".to_string(),
+                    value: b"b".to_vec(),
+                },
+            )
+            .unwrap();
+        {
+            let mut file = OpenOptions::new()
+                .append(true)
+                .open(oplog_path(dir.path(), 7))
+                .unwrap();
+            file.write_all(b"{\"shard_id\":7,\"sequence\":3").unwrap();
+            file.sync_all().unwrap();
+        }
+
+        let reopened = LocalOplogStore::new(dir.path());
+        assert_eq!(reopened.stats(7).last_sequence, 2);
+        assert_eq!(reopened.scan(7, 0, u64::MAX, u64::MAX).unwrap().len(), 2);
+        let record = reopened
+            .append(
+                7,
+                Command::StringSet {
+                    key: "c".to_string(),
+                    value: b"c".to_vec(),
+                },
+            )
+            .unwrap();
+        assert_eq!(record.sequence, 3);
+        assert_eq!(reopened.scan(7, 0, u64::MAX, u64::MAX).unwrap().len(), 3);
     }
 }
