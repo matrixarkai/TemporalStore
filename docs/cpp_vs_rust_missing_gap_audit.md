@@ -1598,6 +1598,11 @@ planning:
     checkpoint whose oplog boundary is at or before a known follower replay
     cursor, preventing checkpoint index/page payload deletion while a follower
     may still need that bootstrap generation.
+21. Closed a merged dump/load generation-safety gap: slot dump manifests now
+    carry deterministic generation ids plus parent manifest lineage, validation
+    rejects generation mismatches, and install persists accepted generations so
+    coherent same-boundary forked manifests for overlapping slots are rejected
+    instead of silently replacing an already-installed dump generation.
 
 Eight storage audit passes completed against C++ storage code:
 

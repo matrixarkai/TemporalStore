@@ -229,6 +229,10 @@ pub struct SlotDumpManifest {
     pub version: u32,
     pub shard_id: ShardId,
     pub manifest_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub dump_generation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_manifest_id: Option<String>,
     pub created_unix_ms: u64,
     pub slot_ids: Vec<u32>,
     pub page_segment_ids: Vec<u64>,
@@ -893,10 +897,14 @@ impl TemporalEngine {
         let index_sha256 = sha256_hex_bytes(&index_bytes);
         let created_unix_ms = now_ms();
         let manifest_id = format!("{shard_id}-{index_log_sequence}-{created_unix_ms}");
+        let parent_manifest_id = latest_slot_dump_manifest_at(&self.index_dir, shard_id)
+            .map(|manifest| manifest.manifest_id);
         let mut manifest = SlotDumpManifest {
-            version: 1,
+            version: 2,
             shard_id,
             manifest_id,
+            dump_generation_id: String::new(),
+            parent_manifest_id,
             created_unix_ms,
             slot_ids: slot_summaries
                 .iter()
@@ -922,6 +930,7 @@ impl TemporalEngine {
             index_sha256,
             checksum: String::new(),
         };
+        manifest.dump_generation_id = slot_dump_generation_id(&manifest);
         manifest.checksum = slot_dump_manifest_checksum(&manifest)?;
         self.persist_slot_dump_manifest(&manifest)
             .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
@@ -939,6 +948,12 @@ impl TemporalEngine {
             return Err(Status::error(
                 "slot_dump_checksum_mismatch",
                 "slot dump manifest checksum mismatch",
+            ));
+        }
+        if manifest.version >= 2 && manifest.dump_generation_id.is_empty() {
+            return Err(Status::error(
+                "slot_dump_missing_generation",
+                "slot dump manifest is missing dump generation id",
             ));
         }
         if manifest.index_bytes.is_empty() {
@@ -1011,6 +1026,14 @@ impl TemporalEngine {
                 ),
             ));
         }
+        if !manifest.dump_generation_id.is_empty()
+            && manifest.dump_generation_id != slot_dump_generation_id(manifest)
+        {
+            return Err(Status::error(
+                "slot_dump_generation_mismatch",
+                "slot dump manifest generation id does not match its sequence, slots, pages, and index checksum",
+            ));
+        }
         let mut unreadable_page_refs = 0usize;
         let mut unreadable_page_bytes = 0u64;
         for entry in live_page_entries {
@@ -1032,6 +1055,7 @@ impl TemporalEngine {
 
     pub fn install_slot_dump_manifest(&self, manifest: &SlotDumpManifest) -> Result<(), Status> {
         self.validate_slot_dump_manifest(manifest)?;
+        self.validate_slot_dump_generation_for_install(manifest)?;
         let current_index_sequence = self.index_log_store.stats(manifest.shard_id).last_sequence;
         if current_index_sequence > manifest.index_log_sequence {
             return Err(Status::error(
@@ -1057,6 +1081,8 @@ impl TemporalEngine {
                 .expect("engine lock poisoned")
                 .insert(manifest.shard_id, restored);
         }
+        self.persist_slot_dump_manifest(manifest)
+            .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;
         Ok(())
     }
 
@@ -2124,6 +2150,41 @@ impl TemporalEngine {
         fs::write(path, bytes)
     }
 
+    fn validate_slot_dump_generation_for_install(
+        &self,
+        manifest: &SlotDumpManifest,
+    ) -> Result<(), Status> {
+        if manifest.dump_generation_id.is_empty() {
+            return Ok(());
+        }
+        let requested_slots = manifest.slot_ids.iter().copied().collect::<BTreeSet<_>>();
+        for existing in self.list_slot_dump_manifests(manifest.shard_id) {
+            if existing.manifest_id == manifest.manifest_id
+                || existing.dump_generation_id.is_empty()
+                || existing.dump_generation_id == manifest.dump_generation_id
+            {
+                continue;
+            }
+            let existing_slots = existing.slot_ids.iter().copied().collect::<BTreeSet<_>>();
+            let overlaps = requested_slots.is_empty()
+                || existing_slots.is_empty()
+                || !requested_slots.is_disjoint(&existing_slots);
+            if overlaps
+                && existing.index_log_sequence >= manifest.index_log_sequence
+                && existing.oplog_sequence >= manifest.oplog_sequence
+            {
+                return Err(Status::error(
+                    "slot_dump_generation_conflict",
+                    format!(
+                        "manifest generation {} conflicts with installed generation {} for overlapping slots",
+                        manifest.dump_generation_id, existing.dump_generation_id
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn load_index(&self, shard_id: ShardId) -> Option<ShardState> {
         let bytes = fs::read(self.index_path(shard_id)).ok()?;
         serde_json::from_slice(&bytes).ok()
@@ -2348,6 +2409,25 @@ fn slot_dump_manifest_checksum(manifest: &SlotDumpManifest) -> Result<String, St
     serde_json::to_vec(&payload)
         .map(|bytes| sha256_hex_bytes(&bytes))
         .map_err(|err| Status::error("slot_dump_checksum_failed", err.to_string()))
+}
+
+fn slot_dump_generation_id(manifest: &SlotDumpManifest) -> String {
+    let mut digest = Sha256::new();
+    digest.update(manifest.shard_id.to_le_bytes());
+    digest.update(manifest.oplog_sequence.to_le_bytes());
+    digest.update(manifest.index_log_sequence.to_le_bytes());
+    for slot_id in &manifest.slot_ids {
+        digest.update(slot_id.to_le_bytes());
+    }
+    for page_segment_id in &manifest.page_segment_ids {
+        digest.update(page_segment_id.to_le_bytes());
+    }
+    digest.update(manifest.index_sha256.as_bytes());
+    digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn sha256_hex_bytes(bytes: &[u8]) -> String {
@@ -8861,6 +8941,72 @@ mod tests {
                 .unwrap_err()
                 .code,
             "slot_dump_stale_manifest"
+        );
+    }
+
+    #[test]
+    fn slot_dump_manifest_rejects_generation_mismatch_and_conflicts() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "generation".to_string(),
+                value: b"v1".to_vec(),
+            },
+        });
+        let manifest = engine
+            .create_slot_dump_manifest(1, Vec::new())
+            .expect("manifest should persist");
+        assert_eq!(manifest.version, 2);
+        assert!(!manifest.dump_generation_id.is_empty());
+
+        let mut mismatched = manifest.clone();
+        mismatched.dump_generation_id = "wrong-generation".to_string();
+        mismatched.checksum = slot_dump_manifest_checksum(&mismatched).unwrap();
+        assert_eq!(
+            engine
+                .validate_slot_dump_manifest(&mismatched)
+                .unwrap_err()
+                .code,
+            "slot_dump_generation_mismatch"
+        );
+
+        let restore_engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("restore-cache"),
+            dir.path().join("pages"),
+            dir.path().join("restore-indexes"),
+        );
+        restore_engine.load_shard(1);
+        restore_engine
+            .install_slot_dump_manifest(&manifest)
+            .expect("first generation should install");
+
+        let mut fork = manifest.clone();
+        let extra_slot = fork
+            .slot_ids
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or_default()
+            .saturating_add(1);
+        fork.slot_ids.push(extra_slot);
+        fork.dump_generation_id = slot_dump_generation_id(&fork);
+        fork.manifest_id = format!("{}-fork", fork.manifest_id);
+        fork.checksum = slot_dump_manifest_checksum(&fork).unwrap();
+        assert_eq!(
+            restore_engine
+                .install_slot_dump_manifest(&fork)
+                .unwrap_err()
+                .code,
+            "slot_dump_generation_conflict"
         );
     }
 
