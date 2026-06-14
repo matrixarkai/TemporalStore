@@ -91,11 +91,21 @@ pub struct PageStoreGcReport {
     pub removed_page_segment_ids: Vec<u64>,
     pub retained_page_segment_ids: Vec<u64>,
     #[serde(default)]
+    pub removed_physical_bytes: u64,
+    #[serde(default)]
+    pub retained_physical_bytes: u64,
+    #[serde(default)]
     pub delayed_destroy_page_segment_ids: Vec<u64>,
+    #[serde(default)]
+    pub delayed_destroy_physical_bytes: u64,
     #[serde(default)]
     pub retained_live_page_segment_ids: Vec<u64>,
     #[serde(default)]
+    pub retained_live_physical_bytes: u64,
+    #[serde(default)]
     pub retained_current_page_segment_ids: Vec<u64>,
+    #[serde(default)]
+    pub retained_current_physical_bytes: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -619,7 +629,16 @@ impl LocalPageStore {
         let mut delayed_destroy_ids = Vec::new();
         let mut retained_live = Vec::new();
         let mut retained_current = Vec::new();
+        let mut removed_physical_bytes = 0;
+        let mut retained_physical_bytes = 0;
+        let mut delayed_destroy_physical_bytes = 0;
+        let mut retained_live_physical_bytes = 0;
+        let mut retained_current_physical_bytes = 0;
         for page_segment_id in segment_ids_at(&inner.root)? {
+            let segment_physical_bytes = segment_path(&inner.root, page_segment_id)
+                .metadata()
+                .map(|metadata| metadata.len())
+                .unwrap_or_default();
             let below_retention_floor = page_segment_id < retain_from_page_segment_id;
             let is_current = page_segment_id == current_page_segment_id;
             let is_live = live_page_segment_ids.contains(&page_segment_id);
@@ -628,6 +647,7 @@ impl LocalPageStore {
                 .map(|selected| selected.contains(&page_segment_id))
                 .unwrap_or(true);
             if below_retention_floor && !is_current && !is_live && is_selected {
+                removed_physical_bytes += segment_physical_bytes;
                 if delayed_destroy {
                     move_segment_to_delayed_destroy(&inner.root, page_segment_id)?;
                     set_zone_state(
@@ -636,6 +656,7 @@ impl LocalPageStore {
                         PageStoreZoneState::DelayedDestroy,
                     );
                     delayed_destroy_ids.push(page_segment_id);
+                    delayed_destroy_physical_bytes += segment_physical_bytes;
                 } else {
                     fs::remove_file(segment_path(&inner.root, page_segment_id))?;
                     set_zone_state(
@@ -648,10 +669,13 @@ impl LocalPageStore {
             } else {
                 if below_retention_floor && is_current {
                     retained_current.push(page_segment_id);
+                    retained_current_physical_bytes += segment_physical_bytes;
                 }
                 if below_retention_floor && is_live {
                     retained_live.push(page_segment_id);
+                    retained_live_physical_bytes += segment_physical_bytes;
                 }
+                retained_physical_bytes += segment_physical_bytes;
                 retained.push(page_segment_id);
             }
         }
@@ -660,9 +684,14 @@ impl LocalPageStore {
             retain_from_page_segment_id,
             removed_page_segment_ids: removed,
             retained_page_segment_ids: retained,
+            removed_physical_bytes,
+            retained_physical_bytes,
             delayed_destroy_page_segment_ids: delayed_destroy_ids,
+            delayed_destroy_physical_bytes,
             retained_live_page_segment_ids: retained_live,
+            retained_live_physical_bytes,
             retained_current_page_segment_ids: retained_current,
+            retained_current_physical_bytes,
         })
     }
 
@@ -1724,6 +1753,11 @@ mod tests {
         let report = store.gc_segments_before(2).unwrap();
         assert_eq!(report.removed_page_segment_ids, vec![0, 1]);
         assert_eq!(report.retained_page_segment_ids, vec![2]);
+        assert_eq!(
+            report.removed_physical_bytes,
+            (b"current".len() + b"old".len()) as u64
+        );
+        assert_eq!(report.retained_physical_bytes, b"keep".len() as u64);
         assert!(report.retained_current_page_segment_ids.is_empty());
         assert!(report.retained_live_page_segment_ids.is_empty());
         assert_eq!(store.segment_ids().unwrap(), vec![2]);
@@ -2193,8 +2227,17 @@ mod tests {
         let report = store.gc_segments_before_with_live_refs(3, [1_u64]).unwrap();
         assert_eq!(report.removed_page_segment_ids, vec![0, 2]);
         assert_eq!(report.retained_page_segment_ids, vec![1, 3]);
+        assert_eq!(
+            report.removed_physical_bytes,
+            (b"current".len() + b"stale".len()) as u64
+        );
+        assert_eq!(
+            report.retained_physical_bytes,
+            (b"live".len() + b"keep".len()) as u64
+        );
         assert!(report.retained_current_page_segment_ids.is_empty());
         assert_eq!(report.retained_live_page_segment_ids, vec![1]);
+        assert_eq!(report.retained_live_physical_bytes, b"live".len() as u64);
         assert_eq!(store.segment_ids().unwrap(), vec![1, 3]);
     }
 
@@ -2213,8 +2256,17 @@ mod tests {
 
         assert_eq!(report.removed_page_segment_ids, vec![0, 1]);
         assert_eq!(report.delayed_destroy_page_segment_ids, vec![0, 1]);
+        assert_eq!(
+            report.removed_physical_bytes,
+            (b"current".len() + b"stale".len()) as u64
+        );
+        assert_eq!(
+            report.delayed_destroy_physical_bytes,
+            report.removed_physical_bytes
+        );
         assert_eq!(report.retained_page_segment_ids, vec![2, 3]);
         assert_eq!(report.retained_live_page_segment_ids, vec![2]);
+        assert_eq!(report.retained_live_physical_bytes, b"live".len() as u64);
         assert_eq!(store.segment_ids().unwrap(), vec![2, 3]);
         assert_eq!(store.delayed_destroy_segment_ids().unwrap(), vec![0, 1]);
 
@@ -2249,6 +2301,7 @@ mod tests {
             .gc_segments_before_with_live_refs_utility(3, [2_u64], 0, true)
             .unwrap();
         assert!(no_op.removed_page_segment_ids.is_empty());
+        assert_eq!(no_op.removed_physical_bytes, 0);
         assert_eq!(store.segment_ids().unwrap(), vec![0, 1, 2, 3]);
 
         let report = store
@@ -2256,8 +2309,20 @@ mod tests {
             .unwrap();
         assert_eq!(report.removed_page_segment_ids, vec![1]);
         assert_eq!(report.delayed_destroy_page_segment_ids, vec![1]);
+        assert_eq!(
+            report.removed_physical_bytes,
+            b"largest-stale-segment".len() as u64
+        );
+        assert_eq!(
+            report.delayed_destroy_physical_bytes,
+            b"largest-stale-segment".len() as u64
+        );
         assert_eq!(report.retained_page_segment_ids, vec![0, 2, 3]);
         assert_eq!(report.retained_live_page_segment_ids, vec![2]);
+        assert_eq!(
+            report.retained_live_physical_bytes,
+            b"live-segment".len() as u64
+        );
         assert_eq!(store.segment_ids().unwrap(), vec![0, 2, 3]);
         assert_eq!(store.delayed_destroy_segment_ids().unwrap(), vec![1]);
     }
