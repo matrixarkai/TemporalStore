@@ -1608,6 +1608,11 @@ planning:
     compaction refuses live page refs whose embedded object id or routing slot
     contradicts the index owner and preserves owner metadata when rewriting
     live refs into the compacted segment.
+23. Closed an atomic slot dump install lifecycle gap: slot dump install now
+    persists prepare/install/commit marker files, committed installs are not
+    reported as interrupted, and recovery boundary reports surface stranded
+    prepare/install markers so partial dump-load installs are visible instead
+    of being indistinguishable from ordinary manifest history.
 
 Eight storage audit passes completed against C++ storage code:
 

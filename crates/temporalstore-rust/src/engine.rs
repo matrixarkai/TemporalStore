@@ -265,6 +265,16 @@ pub struct SlotDumpManifest {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlotDumpInstallMarker {
+    pub shard_id: ShardId,
+    pub manifest_id: String,
+    pub phase: String,
+    pub oplog_sequence: u64,
+    pub index_log_sequence: u64,
+    pub created_unix_ms: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageLifecyclePlan {
     pub shard_id: ShardId,
     pub dirty_slots: Vec<u32>,
@@ -307,6 +317,8 @@ pub struct StorageRecoveryBoundaryReport {
     pub orphan_page_segment_ids: Vec<u64>,
     pub missing_dump_slot_ids: Vec<u32>,
     pub stale_index_page_refs: Vec<StorageRecoveryPageError>,
+    #[serde(default)]
+    pub interrupted_slot_dump_installs: Vec<SlotDumpInstallMarker>,
     #[serde(default)]
     pub owner_mismatch_page_refs: Vec<StorageRecoveryPageOwnerMismatch>,
     #[serde(default)]
@@ -960,6 +972,10 @@ impl TemporalEngine {
         list_slot_dump_manifests_at(&self.index_dir, shard_id).unwrap_or_default()
     }
 
+    pub fn interrupted_slot_dump_installs(&self, shard_id: ShardId) -> Vec<SlotDumpInstallMarker> {
+        interrupted_slot_dump_installs_at(&self.index_dir, shard_id).unwrap_or_default()
+    }
+
     pub fn validate_slot_dump_manifest(&self, manifest: &SlotDumpManifest) -> Result<(), Status> {
         let expected = slot_dump_manifest_checksum(manifest)
             .map_err(|_| Status::error("slot_dump_corrupt", "slot dump manifest is corrupt"))?;
@@ -1087,7 +1103,11 @@ impl TemporalEngine {
         }
         let restored = serde_json::from_slice::<ShardState>(&manifest.index_bytes)
             .map_err(|err| Status::error("slot_dump_invalid_index", err.to_string()))?;
+        self.persist_slot_dump_install_marker(manifest, "prepare")
+            .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;
         self.persist_index_bytes(manifest.shard_id, &manifest.index_bytes)
+            .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;
+        self.persist_slot_dump_install_marker(manifest, "install")
             .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;
         if self
             .shards
@@ -1101,6 +1121,8 @@ impl TemporalEngine {
                 .insert(manifest.shard_id, restored);
         }
         self.persist_slot_dump_manifest(manifest)
+            .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;
+        self.persist_slot_dump_install_marker(manifest, "commit")
             .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;
         Ok(())
     }
@@ -1308,6 +1330,7 @@ impl TemporalEngine {
             .map(|summary| summary.routing_slot)
             .filter(|slot| !latest_dump_slots.contains(slot))
             .collect::<Vec<_>>();
+        let interrupted_slot_dump_installs = self.interrupted_slot_dump_installs(shard_id);
         let recovery = self.storage_recovery_report_without_boundary(shard_id);
         let corrupt_page_segment_ids = recovery
             .page_segment_reports
@@ -1333,6 +1356,7 @@ impl TemporalEngine {
             orphan_page_segment_ids,
             missing_dump_slot_ids,
             stale_index_page_refs: recovery.unreadable_page_refs,
+            interrupted_slot_dump_installs,
             owner_mismatch_page_refs: recovery.owner_mismatch_page_refs,
             missing_owner_page_refs: recovery.missing_owner_page_refs,
             corrupt_page_segment_ids,
@@ -2232,6 +2256,24 @@ impl TemporalEngine {
         fs::write(path, bytes)
     }
 
+    fn persist_slot_dump_install_marker(
+        &self,
+        manifest: &SlotDumpManifest,
+        phase: &str,
+    ) -> Result<(), std::io::Error> {
+        write_slot_dump_install_marker(
+            &self.index_dir,
+            &SlotDumpInstallMarker {
+                shard_id: manifest.shard_id,
+                manifest_id: manifest.manifest_id.clone(),
+                phase: phase.to_string(),
+                oplog_sequence: manifest.oplog_sequence,
+                index_log_sequence: manifest.index_log_sequence,
+                created_unix_ms: now_ms(),
+            },
+        )
+    }
+
     fn validate_slot_dump_generation_for_install(
         &self,
         manifest: &SlotDumpManifest,
@@ -2445,6 +2487,98 @@ fn slot_dump_manifest_path(
     manifest_id: &str,
 ) -> PathBuf {
     slot_dump_manifest_dir(index_dir, shard_id).join(format!("{manifest_id}.json"))
+}
+
+fn slot_dump_install_marker_path(
+    index_dir: &std::path::Path,
+    marker: &SlotDumpInstallMarker,
+) -> PathBuf {
+    slot_dump_manifest_dir(index_dir, marker.shard_id).join(format!(
+        "{}.{}.{}.marker",
+        marker.manifest_id, marker.phase, marker.created_unix_ms
+    ))
+}
+
+fn write_slot_dump_install_marker(
+    index_dir: &std::path::Path,
+    marker: &SlotDumpInstallMarker,
+) -> Result<(), std::io::Error> {
+    let path = slot_dump_install_marker_path(index_dir, marker);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let bytes = serde_json::to_vec_pretty(marker)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+    fs::write(path, bytes)
+}
+
+fn list_slot_dump_install_markers_at(
+    index_dir: &std::path::Path,
+    shard_id: ShardId,
+) -> Result<Vec<SlotDumpInstallMarker>, std::io::Error> {
+    let dir = slot_dump_manifest_dir(index_dir, shard_id);
+    let mut markers = Vec::new();
+    if !dir.exists() {
+        return Ok(markers);
+    }
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        if !entry
+            .path()
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext == "marker")
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let marker = serde_json::from_slice::<SlotDumpInstallMarker>(&fs::read(entry.path())?)
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+        markers.push(marker);
+    }
+    markers.sort_by_key(|marker| {
+        (
+            marker.index_log_sequence,
+            marker.created_unix_ms,
+            slot_dump_install_phase_rank(&marker.phase),
+        )
+    });
+    Ok(markers)
+}
+
+fn interrupted_slot_dump_installs_at(
+    index_dir: &std::path::Path,
+    shard_id: ShardId,
+) -> Result<Vec<SlotDumpInstallMarker>, std::io::Error> {
+    let mut latest_by_manifest = BTreeMap::<String, SlotDumpInstallMarker>::new();
+    for marker in list_slot_dump_install_markers_at(index_dir, shard_id)? {
+        let replace = latest_by_manifest
+            .get(&marker.manifest_id)
+            .map(|existing| {
+                slot_dump_install_phase_rank(&marker.phase)
+                    > slot_dump_install_phase_rank(&existing.phase)
+                    || (slot_dump_install_phase_rank(&marker.phase)
+                        == slot_dump_install_phase_rank(&existing.phase)
+                        && marker.created_unix_ms > existing.created_unix_ms)
+            })
+            .unwrap_or(true);
+        if replace {
+            latest_by_manifest.insert(marker.manifest_id.clone(), marker);
+        }
+    }
+    Ok(latest_by_manifest
+        .into_values()
+        .filter(|marker| marker.phase != "commit")
+        .collect())
+}
+
+fn slot_dump_install_phase_rank(phase: &str) -> u8 {
+    match phase {
+        "prepare" => 1,
+        "install" => 2,
+        "commit" => 3,
+        _ => 0,
+    }
 }
 
 fn list_slot_dump_manifests_at(
@@ -9079,6 +9213,11 @@ mod tests {
         restore_engine
             .install_slot_dump_manifest(&manifest)
             .expect("manifest should install");
+        assert!(restore_engine.interrupted_slot_dump_installs(1).is_empty());
+        let markers = list_slot_dump_install_markers_at(&restore_engine.index_dir, 1).unwrap();
+        assert!(markers.iter().any(|marker| marker.phase == "prepare"));
+        assert!(markers.iter().any(|marker| marker.phase == "install"));
+        assert!(markers.iter().any(|marker| marker.phase == "commit"));
         let response = restore_engine.execute(ExecuteRequest {
             shard_id: 1,
             command: Command::StringGet {
@@ -9117,6 +9256,46 @@ mod tests {
                 .code,
             "slot_dump_stale_manifest"
         );
+    }
+
+    #[test]
+    fn slot_dump_install_markers_report_interrupted_prepare() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "marker".to_string(),
+                value: b"value".to_vec(),
+            },
+        });
+        let manifest = engine
+            .create_slot_dump_manifest(1, Vec::new())
+            .expect("manifest should persist");
+        write_slot_dump_install_marker(
+            &engine.index_dir,
+            &SlotDumpInstallMarker {
+                shard_id: manifest.shard_id,
+                manifest_id: "interrupted".to_string(),
+                phase: "prepare".to_string(),
+                oplog_sequence: manifest.oplog_sequence,
+                index_log_sequence: manifest.index_log_sequence,
+                created_unix_ms: now_ms(),
+            },
+        )
+        .unwrap();
+
+        let interrupted = engine.interrupted_slot_dump_installs(1);
+        assert_eq!(interrupted.len(), 1);
+        assert_eq!(interrupted[0].phase, "prepare");
+        let boundary = engine.storage_recovery_boundary_report(1);
+        assert_eq!(boundary.interrupted_slot_dump_installs, interrupted);
     }
 
     #[test]
