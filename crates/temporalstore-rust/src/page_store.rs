@@ -119,6 +119,8 @@ pub struct PageStoreGcUtilityCandidate {
 pub struct PageStoreDelayedDestroySegmentReport {
     pub page_segment_id: u64,
     pub physical_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified_unix_ms: Option<u64>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,6 +145,10 @@ pub struct PageStoreZoneDescriptor {
     pub state: PageStoreZoneState,
     pub physical_bytes: u64,
     pub logical_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_unix_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_unix_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_page_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -343,8 +349,10 @@ impl LocalPageStore {
         let file = File::create(&path)?;
         file.sync_all()?;
         sync_parent_dir(&path)?;
+        let transition_unix_ms = now_unix_ms();
         if let Some(previous) = inner.zones.get_mut(&previous_page_segment_id) {
             previous.state = PageStoreZoneState::Sealed;
+            previous.updated_unix_ms = Some(transition_unix_ms);
         }
         let new_zone = PageStoreZoneDescriptor {
             zone_id: zone_id_for_segment(inner.page_segment_id),
@@ -352,6 +360,8 @@ impl LocalPageStore {
             state: PageStoreZoneState::Active,
             physical_bytes: 0,
             logical_bytes: 0,
+            created_unix_ms: Some(transition_unix_ms),
+            updated_unix_ms: Some(transition_unix_ms),
             first_page_id: None,
             last_page_id: None,
         };
@@ -472,6 +482,7 @@ impl LocalPageStore {
             inner.next_page_id = inner.next_page_id.max(max_page_id.saturating_add(1));
         }
         let is_current_segment = page_segment_id == inner.page_segment_id;
+        let now = now_unix_ms();
         inner.zones.insert(
             page_segment_id,
             PageStoreZoneDescriptor {
@@ -484,6 +495,12 @@ impl LocalPageStore {
                 },
                 physical_bytes: bytes.len() as u64,
                 logical_bytes: zone_summary.logical_bytes,
+                created_unix_ms: Some(
+                    file_modified_unix_ms(&path)
+                        .or_else(|| file_created_unix_ms(&path))
+                        .unwrap_or(now),
+                ),
+                updated_unix_ms: Some(now),
                 first_page_id: zone_summary.first_page_id,
                 last_page_id: zone_summary.last_page_id,
             },
@@ -873,6 +890,10 @@ fn rebuild_zone_manifest_at(
                 },
                 physical_bytes: bytes.len() as u64,
                 logical_bytes: summary.logical_bytes,
+                created_unix_ms: file_created_unix_ms(&path)
+                    .or_else(|| file_modified_unix_ms(&path)),
+                updated_unix_ms: file_modified_unix_ms(&path)
+                    .or_else(|| file_created_unix_ms(&path)),
                 first_page_id: summary.first_page_id,
                 last_page_id: summary.last_page_id,
             },
@@ -881,13 +902,19 @@ fn rebuild_zone_manifest_at(
     for delayed in delayed_destroy_segment_reports_at(root)? {
         zones
             .entry(delayed.page_segment_id)
-            .and_modify(|zone| zone.state = PageStoreZoneState::DelayedDestroy)
+            .and_modify(|zone| {
+                zone.state = PageStoreZoneState::DelayedDestroy;
+                zone.updated_unix_ms = delayed.modified_unix_ms;
+                zone.physical_bytes = delayed.physical_bytes;
+            })
             .or_insert(PageStoreZoneDescriptor {
                 zone_id: zone_id_for_segment(delayed.page_segment_id),
                 page_segment_id: delayed.page_segment_id,
                 state: PageStoreZoneState::DelayedDestroy,
                 physical_bytes: delayed.physical_bytes,
                 logical_bytes: 0,
+                created_unix_ms: delayed.modified_unix_ms,
+                updated_unix_ms: delayed.modified_unix_ms,
                 first_page_id: None,
                 last_page_id: None,
             });
@@ -992,15 +1019,21 @@ fn ensure_zone_descriptor(
             state,
             physical_bytes,
             logical_bytes: physical_bytes,
+            created_unix_ms: file_created_unix_ms(&segment_path(root, page_segment_id))
+                .or_else(|| file_modified_unix_ms(&segment_path(root, page_segment_id))),
+            updated_unix_ms: file_modified_unix_ms(&segment_path(root, page_segment_id)),
             first_page_id: None,
             last_page_id: None,
         }
     });
+    let transition_unix_ms = now_unix_ms();
     for zone in zones.values_mut() {
         if zone.page_segment_id == page_segment_id {
             zone.state = state;
+            zone.updated_unix_ms = Some(transition_unix_ms);
         } else if zone.state == PageStoreZoneState::Active {
             zone.state = PageStoreZoneState::Sealed;
+            zone.updated_unix_ms = Some(transition_unix_ms);
         }
     }
 }
@@ -1020,12 +1053,19 @@ fn upsert_zone_after_append(
             state: PageStoreZoneState::Active,
             physical_bytes: 0,
             logical_bytes: 0,
+            created_unix_ms: Some(now_unix_ms()),
+            updated_unix_ms: Some(now_unix_ms()),
             first_page_id: Some(page_id),
             last_page_id: Some(page_id),
         });
+    let updated_unix_ms = now_unix_ms();
     zone.state = PageStoreZoneState::Active;
     zone.physical_bytes = physical_bytes;
     zone.logical_bytes = zone.logical_bytes.saturating_add(logical_bytes_written);
+    if zone.created_unix_ms.is_none() {
+        zone.created_unix_ms = Some(updated_unix_ms);
+    }
+    zone.updated_unix_ms = Some(updated_unix_ms);
     zone.first_page_id = Some(
         zone.first_page_id
             .map_or(page_id, |first| first.min(page_id)),
@@ -1040,13 +1080,18 @@ fn set_zone_state(
 ) {
     zones
         .entry(page_segment_id)
-        .and_modify(|zone| zone.state = state)
+        .and_modify(|zone| {
+            zone.state = state;
+            zone.updated_unix_ms = Some(now_unix_ms());
+        })
         .or_insert(PageStoreZoneDescriptor {
             zone_id: zone_id_for_segment(page_segment_id),
             page_segment_id,
             state,
             physical_bytes: 0,
             logical_bytes: 0,
+            created_unix_ms: Some(now_unix_ms()),
+            updated_unix_ms: Some(now_unix_ms()),
             first_page_id: None,
             last_page_id: None,
         });
@@ -1108,12 +1153,17 @@ fn delayed_destroy_segment_reports_at(
     for entry in fs::read_dir(trash_dir)? {
         let entry = entry?;
         if let Some(id) = delayed_destroy_segment_id_from_name(&entry.file_name()) {
+            let metadata = entry.metadata().ok();
             reports.push(PageStoreDelayedDestroySegmentReport {
                 page_segment_id: id,
-                physical_bytes: entry
-                    .metadata()
+                physical_bytes: metadata
+                    .as_ref()
                     .map(|metadata| metadata.len())
                     .unwrap_or_default(),
+                modified_unix_ms: metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.modified().ok())
+                    .and_then(system_time_unix_ms),
             });
         }
     }
@@ -1844,6 +1894,30 @@ fn sync_dir(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+fn now_unix_ms() -> u64 {
+    system_time_unix_ms(std::time::SystemTime::now()).unwrap_or_default()
+}
+
+fn file_created_unix_ms(path: &Path) -> Option<u64> {
+    path.metadata()
+        .ok()
+        .and_then(|metadata| metadata.created().ok())
+        .and_then(system_time_unix_ms)
+}
+
+fn file_modified_unix_ms(path: &Path) -> Option<u64> {
+    path.metadata()
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
+        .and_then(system_time_unix_ms)
+}
+
+fn system_time_unix_ms(time: std::time::SystemTime) -> Option<u64> {
+    time.duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_millis() as u64)
+}
+
 fn unique_temp_path(kind: &str) -> PathBuf {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -2060,10 +2134,14 @@ mod tests {
         assert_eq!(zones[0].state, PageStoreZoneState::Sealed);
         assert_eq!(zones[0].first_page_id, first.page_id);
         assert_eq!(zones[0].last_page_id, first.page_id);
+        assert!(zones[0].created_unix_ms.is_some());
+        assert!(zones[0].updated_unix_ms.is_some());
         assert_eq!(zones[1].page_segment_id, second.page_segment_id);
         assert_eq!(zones[1].state, PageStoreZoneState::Active);
         assert_eq!(zones[1].first_page_id, second.page_id);
         assert_eq!(zones[1].last_page_id, second.page_id);
+        assert!(zones[1].created_unix_ms.is_some());
+        assert!(zones[1].updated_unix_ms.is_some());
         assert!(zone_manifest_path(dir.path()).exists());
         let initial_summary = store.zone_summary();
         assert_eq!(initial_summary.sealed_zones, 1);
@@ -2085,7 +2163,15 @@ mod tests {
         assert_eq!(initial_summary.reclaimable_physical_bytes, 0);
 
         let reopened = LocalPageStore::new(dir.path());
-        assert_eq!(reopened.zone_descriptors(), zones);
+        let reopened_zones = reopened.zone_descriptors();
+        assert_eq!(reopened_zones.len(), zones.len());
+        assert_eq!(reopened_zones[0], zones[0]);
+        assert_eq!(reopened_zones[1].page_segment_id, zones[1].page_segment_id);
+        assert_eq!(reopened_zones[1].state, zones[1].state);
+        assert_eq!(reopened_zones[1].physical_bytes, zones[1].physical_bytes);
+        assert_eq!(reopened_zones[1].logical_bytes, zones[1].logical_bytes);
+        assert_eq!(reopened_zones[1].created_unix_ms, zones[1].created_unix_ms);
+        assert!(reopened_zones[1].updated_unix_ms >= zones[1].updated_unix_ms);
 
         let report = reopened
             .gc_segments_before_with_live_refs_delayed_destroy(1, std::iter::empty())
@@ -2094,6 +2180,8 @@ mod tests {
         let delayed = reopened.zone_descriptors();
         assert_eq!(delayed[0].state, PageStoreZoneState::DelayedDestroy);
         assert!(delayed[0].physical_bytes > 0);
+        assert_eq!(delayed[0].created_unix_ms, zones[0].created_unix_ms);
+        assert!(delayed[0].updated_unix_ms >= zones[0].updated_unix_ms);
         assert_eq!(delayed[1].state, PageStoreZoneState::Active);
         let delayed_summary = reopened.zone_summary();
         assert_eq!(delayed_summary.delayed_destroy_zones, 1);
@@ -2118,6 +2206,8 @@ mod tests {
         assert!(purge.purged_physical_bytes > 0);
         let purged = LocalPageStore::new(dir.path()).zone_descriptors();
         assert_eq!(purged[0].state, PageStoreZoneState::Purged);
+        assert_eq!(purged[0].created_unix_ms, zones[0].created_unix_ms);
+        assert!(purged[0].updated_unix_ms >= delayed[0].updated_unix_ms);
         assert_eq!(purged[1].state, PageStoreZoneState::Active);
         let purged_summary = LocalPageStore::new(dir.path()).zone_summary();
         assert_eq!(purged_summary.purged_zones, 1);
@@ -2147,10 +2237,14 @@ mod tests {
         assert_eq!(zones[0].state, PageStoreZoneState::Sealed);
         assert_eq!(zones[0].first_page_id, first.page_id);
         assert_eq!(zones[0].last_page_id, first.page_id);
+        assert!(zones[0].created_unix_ms.is_some());
+        assert!(zones[0].updated_unix_ms.is_some());
         assert_eq!(zones[1].page_segment_id, second.page_segment_id);
         assert_eq!(zones[1].state, PageStoreZoneState::Active);
         assert_eq!(zones[1].first_page_id, second.page_id);
         assert_eq!(zones[1].last_page_id, second.page_id);
+        assert!(zones[1].created_unix_ms.is_some());
+        assert!(zones[1].updated_unix_ms.is_some());
     }
 
     #[test]
@@ -2435,19 +2529,14 @@ mod tests {
         assert_eq!(report.retained_live_physical_bytes, b"live".len() as u64);
         assert_eq!(store.segment_ids().unwrap(), vec![2, 3]);
         assert_eq!(store.delayed_destroy_segment_ids().unwrap(), vec![0, 1]);
-        assert_eq!(
-            store.delayed_destroy_segment_reports().unwrap(),
-            vec![
-                PageStoreDelayedDestroySegmentReport {
-                    page_segment_id: 0,
-                    physical_bytes: b"current".len() as u64,
-                },
-                PageStoreDelayedDestroySegmentReport {
-                    page_segment_id: 1,
-                    physical_bytes: b"stale".len() as u64,
-                },
-            ]
-        );
+        let delayed_reports = store.delayed_destroy_segment_reports().unwrap();
+        assert_eq!(delayed_reports.len(), 2);
+        assert_eq!(delayed_reports[0].page_segment_id, 0);
+        assert_eq!(delayed_reports[0].physical_bytes, b"current".len() as u64);
+        assert!(delayed_reports[0].modified_unix_ms.is_some());
+        assert_eq!(delayed_reports[1].page_segment_id, 1);
+        assert_eq!(delayed_reports[1].physical_bytes, b"stale".len() as u64);
+        assert!(delayed_reports[1].modified_unix_ms.is_some());
 
         let purge = store.purge_delayed_destroy_segments_with_report().unwrap();
         assert_eq!(purge.purged_page_segment_ids, vec![0, 1]);
@@ -2509,12 +2598,13 @@ mod tests {
         );
         assert_eq!(store.segment_ids().unwrap(), vec![0, 2, 3]);
         assert_eq!(store.delayed_destroy_segment_ids().unwrap(), vec![1]);
+        let delayed_reports = store.delayed_destroy_segment_reports().unwrap();
+        assert_eq!(delayed_reports.len(), 1);
+        assert_eq!(delayed_reports[0].page_segment_id, 1);
         assert_eq!(
-            store.delayed_destroy_segment_reports().unwrap(),
-            vec![PageStoreDelayedDestroySegmentReport {
-                page_segment_id: 1,
-                physical_bytes: b"largest-stale-segment".len() as u64,
-            }]
+            delayed_reports[0].physical_bytes,
+            b"largest-stale-segment".len() as u64
         );
+        assert!(delayed_reports[0].modified_unix_ms.is_some());
     }
 }
