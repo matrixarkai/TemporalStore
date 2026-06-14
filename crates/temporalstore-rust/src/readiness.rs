@@ -54,6 +54,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "typed table client, pipeline, retries/timeouts, route refresh".to_string(),
                 "primary routing for writes and optional secondary routing for reads".to_string(),
                 "background topology sync and C++ crc64 slot formula".to_string(),
+                "client preflight report exposes route/table cache, backend-failure backlog, stats, and options"
+                    .to_string(),
             ],
             missing: vec![
                 "tonic/prost SDK surface for the open-source production API".to_string(),
@@ -73,6 +75,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "namespace/table open path and table-routed proxy execute/batch routes"
                     .to_string(),
                 "C++ service-name JSON aliases for ExecuteCmd, BatchExecuteCmd, OpenTable, and table execute/batch execute"
+                    .to_string(),
+                "C++ service-name admin aliases expose proxy info, heartbeat/config, and embedded client preflight"
                     .to_string(),
             ],
             missing: vec![
@@ -96,6 +100,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "HTTP scheduler admin surface can submit, run-next, snapshot, and restore deterministic metaserver tasks"
                     .to_string(),
                 "optional local scheduler snapshot persistence through TS_META_SCHEDULER_SNAPSHOT"
+                    .to_string(),
+                "metaserver preflight is exposed for both single-node and Raft-backed metadata runtimes, including MasterService aliases"
                     .to_string(),
             ],
             missing: vec![
@@ -189,6 +195,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "local partition_info and object-manager stats report logical objects, page refs, dirty objects, dirty routing slots, and storage bytes"
                     .to_string(),
                 "local shard/table/tenant read/write QPS admission is enforced from Config quota fields"
+                    .to_string(),
+                "C++ ServerService admin aliases expose runtime stats, preflight, dirty-object, and queued-worker state"
                     .to_string(),
             ],
             missing: vec![

@@ -417,6 +417,7 @@ fn handle(
         }
         ("GET", "/meta/info") => json_response(200, &backend_call!(meta, info)),
         ("GET", "/meta/stats") => json_response(200, &backend_call!(meta, stats)),
+        ("GET", "/meta/preflight") => json_response(200, &backend_call!(meta, preflight_report)),
         ("GET", "/meta/raft/status") => match meta.raft_status() {
             Some(status) => json_response(200, &status),
             None => json_response(
@@ -866,6 +867,10 @@ fn handle_master_service_route(
                 )
             })
         }
+        ("GET", "/MasterService/GetInfo") => json_response(200, &backend_call!(meta, info)),
+        ("GET", "/MasterService/Preflight") => {
+            json_response(200, &backend_call!(meta, preflight_report))
+        }
         ("POST", "/MasterService/UnRegisterServer") => {
             parse_or(&request.body, |req: MasterRegisterServerRequest| {
                 backend_call!(
@@ -1242,6 +1247,37 @@ mod tests {
             meta.list_servers().servers[0].server_addr,
             "127.0.0.1:19090"
         );
+
+        for path in ["/meta/preflight", "/MasterService/Preflight"] {
+            let (code, body) = handle(
+                &backend,
+                &scheduler,
+                HttpRequest {
+                    method: "GET".to_string(),
+                    path: path.to_string(),
+                    body: Vec::new(),
+                },
+            );
+            assert_eq!(code, 200, "{path}");
+            let preflight: temporalstore_rust::meta::MetaPreflightReport =
+                serde_json::from_slice(&body).unwrap();
+            assert!(preflight.status.ok, "{path}: {preflight:?}");
+            assert_eq!(preflight.normal_servers, 1);
+        }
+
+        let (code, body) = handle(
+            &backend,
+            &scheduler,
+            HttpRequest {
+                method: "GET".to_string(),
+                path: "/MasterService/GetInfo".to_string(),
+                body: Vec::new(),
+            },
+        );
+        assert_eq!(code, 200);
+        let info: temporalstore_rust::meta::MetaInfo = serde_json::from_slice(&body).unwrap();
+        assert!(info.status.ok, "{info:?}");
+        assert_eq!(info.stats.server_count, 1);
 
         let (code, body) = handle(
             &backend,

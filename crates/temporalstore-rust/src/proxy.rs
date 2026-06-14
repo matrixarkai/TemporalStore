@@ -257,12 +257,19 @@ impl ProxyService {
             ("GET", "/readiness") | ("GET", "/cpp_parity") => {
                 json_response(200, &crate::production_readiness_report())
             }
-            ("GET", "/proxy/info") => json_response(200, &self.info()),
-            ("GET", "/proxy/heartbeat") => json_response(200, &self.heartbeat_report()),
+            ("GET", "/proxy/info") | ("GET", "/ProxyService/GetInfo") => {
+                json_response(200, &self.info())
+            }
+            ("GET", "/proxy/heartbeat") | ("GET", "/ProxyService/Heartbeat") => {
+                json_response(200, &self.heartbeat_report())
+            }
             ("GET", "/proxy/preflight") | ("GET", "/ProxyService/Preflight") => {
                 json_response(200, &self.preflight_report())
             }
-            ("GET", "/proxy/config") => {
+            ("GET", "/proxy/client_preflight") | ("GET", "/ProxyService/ClientPreflight") => {
+                json_response(200, &self.client().preflight_report())
+            }
+            ("GET", "/proxy/config") | ("GET", "/ProxyService/GetConfig") => {
                 let options = self
                     .inner
                     .options
@@ -271,13 +278,15 @@ impl ProxyService {
                     .clone();
                 json_response(200, &options)
             }
-            ("POST", "/proxy/config") => match parse_json::<ProxyOptions>(&request.body) {
-                Ok(options) => json_response(200, &self.update_options_report(options)),
-                Err(err) => {
-                    self.inc_bad_request();
-                    json_response(400, &Status::error("bad_request", err.to_string()))
+            ("POST", "/proxy/config") | ("POST", "/ProxyService/UpdateConfig") => {
+                match parse_json::<ProxyOptions>(&request.body) {
+                    Ok(options) => json_response(200, &self.update_options_report(options)),
+                    Err(err) => {
+                        self.inc_bad_request();
+                        json_response(400, &Status::error("bad_request", err.to_string()))
+                    }
                 }
-            },
+            }
             ("GET", path) if path.starts_with("/shards/") => {
                 let shard_id = path
                     .trim_start_matches("/shards/")
@@ -954,6 +963,44 @@ mod tests {
         assert_eq!(code, 200);
         let routed = parse_json::<ProxyPreflightReport>(&body).unwrap();
         assert_eq!(routed.stats.bad_requests, 1);
+    }
+
+    #[test]
+    fn proxy_cpp_admin_aliases_expose_info_config_and_client_preflight() {
+        let proxy = ProxyService::new(ProxyOptions {
+            meta_addr: "127.0.0.1:1".to_string(),
+            proxy_addr: "127.0.0.1:17000".to_string(),
+            namespace: "ns".to_string(),
+            ..ProxyOptions::default()
+        });
+
+        let (code, body) = proxy.handle(HttpRequest {
+            method: "GET".to_string(),
+            path: "/ProxyService/GetInfo".to_string(),
+            body: Vec::new(),
+        });
+        assert_eq!(code, 200);
+        let info = parse_json::<ProxyInfo>(&body).unwrap();
+        assert_eq!(info.meta_addr, "127.0.0.1:1");
+
+        let (code, body) = proxy.handle(HttpRequest {
+            method: "GET".to_string(),
+            path: "/ProxyService/GetConfig".to_string(),
+            body: Vec::new(),
+        });
+        assert_eq!(code, 200);
+        let config = parse_json::<ProxyOptions>(&body).unwrap();
+        assert_eq!(config.namespace, "ns");
+
+        let (code, body) = proxy.handle(HttpRequest {
+            method: "GET".to_string(),
+            path: "/ProxyService/ClientPreflight".to_string(),
+            body: Vec::new(),
+        });
+        assert_eq!(code, 200);
+        let client = parse_json::<crate::ClientPreflightReport>(&body).unwrap();
+        assert!(client.status.ok);
+        assert_eq!(client.proxy_addr, "127.0.0.1:17000");
     }
 
     #[test]

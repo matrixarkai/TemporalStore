@@ -378,6 +378,27 @@ This pass closed another ByteRaft/ByteKV `RaftEngine` API/configuration gap:
 - data-node and metaserver Raft election paths now reject stale candidates whose logs are not up-to-date with a voting majority before leadership can move.
 - data-node Raft `RequestVote` receive path now follows Raft term monotonicity more closely: higher terms update local hard state and clear old votes before grant/reject decisions, including the candidate-log-behind rejection path.
 - data-node Raft now exposes a safe membership-change unit for add/remove/replace voter plans: it validates target quorum, opens joint consensus, catches up live followers, commits the new voter set, aborts on failure, and returns a scheduler-friendly report with old/new voters and deltas.
+
+This pass repeated the client/proxy/data-node/metaserver surface comparison and closed eight
+operational parity gaps without adding brpc/thrift:
+
+1. Client now exposes a serializable `ClientPreflightReport` for route/table cache size,
+   backend-failure backlog, stats, options, and degraded reasons.
+2. `ClientOptions`, `TableOptions`, `ReplicaReadPolicy`, and `ClientStats` are serializable so
+   service preflight/admin responses can carry client state directly.
+3. Proxy exposes C++-named admin aliases for info and heartbeat:
+   `/ProxyService/GetInfo` and `/ProxyService/Heartbeat`.
+4. Proxy exposes C++-named config and client-health aliases:
+   `/ProxyService/GetConfig`, `/ProxyService/UpdateConfig`, and
+   `/ProxyService/ClientPreflight`.
+5. Data-node server exposes C++-named runtime/admin aliases:
+   `/ServerService/GetRuntimeStats` and `/ServerService/Preflight`.
+6. Data-node server exposes C++-named state-inspection aliases:
+   `/ServerService/ListDirtyObjects` and `/ServerService/ListQueuedShardWorkers`.
+7. Metaserver exposes `/meta/preflight` plus `/MasterService/Preflight` and
+   `/MasterService/GetInfo` for single-node metadata.
+8. Raft-backed metaserver now derives the same preflight report from committed metadata state,
+   so the new metaserver preflight aliases work in both backend modes.
 - metaserver Raft now exposes the same membership-change plan/apply report shape for add/remove/replace voters, including target-quorum validation, follower catch-up, committed voter reporting, and metadata availability on added voters.
 
 This is API/config parity plus local-model enforcement. It is not yet the actual optimization implementation for reorder queues, inflight replication windows, WAL sync/segments, network transport timeout, or pre-vote. Those fields become operationally meaningful when the in-process model is replaced by OpenRaft/raft-rs plus durable WAL and transport.

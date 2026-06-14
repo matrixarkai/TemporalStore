@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::http::{
@@ -32,7 +33,7 @@ pub enum ClientError {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientOptions {
     pub proxy_addr: String,
     pub meta_addr: Option<String>,
@@ -99,7 +100,7 @@ impl Default for RequestOptions {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TableOptions {
     pub io_timeout_ms: u64,
     pub connect_timeout_ms: u64,
@@ -134,14 +135,14 @@ impl Default for TableOptions {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReplicaReadPolicy {
     PinPrimary,
     FirstReplica,
     RoundRobinReplica,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientStats {
     pub open_table_calls: u64,
     pub close_table_calls: u64,
@@ -156,6 +157,20 @@ pub struct ClientStats {
     pub backend_successes_after_error: u64,
     pub meta_sync_total: u64,
     pub meta_sync_errors: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientPreflightReport {
+    pub status: Status,
+    pub proxy_addr: String,
+    pub meta_addr: Option<String>,
+    pub default_shard_id: ShardId,
+    pub route_cache_size: usize,
+    pub table_cache_size: usize,
+    pub backend_failure_count: usize,
+    pub stats: ClientStats,
+    pub options: ClientOptions,
+    pub degraded_reasons: Vec<String>,
 }
 
 impl ClientStats {
@@ -489,6 +504,51 @@ impl TemporalStoreClient {
 
     pub fn stats(&self) -> ClientStats {
         *self.inner.stats.lock().expect("client stats lock poisoned")
+    }
+
+    pub fn preflight_report(&self) -> ClientPreflightReport {
+        let options = self.inner.options.clone();
+        let stats = self.stats();
+        let route_cache_size = self.route_cache_size();
+        let table_cache_size = self
+            .inner
+            .tables
+            .lock()
+            .expect("client table cache lock poisoned")
+            .len();
+        let backend_failure_count = self
+            .inner
+            .backend_failures
+            .lock()
+            .expect("client backend failure lock poisoned")
+            .len();
+        let mut degraded_reasons = Vec::new();
+        if stats.meta_sync_errors > 0 {
+            degraded_reasons.push("meta_sync_errors".to_string());
+        }
+        if stats.backend_errors > 0 {
+            degraded_reasons.push("backend_errors".to_string());
+        }
+        if stats.continuous_backend_failures > 0 || backend_failure_count > 0 {
+            degraded_reasons.push("backend_failure_backlog".to_string());
+        }
+        let status = if degraded_reasons.is_empty() {
+            Status::ok()
+        } else {
+            Status::error("degraded", degraded_reasons.join(","))
+        };
+        ClientPreflightReport {
+            status,
+            proxy_addr: options.proxy_addr.clone(),
+            meta_addr: options.meta_addr.clone(),
+            default_shard_id: options.default_shard_id,
+            route_cache_size,
+            table_cache_size,
+            backend_failure_count,
+            stats,
+            options,
+            degraded_reasons,
+        }
     }
 
     pub fn route_cache_size(&self) -> usize {
@@ -2403,6 +2463,38 @@ mod tests {
     use crate::engine::TemporalEngine;
     use crate::http::{json_response, parse_json, serve};
     use crate::meta::{GetShardResponse, ShardLocation, TableMetaInfo, TablePartition};
+
+    #[test]
+    fn client_preflight_reports_cache_stats_and_backend_failures() {
+        let client = TemporalStoreClient::with_options(ClientOptions {
+            proxy_addr: "127.0.0.1:17000".to_string(),
+            meta_addr: Some("127.0.0.1:17001".to_string()),
+            default_shard_id: 7,
+            ..ClientOptions::default()
+        });
+        let table = client.open_table(
+            "ns",
+            "tbl",
+            TableOptions {
+                first_shard_id: 7,
+                ..TableOptions::default()
+            },
+        );
+        client.insert_cached_route_for_test(7, "127.0.0.1:17002");
+        client.insert_backend_failure_for_test("127.0.0.1:17002", 20, 10, 3);
+
+        let report = client.preflight_report();
+        assert_eq!(report.proxy_addr, "127.0.0.1:17000");
+        assert_eq!(report.meta_addr.as_deref(), Some("127.0.0.1:17001"));
+        assert_eq!(report.default_shard_id, 7);
+        assert_eq!(report.route_cache_size, 1);
+        assert_eq!(report.table_cache_size, 1);
+        assert_eq!(report.backend_failure_count, 1);
+        assert_eq!(report.stats.open_table_calls, 1);
+        assert_eq!(report.status.code, "degraded");
+        assert_eq!(report.degraded_reasons, vec!["backend_failure_backlog"]);
+        assert_eq!(table.shard_id(), 7);
+    }
 
     #[test]
     fn table_typed_methods_and_pipeline_match_cpp_client_shape() {

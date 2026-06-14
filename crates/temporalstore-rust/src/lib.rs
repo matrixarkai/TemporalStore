@@ -22,8 +22,8 @@ pub mod types;
 pub use cache::{CacheKey, CacheStats, MultiLayerCache};
 pub use client::{
     crc64_jones, key_is_dropped_by_percent, shard_id_for_key, slot_id_for_key, stable_key_hash,
-    ClientError, ClientOptions, ClientStats, RequestOptions, TableOptions, TemporalStoreClient,
-    TemporalStorePipeline, TemporalStoreTable,
+    ClientError, ClientOptions, ClientPreflightReport, ClientStats, RequestOptions, TableOptions,
+    TemporalStoreClient, TemporalStorePipeline, TemporalStoreTable,
 };
 pub use control::{
     CheckedBatchExecuteRequest, CheckedBatchExecuteResponse, CheckedExecuteRequest,

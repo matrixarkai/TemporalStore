@@ -21,12 +21,13 @@ use crate::http::{
 use crate::meta::{
     AckResponse, AddNamespaceRequest, AddTableRequest, DeleteTableRequest, GetShardResponse,
     GetTableTopologyRequest, ListNamespacesResponse, ListProxiesResponse, ListServersResponse,
-    ListTablesResponse, LoadFinishRequest, MetaEntityState, MetaInfo, MetaMutation, MetaSnapshot,
-    MetaStats, ProxyHeartbeatRequest, ProxyHeartbeatResponse, PublishShardSnapshotRequest,
-    RegisterProxyRequest, RegisterServerRequest, RegisterShardRequest, RegisterShardResponse,
-    SafeModePolicy, SafeModeReport, ServerHeartbeatRequest, ServerHeartbeatResponse,
-    ServerMetaInfo, ShardLocation, ShardSnapshotRef, SingleNodeMeta, StaleResourceReport,
-    StaleServerReport, StateChangeRequest, TableTopologyResponse, UpdateTableRequest,
+    ListTablesResponse, LoadFinishRequest, MetaEntityState, MetaInfo, MetaMutation,
+    MetaPreflightReport, MetaSnapshot, MetaStats, ProxyHeartbeatRequest, ProxyHeartbeatResponse,
+    PublishShardSnapshotRequest, RegisterProxyRequest, RegisterServerRequest, RegisterShardRequest,
+    RegisterShardResponse, SafeModePolicy, SafeModeReport, ServerHeartbeatRequest,
+    ServerHeartbeatResponse, ServerMetaInfo, ShardLocation, ShardSnapshotRef, SingleNodeMeta,
+    StaleResourceReport, StaleServerReport, StateChangeRequest, TableTopologyResponse,
+    UpdateTableRequest,
 };
 use crate::types::{Command, CommandResponse, ExecuteRequest, ShardId, Status};
 use bytes::Bytes;
@@ -6562,6 +6563,22 @@ impl MetaRaftCluster {
         self.read_meta()
             .map(|meta| meta.stats())
             .unwrap_or_else(|_| MetaStats::default())
+    }
+
+    pub fn preflight_report(&self) -> MetaPreflightReport {
+        self.read_meta()
+            .map(|meta| meta.preflight_report())
+            .unwrap_or_else(|status| MetaPreflightReport {
+                status,
+                stats: MetaStats::default(),
+                normal_servers: 0,
+                frozen_servers: 0,
+                normal_proxies: 0,
+                frozen_proxies: 0,
+                dropped_tables: 0,
+                shard_routes: 0,
+                degraded_reasons: vec!["raft_read_unavailable".to_string()],
+            })
     }
 
     fn mutation_status(&self, mutation: MetaMutation) -> Status {

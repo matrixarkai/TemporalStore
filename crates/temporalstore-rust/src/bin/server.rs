@@ -174,6 +174,7 @@ fn main() {
         if let Some(response) = handle_cpp_server_service_route(
             &request,
             &engine,
+            &runtime,
             raft_state.as_ref(),
             &meta_addr,
             &advertised_addr,
@@ -196,6 +197,7 @@ fn main() {
             }
             ("GET", "/server/info") => json_response(200, &engine.loaded_shard_stats()),
             ("GET", "/server/runtime_stats") => json_response(200, &runtime.stats()),
+            ("GET", "/server/preflight") => json_response(200, &runtime.preflight_report()),
             ("GET", "/server/dirty_objects") => json_response(200, &runtime.dirty_objects()),
             ("GET", "/server/queued_shard_workers") => {
                 json_response(200, &runtime.queued_shard_worker_infos())
@@ -449,6 +451,7 @@ struct ApplyDataRaftLogRouteResponse {
 fn handle_cpp_server_service_route(
     request: &HttpRequest,
     engine: &TemporalEngine,
+    runtime: &DataNodeRuntime,
     raft_state: Option<&ServerRaftState>,
     meta_addr: &str,
     advertised_addr: &str,
@@ -546,6 +549,12 @@ fn handle_cpp_server_service_route(
                 ),
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
             }
+        }
+        ("GET", "/ServerService/GetRuntimeStats") => json_response(200, &runtime.stats()),
+        ("GET", "/ServerService/Preflight") => json_response(200, &runtime.preflight_report()),
+        ("GET", "/ServerService/ListDirtyObjects") => json_response(200, &runtime.dirty_objects()),
+        ("GET", "/ServerService/ListQueuedShardWorkers") => {
+            json_response(200, &runtime.queued_shard_worker_infos())
         }
         _ => return None,
     };
@@ -2455,6 +2464,7 @@ mod tests {
         );
         let data_raft_appliers: Arc<Mutex<BTreeMap<u64, DataRaftCommittedLogApplier>>> =
             Arc::default();
+        let runtime = DataNodeRuntime::new(engine.clone(), DataNodeRuntimeOptions::default());
 
         let load = HttpRequest {
             method: "POST".to_string(),
@@ -2474,6 +2484,7 @@ mod tests {
         let (code, body) = handle_cpp_server_service_route(
             &load,
             &engine,
+            &runtime,
             None,
             "",
             "server-a",
@@ -2499,6 +2510,7 @@ mod tests {
         let (code, body) = handle_cpp_server_service_route(
             &execute,
             &engine,
+            &runtime,
             None,
             "",
             "server-a",
@@ -2523,6 +2535,7 @@ mod tests {
         let (code, body) = handle_cpp_server_service_route(
             &batch,
             &engine,
+            &runtime,
             None,
             "",
             "server-a",
@@ -2552,6 +2565,7 @@ mod tests {
             let (code, body) = handle_cpp_server_service_route(
                 &request,
                 &engine,
+                &runtime,
                 None,
                 "",
                 "server-a",
@@ -2588,6 +2602,7 @@ mod tests {
         let (code, body) = handle_cpp_server_service_route(
             &apply_raft,
             &engine,
+            &runtime,
             None,
             "",
             "server-a",
@@ -2604,6 +2619,7 @@ mod tests {
             &handle_cpp_server_service_route(
                 &apply_raft,
                 &engine,
+                &runtime,
                 None,
                 "",
                 "server-a",
@@ -2638,6 +2654,7 @@ mod tests {
         let (code, body) = handle_cpp_server_service_route(
             &unload,
             &engine,
+            &runtime,
             None,
             "",
             "server-a",
@@ -2656,12 +2673,66 @@ mod tests {
         assert!(handle_cpp_server_service_route(
             &unknown,
             &engine,
+            &runtime,
             None,
             "",
             "server-a",
             &data_raft_appliers
         )
         .is_none());
+    }
+
+    #[test]
+    fn server_cpp_admin_aliases_expose_runtime_preflight_dirty_and_queue_state() {
+        let dir = tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("index"),
+        );
+        engine.load_shard(1);
+        let runtime = DataNodeRuntime::new(engine.clone(), DataNodeRuntimeOptions::default());
+        let data_raft_appliers: Arc<Mutex<BTreeMap<u64, DataRaftCommittedLogApplier>>> =
+            Arc::default();
+
+        let write = runtime.submit_execute(
+            ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "dirty-admin".to_string(),
+                    value: b"value".to_vec(),
+                },
+            },
+            RequestController::default(),
+        );
+        assert!(write.status.ok, "{write:?}");
+        let _ = runtime.job_status(write.job_id);
+
+        for path in [
+            "/ServerService/GetRuntimeStats",
+            "/ServerService/Preflight",
+            "/ServerService/ListDirtyObjects",
+            "/ServerService/ListQueuedShardWorkers",
+        ] {
+            let (code, body) = handle_cpp_server_service_route(
+                &HttpRequest {
+                    method: "GET".to_string(),
+                    path: path.to_string(),
+                    body: Vec::new(),
+                },
+                &engine,
+                &runtime,
+                None,
+                "",
+                "server-a",
+                &data_raft_appliers,
+            )
+            .unwrap();
+            assert_eq!(code, 200, "{path}");
+            let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert!(value.is_object() || value.is_array(), "{path}: {value}");
+        }
     }
 
     #[test]
