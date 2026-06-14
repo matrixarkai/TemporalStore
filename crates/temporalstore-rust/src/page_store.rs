@@ -115,6 +115,18 @@ pub struct PageStoreGcUtilityCandidate {
     pub utility_score: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PageStoreDelayedDestroySegmentReport {
+    pub page_segment_id: u64,
+    pub physical_bytes: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PageStorePurgeDelayedDestroyReport {
+    pub purged_page_segment_ids: Vec<u64>,
+    pub purged_physical_bytes: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PageStoreZoneState {
@@ -705,18 +717,43 @@ impl LocalPageStore {
         delayed_destroy_segment_ids_at(&root)
     }
 
+    pub fn delayed_destroy_segment_reports(
+        &self,
+    ) -> Result<Vec<PageStoreDelayedDestroySegmentReport>, PageStoreError> {
+        let root = self
+            .inner
+            .lock()
+            .expect("page store lock poisoned")
+            .root
+            .clone();
+        delayed_destroy_segment_reports_at(&root)
+    }
+
     pub fn purge_delayed_destroy_segments(&self) -> Result<Vec<u64>, PageStoreError> {
+        Ok(self
+            .purge_delayed_destroy_segments_with_report()?
+            .purged_page_segment_ids)
+    }
+
+    pub fn purge_delayed_destroy_segments_with_report(
+        &self,
+    ) -> Result<PageStorePurgeDelayedDestroyReport, PageStoreError> {
         let mut inner = self.inner.lock().expect("page store lock poisoned");
         let trash_dir = delayed_destroy_dir(&inner.root);
         let mut purged = Vec::new();
+        let mut purged_physical_bytes = 0;
         if !trash_dir.exists() {
-            return Ok(purged);
+            return Ok(PageStorePurgeDelayedDestroyReport::default());
         }
         for entry in fs::read_dir(&trash_dir)? {
             let entry = entry?;
             let Some(id) = delayed_destroy_segment_id_from_name(&entry.file_name()) else {
                 continue;
             };
+            purged_physical_bytes += entry
+                .metadata()
+                .map(|metadata| metadata.len())
+                .unwrap_or_default();
             fs::remove_file(entry.path())?;
             set_zone_state(&mut inner.zones, id, PageStoreZoneState::Purged);
             purged.push(id);
@@ -724,7 +761,10 @@ impl LocalPageStore {
         purged.sort_unstable();
         sync_dir(&trash_dir)?;
         persist_zone_manifest(&inner.root, &inner.zones)?;
-        Ok(purged)
+        Ok(PageStorePurgeDelayedDestroyReport {
+            purged_page_segment_ids: purged,
+            purged_physical_bytes,
+        })
     }
 
     pub fn zone_descriptors(&self) -> Vec<PageStoreZoneDescriptor> {
@@ -819,15 +859,15 @@ fn rebuild_zone_manifest_at(
             },
         );
     }
-    for page_segment_id in delayed_destroy_segment_ids_at(root)? {
+    for delayed in delayed_destroy_segment_reports_at(root)? {
         zones
-            .entry(page_segment_id)
+            .entry(delayed.page_segment_id)
             .and_modify(|zone| zone.state = PageStoreZoneState::DelayedDestroy)
             .or_insert(PageStoreZoneDescriptor {
-                zone_id: zone_id_for_segment(page_segment_id),
-                page_segment_id,
+                zone_id: zone_id_for_segment(delayed.page_segment_id),
+                page_segment_id: delayed.page_segment_id,
                 state: PageStoreZoneState::DelayedDestroy,
-                physical_bytes: 0,
+                physical_bytes: delayed.physical_bytes,
                 logical_bytes: 0,
                 first_page_id: None,
                 last_page_id: None,
@@ -987,19 +1027,34 @@ fn move_segment_to_delayed_destroy(
 }
 
 fn delayed_destroy_segment_ids_at(root: &Path) -> Result<Vec<u64>, PageStoreError> {
+    Ok(delayed_destroy_segment_reports_at(root)?
+        .into_iter()
+        .map(|report| report.page_segment_id)
+        .collect())
+}
+
+fn delayed_destroy_segment_reports_at(
+    root: &Path,
+) -> Result<Vec<PageStoreDelayedDestroySegmentReport>, PageStoreError> {
     let trash_dir = delayed_destroy_dir(root);
-    let mut ids = Vec::new();
+    let mut reports = Vec::new();
     if !trash_dir.exists() {
-        return Ok(ids);
+        return Ok(reports);
     }
     for entry in fs::read_dir(trash_dir)? {
         let entry = entry?;
         if let Some(id) = delayed_destroy_segment_id_from_name(&entry.file_name()) {
-            ids.push(id);
+            reports.push(PageStoreDelayedDestroySegmentReport {
+                page_segment_id: id,
+                physical_bytes: entry
+                    .metadata()
+                    .map(|metadata| metadata.len())
+                    .unwrap_or_default(),
+            });
         }
     }
-    ids.sort_unstable();
-    Ok(ids)
+    reports.sort_by_key(|report| report.page_segment_id);
+    Ok(reports)
 }
 
 fn delayed_destroy_segment_id_from_name(name: &std::ffi::OsStr) -> Option<u64> {
@@ -1956,9 +2011,14 @@ mod tests {
         assert_eq!(report.delayed_destroy_page_segment_ids, vec![0]);
         let delayed = reopened.zone_descriptors();
         assert_eq!(delayed[0].state, PageStoreZoneState::DelayedDestroy);
+        assert!(delayed[0].physical_bytes > 0);
         assert_eq!(delayed[1].state, PageStoreZoneState::Active);
 
-        assert_eq!(reopened.purge_delayed_destroy_segments().unwrap(), vec![0]);
+        let purge = reopened
+            .purge_delayed_destroy_segments_with_report()
+            .unwrap();
+        assert_eq!(purge.purged_page_segment_ids, vec![0]);
+        assert!(purge.purged_physical_bytes > 0);
         let purged = LocalPageStore::new(dir.path()).zone_descriptors();
         assert_eq!(purged[0].state, PageStoreZoneState::Purged);
         assert_eq!(purged[1].state, PageStoreZoneState::Active);
@@ -2269,10 +2329,28 @@ mod tests {
         assert_eq!(report.retained_live_physical_bytes, b"live".len() as u64);
         assert_eq!(store.segment_ids().unwrap(), vec![2, 3]);
         assert_eq!(store.delayed_destroy_segment_ids().unwrap(), vec![0, 1]);
+        assert_eq!(
+            store.delayed_destroy_segment_reports().unwrap(),
+            vec![
+                PageStoreDelayedDestroySegmentReport {
+                    page_segment_id: 0,
+                    physical_bytes: b"current".len() as u64,
+                },
+                PageStoreDelayedDestroySegmentReport {
+                    page_segment_id: 1,
+                    physical_bytes: b"stale".len() as u64,
+                },
+            ]
+        );
 
-        let purged = store.purge_delayed_destroy_segments().unwrap();
-        assert_eq!(purged, vec![0, 1]);
+        let purge = store.purge_delayed_destroy_segments_with_report().unwrap();
+        assert_eq!(purge.purged_page_segment_ids, vec![0, 1]);
+        assert_eq!(
+            purge.purged_physical_bytes,
+            (b"current".len() + b"stale".len()) as u64
+        );
         assert!(store.delayed_destroy_segment_ids().unwrap().is_empty());
+        assert!(store.delayed_destroy_segment_reports().unwrap().is_empty());
         assert_eq!(store.segment_ids().unwrap(), vec![2, 3]);
     }
 
@@ -2325,5 +2403,12 @@ mod tests {
         );
         assert_eq!(store.segment_ids().unwrap(), vec![0, 2, 3]);
         assert_eq!(store.delayed_destroy_segment_ids().unwrap(), vec![1]);
+        assert_eq!(
+            store.delayed_destroy_segment_reports().unwrap(),
+            vec![PageStoreDelayedDestroySegmentReport {
+                page_segment_id: 1,
+                physical_bytes: b"largest-stale-segment".len() as u64,
+            }]
+        );
     }
 }
