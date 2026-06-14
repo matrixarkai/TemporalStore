@@ -9792,6 +9792,7 @@ mod tests {
             .unwrap();
 
         assert!(cluster.commit_index(1).unwrap() > 1);
+        cluster.catch_up(3).unwrap();
         assert_eq!(
             cluster
                 .read_from_replica(

@@ -18,7 +18,9 @@ use crate::control::{
 };
 use crate::index_log::LocalIndexLogStore;
 use crate::oplog::LocalOplogStore;
-use crate::page_store::{LocalPageStore, PageAddress, PageStoreError, PageStoreStats};
+use crate::page_store::{
+    LocalPageStore, PageAddress, PageStoreError, PageStoreOptions, PageStoreStats,
+};
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,
     ExecuteResponse, FeatureFilter, FeatureFilterOp, FeaturePoint, FeatureWritePolicy, IpsStats,
@@ -194,9 +196,25 @@ impl TemporalEngine {
         page_store_dir: impl Into<PathBuf>,
         index_dir: impl Into<PathBuf>,
     ) -> Self {
+        Self::with_local_dirs_and_page_store_options(
+            memory_capacity_bytes,
+            cache_dir,
+            page_store_dir,
+            index_dir,
+            PageStoreOptions::default(),
+        )
+    }
+
+    pub fn with_local_dirs_and_page_store_options(
+        memory_capacity_bytes: usize,
+        cache_dir: impl Into<PathBuf>,
+        page_store_dir: impl Into<PathBuf>,
+        index_dir: impl Into<PathBuf>,
+        page_store_options: PageStoreOptions,
+    ) -> Self {
         Self::with_cache_page_store_and_index_dir(
             MultiLayerCache::new(memory_capacity_bytes, cache_dir),
-            LocalPageStore::new(page_store_dir),
+            LocalPageStore::with_options(page_store_dir, page_store_options),
             index_dir,
         )
     }
@@ -4399,6 +4417,44 @@ mod tests {
             },
         });
         assert!(cache.stats().compressed_hits >= 1);
+    }
+
+    #[test]
+    fn local_dirs_constructor_applies_page_store_compression_options() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs_and_page_store_options(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+            PageStoreOptions {
+                compression_enabled: false,
+                ..PageStoreOptions::default()
+            },
+        );
+        engine.load_shard(1);
+        let value = b"engine-page-policy-".repeat(80);
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "large-policy".to_string(),
+                value: value.clone(),
+            },
+        });
+
+        let page_store = engine.page_store();
+        let stats = page_store.stats();
+        assert_eq!(stats.writes, 1);
+        assert_eq!(stats.compressed_records_written, 0);
+        assert_eq!(stats.compression_bytes_saved, 0);
+
+        let read = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: "large-policy".to_string(),
+            },
+        });
+        assert_eq!(read.response, CommandResponse::Bytes { value: Some(value) });
     }
 
     #[test]

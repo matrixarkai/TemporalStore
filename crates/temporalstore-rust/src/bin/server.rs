@@ -24,12 +24,12 @@ use temporalstore_rust::{
     CommandResponse, CompactionRequest, DataNodeRuntime, DataNodeRuntimeOptions,
     DistributedRaftCommandResponse, DistributedRaftProposeRequest, DistributedRaftReadRequest,
     DumpShardRequest, GcRequest, HttpReplicaStreamSource, LoadShardRequest,
-    MembershipUpdateRequest, ProductionRaftEngineKind, ProductionRaftNode, ProductionRaftRuntime,
-    ProductionRaftRuntimeOptions, ProductionRaftSecurity, RaftConfig, RaftControlLeadershipRequest,
-    RaftFailoverReport, RaftMembershipChangeReport, RaftNodeId, RaftRpcRuntimeOptions,
-    RaftTransport, ReplicaReplayLoop, ReplicaReplayOptions, ReplicaReplayRequest,
-    ReplicaReplayResponse, RequestController, ScanStreamRequest, SetConfigRequest,
-    StreamReadRequest, UnloadShardRequest,
+    MembershipUpdateRequest, PageStoreOptions, ProductionRaftEngineKind, ProductionRaftNode,
+    ProductionRaftRuntime, ProductionRaftRuntimeOptions, ProductionRaftSecurity, RaftConfig,
+    RaftControlLeadershipRequest, RaftFailoverReport, RaftMembershipChangeReport, RaftNodeId,
+    RaftRpcRuntimeOptions, RaftTransport, ReplicaReplayLoop, ReplicaReplayOptions,
+    ReplicaReplayRequest, ReplicaReplayResponse, RequestController, ScanStreamRequest,
+    SetConfigRequest, StreamReadRequest, UnloadShardRequest,
 };
 use temporalstore_snapshot::{FileObjectStore, S3SnapshotStore};
 
@@ -60,8 +60,14 @@ fn main() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or_default();
-    let engine =
-        TemporalEngine::with_local_dirs(cache_memory_bytes, cache_dir, page_store_dir, index_dir);
+    let page_store_options = page_store_options_from_env();
+    let engine = TemporalEngine::with_local_dirs_and_page_store_options(
+        cache_memory_bytes,
+        cache_dir,
+        page_store_dir,
+        index_dir,
+        page_store_options,
+    );
     let startup_load = startup_load_shard_request(shard_id, node_id);
     let load_response = engine.load_shard_with(startup_load);
     if !load_response.status.ok {
@@ -573,11 +579,36 @@ fn env_u32(name: &str, default: u32) -> u32 {
         .unwrap_or(default)
 }
 
+fn env_i32(name: &str, default: i32) -> i32 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
+}
+
 fn env_bool(name: &str, default: bool) -> bool {
     std::env::var(name)
         .ok()
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
         .unwrap_or(default)
+}
+
+fn page_store_options_from_env() -> PageStoreOptions {
+    let defaults = PageStoreOptions::default();
+    PageStoreOptions {
+        compression_enabled: env_bool(
+            "TS_PAGE_STORE_COMPRESSION_ENABLED",
+            defaults.compression_enabled,
+        ),
+        compression_min_bytes: env_usize(
+            "TS_PAGE_STORE_COMPRESSION_MIN_BYTES",
+            defaults.compression_min_bytes,
+        ),
+        compression_level: env_i32(
+            "TS_PAGE_STORE_COMPRESSION_LEVEL",
+            defaults.compression_level,
+        ),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1784,6 +1815,34 @@ mod tests {
             },
         });
         assert_eq!(write.status.code, "readonly_shard");
+
+        for key in keys {
+            std::env::remove_var(key);
+        }
+    }
+
+    #[test]
+    fn page_store_options_read_compression_policy_env() {
+        let keys = [
+            "TS_PAGE_STORE_COMPRESSION_ENABLED",
+            "TS_PAGE_STORE_COMPRESSION_MIN_BYTES",
+            "TS_PAGE_STORE_COMPRESSION_LEVEL",
+        ];
+        for key in keys {
+            std::env::remove_var(key);
+        }
+
+        let defaults = page_store_options_from_env();
+        assert!(defaults.compression_enabled);
+
+        std::env::set_var("TS_PAGE_STORE_COMPRESSION_ENABLED", "false");
+        std::env::set_var("TS_PAGE_STORE_COMPRESSION_MIN_BYTES", "4096");
+        std::env::set_var("TS_PAGE_STORE_COMPRESSION_LEVEL", "3");
+        let options = page_store_options_from_env();
+
+        assert!(!options.compression_enabled);
+        assert_eq!(options.compression_min_bytes, 4096);
+        assert_eq!(options.compression_level, 3);
 
         for key in keys {
             std::env::remove_var(key);
