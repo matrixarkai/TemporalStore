@@ -232,6 +232,12 @@ pub struct PageStoreSegmentReport {
     pub logical_bytes: u64,
     pub page_count: u64,
     #[serde(default)]
+    pub readable_prefix_physical_bytes: u64,
+    #[serde(default)]
+    pub has_corruption: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_error_offset: Option<u64>,
+    #[serde(default)]
     pub object_count: u64,
     #[serde(default)]
     pub routing_slot_count: u64,
@@ -1976,6 +1982,7 @@ fn inspect_segment(segment: &[u8], page_segment_id: u64) -> PageStoreSegmentRepo
     if !segment.starts_with(PAGE_RECORD_MAGIC) {
         report.logical_bytes = segment.len() as u64;
         report.page_count = 1;
+        report.readable_prefix_physical_bytes = segment.len() as u64;
         return report;
     }
 
@@ -1993,25 +2000,33 @@ fn inspect_segment(segment: &[u8], page_segment_id: u64) -> PageStoreSegmentRepo
             sha256: None,
         };
         if !remaining.starts_with(PAGE_RECORD_MAGIC) {
-            report.first_error = Some(
+            record_segment_inspection_error(
+                &mut report,
+                address.offset,
                 corrupt_page_envelope(&address, "mixed raw bytes after page envelope").to_string(),
             );
             break;
         }
         if remaining.len() < PAGE_RECORD_V1_HEADER_LEN {
-            report.first_error = Some(corrupt_page_envelope(&address, "short header").to_string());
+            record_segment_inspection_error(
+                &mut report,
+                address.offset,
+                corrupt_page_envelope(&address, "short header").to_string(),
+            );
             break;
         }
         let header = match parse_page_record_header(remaining, &address) {
             Ok(header) => header,
             Err(err) => {
-                report.first_error = Some(err.to_string());
+                record_segment_inspection_error(&mut report, address.offset, err.to_string());
                 break;
             }
         };
         let record_len = header.header_len.saturating_add(header.stored_len);
         if remaining.len() < record_len {
-            report.first_error = Some(
+            record_segment_inspection_error(
+                &mut report,
+                address.offset,
                 corrupt_page_envelope(&address, "payload length mismatch".to_string()).to_string(),
             );
             break;
@@ -2054,13 +2069,24 @@ fn inspect_segment(segment: &[u8], page_segment_id: u64) -> PageStoreSegmentRepo
                 }
             }
             Err(err) => {
-                report.first_error = Some(err.to_string());
+                record_segment_inspection_error(&mut report, address.offset, err.to_string());
                 break;
             }
         }
         physical_offset = physical_offset.saturating_add(record_len);
+        report.readable_prefix_physical_bytes = physical_offset as u64;
     }
     report
+}
+
+fn record_segment_inspection_error(
+    report: &mut PageStoreSegmentReport,
+    offset: u64,
+    error: String,
+) {
+    report.has_corruption = true;
+    report.first_error_offset = Some(offset);
+    report.first_error = Some(error);
 }
 
 fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
@@ -2518,6 +2544,12 @@ mod tests {
         );
         assert_eq!(reports[0].page_count, 2);
         assert_eq!(reports[0].compressed_records, 2);
+        assert_eq!(
+            reports[0].readable_prefix_physical_bytes,
+            reports[0].physical_bytes
+        );
+        assert!(!reports[0].has_corruption);
+        assert_eq!(reports[0].first_error_offset, None);
         assert_eq!(reports[0].first_page_id, first.page_id);
         assert_eq!(reports[0].last_page_id, second.page_id);
         assert_eq!(reports[0].first_error, None);
@@ -2545,6 +2577,11 @@ mod tests {
         assert_eq!(reports[0].routing_slot_count, 2);
         assert_eq!(reports[0].first_routing_slot, Some(7));
         assert_eq!(reports[0].last_routing_slot, Some(11));
+        assert_eq!(
+            reports[0].readable_prefix_physical_bytes,
+            reports[0].physical_bytes
+        );
+        assert!(!reports[0].has_corruption);
         assert_eq!(reports[0].first_error, None);
     }
 
@@ -2564,6 +2601,9 @@ mod tests {
         assert_eq!(reports.len(), 1);
         assert_eq!(reports[0].page_count, 1);
         assert_eq!(reports[0].logical_bytes, b"healthy".len() as u64);
+        assert_eq!(reports[0].readable_prefix_physical_bytes, first.length);
+        assert!(reports[0].has_corruption);
+        assert_eq!(reports[0].first_error_offset, Some(first.length));
         assert_eq!(reports[0].first_page_id, first.page_id);
         assert_eq!(reports[0].last_page_id, first.page_id);
         let error = reports[0]
