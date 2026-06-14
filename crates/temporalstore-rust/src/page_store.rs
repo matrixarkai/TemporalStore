@@ -127,6 +127,21 @@ pub struct PageStoreZoneDescriptor {
     pub last_page_id: Option<u64>,
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PageStoreSegmentReport {
+    pub page_segment_id: u64,
+    pub physical_bytes: u64,
+    pub logical_bytes: u64,
+    pub page_count: u64,
+    pub compressed_records: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_page_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_page_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_error: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct PageStoreZoneManifest {
     version: u32,
@@ -683,6 +698,21 @@ impl LocalPageStore {
             .values()
             .cloned()
             .collect()
+    }
+
+    pub fn segment_reports(&self) -> Result<Vec<PageStoreSegmentReport>, PageStoreError> {
+        let root = self
+            .inner
+            .lock()
+            .expect("page store lock poisoned")
+            .root
+            .clone();
+        let mut reports = Vec::new();
+        for page_segment_id in segment_ids_at(&root)? {
+            let bytes = fs::read(segment_path(&root, page_segment_id))?;
+            reports.push(inspect_segment(&bytes, page_segment_id));
+        }
+        Ok(reports)
     }
 
     pub fn stats(&self) -> PageStoreStats {
@@ -1541,6 +1571,95 @@ fn summarize_segment(
     Ok(summary)
 }
 
+fn inspect_segment(segment: &[u8], page_segment_id: u64) -> PageStoreSegmentReport {
+    let mut report = PageStoreSegmentReport {
+        page_segment_id,
+        physical_bytes: segment.len() as u64,
+        ..PageStoreSegmentReport::default()
+    };
+    if segment.is_empty() {
+        return report;
+    }
+    if !segment.starts_with(PAGE_RECORD_MAGIC) {
+        report.logical_bytes = segment.len() as u64;
+        report.page_count = 1;
+        return report;
+    }
+
+    let mut physical_offset = 0usize;
+    while physical_offset < segment.len() {
+        let remaining = &segment[physical_offset..];
+        let mut address = PageAddress {
+            page_segment_id,
+            offset: physical_offset as u64,
+            length: 0,
+            page_id: None,
+            object_id: None,
+            routing_slot: None,
+            zone_id: None,
+            sha256: None,
+        };
+        if !remaining.starts_with(PAGE_RECORD_MAGIC) {
+            report.first_error = Some(
+                corrupt_page_envelope(&address, "mixed raw bytes after page envelope").to_string(),
+            );
+            break;
+        }
+        if remaining.len() < PAGE_RECORD_V1_HEADER_LEN {
+            report.first_error = Some(corrupt_page_envelope(&address, "short header").to_string());
+            break;
+        }
+        let header = match parse_page_record_header(remaining, &address) {
+            Ok(header) => header,
+            Err(err) => {
+                report.first_error = Some(err.to_string());
+                break;
+            }
+        };
+        let record_len = header.header_len.saturating_add(header.stored_len);
+        if remaining.len() < record_len {
+            report.first_error = Some(
+                corrupt_page_envelope(&address, "payload length mismatch".to_string()).to_string(),
+            );
+            break;
+        }
+        address.length = record_len as u64;
+        address.page_id = header.page_id;
+        address.object_id = header.object_id;
+        address.routing_slot = header.routing_slot;
+        address.zone_id = header.zone_id;
+        match decode_page_record(&remaining[..record_len], &address) {
+            Ok(decoded) => {
+                report.page_count = report.page_count.saturating_add(1);
+                report.logical_bytes = report
+                    .logical_bytes
+                    .saturating_add(decoded.logical_len as u64);
+                if decoded.compression == PageRecordCompression::Zstd {
+                    report.compressed_records = report.compressed_records.saturating_add(1);
+                }
+                if let Some(page_id) = header.page_id {
+                    report.first_page_id = Some(
+                        report
+                            .first_page_id
+                            .map_or(page_id, |current| current.min(page_id)),
+                    );
+                    report.last_page_id = Some(
+                        report
+                            .last_page_id
+                            .map_or(page_id, |current| current.max(page_id)),
+                    );
+                }
+            }
+            Err(err) => {
+                report.first_error = Some(err.to_string());
+                break;
+            }
+        }
+        physical_offset = physical_offset.saturating_add(record_len);
+    }
+    report
+}
+
 fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         if let Ok(dir) = File::open(parent) {
@@ -1861,6 +1980,56 @@ mod tests {
         assert!(stats.compression_bytes_saved > 0);
         assert!(stats.bytes_written < stats.logical_bytes_written);
         assert!(stats.logical_bytes_read >= stats.bytes_read);
+    }
+
+    #[test]
+    fn segment_reports_describe_page_counts_bytes_and_compression() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalPageStore::new(dir.path());
+        let first_payload = b"prefix-".repeat(80);
+        let second_payload = b"suffix-".repeat(80);
+        let first = store.append(&first_payload).unwrap();
+        let second = store.append(&second_payload).unwrap();
+
+        let reports = store.segment_reports().unwrap();
+
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].page_segment_id, first.page_segment_id);
+        assert_eq!(reports[0].physical_bytes, first.length + second.length);
+        assert_eq!(
+            reports[0].logical_bytes,
+            (first_payload.len() + second_payload.len()) as u64
+        );
+        assert_eq!(reports[0].page_count, 2);
+        assert_eq!(reports[0].compressed_records, 2);
+        assert_eq!(reports[0].first_page_id, first.page_id);
+        assert_eq!(reports[0].last_page_id, second.page_id);
+        assert_eq!(reports[0].first_error, None);
+    }
+
+    #[test]
+    fn segment_reports_capture_first_corrupt_record_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalPageStore::new(dir.path());
+        let first = store.append(b"healthy").unwrap();
+        let second = store.append(b"damaged").unwrap();
+        let path = segment_path(dir.path(), second.page_segment_id);
+        let mut segment = fs::read(&path).unwrap();
+        *segment.last_mut().unwrap() ^= 0xff;
+        fs::write(path, segment).unwrap();
+
+        let reports = store.segment_reports().unwrap();
+
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].page_count, 1);
+        assert_eq!(reports[0].logical_bytes, b"healthy".len() as u64);
+        assert_eq!(reports[0].first_page_id, first.page_id);
+        assert_eq!(reports[0].last_page_id, first.page_id);
+        let error = reports[0]
+            .first_error
+            .as_ref()
+            .expect("corrupt second record should be reported");
+        assert!(error.contains("checksum") || error.contains("corrupt page envelope"));
     }
 
     #[test]

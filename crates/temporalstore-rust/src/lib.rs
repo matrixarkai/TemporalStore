@@ -58,7 +58,9 @@ pub use meta::{
     TableTopologyResponse,
 };
 pub use oplog::{LocalOplogStore, OplogRecord, OplogStats};
-pub use page_store::{LocalPageStore, PageAddress, PageStoreOptions, PageStoreStats};
+pub use page_store::{
+    LocalPageStore, PageAddress, PageStoreOptions, PageStoreSegmentReport, PageStoreStats,
+};
 pub use partition_id::{
     validate_partition_count_per_set, validate_partition_set_count, PartitionId, PartitionIdError,
     MAX_PARTITION_SET_INDEX, MAX_TABLE_ID, MIN_SLOTS_PER_PARTITION, PARTITION_INDEX_MASK,

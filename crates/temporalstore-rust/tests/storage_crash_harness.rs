@@ -52,6 +52,12 @@ fn storage_crash_harness_recovers_after_abrupt_process_abort() {
     assert_eq!(summary.recovery.readable_page_refs, 2);
     assert!(summary.recovery.all_live_pages_readable);
     assert_eq!(summary.recovery.zone_descriptors.len(), 2);
+    assert_eq!(summary.recovery.page_segment_reports.len(), 2);
+    assert!(summary
+        .recovery
+        .page_segment_reports
+        .iter()
+        .all(|report| report.first_error.is_none()));
 }
 
 #[test]
@@ -109,6 +115,12 @@ fn storage_crash_harness_reports_corrupt_page_after_process_abort() {
     assert!(!summary.recovery.all_live_pages_readable);
     assert_eq!(summary.recovery.unreadable_page_refs.len(), 1);
     assert_eq!(summary.recovery.unreadable_page_refs[0].page_segment_id, 0);
+    assert_eq!(summary.recovery.page_segment_reports.len(), 2);
+    assert!(summary
+        .recovery
+        .page_segment_reports
+        .iter()
+        .any(|report| report.first_error.is_some()));
     assert!(
         summary.recovery.unreadable_page_refs[0]
             .error

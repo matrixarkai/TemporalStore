@@ -19,8 +19,8 @@ use crate::control::{
 use crate::index_log::LocalIndexLogStore;
 use crate::oplog::LocalOplogStore;
 use crate::page_store::{
-    LocalPageStore, PageAddress, PageStoreError, PageStoreOptions, PageStoreStats,
-    PageStoreZoneDescriptor,
+    LocalPageStore, PageAddress, PageStoreError, PageStoreOptions, PageStoreSegmentReport,
+    PageStoreStats, PageStoreZoneDescriptor,
 };
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,
@@ -154,6 +154,8 @@ pub struct StorageRecoveryReport {
     pub active_page_segment_ids: Vec<u64>,
     pub live_page_segment_ids: Vec<u64>,
     pub zone_descriptors: Vec<PageStoreZoneDescriptor>,
+    #[serde(default)]
+    pub page_segment_reports: Vec<PageStoreSegmentReport>,
     pub total_page_refs: usize,
     pub readable_page_refs: usize,
     #[serde(default)]
@@ -1064,6 +1066,7 @@ impl TemporalEngine {
             .unwrap_or_default();
         let active_page_segment_ids = self.page_store.segment_ids().unwrap_or_default();
         let zone_descriptors = self.page_store.zone_descriptors();
+        let page_segment_reports = self.page_store.segment_reports().unwrap_or_default();
         let shards = self.shards.read().expect("engine lock poisoned");
         let addresses = shards
             .get(&shard_id)
@@ -1098,6 +1101,7 @@ impl TemporalEngine {
             active_page_segment_ids,
             live_page_segment_ids,
             zone_descriptors,
+            page_segment_reports,
             total_page_refs,
             readable_page_refs,
             unreadable_page_refs,
