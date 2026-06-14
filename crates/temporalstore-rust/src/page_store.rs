@@ -65,6 +65,26 @@ pub struct PageStoreStats {
     pub compression_bytes_saved: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PageStoreOptions {
+    #[serde(default = "default_page_record_compression_enabled")]
+    pub compression_enabled: bool,
+    #[serde(default = "default_page_record_compression_min_bytes")]
+    pub compression_min_bytes: usize,
+    #[serde(default = "default_page_record_compression_level")]
+    pub compression_level: i32,
+}
+
+impl Default for PageStoreOptions {
+    fn default() -> Self {
+        Self {
+            compression_enabled: default_page_record_compression_enabled(),
+            compression_min_bytes: default_page_record_compression_min_bytes(),
+            compression_level: default_page_record_compression_level(),
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PageStoreGcReport {
     pub retain_from_page_segment_id: u64,
@@ -93,11 +113,16 @@ struct PageStoreInner {
     page_segment_id: u64,
     write_offset: u64,
     next_page_id: u64,
+    options: PageStoreOptions,
     stats: PageStoreStats,
 }
 
 impl LocalPageStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self::with_options(root, PageStoreOptions::default())
+    }
+
+    pub fn with_options(root: impl Into<PathBuf>, options: PageStoreOptions) -> Self {
         let root = root.into();
         let _ = fs::create_dir_all(&root);
         let page_segment_id = latest_segment_id_at(&root).unwrap_or_default();
@@ -112,6 +137,7 @@ impl LocalPageStore {
                 page_segment_id,
                 write_offset,
                 next_page_id,
+                options,
                 stats: PageStoreStats::default(),
             })),
         }
@@ -141,7 +167,14 @@ impl LocalPageStore {
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
         let page_id = inner.next_page_id;
         let zone_id = zone_id_for_segment(inner.page_segment_id);
-        let record = encode_page_record(bytes, page_id, object_id, routing_slot, zone_id)?;
+        let record = encode_page_record(
+            bytes,
+            page_id,
+            object_id,
+            routing_slot,
+            zone_id,
+            inner.options,
+        )?;
         let address = PageAddress {
             page_segment_id: inner.page_segment_id,
             offset: inner.write_offset,
@@ -401,8 +434,21 @@ const PAGE_RECORD_V4_HEADER_LEN: usize = PAGE_RECORD_V3_HEADER_LEN + 8;
 const PAGE_RECORD_V5_HEADER_LEN: usize = PAGE_RECORD_V4_HEADER_LEN + 8;
 const PAGE_RECORD_HEADER_LEN: usize = PAGE_RECORD_V5_HEADER_LEN + 16;
 const PAGE_RECORD_COMPRESSION_MIN_BYTES: usize = 256;
+const PAGE_RECORD_COMPRESSION_LEVEL: i32 = 0;
 const PAGE_RECORD_COMPRESSION_NONE: u8 = 0;
 const PAGE_RECORD_COMPRESSION_ZSTD: u8 = 1;
+
+fn default_page_record_compression_enabled() -> bool {
+    true
+}
+
+fn default_page_record_compression_min_bytes() -> usize {
+    PAGE_RECORD_COMPRESSION_MIN_BYTES
+}
+
+fn default_page_record_compression_level() -> i32 {
+    PAGE_RECORD_COMPRESSION_LEVEL
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PageRecordCompression {
@@ -450,9 +496,10 @@ fn encode_page_record(
     object_id: Option<u64>,
     routing_slot: Option<u32>,
     zone_id: u64,
+    options: PageStoreOptions,
 ) -> Result<EncodedPageRecord, PageStoreError> {
     let digest = Sha256::digest(payload);
-    let (stored_payload, compression) = encode_page_record_payload(payload)?;
+    let (stored_payload, compression) = encode_page_record_payload(payload, options)?;
     let stored_len = stored_payload.len();
     let mut record = Vec::with_capacity(PAGE_RECORD_HEADER_LEN + stored_payload.len());
     record.extend_from_slice(PAGE_RECORD_MAGIC);
@@ -485,11 +532,15 @@ fn encode_page_record(
 
 fn encode_page_record_payload(
     payload: &[u8],
+    options: PageStoreOptions,
 ) -> Result<(Vec<u8>, PageRecordCompression), PageStoreError> {
-    if payload.len() < PAGE_RECORD_COMPRESSION_MIN_BYTES {
+    if !options.compression_enabled || payload.len() < options.compression_min_bytes {
         return Ok((payload.to_vec(), PageRecordCompression::None));
     }
-    let compressed = zstd::stream::encode_all(Cursor::new(payload), 0)?;
+    let compressed = zstd::stream::encode_all(
+        Cursor::new(payload),
+        options.compression_level.clamp(-7, 22),
+    )?;
     if compressed.len() < payload.len() {
         Ok((compressed, PageRecordCompression::Zstd))
     } else {
@@ -1197,6 +1248,55 @@ mod tests {
         assert!(stats.compression_bytes_saved > 0);
         assert!(stats.bytes_written < stats.logical_bytes_written);
         assert!(stats.logical_bytes_read >= stats.bytes_read);
+    }
+
+    #[test]
+    fn page_record_compression_policy_can_disable_or_raise_threshold() {
+        let payload = b"policy-controlled-".repeat(80);
+
+        let disabled_dir = tempfile::tempdir().unwrap();
+        let disabled_store = LocalPageStore::with_options(
+            disabled_dir.path(),
+            PageStoreOptions {
+                compression_enabled: false,
+                ..PageStoreOptions::default()
+            },
+        );
+        let disabled_address = disabled_store.append(&payload).unwrap();
+        let disabled_raw = disabled_store
+            .read_segment(disabled_address.page_segment_id)
+            .unwrap();
+
+        assert_eq!(
+            disabled_address.length,
+            (PAGE_RECORD_HEADER_LEN + payload.len()) as u64
+        );
+        assert_eq!(disabled_raw[92], PAGE_RECORD_COMPRESSION_NONE);
+        assert_eq!(disabled_store.read(&disabled_address).unwrap(), payload);
+        assert_eq!(disabled_store.stats().compressed_records_written, 0);
+        assert_eq!(disabled_store.stats().compression_bytes_saved, 0);
+
+        let threshold_dir = tempfile::tempdir().unwrap();
+        let threshold_store = LocalPageStore::with_options(
+            threshold_dir.path(),
+            PageStoreOptions {
+                compression_min_bytes: payload.len() + 1,
+                ..PageStoreOptions::default()
+            },
+        );
+        let threshold_address = threshold_store.append(&payload).unwrap();
+        let threshold_raw = threshold_store
+            .read_segment(threshold_address.page_segment_id)
+            .unwrap();
+
+        assert_eq!(
+            threshold_address.length,
+            (PAGE_RECORD_HEADER_LEN + payload.len()) as u64
+        );
+        assert_eq!(threshold_raw[92], PAGE_RECORD_COMPRESSION_NONE);
+        assert_eq!(threshold_store.read(&threshold_address).unwrap(), payload);
+        assert_eq!(threshold_store.stats().compressed_records_written, 0);
+        assert_eq!(threshold_store.stats().compression_bytes_saved, 0);
     }
 
     #[test]
