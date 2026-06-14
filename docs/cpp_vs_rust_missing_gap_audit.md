@@ -1623,6 +1623,11 @@ planning:
     the missing commit marker after manifest validation, and includes manifest
     prune planning/application plus install roll-forward reports in storage
     lifecycle output.
+26. Closed a follower-cursor manifest retention gap: slot dump manifest prune
+    planning now accepts follower replay cursors, retains the manifest boundary
+    needed by a lagging follower, reports the follower/manifest block reason,
+    and allows pruning again once the follower cursor advances past the latest
+    retained generation.
 
 Eight storage audit passes completed against C++ storage code:
 

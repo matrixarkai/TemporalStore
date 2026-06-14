@@ -1146,6 +1146,7 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
                         purge_delayed_destroy: false,
                         prune_slot_dump_manifests: false,
                         roll_forward_slot_dump_installs: false,
+                        follower_replay_cursors: Vec::new(),
                         invalidate_cache: false,
                         warm_cache: false,
                     })
@@ -1392,6 +1393,7 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
                         purge_delayed_destroy: false,
                         prune_slot_dump_manifests: false,
                         roll_forward_slot_dump_installs: false,
+                        follower_replay_cursors: Vec::new(),
                         invalidate_cache: false,
                         warm_cache: false,
                     }),
@@ -2010,6 +2012,7 @@ mod tests {
                 purge_delayed_destroy: false,
                 prune_slot_dump_manifests: false,
                 roll_forward_slot_dump_installs: false,
+                follower_replay_cursors: Vec::new(),
                 invalidate_cache: false,
                 warm_cache: true,
             },
