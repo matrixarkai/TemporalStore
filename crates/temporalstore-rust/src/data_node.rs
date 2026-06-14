@@ -1141,6 +1141,8 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
                     .storage_lifecycle_plan(StorageLifecycleRequest {
                         shard_id: request.shard_id,
                         selected_dump_slots: Vec::new(),
+                        max_dump_slots_per_round: 0,
+                        min_undumped_oplog_records: 0,
                         purge_delayed_destroy: false,
                         invalidate_cache: false,
                         warm_cache: false,
@@ -1383,6 +1385,8 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
                     .storage_lifecycle_plan(StorageLifecycleRequest {
                         shard_id: request.shard_id,
                         selected_dump_slots: Vec::new(),
+                        max_dump_slots_per_round: 0,
+                        min_undumped_oplog_records: 0,
                         purge_delayed_destroy: false,
                         invalidate_cache: false,
                         warm_cache: false,
@@ -1997,6 +2001,8 @@ mod tests {
             StorageLifecycleRequest {
                 shard_id: 1,
                 selected_dump_slots: Vec::new(),
+                max_dump_slots_per_round: 0,
+                min_undumped_oplog_records: 0,
                 purge_delayed_destroy: false,
                 invalidate_cache: false,
                 warm_cache: true,

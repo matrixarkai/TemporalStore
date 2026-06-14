@@ -1554,6 +1554,11 @@ planning:
     deletion that would advance beyond a known follower replay cursor.
 16. Closed the cache policy testability gap: lifecycle apply can warm cache
     entries from live page-index refs and reports the number of warmed page refs.
+17. Closed the C++ `StorageManager::ShouldDelayDumpOplog`/per-round dump
+    policy gap: Rust lifecycle planning now reports undumped oplog records,
+    can delay automatic dirty-slot dumps until a configured oplog threshold is
+    reached, and can cap selected dirty slots per lifecycle round while still
+    allowing explicit operator-selected slots.
 
 Remaining explicit non-goals for this pass: brpc/thrift surfaces, S3/ByteStore
 integration, C++ byte-for-byte page/header compatibility, and CacheLib/mtcache

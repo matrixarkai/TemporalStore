@@ -250,6 +250,10 @@ pub struct StorageLifecyclePlan {
     pub shard_id: ShardId,
     pub dirty_slots: Vec<u32>,
     pub selected_dump_slots: Vec<u32>,
+    #[serde(default)]
+    pub undumped_oplog_records: u64,
+    #[serde(default)]
+    pub dump_delayed: bool,
     pub slot_summaries: Vec<SlotStorageSummary>,
     pub live_page_segment_ids: Vec<u64>,
     pub stale_page_segment_ids: Vec<u64>,
@@ -293,6 +297,10 @@ pub struct StorageLifecycleRequest {
     pub shard_id: ShardId,
     #[serde(default)]
     pub selected_dump_slots: Vec<u32>,
+    #[serde(default)]
+    pub max_dump_slots_per_round: usize,
+    #[serde(default)]
+    pub min_undumped_oplog_records: u64,
     #[serde(default)]
     pub purge_delayed_destroy: bool,
     #[serde(default)]
@@ -1004,11 +1012,29 @@ impl TemporalEngine {
             .filter(|summary| summary.dirty_object_count > 0)
             .map(|summary| summary.routing_slot)
             .collect::<Vec<_>>();
-        let selected_dump_slots = if request.selected_dump_slots.is_empty() {
-            dirty_slots.clone()
-        } else {
+        let latest_dump_oplog_sequence =
+            latest_slot_dump_manifest_at(&self.index_dir, request.shard_id)
+                .map(|manifest| manifest.oplog_sequence)
+                .unwrap_or_default();
+        let current_oplog_sequence = self.oplog_store.stats(request.shard_id).last_sequence;
+        let undumped_oplog_records =
+            current_oplog_sequence.saturating_sub(latest_dump_oplog_sequence);
+        let explicit_slots = !request.selected_dump_slots.is_empty();
+        let dump_delayed = !explicit_slots
+            && request.min_undumped_oplog_records > 0
+            && undumped_oplog_records < request.min_undumped_oplog_records;
+        let mut selected_dump_slots = if explicit_slots {
             request.selected_dump_slots.clone()
+        } else if dump_delayed {
+            Vec::new()
+        } else {
+            dirty_slots.clone()
         };
+        if request.max_dump_slots_per_round > 0
+            && selected_dump_slots.len() > request.max_dump_slots_per_round
+        {
+            selected_dump_slots.truncate(request.max_dump_slots_per_round);
+        }
         let live_page_segment_ids = self.live_page_segment_ids(request.shard_id);
         let live_page_segment_set = live_page_segment_ids
             .iter()
@@ -1028,6 +1054,8 @@ impl TemporalEngine {
         let mut reasons = Vec::new();
         if !selected_dump_slots.is_empty() {
             reasons.push("dirty_slot_dump".to_string());
+        } else if dump_delayed && !dirty_slots.is_empty() {
+            reasons.push("dirty_slot_dump_delayed".to_string());
         }
         if !stale_page_segment_ids.is_empty() {
             reasons.push("stale_page_segment_gc".to_string());
@@ -1042,6 +1070,8 @@ impl TemporalEngine {
             shard_id: request.shard_id,
             dirty_slots,
             selected_dump_slots,
+            undumped_oplog_records,
+            dump_delayed,
             slot_summaries,
             live_page_segment_ids,
             stale_page_segment_ids,
@@ -8780,6 +8810,8 @@ mod tests {
         let plan = engine.storage_lifecycle_plan(StorageLifecycleRequest {
             shard_id: 1,
             selected_dump_slots: Vec::new(),
+            max_dump_slots_per_round: 0,
+            min_undumped_oplog_records: 0,
             purge_delayed_destroy: false,
             invalidate_cache: false,
             warm_cache: false,
@@ -8792,6 +8824,8 @@ mod tests {
         let report = engine.apply_storage_lifecycle(StorageLifecycleRequest {
             shard_id: 1,
             selected_dump_slots: plan.selected_dump_slots.clone(),
+            max_dump_slots_per_round: 0,
+            min_undumped_oplog_records: 0,
             purge_delayed_destroy: false,
             invalidate_cache: true,
             warm_cache: false,
@@ -8824,6 +8858,8 @@ mod tests {
         let plan = engine.storage_lifecycle_plan(StorageLifecycleRequest {
             shard_id: 1,
             selected_dump_slots: Vec::new(),
+            max_dump_slots_per_round: 0,
+            min_undumped_oplog_records: 0,
             purge_delayed_destroy: false,
             invalidate_cache: false,
             warm_cache: false,
@@ -8831,11 +8867,88 @@ mod tests {
         let report = engine.apply_storage_lifecycle(StorageLifecycleRequest {
             shard_id: 1,
             selected_dump_slots: plan.selected_dump_slots,
+            max_dump_slots_per_round: 0,
+            min_undumped_oplog_records: 0,
             purge_delayed_destroy: false,
             invalidate_cache: false,
             warm_cache: true,
         });
         assert!(report.cache_warmup_page_refs >= 1);
         assert!(engine.cache().stats().puts >= 1);
+    }
+
+    #[test]
+    fn storage_lifecycle_plan_matches_cpp_delayed_and_limited_dirty_slot_dump_policy() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for i in 0..128 {
+            let key = format!("slot-{i}");
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: key.clone(),
+                    value: key.as_bytes().to_vec(),
+                },
+            });
+            let observed = engine.storage_lifecycle_plan(StorageLifecycleRequest {
+                shard_id: 1,
+                selected_dump_slots: Vec::new(),
+                max_dump_slots_per_round: 0,
+                min_undumped_oplog_records: 0,
+                purge_delayed_destroy: false,
+                invalidate_cache: false,
+                warm_cache: false,
+            });
+            if observed.dirty_slots.len() >= 3 {
+                break;
+            }
+        }
+
+        let delayed = engine.storage_lifecycle_plan(StorageLifecycleRequest {
+            shard_id: 1,
+            selected_dump_slots: Vec::new(),
+            max_dump_slots_per_round: 0,
+            min_undumped_oplog_records: 99,
+            purge_delayed_destroy: false,
+            invalidate_cache: false,
+            warm_cache: false,
+        });
+        assert!(delayed.dump_delayed);
+        assert!(delayed.selected_dump_slots.is_empty());
+        assert!(delayed
+            .reasons
+            .contains(&"dirty_slot_dump_delayed".to_string()));
+
+        let limited = engine.storage_lifecycle_plan(StorageLifecycleRequest {
+            shard_id: 1,
+            selected_dump_slots: Vec::new(),
+            max_dump_slots_per_round: 2,
+            min_undumped_oplog_records: 1,
+            purge_delayed_destroy: false,
+            invalidate_cache: false,
+            warm_cache: false,
+        });
+        assert!(!limited.dump_delayed);
+        assert!(limited.undumped_oplog_records >= 3);
+        assert_eq!(limited.selected_dump_slots.len(), 2);
+        assert!(limited.dirty_slots.len() >= limited.selected_dump_slots.len());
+
+        let explicit = engine.storage_lifecycle_plan(StorageLifecycleRequest {
+            shard_id: 1,
+            selected_dump_slots: vec![delayed.dirty_slots[0]],
+            max_dump_slots_per_round: 0,
+            min_undumped_oplog_records: 99,
+            purge_delayed_destroy: false,
+            invalidate_cache: false,
+            warm_cache: false,
+        });
+        assert!(!explicit.dump_delayed);
+        assert_eq!(explicit.selected_dump_slots, vec![delayed.dirty_slots[0]]);
     }
 }
