@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -105,6 +105,34 @@ pub struct PageStoreGcUtilityCandidate {
     pub utility_score: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PageStoreZoneState {
+    Active,
+    Sealed,
+    DelayedDestroy,
+    Purged,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PageStoreZoneDescriptor {
+    pub zone_id: u64,
+    pub page_segment_id: u64,
+    pub state: PageStoreZoneState,
+    pub physical_bytes: u64,
+    pub logical_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_page_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_page_id: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct PageStoreZoneManifest {
+    version: u32,
+    zones: Vec<PageStoreZoneDescriptor>,
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PageStoreRollReport {
     pub previous_page_segment_id: u64,
@@ -123,6 +151,7 @@ struct PageStoreInner {
     write_offset: u64,
     next_page_id: u64,
     options: PageStoreOptions,
+    zones: BTreeMap<u64, PageStoreZoneDescriptor>,
     stats: PageStoreStats,
 }
 
@@ -140,6 +169,19 @@ impl LocalPageStore {
             .map(|metadata| metadata.len())
             .unwrap_or_default();
         let next_page_id = next_page_id_at(&root).unwrap_or_default();
+        let mut zones = if zone_manifest_path(&root).exists() {
+            load_zone_manifest_at(&root)
+                .or_else(|_| rebuild_zone_manifest_at(&root))
+                .unwrap_or_default()
+        } else {
+            rebuild_zone_manifest_at(&root).unwrap_or_default()
+        };
+        ensure_zone_descriptor(
+            &mut zones,
+            &root,
+            page_segment_id,
+            PageStoreZoneState::Active,
+        );
         Self {
             inner: Arc::new(Mutex::new(PageStoreInner {
                 root,
@@ -147,6 +189,7 @@ impl LocalPageStore {
                 write_offset,
                 next_page_id,
                 options,
+                zones,
                 stats: PageStoreStats::default(),
             })),
         }
@@ -199,6 +242,16 @@ impl LocalPageStore {
         file.sync_data()?;
         inner.next_page_id = inner.next_page_id.saturating_add(1);
         inner.write_offset += address.length;
+        let page_segment_id = inner.page_segment_id;
+        let write_offset = inner.write_offset;
+        upsert_zone_after_append(
+            &mut inner.zones,
+            page_segment_id,
+            write_offset,
+            record.logical_len as u64,
+            page_id,
+        );
+        persist_zone_manifest(&inner.root, &inner.zones)?;
         inner.stats.writes += 1;
         inner.stats.bytes_written += address.length;
         inner.stats.logical_bytes_written += record.logical_len as u64;
@@ -226,6 +279,21 @@ impl LocalPageStore {
         let file = File::create(&path)?;
         file.sync_all()?;
         sync_parent_dir(&path)?;
+        if let Some(previous) = inner.zones.get_mut(&previous_page_segment_id) {
+            previous.state = PageStoreZoneState::Sealed;
+        }
+        let new_zone = PageStoreZoneDescriptor {
+            zone_id: zone_id_for_segment(inner.page_segment_id),
+            page_segment_id: inner.page_segment_id,
+            state: PageStoreZoneState::Active,
+            physical_bytes: 0,
+            logical_bytes: 0,
+            first_page_id: None,
+            last_page_id: None,
+        };
+        let page_segment_id = inner.page_segment_id;
+        inner.zones.insert(page_segment_id, new_zone);
+        persist_zone_manifest(&inner.root, &inner.zones)?;
         Ok(PageStoreRollReport {
             previous_page_segment_id,
             new_page_segment_id: inner.page_segment_id,
@@ -335,9 +403,37 @@ impl LocalPageStore {
             inner.page_segment_id = page_segment_id;
             inner.write_offset = bytes.len() as u64;
         }
-        if let Some(max_page_id) = max_page_id_in_segment(bytes, page_segment_id)? {
+        let zone_summary = summarize_segment(bytes, page_segment_id)?;
+        if let Some(max_page_id) = zone_summary.last_page_id {
             inner.next_page_id = inner.next_page_id.max(max_page_id.saturating_add(1));
         }
+        let is_current_segment = page_segment_id == inner.page_segment_id;
+        inner.zones.insert(
+            page_segment_id,
+            PageStoreZoneDescriptor {
+                zone_id: zone_id_for_segment(page_segment_id),
+                page_segment_id,
+                state: if is_current_segment {
+                    PageStoreZoneState::Active
+                } else {
+                    PageStoreZoneState::Sealed
+                },
+                physical_bytes: bytes.len() as u64,
+                logical_bytes: zone_summary.logical_bytes,
+                first_page_id: zone_summary.first_page_id,
+                last_page_id: zone_summary.last_page_id,
+            },
+        );
+        if is_current_segment {
+            for zone in inner.zones.values_mut() {
+                if zone.page_segment_id != page_segment_id
+                    && zone.state == PageStoreZoneState::Active
+                {
+                    zone.state = PageStoreZoneState::Sealed;
+                }
+            }
+        }
+        persist_zone_manifest(&inner.root, &inner.zones)?;
         Ok(())
     }
 
@@ -484,7 +580,7 @@ impl LocalPageStore {
         delayed_destroy: bool,
         selected_page_segment_ids: Option<BTreeSet<u64>>,
     ) -> Result<PageStoreGcReport, PageStoreError> {
-        let inner = self.inner.lock().expect("page store lock poisoned");
+        let mut inner = self.inner.lock().expect("page store lock poisoned");
         fs::create_dir_all(&inner.root)?;
         if delayed_destroy {
             fs::create_dir_all(delayed_destroy_dir(&inner.root))?;
@@ -507,9 +603,19 @@ impl LocalPageStore {
             if below_retention_floor && !is_current && !is_live && is_selected {
                 if delayed_destroy {
                     move_segment_to_delayed_destroy(&inner.root, page_segment_id)?;
+                    set_zone_state(
+                        &mut inner.zones,
+                        page_segment_id,
+                        PageStoreZoneState::DelayedDestroy,
+                    );
                     delayed_destroy_ids.push(page_segment_id);
                 } else {
                     fs::remove_file(segment_path(&inner.root, page_segment_id))?;
+                    set_zone_state(
+                        &mut inner.zones,
+                        page_segment_id,
+                        PageStoreZoneState::Purged,
+                    );
                 }
                 removed.push(page_segment_id);
             } else {
@@ -522,6 +628,7 @@ impl LocalPageStore {
                 retained.push(page_segment_id);
             }
         }
+        persist_zone_manifest(&inner.root, &inner.zones)?;
         Ok(PageStoreGcReport {
             retain_from_page_segment_id,
             removed_page_segment_ids: removed,
@@ -543,13 +650,8 @@ impl LocalPageStore {
     }
 
     pub fn purge_delayed_destroy_segments(&self) -> Result<Vec<u64>, PageStoreError> {
-        let root = self
-            .inner
-            .lock()
-            .expect("page store lock poisoned")
-            .root
-            .clone();
-        let trash_dir = delayed_destroy_dir(&root);
+        let mut inner = self.inner.lock().expect("page store lock poisoned");
+        let trash_dir = delayed_destroy_dir(&inner.root);
         let mut purged = Vec::new();
         if !trash_dir.exists() {
             return Ok(purged);
@@ -560,11 +662,23 @@ impl LocalPageStore {
                 continue;
             };
             fs::remove_file(entry.path())?;
+            set_zone_state(&mut inner.zones, id, PageStoreZoneState::Purged);
             purged.push(id);
         }
         purged.sort_unstable();
         sync_dir(&trash_dir)?;
+        persist_zone_manifest(&inner.root, &inner.zones)?;
         Ok(purged)
+    }
+
+    pub fn zone_descriptors(&self) -> Vec<PageStoreZoneDescriptor> {
+        self.inner
+            .lock()
+            .expect("page store lock poisoned")
+            .zones
+            .values()
+            .cloned()
+            .collect()
     }
 
     pub fn stats(&self) -> PageStoreStats {
@@ -580,6 +694,187 @@ impl Default for LocalPageStore {
 
 fn segment_path(root: &Path, page_segment_id: u64) -> PathBuf {
     root.join(format!("page_segment_{page_segment_id:020}.seg"))
+}
+
+fn zone_manifest_path(root: &Path) -> PathBuf {
+    root.join("page_zone_manifest.json")
+}
+
+fn load_zone_manifest_at(
+    root: &Path,
+) -> Result<BTreeMap<u64, PageStoreZoneDescriptor>, PageStoreError> {
+    let path = zone_manifest_path(root);
+    if !path.exists() {
+        return Ok(BTreeMap::new());
+    }
+    let manifest: PageStoreZoneManifest =
+        serde_json::from_slice(&fs::read(path)?).map_err(|err| {
+            PageStoreError::CorruptPageEnvelope {
+                page_segment_id: 0,
+                offset: 0,
+                reason: format!("corrupt zone manifest: {err}"),
+            }
+        })?;
+    Ok(manifest
+        .zones
+        .into_iter()
+        .map(|zone| (zone.page_segment_id, zone))
+        .collect())
+}
+
+fn rebuild_zone_manifest_at(
+    root: &Path,
+) -> Result<BTreeMap<u64, PageStoreZoneDescriptor>, PageStoreError> {
+    let mut zones = BTreeMap::new();
+    let latest = latest_segment_id_at(root)?;
+    for page_segment_id in segment_ids_at(root)? {
+        let path = segment_path(root, page_segment_id);
+        let bytes = fs::read(&path)?;
+        let summary = summarize_segment(&bytes, page_segment_id)?;
+        zones.insert(
+            page_segment_id,
+            PageStoreZoneDescriptor {
+                zone_id: zone_id_for_segment(page_segment_id),
+                page_segment_id,
+                state: if page_segment_id == latest {
+                    PageStoreZoneState::Active
+                } else {
+                    PageStoreZoneState::Sealed
+                },
+                physical_bytes: bytes.len() as u64,
+                logical_bytes: summary.logical_bytes,
+                first_page_id: summary.first_page_id,
+                last_page_id: summary.last_page_id,
+            },
+        );
+    }
+    for page_segment_id in delayed_destroy_segment_ids_at(root)? {
+        zones
+            .entry(page_segment_id)
+            .and_modify(|zone| zone.state = PageStoreZoneState::DelayedDestroy)
+            .or_insert(PageStoreZoneDescriptor {
+                zone_id: zone_id_for_segment(page_segment_id),
+                page_segment_id,
+                state: PageStoreZoneState::DelayedDestroy,
+                physical_bytes: 0,
+                logical_bytes: 0,
+                first_page_id: None,
+                last_page_id: None,
+            });
+    }
+    Ok(zones)
+}
+
+fn persist_zone_manifest(
+    root: &Path,
+    zones: &BTreeMap<u64, PageStoreZoneDescriptor>,
+) -> Result<(), PageStoreError> {
+    fs::create_dir_all(root)?;
+    let path = zone_manifest_path(root);
+    let temp_path = path.with_extension(format!(
+        "json.tmp.{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default()
+    ));
+    let manifest = PageStoreZoneManifest {
+        version: 1,
+        zones: zones.values().cloned().collect(),
+    };
+    {
+        let mut temp = File::create(&temp_path)?;
+        serde_json::to_writer_pretty(&mut temp, &manifest).map_err(|err| {
+            PageStoreError::CorruptPageEnvelope {
+                page_segment_id: 0,
+                offset: 0,
+                reason: format!("serialize zone manifest: {err}"),
+            }
+        })?;
+        temp.write_all(b"\n")?;
+        temp.flush()?;
+        temp.sync_all()?;
+    }
+    fs::rename(&temp_path, &path)?;
+    sync_parent_dir(&path)?;
+    Ok(())
+}
+
+fn ensure_zone_descriptor(
+    zones: &mut BTreeMap<u64, PageStoreZoneDescriptor>,
+    root: &Path,
+    page_segment_id: u64,
+    state: PageStoreZoneState,
+) {
+    zones.entry(page_segment_id).or_insert_with(|| {
+        let physical_bytes = segment_path(root, page_segment_id)
+            .metadata()
+            .map(|metadata| metadata.len())
+            .unwrap_or_default();
+        PageStoreZoneDescriptor {
+            zone_id: zone_id_for_segment(page_segment_id),
+            page_segment_id,
+            state,
+            physical_bytes,
+            logical_bytes: physical_bytes,
+            first_page_id: None,
+            last_page_id: None,
+        }
+    });
+    for zone in zones.values_mut() {
+        if zone.page_segment_id == page_segment_id {
+            zone.state = state;
+        } else if zone.state == PageStoreZoneState::Active {
+            zone.state = PageStoreZoneState::Sealed;
+        }
+    }
+}
+
+fn upsert_zone_after_append(
+    zones: &mut BTreeMap<u64, PageStoreZoneDescriptor>,
+    page_segment_id: u64,
+    physical_bytes: u64,
+    logical_bytes_written: u64,
+    page_id: u64,
+) {
+    let zone = zones
+        .entry(page_segment_id)
+        .or_insert(PageStoreZoneDescriptor {
+            zone_id: zone_id_for_segment(page_segment_id),
+            page_segment_id,
+            state: PageStoreZoneState::Active,
+            physical_bytes: 0,
+            logical_bytes: 0,
+            first_page_id: Some(page_id),
+            last_page_id: Some(page_id),
+        });
+    zone.state = PageStoreZoneState::Active;
+    zone.physical_bytes = physical_bytes;
+    zone.logical_bytes = zone.logical_bytes.saturating_add(logical_bytes_written);
+    zone.first_page_id = Some(
+        zone.first_page_id
+            .map_or(page_id, |first| first.min(page_id)),
+    );
+    zone.last_page_id = Some(zone.last_page_id.map_or(page_id, |last| last.max(page_id)));
+}
+
+fn set_zone_state(
+    zones: &mut BTreeMap<u64, PageStoreZoneDescriptor>,
+    page_segment_id: u64,
+    state: PageStoreZoneState,
+) {
+    zones
+        .entry(page_segment_id)
+        .and_modify(|zone| zone.state = state)
+        .or_insert(PageStoreZoneDescriptor {
+            zone_id: zone_id_for_segment(page_segment_id),
+            page_segment_id,
+            state,
+            physical_bytes: 0,
+            logical_bytes: 0,
+            first_page_id: None,
+            last_page_id: None,
+        });
 }
 
 fn page_segment_utility_score(below_retention_floor: bool, is_current: bool, is_live: bool) -> u64 {
@@ -1163,7 +1458,7 @@ fn next_page_id_at(root: &Path) -> Result<u64, PageStoreError> {
     let mut max_page_id = None;
     for page_segment_id in segment_ids_at(root)? {
         let bytes = fs::read(segment_path(root, page_segment_id))?;
-        if let Some(segment_max) = max_page_id_in_segment(&bytes, page_segment_id)? {
+        if let Some(segment_max) = summarize_segment(&bytes, page_segment_id)?.last_page_id {
             max_page_id =
                 Some(max_page_id.map_or(segment_max, |current: u64| current.max(segment_max)));
         }
@@ -1173,15 +1468,26 @@ fn next_page_id_at(root: &Path) -> Result<u64, PageStoreError> {
         .unwrap_or_default())
 }
 
-fn max_page_id_in_segment(
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct SegmentSummary {
+    logical_bytes: u64,
+    first_page_id: Option<u64>,
+    last_page_id: Option<u64>,
+}
+
+fn summarize_segment(
     segment: &[u8],
     page_segment_id: u64,
-) -> Result<Option<u64>, PageStoreError> {
+) -> Result<SegmentSummary, PageStoreError> {
     if !segment.starts_with(PAGE_RECORD_MAGIC) {
-        return Ok(None);
+        return Ok(SegmentSummary {
+            logical_bytes: segment.len() as u64,
+            first_page_id: None,
+            last_page_id: None,
+        });
     }
     let mut physical_offset = 0usize;
-    let mut max_page_id = None;
+    let mut summary = SegmentSummary::default();
     while physical_offset < segment.len() {
         let remaining = &segment[physical_offset..];
         let address = PageAddress {
@@ -1212,11 +1518,23 @@ fn max_page_id_in_segment(
             ));
         }
         if let Some(page_id) = header.page_id {
-            max_page_id = Some(max_page_id.map_or(page_id, |current: u64| current.max(page_id)));
+            summary.first_page_id = Some(
+                summary
+                    .first_page_id
+                    .map_or(page_id, |current| current.min(page_id)),
+            );
+            summary.last_page_id = Some(
+                summary
+                    .last_page_id
+                    .map_or(page_id, |current| current.max(page_id)),
+            );
         }
+        summary.logical_bytes = summary
+            .logical_bytes
+            .saturating_add(header.payload_len as u64);
         physical_offset = physical_offset.saturating_add(record_len);
     }
-    Ok(max_page_id)
+    Ok(summary)
 }
 
 fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
@@ -1430,6 +1748,66 @@ mod tests {
         assert_eq!(second.zone_id, Some(second.page_segment_id));
         assert_eq!(second.zone_id, Some(roll.new_page_segment_id));
         assert_ne!(first.zone_id, second.zone_id);
+    }
+
+    #[test]
+    fn zone_manifest_tracks_roll_reopen_gc_and_purge() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalPageStore::new(dir.path());
+        let first = store.append(b"first-zone").unwrap();
+        store.roll_segment().unwrap();
+        let second = store.append(b"second-zone").unwrap();
+
+        let zones = store.zone_descriptors();
+        assert_eq!(zones.len(), 2);
+        assert_eq!(zones[0].page_segment_id, first.page_segment_id);
+        assert_eq!(zones[0].state, PageStoreZoneState::Sealed);
+        assert_eq!(zones[0].first_page_id, first.page_id);
+        assert_eq!(zones[0].last_page_id, first.page_id);
+        assert_eq!(zones[1].page_segment_id, second.page_segment_id);
+        assert_eq!(zones[1].state, PageStoreZoneState::Active);
+        assert_eq!(zones[1].first_page_id, second.page_id);
+        assert_eq!(zones[1].last_page_id, second.page_id);
+        assert!(zone_manifest_path(dir.path()).exists());
+
+        let reopened = LocalPageStore::new(dir.path());
+        assert_eq!(reopened.zone_descriptors(), zones);
+
+        let report = reopened
+            .gc_segments_before_with_live_refs_delayed_destroy(1, std::iter::empty())
+            .unwrap();
+        assert_eq!(report.delayed_destroy_page_segment_ids, vec![0]);
+        let delayed = reopened.zone_descriptors();
+        assert_eq!(delayed[0].state, PageStoreZoneState::DelayedDestroy);
+        assert_eq!(delayed[1].state, PageStoreZoneState::Active);
+
+        assert_eq!(reopened.purge_delayed_destroy_segments().unwrap(), vec![0]);
+        let purged = LocalPageStore::new(dir.path()).zone_descriptors();
+        assert_eq!(purged[0].state, PageStoreZoneState::Purged);
+        assert_eq!(purged[1].state, PageStoreZoneState::Active);
+    }
+
+    #[test]
+    fn missing_zone_manifest_rebuilds_from_existing_segments() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalPageStore::new(dir.path());
+        let first = store.append(b"first-zone").unwrap();
+        store.roll_segment().unwrap();
+        let second = store.append(b"second-zone").unwrap();
+        fs::remove_file(zone_manifest_path(dir.path())).unwrap();
+
+        let rebuilt = LocalPageStore::new(dir.path());
+        let zones = rebuilt.zone_descriptors();
+
+        assert_eq!(zones.len(), 2);
+        assert_eq!(zones[0].page_segment_id, first.page_segment_id);
+        assert_eq!(zones[0].state, PageStoreZoneState::Sealed);
+        assert_eq!(zones[0].first_page_id, first.page_id);
+        assert_eq!(zones[0].last_page_id, first.page_id);
+        assert_eq!(zones[1].page_segment_id, second.page_segment_id);
+        assert_eq!(zones[1].state, PageStoreZoneState::Active);
+        assert_eq!(zones[1].first_page_id, second.page_id);
+        assert_eq!(zones[1].last_page_id, second.page_id);
     }
 
     #[test]
