@@ -58,6 +58,24 @@ brpc and Thrift are intentionally not part of the Rust target. The Rust open-sou
 
 ## What Was Closed In The Latest Pass
 
+This pass closed the next client/proxy request-time topology convergence gap:
+
+1. Table execute and batch execute now treat C++ topology statuses such as `meta_changed`,
+   `topom_error`, `partition_loading`, `not_serving`, and stale load-version errors as
+   metadata-refresh triggers.
+2. A topology status can force one targeted table-topology refresh and retry even when the normal
+   write retry budget is zero, preserving the existing no-retry behavior for ordinary write
+   `retry_later` responses.
+3. The refresh uses the Rust-native metaserver table-topology path and keeps the prior
+   table-scoped route-cache replacement behavior.
+4. A regression test covers a stale cached route returning `meta_changed`, refreshing from
+   metaserver, and completing the write on the new live node.
+
+This improves C++ `MetaSyncer`/route convergence behavior on active requests. Remaining work is a
+dedicated background MetaSyncer state report and broader multi-table/multi-proxy scale scenarios.
+
+## What Was Closed In The Previous Pass
+
 This pass closed a client/proxy topology refresh gap:
 
 1. The Rust client now has `refresh_stale_routes_from_meta()`, which reads metaserver topology

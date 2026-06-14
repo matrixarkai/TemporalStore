@@ -2221,9 +2221,10 @@ impl TemporalStoreTable {
         }
         let write = is_write(&command);
         let force_primary = write || table_options.pin_primary;
-        let max_attempts = retry_attempts_for(&table_options, write);
-        let mut response = None;
-        for attempt in 0..max_attempts {
+        let retry_budget_attempts = retry_attempts_for(&table_options, write);
+        let mut attempt = 0;
+        let mut topology_refresh_used = false;
+        let response = loop {
             let current = self.client.execute_routed_with_http_and_policy(
                 ExecuteRequest {
                     shard_id,
@@ -2239,16 +2240,20 @@ impl TemporalStoreTable {
                     Some(table_options.preferred_location.as_str())
                 },
             )?;
-            if current.status.ok
-                || !status_is_cpp_retryable(&current.status)
-                || attempt + 1 == max_attempts
-            {
-                response = Some(current);
-                break;
+            let topology_retry = status_is_cpp_topology_retryable(&current.status);
+            let can_retry = status_is_cpp_retryable(&current.status)
+                && (attempt + 1 < retry_budget_attempts
+                    || (topology_retry && !topology_refresh_used));
+            if current.status.ok || !can_retry {
+                break current;
+            }
+            if topology_retry && !topology_refresh_used {
+                topology_refresh_used = true;
+                self.refresh_table_topology_after_status();
             }
             sleep_before_retry(&table_options, attempt);
-        }
-        let response = response.expect("retry loop must run at least one attempt");
+            attempt += 1;
+        };
         if !response.status.ok {
             return Err(ClientError::Status(response.status.message));
         }
@@ -2297,24 +2302,30 @@ impl TemporalStoreTable {
         table_options: TableOptions,
     ) -> Result<BatchExecuteResponse, ClientError> {
         let write = request.commands.iter().any(is_write);
-        let max_attempts = retry_attempts_for(&table_options, write);
-        let mut response = None;
-        for attempt in 0..max_attempts {
+        let retry_budget_attempts = retry_attempts_for(&table_options, write);
+        let mut attempt = 0;
+        let mut topology_refresh_used = false;
+        let response = loop {
             let current = self.client.batch_execute_with_http(
                 request.clone(),
                 self.http_options(),
                 Some(table_options.continuous_failed_time_ms),
             )?;
-            if current.status.ok
-                || !status_is_cpp_retryable(&current.status)
-                || attempt + 1 == max_attempts
-            {
-                response = Some(current);
-                break;
+            let topology_retry = status_is_cpp_topology_retryable(&current.status);
+            let can_retry = status_is_cpp_retryable(&current.status)
+                && (attempt + 1 < retry_budget_attempts
+                    || (topology_retry && !topology_refresh_used));
+            if current.status.ok || !can_retry {
+                break current;
+            }
+            if topology_retry && !topology_refresh_used {
+                topology_refresh_used = true;
+                self.refresh_table_topology_after_status();
             }
             sleep_before_retry(&table_options, attempt);
-        }
-        Ok(response.expect("retry loop must run at least one attempt"))
+            attempt += 1;
+        };
+        Ok(response)
     }
 
     fn batch_execute_grouped_by_shard(
@@ -2391,6 +2402,15 @@ impl TemporalStoreTable {
             io_timeout_ms: self.options.io_timeout_ms,
             max_retries: self.client.inner.options.max_retries,
         }
+    }
+
+    fn refresh_table_topology_after_status(&self) {
+        if self.client.inner.options.meta_addr.is_none() {
+            return;
+        }
+        let _ = self
+            .client
+            .sync_table_topology(self.namespace.clone(), self.table_name.clone());
     }
 }
 
@@ -2646,6 +2666,30 @@ fn status_is_cpp_retryable(status: &Status) -> bool {
             | "meta_changed"
             | "topomerror"
             | "topom_error"
+            | "notserving"
+            | "not_serving"
+            | "staleloadversion"
+            | "stale_load_version"
+    )
+}
+
+fn status_is_cpp_topology_retryable(status: &Status) -> bool {
+    if status.ok {
+        return false;
+    }
+    let code = normalize_status_code(&status.code);
+    matches!(
+        code.as_str(),
+        "partitionloading"
+            | "partition_loading"
+            | "metachanged"
+            | "meta_changed"
+            | "topomerror"
+            | "topom_error"
+            | "notserving"
+            | "not_serving"
+            | "staleloadversion"
+            | "stale_load_version"
     )
 }
 
@@ -3203,6 +3247,129 @@ mod tests {
         assert_eq!(stats.backend_errors, 1);
         assert_eq!(stats.backend_error_streak, 0);
         assert_eq!(stats.backend_successes_after_error, 1);
+    }
+
+    #[test]
+    fn table_write_refreshes_topology_after_meta_changed_without_write_retry_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        let stale_addr = free_local_addr();
+        let live_addr = free_local_addr();
+        let meta_addr = free_local_addr();
+        let stale_attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let stale_attempts_for_server = stale_attempts.clone();
+        let stale_addr_for_listener = stale_addr.clone();
+        std::thread::spawn(move || {
+            serve(&stale_addr_for_listener, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    ("POST", "/execute") => {
+                        stale_attempts_for_server.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        json_response(
+                            200,
+                            &ExecuteResponse {
+                                status: Status::error("meta_changed", "route moved"),
+                                response: CommandResponse::Empty,
+                            },
+                        )
+                    }
+                    _ => json_response(404, &Status::error("not_found", "not found")),
+                }
+            })
+            .unwrap();
+        });
+
+        let engine_for_live = engine.clone();
+        let live_addr_for_listener = live_addr.clone();
+        std::thread::spawn(move || {
+            serve(&live_addr_for_listener, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    ("POST", "/execute") => {
+                        let req = parse_json::<ExecuteRequest>(&request.body).unwrap();
+                        json_response(200, &engine_for_live.execute(req))
+                    }
+                    _ => json_response(404, &Status::error("not_found", "not found")),
+                }
+            })
+            .unwrap();
+        });
+
+        let live_addr_for_meta = live_addr.clone();
+        let meta_addr_for_listener = meta_addr.clone();
+        std::thread::spawn(move || {
+            serve(&meta_addr_for_listener, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    ("POST", "/tables/topology") => json_response(
+                        200,
+                        &TableTopologyResponse {
+                            status: Status::ok(),
+                            table: Some(TableMetaInfo {
+                                table_id: 7,
+                                namespace: "ns".to_string(),
+                                table_name: "tbl".to_string(),
+                                state: crate::meta::MetaEntityState::Normal,
+                                topology_version: 2,
+                                first_shard_id: 1,
+                                shard_count: 1,
+                                replica_count: 1,
+                                use_cpp_partition_ids: false,
+                                partition_version: 0,
+                                serving_options: crate::meta::TableServingOptions::default(),
+                            }),
+                            partitions: vec![TablePartition {
+                                shard_id: 1,
+                                start_slot: 0,
+                                end_slot: u64::MAX,
+                                primary: Some(live_addr_for_meta.clone()),
+                                replicas: vec![live_addr_for_meta.clone()],
+                                primary_endpoint: None,
+                                replica_endpoints: Vec::new(),
+                            }],
+                            unchanged: false,
+                        },
+                    ),
+                    _ => json_response(404, &Status::error("not_found", "not found")),
+                }
+            })
+            .unwrap();
+        });
+        wait_for_http(&stale_addr);
+        wait_for_http(&live_addr);
+        wait_for_http(&meta_addr);
+
+        let client = TemporalStoreClient::with_options(ClientOptions {
+            proxy_addr: "127.0.0.1:1".to_string(),
+            meta_addr: Some(meta_addr.clone()),
+            route_cache_ttl_ms: 60_000,
+            max_write_retries: 0,
+            retry_backoff_ms: 0,
+            ..ClientOptions::default()
+        });
+        let table = client.open_table(
+            "ns",
+            "tbl",
+            TableOptions {
+                first_shard_id: 1,
+                shard_count: 1,
+                max_write_retries: 0,
+                retry_backoff_ms: 0,
+                ..TableOptions::default()
+            },
+        );
+        client.insert_cached_route_for_test(1, stale_addr);
+
+        table.set("k", b"v".to_vec()).unwrap();
+        assert_eq!(table.get("k").unwrap(), Some(b"v".to_vec()));
+        assert_eq!(stale_attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            client.topology_cache_report().routes[0].primary_addr,
+            live_addr
+        );
     }
 
     #[test]
