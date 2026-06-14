@@ -1781,6 +1781,13 @@ fn build_partitions(state: &MetaState, table: &TableMetaInfo) -> Vec<TablePartit
     struct PlacementCandidate {
         server_addr: String,
         location: String,
+        degraded: bool,
+        queue_depth: usize,
+        background_queue_depth: usize,
+        running_shard_count: usize,
+        dirty_object_count: usize,
+        dirty_shard_count: usize,
+        shard_state_penalty: u8,
         key_count: u64,
         memory_bytes: u64,
     }
@@ -1800,20 +1807,52 @@ fn build_partitions(state: &MetaState, table: &TableMetaInfo) -> Vec<TablePartit
                 .iter()
                 .map(|load| load.memory_bytes)
                 .sum::<u64>();
+            let shard_state_penalty = server
+                .shard_states
+                .iter()
+                .map(|state| placement_shard_state_penalty(&state.serving_state))
+                .max()
+                .unwrap_or_default();
             PlacementCandidate {
                 server_addr: server.server_addr.clone(),
                 location: server.location.clone(),
+                degraded: !server.runtime_load.degraded_reasons.is_empty(),
+                queue_depth: server.runtime_load.queue_depth,
+                background_queue_depth: server.runtime_load.background_queue_depth,
+                running_shard_count: server.runtime_load.running_shard_count,
+                dirty_object_count: server.runtime_load.dirty_object_count,
+                dirty_shard_count: server.runtime_load.dirty_shard_count,
+                shard_state_penalty,
                 key_count,
                 memory_bytes,
             }
         })
         .collect::<Vec<_>>();
     normal_servers.sort_by(|left, right| {
-        (left.key_count, left.memory_bytes, &left.server_addr).cmp(&(
-            right.key_count,
-            right.memory_bytes,
-            &right.server_addr,
-        ))
+        (
+            left.degraded,
+            left.shard_state_penalty,
+            left.queue_depth,
+            left.background_queue_depth,
+            left.running_shard_count,
+            left.dirty_object_count,
+            left.dirty_shard_count,
+            left.key_count,
+            left.memory_bytes,
+            &left.server_addr,
+        )
+            .cmp(&(
+                right.degraded,
+                right.shard_state_penalty,
+                right.queue_depth,
+                right.background_queue_depth,
+                right.running_shard_count,
+                right.dirty_object_count,
+                right.dirty_shard_count,
+                right.key_count,
+                right.memory_bytes,
+                &right.server_addr,
+            ))
     });
     let slot_count = 1_u64 << 30;
     let mut partitions = Vec::new();
@@ -1927,6 +1966,16 @@ fn push_replica(
         used_hosts.insert(host);
     }
     replicas.push(server_addr.to_string());
+}
+
+fn placement_shard_state_penalty(serving_state: &str) -> u8 {
+    match serving_state {
+        "serving" | "readonly" => 0,
+        "queued" | "running" | "loading" => 1,
+        "freezing" | "unloading" => 2,
+        "failed" => 3,
+        _ => 1,
+    }
 }
 
 fn server_host(server_addr: &str) -> String {
@@ -2849,6 +2898,119 @@ mod tests {
         assert_eq!(
             topo.partitions[0].replicas,
             vec!["cool".to_string(), "warm".to_string()]
+        );
+    }
+
+    #[test]
+    fn metaserver_topology_uses_runtime_load_when_record_load_ties() {
+        let meta = SingleNodeMeta::default();
+        for (server_addr, queue_depth, dirty_object_count, degraded) in [
+            ("busy", 50, 100, false),
+            ("cool", 0, 0, false),
+            ("degraded", 0, 0, true),
+        ] {
+            meta.register_server(RegisterServerRequest {
+                server_addr: server_addr.to_string(),
+                node_id: 0,
+                location: "z".to_string(),
+                binary_version: String::new(),
+            });
+            meta.server_heartbeat(ServerHeartbeatRequest {
+                server_addr: server_addr.to_string(),
+                boot_time_ms: 1,
+                binary_version: String::new(),
+                shard_loads: vec![ShardLoad {
+                    shard_id: 1,
+                    key_count: 10,
+                    memory_bytes: 10,
+                }],
+                partition_loads: Vec::new(),
+                runtime_load: ServerRuntimeLoad {
+                    queue_depth,
+                    dirty_object_count,
+                    degraded_reasons: degraded
+                        .then(|| "background_queue_full".to_string())
+                        .into_iter()
+                        .collect(),
+                    ..ServerRuntimeLoad::default()
+                },
+                shard_states: Vec::new(),
+            });
+        }
+        meta.add_table(AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "runtime_load".to_string(),
+            first_shard_id: 400,
+            shard_count: 1,
+            replica_count: 2,
+            use_cpp_partition_ids: false,
+            partition_version: 0,
+            serving_options: crate::meta::TableServingOptions::default(),
+        });
+
+        let topo = meta.get_table_topology(GetTableTopologyRequest {
+            namespace: "ns".to_string(),
+            table_name: "runtime_load".to_string(),
+            old_topology_version: 0,
+        });
+        assert_eq!(
+            topo.partitions[0].replicas,
+            vec!["cool".to_string(), "busy".to_string()]
+        );
+    }
+
+    #[test]
+    fn metaserver_topology_avoids_unhealthy_shard_serving_states() {
+        let meta = SingleNodeMeta::default();
+        for (server_addr, serving_state) in [
+            ("freezing", "freezing"),
+            ("failed", "failed"),
+            ("serving", "serving"),
+        ] {
+            meta.register_server(RegisterServerRequest {
+                server_addr: server_addr.to_string(),
+                node_id: 0,
+                location: "z".to_string(),
+                binary_version: String::new(),
+            });
+            meta.server_heartbeat(ServerHeartbeatRequest {
+                server_addr: server_addr.to_string(),
+                boot_time_ms: 1,
+                binary_version: String::new(),
+                shard_loads: vec![ShardLoad {
+                    shard_id: 1,
+                    key_count: 10,
+                    memory_bytes: 10,
+                }],
+                partition_loads: Vec::new(),
+                runtime_load: ServerRuntimeLoad::default(),
+                shard_states: vec![ServerShardServingState {
+                    shard_id: 1,
+                    serving_state: serving_state.to_string(),
+                    loaded: serving_state != "failed",
+                    ..ServerShardServingState::default()
+                }],
+            });
+        }
+        meta.add_table(AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "serving_state".to_string(),
+            first_shard_id: 500,
+            shard_count: 1,
+            replica_count: 2,
+            use_cpp_partition_ids: false,
+            partition_version: 0,
+            serving_options: crate::meta::TableServingOptions::default(),
+        });
+
+        let topo = meta.get_table_topology(GetTableTopologyRequest {
+            namespace: "ns".to_string(),
+            table_name: "serving_state".to_string(),
+            old_topology_version: 0,
+        });
+        assert_eq!(
+            topo.partitions[0].replicas,
+            vec!["serving".to_string(), "freezing".to_string()]
         );
     }
 
