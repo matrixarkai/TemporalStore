@@ -7,7 +7,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::control::{CheckedExecuteRequest, CheckedExecuteResponse};
-use crate::engine::TemporalEngine;
+use crate::engine::{ShardCompactionUtilityReport, TemporalEngine};
 use crate::types::{Command, CommandResponse, ExecuteRequest, ExecuteResponse, ShardId, Status};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -144,6 +144,10 @@ pub struct CompactionResponse {
     pub compacted_page_segment_id: u64,
     #[serde(default)]
     pub stale_page_segment_ids: Vec<u64>,
+    #[serde(default)]
+    pub before: ShardCompactionUtilityReport,
+    #[serde(default)]
+    pub after: ShardCompactionUtilityReport,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1054,6 +1058,8 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
                 previous_page_segment_id,
                 compacted_page_segment_id,
                 stale_page_segment_ids,
+                before,
+                after,
             ) = match compaction {
                 Ok(report) => (
                     Status::ok(),
@@ -1061,8 +1067,18 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
                     report.previous_page_segment_id,
                     report.compacted_page_segment_id,
                     report.stale_page_segment_ids,
+                    report.before,
+                    report.after,
                 ),
-                Err(status) => (status, 0, 0, 0, Vec::new()),
+                Err(status) => (
+                    status,
+                    0,
+                    0,
+                    0,
+                    Vec::new(),
+                    ShardCompactionUtilityReport::default(),
+                    ShardCompactionUtilityReport::default(),
+                ),
             };
             inner
                 .stats
@@ -1076,6 +1092,8 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
                 previous_page_segment_id,
                 compacted_page_segment_id,
                 stale_page_segment_ids,
+                before,
+                after,
             })
         }
         TaskRequest::Gc(request) => {
@@ -1270,6 +1288,8 @@ fn task_timeout_output(kind: DataNodeTaskKind) -> DataNodeTaskOutput {
             previous_page_segment_id: 0,
             compacted_page_segment_id: 0,
             stale_page_segment_ids: Vec::new(),
+            before: ShardCompactionUtilityReport::default(),
+            after: ShardCompactionUtilityReport::default(),
         }),
         DataNodeTaskKind::Gc => DataNodeTaskOutput::Gc(GcResponse {
             status,
@@ -1315,6 +1335,8 @@ fn task_canceled_output(task: &QueuedTask, message: &str) -> DataNodeTaskOutput 
             previous_page_segment_id: 0,
             compacted_page_segment_id: 0,
             stale_page_segment_ids: Vec::new(),
+            before: ShardCompactionUtilityReport::default(),
+            after: ShardCompactionUtilityReport::default(),
         }),
         DataNodeTaskKind::Gc => DataNodeTaskOutput::Gc(GcResponse {
             status,
@@ -1798,7 +1820,11 @@ mod tests {
     fn runtime_compaction_rewrites_live_pages_and_reports_stale_segments() {
         let engine = TemporalEngine::default();
         engine.load_shard(1);
-        for (key, value) in [("a", b"one".to_vec()), ("b", b"two".to_vec())] {
+        for (key, value) in [
+            ("a", b"old".to_vec()),
+            ("a", b"one".to_vec()),
+            ("b", b"two".to_vec()),
+        ] {
             let response = engine.execute(ExecuteRequest {
                 shard_id: 1,
                 command: Command::StringSet {
@@ -1832,6 +1858,14 @@ mod tests {
         assert_eq!(output.previous_page_segment_id, 0);
         assert_eq!(output.compacted_page_segment_id, 1);
         assert_eq!(output.stale_page_segment_ids, vec![0]);
+        assert_eq!(output.before.total_page_count, 3);
+        assert_eq!(output.before.live_page_refs, 2);
+        assert_eq!(output.before.stale_page_estimate, 1);
+        assert_eq!(output.before.live_ref_density_basis_points, 6_666);
+        assert_eq!(output.after.total_page_count, 2);
+        assert_eq!(output.after.live_page_refs, 2);
+        assert_eq!(output.after.stale_page_estimate, 0);
+        assert_eq!(output.after.live_ref_density_basis_points, 10_000);
         assert_eq!(engine.live_page_segment_ids(1), vec![1]);
         assert_eq!(
             engine

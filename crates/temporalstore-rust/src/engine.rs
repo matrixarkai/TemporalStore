@@ -121,6 +121,19 @@ pub struct ShardCompactionReport {
     pub compacted_page_segment_id: u64,
     pub rewritten_page_refs: usize,
     pub stale_page_segment_ids: Vec<u64>,
+    #[serde(default)]
+    pub before: ShardCompactionUtilityReport,
+    #[serde(default)]
+    pub after: ShardCompactionUtilityReport,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShardCompactionUtilityReport {
+    pub live_page_segment_count: usize,
+    pub total_page_count: u64,
+    pub live_page_refs: u64,
+    pub stale_page_estimate: u64,
+    pub live_ref_density_basis_points: u64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1251,6 +1264,7 @@ impl TemporalEngine {
             return Err(Status::error("shard_not_loaded", "shard is not loaded"));
         };
         let before_segments = collect_live_page_segment_ids(shard);
+        let before = compaction_utility_report(&self.page_store, shard);
         let roll = self
             .page_store
             .roll_segment()
@@ -1337,6 +1351,7 @@ impl TemporalEngine {
         }
 
         let after_segments = collect_live_page_segment_ids(shard);
+        let after = compaction_utility_report(&self.page_store, shard);
         let stale_page_segment_ids = before_segments
             .difference(&after_segments)
             .copied()
@@ -1352,6 +1367,8 @@ impl TemporalEngine {
             compacted_page_segment_id: roll.new_page_segment_id,
             rewritten_page_refs,
             stale_page_segment_ids,
+            before,
+            after,
         })
     }
 
@@ -3054,6 +3071,46 @@ fn collect_live_page_addresses(shard: &ShardState) -> Vec<PageAddress> {
     addresses
 }
 
+fn compaction_utility_report(
+    page_store: &LocalPageStore,
+    shard: &ShardState,
+) -> ShardCompactionUtilityReport {
+    let addresses = collect_live_page_addresses(shard);
+    let live_page_segment_ids = addresses
+        .iter()
+        .map(|address| address.page_segment_id)
+        .collect::<BTreeSet<_>>();
+    let segment_page_counts = page_store
+        .segment_reports()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|report| (report.page_segment_id, report.page_count))
+        .collect::<BTreeMap<_, _>>();
+    let total_page_count = live_page_segment_ids
+        .iter()
+        .map(|page_segment_id| {
+            segment_page_counts
+                .get(page_segment_id)
+                .copied()
+                .unwrap_or_default()
+        })
+        .sum::<u64>();
+    let live_page_refs = addresses.len() as u64;
+    let stale_page_estimate = total_page_count.saturating_sub(live_page_refs);
+    let live_ref_density_basis_points = if total_page_count == 0 {
+        0
+    } else {
+        live_page_refs.saturating_mul(10_000) / total_page_count
+    };
+    ShardCompactionUtilityReport {
+        live_page_segment_count: live_page_segment_ids.len(),
+        total_page_count,
+        live_page_refs,
+        stale_page_estimate,
+        live_ref_density_basis_points,
+    }
+}
+
 fn compact_page_addresses<'a>(
     page_store: &LocalPageStore,
     cache: &MultiLayerCache,
@@ -3910,6 +3967,18 @@ mod tests {
                     shard_id: 1,
                     command: Command::StringSet {
                         key: "k".to_string(),
+                        value: b"v1".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: "k".to_string(),
                         value: b"v2".to_vec(),
                     },
                 })
@@ -3936,6 +4005,16 @@ mod tests {
         assert_eq!(report.compacted_page_segment_id, 1);
         assert_eq!(report.rewritten_page_refs, 2);
         assert_eq!(report.stale_page_segment_ids, vec![0]);
+        assert_eq!(report.before.live_page_segment_count, 1);
+        assert_eq!(report.before.total_page_count, 3);
+        assert_eq!(report.before.live_page_refs, 2);
+        assert_eq!(report.before.stale_page_estimate, 1);
+        assert_eq!(report.before.live_ref_density_basis_points, 6_666);
+        assert_eq!(report.after.live_page_segment_count, 1);
+        assert_eq!(report.after.total_page_count, 2);
+        assert_eq!(report.after.live_page_refs, 2);
+        assert_eq!(report.after.stale_page_estimate, 0);
+        assert_eq!(report.after.live_ref_density_basis_points, 10_000);
         assert_eq!(engine.live_page_segment_ids(1), vec![1]);
 
         let gc = page_store
