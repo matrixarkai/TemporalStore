@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -131,7 +131,7 @@ impl LocalPageStore {
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
         let page_id = inner.next_page_id;
         let zone_id = zone_id_for_segment(inner.page_segment_id);
-        let record = encode_page_record(bytes, page_id, object_id, routing_slot, zone_id);
+        let record = encode_page_record(bytes, page_id, object_id, routing_slot, zone_id)?;
         let address = PageAddress {
             page_segment_id: inner.page_segment_id,
             offset: inner.write_offset,
@@ -369,22 +369,34 @@ fn zone_id_for_segment(page_segment_id: u64) -> u64 {
 }
 
 const PAGE_RECORD_MAGIC: &[u8; 8] = b"TSPAGE01";
-const PAGE_RECORD_VERSION: u8 = 5;
+const PAGE_RECORD_VERSION: u8 = 6;
 const PAGE_RECORD_V1_HEADER_LEN: usize = 8 + 1 + 1 + 2 + 8 + 8 + 32;
 const PAGE_RECORD_V2_HEADER_LEN: usize = PAGE_RECORD_V1_HEADER_LEN + 8;
 const PAGE_RECORD_V3_HEADER_LEN: usize = PAGE_RECORD_V2_HEADER_LEN + 8;
 const PAGE_RECORD_V4_HEADER_LEN: usize = PAGE_RECORD_V3_HEADER_LEN + 8;
-const PAGE_RECORD_HEADER_LEN: usize = PAGE_RECORD_V4_HEADER_LEN + 8;
+const PAGE_RECORD_V5_HEADER_LEN: usize = PAGE_RECORD_V4_HEADER_LEN + 8;
+const PAGE_RECORD_HEADER_LEN: usize = PAGE_RECORD_V5_HEADER_LEN + 16;
+const PAGE_RECORD_COMPRESSION_MIN_BYTES: usize = 256;
+const PAGE_RECORD_COMPRESSION_NONE: u8 = 0;
+const PAGE_RECORD_COMPRESSION_ZSTD: u8 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PageRecordCompression {
+    None,
+    Zstd,
+}
 
 #[derive(Debug, Clone, Copy)]
 struct PageRecordHeader {
     header_len: usize,
     payload_len: usize,
+    stored_len: usize,
     expected_sha256: [u8; 32],
     page_id: Option<u64>,
     object_id: Option<u64>,
     routing_slot: Option<u32>,
     zone_id: Option<u64>,
+    compression: PageRecordCompression,
 }
 
 fn encode_page_record(
@@ -393,9 +405,10 @@ fn encode_page_record(
     object_id: Option<u64>,
     routing_slot: Option<u32>,
     zone_id: u64,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, PageStoreError> {
     let digest = Sha256::digest(payload);
-    let mut record = Vec::with_capacity(PAGE_RECORD_HEADER_LEN + payload.len());
+    let (stored_payload, compression) = encode_page_record_payload(payload)?;
+    let mut record = Vec::with_capacity(PAGE_RECORD_HEADER_LEN + stored_payload.len());
     record.extend_from_slice(PAGE_RECORD_MAGIC);
     record.push(PAGE_RECORD_VERSION);
     record.push(0);
@@ -409,8 +422,28 @@ fn encode_page_record(
     record.extend_from_slice(&[0, 0, 0]);
     record.extend_from_slice(&routing_slot.unwrap_or_default().to_le_bytes());
     record.extend_from_slice(&zone_id.to_le_bytes());
-    record.extend_from_slice(payload);
-    record
+    record.push(match compression {
+        PageRecordCompression::None => PAGE_RECORD_COMPRESSION_NONE,
+        PageRecordCompression::Zstd => PAGE_RECORD_COMPRESSION_ZSTD,
+    });
+    record.extend_from_slice(&[0; 7]);
+    record.extend_from_slice(&(stored_payload.len() as u64).to_le_bytes());
+    record.extend_from_slice(&stored_payload);
+    Ok(record)
+}
+
+fn encode_page_record_payload(
+    payload: &[u8],
+) -> Result<(Vec<u8>, PageRecordCompression), PageStoreError> {
+    if payload.len() < PAGE_RECORD_COMPRESSION_MIN_BYTES {
+        return Ok((payload.to_vec(), PageRecordCompression::None));
+    }
+    let compressed = zstd::stream::encode_all(Cursor::new(payload), 0)?;
+    if compressed.len() < payload.len() {
+        Ok((compressed, PageRecordCompression::Zstd))
+    } else {
+        Ok((payload.to_vec(), PageRecordCompression::None))
+    }
 }
 
 fn decode_page_record(record: &[u8], address: &PageAddress) -> Result<Vec<u8>, PageStoreError> {
@@ -460,15 +493,15 @@ fn decode_page_record(record: &[u8], address: &PageAddress) -> Result<Vec<u8>, P
             ));
         }
     }
-    if record.len() != header.header_len + header.payload_len {
+    if record.len() != header.header_len + header.stored_len {
         return Err(corrupt_page_envelope(
             address,
             "payload length mismatch".to_string(),
         ));
     }
-    let payload = &record[header.header_len..];
-    verify_page_record_checksum(payload, &header.expected_sha256, address)?;
-    Ok(payload.to_vec())
+    let payload = decode_page_record_payload(&record[header.header_len..], &header, address)?;
+    verify_page_record_checksum(&payload, &header.expected_sha256, address)?;
+    Ok(payload)
 }
 
 fn logical_range_from_segment(
@@ -518,14 +551,13 @@ fn logical_range_from_segment(
             return Err(corrupt_page_envelope(&address, "short header"));
         }
         let header = parse_page_record_header(remaining, &address)?;
-        let record_len = header.header_len.saturating_add(header.payload_len);
+        let record_len = header.header_len.saturating_add(header.stored_len);
         if remaining.len() < record_len {
             return Err(corrupt_page_envelope(
                 &address,
                 "payload length mismatch".to_string(),
             ));
         }
-        let payload = &remaining[header.header_len..record_len];
         let address = PageAddress {
             length: record_len as u64,
             page_id: header.page_id,
@@ -534,7 +566,12 @@ fn logical_range_from_segment(
             zone_id: header.zone_id,
             ..address
         };
-        verify_page_record_checksum(payload, &header.expected_sha256, &address)?;
+        let payload = decode_page_record_payload(
+            &remaining[header.header_len..record_len],
+            &header,
+            &address,
+        )?;
+        verify_page_record_checksum(&payload, &header.expected_sha256, &address)?;
 
         let logical_end = logical_offset.saturating_add(header.payload_len);
         let overlap_start = requested_start.max(logical_offset);
@@ -576,6 +613,8 @@ fn parse_page_record_header(
         PAGE_RECORD_V3_HEADER_LEN
     } else if version == 4 {
         PAGE_RECORD_V4_HEADER_LEN
+    } else if version == 5 {
+        PAGE_RECORD_V5_HEADER_LEN
     } else {
         PAGE_RECORD_HEADER_LEN
     };
@@ -584,6 +623,9 @@ fn parse_page_record_header(
             address,
             format!("unexpected header length {header_len}"),
         ));
+    }
+    if record.len() < expected_header_len {
+        return Err(corrupt_page_envelope(address, "short header"));
     }
     let payload_len = u64::from_le_bytes(
         record[12..20]
@@ -645,15 +687,69 @@ fn parse_page_record_header(
     } else {
         None
     };
+    let (compression, stored_len) = if version >= 6 {
+        let compression = match record[92] {
+            PAGE_RECORD_COMPRESSION_NONE => PageRecordCompression::None,
+            PAGE_RECORD_COMPRESSION_ZSTD => PageRecordCompression::Zstd,
+            codec => {
+                return Err(corrupt_page_envelope(
+                    address,
+                    format!("unsupported compression codec {codec}"),
+                ));
+            }
+        };
+        let stored_len = u64::from_le_bytes(
+            record[100..108]
+                .try_into()
+                .expect("page envelope stored length slice"),
+        ) as usize;
+        (compression, stored_len)
+    } else {
+        (PageRecordCompression::None, payload_len)
+    };
+    if compression == PageRecordCompression::None && stored_len != payload_len {
+        return Err(corrupt_page_envelope(
+            address,
+            format!("stored length {stored_len} does not match payload length {payload_len}"),
+        ));
+    }
     Ok(PageRecordHeader {
         header_len,
         payload_len,
+        stored_len,
         expected_sha256,
         page_id,
         object_id,
         routing_slot,
         zone_id,
+        compression,
     })
+}
+
+fn decode_page_record_payload(
+    stored_payload: &[u8],
+    header: &PageRecordHeader,
+    address: &PageAddress,
+) -> Result<Vec<u8>, PageStoreError> {
+    match header.compression {
+        PageRecordCompression::None => Ok(stored_payload.to_vec()),
+        PageRecordCompression::Zstd => {
+            let payload = zstd::stream::decode_all(Cursor::new(stored_payload)).map_err(|err| {
+                corrupt_page_envelope(address, format!("zstd decompression failed: {err}"))
+            })?;
+            if payload.len() != header.payload_len {
+                return Err(corrupt_page_envelope(
+                    address,
+                    format!(
+                        "decompressed length {} does not match payload length {}",
+                        payload.len(),
+                        header.payload_len
+                    ),
+                ));
+            }
+            Ok(payload)
+        }
+    }
 }
 
 fn verify_page_record_checksum(
@@ -757,7 +853,7 @@ fn max_page_id_in_segment(
             return Err(corrupt_page_envelope(&address, "short header"));
         }
         let header = parse_page_record_header(remaining, &address)?;
-        let record_len = header.header_len.saturating_add(header.payload_len);
+        let record_len = header.header_len.saturating_add(header.stored_len);
         if remaining.len() < record_len {
             return Err(corrupt_page_envelope(
                 &address,
@@ -986,6 +1082,50 @@ mod tests {
         store.append(b"def").unwrap();
 
         assert_eq!(store.read_logical_range(0, 1, 4).unwrap(), b"bcde");
+    }
+
+    #[test]
+    fn compressed_page_records_round_trip_and_remain_logical() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalPageStore::new(dir.path());
+        let first_payload = b"prefix-".repeat(80);
+        let second_payload = b"suffix-".repeat(80);
+        let first = store.append(&first_payload).unwrap();
+        let second = store.append(&second_payload).unwrap();
+        let raw = store.read_segment(first.page_segment_id).unwrap();
+
+        assert!(first.length < (PAGE_RECORD_HEADER_LEN + first_payload.len()) as u64);
+        assert!(second.length < (PAGE_RECORD_HEADER_LEN + second_payload.len()) as u64);
+        assert_eq!(store.read(&first).unwrap(), first_payload);
+        assert_eq!(store.read(&second).unwrap(), second_payload);
+
+        let logical_offset = first_payload.len() as u64 - 3;
+        let logical = store
+            .read_logical_range(first.page_segment_id, logical_offset, 12)
+            .unwrap();
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&first_payload[first_payload.len() - 3..]);
+        expected.extend_from_slice(&second_payload[..9]);
+        assert_eq!(logical, expected);
+        assert_eq!(raw[8], PAGE_RECORD_VERSION);
+        assert_eq!(raw[92], PAGE_RECORD_COMPRESSION_ZSTD);
+    }
+
+    #[test]
+    fn page_envelope_rejects_corrupt_compressed_payload() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalPageStore::new(dir.path());
+        let address = store.append(&b"compress-me-".repeat(80)).unwrap();
+        let path = segment_path(dir.path(), address.page_segment_id);
+        let mut segment = fs::read(&path).unwrap();
+        *segment.last_mut().unwrap() ^= 0xff;
+        fs::write(path, segment).unwrap();
+
+        let err = store.read(&address).unwrap_err();
+        assert!(matches!(
+            err,
+            PageStoreError::ChecksumMismatch { .. } | PageStoreError::CorruptPageEnvelope { .. }
+        ));
     }
 
     #[test]
