@@ -1559,6 +1559,23 @@ planning:
     can delay automatic dirty-slot dumps until a configured oplog threshold is
     reached, and can cap selected dirty slots per lifecycle round while still
     allowing explicit operator-selected slots.
+18. Closed the C++ `SlotStore::LoadPages` validation gap: Rust slot dump
+    manifest validation now reconstructs live page refs from the embedded index
+    snapshot and reads each referenced page before install, rejecting corrupt or
+    unreadable page bytes instead of accepting a manifest that only references
+    an existing segment.
+
+Eight storage audit passes completed against C++ storage code:
+
+1. `ObjectManager` object/page ownership -> Rust slot summaries and page refs.
+2. `SlotStore::DumpSlots` dirty-slot dump -> Rust selected-slot manifests.
+3. `SlotStore::LoadPages` read validation -> Rust manifest live-ref page reads.
+4. `StorageManager::ShouldDelayDumpOplog` -> Rust undumped-oplog threshold.
+5. `storage_dump_slots_per_round` -> Rust max dump slots per lifecycle round.
+6. `PageGc`/delayed destroy -> Rust live-ref page GC and delayed purge.
+7. `PageCompactor` -> Rust live-page compaction and stale-segment reports.
+8. `Evicter`/`Expirer`/metrics loop -> Rust cache eviction, TTL sweep, runtime
+   stats, Prometheus storage metrics, and local scale validation.
 
 Remaining explicit non-goals for this pass: brpc/thrift surfaces, S3/ByteStore
 integration, C++ byte-for-byte page/header compatibility, and CacheLib/mtcache

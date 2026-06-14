@@ -972,6 +972,44 @@ impl TemporalEngine {
                 format!("slot dump references missing page segments: {missing:?}"),
             ));
         }
+        let restored = serde_json::from_slice::<ShardState>(&manifest.index_bytes)
+            .map_err(|err| Status::error("slot_dump_invalid_index", err.to_string()))?;
+        let manifest_slots = manifest.slot_ids.iter().copied().collect::<BTreeSet<_>>();
+        let live_page_entries = collect_live_page_entries(&restored)
+            .into_iter()
+            .filter(|entry| {
+                let routing_slot = entry.address.routing_slot.unwrap_or_else(|| {
+                    self.routing_slot_for_key(manifest.shard_id, &entry.object_key)
+                });
+                manifest_slots.is_empty() || manifest_slots.contains(&routing_slot)
+            })
+            .collect::<Vec<_>>();
+        if live_page_entries.len() as u64 != manifest.live_page_refs {
+            return Err(Status::error(
+                "slot_dump_live_ref_mismatch",
+                format!(
+                    "slot dump expected {} live page refs but index has {}",
+                    manifest.live_page_refs,
+                    live_page_entries.len()
+                ),
+            ));
+        }
+        let mut unreadable_page_refs = 0usize;
+        let mut unreadable_page_bytes = 0u64;
+        for entry in live_page_entries {
+            if self.page_store.read(&entry.address).is_err() {
+                unreadable_page_refs = unreadable_page_refs.saturating_add(1);
+                unreadable_page_bytes = unreadable_page_bytes.saturating_add(entry.address.length);
+            }
+        }
+        if unreadable_page_refs > 0 {
+            return Err(Status::error(
+                "slot_dump_unreadable_page_refs",
+                format!(
+                    "slot dump has {unreadable_page_refs} unreadable page refs covering {unreadable_page_bytes} bytes"
+                ),
+            ));
+        }
         Ok(())
     }
 
@@ -8708,6 +8746,21 @@ mod tests {
         missing.page_segment_ids.push(999_999);
         missing.checksum = slot_dump_manifest_checksum(&missing).unwrap();
         assert!(!engine.validate_slot_dump_manifest(&missing).unwrap_err().ok);
+
+        let corrupt = engine
+            .create_slot_dump_manifest(1, Vec::new())
+            .expect("manifest should persist");
+        let segment_id = corrupt.page_segment_ids[0];
+        let mut segment = engine.page_store().read_segment(segment_id).unwrap();
+        *segment.last_mut().unwrap() ^= 0xff;
+        let _ = engine.page_store().install_segment(segment_id, &segment);
+        assert_eq!(
+            engine
+                .validate_slot_dump_manifest(&corrupt)
+                .unwrap_err()
+                .code,
+            "slot_dump_unreadable_page_refs"
+        );
     }
 
     #[test]
