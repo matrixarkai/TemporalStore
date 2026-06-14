@@ -26,6 +26,16 @@ impl Default for MetaEntityState {
     }
 }
 
+impl MetaEntityState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Frozen => "frozen",
+            Self::Dropped => "dropped",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ShardLocation {
     pub shard_id: ShardId,
@@ -103,6 +113,10 @@ pub struct ServerHeartbeatRequest {
 pub struct ServerHeartbeatResponse {
     pub status: Status,
     pub forbid_auto_register: bool,
+    #[serde(default)]
+    pub topology_version: u64,
+    #[serde(default)]
+    pub server_state: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -134,6 +148,12 @@ pub struct ServerRuntimeLoad {
     pub compaction_runs: u64,
     pub gc_runs: u64,
     pub storage_lifecycle_runs: u64,
+    #[serde(default)]
+    pub last_meta_topology_version: u64,
+    #[serde(default)]
+    pub meta_heartbeat_consecutive_failures: u64,
+    #[serde(default)]
+    pub meta_forbid_auto_register: bool,
     #[serde(default)]
     pub degraded_reasons: Vec<String>,
 }
@@ -943,16 +963,21 @@ impl SingleNodeMeta {
     pub fn server_heartbeat(&self, request: ServerHeartbeatRequest) -> ServerHeartbeatResponse {
         let mut state = self.inner.write().expect("meta lock poisoned");
         state.counters.server_heartbeat_total += 1;
+        let topology_version = state.topology_version;
         let Some(server) = state.servers.get_mut(&request.server_addr) else {
             return ServerHeartbeatResponse {
                 status: Status::error("not_found", "server not found"),
                 forbid_auto_register: false,
+                topology_version,
+                server_state: "unknown".to_string(),
             };
         };
         if server.state == MetaEntityState::Frozen {
             return ServerHeartbeatResponse {
                 status: Status::error("resource_frozen", "server frozen"),
                 forbid_auto_register: true,
+                topology_version,
+                server_state: MetaEntityState::Frozen.as_str().to_string(),
             };
         }
         server.last_heartbeat_ms = now_ms();
@@ -967,6 +992,8 @@ impl SingleNodeMeta {
         ServerHeartbeatResponse {
             status: Status::ok(),
             forbid_auto_register: false,
+            topology_version,
+            server_state: server.state.as_str().to_string(),
         }
     }
 
@@ -2294,60 +2321,19 @@ mod tests {
             .ok
         );
         assert_eq!(meta.get(7).location.unwrap().server_addr, "127.0.0.1:18001");
-        assert!(
-            meta.server_heartbeat(ServerHeartbeatRequest {
-                server_addr: "127.0.0.1:18001".to_string(),
-                boot_time_ms: 11,
-                binary_version: "v1".to_string(),
-                shard_loads: vec![ShardLoad {
+        let heartbeat = meta.server_heartbeat(ServerHeartbeatRequest {
+            server_addr: "127.0.0.1:18001".to_string(),
+            boot_time_ms: 11,
+            binary_version: "v1".to_string(),
+            shard_loads: vec![ShardLoad {
+                shard_id: 7,
+                key_count: 10,
+                memory_bytes: 100,
+            }],
+            partition_loads: vec![PartitionLoad {
+                shard_id: 7,
+                partition_info: crate::control::PartitionInfoStats {
                     shard_id: 7,
-                    key_count: 10,
-                    memory_bytes: 100,
-                }],
-                partition_loads: vec![PartitionLoad {
-                    shard_id: 7,
-                    partition_info: crate::control::PartitionInfoStats {
-                        shard_id: 7,
-                        loaded: true,
-                        readonly: false,
-                        load_version: 11,
-                        table_name: "tbl".to_string(),
-                        shard_uri: "local://tbl/7".to_string(),
-                        start_routing_slot: 1,
-                        end_routing_slot: 2,
-                        total_records: 10,
-                        storage_bytes: 100,
-                        object_manager: crate::control::ObjectManagerStats {
-                            object_count: 10,
-                            page_ref_count: 10,
-                            dirty_object_count: 1,
-                            dirty_slot_count: 1,
-                            routing_slot_count: 2,
-                        },
-                    },
-                }],
-                runtime_load: ServerRuntimeLoad {
-                    queue_depth: 2,
-                    background_queue_depth: 1,
-                    queued_shard_count: 1,
-                    running_shard_count: 1,
-                    dirty_object_count: 3,
-                    dirty_shard_count: 1,
-                    rejected_total: 4,
-                    rejected_background_total: 1,
-                    timed_out_total: 0,
-                    canceled_total: 0,
-                    dump_runs: 5,
-                    compaction_runs: 6,
-                    gc_runs: 7,
-                    storage_lifecycle_runs: 8,
-                    degraded_reasons: vec!["background_queue_full".to_string()],
-                },
-                shard_states: vec![ServerShardServingState {
-                    shard_id: 7,
-                    serving_state: "serving".to_string(),
-                    worker_index: 3,
-                    worker_threads: 4,
                     loaded: true,
                     readonly: false,
                     load_version: 11,
@@ -2357,22 +2343,65 @@ mod tests {
                     end_routing_slot: 2,
                     total_records: 10,
                     storage_bytes: 100,
-                    cache_memory_bytes: 64,
-                    page_store_bytes_written: 100,
-                    oplog_sequence: 9,
-                    dirty_object_count: 1,
-                    dirty_slot_count: 1,
-                }],
-            })
-            .status
-            .ok
-        );
+                    object_manager: crate::control::ObjectManagerStats {
+                        object_count: 10,
+                        page_ref_count: 10,
+                        dirty_object_count: 1,
+                        dirty_slot_count: 1,
+                        routing_slot_count: 2,
+                    },
+                },
+            }],
+            runtime_load: ServerRuntimeLoad {
+                queue_depth: 2,
+                background_queue_depth: 1,
+                queued_shard_count: 1,
+                running_shard_count: 1,
+                dirty_object_count: 3,
+                dirty_shard_count: 1,
+                rejected_total: 4,
+                rejected_background_total: 1,
+                dump_runs: 5,
+                compaction_runs: 6,
+                gc_runs: 7,
+                storage_lifecycle_runs: 8,
+                last_meta_topology_version: 12,
+                meta_heartbeat_consecutive_failures: 2,
+                degraded_reasons: vec!["background_queue_full".to_string()],
+                ..ServerRuntimeLoad::default()
+            },
+            shard_states: vec![ServerShardServingState {
+                shard_id: 7,
+                serving_state: "serving".to_string(),
+                worker_index: 3,
+                worker_threads: 4,
+                loaded: true,
+                readonly: false,
+                load_version: 11,
+                table_name: "tbl".to_string(),
+                shard_uri: "local://tbl/7".to_string(),
+                start_routing_slot: 1,
+                end_routing_slot: 2,
+                total_records: 10,
+                storage_bytes: 100,
+                cache_memory_bytes: 64,
+                page_store_bytes_written: 100,
+                oplog_sequence: 9,
+                dirty_object_count: 1,
+                dirty_slot_count: 1,
+            }],
+        });
+        assert!(heartbeat.status.ok);
+        assert_eq!(heartbeat.topology_version, meta.stats().topology_version);
+        assert_eq!(heartbeat.server_state, "normal");
         let server = meta.list_servers().servers.remove(0);
         assert_eq!(server.shard_loads[0].key_count, 10);
         assert_eq!(server.partition_loads[0].partition_info.table_name, "tbl");
         assert_eq!(server.partition_loads[0].partition_info.storage_bytes, 100);
         assert_eq!(server.runtime_load.queue_depth, 2);
         assert_eq!(server.runtime_load.storage_lifecycle_runs, 8);
+        assert_eq!(server.runtime_load.last_meta_topology_version, 12);
+        assert_eq!(server.runtime_load.meta_heartbeat_consecutive_failures, 2);
         assert_eq!(
             server.runtime_load.degraded_reasons,
             vec!["background_queue_full"]

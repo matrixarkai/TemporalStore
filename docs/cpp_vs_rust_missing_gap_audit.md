@@ -58,6 +58,22 @@ brpc and Thrift are intentionally not part of the Rust target. The Rust open-sou
 
 ## What Was Closed In The Latest Pass
 
+This pass closed a node-server/metaserver heartbeat observability gap:
+
+1. Metaserver heartbeat responses now carry the authoritative topology version and current server
+   state alongside the existing forbid-auto-register decision.
+2. Data-node runtime preflight now retains the latest metaserver heartbeat status, topology
+   version, server state, forbid-auto-register flag, and consecutive failure count.
+3. Data-node runtime load reports now include compact metaserver heartbeat/topology fields so meta
+   can retain the node's last observed control-plane state.
+4. Server heartbeat sending records both successful and failed metaserver heartbeat attempts into
+   the runtime preflight surface.
+
+This improves C++-style node/control-plane diagnosis. It does not add brpc/Thrift surfaces and
+does not change the Rust-native heartbeat transport.
+
+## What Was Closed In The Previous Pass
+
 This pass closed a client/proxy/metaserver operational topology gap:
 
 1. The Rust client route cache now records the topology version and refresh reason for table

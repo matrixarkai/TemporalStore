@@ -6315,6 +6315,8 @@ impl MetaRaftCluster {
             |status| ServerHeartbeatResponse {
                 status,
                 forbid_auto_register: true,
+                topology_version: 0,
+                server_state: String::new(),
             },
             |meta| meta.server_heartbeat(request),
         )

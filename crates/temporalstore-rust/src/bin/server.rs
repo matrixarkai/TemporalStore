@@ -1821,11 +1821,16 @@ fn send_heartbeat(
         runtime_load: runtime.server_runtime_load(),
         shard_states: runtime.shard_serving_states(),
     };
-    post_json::<_, ServerHeartbeatResponse>(meta_addr, "/servers/heartbeat", &request)
-        .unwrap_or_else(|err| ServerHeartbeatResponse {
-            status: Status::error("heartbeat_failed", err.to_string()),
-            forbid_auto_register: false,
-        })
+    let response =
+        post_json::<_, ServerHeartbeatResponse>(meta_addr, "/servers/heartbeat", &request)
+            .unwrap_or_else(|err| ServerHeartbeatResponse {
+                status: Status::error("heartbeat_failed", err.to_string()),
+                forbid_auto_register: false,
+                topology_version: 0,
+                server_state: String::new(),
+            });
+    runtime.record_metaserver_heartbeat(&response);
+    response
 }
 
 #[cfg(test)]

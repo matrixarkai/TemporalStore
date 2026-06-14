@@ -11,7 +11,7 @@ use crate::engine::{
     ShardCompactionUtilityReport, SlotDumpManifest, StorageLifecyclePlan, StorageLifecycleReport,
     StorageLifecycleRequest, TemporalEngine,
 };
-use crate::meta::{ServerRuntimeLoad, ServerShardServingState};
+use crate::meta::{ServerHeartbeatResponse, ServerRuntimeLoad, ServerShardServingState};
 use crate::types::{Command, CommandResponse, ExecuteRequest, ExecuteResponse, ShardId, Status};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -100,10 +100,34 @@ pub struct DataNodeRuntimeStats {
 pub struct DataNodePreflightReport {
     pub status: Status,
     pub stats: DataNodeRuntimeStats,
+    pub metaserver: DataNodeMetaHeartbeatReport,
     pub queued_workers: Vec<ShardWorkerInfo>,
     pub dirty_shards: Vec<ShardId>,
     pub dirty_objects: Vec<DirtyObjectInfo>,
     pub degraded_reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DataNodeMetaHeartbeatReport {
+    pub last_heartbeat_at_ms: u64,
+    pub last_status: Status,
+    pub last_topology_version: u64,
+    pub last_server_state: String,
+    pub forbid_auto_register: bool,
+    pub consecutive_failures: u64,
+}
+
+impl Default for DataNodeMetaHeartbeatReport {
+    fn default() -> Self {
+        Self {
+            last_heartbeat_at_ms: 0,
+            last_status: Status::ok(),
+            last_topology_version: 0,
+            last_server_state: String::new(),
+            forbid_auto_register: false,
+            consecutive_failures: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -286,6 +310,7 @@ struct DataNodeRuntimeInner {
     canceled: Mutex<BTreeSet<u64>>,
     dirty: Mutex<DirtyTracker>,
     stats: Mutex<MutableRuntimeStats>,
+    meta_heartbeat: Mutex<DataNodeMetaHeartbeatReport>,
     next_job_id: AtomicU64,
 }
 
@@ -524,6 +549,7 @@ impl DataNodeRuntime {
             canceled: Mutex::default(),
             dirty: Mutex::default(),
             stats: Mutex::default(),
+            meta_heartbeat: Mutex::default(),
             next_job_id: AtomicU64::new(1),
         });
         for _ in 0..inner.options.worker_threads {
@@ -568,6 +594,7 @@ impl DataNodeRuntime {
                 canceled: Mutex::default(),
                 dirty: Mutex::default(),
                 stats: Mutex::default(),
+                meta_heartbeat: Mutex::default(),
                 next_job_id: AtomicU64::new(1),
             }),
         }
@@ -919,6 +946,7 @@ impl DataNodeRuntime {
 
     pub fn preflight_report(&self) -> DataNodePreflightReport {
         let stats = self.stats();
+        let metaserver = self.metaserver_heartbeat_report();
         let mut degraded_reasons = Vec::new();
         if stats.queue_depth >= stats.max_queue_depth && stats.max_queue_depth > 0 {
             degraded_reasons.push("foreground_queue_full".to_string());
@@ -934,6 +962,12 @@ impl DataNodeRuntime {
         if stats.timed_out_total > 0 {
             degraded_reasons.push("timed_out_requests".to_string());
         }
+        if metaserver.last_heartbeat_at_ms > 0 && !metaserver.last_status.ok {
+            degraded_reasons.push("metaserver_heartbeat_failed".to_string());
+        }
+        if metaserver.forbid_auto_register {
+            degraded_reasons.push("metaserver_forbid_auto_register".to_string());
+        }
         let status = if degraded_reasons.is_empty() {
             Status::ok()
         } else {
@@ -942,6 +976,7 @@ impl DataNodeRuntime {
         DataNodePreflightReport {
             status,
             stats,
+            metaserver,
             queued_workers: self.queued_shard_worker_infos(),
             dirty_shards: self.dirty_shards(),
             dirty_objects: self.dirty_objects(),
@@ -949,8 +984,35 @@ impl DataNodeRuntime {
         }
     }
 
+    pub fn metaserver_heartbeat_report(&self) -> DataNodeMetaHeartbeatReport {
+        self.inner
+            .meta_heartbeat
+            .lock()
+            .expect("meta heartbeat lock poisoned")
+            .clone()
+    }
+
+    pub fn record_metaserver_heartbeat(&self, response: &ServerHeartbeatResponse) {
+        let mut report = self
+            .inner
+            .meta_heartbeat
+            .lock()
+            .expect("meta heartbeat lock poisoned");
+        report.last_heartbeat_at_ms = now_ms();
+        report.last_status = response.status.clone();
+        report.last_topology_version = response.topology_version;
+        report.last_server_state = response.server_state.clone();
+        report.forbid_auto_register = response.forbid_auto_register;
+        report.consecutive_failures = if response.status.ok {
+            0
+        } else {
+            report.consecutive_failures.saturating_add(1)
+        };
+    }
+
     pub fn server_runtime_load(&self) -> ServerRuntimeLoad {
         let preflight = self.preflight_report();
+        let metaserver = preflight.metaserver.clone();
         ServerRuntimeLoad {
             queue_depth: preflight.stats.queue_depth,
             background_queue_depth: preflight.stats.background_queue_depth,
@@ -966,6 +1028,9 @@ impl DataNodeRuntime {
             compaction_runs: preflight.stats.compaction_runs,
             gc_runs: preflight.stats.gc_runs,
             storage_lifecycle_runs: preflight.stats.storage_lifecycle_runs,
+            last_meta_topology_version: metaserver.last_topology_version,
+            meta_heartbeat_consecutive_failures: metaserver.consecutive_failures,
+            meta_forbid_auto_register: metaserver.forbid_auto_register,
             degraded_reasons: preflight.degraded_reasons,
         }
     }
@@ -2052,6 +2117,36 @@ mod tests {
         assert_eq!(load.queue_depth, 1);
         assert_eq!(load.queued_shard_count, 1);
         assert_eq!(load.dirty_object_count, 1);
+        assert_eq!(load.last_meta_topology_version, 0);
+        runtime.record_metaserver_heartbeat(&ServerHeartbeatResponse {
+            status: Status::error("resource_frozen", "server frozen"),
+            forbid_auto_register: true,
+            topology_version: 99,
+            server_state: "frozen".to_string(),
+        });
+        let preflight = runtime.preflight_report();
+        assert_eq!(preflight.metaserver.last_topology_version, 99);
+        assert_eq!(preflight.metaserver.last_server_state, "frozen");
+        assert_eq!(preflight.metaserver.consecutive_failures, 1);
+        assert!(preflight
+            .degraded_reasons
+            .contains(&"metaserver_heartbeat_failed".to_string()));
+        assert!(preflight
+            .degraded_reasons
+            .contains(&"metaserver_forbid_auto_register".to_string()));
+        let load = runtime.server_runtime_load();
+        assert_eq!(load.last_meta_topology_version, 99);
+        assert_eq!(load.meta_heartbeat_consecutive_failures, 1);
+        assert!(load.meta_forbid_auto_register);
+        runtime.record_metaserver_heartbeat(&ServerHeartbeatResponse {
+            status: Status::ok(),
+            forbid_auto_register: false,
+            topology_version: 100,
+            server_state: "normal".to_string(),
+        });
+        let recovered = runtime.preflight_report();
+        assert_eq!(recovered.metaserver.consecutive_failures, 0);
+        assert_eq!(recovered.metaserver.last_topology_version, 100);
         let shard_states = runtime.shard_serving_states();
         assert_eq!(shard_states.len(), 1);
         let shard = &shard_states[0];
