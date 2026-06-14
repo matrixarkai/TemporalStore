@@ -1564,12 +1564,16 @@ planning:
     snapshot and reads each referenced page before install, rejecting corrupt or
     unreadable page bytes instead of accepting a manifest that only references
     an existing segment.
+19. Closed the dump manifest inventory gap: Rust now rejects a checksum-valid
+    slot dump manifest whose declared page segment list does not exactly match
+    the embedded index snapshot's live page references for the dumped slots.
 
 Eight storage audit passes completed against C++ storage code:
 
 1. `ObjectManager` object/page ownership -> Rust slot summaries and page refs.
 2. `SlotStore::DumpSlots` dirty-slot dump -> Rust selected-slot manifests.
-3. `SlotStore::LoadPages` read validation -> Rust manifest live-ref page reads.
+3. `SlotStore::LoadPages` read validation -> Rust manifest live-ref page reads
+   and page-segment inventory matching.
 4. `StorageManager::ShouldDelayDumpOplog` -> Rust undumped-oplog threshold.
 5. `storage_dump_slots_per_round` -> Rust max dump slots per lifecycle round.
 6. `PageGc`/delayed destroy -> Rust live-ref page GC and delayed purge.

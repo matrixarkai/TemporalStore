@@ -994,6 +994,23 @@ impl TemporalEngine {
                 ),
             ));
         }
+        let referenced_page_segment_ids = live_page_entries
+            .iter()
+            .map(|entry| entry.address.page_segment_id)
+            .collect::<BTreeSet<_>>();
+        let manifest_page_segment_ids = manifest
+            .page_segment_ids
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        if referenced_page_segment_ids != manifest_page_segment_ids {
+            return Err(Status::error(
+                "slot_dump_page_segment_mismatch",
+                format!(
+                    "slot dump page segment ids {manifest_page_segment_ids:?} do not match live refs {referenced_page_segment_ids:?}"
+                ),
+            ));
+        }
         let mut unreadable_page_refs = 0usize;
         let mut unreadable_page_bytes = 0u64;
         for entry in live_page_entries {
@@ -8746,6 +8763,19 @@ mod tests {
         missing.page_segment_ids.push(999_999);
         missing.checksum = slot_dump_manifest_checksum(&missing).unwrap();
         assert!(!engine.validate_slot_dump_manifest(&missing).unwrap_err().ok);
+
+        let mut incomplete = engine
+            .create_slot_dump_manifest(1, Vec::new())
+            .expect("manifest should persist");
+        incomplete.page_segment_ids.clear();
+        incomplete.checksum = slot_dump_manifest_checksum(&incomplete).unwrap();
+        assert_eq!(
+            engine
+                .validate_slot_dump_manifest(&incomplete)
+                .unwrap_err()
+                .code,
+            "slot_dump_page_segment_mismatch"
+        );
 
         let corrupt = engine
             .create_slot_dump_manifest(1, Vec::new())
