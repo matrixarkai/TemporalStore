@@ -113,6 +113,12 @@ pub struct PageStoreGcUtilityCandidate {
     pub page_segment_id: u64,
     pub bytes: u64,
     pub utility_score: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_unix_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_unix_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub age_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -611,6 +617,7 @@ impl LocalPageStore {
         let current_page_segment_id = inner.page_segment_id;
         let live_page_segment_ids = live_page_segment_ids.into_iter().collect::<BTreeSet<_>>();
         let mut candidates = Vec::new();
+        let now = now_unix_ms();
         for page_segment_id in segment_ids_at(&inner.root)? {
             let below_retention_floor = page_segment_id < retain_from_page_segment_id;
             let is_current = page_segment_id == current_page_segment_id;
@@ -620,6 +627,12 @@ impl LocalPageStore {
                     .metadata()
                     .map(|metadata| metadata.len())
                     .unwrap_or_default();
+                let zone = inner.zones.get(&page_segment_id);
+                let created_unix_ms = zone.and_then(|zone| zone.created_unix_ms);
+                let updated_unix_ms = zone.and_then(|zone| zone.updated_unix_ms);
+                let age_ms = updated_unix_ms
+                    .or(created_unix_ms)
+                    .map(|timestamp| now.saturating_sub(timestamp));
                 candidates.push(PageStoreGcUtilityCandidate {
                     page_segment_id,
                     bytes,
@@ -628,6 +641,9 @@ impl LocalPageStore {
                         is_current,
                         is_live,
                     ),
+                    created_unix_ms,
+                    updated_unix_ms,
+                    age_ms,
                 });
             }
         }
@@ -635,6 +651,12 @@ impl LocalPageStore {
             left.utility_score
                 .cmp(&right.utility_score)
                 .then_with(|| right.bytes.cmp(&left.bytes))
+                .then_with(|| {
+                    right
+                        .age_ms
+                        .unwrap_or_default()
+                        .cmp(&left.age_ms.unwrap_or_default())
+                })
                 .then_with(|| left.page_segment_id.cmp(&right.page_segment_id))
         });
         Ok(candidates)
@@ -2569,6 +2591,15 @@ mod tests {
         assert!(candidates
             .iter()
             .all(|candidate| candidate.utility_score == 0));
+        assert!(candidates
+            .iter()
+            .all(|candidate| candidate.created_unix_ms.is_some()));
+        assert!(candidates
+            .iter()
+            .all(|candidate| candidate.updated_unix_ms.is_some()));
+        assert!(candidates
+            .iter()
+            .all(|candidate| candidate.age_ms.is_some()));
 
         let no_op = store
             .gc_segments_before_with_live_refs_utility(3, [2_u64], 0, true)
