@@ -20,17 +20,17 @@ use temporalstore_rust::raft::{
 };
 use temporalstore_rust::types::{BatchExecuteRequest, ExecuteRequest, ExecuteResponse, Status};
 use temporalstore_rust::{
-    handle_authenticated_raft_http, CheckedBatchExecuteRequest, CheckedExecuteRequest, Command,
-    CommandResponse, CompactionRequest, DataNodeRuntime, DataNodeRuntimeOptions,
-    DistributedRaftCommandResponse, DistributedRaftProposeRequest, DistributedRaftReadRequest,
-    DumpShardRequest, GcRequest, HttpReplicaStreamSource, LoadShardRequest,
-    MembershipUpdateRequest, PageStoreOptions, ProductionRaftEngineKind, ProductionRaftNode,
-    ProductionRaftRuntime, ProductionRaftRuntimeOptions, ProductionRaftSecurity, RaftConfig,
-    RaftControlLeadershipRequest, RaftFailoverReport, RaftMembershipChangeReport, RaftNodeId,
-    RaftRpcRuntimeOptions, RaftTransport, ReplicaReplayLoop, ReplicaReplayOptions,
-    ReplicaReplayRequest, ReplicaReplayResponse, RequestController, ScanStreamRequest,
-    SetConfigRequest, SlotDumpManifest, StorageLifecycleRequest, StreamReadRequest,
-    UnloadShardRequest,
+    handle_authenticated_raft_http, production_readiness_report, CheckedBatchExecuteRequest,
+    CheckedExecuteRequest, Command, CommandResponse, CompactionRequest, DataNodeRuntime,
+    DataNodeRuntimeOptions, DistributedRaftCommandResponse, DistributedRaftProposeRequest,
+    DistributedRaftReadRequest, DumpShardRequest, GcRequest, HttpReplicaStreamSource,
+    LoadShardRequest, MembershipUpdateRequest, PageStoreOptions, ProductionRaftEngineKind,
+    ProductionRaftNode, ProductionRaftRuntime, ProductionRaftRuntimeOptions,
+    ProductionRaftSecurity, RaftConfig, RaftControlLeadershipRequest, RaftFailoverReport,
+    RaftMembershipChangeReport, RaftNodeId, RaftRpcRuntimeOptions, RaftTransport,
+    ReplicaReplayLoop, ReplicaReplayOptions, ReplicaReplayRequest, ReplicaReplayResponse,
+    RequestController, ScanStreamRequest, SetConfigRequest, SlotDumpManifest,
+    StorageLifecycleRequest, StreamReadRequest, UnloadShardRequest,
 };
 use temporalstore_snapshot::{FileObjectStore, S3SnapshotStore};
 
@@ -166,6 +166,9 @@ fn main() {
     println!("temporalstore server listening on {addr}");
     serve(&addr, move |request| {
         if let Some(response) = handle_ping_route(&request) {
+            return response;
+        }
+        if let Some(response) = handle_readiness_route(&request) {
             return response;
         }
         if let Some(response) = handle_cpp_server_service_route(
@@ -410,6 +413,15 @@ fn handle_ping_route(request: &HttpRequest) -> Option<(u16, Vec<u8>)> {
     match (request.method.as_str(), request.path.as_str()) {
         ("GET" | "POST", "/ping" | "/ServerService/Ping") => {
             Some(json_response(200, &Status::ok()))
+        }
+        _ => None,
+    }
+}
+
+fn handle_readiness_route(request: &HttpRequest) -> Option<(u16, Vec<u8>)> {
+    match (request.method.as_str(), request.path.as_str()) {
+        ("GET", "/readiness") | ("GET", "/cpp_parity") => {
+            Some(json_response(200, &production_readiness_report()))
         }
         _ => None,
     }
@@ -1807,7 +1819,9 @@ mod tests {
     use temporalstore_rust::http::get_json_with_options;
     use temporalstore_rust::raft::{serialize_data_raft_log, DataRaftLogCodecEntry};
     use temporalstore_rust::types::{Command, CommandResponse};
-    use temporalstore_rust::{BatchExecuteResponse, LoadShardResponse, UnloadShardResponse};
+    use temporalstore_rust::{
+        BatchExecuteResponse, LoadShardResponse, ProductionReadinessReport, UnloadShardResponse,
+    };
 
     use super::*;
 
@@ -1861,6 +1875,22 @@ mod tests {
 
         for key in keys {
             std::env::remove_var(key);
+        }
+    }
+
+    #[test]
+    fn server_exposes_cpp_parity_readiness_report() {
+        for path in ["/readiness", "/cpp_parity"] {
+            let (_, body) = handle_readiness_route(&HttpRequest {
+                method: "GET".to_string(),
+                path: path.to_string(),
+                body: Vec::new(),
+            })
+            .expect("readiness route should match");
+            let report: ProductionReadinessReport = serde_json::from_slice(&body).unwrap();
+            assert!(!report.production_ready);
+            assert!(!report.cpp_parity_ready);
+            assert!(report.missing_count() > 0);
         }
     }
 

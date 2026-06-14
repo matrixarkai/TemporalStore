@@ -332,6 +332,11 @@ These blockers are now surfaced in `production_readiness_report()` under:
 - `fault_tolerance`
 - `scale_testing`
 
+The same `ProductionReadinessReport` is now exposed by every primary Rust service process through
+`GET /readiness` and `GET /cpp_parity` on the proxy, data node, and metaserver. These endpoints are
+intentionally operational parity gates: they return `cpp_parity_ready=false` until the remaining C++
+production blockers above are closed, instead of treating local model coverage as full parity.
+
 This pass closed one concrete feature/raft gap found by scale testing:
 
 - A 5k-row `SequenceAdd` command is larger than the default ByteRaft-style `32 KiB`

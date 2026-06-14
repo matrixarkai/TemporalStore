@@ -20,7 +20,7 @@ use temporalstore_rust::rebalance::{
     DeterministicTaskScheduler, SchedulerRunReport, SchedulerTask, SchedulerTaskKind,
     SchedulerTaskResult, TaskSchedulerOptions, TaskSchedulerSnapshot,
 };
-use temporalstore_rust::types::Status;
+use temporalstore_rust::{production_readiness_report, types::Status};
 
 fn main() {
     let addr = std::env::var("TS_META_BIND_ADDR")
@@ -412,6 +412,9 @@ fn handle(
     }
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/health") => json_response(200, &Status::ok()),
+        ("GET", "/readiness") | ("GET", "/cpp_parity") => {
+            json_response(200, &production_readiness_report())
+        }
         ("GET", "/meta/info") => json_response(200, &backend_call!(meta, info)),
         ("GET", "/meta/stats") => json_response(200, &backend_call!(meta, stats)),
         ("GET", "/meta/raft/status") => match meta.raft_status() {
@@ -977,6 +980,30 @@ mod tests {
     use temporalstore_rust::http::HttpRequest;
     use temporalstore_rust::meta::{MetaEntityState, ShardSnapshotRef, TableTopologyResponse};
     use temporalstore_rust::rebalance::RebalanceStep;
+    use temporalstore_rust::ProductionReadinessReport;
+
+    #[test]
+    fn metaserver_exposes_cpp_parity_readiness_report() {
+        let backend = MetaBackend::Single(SingleNodeMeta::default());
+        let scheduler = MetaTaskScheduler::default();
+
+        for path in ["/readiness", "/cpp_parity"] {
+            let (code, body) = handle(
+                &backend,
+                &scheduler,
+                HttpRequest {
+                    method: "GET".to_string(),
+                    path: path.to_string(),
+                    body: Vec::new(),
+                },
+            );
+            assert_eq!(code, 200);
+            let report: ProductionReadinessReport = serde_json::from_slice(&body).unwrap();
+            assert!(!report.production_ready);
+            assert!(!report.cpp_parity_ready);
+            assert!(report.missing_count() > 0);
+        }
+    }
 
     #[test]
     fn metaserver_snapshot_routes_export_save_load_and_restore_state() {

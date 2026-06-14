@@ -254,6 +254,9 @@ impl ProxyService {
         use crate::http::{json_response, parse_json};
         match (request.method.as_str(), request.path.as_str()) {
             ("GET", "/health") => json_response(200, &Status::ok()),
+            ("GET", "/readiness") | ("GET", "/cpp_parity") => {
+                json_response(200, &crate::production_readiness_report())
+            }
             ("GET", "/proxy/info") => json_response(200, &self.info()),
             ("GET", "/proxy/heartbeat") => json_response(200, &self.heartbeat_report()),
             ("GET", "/proxy/preflight") | ("GET", "/ProxyService/Preflight") => {
@@ -836,7 +839,29 @@ mod tests {
         AddTableRequest, GetTableTopologyRequest, RegisterShardRequest, ShardLocation,
     };
     use crate::types::Command;
+    use crate::ProductionReadinessReport;
     use std::time::Instant;
+
+    #[test]
+    fn proxy_exposes_cpp_parity_readiness_report() {
+        let proxy = ProxyService::new(ProxyOptions {
+            meta_addr: "127.0.0.1:1".to_string(),
+            ..ProxyOptions::default()
+        });
+
+        for path in ["/readiness", "/cpp_parity"] {
+            let (code, body) = proxy.handle(HttpRequest {
+                method: "GET".to_string(),
+                path: path.to_string(),
+                body: Vec::new(),
+            });
+            assert_eq!(code, 200);
+            let report = parse_json::<ProductionReadinessReport>(&body).unwrap();
+            assert!(!report.production_ready);
+            assert!(!report.cpp_parity_ready);
+            assert!(report.missing_count() > 0);
+        }
+    }
 
     #[test]
     fn proxy_caches_route_and_forwards_execute() {
