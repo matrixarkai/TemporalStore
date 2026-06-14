@@ -182,6 +182,8 @@ pub struct StorageRecoveryReport {
     pub owner_mismatch_page_refs: Vec<StorageRecoveryPageOwnerMismatch>,
     #[serde(default)]
     pub missing_owner_page_refs: usize,
+    #[serde(default)]
+    pub object_lifecycle: StorageObjectLifecycleReport,
     pub all_live_pages_readable: bool,
     #[serde(default)]
     pub boundary: StorageRecoveryBoundaryReport,
@@ -204,6 +206,21 @@ pub struct StorageRecoveryPageOwnerMismatch {
     pub actual_object_id: Option<u64>,
     pub expected_routing_slot: u32,
     pub actual_routing_slot: Option<u32>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageObjectLifecycleReport {
+    pub live_object_ids: u64,
+    pub live_page_refs: u64,
+    pub stale_object_ids: u64,
+    pub tombstoned_object_ids: u64,
+    pub reused_object_id_conflicts: u64,
+    pub missing_owner_page_refs: u64,
+    pub owner_mismatch_page_refs: u64,
+    #[serde(default)]
+    pub reused_object_ids: Vec<u64>,
+    #[serde(default)]
+    pub tombstoned_object_keys: Vec<String>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -366,6 +383,8 @@ pub struct StorageLifecycleReport {
     pub manifest_prune_report: Option<SlotDumpManifestPruneReport>,
     #[serde(default)]
     pub install_roll_forward_reports: Vec<SlotDumpInstallRollForwardReport>,
+    #[serde(default)]
+    pub object_lifecycle: StorageObjectLifecycleReport,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -388,6 +407,8 @@ pub struct StorageRecoveryBoundaryReport {
     pub owner_mismatch_page_refs: Vec<StorageRecoveryPageOwnerMismatch>,
     #[serde(default)]
     pub missing_owner_page_refs: usize,
+    #[serde(default)]
+    pub object_lifecycle: StorageObjectLifecycleReport,
     pub corrupt_page_segment_ids: Vec<u64>,
     pub unreadable_page_bytes: u64,
 }
@@ -1483,6 +1504,9 @@ impl TemporalEngine {
         } else {
             self.slot_dump_install_roll_forward_reports(request.shard_id)
         };
+        let object_lifecycle = self
+            .storage_recovery_report_without_boundary(request.shard_id)
+            .object_lifecycle;
         StorageLifecycleReport {
             shard_id: request.shard_id,
             plan,
@@ -1495,6 +1519,7 @@ impl TemporalEngine {
             manifest_prune_plan,
             manifest_prune_report,
             install_roll_forward_reports,
+            object_lifecycle,
         }
     }
 
@@ -1590,6 +1615,7 @@ impl TemporalEngine {
             .iter()
             .map(|error| error.length)
             .sum();
+        let object_lifecycle = recovery.object_lifecycle.clone();
         StorageRecoveryBoundaryReport {
             shard_id,
             latest_safe_oplog_sequence,
@@ -1607,6 +1633,7 @@ impl TemporalEngine {
             manifest_chain_issues,
             owner_mismatch_page_refs: recovery.owner_mismatch_page_refs,
             missing_owner_page_refs: recovery.missing_owner_page_refs,
+            object_lifecycle,
             corrupt_page_segment_ids,
             unreadable_page_bytes,
         }
@@ -2160,6 +2187,7 @@ impl TemporalEngine {
         let mut unreadable_page_refs = Vec::new();
         let mut owner_mismatch_page_refs = Vec::new();
         let mut missing_owner_page_refs = 0usize;
+        let mut object_lifecycle = StorageObjectLifecycleReport::default();
         let mut page_segment_live_reports = page_segment_reports
             .iter()
             .map(|report| {
@@ -2225,6 +2253,9 @@ impl TemporalEngine {
             let ownership = self.validate_shard_page_ownership(shard_id, shard);
             owner_mismatch_page_refs = ownership.mismatches;
             missing_owner_page_refs = ownership.missing_owner_page_refs;
+            object_lifecycle = storage_object_lifecycle_report(shard_id, shard);
+            object_lifecycle.owner_mismatch_page_refs = owner_mismatch_page_refs.len() as u64;
+            object_lifecycle.missing_owner_page_refs = missing_owner_page_refs as u64;
         }
         let page_segment_live_reports = page_segment_live_reports
             .into_values()
@@ -2239,6 +2270,10 @@ impl TemporalEngine {
                 report
             })
             .collect::<Vec<_>>();
+        object_lifecycle.stale_object_ids = page_segment_live_reports
+            .iter()
+            .map(|report| report.stale_page_estimate)
+            .sum();
         let mut live_page_segment_ids = addresses
             .iter()
             .map(|address| address.page_segment_id)
@@ -2262,6 +2297,7 @@ impl TemporalEngine {
             unreadable_page_refs,
             owner_mismatch_page_refs,
             missing_owner_page_refs,
+            object_lifecycle,
             all_live_pages_readable: total_page_refs == readable_page_refs,
             boundary: StorageRecoveryBoundaryReport::default(),
         }
@@ -4657,6 +4693,62 @@ fn expected_live_page_object_id(shard_id: ShardId, entry: &LivePageEntry) -> u64
     )
 }
 
+fn storage_object_lifecycle_report(
+    shard_id: ShardId,
+    shard: &ShardState,
+) -> StorageObjectLifecycleReport {
+    let entries = collect_live_page_entries(shard);
+    let mut expected_object_ids = BTreeSet::new();
+    let mut actual_object_owners = BTreeMap::<u64, BTreeSet<u64>>::new();
+    let mut missing_owner_page_refs = 0u64;
+    let mut owner_mismatch_page_refs = 0u64;
+
+    for entry in &entries {
+        let expected_object_id = expected_live_page_object_id(shard_id, entry);
+        expected_object_ids.insert(expected_object_id);
+        if entry.address.object_id.is_none() || entry.address.routing_slot.is_none() {
+            missing_owner_page_refs = missing_owner_page_refs.saturating_add(1);
+        }
+        match entry.address.object_id {
+            Some(actual_object_id) => {
+                actual_object_owners
+                    .entry(actual_object_id)
+                    .or_default()
+                    .insert(expected_object_id);
+                if actual_object_id != expected_object_id {
+                    owner_mismatch_page_refs = owner_mismatch_page_refs.saturating_add(1);
+                }
+            }
+            None => {}
+        }
+    }
+
+    let reused_object_ids = actual_object_owners
+        .into_iter()
+        .filter_map(|(actual_object_id, expected_ids)| {
+            (expected_ids.len() > 1).then_some(actual_object_id)
+        })
+        .collect::<Vec<_>>();
+    let tombstoned_object_keys = shard
+        .dirty_objects
+        .iter()
+        .filter(|key| !record_exists(shard, key))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    StorageObjectLifecycleReport {
+        live_object_ids: expected_object_ids.len() as u64,
+        live_page_refs: entries.len() as u64,
+        stale_object_ids: 0,
+        tombstoned_object_ids: tombstoned_object_keys.len() as u64,
+        reused_object_id_conflicts: reused_object_ids.len() as u64,
+        missing_owner_page_refs,
+        owner_mismatch_page_refs,
+        reused_object_ids,
+        tombstoned_object_keys,
+    }
+}
+
 fn slot_storage_summaries(
     shard: &ShardState,
     start_routing_slot: u32,
@@ -5791,14 +5883,71 @@ mod tests {
 
         let recovery = engine.storage_recovery_report(1);
         assert_eq!(recovery.owner_mismatch_page_refs.len(), 1);
+        assert_eq!(recovery.object_lifecycle.live_object_ids, 1);
+        assert_eq!(recovery.object_lifecycle.live_page_refs, 1);
+        assert_eq!(recovery.object_lifecycle.owner_mismatch_page_refs, 1);
         assert_eq!(
             recovery.owner_mismatch_page_refs[0].expected_object_id,
             stable_page_object_id(1, "string", "owned", None)
         );
         assert_eq!(recovery.boundary.owner_mismatch_page_refs.len(), 1);
+        assert_eq!(
+            recovery.boundary.object_lifecycle.owner_mismatch_page_refs,
+            1
+        );
 
         let err = engine.compact_shard_pages(1).unwrap_err();
         assert_eq!(err.code, "page_compaction_owner_mismatch");
+    }
+
+    #[test]
+    fn recovery_reports_reused_object_id_conflicts() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        for key in ["first", "second"] {
+            assert!(
+                engine
+                    .execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::StringSet {
+                            key: key.to_string(),
+                            value: key.as_bytes().to_vec(),
+                        },
+                    })
+                    .status
+                    .ok
+            );
+        }
+
+        let reused_object_id = {
+            let mut shards = engine.shards.write().expect("engine lock poisoned");
+            let shard = shards.get_mut(&1).expect("loaded shard");
+            let first_object_id = shard
+                .strings
+                .get("first")
+                .and_then(|address| address.object_id)
+                .expect("first object id");
+            let second = shard.strings.get_mut("second").expect("second address");
+            second.object_id = Some(first_object_id);
+            first_object_id
+        };
+
+        let recovery = engine.storage_recovery_report(1);
+        assert_eq!(recovery.object_lifecycle.live_object_ids, 2);
+        assert_eq!(recovery.object_lifecycle.live_page_refs, 2);
+        assert_eq!(recovery.object_lifecycle.reused_object_id_conflicts, 1);
+        assert_eq!(
+            recovery.object_lifecycle.reused_object_ids,
+            vec![reused_object_id]
+        );
+        assert_eq!(recovery.object_lifecycle.owner_mismatch_page_refs, 1);
+        assert_eq!(
+            recovery
+                .boundary
+                .object_lifecycle
+                .reused_object_id_conflicts,
+            1
+        );
     }
 
     #[test]
@@ -10082,6 +10231,9 @@ mod tests {
             warm_cache: false,
         });
         assert!(report.dump_manifest.is_some());
+        assert_eq!(report.object_lifecycle.live_object_ids, 1);
+        assert_eq!(report.object_lifecycle.live_page_refs, 1);
+        assert_eq!(report.object_lifecycle.stale_object_ids, 1);
         let boundary = engine.storage_recovery_boundary_report(1);
         assert_eq!(boundary.latest_safe_oplog_sequence, 2);
         assert_eq!(boundary.latest_dump_oplog_sequence, 2);
