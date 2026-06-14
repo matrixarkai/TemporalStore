@@ -37,6 +37,7 @@ pub use data_node::{
     DataNodeRuntimeOptions, DataNodeRuntimeStats, DataNodeTaskKind, DataNodeTaskOutput,
     DataNodeTaskStatus, DirtyObjectInfo, DumpShardRequest, DumpShardResponse, GcRequest,
     GcResponse, RequestController, ShardWorkerInfo, StorageLifecycleResponse,
+    StorageLifecycleScheduler,
 };
 pub use e2e::{
     AsyncStorageJournal, EndToEndWorkflow, KillSwitches, ReplicaReadPolicy, RoutingClient,
@@ -110,8 +111,8 @@ pub use replica_replay::{
     ReplicaStreamSource,
 };
 pub use shared_store::{
-    ReplayReport, SharedStoreCheckpointManifest, SharedStoreFlushReport, SharedStoreOplogEntry,
-    SharedStoreOplogObject, SharedStorePageSegment, SharedStoreReplayCursor,
+    ReplayReport, SharedStoreCheckpointManifest, SharedStoreFlushReport, SharedStoreGcReport,
+    SharedStoreOplogEntry, SharedStoreOplogObject, SharedStorePageSegment, SharedStoreReplayCursor,
     SharedStoreReplicationError, SharedStoreReplicator, SharedStoreRetryPolicy,
     SharedStoreStorageMode, SharedStoreStorageWriter, SharedStoreWriteReport,
 };

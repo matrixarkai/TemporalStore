@@ -91,6 +91,8 @@ pub struct DataNodeRuntimeStats {
     pub dump_runs: u64,
     pub compaction_runs: u64,
     pub gc_runs: u64,
+    #[serde(default)]
+    pub storage_lifecycle_runs: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -213,6 +215,12 @@ pub struct ExpirySweepScheduler {
     handle: Option<JoinHandle<()>>,
 }
 
+#[derive(Debug)]
+pub struct StorageLifecycleScheduler {
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
 impl DirtyDumpScheduler {
     pub fn stop(mut self) {
         self.stop.store(true, Ordering::Relaxed);
@@ -249,6 +257,24 @@ impl Drop for ExpirySweepScheduler {
     }
 }
 
+impl StorageLifecycleScheduler {
+    pub fn stop(mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for StorageLifecycleScheduler {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
 #[derive(Debug)]
 struct DataNodeRuntimeInner {
     engine: TemporalEngine,
@@ -275,6 +301,7 @@ struct MutableRuntimeStats {
     dump_runs: u64,
     compaction_runs: u64,
     gc_runs: u64,
+    storage_lifecycle_runs: u64,
 }
 
 #[derive(Debug)]
@@ -744,6 +771,11 @@ impl DataNodeRuntime {
         request: StorageLifecycleRequest,
     ) -> StorageLifecycleResponse {
         let report = self.inner.engine.apply_storage_lifecycle(request);
+        self.inner
+            .stats
+            .lock()
+            .expect("runtime stats lock poisoned")
+            .storage_lifecycle_runs += 1;
         StorageLifecycleResponse {
             status: Status::ok(),
             report,
@@ -769,6 +801,30 @@ impl DataNodeRuntime {
             }
         });
         DirtyDumpScheduler {
+            stop,
+            handle: Some(handle),
+        }
+    }
+
+    pub fn start_storage_lifecycle_scheduler(
+        &self,
+        interval: Duration,
+        request: StorageLifecycleRequest,
+    ) -> StorageLifecycleScheduler {
+        let runtime = self.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let scheduler_stop = Arc::clone(&stop);
+        let sleep_interval = interval.max(Duration::from_millis(1));
+        let handle = thread::spawn(move || {
+            while !scheduler_stop.load(Ordering::Relaxed) {
+                thread::sleep(sleep_interval);
+                if scheduler_stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                runtime.apply_storage_lifecycle(request.clone());
+            }
+        });
+        StorageLifecycleScheduler {
             stop,
             handle: Some(handle),
         }
@@ -856,6 +912,7 @@ impl DataNodeRuntime {
             dump_runs: stats.dump_runs,
             compaction_runs: stats.compaction_runs,
             gc_runs: stats.gc_runs,
+            storage_lifecycle_runs: stats.storage_lifecycle_runs,
         }
     }
 
@@ -1086,6 +1143,7 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
                         selected_dump_slots: Vec::new(),
                         purge_delayed_destroy: false,
                         invalidate_cache: false,
+                        warm_cache: false,
                     })
                     .selected_dump_slots
             } else {
@@ -1327,6 +1385,7 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
                         selected_dump_slots: Vec::new(),
                         purge_delayed_destroy: false,
                         invalidate_cache: false,
+                        warm_cache: false,
                     }),
             );
             inner
@@ -1908,6 +1967,46 @@ mod tests {
         assert!(first[0].status.ok);
         assert!(second.is_empty());
         assert_eq!(runtime.stats().background_queue_depth, 1);
+    }
+
+    #[test]
+    fn runtime_storage_lifecycle_scheduler_runs_periodically() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let runtime = DataNodeRuntime::new(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 1,
+                max_queue_depth: 8,
+                max_background_queue_depth: 8,
+            },
+        );
+        let job = runtime.submit_execute(
+            ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "lifecycle-scheduler".to_string(),
+                    value: b"v".to_vec(),
+                },
+            },
+            RequestController { timeout_ms: 1000 },
+        );
+        assert!(wait_for_job(&runtime, job.job_id).status.ok);
+        let scheduler = runtime.start_storage_lifecycle_scheduler(
+            Duration::from_millis(5),
+            StorageLifecycleRequest {
+                shard_id: 1,
+                selected_dump_slots: Vec::new(),
+                purge_delayed_destroy: false,
+                invalidate_cache: false,
+                warm_cache: true,
+            },
+        );
+        wait_until(Duration::from_secs(1), || {
+            runtime.stats().storage_lifecycle_runs >= 1
+        });
+        scheduler.stop();
+        assert!(runtime.stats().storage_lifecycle_runs >= 1);
     }
 
     #[test]

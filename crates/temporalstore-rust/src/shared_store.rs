@@ -35,6 +35,13 @@ pub enum SharedStoreReplicationError {
     ApplyFailed { oplog_index: u64, status: Status },
     #[error("oplog replay gap: expected index {expected}, got {actual}")]
     ReplayGap { expected: u64, actual: u64 },
+    #[error(
+        "shared-store GC would remove oplog needed by replay cursor {cursor_oplog_index} before retain {retain_from_oplog_index}"
+    )]
+    GcBlockedByReplayCursor {
+        cursor_oplog_index: u64,
+        retain_from_oplog_index: u64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -106,6 +113,8 @@ pub struct SharedStoreGcReport {
     pub deleted_checkpoints: usize,
     pub deleted_checkpoint_objects: usize,
     pub retained_checkpoint_ids: Vec<String>,
+    #[serde(default)]
+    pub retained_for_cursor_oplog_index: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -526,6 +535,29 @@ where
             deleted_oplog_objects,
             ..SharedStoreGcReport::default()
         })
+    }
+
+    pub async fn gc_oplog_before_cursor_safe(
+        &self,
+        shard_id: ShardId,
+        retain_from_oplog_index: u64,
+    ) -> Result<SharedStoreGcReport, SharedStoreReplicationError> {
+        let cursor = self.load_replay_cursor(shard_id).await?;
+        if cursor.last_oplog_index > 0
+            && retain_from_oplog_index > cursor.last_oplog_index.saturating_add(1)
+        {
+            return Err(SharedStoreReplicationError::GcBlockedByReplayCursor {
+                cursor_oplog_index: cursor.last_oplog_index,
+                retain_from_oplog_index,
+            });
+        }
+        let mut report = self
+            .gc_oplog_before(shard_id, retain_from_oplog_index)
+            .await?;
+        if cursor.last_oplog_index > 0 {
+            report.retained_for_cursor_oplog_index = Some(cursor.last_oplog_index);
+        }
+        Ok(report)
     }
 
     pub async fn gc_checkpoints(
@@ -1299,6 +1331,49 @@ mod tests {
         assert_eq!(checkpoint_gc.deleted_checkpoints, 2);
         assert_eq!(checkpoint_gc.retained_checkpoint_ids.len(), 1);
         assert_eq!(replicator.list_checkpoints(1).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn shared_store_gc_refuses_oplog_needed_by_replay_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
+        let replicator = SharedStoreReplicator::new("cluster-a", store.clone());
+        for oplog_index in 1..=3 {
+            replicator
+                .publish_oplog_entry(SharedStoreOplogEntry {
+                    shard_id: 1,
+                    oplog_index,
+                    command: Command::StringSet {
+                        key: format!("k{oplog_index}"),
+                        value: vec![oplog_index as u8],
+                    },
+                })
+                .await
+                .unwrap();
+        }
+        replicator
+            .save_replay_cursor(&SharedStoreReplayCursor {
+                shard_id: 1,
+                last_oplog_index: 1,
+                last_replay_time_ms: 42,
+            })
+            .await
+            .unwrap();
+
+        let err = replicator
+            .gc_oplog_before_cursor_safe(1, 3)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            SharedStoreReplicationError::GcBlockedByReplayCursor {
+                cursor_oplog_index: 1,
+                retain_from_oplog_index: 3
+            }
+        ));
+        let safe = replicator.gc_oplog_before_cursor_safe(1, 2).await.unwrap();
+        assert_eq!(safe.deleted_oplog_objects, 1);
+        assert_eq!(safe.retained_for_cursor_oplog_index, Some(1));
     }
 
     #[derive(Debug)]

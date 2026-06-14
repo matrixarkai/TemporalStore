@@ -1543,6 +1543,24 @@ planning:
     physical bytes, and dirty objects per routing slot.
 12. Compared local validation: unit tests cover slot summaries, manifest
     validation failures, selected-slot dump cleanup, and lifecycle boundaries.
+13. Closed the next dump/load gap: slot dump manifests now embed a checksum-
+    protected index snapshot and can be installed through the Rust engine or
+    `/server/storage/dumps/install`, with stale, partial, missing-segment, and
+    checksum failures rejected.
+14. Closed the first production cleaner-loop gap: `DataNodeRuntime` now exposes
+    a periodic storage lifecycle scheduler and counts lifecycle runs in runtime
+    stats.
+15. Closed the local shared-store retention gap: cursor-safe oplog GC refuses
+    deletion that would advance beyond a known follower replay cursor.
+16. Closed the cache policy testability gap: lifecycle apply can warm cache
+    entries from live page-index refs and reports the number of warmed page refs.
+
+Remaining explicit non-goals for this pass: brpc/thrift surfaces, S3/ByteStore
+integration, C++ byte-for-byte page/header compatibility, and CacheLib/mtcache
+FFI. Remaining future parity depth is the larger C++ object/page allocator and
+stream-backend internals, but the Rust storage lifecycle now has concrete
+slot-scoped ownership summaries, dump/install validation, scheduler hooks,
+cursor-safe local shared-store GC, and local cache warmup coverage.
 13. Remaining gap: Rust still does not have the full C++ merged dump/load
     install pipeline, binary/protobuf logs, production cleaner weights, or
     CacheLib/mtcache-equivalent SSD cache.

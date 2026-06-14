@@ -29,7 +29,8 @@ use temporalstore_rust::{
     RaftControlLeadershipRequest, RaftFailoverReport, RaftMembershipChangeReport, RaftNodeId,
     RaftRpcRuntimeOptions, RaftTransport, ReplicaReplayLoop, ReplicaReplayOptions,
     ReplicaReplayRequest, ReplicaReplayResponse, RequestController, ScanStreamRequest,
-    SetConfigRequest, StorageLifecycleRequest, StreamReadRequest, UnloadShardRequest,
+    SetConfigRequest, SlotDumpManifest, StorageLifecycleRequest, StreamReadRequest,
+    UnloadShardRequest,
 };
 use temporalstore_snapshot::{FileObjectStore, S3SnapshotStore};
 
@@ -226,6 +227,15 @@ fn main() {
             ("POST", "/server/storage/lifecycle/apply") => {
                 match parse_json::<StorageLifecycleRequest>(&request.body) {
                     Ok(req) => json_response(200, &runtime.apply_storage_lifecycle(req)),
+                    Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+                }
+            }
+            ("POST", "/server/storage/dumps/install") => {
+                match parse_json::<SlotDumpManifest>(&request.body) {
+                    Ok(manifest) => match engine.install_slot_dump_manifest(&manifest) {
+                        Ok(()) => json_response(200, &Status::ok()),
+                        Err(status) => json_response(409, &status),
+                    },
                     Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
                 }
             }

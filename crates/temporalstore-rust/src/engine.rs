@@ -238,6 +238,10 @@ pub struct SlotDumpManifest {
     pub logical_bytes: u64,
     pub physical_bytes: u64,
     pub slot_summaries: Vec<SlotStorageSummary>,
+    #[serde(default)]
+    pub index_bytes: Vec<u8>,
+    #[serde(default)]
+    pub index_sha256: String,
     pub checksum: String,
 }
 
@@ -262,6 +266,8 @@ pub struct StorageLifecycleReport {
     pub dump_manifest: Option<SlotDumpManifest>,
     pub cache_entries_removed: usize,
     pub cache_disk_bytes_removed: u64,
+    #[serde(default)]
+    pub cache_warmup_page_refs: usize,
     pub delayed_destroy_purged_segments: Vec<u64>,
     pub delayed_destroy_purged_bytes: u64,
 }
@@ -291,6 +297,8 @@ pub struct StorageLifecycleRequest {
     pub purge_delayed_destroy: bool,
     #[serde(default)]
     pub invalidate_cache: bool,
+    #[serde(default)]
+    pub warm_cache: bool,
 }
 
 impl TemporalEngine {
@@ -871,6 +879,10 @@ impl TemporalEngine {
         page_segment_ids.sort_unstable();
         let oplog_sequence = self.oplog_store.stats(shard_id).last_sequence;
         let index_log_sequence = self.index_log_store.stats(shard_id).last_sequence;
+        let index_bytes = self
+            .export_index_bytes(shard_id)
+            .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
+        let index_sha256 = sha256_hex_bytes(&index_bytes);
         let created_unix_ms = now_ms();
         let manifest_id = format!("{shard_id}-{index_log_sequence}-{created_unix_ms}");
         let mut manifest = SlotDumpManifest {
@@ -898,6 +910,8 @@ impl TemporalEngine {
                 .map(|summary| summary.physical_bytes)
                 .sum(),
             slot_summaries,
+            index_bytes,
+            index_sha256,
             checksum: String::new(),
         };
         manifest.checksum = slot_dump_manifest_checksum(&manifest)?;
@@ -919,6 +933,19 @@ impl TemporalEngine {
                 "slot dump manifest checksum mismatch",
             ));
         }
+        if manifest.index_bytes.is_empty() {
+            return Err(Status::error(
+                "slot_dump_partial_manifest",
+                "slot dump manifest is missing index bytes",
+            ));
+        }
+        let actual_index_sha256 = sha256_hex_bytes(&manifest.index_bytes);
+        if manifest.index_sha256 != actual_index_sha256 {
+            return Err(Status::error(
+                "slot_dump_index_checksum_mismatch",
+                "slot dump manifest index checksum mismatch",
+            ));
+        }
         let existing_segments = self
             .page_store
             .segment_ids()
@@ -936,6 +963,36 @@ impl TemporalEngine {
                 "slot_dump_missing_page_segments",
                 format!("slot dump references missing page segments: {missing:?}"),
             ));
+        }
+        Ok(())
+    }
+
+    pub fn install_slot_dump_manifest(&self, manifest: &SlotDumpManifest) -> Result<(), Status> {
+        self.validate_slot_dump_manifest(manifest)?;
+        let current_index_sequence = self.index_log_store.stats(manifest.shard_id).last_sequence;
+        if current_index_sequence > manifest.index_log_sequence {
+            return Err(Status::error(
+                "slot_dump_stale_manifest",
+                format!(
+                    "manifest index sequence {} is older than current {}",
+                    manifest.index_log_sequence, current_index_sequence
+                ),
+            ));
+        }
+        let restored = serde_json::from_slice::<ShardState>(&manifest.index_bytes)
+            .map_err(|err| Status::error("slot_dump_invalid_index", err.to_string()))?;
+        self.persist_index_bytes(manifest.shard_id, &manifest.index_bytes)
+            .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;
+        if self
+            .shards
+            .read()
+            .expect("engine lock poisoned")
+            .contains_key(&manifest.shard_id)
+        {
+            self.shards
+                .write()
+                .expect("engine lock poisoned")
+                .insert(manifest.shard_id, restored);
         }
         Ok(())
     }
@@ -1019,6 +1076,11 @@ impl TemporalEngine {
         } else {
             (0, 0)
         };
+        let cache_warmup_page_refs = if request.warm_cache {
+            self.warm_cache_from_page_index(request.shard_id, plan.selected_dump_slots.clone())
+        } else {
+            0
+        };
         let purge_report = if request.purge_delayed_destroy {
             self.page_store
                 .purge_delayed_destroy_segments_with_report()
@@ -1032,9 +1094,46 @@ impl TemporalEngine {
             dump_manifest,
             cache_entries_removed,
             cache_disk_bytes_removed,
+            cache_warmup_page_refs,
             delayed_destroy_purged_segments: purge_report.purged_page_segment_ids,
             delayed_destroy_purged_bytes: purge_report.purged_physical_bytes,
         }
+    }
+
+    pub fn warm_cache_from_page_index(
+        &self,
+        shard_id: ShardId,
+        selected_slots: impl IntoIterator<Item = u32>,
+    ) -> usize {
+        let selected_slots = selected_slots.into_iter().collect::<BTreeSet<_>>();
+        let shards = self.shards.read().expect("engine lock poisoned");
+        let Some(shard) = shards.get(&shard_id) else {
+            return 0;
+        };
+        let mut warmed = 0usize;
+        for entry in collect_live_page_entries(shard) {
+            let routing_slot = entry
+                .address
+                .routing_slot
+                .unwrap_or_else(|| self.routing_slot_for_key(shard_id, &entry.object_key));
+            if !selected_slots.is_empty() && !selected_slots.contains(&routing_slot) {
+                continue;
+            }
+            let key = CacheKey::page(
+                shard_id,
+                entry.address.page_segment_id,
+                entry.address.offset,
+                entry.address.length,
+            );
+            if self.cache.get(&key).ok().flatten().is_some() {
+                warmed = warmed.saturating_add(1);
+            } else if let Ok(bytes) = self.page_store.read(&entry.address) {
+                if self.cache.put(key, bytes).is_ok() {
+                    warmed = warmed.saturating_add(1);
+                }
+            }
+        }
+        warmed
     }
 
     pub fn storage_recovery_boundary_report(
@@ -2162,11 +2261,13 @@ fn slot_dump_manifest_checksum(manifest: &SlotDumpManifest) -> Result<String, St
     let mut payload = manifest.clone();
     payload.checksum.clear();
     serde_json::to_vec(&payload)
-        .map(|bytes| {
-            let digest = Sha256::digest(&bytes);
-            digest.iter().map(|byte| format!("{byte:02x}")).collect()
-        })
+        .map(|bytes| sha256_hex_bytes(&bytes))
         .map_err(|err| Status::error("slot_dump_checksum_failed", err.to_string()))
+}
+
+fn sha256_hex_bytes(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn execute_on_shard(
@@ -8580,6 +8681,77 @@ mod tests {
     }
 
     #[test]
+    fn slot_dump_manifest_install_restores_index_and_rejects_partial_or_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "restore-me".to_string(),
+                value: b"v1".to_vec(),
+            },
+        });
+        let manifest = engine
+            .create_slot_dump_manifest(1, Vec::new())
+            .expect("manifest should persist");
+
+        let restore_engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("restore-cache"),
+            dir.path().join("pages"),
+            dir.path().join("restore-indexes"),
+        );
+        restore_engine.load_shard(1);
+        restore_engine
+            .install_slot_dump_manifest(&manifest)
+            .expect("manifest should install");
+        let response = restore_engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: "restore-me".to_string(),
+            },
+        });
+        assert_eq!(
+            response.response,
+            CommandResponse::Bytes {
+                value: Some(b"v1".to_vec())
+            }
+        );
+
+        let mut partial = manifest.clone();
+        partial.index_bytes.clear();
+        partial.checksum = slot_dump_manifest_checksum(&partial).unwrap();
+        assert_eq!(
+            restore_engine
+                .install_slot_dump_manifest(&partial)
+                .unwrap_err()
+                .code,
+            "slot_dump_partial_manifest"
+        );
+
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "newer".to_string(),
+                value: b"v2".to_vec(),
+            },
+        });
+        assert_eq!(
+            engine
+                .install_slot_dump_manifest(&manifest)
+                .unwrap_err()
+                .code,
+            "slot_dump_stale_manifest"
+        );
+    }
+
+    #[test]
     fn storage_lifecycle_plan_and_boundary_report_cover_dirty_and_orphan_segments() {
         let dir = tempfile::tempdir().unwrap();
         let engine = TemporalEngine::with_local_dirs(
@@ -8610,6 +8782,7 @@ mod tests {
             selected_dump_slots: Vec::new(),
             purge_delayed_destroy: false,
             invalidate_cache: false,
+            warm_cache: false,
         });
         assert!(!plan.dirty_slots.is_empty());
         assert_eq!(plan.selected_dump_slots, plan.dirty_slots);
@@ -8621,11 +8794,48 @@ mod tests {
             selected_dump_slots: plan.selected_dump_slots.clone(),
             purge_delayed_destroy: false,
             invalidate_cache: true,
+            warm_cache: false,
         });
         assert!(report.dump_manifest.is_some());
         let boundary = engine.storage_recovery_boundary_report(1);
         assert_eq!(boundary.latest_safe_oplog_sequence, 2);
         assert_eq!(boundary.latest_dump_oplog_sequence, 2);
         assert!(boundary.orphan_page_segment_ids.contains(&0));
+    }
+
+    #[test]
+    fn storage_lifecycle_apply_warms_cache_from_page_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            32,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "warm-me".to_string(),
+                value: vec![7; 128],
+            },
+        });
+        engine.cache().invalidate_shard(1).unwrap();
+        let plan = engine.storage_lifecycle_plan(StorageLifecycleRequest {
+            shard_id: 1,
+            selected_dump_slots: Vec::new(),
+            purge_delayed_destroy: false,
+            invalidate_cache: false,
+            warm_cache: false,
+        });
+        let report = engine.apply_storage_lifecycle(StorageLifecycleRequest {
+            shard_id: 1,
+            selected_dump_slots: plan.selected_dump_slots,
+            purge_delayed_destroy: false,
+            invalidate_cache: false,
+            warm_cache: true,
+        });
+        assert!(report.cache_warmup_page_refs >= 1);
+        assert!(engine.cache().stats().puts >= 1);
     }
 }
