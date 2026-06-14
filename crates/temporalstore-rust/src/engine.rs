@@ -718,6 +718,10 @@ impl TemporalEngine {
         out.push_str("# TYPE temporalstore_page_store_operations_total counter\n");
         out.push_str("# HELP temporalstore_page_store_bytes_total Page store byte counters by shard and kind.\n");
         out.push_str("# TYPE temporalstore_page_store_bytes_total counter\n");
+        out.push_str("# HELP temporalstore_page_store_zone_count Page-store zone counts by shard and lifecycle state.\n");
+        out.push_str("# TYPE temporalstore_page_store_zone_count gauge\n");
+        out.push_str("# HELP temporalstore_page_store_zone_bytes Page-store physical bytes by shard and lifecycle kind.\n");
+        out.push_str("# TYPE temporalstore_page_store_zone_bytes gauge\n");
         out.push_str("# HELP temporalstore_oplog_records_total Oplog append records by shard.\n");
         out.push_str("# TYPE temporalstore_oplog_records_total counter\n");
         out.push_str("# HELP temporalstore_oplog_bytes_total Oplog appended bytes by shard.\n");
@@ -867,6 +871,53 @@ impl TemporalEngine {
                 push_metric(
                     &mut out,
                     "temporalstore_page_store_bytes_total",
+                    &[
+                        ("shard_id", stats.shard_id.to_string()),
+                        ("kind", kind.into()),
+                    ],
+                    value,
+                );
+            }
+            for (state, value) in [
+                ("active", stats.page_store_zones.active_zones),
+                ("sealed", stats.page_store_zones.sealed_zones),
+                (
+                    "delayed_destroy",
+                    stats.page_store_zones.delayed_destroy_zones,
+                ),
+                ("purged", stats.page_store_zones.purged_zones),
+            ] {
+                push_metric(
+                    &mut out,
+                    "temporalstore_page_store_zone_count",
+                    &[
+                        ("shard_id", stats.shard_id.to_string()),
+                        ("state", state.into()),
+                    ],
+                    value,
+                );
+            }
+            for (kind, value) in [
+                ("active", stats.page_store_zones.active_physical_bytes),
+                ("sealed", stats.page_store_zones.sealed_physical_bytes),
+                (
+                    "delayed_destroy",
+                    stats.page_store_zones.delayed_destroy_physical_bytes,
+                ),
+                ("purged", stats.page_store_zones.purged_physical_bytes),
+                ("live", stats.page_store_zones.live_physical_bytes),
+                (
+                    "reclaimable",
+                    stats.page_store_zones.reclaimable_physical_bytes,
+                ),
+                (
+                    "total_known",
+                    stats.page_store_zones.total_known_physical_bytes,
+                ),
+            ] {
+                push_metric(
+                    &mut out,
+                    "temporalstore_page_store_zone_bytes",
                     &[
                         ("shard_id", stats.shard_id.to_string()),
                         ("kind", kind.into()),
@@ -1426,6 +1477,7 @@ impl TemporalEngine {
             .cloned();
         shards.get(&shard_id).map(|state| {
             let page_store = self.page_store.stats();
+            let page_store_zones = self.page_store.zone_summary();
             let string_records = state.strings.len();
             let hash_records = state.hashes.len();
             let set_records = state.sets.len();
@@ -1494,6 +1546,7 @@ impl TemporalEngine {
                 partition_info,
                 cache: self.cache.stats(),
                 page_store,
+                page_store_zones,
                 oplog: self.oplog_store.stats(shard_id),
             }
         })
@@ -7664,6 +7717,13 @@ mod tests {
         assert_eq!(stats.partition_info.start_routing_slot, 10);
         assert_eq!(stats.partition_info.end_routing_slot, 20);
         assert_eq!(stats.partition_info.object_manager, stats.object_manager);
+        assert!(stats.page_store_zones.active_zones >= 1);
+        assert!(stats.page_store_zones.active_physical_bytes > 0);
+        assert_eq!(
+            stats.page_store_zones.live_physical_bytes,
+            stats.page_store_zones.active_physical_bytes
+                + stats.page_store_zones.sealed_physical_bytes
+        );
     }
 
     #[test]
@@ -7683,6 +7743,7 @@ mod tests {
                 key: "k".to_string(),
             },
         });
+        engine.page_store().roll_segment().unwrap();
 
         let metrics = engine.prometheus_metrics();
         assert!(metrics.contains("temporalstore_shard_records{shard_id=\"1\",kind=\"string\"} 1"));
@@ -7691,6 +7752,13 @@ mod tests {
             "temporalstore_cache_operations_total{shard_id=\"1\",kind=\"memory_evictions\"}"
         ));
         assert!(metrics.contains("temporalstore_page_store_operations_total"));
+        assert!(metrics
+            .contains("temporalstore_page_store_zone_count{shard_id=\"1\",state=\"sealed\"} 1"));
+        assert!(
+            metrics.contains("temporalstore_page_store_zone_bytes{shard_id=\"1\",kind=\"live\"}")
+        );
+        assert!(metrics
+            .contains("temporalstore_page_store_zone_bytes{shard_id=\"1\",kind=\"total_known\"}"));
         assert!(metrics.contains("temporalstore_oplog_records_total{shard_id=\"1\"} 1"));
         assert!(metrics.contains("temporalstore_object_manager_objects{shard_id=\"1\"} 1"));
         assert!(metrics.contains("temporalstore_object_manager_page_refs{shard_id=\"1\"} 1"));

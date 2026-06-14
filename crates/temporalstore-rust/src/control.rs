@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cache::CacheStats;
 use crate::oplog::OplogStats;
-use crate::page_store::PageStoreStats;
+use crate::page_store::{PageStoreStats, PageStoreZoneSummary};
 use crate::types::{BatchExecuteResponse, Command, ExecuteResponse};
 use crate::types::{ShardId, Status};
 
@@ -175,6 +175,8 @@ pub struct ShardStats {
     pub partition_info: PartitionInfoStats,
     pub cache: CacheStats,
     pub page_store: PageStoreStats,
+    #[serde(default)]
+    pub page_store_zones: PageStoreZoneSummary,
     pub oplog: OplogStats,
 }
 
