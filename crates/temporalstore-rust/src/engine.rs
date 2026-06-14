@@ -759,6 +759,11 @@ impl TemporalEngine {
             for (kind, value) in [
                 ("writes", stats.page_store.writes),
                 ("reads", stats.page_store.reads),
+                (
+                    "compressed_writes",
+                    stats.page_store.compressed_records_written,
+                ),
+                ("compressed_reads", stats.page_store.compressed_records_read),
             ] {
                 push_metric(
                     &mut out,
@@ -773,6 +778,12 @@ impl TemporalEngine {
             for (kind, value) in [
                 ("written", stats.page_store.bytes_written),
                 ("read", stats.page_store.bytes_read),
+                ("logical_written", stats.page_store.logical_bytes_written),
+                ("logical_read", stats.page_store.logical_bytes_read),
+                (
+                    "compression_saved",
+                    stats.page_store.compression_bytes_saved,
+                ),
             ] {
                 push_metric(
                     &mut out,

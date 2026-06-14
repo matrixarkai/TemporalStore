@@ -53,6 +53,16 @@ pub struct PageStoreStats {
     pub reads: u64,
     pub bytes_written: u64,
     pub bytes_read: u64,
+    #[serde(default)]
+    pub logical_bytes_written: u64,
+    #[serde(default)]
+    pub logical_bytes_read: u64,
+    #[serde(default)]
+    pub compressed_records_written: u64,
+    #[serde(default)]
+    pub compressed_records_read: u64,
+    #[serde(default)]
+    pub compression_bytes_saved: u64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -135,20 +145,26 @@ impl LocalPageStore {
         let address = PageAddress {
             page_segment_id: inner.page_segment_id,
             offset: inner.write_offset,
-            length: record.len() as u64,
+            length: record.bytes.len() as u64,
             page_id: Some(page_id),
             object_id,
             routing_slot,
             zone_id: Some(zone_id),
             sha256: Some(sha256_hex(bytes)),
         };
-        file.write_all(&record)?;
+        file.write_all(&record.bytes)?;
         file.flush()?;
         file.sync_data()?;
         inner.next_page_id = inner.next_page_id.saturating_add(1);
         inner.write_offset += address.length;
         inner.stats.writes += 1;
         inner.stats.bytes_written += address.length;
+        inner.stats.logical_bytes_written += record.logical_len as u64;
+        if record.compression == PageRecordCompression::Zstd {
+            inner.stats.compressed_records_written += 1;
+            inner.stats.compression_bytes_saved +=
+                record.logical_len.saturating_sub(record.stored_len) as u64;
+        }
         Ok(address)
     }
 
@@ -181,7 +197,8 @@ impl LocalPageStore {
         file.seek(SeekFrom::Start(address.offset))?;
         let mut bytes = vec![0; address.length as usize];
         file.read_exact(&mut bytes)?;
-        let bytes = decode_page_record(&bytes, address)?;
+        let decoded = decode_page_record(&bytes, address)?;
+        let bytes = decoded.payload;
         if let Some(expected) = &address.sha256 {
             let actual = sha256_hex(&bytes);
             if &actual != expected {
@@ -196,6 +213,10 @@ impl LocalPageStore {
         }
         inner.stats.reads += 1;
         inner.stats.bytes_read += address.length;
+        inner.stats.logical_bytes_read += decoded.logical_len as u64;
+        if decoded.compression == PageRecordCompression::Zstd {
+            inner.stats.compressed_records_read += 1;
+        }
         Ok(bytes)
     }
 
@@ -226,9 +247,12 @@ impl LocalPageStore {
         let mut inner = self.inner.lock().expect("page store lock poisoned");
         let path = segment_path(&inner.root, page_segment_id);
         let segment = fs::read(path)?;
-        let bytes = logical_range_from_segment(&segment, page_segment_id, offset, size)?;
+        let range = logical_range_from_segment(&segment, page_segment_id, offset, size)?;
+        let bytes = range.bytes;
         inner.stats.reads += 1;
         inner.stats.bytes_read += bytes.len() as u64;
+        inner.stats.logical_bytes_read += bytes.len() as u64;
+        inner.stats.compressed_records_read += range.compressed_records_read;
         Ok(bytes)
     }
 
@@ -399,15 +423,37 @@ struct PageRecordHeader {
     compression: PageRecordCompression,
 }
 
+#[derive(Debug)]
+struct EncodedPageRecord {
+    bytes: Vec<u8>,
+    logical_len: usize,
+    stored_len: usize,
+    compression: PageRecordCompression,
+}
+
+#[derive(Debug)]
+struct DecodedPageRecord {
+    payload: Vec<u8>,
+    logical_len: usize,
+    compression: PageRecordCompression,
+}
+
+#[derive(Debug)]
+struct LogicalRangeRead {
+    bytes: Vec<u8>,
+    compressed_records_read: u64,
+}
+
 fn encode_page_record(
     payload: &[u8],
     page_id: u64,
     object_id: Option<u64>,
     routing_slot: Option<u32>,
     zone_id: u64,
-) -> Result<Vec<u8>, PageStoreError> {
+) -> Result<EncodedPageRecord, PageStoreError> {
     let digest = Sha256::digest(payload);
     let (stored_payload, compression) = encode_page_record_payload(payload)?;
+    let stored_len = stored_payload.len();
     let mut record = Vec::with_capacity(PAGE_RECORD_HEADER_LEN + stored_payload.len());
     record.extend_from_slice(PAGE_RECORD_MAGIC);
     record.push(PAGE_RECORD_VERSION);
@@ -427,9 +473,14 @@ fn encode_page_record(
         PageRecordCompression::Zstd => PAGE_RECORD_COMPRESSION_ZSTD,
     });
     record.extend_from_slice(&[0; 7]);
-    record.extend_from_slice(&(stored_payload.len() as u64).to_le_bytes());
+    record.extend_from_slice(&(stored_len as u64).to_le_bytes());
     record.extend_from_slice(&stored_payload);
-    Ok(record)
+    Ok(EncodedPageRecord {
+        bytes: record,
+        logical_len: payload.len(),
+        stored_len,
+        compression,
+    })
 }
 
 fn encode_page_record_payload(
@@ -446,9 +497,16 @@ fn encode_page_record_payload(
     }
 }
 
-fn decode_page_record(record: &[u8], address: &PageAddress) -> Result<Vec<u8>, PageStoreError> {
+fn decode_page_record(
+    record: &[u8],
+    address: &PageAddress,
+) -> Result<DecodedPageRecord, PageStoreError> {
     if !record.starts_with(PAGE_RECORD_MAGIC) {
-        return Ok(record.to_vec());
+        return Ok(DecodedPageRecord {
+            payload: record.to_vec(),
+            logical_len: record.len(),
+            compression: PageRecordCompression::None,
+        });
     }
     if record.len() < PAGE_RECORD_V1_HEADER_LEN {
         return Err(corrupt_page_envelope(address, "short header"));
@@ -501,7 +559,11 @@ fn decode_page_record(record: &[u8], address: &PageAddress) -> Result<Vec<u8>, P
     }
     let payload = decode_page_record_payload(&record[header.header_len..], &header, address)?;
     verify_page_record_checksum(&payload, &header.expected_sha256, address)?;
-    Ok(payload)
+    Ok(DecodedPageRecord {
+        payload,
+        logical_len: header.payload_len,
+        compression: header.compression,
+    })
 }
 
 fn logical_range_from_segment(
@@ -509,17 +571,24 @@ fn logical_range_from_segment(
     page_segment_id: u64,
     offset: u64,
     size: u64,
-) -> Result<Vec<u8>, PageStoreError> {
+) -> Result<LogicalRangeRead, PageStoreError> {
     if size == 0 {
-        return Ok(Vec::new());
+        return Ok(LogicalRangeRead {
+            bytes: Vec::new(),
+            compressed_records_read: 0,
+        });
     }
     if !segment.starts_with(PAGE_RECORD_MAGIC) {
         let start = offset as usize;
         let end = start.saturating_add(size as usize).min(segment.len());
-        return Ok(if start >= segment.len() {
+        let bytes = if start >= segment.len() {
             Vec::new()
         } else {
             segment[start..end].to_vec()
+        };
+        return Ok(LogicalRangeRead {
+            bytes,
+            compressed_records_read: 0,
         });
     }
 
@@ -528,6 +597,7 @@ fn logical_range_from_segment(
     let mut physical_offset = 0usize;
     let mut logical_offset = 0usize;
     let mut out = Vec::with_capacity(size as usize);
+    let mut compressed_records_read = 0_u64;
 
     while physical_offset < segment.len() && out.len() < size as usize {
         let remaining = &segment[physical_offset..];
@@ -572,6 +642,9 @@ fn logical_range_from_segment(
             &address,
         )?;
         verify_page_record_checksum(&payload, &header.expected_sha256, &address)?;
+        if header.compression == PageRecordCompression::Zstd {
+            compressed_records_read += 1;
+        }
 
         let logical_end = logical_offset.saturating_add(header.payload_len);
         let overlap_start = requested_start.max(logical_offset);
@@ -586,7 +659,10 @@ fn logical_range_from_segment(
         logical_offset = logical_end;
     }
 
-    Ok(out)
+    Ok(LogicalRangeRead {
+        bytes: out,
+        compressed_records_read,
+    })
 }
 
 fn parse_page_record_header(
@@ -1109,6 +1185,18 @@ mod tests {
         assert_eq!(logical, expected);
         assert_eq!(raw[8], PAGE_RECORD_VERSION);
         assert_eq!(raw[92], PAGE_RECORD_COMPRESSION_ZSTD);
+
+        let stats = store.stats();
+        assert_eq!(stats.writes, 2);
+        assert_eq!(
+            stats.logical_bytes_written,
+            (first_payload.len() + second_payload.len()) as u64
+        );
+        assert_eq!(stats.compressed_records_written, 2);
+        assert_eq!(stats.compressed_records_read, 4);
+        assert!(stats.compression_bytes_saved > 0);
+        assert!(stats.bytes_written < stats.logical_bytes_written);
+        assert!(stats.logical_bytes_read >= stats.bytes_read);
     }
 
     #[test]
