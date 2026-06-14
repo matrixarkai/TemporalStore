@@ -91,6 +91,8 @@ pub struct PageStoreGcReport {
     pub removed_page_segment_ids: Vec<u64>,
     pub retained_page_segment_ids: Vec<u64>,
     #[serde(default)]
+    pub delayed_destroy_page_segment_ids: Vec<u64>,
+    #[serde(default)]
     pub retained_live_page_segment_ids: Vec<u64>,
     #[serde(default)]
     pub retained_current_page_segment_ids: Vec<u64>,
@@ -372,12 +374,41 @@ impl LocalPageStore {
         retain_from_page_segment_id: u64,
         live_page_segment_ids: impl IntoIterator<Item = u64>,
     ) -> Result<PageStoreGcReport, PageStoreError> {
+        self.gc_segments_before_with_live_refs_mode(
+            retain_from_page_segment_id,
+            live_page_segment_ids,
+            false,
+        )
+    }
+
+    pub fn gc_segments_before_with_live_refs_delayed_destroy(
+        &self,
+        retain_from_page_segment_id: u64,
+        live_page_segment_ids: impl IntoIterator<Item = u64>,
+    ) -> Result<PageStoreGcReport, PageStoreError> {
+        self.gc_segments_before_with_live_refs_mode(
+            retain_from_page_segment_id,
+            live_page_segment_ids,
+            true,
+        )
+    }
+
+    fn gc_segments_before_with_live_refs_mode(
+        &self,
+        retain_from_page_segment_id: u64,
+        live_page_segment_ids: impl IntoIterator<Item = u64>,
+        delayed_destroy: bool,
+    ) -> Result<PageStoreGcReport, PageStoreError> {
         let inner = self.inner.lock().expect("page store lock poisoned");
         fs::create_dir_all(&inner.root)?;
+        if delayed_destroy {
+            fs::create_dir_all(delayed_destroy_dir(&inner.root))?;
+        }
         let current_page_segment_id = inner.page_segment_id;
         let live_page_segment_ids = live_page_segment_ids.into_iter().collect::<BTreeSet<_>>();
         let mut removed = Vec::new();
         let mut retained = Vec::new();
+        let mut delayed_destroy_ids = Vec::new();
         let mut retained_live = Vec::new();
         let mut retained_current = Vec::new();
         for page_segment_id in segment_ids_at(&inner.root)? {
@@ -385,7 +416,12 @@ impl LocalPageStore {
             let is_current = page_segment_id == current_page_segment_id;
             let is_live = live_page_segment_ids.contains(&page_segment_id);
             if below_retention_floor && !is_current && !is_live {
-                fs::remove_file(segment_path(&inner.root, page_segment_id))?;
+                if delayed_destroy {
+                    move_segment_to_delayed_destroy(&inner.root, page_segment_id)?;
+                    delayed_destroy_ids.push(page_segment_id);
+                } else {
+                    fs::remove_file(segment_path(&inner.root, page_segment_id))?;
+                }
                 removed.push(page_segment_id);
             } else {
                 if below_retention_floor && is_current {
@@ -401,9 +437,45 @@ impl LocalPageStore {
             retain_from_page_segment_id,
             removed_page_segment_ids: removed,
             retained_page_segment_ids: retained,
+            delayed_destroy_page_segment_ids: delayed_destroy_ids,
             retained_live_page_segment_ids: retained_live,
             retained_current_page_segment_ids: retained_current,
         })
+    }
+
+    pub fn delayed_destroy_segment_ids(&self) -> Result<Vec<u64>, PageStoreError> {
+        let root = self
+            .inner
+            .lock()
+            .expect("page store lock poisoned")
+            .root
+            .clone();
+        delayed_destroy_segment_ids_at(&root)
+    }
+
+    pub fn purge_delayed_destroy_segments(&self) -> Result<Vec<u64>, PageStoreError> {
+        let root = self
+            .inner
+            .lock()
+            .expect("page store lock poisoned")
+            .root
+            .clone();
+        let trash_dir = delayed_destroy_dir(&root);
+        let mut purged = Vec::new();
+        if !trash_dir.exists() {
+            return Ok(purged);
+        }
+        for entry in fs::read_dir(&trash_dir)? {
+            let entry = entry?;
+            let Some(id) = delayed_destroy_segment_id_from_name(&entry.file_name()) else {
+                continue;
+            };
+            fs::remove_file(entry.path())?;
+            purged.push(id);
+        }
+        purged.sort_unstable();
+        sync_dir(&trash_dir)?;
+        Ok(purged)
     }
 
     pub fn stats(&self) -> PageStoreStats {
@@ -419,6 +491,59 @@ impl Default for LocalPageStore {
 
 fn segment_path(root: &Path, page_segment_id: u64) -> PathBuf {
     root.join(format!("page_segment_{page_segment_id:020}.seg"))
+}
+
+fn delayed_destroy_dir(root: &Path) -> PathBuf {
+    root.join(".page_segment_trash")
+}
+
+fn delayed_destroy_path(root: &Path, page_segment_id: u64) -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    delayed_destroy_dir(root).join(format!(
+        "page_segment_{page_segment_id:020}.seg.deleted.{nanos}"
+    ))
+}
+
+fn move_segment_to_delayed_destroy(
+    root: &Path,
+    page_segment_id: u64,
+) -> Result<(), PageStoreError> {
+    let source = segment_path(root, page_segment_id);
+    let trash_dir = delayed_destroy_dir(root);
+    fs::create_dir_all(&trash_dir)?;
+    let destination = delayed_destroy_path(root, page_segment_id);
+    fs::rename(&source, &destination)?;
+    sync_parent_dir(&source)?;
+    sync_parent_dir(&destination)?;
+    Ok(())
+}
+
+fn delayed_destroy_segment_ids_at(root: &Path) -> Result<Vec<u64>, PageStoreError> {
+    let trash_dir = delayed_destroy_dir(root);
+    let mut ids = Vec::new();
+    if !trash_dir.exists() {
+        return Ok(ids);
+    }
+    for entry in fs::read_dir(trash_dir)? {
+        let entry = entry?;
+        if let Some(id) = delayed_destroy_segment_id_from_name(&entry.file_name()) {
+            ids.push(id);
+        }
+    }
+    ids.sort_unstable();
+    Ok(ids)
+}
+
+fn delayed_destroy_segment_id_from_name(name: &std::ffi::OsStr) -> Option<u64> {
+    let name = name.to_str()?;
+    let id = name
+        .strip_prefix("page_segment_")?
+        .strip_suffix(name.split_once(".seg.deleted.")?.1)?
+        .strip_suffix(".seg.deleted.")?;
+    id.parse::<u64>().ok()
 }
 
 fn zone_id_for_segment(page_segment_id: u64) -> u64 {
@@ -1004,6 +1129,13 @@ fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+fn sync_dir(path: &Path) -> std::io::Result<()> {
+    if let Ok(dir) = File::open(path) {
+        dir.sync_all()?;
+    }
+    Ok(())
+}
+
 fn unique_temp_path(kind: &str) -> PathBuf {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1369,5 +1501,31 @@ mod tests {
         assert!(report.retained_current_page_segment_ids.is_empty());
         assert_eq!(report.retained_live_page_segment_ids, vec![1]);
         assert_eq!(store.segment_ids().unwrap(), vec![1, 3]);
+    }
+
+    #[test]
+    fn delayed_destroy_gc_quarantines_stale_segments_before_purge() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalPageStore::new(dir.path());
+        store.install_segment(0, b"current").unwrap();
+        store.install_segment(1, b"stale").unwrap();
+        store.install_segment(2, b"live").unwrap();
+        store.install_segment(3, b"keep").unwrap();
+
+        let report = store
+            .gc_segments_before_with_live_refs_delayed_destroy(3, [2_u64])
+            .unwrap();
+
+        assert_eq!(report.removed_page_segment_ids, vec![0, 1]);
+        assert_eq!(report.delayed_destroy_page_segment_ids, vec![0, 1]);
+        assert_eq!(report.retained_page_segment_ids, vec![2, 3]);
+        assert_eq!(report.retained_live_page_segment_ids, vec![2]);
+        assert_eq!(store.segment_ids().unwrap(), vec![2, 3]);
+        assert_eq!(store.delayed_destroy_segment_ids().unwrap(), vec![0, 1]);
+
+        let purged = store.purge_delayed_destroy_segments().unwrap();
+        assert_eq!(purged, vec![0, 1]);
+        assert!(store.delayed_destroy_segment_ids().unwrap().is_empty());
+        assert_eq!(store.segment_ids().unwrap(), vec![2, 3]);
     }
 }
