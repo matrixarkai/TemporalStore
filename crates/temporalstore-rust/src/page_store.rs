@@ -133,11 +133,19 @@ pub struct PageStoreSegmentReport {
     pub physical_bytes: u64,
     pub logical_bytes: u64,
     pub page_count: u64,
+    #[serde(default)]
+    pub object_count: u64,
+    #[serde(default)]
+    pub routing_slot_count: u64,
     pub compressed_records: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_page_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_page_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_routing_slot: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_routing_slot: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_error: Option<String>,
 }
@@ -1577,6 +1585,8 @@ fn inspect_segment(segment: &[u8], page_segment_id: u64) -> PageStoreSegmentRepo
         physical_bytes: segment.len() as u64,
         ..PageStoreSegmentReport::default()
     };
+    let mut object_ids = BTreeSet::new();
+    let mut routing_slots = BTreeSet::new();
     if segment.is_empty() {
         return report;
     }
@@ -1636,6 +1646,16 @@ fn inspect_segment(segment: &[u8], page_segment_id: u64) -> PageStoreSegmentRepo
                     .saturating_add(decoded.logical_len as u64);
                 if decoded.compression == PageRecordCompression::Zstd {
                     report.compressed_records = report.compressed_records.saturating_add(1);
+                }
+                if let Some(object_id) = header.object_id {
+                    object_ids.insert(object_id);
+                    report.object_count = object_ids.len() as u64;
+                }
+                if let Some(routing_slot) = header.routing_slot {
+                    routing_slots.insert(routing_slot);
+                    report.routing_slot_count = routing_slots.len() as u64;
+                    report.first_routing_slot = routing_slots.first().copied();
+                    report.last_routing_slot = routing_slots.last().copied();
                 }
                 if let Some(page_id) = header.page_id {
                     report.first_page_id = Some(
@@ -2004,6 +2024,31 @@ mod tests {
         assert_eq!(reports[0].compressed_records, 2);
         assert_eq!(reports[0].first_page_id, first.page_id);
         assert_eq!(reports[0].last_page_id, second.page_id);
+        assert_eq!(reports[0].first_error, None);
+    }
+
+    #[test]
+    fn segment_reports_describe_object_and_routing_slot_ownership() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalPageStore::new(dir.path());
+        store
+            .append_with_page_metadata(b"slot-7-object-100", Some(100), Some(7))
+            .unwrap();
+        store
+            .append_with_page_metadata(b"slot-11-object-101", Some(101), Some(11))
+            .unwrap();
+        store
+            .append_with_page_metadata(b"slot-7-object-100-again", Some(100), Some(7))
+            .unwrap();
+
+        let reports = store.segment_reports().unwrap();
+
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].page_count, 3);
+        assert_eq!(reports[0].object_count, 2);
+        assert_eq!(reports[0].routing_slot_count, 2);
+        assert_eq!(reports[0].first_routing_slot, Some(7));
+        assert_eq!(reports[0].last_routing_slot, Some(11));
         assert_eq!(reports[0].first_error, None);
     }
 
