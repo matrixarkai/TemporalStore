@@ -722,6 +722,10 @@ impl TemporalEngine {
         out.push_str("# TYPE temporalstore_page_store_zone_count gauge\n");
         out.push_str("# HELP temporalstore_page_store_zone_bytes Page-store physical bytes by shard and lifecycle kind.\n");
         out.push_str("# TYPE temporalstore_page_store_zone_bytes gauge\n");
+        out.push_str("# HELP temporalstore_page_store_zone_oldest_unix_ms Oldest page-store zone timestamp by shard and lifecycle scope.\n");
+        out.push_str("# TYPE temporalstore_page_store_zone_oldest_unix_ms gauge\n");
+        out.push_str("# HELP temporalstore_page_store_zone_oldest_age_ms Oldest page-store zone age by shard and lifecycle scope.\n");
+        out.push_str("# TYPE temporalstore_page_store_zone_oldest_age_ms gauge\n");
         out.push_str("# HELP temporalstore_oplog_records_total Oplog append records by shard.\n");
         out.push_str("# TYPE temporalstore_oplog_records_total counter\n");
         out.push_str("# HELP temporalstore_oplog_bytes_total Oplog appended bytes by shard.\n");
@@ -924,6 +928,46 @@ impl TemporalEngine {
                     ],
                     value,
                 );
+            }
+            for (scope, value) in [
+                ("known", stats.page_store_zones.oldest_known_zone_unix_ms),
+                ("live", stats.page_store_zones.oldest_live_zone_unix_ms),
+                (
+                    "reclaimable",
+                    stats.page_store_zones.oldest_reclaimable_zone_unix_ms,
+                ),
+            ] {
+                if let Some(value) = value {
+                    push_metric(
+                        &mut out,
+                        "temporalstore_page_store_zone_oldest_unix_ms",
+                        &[
+                            ("shard_id", stats.shard_id.to_string()),
+                            ("scope", scope.into()),
+                        ],
+                        value,
+                    );
+                }
+            }
+            for (scope, value) in [
+                ("known", stats.page_store_zones.oldest_known_zone_age_ms),
+                ("live", stats.page_store_zones.oldest_live_zone_age_ms),
+                (
+                    "reclaimable",
+                    stats.page_store_zones.oldest_reclaimable_zone_age_ms,
+                ),
+            ] {
+                if let Some(value) = value {
+                    push_metric(
+                        &mut out,
+                        "temporalstore_page_store_zone_oldest_age_ms",
+                        &[
+                            ("shard_id", stats.shard_id.to_string()),
+                            ("scope", scope.into()),
+                        ],
+                        value,
+                    );
+                }
             }
             push_metric(
                 &mut out,
@@ -7759,6 +7803,18 @@ mod tests {
         );
         assert!(metrics
             .contains("temporalstore_page_store_zone_bytes{shard_id=\"1\",kind=\"total_known\"}"));
+        assert!(metrics.contains(
+            "temporalstore_page_store_zone_oldest_unix_ms{shard_id=\"1\",scope=\"known\"}"
+        ));
+        assert!(metrics.contains(
+            "temporalstore_page_store_zone_oldest_unix_ms{shard_id=\"1\",scope=\"live\"}"
+        ));
+        assert!(metrics.contains(
+            "temporalstore_page_store_zone_oldest_age_ms{shard_id=\"1\",scope=\"known\"}"
+        ));
+        assert!(metrics.contains(
+            "temporalstore_page_store_zone_oldest_age_ms{shard_id=\"1\",scope=\"live\"}"
+        ));
         assert!(metrics.contains("temporalstore_oplog_records_total{shard_id=\"1\"} 1"));
         assert!(metrics.contains("temporalstore_object_manager_objects{shard_id=\"1\"} 1"));
         assert!(metrics.contains("temporalstore_object_manager_page_refs{shard_id=\"1\"} 1"));
