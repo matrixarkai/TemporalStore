@@ -879,6 +879,27 @@ Production-readiness grouped pass focused on process-level storage crash recover
    not replace multi-process Raft/data-node chaos, disk-fault injection, or full
    C++ object/page/slot replay.
 
+Eight-loop C++ gap-fill pass focused on local disk-fault diagnostics:
+
+1. Compared C++ recovery expectations with Rust process-abort coverage: process
+   loss was covered, but disk corruption reporting was too coarse.
+2. Compared C++ page checksum behavior with Rust page envelopes: Rust rejected
+   corrupt pages, but recovery reports only exposed a boolean/count.
+3. Compared C++ operator diagnosis needs with Rust observability: Rust now
+   records unreadable page refs with segment id, offset, length, and error.
+4. Compared index/page consistency handling: Rust recovery now distinguishes
+   total indexed page refs from readable refs and lists the unreadable subset.
+5. Compared disk-fault harness coverage: Rust `storage_crash_harness` now has a
+   `corrupt-page` mode that mutates a persisted page segment after an aborted
+   writer process.
+6. Compared restart behavior after fault injection: the recover process still
+   reports readable keys and identifies the damaged page-backed key path.
+7. Compared test gates: integration tests now cover process abort followed by
+   page-segment corruption and recovery report validation.
+8. Remaining gap: this is local single-node disk corruption diagnostics, not
+   multi-process Raft/data-node disk-fault chaos or full C++ object/page/slot
+   replay.
+
 | Area | C++ TemporalStore | Rust Today | Missing |
 | --- | --- | --- | --- |
 | Protocol | brpc/thrift/protobuf APIs and extension protos | JSON/HTTP command API plus RESP adapter; C++ `ServerService`-named JSON route aliases for load/unload/execute/batch/apply-data-raft-log/config/info/stats/stream/update-membership/ping; C++ `MasterService`-named JSON route aliases for implemented table/server control-plane operations including table update/delete; brpc/thrift intentionally excluded from the Rust parity target | SDK compatibility for the supported Rust HTTP/RESP API; no brpc/thrift parity target now |
@@ -902,7 +923,7 @@ Production-readiness grouped pass focused on process-level storage crash recover
 | Redis | not the main C++ wire API; C++ server also exposes admin commands such as `INFO`, `CONFIG`, `SLAVEOF`, and `PARTITION` | useful RESP compatibility, including `SET NX/XX GET EX/PX`, hash/set commands, feature commands, C++-style `INFO`/`CONFIG`/`SLAVEOF`/`AUTH`/`BGSAVE`/`PARTITION` smoke commands, and CRC64 slot/hash helpers | sorted sets/lists if needed; real partition-manager backing for admin commands |
 | Metrics | production metrics/logging | Prometheus `/metrics` for shard/cache/page/oplog/runtime/object-manager/partition plus snapshot metric names; local raft metrics renderer | dashboards and alerts |
 | Deployment | internal production environment | Docker and existing-EKS Terraform skeleton | service discovery, autoscale controller, rolling upgrade, runbooks, auth/TLS |
-| Testing | mature internal tests and production history | local unit/integration/compat tests, storage recovery report tests covering oplog/index-log/page stream/zone manifest reopen and missing-manifest rebuild, process-level local storage abort/recover harness | multi-process chaos, disk-fault crash recovery, perf benchmarks, C++ golden corpus |
+| Testing | mature internal tests and production history | local unit/integration/compat tests, storage recovery report tests covering oplog/index-log/page stream/zone manifest reopen and missing-manifest rebuild, process-level local storage abort/recover harness with page-segment corruption diagnostics | multi-process chaos, broader disk-fault crash recovery, perf benchmarks, C++ golden corpus |
 
 ## P0 Still Missing Before Distributed Alpha
 

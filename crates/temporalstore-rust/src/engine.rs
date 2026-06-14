@@ -156,7 +156,17 @@ pub struct StorageRecoveryReport {
     pub zone_descriptors: Vec<PageStoreZoneDescriptor>,
     pub total_page_refs: usize,
     pub readable_page_refs: usize,
+    #[serde(default)]
+    pub unreadable_page_refs: Vec<StorageRecoveryPageError>,
     pub all_live_pages_readable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageRecoveryPageError {
+    pub page_segment_id: u64,
+    pub offset: u64,
+    pub length: u64,
+    pub error: String,
 }
 
 impl TemporalEngine {
@@ -1060,10 +1070,19 @@ impl TemporalEngine {
             .map(collect_live_page_addresses)
             .unwrap_or_default();
         let total_page_refs = addresses.len();
-        let readable_page_refs = addresses
-            .iter()
-            .filter(|address| self.page_store.read(address).is_ok())
-            .count();
+        let mut readable_page_refs = 0usize;
+        let mut unreadable_page_refs = Vec::new();
+        for address in &addresses {
+            match self.page_store.read(address) {
+                Ok(_) => readable_page_refs += 1,
+                Err(err) => unreadable_page_refs.push(StorageRecoveryPageError {
+                    page_segment_id: address.page_segment_id,
+                    offset: address.offset,
+                    length: address.length,
+                    error: err.to_string(),
+                }),
+            }
+        }
         let mut live_page_segment_ids = addresses
             .iter()
             .map(|address| address.page_segment_id)
@@ -1081,6 +1100,7 @@ impl TemporalEngine {
             zone_descriptors,
             total_page_refs,
             readable_page_refs,
+            unreadable_page_refs,
             all_live_pages_readable: total_page_refs == readable_page_refs,
         }
     }

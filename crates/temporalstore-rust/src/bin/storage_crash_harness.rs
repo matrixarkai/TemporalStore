@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 
 use serde::Serialize;
@@ -15,6 +16,7 @@ struct HarnessOptions {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HarnessMode {
     WriteAbort,
+    CorruptPage,
     Recover,
 }
 
@@ -31,6 +33,7 @@ fn main() {
     fs::create_dir_all(&options.root).expect("failed to create crash harness root");
     match options.mode {
         HarnessMode::WriteAbort => write_then_abort(options.root),
+        HarnessMode::CorruptPage => corrupt_first_page_segment(options.root),
         HarnessMode::Recover => recover_and_print(options.root),
     }
 }
@@ -59,6 +62,29 @@ fn recover_and_print(root: PathBuf) {
         "{}",
         serde_json::to_string_pretty(&summary).expect("summary should serialize")
     );
+}
+
+fn corrupt_first_page_segment(root: PathBuf) {
+    let segment_path = root
+        .join("pages")
+        .join("page_segment_00000000000000000000.seg");
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&segment_path)
+        .expect("page segment should exist before corruption");
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).expect("read page segment");
+    assert!(
+        !bytes.is_empty(),
+        "page segment should contain at least one durable page"
+    );
+    let offset = bytes.len().saturating_sub(1) as u64;
+    let corrupted = bytes[offset as usize] ^ 0xff;
+    file.seek(SeekFrom::Start(offset))
+        .expect("seek corruption byte");
+    file.write_all(&[corrupted]).expect("write corruption byte");
+    file.sync_all().expect("sync corrupted page segment");
 }
 
 fn open_engine(root: &std::path::Path) -> TemporalEngine {
@@ -108,12 +134,15 @@ fn parse_options() -> HarnessOptions {
             "--mode" => {
                 mode = args.next().map(|mode| match mode.as_str() {
                     "write-abort" => HarnessMode::WriteAbort,
+                    "corrupt-page" => HarnessMode::CorruptPage,
                     "recover" => HarnessMode::Recover,
                     other => panic!("unsupported --mode {other}"),
                 });
             }
             "-h" | "--help" => {
-                eprintln!("usage: storage_crash_harness --root <dir> --mode <write-abort|recover>");
+                eprintln!(
+                    "usage: storage_crash_harness --root <dir> --mode <write-abort|corrupt-page|recover>"
+                );
                 std::process::exit(0);
             }
             other => panic!("unknown argument {other}"),
