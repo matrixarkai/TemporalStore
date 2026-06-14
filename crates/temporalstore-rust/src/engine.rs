@@ -156,6 +156,8 @@ pub struct StorageRecoveryReport {
     pub zone_descriptors: Vec<PageStoreZoneDescriptor>,
     #[serde(default)]
     pub page_segment_reports: Vec<PageStoreSegmentReport>,
+    #[serde(default)]
+    pub page_segment_live_reports: Vec<StorageRecoverySegmentLiveReport>,
     pub total_page_refs: usize,
     pub readable_page_refs: usize,
     #[serde(default)]
@@ -169,6 +171,23 @@ pub struct StorageRecoveryPageError {
     pub offset: u64,
     pub length: u64,
     pub error: String,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageRecoverySegmentLiveReport {
+    pub page_segment_id: u64,
+    pub physical_bytes: u64,
+    pub logical_bytes: u64,
+    pub page_count: u64,
+    pub live_page_refs: u64,
+    pub readable_live_page_refs: u64,
+    pub unreadable_live_page_refs: u64,
+    pub stale_page_estimate: u64,
+    pub live_physical_bytes: u64,
+    pub live_logical_bytes: u64,
+    pub live_object_count: u64,
+    pub live_routing_slot_count: u64,
+    pub live_ref_density_basis_points: u64,
 }
 
 impl TemporalEngine {
@@ -1075,17 +1094,80 @@ impl TemporalEngine {
         let total_page_refs = addresses.len();
         let mut readable_page_refs = 0usize;
         let mut unreadable_page_refs = Vec::new();
+        let mut page_segment_live_reports = page_segment_reports
+            .iter()
+            .map(|report| {
+                (
+                    report.page_segment_id,
+                    StorageRecoverySegmentLiveReport {
+                        page_segment_id: report.page_segment_id,
+                        physical_bytes: report.physical_bytes,
+                        logical_bytes: report.logical_bytes,
+                        page_count: report.page_count,
+                        ..StorageRecoverySegmentLiveReport::default()
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mut live_object_ids = BTreeMap::<u64, BTreeSet<u64>>::new();
+        let mut live_routing_slots = BTreeMap::<u64, BTreeSet<u32>>::new();
         for address in &addresses {
-            match self.page_store.read(address) {
-                Ok(_) => readable_page_refs += 1,
-                Err(err) => unreadable_page_refs.push(StorageRecoveryPageError {
+            let segment_report = page_segment_live_reports
+                .entry(address.page_segment_id)
+                .or_insert(StorageRecoverySegmentLiveReport {
                     page_segment_id: address.page_segment_id,
-                    offset: address.offset,
-                    length: address.length,
-                    error: err.to_string(),
-                }),
+                    ..StorageRecoverySegmentLiveReport::default()
+                });
+            segment_report.live_page_refs = segment_report.live_page_refs.saturating_add(1);
+            segment_report.live_physical_bytes = segment_report
+                .live_physical_bytes
+                .saturating_add(address.length);
+            if let Some(object_id) = address.object_id {
+                let objects = live_object_ids.entry(address.page_segment_id).or_default();
+                objects.insert(object_id);
+                segment_report.live_object_count = objects.len() as u64;
+            }
+            if let Some(routing_slot) = address.routing_slot {
+                let slots = live_routing_slots
+                    .entry(address.page_segment_id)
+                    .or_default();
+                slots.insert(routing_slot);
+                segment_report.live_routing_slot_count = slots.len() as u64;
+            }
+            match self.page_store.read(address) {
+                Ok(bytes) => {
+                    readable_page_refs += 1;
+                    segment_report.readable_live_page_refs =
+                        segment_report.readable_live_page_refs.saturating_add(1);
+                    segment_report.live_logical_bytes = segment_report
+                        .live_logical_bytes
+                        .saturating_add(bytes.len() as u64);
+                }
+                Err(err) => {
+                    segment_report.unreadable_live_page_refs =
+                        segment_report.unreadable_live_page_refs.saturating_add(1);
+                    unreadable_page_refs.push(StorageRecoveryPageError {
+                        page_segment_id: address.page_segment_id,
+                        offset: address.offset,
+                        length: address.length,
+                        error: err.to_string(),
+                    });
+                }
             }
         }
+        let page_segment_live_reports = page_segment_live_reports
+            .into_values()
+            .map(|mut report| {
+                report.stale_page_estimate =
+                    report.page_count.saturating_sub(report.live_page_refs);
+                report.live_ref_density_basis_points = if report.page_count == 0 {
+                    0
+                } else {
+                    report.live_page_refs.saturating_mul(10_000) / report.page_count
+                };
+                report
+            })
+            .collect::<Vec<_>>();
         let mut live_page_segment_ids = addresses
             .iter()
             .map(|address| address.page_segment_id)
@@ -1102,6 +1184,7 @@ impl TemporalEngine {
             live_page_segment_ids,
             zone_descriptors,
             page_segment_reports,
+            page_segment_live_reports,
             total_page_refs,
             readable_page_refs,
             unreadable_page_refs,
@@ -3946,6 +4029,30 @@ mod tests {
         assert_eq!(report.zone_descriptors.len(), 2);
         assert_eq!(report.zone_descriptors[0].state, PageStoreZoneState::Sealed);
         assert_eq!(report.zone_descriptors[1].state, PageStoreZoneState::Active);
+        assert_eq!(report.page_segment_live_reports.len(), 2);
+        assert_eq!(report.page_segment_live_reports[0].page_segment_id, 0);
+        assert_eq!(report.page_segment_live_reports[0].page_count, 1);
+        assert_eq!(report.page_segment_live_reports[0].live_page_refs, 1);
+        assert_eq!(
+            report.page_segment_live_reports[0].readable_live_page_refs,
+            1
+        );
+        assert_eq!(
+            report.page_segment_live_reports[0].unreadable_live_page_refs,
+            0
+        );
+        assert_eq!(report.page_segment_live_reports[0].stale_page_estimate, 0);
+        assert_eq!(
+            report.page_segment_live_reports[0].live_ref_density_basis_points,
+            10_000
+        );
+        assert_eq!(report.page_segment_live_reports[0].live_object_count, 1);
+        assert_eq!(
+            report.page_segment_live_reports[0].live_routing_slot_count,
+            1
+        );
+        assert_eq!(report.page_segment_live_reports[0].live_logical_bytes, 2);
+        assert!(report.page_segment_live_reports[0].live_physical_bytes > 0);
 
         assert_eq!(
             recovered
@@ -3974,6 +4081,58 @@ mod tests {
                 value: Some(b"hv".to_vec())
             }
         );
+    }
+
+    #[test]
+    fn crash_recovery_report_marks_stale_segment_density_after_overwrite() {
+        let cache_dir = unique_temp_path("recovery-density-cache");
+        let page_dir = unique_temp_path("recovery-density-pages");
+        let index_dir = unique_temp_path("recovery-density-index");
+        let engine = TemporalEngine::with_local_dirs(256, &cache_dir, &page_dir, &index_dir);
+        engine.load_shard(1);
+
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: "hot".to_string(),
+                        value: b"old".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: "hot".to_string(),
+                        value: b"new".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+
+        let recovered = TemporalEngine::with_local_dirs(256, &cache_dir, &page_dir, &index_dir);
+        recovered.load_shard(1);
+        let report = recovered.storage_recovery_report(1);
+        let segment = report
+            .page_segment_live_reports
+            .iter()
+            .find(|segment| segment.page_segment_id == 0)
+            .expect("segment 0 live-density report");
+
+        assert_eq!(segment.page_count, 2);
+        assert_eq!(segment.live_page_refs, 1);
+        assert_eq!(segment.readable_live_page_refs, 1);
+        assert_eq!(segment.stale_page_estimate, 1);
+        assert_eq!(segment.live_ref_density_basis_points, 5_000);
+        assert_eq!(segment.live_logical_bytes, 3);
+        assert_eq!(segment.live_object_count, 1);
+        assert_eq!(segment.live_routing_slot_count, 1);
     }
 
     #[test]

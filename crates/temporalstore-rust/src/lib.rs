@@ -43,7 +43,8 @@ pub use e2e::{
     TemporalStoreClientOptions, WorkflowError, WorkflowProxy,
 };
 pub use engine::{
-    RustStorageObservation, StorageRecoveryPageError, StorageRecoveryReport, TemporalEngine,
+    RustStorageObservation, StorageRecoveryPageError, StorageRecoveryReport,
+    StorageRecoverySegmentLiveReport, TemporalEngine,
 };
 pub use index_log::{IndexLogRecord, IndexLogStats, LocalIndexLogStore};
 pub use meta::{
