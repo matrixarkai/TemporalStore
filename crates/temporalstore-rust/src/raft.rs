@@ -27,7 +27,7 @@ use crate::meta::{
     RegisterShardResponse, SafeModePolicy, SafeModeReport, ServerHeartbeatRequest,
     ServerHeartbeatResponse, ServerMetaInfo, ShardLocation, ShardSnapshotRef, SingleNodeMeta,
     StaleResourceReport, StaleServerReport, StateChangeRequest, TableTopologyResponse,
-    UpdateTableRequest,
+    TopologyVersionReport, TopologyVersionRequest, UpdateTableRequest,
 };
 use crate::types::{Command, CommandResponse, ExecuteRequest, ShardId, Status};
 use bytes::Bytes;
@@ -6578,6 +6578,34 @@ impl MetaRaftCluster {
                 dropped_tables: 0,
                 shard_routes: 0,
                 degraded_reasons: vec!["raft_read_unavailable".to_string()],
+            })
+    }
+
+    pub fn topology_version_report(
+        &self,
+        request: TopologyVersionRequest,
+    ) -> TopologyVersionReport {
+        self.read_meta()
+            .map(|meta| meta.topology_version_report(request.clone()))
+            .unwrap_or_else(|status| TopologyVersionReport {
+                status,
+                current_topology_version: 0,
+                old_topology_version: request.old_topology_version,
+                unchanged: false,
+                server_count: 0,
+                proxy_count: 0,
+                table_count: 0,
+                shard_route_count: 0,
+                normal_servers: 0,
+                frozen_servers: 0,
+                dropped_servers: 0,
+                normal_proxies: 0,
+                frozen_proxies: 0,
+                dropped_proxies: 0,
+                normal_tables: 0,
+                frozen_tables: 0,
+                dropped_tables: 0,
+                changed_tables: Vec::new(),
             })
     }
 

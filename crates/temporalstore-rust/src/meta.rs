@@ -439,6 +439,34 @@ pub struct TableTopologyResponse {
     pub unchanged: bool,
 }
 
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TopologyVersionRequest {
+    #[serde(default)]
+    pub old_topology_version: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TopologyVersionReport {
+    pub status: Status,
+    pub current_topology_version: u64,
+    pub old_topology_version: u64,
+    pub unchanged: bool,
+    pub server_count: usize,
+    pub proxy_count: usize,
+    pub table_count: usize,
+    pub shard_route_count: usize,
+    pub normal_servers: usize,
+    pub frozen_servers: usize,
+    pub dropped_servers: usize,
+    pub normal_proxies: usize,
+    pub frozen_proxies: usize,
+    pub dropped_proxies: usize,
+    pub normal_tables: usize,
+    pub frozen_tables: usize,
+    pub dropped_tables: usize,
+    pub changed_tables: Vec<TableMetaInfo>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ListNamespacesResponse {
     pub status: Status,
@@ -1628,6 +1656,14 @@ impl SingleNodeMeta {
         }
     }
 
+    pub fn topology_version_report(
+        &self,
+        request: TopologyVersionRequest,
+    ) -> TopologyVersionReport {
+        let state = self.inner.read().expect("meta lock poisoned");
+        topology_version_report_from_state(&state, request.old_topology_version)
+    }
+
     fn set_server_state(&self, request: StateChangeRequest, next: MetaEntityState) -> AckResponse {
         if !self
             .inner
@@ -2047,6 +2083,74 @@ fn stats_from_state(state: &MetaState) -> MetaStats {
         namespace_count: state.namespaces.len(),
         table_count: state.tables.len(),
         shard_count: state.shards.len(),
+    }
+}
+
+fn topology_version_report_from_state(
+    state: &MetaState,
+    old_topology_version: u64,
+) -> TopologyVersionReport {
+    let changed_tables = state
+        .tables
+        .values()
+        .filter(|table| table.info.topology_version > old_topology_version)
+        .map(|table| table.info.clone())
+        .collect::<Vec<_>>();
+    TopologyVersionReport {
+        status: Status::ok(),
+        current_topology_version: state.topology_version,
+        old_topology_version,
+        unchanged: old_topology_version >= state.topology_version,
+        server_count: state.servers.len(),
+        proxy_count: state.proxies.len(),
+        table_count: state.tables.len(),
+        shard_route_count: state.shards.len(),
+        normal_servers: state
+            .servers
+            .values()
+            .filter(|server| server.state == MetaEntityState::Normal)
+            .count(),
+        frozen_servers: state
+            .servers
+            .values()
+            .filter(|server| server.state == MetaEntityState::Frozen)
+            .count(),
+        dropped_servers: state
+            .servers
+            .values()
+            .filter(|server| server.state == MetaEntityState::Dropped)
+            .count(),
+        normal_proxies: state
+            .proxies
+            .values()
+            .filter(|proxy| proxy.state == MetaEntityState::Normal)
+            .count(),
+        frozen_proxies: state
+            .proxies
+            .values()
+            .filter(|proxy| proxy.state == MetaEntityState::Frozen)
+            .count(),
+        dropped_proxies: state
+            .proxies
+            .values()
+            .filter(|proxy| proxy.state == MetaEntityState::Dropped)
+            .count(),
+        normal_tables: state
+            .tables
+            .values()
+            .filter(|table| table.info.state == MetaEntityState::Normal)
+            .count(),
+        frozen_tables: state
+            .tables
+            .values()
+            .filter(|table| table.info.state == MetaEntityState::Frozen)
+            .count(),
+        dropped_tables: state
+            .tables
+            .values()
+            .filter(|table| table.info.state == MetaEntityState::Dropped)
+            .count(),
+        changed_tables,
     }
 }
 
@@ -2553,11 +2657,31 @@ mod tests {
         assert_eq!(topo.partitions.len(), 2);
         assert_eq!(topo.partitions[0].primary.as_deref(), Some("s1"));
         assert_eq!(topo.partitions[0].replicas.len(), 2);
+        let topology_version = topo.table.as_ref().unwrap().topology_version;
+        let report = meta.topology_version_report(TopologyVersionRequest {
+            old_topology_version: 0,
+        });
+        assert!(report.status.ok);
+        assert_eq!(
+            report.current_topology_version,
+            meta.stats().topology_version
+        );
+        assert_eq!(report.server_count, 2);
+        assert_eq!(report.table_count, 1);
+        assert_eq!(report.shard_route_count, 1);
+        assert_eq!(report.changed_tables.len(), 1);
+        assert_eq!(report.changed_tables[0].topology_version, topology_version);
+
+        let unchanged_report = meta.topology_version_report(TopologyVersionRequest {
+            old_topology_version: report.current_topology_version,
+        });
+        assert!(unchanged_report.unchanged);
+        assert!(unchanged_report.changed_tables.is_empty());
 
         let unchanged = meta.get_table_topology(GetTableTopologyRequest {
             namespace: "ns".to_string(),
             table_name: "tbl".to_string(),
-            old_topology_version: topo.table.unwrap().topology_version,
+            old_topology_version: topology_version,
         });
         assert!(unchanged.status.ok);
         assert!(unchanged.unchanged);

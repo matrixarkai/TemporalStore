@@ -170,7 +170,30 @@ pub struct ClientPreflightReport {
     pub backend_failure_count: usize,
     pub stats: ClientStats,
     pub options: ClientOptions,
+    pub topology_cache: ClientTopologyCacheReport,
     pub degraded_reasons: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientTopologyCacheReport {
+    pub route_count: usize,
+    pub min_topology_version: u64,
+    pub max_topology_version: u64,
+    pub unknown_topology_version_routes: usize,
+    pub ttl_expired_routes: usize,
+    pub last_refresh_reason: String,
+    pub routes: Vec<ClientRouteCacheEntryReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientRouteCacheEntryReport {
+    pub shard_id: ShardId,
+    pub primary_addr: String,
+    pub replica_count: usize,
+    pub topology_version: u64,
+    pub fetched_age_ms: u64,
+    pub ttl_expired: bool,
+    pub refresh_reason: String,
 }
 
 impl ClientStats {
@@ -211,6 +234,8 @@ struct CachedRoute {
     replica_endpoints: Vec<ServerEndpoint>,
     next_replica_index: usize,
     fetched_at: Instant,
+    topology_version: u64,
+    refresh_reason: String,
 }
 
 #[derive(Debug, Clone)]
@@ -433,6 +458,8 @@ impl TemporalStoreClient {
                                 .collect(),
                             next_replica_index: 0,
                             fetched_at: Instant::now(),
+                            topology_version: table.topology_version,
+                            refresh_reason: "table_topology_sync".to_string(),
                         },
                     )
                 })
@@ -510,6 +537,7 @@ impl TemporalStoreClient {
         let options = self.inner.options.clone();
         let stats = self.stats();
         let route_cache_size = self.route_cache_size();
+        let topology_cache = self.topology_cache_report();
         let table_cache_size = self
             .inner
             .tables
@@ -547,7 +575,64 @@ impl TemporalStoreClient {
             backend_failure_count,
             stats,
             options,
+            topology_cache,
             degraded_reasons,
+        }
+    }
+
+    pub fn topology_cache_report(&self) -> ClientTopologyCacheReport {
+        let ttl = Duration::from_millis(self.inner.options.route_cache_ttl_ms);
+        let routes = self
+            .inner
+            .routes
+            .lock()
+            .expect("client route cache lock poisoned")
+            .iter()
+            .map(|(shard_id, route)| {
+                let fetched_age_ms = duration_ms_u64(route.fetched_at.elapsed());
+                ClientRouteCacheEntryReport {
+                    shard_id: *shard_id,
+                    primary_addr: route.primary_addr.clone(),
+                    replica_count: route.replica_addrs.len().max(route.replica_endpoints.len()),
+                    topology_version: route.topology_version,
+                    fetched_age_ms,
+                    ttl_expired: route.fetched_at.elapsed() > ttl,
+                    refresh_reason: route.refresh_reason.clone(),
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut routes = routes;
+        routes.sort_by_key(|route| route.shard_id);
+        let route_count = routes.len();
+        let min_topology_version = routes
+            .iter()
+            .filter(|route| route.topology_version > 0)
+            .map(|route| route.topology_version)
+            .min()
+            .unwrap_or_default();
+        let max_topology_version = routes
+            .iter()
+            .map(|route| route.topology_version)
+            .max()
+            .unwrap_or_default();
+        let unknown_topology_version_routes = routes
+            .iter()
+            .filter(|route| route.topology_version == 0)
+            .count();
+        let ttl_expired_routes = routes.iter().filter(|route| route.ttl_expired).count();
+        let last_refresh_reason = routes
+            .iter()
+            .min_by_key(|route| route.fetched_age_ms)
+            .map(|route| route.refresh_reason.clone())
+            .unwrap_or_default();
+        ClientTopologyCacheReport {
+            route_count,
+            min_topology_version,
+            max_topology_version,
+            unknown_topology_version_routes,
+            ttl_expired_routes,
+            last_refresh_reason,
+            routes,
         }
     }
 
@@ -573,6 +658,8 @@ impl TemporalStoreClient {
                     replica_endpoints: Vec::new(),
                     next_replica_index: 0,
                     fetched_at: Instant::now(),
+                    topology_version: 0,
+                    refresh_reason: "test_insert".to_string(),
                 },
             );
     }
@@ -897,6 +984,8 @@ impl TemporalStoreClient {
                     replica_endpoints: Vec::new(),
                     next_replica_index: 0,
                     fetched_at: Instant::now(),
+                    topology_version: 0,
+                    refresh_reason: "shard_lookup".to_string(),
                 },
             );
         self.inner
@@ -2296,6 +2385,10 @@ fn table_combine_name(namespace: &str, table_name: &str) -> String {
     format!("{namespace}/{table_name}")
 }
 
+fn duration_ms_u64(duration: Duration) -> u64 {
+    duration.as_millis().min(u128::from(u64::MAX)) as u64
+}
+
 pub fn shard_id_for_key(
     key: &str,
     first_shard_id: ShardId,
@@ -2488,6 +2581,10 @@ mod tests {
         assert_eq!(report.meta_addr.as_deref(), Some("127.0.0.1:17001"));
         assert_eq!(report.default_shard_id, 7);
         assert_eq!(report.route_cache_size, 1);
+        assert_eq!(report.topology_cache.route_count, 1);
+        assert_eq!(report.topology_cache.unknown_topology_version_routes, 1);
+        assert_eq!(report.topology_cache.last_refresh_reason, "test_insert");
+        assert_eq!(report.topology_cache.routes[0].shard_id, 7);
         assert_eq!(report.table_cache_size, 1);
         assert_eq!(report.backend_failure_count, 1);
         assert_eq!(report.stats.open_table_calls, 1);
@@ -2922,6 +3019,8 @@ mod tests {
                 replica_endpoints: Vec::new(),
                 next_replica_index: 0,
                 fetched_at: Instant::now(),
+                topology_version: 0,
+                refresh_reason: "test_insert".to_string(),
             },
         );
         let table = client.open_table("ns", "tbl", TableOptions::default());
@@ -2997,6 +3096,8 @@ mod tests {
                 replica_endpoints: Vec::new(),
                 next_replica_index: 0,
                 fetched_at: Instant::now(),
+                topology_version: 0,
+                refresh_reason: "test_insert".to_string(),
             },
         );
         client.inner.backend_failures.lock().unwrap().insert(
@@ -3293,6 +3394,8 @@ mod tests {
             replica_endpoints: Vec::new(),
             next_replica_index: 0,
             fetched_at: Instant::now(),
+            topology_version: 7,
+            refresh_reason: "test_insert".to_string(),
         };
 
         assert_eq!(
@@ -3330,6 +3433,8 @@ mod tests {
             ],
             next_replica_index: 0,
             fetched_at: Instant::now(),
+            topology_version: 7,
+            refresh_reason: "test_insert".to_string(),
         };
 
         assert_eq!(

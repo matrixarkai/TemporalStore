@@ -5,8 +5,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::client::{
-    ClientOptions, ClientStats, ReplicaReadPolicy, RequestOptions, TableOptions,
-    TemporalStoreClient,
+    ClientOptions, ClientStats, ClientTopologyCacheReport, ReplicaReadPolicy, RequestOptions,
+    TableOptions, TemporalStoreClient,
 };
 use crate::http::{get_json_with_options, post_json_with_options, HttpRequest, HttpRequestOptions};
 use crate::meta::GetShardResponse;
@@ -112,6 +112,7 @@ pub struct ProxyHeartbeatReport {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyClientPreflightReport {
     pub route_cache_size: usize,
+    pub topology_cache: ClientTopologyCacheReport,
     pub open_table_calls: u64,
     pub execute_requests: u64,
     pub batch_execute_requests: u64,
@@ -569,6 +570,7 @@ impl ProxyService {
         };
         let config_version = proxy_config_version(&options);
         let route_cache_size = self.client().route_cache_size();
+        let topology_cache = self.client().topology_cache_report();
         ProxyPreflightReport {
             status,
             meta_addr: options.meta_addr,
@@ -579,6 +581,7 @@ impl ProxyService {
             stats,
             client: ProxyClientPreflightReport {
                 route_cache_size,
+                topology_cache,
                 open_table_calls: client_stats.open_table_calls,
                 execute_requests: client_stats.execute_requests,
                 batch_execute_requests: client_stats.batch_execute_requests,
@@ -929,6 +932,14 @@ mod tests {
         assert!(preflight.status.ok);
         assert_eq!(preflight.route_cache_size, 1);
         assert_eq!(preflight.client.route_cache_size, 1);
+        assert_eq!(preflight.client.topology_cache.route_count, 1);
+        assert_eq!(
+            preflight
+                .client
+                .topology_cache
+                .unknown_topology_version_routes,
+            1
+        );
         assert!(preflight.client.route_refreshes >= 1);
         assert!(preflight.degraded_reasons.is_empty());
     }

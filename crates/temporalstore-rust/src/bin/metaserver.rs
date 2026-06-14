@@ -10,7 +10,7 @@ use temporalstore_rust::meta::{
     MetaSnapshot, MetaSnapshotFileRequest, MetaSnapshotFileResponse, MetaSnapshotResponse,
     ProxyHeartbeatRequest, PublishShardSnapshotRequest, RegisterProxyRequest,
     RegisterServerRequest, RegisterShardRequest, SafeModePolicy, ServerHeartbeatRequest,
-    SingleNodeMeta, StateChangeRequest, UpdateTableRequest,
+    SingleNodeMeta, StateChangeRequest, TopologyVersionRequest, UpdateTableRequest,
 };
 use temporalstore_rust::raft::{
     ProductionMetaRaftRuntime, ProductionMetaRaftRuntimeOptions, ProductionRaftEngineKind,
@@ -418,6 +418,19 @@ fn handle(
         ("GET", "/meta/info") => json_response(200, &backend_call!(meta, info)),
         ("GET", "/meta/stats") => json_response(200, &backend_call!(meta, stats)),
         ("GET", "/meta/preflight") => json_response(200, &backend_call!(meta, preflight_report)),
+        ("GET", "/meta/topology_version") | ("GET", "/meta/topology") => json_response(
+            200,
+            &backend_call!(
+                meta,
+                topology_version_report,
+                TopologyVersionRequest::default()
+            ),
+        ),
+        ("POST", "/meta/topology_version") | ("POST", "/meta/topology") => {
+            parse_or(&request.body, |req: TopologyVersionRequest| {
+                backend_call!(meta, topology_version_report, req)
+            })
+        }
         ("GET", "/meta/raft/status") => match meta.raft_status() {
             Some(status) => json_response(200, &status),
             None => json_response(

@@ -58,6 +58,24 @@ brpc and Thrift are intentionally not part of the Rust target. The Rust open-sou
 
 ## What Was Closed In The Latest Pass
 
+This pass closed a client/proxy/metaserver operational topology gap:
+
+1. The Rust client route cache now records the topology version and refresh reason for table
+   topology syncs, direct shard lookups, and test/admin-inserted routes.
+2. Client preflight now returns a topology cache report with min/max cached topology versions,
+   TTL-expired route count, unknown-version route count, latest refresh reason, and per-shard
+   route provenance.
+3. Proxy preflight now carries the embedded client topology cache report, so proxy operators can
+   diagnose stale or unknown route versions without separately querying the client debug endpoint.
+4. The metaserver now exposes `/meta/topology_version` and `/meta/topology` as authoritative
+   topology-version reports with inventory counts and tables changed since a caller-provided old
+   version. The same read path works in single-node and Raft-backed metaserver mode.
+
+This improves C++-style route/topology observability and stale-cache diagnosis. It does not claim
+brpc/Thrift compatibility, and it does not replace the Rust-native HTTP/admin surface.
+
+## What Was Closed In The Previous Pass
+
 This pass repeated the Raft distributed replication and failover comparison three times against the
 C++ Raft control protocol artifacts and the Rust standalone/integrated data-node Raft surfaces:
 
