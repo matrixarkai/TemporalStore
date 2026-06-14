@@ -5,13 +5,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::client::{
-    ClientOptions, ClientStats, ClientTopologyCacheReport, ReplicaReadPolicy, RequestOptions,
-    TableOptions, TemporalStoreClient,
+    ClientOptions, ClientStats, ClientTopologyCacheReport, ClientTopologyRefreshReport,
+    ReplicaReadPolicy, RequestOptions, TableOptions, TemporalStoreClient,
 };
 use crate::http::{get_json_with_options, post_json_with_options, HttpRequest, HttpRequestOptions};
 use crate::meta::GetShardResponse;
 use crate::meta::{
     AckResponse, ProxyHeartbeatRequest, ProxyHeartbeatResponse, RegisterProxyRequest,
+    TopologyVersionReport, TopologyVersionRequest,
 };
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,
@@ -133,9 +134,21 @@ pub struct ProxyPreflightReport {
     pub namespace: String,
     pub config_version: u64,
     pub route_cache_size: usize,
+    #[serde(default)]
+    pub authoritative_topology_version: u64,
+    #[serde(default)]
+    pub topology_cache_stale: bool,
+    #[serde(default)]
+    pub topology_check_status: Option<Status>,
     pub stats: ProxyStats,
     pub client: ProxyClientPreflightReport,
     pub degraded_reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyTopologyRefreshResponse {
+    pub status: Status,
+    pub report: Option<ClientTopologyRefreshReport>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -269,6 +282,9 @@ impl ProxyService {
             }
             ("GET", "/proxy/client_preflight") | ("GET", "/ProxyService/ClientPreflight") => {
                 json_response(200, &self.client().preflight_report())
+            }
+            ("POST", "/proxy/topology/refresh") | ("POST", "/ProxyService/RefreshTopology") => {
+                json_response(200, &self.refresh_topology_from_meta())
             }
             ("GET", "/proxy/config") | ("GET", "/ProxyService/GetConfig") => {
                 let options = self
@@ -550,6 +566,23 @@ impl ProxyService {
         let options = self.options();
         let stats = *self.inner.stats.read().expect("proxy stats lock poisoned");
         let client_stats = self.client().stats();
+        let route_cache_size = self.client().route_cache_size();
+        let mut topology_cache = self.client().topology_cache_report();
+        let topology_check_status =
+            if route_cache_size == 0 || topology_cache.max_topology_version == 0 {
+                Status::ok()
+            } else {
+                self.fetch_meta_topology_version(topology_cache.max_topology_version)
+                    .map(|report| {
+                        topology_cache = self
+                            .client()
+                            .topology_cache_report_against(report.current_topology_version);
+                        report.status
+                    })
+                    .unwrap_or_else(|status| status)
+            };
+        let authoritative_topology_version = topology_cache.authoritative_topology_version;
+        let topology_cache_stale = topology_cache.cache_stale;
         let mut degraded_reasons = Vec::new();
         if stats.metaserver_errors > 0 || client_stats.meta_sync_errors > 0 {
             degraded_reasons.push("metaserver_errors".to_string());
@@ -563,14 +596,18 @@ impl ProxyService {
         if stats.bad_requests > 0 {
             degraded_reasons.push("bad_requests".to_string());
         }
+        if topology_cache_stale {
+            degraded_reasons.push("topology_cache_stale".to_string());
+        }
+        if !topology_check_status.ok {
+            degraded_reasons.push("topology_check_failed".to_string());
+        }
         let status = if degraded_reasons.is_empty() {
             Status::ok()
         } else {
             Status::error("degraded", degraded_reasons.join(","))
         };
         let config_version = proxy_config_version(&options);
-        let route_cache_size = self.client().route_cache_size();
-        let topology_cache = self.client().topology_cache_report();
         ProxyPreflightReport {
             status,
             meta_addr: options.meta_addr,
@@ -578,6 +615,9 @@ impl ProxyService {
             namespace: options.namespace,
             config_version,
             route_cache_size,
+            authoritative_topology_version,
+            topology_cache_stale,
+            topology_check_status: Some(topology_check_status),
             stats,
             client: ProxyClientPreflightReport {
                 route_cache_size,
@@ -595,6 +635,42 @@ impl ProxyService {
             },
             degraded_reasons,
         }
+    }
+
+    pub fn refresh_topology_from_meta(&self) -> ProxyTopologyRefreshResponse {
+        match self.client().refresh_stale_routes_from_meta() {
+            Ok(report) => ProxyTopologyRefreshResponse {
+                status: report.status.clone(),
+                report: Some(report),
+            },
+            Err(err) => {
+                self.inner
+                    .stats
+                    .write()
+                    .expect("proxy stats lock poisoned")
+                    .metaserver_errors += 1;
+                ProxyTopologyRefreshResponse {
+                    status: Status::error("refresh_failed", err.to_string()),
+                    report: None,
+                }
+            }
+        }
+    }
+
+    fn fetch_meta_topology_version(
+        &self,
+        old_topology_version: u64,
+    ) -> Result<TopologyVersionReport, Status> {
+        let options = self.options();
+        post_json_with_options::<_, TopologyVersionReport>(
+            &options.meta_addr,
+            "/meta/topology_version",
+            &TopologyVersionRequest {
+                old_topology_version,
+            },
+            options.http_options(),
+        )
+        .map_err(|err| Status::error("topology_check_failed", err.to_string()))
     }
 
     pub fn heartbeat_to_meta(&self) -> ProxyHeartbeatResponse {
@@ -849,9 +925,11 @@ mod tests {
     use crate::http::{json_response, parse_json, serve};
     use crate::meta::{
         AddTableRequest, GetTableTopologyRequest, RegisterShardRequest, ShardLocation,
+        UpdateTableRequest,
     };
     use crate::types::Command;
     use crate::ProductionReadinessReport;
+    use std::net::TcpListener;
     use std::time::Instant;
 
     #[test]
@@ -1350,6 +1428,89 @@ mod tests {
     }
 
     #[test]
+    fn proxy_detects_and_refreshes_stale_topology_cache() {
+        let meta = crate::meta::SingleNodeMeta::default();
+        assert!(
+            meta.add_table(AddTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "tbl".to_string(),
+                first_shard_id: 1,
+                shard_count: 1,
+                replica_count: 1,
+                use_cpp_partition_ids: false,
+                partition_version: 0,
+                serving_options: crate::meta::TableServingOptions::default(),
+            })
+            .status
+            .ok
+        );
+        assert!(
+            meta.register(RegisterShardRequest {
+                shard_id: 1,
+                server_addr: test_addr(18_321),
+            })
+            .status
+            .ok
+        );
+        let meta_addr = free_local_addr();
+        start_meta_service(meta_addr.clone(), meta.clone());
+        wait_for_http(&meta_addr);
+
+        let proxy = ProxyService::new(ProxyOptions {
+            meta_addr,
+            route_cache_ttl_ms: 60_000,
+            ..ProxyOptions::default()
+        });
+        let opened = proxy.open_table(ProxyOpenTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+            pin_primary: None,
+            replica_read_policy: None,
+        });
+        assert!(opened.status.ok, "{opened:?}");
+        assert!(!proxy.preflight_report().topology_cache_stale);
+
+        assert!(
+            meta.update_table(UpdateTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "tbl".to_string(),
+                shard_count: Some(1),
+                replica_count: Some(1),
+                first_shard_id: None,
+                use_cpp_partition_ids: None,
+                partition_version: None,
+                serving_options: Some(crate::meta::TableServingOptionsPatch {
+                    drop_percent: Some(1),
+                    ..crate::meta::TableServingOptionsPatch::default()
+                }),
+            })
+            .status
+            .ok
+        );
+
+        let stale = proxy.preflight_report();
+        assert!(stale.topology_cache_stale);
+        assert!(stale
+            .degraded_reasons
+            .contains(&"topology_cache_stale".to_string()));
+
+        let refresh = proxy.refresh_topology_from_meta();
+        assert!(refresh.status.ok, "{refresh:?}");
+        let report = refresh.report.unwrap();
+        assert_eq!(report.refreshed_tables, vec!["ns/tbl"]);
+        assert!(!proxy.preflight_report().topology_cache_stale);
+
+        let (code, body) = proxy.handle(HttpRequest {
+            method: "POST".to_string(),
+            path: "/proxy/topology/refresh".to_string(),
+            body: Vec::new(),
+        });
+        assert_eq!(code, 200);
+        let routed = parse_json::<ProxyTopologyRefreshResponse>(&body).unwrap();
+        assert!(routed.status.ok);
+    }
+
+    #[test]
     fn proxy_heartbeat_auto_registers_when_metaserver_returns_not_found() {
         let meta = crate::meta::SingleNodeMeta::default();
         let meta_addr = test_addr(18_314);
@@ -1535,6 +1696,10 @@ mod tests {
                         let req = parse_json::<GetTableTopologyRequest>(&request.body).unwrap();
                         json_response(200, &meta.get_table_topology(req))
                     }
+                    ("POST", "/meta/topology_version") => {
+                        let req = parse_json::<TopologyVersionRequest>(&request.body).unwrap();
+                        json_response(200, &meta.topology_version_report(req))
+                    }
                     _ => json_response(404, &Status::error("not_found", "not found")),
                 }
             })
@@ -1554,6 +1719,11 @@ mod tests {
 
     fn test_addr(port: u16) -> String {
         format!("127.0.0.1:{port}")
+    }
+
+    fn free_local_addr() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().to_string()
     }
 
     fn wait_for_http(addr: &str) {

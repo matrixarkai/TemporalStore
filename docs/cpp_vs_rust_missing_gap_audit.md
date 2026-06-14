@@ -58,6 +58,23 @@ brpc and Thrift are intentionally not part of the Rust target. The Rust open-sou
 
 ## What Was Closed In The Latest Pass
 
+This pass closed a client/proxy topology refresh gap:
+
+1. The Rust client now has `refresh_stale_routes_from_meta()`, which reads metaserver topology
+   events from `/meta/topology_version` and refreshes affected open tables through the existing
+   table-topology sync path.
+2. Client table-topology sync now replaces only the refreshed table's shard-route range instead of
+   clearing the entire route cache, preserving other open table routes during targeted refresh.
+3. Proxy preflight now compares versioned embedded-client route cache state against metaserver's
+   authoritative topology version and reports stale topology cache degradation.
+4. Proxy now exposes `POST /proxy/topology/refresh` and `POST /ProxyService/RefreshTopology` to
+   force a metaserver-event-driven client route refresh.
+
+This improves C++-style proxy/client topology convergence. Request-time automatic refresh remains
+a separate follow-up; this pass adds the explicit admin refresh and stale-cache diagnosis.
+
+## What Was Closed In The Previous Pass
+
 This pass closed the next nodeserver topology-validation gap:
 
 1. Data-node topology validation can now compare loaded shard state against supplied metaserver

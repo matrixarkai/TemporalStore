@@ -11,7 +11,10 @@ use crate::http::{
     HttpRequestOptions,
 };
 use crate::meta::GetShardResponse;
-use crate::meta::{GetTableTopologyRequest, ServerEndpoint, TableTopologyResponse};
+use crate::meta::{
+    GetTableTopologyRequest, ServerEndpoint, TableTopologyResponse, TopologyVersionReport,
+    TopologyVersionRequest,
+};
 use crate::types::{
     parse_cpp_feature_filters, BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse,
     ExecuteRequest, ExecuteResponse, FeatureFilter, FeaturePoint, FeatureWritePolicy, IpsStats,
@@ -202,6 +205,19 @@ pub struct ClientRouteCacheEntryReport {
     pub refresh_reason: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientTopologyRefreshReport {
+    pub status: Status,
+    pub old_topology_version: u64,
+    pub current_topology_version: u64,
+    pub unchanged: bool,
+    pub refreshed_tables: Vec<String>,
+    pub skipped_tables: Vec<String>,
+    pub refresh_all: bool,
+    pub event_count: usize,
+    pub stale_before_refresh: bool,
+}
+
 impl ClientStats {
     fn record_backend_error(&mut self, became_continuous: bool) {
         self.backend_errors += 1;
@@ -379,6 +395,10 @@ impl TemporalStoreClient {
         let table = topology
             .table
             .ok_or_else(|| ClientError::Status("table topology missing".to_string()))?;
+        let route_topology_version = self
+            .current_meta_topology_version()
+            .unwrap_or(table.topology_version)
+            .max(table.topology_version);
         let serving_options = table.serving_options.clone();
         let default_serving_options = crate::meta::TableServingOptions::default();
         let options = TableOptions {
@@ -464,7 +484,7 @@ impl TemporalStoreClient {
                                 .collect(),
                             next_replica_index: 0,
                             fetched_at: Instant::now(),
-                            topology_version: table.topology_version,
+                            topology_version: route_topology_version,
                             refresh_reason: "table_topology_sync".to_string(),
                         },
                     )
@@ -481,11 +501,132 @@ impl TemporalStoreClient {
             .routes
             .lock()
             .expect("client route cache lock poisoned");
-        route_cache.clear();
+        let last_shard_id = table
+            .first_shard_id
+            .saturating_add(table.shard_count.saturating_sub(1));
+        route_cache
+            .retain(|shard_id, _| *shard_id < table.first_shard_id || *shard_id > last_shard_id);
         for (shard_id, route) in routes {
             route_cache.insert(shard_id, route);
         }
         Ok(options)
+    }
+
+    fn current_meta_topology_version(&self) -> Option<u64> {
+        let meta_addr = self.inner.options.meta_addr.as_ref()?;
+        let topology = post_json_with_options::<_, TopologyVersionReport>(
+            meta_addr,
+            "/meta/topology_version",
+            &TopologyVersionRequest {
+                old_topology_version: 0,
+            },
+            self.inner.options.http_options(),
+        )
+        .ok()?;
+        topology
+            .status
+            .ok
+            .then_some(topology.current_topology_version)
+    }
+
+    pub fn refresh_stale_routes_from_meta(
+        &self,
+    ) -> Result<ClientTopologyRefreshReport, ClientError> {
+        let old_topology_version = self.topology_cache_report().max_topology_version;
+        let meta_addr = self
+            .inner
+            .options
+            .meta_addr
+            .as_ref()
+            .ok_or_else(|| ClientError::Status("meta_addr is required".to_string()))?;
+        let topology: TopologyVersionReport = post_json_with_options(
+            meta_addr,
+            "/meta/topology_version",
+            &TopologyVersionRequest {
+                old_topology_version,
+            },
+            self.inner.options.http_options(),
+        )?;
+        if !topology.status.ok {
+            self.inner
+                .stats
+                .lock()
+                .expect("client stats lock poisoned")
+                .meta_sync_errors += 1;
+            return Err(ClientError::Status(topology.status.message));
+        }
+
+        let open_tables = self.open_table_keys();
+        let mut selected = BTreeMap::<String, (String, String)>::new();
+        let mut refresh_all = old_topology_version < topology.current_topology_version
+            && topology.events.is_empty()
+            && !topology.unchanged;
+        for event in &topology.events {
+            if let Some(table) = event.resource.strip_prefix("table:") {
+                if let Some((namespace, table_name)) = table.split_once('/') {
+                    let key = table_combine_name(namespace, table_name);
+                    if open_tables.iter().any(|open| open == &key) {
+                        selected.insert(key, (namespace.to_string(), table_name.to_string()));
+                    }
+                }
+            } else if matches!(
+                event.kind.as_str(),
+                "register_shard"
+                    | "finish_load"
+                    | "publish_shard_snapshot"
+                    | "register_server"
+                    | "server_state"
+            ) {
+                refresh_all = true;
+            }
+        }
+        if refresh_all {
+            for key in &open_tables {
+                if let Some((namespace, table_name)) = key.split_once('/') {
+                    selected.insert(key.clone(), (namespace.to_string(), table_name.to_string()));
+                }
+            }
+        }
+
+        let mut refreshed_tables = Vec::new();
+        let mut skipped_tables = Vec::new();
+        for (key, (namespace, table_name)) in selected {
+            match self.sync_table_topology(namespace, table_name) {
+                Ok(_) => refreshed_tables.push(key),
+                Err(_) => skipped_tables.push(key),
+            }
+        }
+        refreshed_tables.sort();
+        skipped_tables.sort();
+        let status = if skipped_tables.is_empty() {
+            Status::ok()
+        } else {
+            Status::error("partial_refresh", skipped_tables.join(","))
+        };
+        Ok(ClientTopologyRefreshReport {
+            status,
+            old_topology_version,
+            current_topology_version: topology.current_topology_version,
+            unchanged: topology.unchanged,
+            refreshed_tables,
+            skipped_tables,
+            refresh_all,
+            event_count: topology.events.len(),
+            stale_before_refresh: old_topology_version < topology.current_topology_version,
+        })
+    }
+
+    pub fn open_table_keys(&self) -> Vec<String> {
+        let mut tables = self
+            .inner
+            .tables
+            .lock()
+            .expect("client table cache lock poisoned")
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        tables.sort();
+        tables
     }
 
     pub fn start_meta_sync_loop(&self, interval_ms: u64) -> thread::JoinHandle<()> {
@@ -2631,11 +2772,12 @@ mod tests {
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
-        let server_addr = test_addr(18_210);
-        let proxy_addr = test_addr(18_211);
+        let server_addr = free_local_addr();
+        let proxy_addr = free_local_addr();
         let engine_for_server = engine.clone();
+        let server_addr_for_listener = server_addr.clone();
         std::thread::spawn(move || {
-            serve(&server_addr, move |request| {
+            serve(&server_addr_for_listener, move |request| {
                 match (request.method.as_str(), request.path.as_str()) {
                     ("POST", "/execute") => {
                         let req = parse_json::<ExecuteRequest>(&request.body).unwrap();
@@ -2650,9 +2792,10 @@ mod tests {
             })
             .unwrap();
         });
-        let server_addr_for_proxy = test_addr(18_210);
+        let server_addr_for_proxy = server_addr.clone();
+        let proxy_addr_for_listener = proxy_addr.clone();
         std::thread::spawn(move || {
-            serve(&proxy_addr, move |request| {
+            serve(&proxy_addr_for_listener, move |request| {
                 match (request.method.as_str(), request.path.as_str()) {
                     ("GET", "/shards/1") => json_response(
                         200,
@@ -2682,10 +2825,10 @@ mod tests {
             })
             .unwrap();
         });
-        wait_for_http(&test_addr(18_211));
+        wait_for_http(&proxy_addr);
 
         let client = TemporalStoreClient::with_options(ClientOptions {
-            proxy_addr: test_addr(18_211),
+            proxy_addr: proxy_addr.clone(),
             max_retries: 1,
             ..ClientOptions::default()
         });
@@ -2994,11 +3137,12 @@ mod tests {
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
-        let server_addr = test_addr(18_212);
-        let meta_addr = test_addr(18_213);
+        let server_addr = free_local_addr();
+        let meta_addr = free_local_addr();
         let engine_for_server = engine.clone();
+        let server_addr_for_listener = server_addr.clone();
         std::thread::spawn(move || {
-            serve(&server_addr, move |request| {
+            serve(&server_addr_for_listener, move |request| {
                 match (request.method.as_str(), request.path.as_str()) {
                     ("POST", "/execute") => {
                         let req = parse_json::<ExecuteRequest>(&request.body).unwrap();
@@ -3009,9 +3153,10 @@ mod tests {
             })
             .unwrap();
         });
-        let live_server = test_addr(18_212);
+        let live_server = server_addr.clone();
+        let meta_addr_for_listener = meta_addr.clone();
         std::thread::spawn(move || {
-            serve(&meta_addr, move |request| {
+            serve(&meta_addr_for_listener, move |request| {
                 match (request.method.as_str(), request.path.as_str()) {
                     ("GET", "/shards/1") => json_response(
                         200,
@@ -3029,11 +3174,11 @@ mod tests {
             })
             .unwrap();
         });
-        wait_for_http(&test_addr(18_213));
+        wait_for_http(&meta_addr);
 
         let client = TemporalStoreClient::with_options(ClientOptions {
             proxy_addr: "127.0.0.1:1".to_string(),
-            meta_addr: Some(test_addr(18_213)),
+            meta_addr: Some(meta_addr.clone()),
             route_cache_ttl_ms: 60_000,
             connect_timeout_ms: 50,
             io_timeout_ms: 200,
@@ -3070,11 +3215,12 @@ mod tests {
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
-        let server_addr = test_addr(18_226);
-        let meta_addr = test_addr(18_227);
+        let server_addr = free_local_addr();
+        let meta_addr = free_local_addr();
         let engine_for_server = engine.clone();
+        let server_addr_for_listener = server_addr.clone();
         std::thread::spawn(move || {
-            serve(&server_addr, move |request| {
+            serve(&server_addr_for_listener, move |request| {
                 match (request.method.as_str(), request.path.as_str()) {
                     ("POST", "/execute") => {
                         let req = parse_json::<ExecuteRequest>(&request.body).unwrap();
@@ -3085,9 +3231,10 @@ mod tests {
             })
             .unwrap();
         });
-        let live_server = test_addr(18_226);
+        let live_server = server_addr.clone();
+        let meta_addr_for_listener = meta_addr.clone();
         std::thread::spawn(move || {
-            serve(&meta_addr, move |request| {
+            serve(&meta_addr_for_listener, move |request| {
                 match (request.method.as_str(), request.path.as_str()) {
                     ("GET", "/shards/1") => json_response(
                         200,
@@ -3105,12 +3252,12 @@ mod tests {
             })
             .unwrap();
         });
-        wait_for_http(&test_addr(18_227));
+        wait_for_http(&meta_addr);
 
         let bad_server = "127.0.0.1:1".to_string();
         let client = TemporalStoreClient::with_options(ClientOptions {
             proxy_addr: bad_server.clone(),
-            meta_addr: Some(test_addr(18_227)),
+            meta_addr: Some(meta_addr.clone()),
             route_cache_ttl_ms: 60_000,
             connect_timeout_ms: 50,
             io_timeout_ms: 200,
@@ -3157,9 +3304,10 @@ mod tests {
 
     #[test]
     fn client_opens_table_from_metaserver_topology() {
-        let meta_addr = test_addr(18_214);
+        let meta_addr = free_local_addr();
+        let meta_addr_for_listener = meta_addr.clone();
         std::thread::spawn(move || {
-            serve(&meta_addr, move |request| {
+            serve(&meta_addr_for_listener, move |request| {
                 match (request.method.as_str(), request.path.as_str()) {
                     ("POST", "/tables/topology") => json_response(
                         200,
@@ -3187,10 +3335,10 @@ mod tests {
             })
             .unwrap();
         });
-        wait_for_http(&test_addr(18_214));
+        wait_for_http(&meta_addr);
 
         let client = TemporalStoreClient::with_options(ClientOptions {
-            meta_addr: Some(test_addr(18_214)),
+            meta_addr: Some(meta_addr.clone()),
             drop_percent: 17,
             ..ClientOptions::default()
         });
@@ -3204,9 +3352,10 @@ mod tests {
 
     #[test]
     fn client_applies_metaserver_table_serving_options() {
-        let meta_addr = test_addr(18_215);
+        let meta_addr = free_local_addr();
+        let meta_addr_for_listener = meta_addr.clone();
         std::thread::spawn(move || {
-            serve(&meta_addr, move |request| {
+            serve(&meta_addr_for_listener, move |request| {
                 match (request.method.as_str(), request.path.as_str()) {
                     ("POST", "/tables/topology") => json_response(
                         200,
@@ -3245,10 +3394,10 @@ mod tests {
             })
             .unwrap();
         });
-        wait_for_http(&test_addr(18_215));
+        wait_for_http(&meta_addr);
 
         let client = TemporalStoreClient::with_options(ClientOptions {
-            meta_addr: Some(test_addr(18_215)),
+            meta_addr: Some(meta_addr.clone()),
             drop_percent: 0,
             ..ClientOptions::default()
         });
@@ -3271,9 +3420,9 @@ mod tests {
 
     #[test]
     fn table_read_policy_can_select_secondary_from_metaserver_topology() {
-        let primary_addr = test_addr(18_222);
-        let replica_addr = test_addr(18_223);
-        let meta_addr = test_addr(18_224);
+        let primary_addr = free_local_addr();
+        let replica_addr = free_local_addr();
+        let meta_addr = free_local_addr();
 
         let primary_server = primary_addr.clone();
         std::thread::spawn(move || {
@@ -3340,8 +3489,9 @@ mod tests {
 
         let primary_for_meta = primary_addr.clone();
         let replica_for_meta = replica_addr.clone();
+        let meta_addr_for_listener = meta_addr.clone();
         std::thread::spawn(move || {
-            serve(&meta_addr, move |request| {
+            serve(&meta_addr_for_listener, move |request| {
                 match (request.method.as_str(), request.path.as_str()) {
                     ("POST", "/tables/topology") => json_response(
                         200,
@@ -3379,11 +3529,11 @@ mod tests {
         });
         wait_for_http(&primary_addr);
         wait_for_http(&replica_addr);
-        wait_for_http(&test_addr(18_224));
+        wait_for_http(&meta_addr);
 
         let client = TemporalStoreClient::with_options(ClientOptions {
             proxy_addr: "127.0.0.1:1".to_string(),
-            meta_addr: Some(test_addr(18_224)),
+            meta_addr: Some(meta_addr.clone()),
             route_cache_ttl_ms: 60_000,
             ..ClientOptions::default()
         });
@@ -3536,11 +3686,12 @@ mod tests {
 
     #[test]
     fn client_retries_cpp_retryable_read_status_before_returning() {
-        let proxy_addr = test_addr(18_236);
+        let proxy_addr = free_local_addr();
         let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let attempts_for_server = attempts.clone();
+        let proxy_addr_for_listener = proxy_addr.clone();
         std::thread::spawn(move || {
-            serve(&proxy_addr, move |request| {
+            serve(&proxy_addr_for_listener, move |request| {
                 match (request.method.as_str(), request.path.as_str()) {
                     ("POST", "/execute") => {
                         let attempt =
@@ -3570,10 +3721,10 @@ mod tests {
             })
             .unwrap();
         });
-        wait_for_http(&test_addr(18_236));
+        wait_for_http(&proxy_addr);
 
         let client = TemporalStoreClient::with_options(ClientOptions {
-            proxy_addr: test_addr(18_236),
+            proxy_addr: proxy_addr.clone(),
             ..ClientOptions::default()
         });
         let table = client.open_table(
@@ -3591,11 +3742,12 @@ mod tests {
 
     #[test]
     fn client_does_not_retry_write_status_without_write_retry_budget() {
-        let proxy_addr = test_addr(18_237);
+        let proxy_addr = free_local_addr();
         let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let attempts_for_server = attempts.clone();
+        let proxy_addr_for_listener = proxy_addr.clone();
         std::thread::spawn(move || {
-            serve(&proxy_addr, move |request| {
+            serve(&proxy_addr_for_listener, move |request| {
                 match (request.method.as_str(), request.path.as_str()) {
                     ("POST", "/execute") => {
                         attempts_for_server.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -3612,10 +3764,10 @@ mod tests {
             })
             .unwrap();
         });
-        wait_for_http(&test_addr(18_237));
+        wait_for_http(&proxy_addr);
 
         let client = TemporalStoreClient::with_options(ClientOptions {
-            proxy_addr: test_addr(18_237),
+            proxy_addr: proxy_addr.clone(),
             ..ClientOptions::default()
         });
         let table = client.open_table("ns", "tbl", TableOptions::default());
@@ -3824,10 +3976,6 @@ mod tests {
             .map(|index| format!("key-{shard_id}-{index}"))
             .find(|key| table.shard_id_for_key(key) == shard_id)
             .unwrap()
-    }
-
-    fn test_addr(port: u16) -> String {
-        format!("127.0.0.1:{port}")
     }
 
     fn free_local_addr() -> String {
