@@ -211,6 +211,18 @@ pub struct PageStoreZoneSummary {
     pub live_physical_bytes: u64,
     pub reclaimable_physical_bytes: u64,
     pub total_known_physical_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oldest_known_zone_unix_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oldest_known_zone_age_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oldest_live_zone_unix_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oldest_live_zone_age_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oldest_reclaimable_zone_unix_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oldest_reclaimable_zone_age_ms: Option<u64>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1109,12 +1121,15 @@ fn persist_zone_manifest(
 
 fn summarize_zones(zones: &BTreeMap<u64, PageStoreZoneDescriptor>) -> PageStoreZoneSummary {
     let mut summary = PageStoreZoneSummary::default();
+    let now = now_unix_ms();
     for zone in zones.values() {
+        update_oldest_zone_timestamp(&mut summary.oldest_known_zone_unix_ms, zone);
         summary.total_known_physical_bytes = summary
             .total_known_physical_bytes
             .saturating_add(zone.physical_bytes);
         match zone.state {
             PageStoreZoneState::Active => {
+                update_oldest_zone_timestamp(&mut summary.oldest_live_zone_unix_ms, zone);
                 summary.active_zones = summary.active_zones.saturating_add(1);
                 summary.active_physical_bytes = summary
                     .active_physical_bytes
@@ -1124,6 +1139,7 @@ fn summarize_zones(zones: &BTreeMap<u64, PageStoreZoneDescriptor>) -> PageStoreZ
                     .saturating_add(zone.physical_bytes);
             }
             PageStoreZoneState::Sealed => {
+                update_oldest_zone_timestamp(&mut summary.oldest_live_zone_unix_ms, zone);
                 summary.sealed_zones = summary.sealed_zones.saturating_add(1);
                 summary.sealed_physical_bytes = summary
                     .sealed_physical_bytes
@@ -1133,6 +1149,7 @@ fn summarize_zones(zones: &BTreeMap<u64, PageStoreZoneDescriptor>) -> PageStoreZ
                     .saturating_add(zone.physical_bytes);
             }
             PageStoreZoneState::DelayedDestroy => {
+                update_oldest_zone_timestamp(&mut summary.oldest_reclaimable_zone_unix_ms, zone);
                 summary.delayed_destroy_zones = summary.delayed_destroy_zones.saturating_add(1);
                 summary.delayed_destroy_physical_bytes = summary
                     .delayed_destroy_physical_bytes
@@ -1149,7 +1166,25 @@ fn summarize_zones(zones: &BTreeMap<u64, PageStoreZoneDescriptor>) -> PageStoreZ
             }
         }
     }
+    summary.oldest_known_zone_age_ms = summary
+        .oldest_known_zone_unix_ms
+        .map(|timestamp| now.saturating_sub(timestamp));
+    summary.oldest_live_zone_age_ms = summary
+        .oldest_live_zone_unix_ms
+        .map(|timestamp| now.saturating_sub(timestamp));
+    summary.oldest_reclaimable_zone_age_ms = summary
+        .oldest_reclaimable_zone_unix_ms
+        .map(|timestamp| now.saturating_sub(timestamp));
     summary
+}
+
+fn update_oldest_zone_timestamp(target: &mut Option<u64>, zone: &PageStoreZoneDescriptor) {
+    let Some(timestamp) = zone.updated_unix_ms.or(zone.created_unix_ms) else {
+        return;
+    };
+    if target.map(|current| timestamp < current).unwrap_or(true) {
+        *target = Some(timestamp);
+    }
 }
 
 fn ensure_zone_descriptor(
@@ -2311,6 +2346,12 @@ mod tests {
             zones[0].physical_bytes + zones[1].physical_bytes
         );
         assert_eq!(initial_summary.reclaimable_physical_bytes, 0);
+        assert!(initial_summary.oldest_known_zone_unix_ms.is_some());
+        assert!(initial_summary.oldest_known_zone_age_ms.is_some());
+        assert!(initial_summary.oldest_live_zone_unix_ms.is_some());
+        assert!(initial_summary.oldest_live_zone_age_ms.is_some());
+        assert!(initial_summary.oldest_reclaimable_zone_unix_ms.is_none());
+        assert!(initial_summary.oldest_reclaimable_zone_age_ms.is_none());
 
         let reopened = LocalPageStore::new(dir.path());
         let reopened_zones = reopened.zone_descriptors();
@@ -2348,6 +2389,13 @@ mod tests {
             delayed_summary.live_physical_bytes,
             delayed[1].physical_bytes
         );
+        assert!(delayed_summary.oldest_known_zone_unix_ms.is_some());
+        assert!(delayed_summary.oldest_live_zone_unix_ms.is_some());
+        assert_eq!(
+            delayed_summary.oldest_reclaimable_zone_unix_ms,
+            delayed[0].updated_unix_ms
+        );
+        assert!(delayed_summary.oldest_reclaimable_zone_age_ms.is_some());
 
         let purge = reopened
             .purge_delayed_destroy_segments_with_report()
@@ -2368,6 +2416,10 @@ mod tests {
         );
         assert_eq!(purged_summary.live_physical_bytes, purged[1].physical_bytes);
         assert_eq!(purged_summary.reclaimable_physical_bytes, 0);
+        assert!(purged_summary.oldest_known_zone_unix_ms.is_some());
+        assert!(purged_summary.oldest_live_zone_unix_ms.is_some());
+        assert!(purged_summary.oldest_reclaimable_zone_unix_ms.is_none());
+        assert!(purged_summary.oldest_reclaimable_zone_age_ms.is_none());
     }
 
     #[test]
