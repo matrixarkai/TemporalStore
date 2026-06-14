@@ -11,6 +11,7 @@ use crate::engine::{
     ShardCompactionUtilityReport, SlotDumpManifest, StorageLifecyclePlan, StorageLifecycleReport,
     StorageLifecycleRequest, TemporalEngine,
 };
+use crate::meta::{ServerRuntimeLoad, ServerShardServingState};
 use crate::types::{Command, CommandResponse, ExecuteRequest, ExecuteResponse, ShardId, Status};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -946,6 +947,86 @@ impl DataNodeRuntime {
             dirty_objects: self.dirty_objects(),
             degraded_reasons,
         }
+    }
+
+    pub fn server_runtime_load(&self) -> ServerRuntimeLoad {
+        let preflight = self.preflight_report();
+        ServerRuntimeLoad {
+            queue_depth: preflight.stats.queue_depth,
+            background_queue_depth: preflight.stats.background_queue_depth,
+            queued_shard_count: preflight.stats.queued_shard_count,
+            running_shard_count: preflight.stats.running_shard_count,
+            dirty_object_count: preflight.stats.dirty_object_count,
+            dirty_shard_count: preflight.stats.dirty_shard_count,
+            rejected_total: preflight.stats.rejected_total,
+            rejected_background_total: preflight.stats.rejected_background_total,
+            timed_out_total: preflight.stats.timed_out_total,
+            canceled_total: preflight.stats.canceled_total,
+            dump_runs: preflight.stats.dump_runs,
+            compaction_runs: preflight.stats.compaction_runs,
+            gc_runs: preflight.stats.gc_runs,
+            storage_lifecycle_runs: preflight.stats.storage_lifecycle_runs,
+            degraded_reasons: preflight.degraded_reasons,
+        }
+    }
+
+    pub fn shard_serving_states(&self) -> Vec<ServerShardServingState> {
+        let dirty_objects = self.dirty_objects();
+        let mut dirty_by_shard = HashMap::<ShardId, usize>::new();
+        for dirty in dirty_objects {
+            *dirty_by_shard.entry(dirty.shard_id).or_default() += 1;
+        }
+        let queue = self
+            .inner
+            .queue
+            .lock()
+            .expect("runtime queue lock poisoned");
+        let queued_shards = queue.by_shard.keys().copied().collect::<BTreeSet<_>>();
+        let running_shards = queue.running_shards.clone();
+        drop(queue);
+
+        self.inner
+            .engine
+            .loaded_shard_stats()
+            .into_iter()
+            .map(|stats| {
+                let serving_state = if running_shards.contains(&stats.shard_id) {
+                    "running"
+                } else if queued_shards.contains(&stats.shard_id) {
+                    "queued"
+                } else if stats.readonly {
+                    "readonly"
+                } else if stats.loaded {
+                    "serving"
+                } else {
+                    "unloaded"
+                };
+                let worker = self.shard_worker_info(stats.shard_id);
+                ServerShardServingState {
+                    shard_id: stats.shard_id,
+                    serving_state: serving_state.to_string(),
+                    worker_index: worker.worker_index,
+                    worker_threads: worker.worker_threads,
+                    loaded: stats.loaded,
+                    readonly: stats.readonly,
+                    load_version: stats.load_version,
+                    table_name: stats.partition_info.table_name,
+                    shard_uri: stats.partition_info.shard_uri,
+                    start_routing_slot: stats.partition_info.start_routing_slot,
+                    end_routing_slot: stats.partition_info.end_routing_slot,
+                    total_records: stats.total_records,
+                    storage_bytes: stats.storage_bytes,
+                    cache_memory_bytes: stats.cache.memory_bytes,
+                    page_store_bytes_written: stats.page_store.bytes_written,
+                    oplog_sequence: stats.oplog.last_sequence,
+                    dirty_object_count: dirty_by_shard
+                        .get(&stats.shard_id)
+                        .copied()
+                        .unwrap_or_default() as u64,
+                    dirty_slot_count: stats.object_manager.dirty_slot_count as u64,
+                }
+            })
+            .collect()
     }
 
     fn submit(
@@ -1915,6 +1996,74 @@ mod tests {
         assert_eq!(preflight.queued_workers.len(), 1);
         assert_eq!(preflight.dirty_shards, vec![1]);
         assert_eq!(preflight.dirty_objects.len(), 1);
+    }
+
+    #[test]
+    fn runtime_builds_cpp_style_server_load_report() {
+        let engine = TemporalEngine::default();
+        assert!(
+            engine
+                .load_shard_with(crate::control::LoadShardRequest {
+                    shard_id: 7,
+                    table_name: "tbl".to_string(),
+                    shard_uri: "local://tbl/7".to_string(),
+                    start_routing_slot: 10,
+                    end_routing_slot: 19,
+                    readonly: false,
+                    load_version: 42,
+                    local_node_id: Some(3),
+                })
+                .status
+                .ok
+        );
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine.clone(),
+            DataNodeRuntimeOptions {
+                worker_threads: 4,
+                max_queue_depth: 2,
+                max_background_queue_depth: 1,
+            },
+        );
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 7,
+                    command: Command::StringSet {
+                        key: "k".to_string(),
+                        value: b"v".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+        mark_dirty(&runtime.inner.dirty, 7, Some("k"));
+        let queued = runtime.submit_execute(
+            ExecuteRequest {
+                shard_id: 7,
+                command: Command::StringGet {
+                    key: "k".to_string(),
+                },
+            },
+            RequestController { timeout_ms: 1000 },
+        );
+        assert!(queued.status.ok);
+
+        let load = runtime.server_runtime_load();
+        assert_eq!(load.queue_depth, 1);
+        assert_eq!(load.queued_shard_count, 1);
+        assert_eq!(load.dirty_object_count, 1);
+        let shard_states = runtime.shard_serving_states();
+        assert_eq!(shard_states.len(), 1);
+        let shard = &shard_states[0];
+        assert_eq!(shard.shard_id, 7);
+        assert_eq!(shard.serving_state, "queued");
+        assert_eq!(shard.worker_index, 0);
+        assert_eq!(shard.worker_threads, 1);
+        assert!(!shard.readonly);
+        assert_eq!(shard.load_version, 42);
+        assert_eq!(shard.table_name, "tbl");
+        assert_eq!(shard.dirty_object_count, 1);
+        assert_eq!(shard.oplog_sequence, 1);
     }
 
     #[test]

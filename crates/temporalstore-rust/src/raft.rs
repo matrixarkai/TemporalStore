@@ -9455,6 +9455,8 @@ mod tests {
             binary_version: "test".to_string(),
             shard_loads: Vec::new(),
             partition_loads: Vec::new(),
+            runtime_load: crate::meta::ServerRuntimeLoad::default(),
+            shard_states: Vec::new(),
         }
     }
 

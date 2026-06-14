@@ -93,6 +93,10 @@ pub struct ServerHeartbeatRequest {
     pub shard_loads: Vec<ShardLoad>,
     #[serde(default)]
     pub partition_loads: Vec<PartitionLoad>,
+    #[serde(default)]
+    pub runtime_load: ServerRuntimeLoad,
+    #[serde(default)]
+    pub shard_states: Vec<ServerShardServingState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -114,6 +118,48 @@ pub struct PartitionLoad {
     pub partition_info: PartitionInfoStats,
 }
 
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServerRuntimeLoad {
+    pub queue_depth: usize,
+    pub background_queue_depth: usize,
+    pub queued_shard_count: usize,
+    pub running_shard_count: usize,
+    pub dirty_object_count: usize,
+    pub dirty_shard_count: usize,
+    pub rejected_total: u64,
+    pub rejected_background_total: u64,
+    pub timed_out_total: u64,
+    pub canceled_total: u64,
+    pub dump_runs: u64,
+    pub compaction_runs: u64,
+    pub gc_runs: u64,
+    pub storage_lifecycle_runs: u64,
+    #[serde(default)]
+    pub degraded_reasons: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServerShardServingState {
+    pub shard_id: ShardId,
+    pub serving_state: String,
+    pub worker_index: usize,
+    pub worker_threads: usize,
+    pub loaded: bool,
+    pub readonly: bool,
+    pub load_version: u64,
+    pub table_name: String,
+    pub shard_uri: String,
+    pub start_routing_slot: u32,
+    pub end_routing_slot: u32,
+    pub total_records: usize,
+    pub storage_bytes: u64,
+    pub cache_memory_bytes: u64,
+    pub page_store_bytes_written: u64,
+    pub oplog_sequence: u64,
+    pub dirty_object_count: u64,
+    pub dirty_slot_count: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ServerMetaInfo {
     pub server_addr: String,
@@ -130,6 +176,10 @@ pub struct ServerMetaInfo {
     pub shard_loads: Vec<ShardLoad>,
     #[serde(default)]
     pub partition_loads: Vec<PartitionLoad>,
+    #[serde(default)]
+    pub runtime_load: ServerRuntimeLoad,
+    #[serde(default)]
+    pub shard_states: Vec<ServerShardServingState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -852,6 +902,8 @@ impl SingleNodeMeta {
                 binary_version: request.binary_version,
                 shard_loads: Vec::new(),
                 partition_loads: Vec::new(),
+                runtime_load: ServerRuntimeLoad::default(),
+                shard_states: Vec::new(),
             },
         );
         state.topology_version += 1;
@@ -882,6 +934,8 @@ impl SingleNodeMeta {
         }
         server.shard_loads = request.shard_loads;
         server.partition_loads = request.partition_loads;
+        server.runtime_load = request.runtime_load;
+        server.shard_states = request.shard_states;
         ServerHeartbeatResponse {
             status: Status::ok(),
             forbid_auto_register: false,
@@ -1921,6 +1975,8 @@ fn ensure_server(state: &mut MetaState, server_addr: &str) {
             binary_version: String::new(),
             shard_loads: Vec::new(),
             partition_loads: Vec::new(),
+            runtime_load: ServerRuntimeLoad::default(),
+            shard_states: Vec::new(),
         });
 }
 
@@ -2117,6 +2173,43 @@ mod tests {
                         },
                     },
                 }],
+                runtime_load: ServerRuntimeLoad {
+                    queue_depth: 2,
+                    background_queue_depth: 1,
+                    queued_shard_count: 1,
+                    running_shard_count: 1,
+                    dirty_object_count: 3,
+                    dirty_shard_count: 1,
+                    rejected_total: 4,
+                    rejected_background_total: 1,
+                    timed_out_total: 0,
+                    canceled_total: 0,
+                    dump_runs: 5,
+                    compaction_runs: 6,
+                    gc_runs: 7,
+                    storage_lifecycle_runs: 8,
+                    degraded_reasons: vec!["background_queue_full".to_string()],
+                },
+                shard_states: vec![ServerShardServingState {
+                    shard_id: 7,
+                    serving_state: "serving".to_string(),
+                    worker_index: 3,
+                    worker_threads: 4,
+                    loaded: true,
+                    readonly: false,
+                    load_version: 11,
+                    table_name: "tbl".to_string(),
+                    shard_uri: "local://tbl/7".to_string(),
+                    start_routing_slot: 1,
+                    end_routing_slot: 2,
+                    total_records: 10,
+                    storage_bytes: 100,
+                    cache_memory_bytes: 64,
+                    page_store_bytes_written: 100,
+                    oplog_sequence: 9,
+                    dirty_object_count: 1,
+                    dirty_slot_count: 1,
+                }],
             })
             .status
             .ok
@@ -2125,6 +2218,14 @@ mod tests {
         assert_eq!(server.shard_loads[0].key_count, 10);
         assert_eq!(server.partition_loads[0].partition_info.table_name, "tbl");
         assert_eq!(server.partition_loads[0].partition_info.storage_bytes, 100);
+        assert_eq!(server.runtime_load.queue_depth, 2);
+        assert_eq!(server.runtime_load.storage_lifecycle_runs, 8);
+        assert_eq!(
+            server.runtime_load.degraded_reasons,
+            vec!["background_queue_full"]
+        );
+        assert_eq!(server.shard_states[0].serving_state, "serving");
+        assert_eq!(server.shard_states[0].oplog_sequence, 9);
         assert_eq!(meta.stats().server_heartbeat_total, 1);
     }
 
@@ -2317,6 +2418,8 @@ mod tests {
             binary_version: "v".to_string(),
             shard_loads: Vec::new(),
             partition_loads: Vec::new(),
+            runtime_load: ServerRuntimeLoad::default(),
+            shard_states: Vec::new(),
         });
         assert_eq!(server_heartbeat.status.code, "resource_frozen");
         assert!(server_heartbeat.forbid_auto_register);
@@ -2723,6 +2826,8 @@ mod tests {
                     memory_bytes,
                 }],
                 partition_loads: Vec::new(),
+                runtime_load: ServerRuntimeLoad::default(),
+                shard_states: Vec::new(),
             });
         }
         meta.add_table(AddTableRequest {
@@ -2771,6 +2876,8 @@ mod tests {
                     memory_bytes,
                 }],
                 partition_loads: Vec::new(),
+                runtime_load: ServerRuntimeLoad::default(),
+                shard_states: Vec::new(),
             });
         }
         meta.add_table(AddTableRequest {
@@ -2820,6 +2927,8 @@ mod tests {
                     memory_bytes,
                 }],
                 partition_loads: Vec::new(),
+                runtime_load: ServerRuntimeLoad::default(),
+                shard_states: Vec::new(),
             });
         }
         meta.add_table(AddTableRequest {
@@ -2867,6 +2976,8 @@ mod tests {
                     memory_bytes,
                 }],
                 partition_loads: Vec::new(),
+                runtime_load: ServerRuntimeLoad::default(),
+                shard_states: Vec::new(),
             });
         }
         meta.add_table(AddTableRequest {

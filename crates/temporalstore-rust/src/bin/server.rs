@@ -145,6 +145,7 @@ fn main() {
 
     start_heartbeat_loop(
         engine.clone(),
+        runtime.clone(),
         meta_addr.clone(),
         advertised_addr.clone(),
         binary_version.clone(),
@@ -249,7 +250,13 @@ fn main() {
             }
             ("POST", "/heartbeat") => json_response(
                 200,
-                &send_heartbeat(&engine, &meta_addr, &advertised_addr, &binary_version),
+                &send_heartbeat(
+                    &engine,
+                    &runtime,
+                    &meta_addr,
+                    &advertised_addr,
+                    &binary_version,
+                ),
             ),
             ("GET", path) if path.starts_with("/jobs/") => {
                 let job_id = path
@@ -1754,6 +1761,7 @@ fn append_replica_replay_metrics(out: &mut String, status: &ReplicaReplayLoopSta
 
 fn start_heartbeat_loop(
     engine: TemporalEngine,
+    runtime: DataNodeRuntime,
     meta_addr: String,
     server_addr: String,
     binary_version: String,
@@ -1763,7 +1771,7 @@ fn start_heartbeat_loop(
         return;
     }
     std::thread::spawn(move || loop {
-        let _ = send_heartbeat(&engine, &meta_addr, &server_addr, &binary_version);
+        let _ = send_heartbeat(&engine, &runtime, &meta_addr, &server_addr, &binary_version);
         std::thread::sleep(std::time::Duration::from_millis(interval_ms));
     });
 }
@@ -1777,6 +1785,7 @@ fn now_ms() -> u64 {
 
 fn send_heartbeat(
     engine: &TemporalEngine,
+    runtime: &DataNodeRuntime,
     meta_addr: &str,
     server_addr: &str,
     binary_version: &str,
@@ -1809,6 +1818,8 @@ fn send_heartbeat(
         binary_version: binary_version.to_string(),
         shard_loads,
         partition_loads,
+        runtime_load: runtime.server_runtime_load(),
+        shard_states: runtime.shard_serving_states(),
     };
     post_json::<_, ServerHeartbeatResponse>(meta_addr, "/servers/heartbeat", &request)
         .unwrap_or_else(|err| ServerHeartbeatResponse {

@@ -57,9 +57,9 @@ pub use meta::{
     MetaMutation, MetaPreflightReport, MetaStats, NamespaceMetaInfo, PartitionLoad,
     ProxyHeartbeatRequest, ProxyHeartbeatResponse, ProxyMetaInfo, RegisterProxyRequest,
     RegisterServerRequest, RegisterShardRequest, RegisterShardResponse, ServerEndpoint,
-    ServerHeartbeatRequest, ServerHeartbeatResponse, ServerMetaInfo, ShardLoad, ShardLocation,
-    SingleNodeMeta, StaleResourceReport, StaleServerReport, StateChangeRequest, TableMetaInfo,
-    TablePartition, TableTopologyResponse,
+    ServerHeartbeatRequest, ServerHeartbeatResponse, ServerMetaInfo, ServerRuntimeLoad,
+    ServerShardServingState, ShardLoad, ShardLocation, SingleNodeMeta, StaleResourceReport,
+    StaleServerReport, StateChangeRequest, TableMetaInfo, TablePartition, TableTopologyResponse,
 };
 pub use oplog::{LocalOplogStore, OplogRecord, OplogStats};
 pub use page_store::{
