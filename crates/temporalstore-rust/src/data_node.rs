@@ -11,7 +11,9 @@ use crate::engine::{
     ShardCompactionUtilityReport, SlotDumpManifest, StorageLifecyclePlan, StorageLifecycleReport,
     StorageLifecycleRequest, TemporalEngine,
 };
-use crate::meta::{ServerHeartbeatResponse, ServerRuntimeLoad, ServerShardServingState};
+use crate::meta::{
+    ServerHeartbeatResponse, ServerRuntimeLoad, ServerShardServingState, TableTopologyResponse,
+};
 use crate::types::{Command, CommandResponse, ExecuteRequest, ExecuteResponse, ShardId, Status};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -113,8 +115,25 @@ pub struct DataNodeTopologyValidationReport {
     pub loaded_shard_count: usize,
     pub loaded_shards: Vec<ShardId>,
     pub last_meta_topology_version: u64,
+    #[serde(default)]
+    pub authoritative_topology_version: u64,
+    #[serde(default)]
+    pub validated_against_metaserver: bool,
+    #[serde(default)]
+    pub mismatch_count: usize,
+    #[serde(default)]
+    pub missing_in_meta: Vec<ShardId>,
+    #[serde(default)]
+    pub mismatches: Vec<DataNodeTopologyMismatch>,
     pub validation_limited: bool,
     pub limitation_reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DataNodeTopologyMismatch {
+    pub shard_id: ShardId,
+    pub kind: String,
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1010,9 +1029,108 @@ impl DataNodeRuntime {
             loaded_shard_count: loaded_shards.len(),
             loaded_shards,
             last_meta_topology_version: metaserver.last_topology_version,
+            authoritative_topology_version: 0,
+            validated_against_metaserver: false,
+            mismatch_count: 0,
+            missing_in_meta: Vec::new(),
+            mismatches: Vec::new(),
             validation_limited: true,
             limitation_reason:
                 "metaserver topology partition map is not attached to node preflight".to_string(),
+        }
+    }
+
+    pub fn validate_topology_against_metaserver(
+        &self,
+        server_addr: &str,
+        topologies: &[TableTopologyResponse],
+    ) -> DataNodeTopologyValidationReport {
+        let metaserver = self.metaserver_heartbeat_report();
+        let loaded_states = self
+            .shard_serving_states()
+            .into_iter()
+            .filter(|state| state.loaded)
+            .collect::<Vec<_>>();
+        let mut loaded_shards = loaded_states
+            .iter()
+            .map(|state| state.shard_id)
+            .collect::<Vec<_>>();
+        loaded_shards.sort_unstable();
+
+        let authoritative_topology_version = topologies
+            .iter()
+            .filter_map(|topology| topology.table.as_ref().map(|table| table.topology_version))
+            .max()
+            .unwrap_or_default();
+        let mut missing_in_meta = Vec::new();
+        let mut mismatches = Vec::new();
+        for state in &loaded_states {
+            let partition = topologies
+                .iter()
+                .flat_map(|topology| topology.partitions.iter())
+                .find(|partition| partition.shard_id == state.shard_id);
+            let Some(partition) = partition else {
+                missing_in_meta.push(state.shard_id);
+                mismatches.push(DataNodeTopologyMismatch {
+                    shard_id: state.shard_id,
+                    kind: "missing_partition".to_string(),
+                    detail: "loaded shard is not present in supplied metaserver topology"
+                        .to_string(),
+                });
+                continue;
+            };
+            if !state.readonly && partition.primary.as_deref() != Some(server_addr) {
+                mismatches.push(DataNodeTopologyMismatch {
+                    shard_id: state.shard_id,
+                    kind: "primary_mismatch".to_string(),
+                    detail: format!(
+                        "node serves primary but metaserver primary is {:?}",
+                        partition.primary
+                    ),
+                });
+            }
+            if state.readonly
+                && partition.primary.as_deref() != Some(server_addr)
+                && !partition
+                    .replicas
+                    .iter()
+                    .any(|replica| replica == server_addr)
+            {
+                mismatches.push(DataNodeTopologyMismatch {
+                    shard_id: state.shard_id,
+                    kind: "replica_mismatch".to_string(),
+                    detail: "readonly loaded shard is neither primary nor replica in metaserver topology"
+                        .to_string(),
+                });
+            }
+            if u64::from(state.start_routing_slot) != partition.start_slot
+                || u64::from(state.end_routing_slot) != partition.end_slot
+            {
+                mismatches.push(DataNodeTopologyMismatch {
+                    shard_id: state.shard_id,
+                    kind: "routing_slot_mismatch".to_string(),
+                    detail: format!(
+                        "local={}..{}, meta={}..{}",
+                        state.start_routing_slot,
+                        state.end_routing_slot,
+                        partition.start_slot,
+                        partition.end_slot
+                    ),
+                });
+            }
+        }
+        let mismatch_count = mismatches.len();
+        DataNodeTopologyValidationReport {
+            loaded_shard_count: loaded_shards.len(),
+            loaded_shards,
+            last_meta_topology_version: metaserver.last_topology_version,
+            authoritative_topology_version,
+            validated_against_metaserver: true,
+            mismatch_count,
+            missing_in_meta,
+            mismatches,
+            validation_limited: false,
+            limitation_reason: String::new(),
         }
     }
 
@@ -2185,6 +2303,54 @@ mod tests {
         );
         assert_eq!(recovered.topology_validation.loaded_shards, vec![7]);
         assert!(recovered.topology_validation.validation_limited);
+        let topology = TableTopologyResponse {
+            status: Status::ok(),
+            table: Some(crate::meta::TableMetaInfo {
+                table_id: 1,
+                namespace: "ns".to_string(),
+                table_name: "tbl".to_string(),
+                state: crate::meta::MetaEntityState::Normal,
+                topology_version: 100,
+                first_shard_id: 7,
+                shard_count: 1,
+                replica_count: 1,
+                use_cpp_partition_ids: false,
+                partition_version: 0,
+                serving_options: crate::meta::TableServingOptions::default(),
+            }),
+            partitions: vec![crate::meta::TablePartition {
+                shard_id: 7,
+                start_slot: 10,
+                end_slot: 19,
+                primary: Some("server-a".to_string()),
+                replicas: vec!["server-a".to_string()],
+                primary_endpoint: None,
+                replica_endpoints: Vec::new(),
+            }],
+            unchanged: false,
+        };
+        let validated = runtime.validate_topology_against_metaserver("server-a", &[topology]);
+        assert!(validated.validated_against_metaserver);
+        assert!(!validated.validation_limited);
+        assert_eq!(validated.authoritative_topology_version, 100);
+        assert_eq!(validated.mismatch_count, 0);
+        let mismatch_topology = TableTopologyResponse {
+            status: Status::ok(),
+            table: None,
+            partitions: vec![crate::meta::TablePartition {
+                shard_id: 7,
+                start_slot: 0,
+                end_slot: 9,
+                primary: Some("server-b".to_string()),
+                replicas: vec!["server-b".to_string()],
+                primary_endpoint: None,
+                replica_endpoints: Vec::new(),
+            }],
+            unchanged: false,
+        };
+        let mismatched =
+            runtime.validate_topology_against_metaserver("server-a", &[mismatch_topology]);
+        assert!(mismatched.mismatch_count >= 2);
         let shard_states = runtime.shard_serving_states();
         assert_eq!(shard_states.len(), 1);
         let shard = &shard_states[0];

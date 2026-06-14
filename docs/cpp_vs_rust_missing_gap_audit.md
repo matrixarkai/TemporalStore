@@ -58,6 +58,21 @@ brpc and Thrift are intentionally not part of the Rust target. The Rust open-sou
 
 ## What Was Closed In The Latest Pass
 
+This pass closed the next nodeserver topology-validation gap:
+
+1. Data-node topology validation can now compare loaded shard state against supplied metaserver
+   table topology partitions, checking missing partitions, primary/replica role mismatches, and
+   routing-slot range mismatches.
+2. The server binary now exposes `POST /server/topology/validate` and
+   `POST /ServerService/ValidateTopology`, fetching loaded table topology from metaserver and
+   returning a validation report plus per-table fetch errors.
+3. Node preflight still includes the cheap local-only validation summary, while the new admin route
+   performs the heavier authoritative partition-map validation on demand.
+
+This improves C++-style node/topology audit behavior without adding brpc/Thrift surfaces.
+
+## What Was Closed In The Previous Pass
+
 This pass closed another client/proxy/metaserver/nodeserver topology-diagnosis gap:
 
 1. Metaserver now records a bounded topology event history for version-changing operations such as

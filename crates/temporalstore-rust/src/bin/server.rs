@@ -4,15 +4,16 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use temporalstore_rust::data_node::DataNodeTopologyValidationReport;
 use temporalstore_rust::engine::TemporalEngine;
 use temporalstore_rust::http::{
     get_json_with_options, json_response, parse_json, post_json, serve, HttpRequest,
     HttpRequestOptions,
 };
 use temporalstore_rust::meta::{
-    AckResponse, GetShardResponse, LoadFinishRequest, PartitionLoad, RegisterServerRequest,
-    RegisterShardRequest, RegisterShardResponse, ServerHeartbeatRequest, ServerHeartbeatResponse,
-    ShardLoad, ShardSnapshotRef,
+    AckResponse, GetShardResponse, GetTableTopologyRequest, LoadFinishRequest, PartitionLoad,
+    RegisterServerRequest, RegisterShardRequest, RegisterShardResponse, ServerHeartbeatRequest,
+    ServerHeartbeatResponse, ShardLoad, ShardSnapshotRef, TableTopologyResponse,
 };
 use temporalstore_rust::raft::{
     DataRaftCommittedLogApplier, DataRaftReadMode, DataRaftReadPolicy, RaftReplicaBootstrapPlan,
@@ -33,6 +34,24 @@ use temporalstore_rust::{
     StorageLifecycleRequest, StreamReadRequest, UnloadShardRequest,
 };
 use temporalstore_snapshot::{FileObjectStore, S3SnapshotStore};
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct ServerTopologyValidationRequest {
+    #[serde(default)]
+    namespace: String,
+    #[serde(default)]
+    server_addr: String,
+    #[serde(default)]
+    table_names: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct ServerTopologyValidationResponse {
+    status: Status,
+    report: DataNodeTopologyValidationReport,
+    fetched_tables: Vec<String>,
+    fetch_errors: Vec<String>,
+}
 
 fn main() {
     let addr = std::env::var("TS_SERVER_BIND_ADDR")
@@ -199,6 +218,20 @@ fn main() {
             ("GET", "/server/info") => json_response(200, &engine.loaded_shard_stats()),
             ("GET", "/server/runtime_stats") => json_response(200, &runtime.stats()),
             ("GET", "/server/preflight") => json_response(200, &runtime.preflight_report()),
+            ("POST", "/server/topology/validate") | ("POST", "/ServerService/ValidateTopology") => {
+                match parse_json::<ServerTopologyValidationRequest>(&request.body) {
+                    Ok(req) => json_response(
+                        200,
+                        &validate_node_topology_from_meta(
+                            &runtime,
+                            &meta_addr,
+                            &advertised_addr,
+                            req,
+                        ),
+                    ),
+                    Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+                }
+            }
             ("GET", "/server/dirty_objects") => json_response(200, &runtime.dirty_objects()),
             ("GET", "/server/queued_shard_workers") => {
                 json_response(200, &runtime.queued_shard_worker_infos())
@@ -1783,6 +1816,71 @@ fn now_ms() -> u64 {
         .unwrap_or_default()
 }
 
+fn validate_node_topology_from_meta(
+    runtime: &DataNodeRuntime,
+    meta_addr: &str,
+    advertised_addr: &str,
+    request: ServerTopologyValidationRequest,
+) -> ServerTopologyValidationResponse {
+    let server_addr = if request.server_addr.is_empty() {
+        advertised_addr.to_string()
+    } else {
+        request.server_addr
+    };
+    let mut table_names = if request.table_names.is_empty() {
+        runtime
+            .shard_serving_states()
+            .into_iter()
+            .filter(|state| state.loaded && !state.table_name.is_empty())
+            .map(|state| state.table_name)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>()
+    } else {
+        request.table_names
+    };
+    table_names.sort();
+    table_names.dedup();
+
+    let mut topologies = Vec::new();
+    let mut fetched_tables = Vec::new();
+    let mut fetch_errors = Vec::new();
+    for table_name in &table_names {
+        let topology = post_json::<_, TableTopologyResponse>(
+            meta_addr,
+            "/tables/topology",
+            &GetTableTopologyRequest {
+                namespace: request.namespace.clone(),
+                table_name: table_name.clone(),
+                old_topology_version: 0,
+            },
+        );
+        match topology {
+            Ok(topology) if topology.status.ok => {
+                fetched_tables.push(table_name.clone());
+                topologies.push(topology);
+            }
+            Ok(topology) => fetch_errors.push(format!(
+                "{table_name}:{}:{}",
+                topology.status.code, topology.status.message
+            )),
+            Err(err) => fetch_errors.push(format!("{table_name}:http_error:{err}")),
+        }
+    }
+    let report = runtime.validate_topology_against_metaserver(&server_addr, &topologies);
+    let status = if fetch_errors.is_empty() {
+        Status::ok()
+    } else {
+        Status::error("topology_fetch_failed", fetch_errors.join(","))
+    };
+    ServerTopologyValidationResponse {
+        status,
+        report,
+        fetched_tables,
+        fetch_errors,
+    }
+}
+
 fn send_heartbeat(
     engine: &TemporalEngine,
     runtime: &DataNodeRuntime,
@@ -1901,6 +1999,99 @@ mod tests {
         for key in keys {
             std::env::remove_var(key);
         }
+    }
+
+    #[test]
+    fn server_topology_validation_fetches_metaserver_partition_map() {
+        let engine = TemporalEngine::default();
+        assert!(
+            engine
+                .load_shard_with(LoadShardRequest {
+                    shard_id: 9,
+                    table_name: "orders".to_string(),
+                    shard_uri: "local://orders/9".to_string(),
+                    start_routing_slot: 90,
+                    end_routing_slot: 99,
+                    readonly: false,
+                    load_version: 7,
+                    local_node_id: Some(1),
+                })
+                .status
+                .ok
+        );
+        let runtime = DataNodeRuntime::new(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 1,
+                max_queue_depth: 8,
+                max_background_queue_depth: 8,
+            },
+        );
+        let meta_addr = free_local_addr();
+        let bind_addr = meta_addr.clone();
+        thread::spawn(move || {
+            serve(&bind_addr, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    ("GET", "/health") => json_response(200, &Status::ok()),
+                    ("POST", "/tables/topology") => {
+                        let req = parse_json::<GetTableTopologyRequest>(&request.body).unwrap();
+                        assert_eq!(req.namespace, "prod");
+                        assert_eq!(req.table_name, "orders");
+                        json_response(
+                            200,
+                            &TableTopologyResponse {
+                                status: Status::ok(),
+                                table: Some(temporalstore_rust::meta::TableMetaInfo {
+                                    table_id: 1,
+                                    namespace: "prod".to_string(),
+                                    table_name: "orders".to_string(),
+                                    state: temporalstore_rust::meta::MetaEntityState::Normal,
+                                    topology_version: 44,
+                                    first_shard_id: 9,
+                                    shard_count: 1,
+                                    replica_count: 1,
+                                    use_cpp_partition_ids: false,
+                                    partition_version: 0,
+                                    serving_options:
+                                        temporalstore_rust::meta::TableServingOptions::default(),
+                                }),
+                                partitions: vec![temporalstore_rust::meta::TablePartition {
+                                    shard_id: 9,
+                                    start_slot: 90,
+                                    end_slot: 99,
+                                    primary: Some("server-a".to_string()),
+                                    replicas: vec!["server-a".to_string()],
+                                    primary_endpoint: None,
+                                    replica_endpoints: Vec::new(),
+                                }],
+                                unchanged: false,
+                            },
+                        )
+                    }
+                    _ => json_response(404, &Status::error("not_found", "not found")),
+                }
+            })
+            .unwrap();
+        });
+        wait_for_http(&meta_addr);
+
+        let response = validate_node_topology_from_meta(
+            &runtime,
+            &meta_addr,
+            "server-a",
+            ServerTopologyValidationRequest {
+                namespace: "prod".to_string(),
+                server_addr: String::new(),
+                table_names: Vec::new(),
+            },
+        );
+        assert!(response.status.ok, "{response:?}");
+        assert_eq!(response.fetched_tables, vec!["orders"]);
+        assert!(response.fetch_errors.is_empty());
+        assert!(response.report.validated_against_metaserver);
+        assert_eq!(response.report.authoritative_topology_version, 44);
+        assert_eq!(response.report.mismatch_count, 0);
+        assert_eq!(response.report.loaded_shards, vec![9]);
     }
 
     #[test]
