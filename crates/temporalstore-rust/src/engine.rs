@@ -20,6 +20,7 @@ use crate::index_log::LocalIndexLogStore;
 use crate::oplog::LocalOplogStore;
 use crate::page_store::{
     LocalPageStore, PageAddress, PageStoreError, PageStoreOptions, PageStoreStats,
+    PageStoreZoneDescriptor,
 };
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,
@@ -142,6 +143,20 @@ pub struct RustStorageObservation {
     pub cache_disk_bytes: u64,
     pub local_page_bytes_written: u64,
     pub local_page_bytes_read: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageRecoveryReport {
+    pub shard_id: ShardId,
+    pub index_bytes: u64,
+    pub oplog_records: usize,
+    pub index_log_records: usize,
+    pub active_page_segment_ids: Vec<u64>,
+    pub live_page_segment_ids: Vec<u64>,
+    pub zone_descriptors: Vec<PageStoreZoneDescriptor>,
+    pub total_page_refs: usize,
+    pub readable_page_refs: usize,
+    pub all_live_pages_readable: bool,
 }
 
 impl TemporalEngine {
@@ -1019,6 +1034,55 @@ impl TemporalEngine {
     ) -> Result<(), std::io::Error> {
         fs::create_dir_all(&self.index_dir)?;
         fs::write(self.index_path(shard_id), bytes)
+    }
+
+    pub fn storage_recovery_report(&self, shard_id: ShardId) -> StorageRecoveryReport {
+        let index_bytes = self
+            .index_path(shard_id)
+            .metadata()
+            .map(|metadata| metadata.len())
+            .unwrap_or_default();
+        let oplog_records = self
+            .oplog_store
+            .scan(shard_id, 0, u64::MAX, u64::MAX)
+            .map(|records| records.len())
+            .unwrap_or_default();
+        let index_log_records = self
+            .index_log_store
+            .scan(shard_id, 0, u64::MAX, u64::MAX)
+            .map(|records| records.len())
+            .unwrap_or_default();
+        let active_page_segment_ids = self.page_store.segment_ids().unwrap_or_default();
+        let zone_descriptors = self.page_store.zone_descriptors();
+        let shards = self.shards.read().expect("engine lock poisoned");
+        let addresses = shards
+            .get(&shard_id)
+            .map(collect_live_page_addresses)
+            .unwrap_or_default();
+        let total_page_refs = addresses.len();
+        let readable_page_refs = addresses
+            .iter()
+            .filter(|address| self.page_store.read(address).is_ok())
+            .count();
+        let mut live_page_segment_ids = addresses
+            .iter()
+            .map(|address| address.page_segment_id)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        live_page_segment_ids.sort_unstable();
+        StorageRecoveryReport {
+            shard_id,
+            index_bytes,
+            oplog_records,
+            index_log_records,
+            active_page_segment_ids,
+            live_page_segment_ids,
+            zone_descriptors,
+            total_page_refs,
+            readable_page_refs,
+            all_live_pages_readable: total_page_refs == readable_page_refs,
+        }
     }
 
     pub fn live_page_segment_ids(&self, shard_id: ShardId) -> Vec<u64> {
@@ -2859,6 +2923,30 @@ fn collect_live_page_segment_ids(shard: &ShardState) -> BTreeSet<u64> {
     ids
 }
 
+fn collect_live_page_addresses(shard: &ShardState) -> Vec<PageAddress> {
+    let mut addresses = Vec::new();
+    addresses.extend(shard.strings.values().cloned());
+    for fields in shard.hashes.values() {
+        addresses.extend(fields.values().cloned());
+    }
+    for members in shard.sets.values() {
+        addresses.extend(members.values().cloned());
+    }
+    for series in shard.features.values() {
+        addresses.extend(series.values().cloned());
+    }
+    for series in shard.sequences.values() {
+        addresses.extend(series.values().cloned());
+    }
+    for series in shard.ips.values() {
+        addresses.extend(series.values().cloned());
+    }
+    for series in shard.ips_meta.values() {
+        addresses.extend(series.values().map(|meta| meta.address.clone()));
+    }
+    addresses
+}
+
 fn compact_page_addresses<'a>(
     page_store: &LocalPageStore,
     cache: &MultiLayerCache,
@@ -3563,6 +3651,7 @@ fn cached_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::page_store::PageStoreZoneState;
     use crate::types::parse_cpp_feature_filters;
 
     fn wait_for_fresh_admission_second() {
@@ -3779,6 +3868,163 @@ mod tests {
                 .response,
             CommandResponse::Bytes {
                 value: Some(b"hv".to_vec())
+            }
+        );
+    }
+
+    #[test]
+    fn crash_recovery_report_covers_oplog_index_page_and_zone_manifest() {
+        let cache_dir = unique_temp_path("recovery-cache");
+        let page_dir = unique_temp_path("recovery-pages");
+        let index_dir = unique_temp_path("recovery-index");
+        let engine = TemporalEngine::with_local_dirs(256, &cache_dir, &page_dir, &index_dir);
+        engine.load_shard(1);
+
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: "k".to_string(),
+                        value: b"v1".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+        engine.page_store().roll_segment().unwrap();
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::HashSet {
+                        key: "h".to_string(),
+                        field: "f".to_string(),
+                        value: b"hv".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+
+        let recovered = TemporalEngine::with_local_dirs(256, &cache_dir, &page_dir, &index_dir);
+        recovered.load_shard(1);
+        let report = recovered.storage_recovery_report(1);
+
+        assert!(report.index_bytes > 0);
+        assert_eq!(report.oplog_records, 2);
+        assert_eq!(report.index_log_records, 2);
+        assert_eq!(report.active_page_segment_ids, vec![0, 1]);
+        assert_eq!(report.live_page_segment_ids, vec![0, 1]);
+        assert_eq!(report.total_page_refs, 2);
+        assert_eq!(report.readable_page_refs, 2);
+        assert!(report.all_live_pages_readable);
+        assert_eq!(report.zone_descriptors.len(), 2);
+        assert_eq!(report.zone_descriptors[0].state, PageStoreZoneState::Sealed);
+        assert_eq!(report.zone_descriptors[1].state, PageStoreZoneState::Active);
+
+        assert_eq!(
+            recovered
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "k".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"v1".to_vec())
+            }
+        );
+        assert_eq!(
+            recovered
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::HashGet {
+                        key: "h".to_string(),
+                        field: "f".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"hv".to_vec())
+            }
+        );
+    }
+
+    #[test]
+    fn crash_recovery_rebuilds_missing_zone_manifest_from_page_stream() {
+        let cache_dir = unique_temp_path("recovery-rebuild-cache");
+        let page_dir = unique_temp_path("recovery-rebuild-pages");
+        let index_dir = unique_temp_path("recovery-rebuild-index");
+        let engine = TemporalEngine::with_local_dirs(256, &cache_dir, &page_dir, &index_dir);
+        engine.load_shard(1);
+
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: "before".to_string(),
+                        value: b"before".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+        engine.page_store().roll_segment().unwrap();
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: "after".to_string(),
+                        value: b"after".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+
+        fs::remove_file(page_dir.join("page_zone_manifest.json")).unwrap();
+        let recovered = TemporalEngine::with_local_dirs(256, &cache_dir, &page_dir, &index_dir);
+        recovered.load_shard(1);
+        let report = recovered.storage_recovery_report(1);
+
+        assert_eq!(report.oplog_records, 2);
+        assert_eq!(report.index_log_records, 2);
+        assert_eq!(report.active_page_segment_ids, vec![0, 1]);
+        assert_eq!(report.live_page_segment_ids, vec![0, 1]);
+        assert_eq!(report.total_page_refs, 2);
+        assert!(report.all_live_pages_readable);
+        assert_eq!(report.zone_descriptors.len(), 2);
+        assert_eq!(report.zone_descriptors[0].state, PageStoreZoneState::Sealed);
+        assert_eq!(report.zone_descriptors[1].state, PageStoreZoneState::Active);
+        assert!(page_dir.join("page_zone_manifest.json").exists());
+        assert_eq!(
+            recovered
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "before".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"before".to_vec())
+            }
+        );
+        assert_eq!(
+            recovered
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "after".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"after".to_vec())
             }
         );
     }

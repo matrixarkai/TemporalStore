@@ -169,7 +169,8 @@ impl LocalPageStore {
             .map(|metadata| metadata.len())
             .unwrap_or_default();
         let next_page_id = next_page_id_at(&root).unwrap_or_default();
-        let mut zones = if zone_manifest_path(&root).exists() {
+        let manifest_exists = zone_manifest_path(&root).exists();
+        let mut zones = if manifest_exists {
             load_zone_manifest_at(&root)
                 .or_else(|_| rebuild_zone_manifest_at(&root))
                 .unwrap_or_default()
@@ -182,6 +183,9 @@ impl LocalPageStore {
             page_segment_id,
             PageStoreZoneState::Active,
         );
+        if !manifest_exists {
+            let _ = persist_zone_manifest(&root, &zones);
+        }
         Self {
             inner: Arc::new(Mutex::new(PageStoreInner {
                 root,
