@@ -84,8 +84,9 @@ shared store oplog -> command replay -> catch up after checkpoint
 - Oplog objects are checksum-enveloped and replay rejects corrupt entries.
 - Object-store writes support a bounded retry policy; async flush requeues entries after publish
   failure.
-- Shared-store GC can delete oplog objects before a replay-safe index and checkpoint GC keeps the
-  newest N checkpoints while deleting old checkpoint index/page payloads by prefix.
+- Shared-store GC can delete oplog objects before a replay-safe index. Cursor-safe oplog GC refuses
+  deletion past a known follower cursor, and cursor-safe checkpoint GC keeps both the newest N
+  checkpoints and the checkpoint generation needed by the persisted follower replay cursor.
 
 ## Local Storage Modes Harness
 
@@ -119,8 +120,7 @@ position, restored read value, and the local WAL segment files used by each Raft
 ## What Is Still Missing For Production
 
 - integration with real Raft commit index
-- lifecycle scheduling around oplog/checkpoint GC, including safety checks against follower replay
-  cursors and Raft snapshot/install state
+- lifecycle scheduling around oplog/checkpoint GC tied to Raft snapshot/install state
 - S3 multipart upload and range-read optimization for large page segment sets
 - concurrency control so followers do not install a partially uploaded generation
 

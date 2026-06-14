@@ -42,6 +42,14 @@ pub enum SharedStoreReplicationError {
         cursor_oplog_index: u64,
         retain_from_oplog_index: u64,
     },
+    #[error(
+        "shared-store checkpoint GC would remove checkpoint {checkpoint_id} at oplog {checkpoint_oplog_index} needed by replay cursor {cursor_oplog_index}"
+    )]
+    CheckpointGcBlockedByReplayCursor {
+        cursor_oplog_index: u64,
+        checkpoint_oplog_index: u64,
+        checkpoint_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -115,6 +123,8 @@ pub struct SharedStoreGcReport {
     pub retained_checkpoint_ids: Vec<String>,
     #[serde(default)]
     pub retained_for_cursor_oplog_index: Option<u64>,
+    #[serde(default)]
+    pub retained_for_cursor_checkpoint_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -583,6 +593,76 @@ where
             deleted_checkpoints: delete_count,
             deleted_checkpoint_objects,
             retained_checkpoint_ids,
+            ..SharedStoreGcReport::default()
+        })
+    }
+
+    pub async fn gc_checkpoints_cursor_safe(
+        &self,
+        shard_id: ShardId,
+        keep_last: usize,
+    ) -> Result<SharedStoreGcReport, SharedStoreReplicationError> {
+        let keep_last = keep_last.max(1);
+        let manifests = self.list_checkpoints(shard_id).await?;
+        let cursor = self.load_replay_cursor(shard_id).await?;
+        let retain_start = manifests.len().saturating_sub(keep_last);
+        let cursor_anchor = if cursor.last_oplog_index > 0 {
+            manifests
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(_, manifest)| manifest.checkpoint_oplog_index <= cursor.last_oplog_index)
+                .map(|(index, _)| index)
+        } else {
+            None
+        };
+        let mut retained_checkpoint_ids = manifests[retain_start..]
+            .iter()
+            .map(|manifest| manifest.checkpoint_id.clone())
+            .collect::<Vec<_>>();
+        let mut deleted_checkpoints = 0usize;
+        let mut deleted_checkpoint_objects = 0usize;
+        for (index, manifest) in manifests.iter().enumerate() {
+            let retained_by_keep_last = index >= retain_start;
+            let retained_by_cursor = cursor_anchor == Some(index);
+            if retained_by_keep_last || retained_by_cursor {
+                if retained_by_cursor
+                    && !retained_checkpoint_ids
+                        .iter()
+                        .any(|id| id == &manifest.checkpoint_id)
+                {
+                    retained_checkpoint_ids.push(manifest.checkpoint_id.clone());
+                }
+                continue;
+            }
+            if cursor.last_oplog_index > 0
+                && manifest.checkpoint_oplog_index <= cursor.last_oplog_index
+                && cursor_anchor.is_none()
+            {
+                return Err(
+                    SharedStoreReplicationError::CheckpointGcBlockedByReplayCursor {
+                        cursor_oplog_index: cursor.last_oplog_index,
+                        checkpoint_oplog_index: manifest.checkpoint_oplog_index,
+                        checkpoint_id: manifest.checkpoint_id.clone(),
+                    },
+                );
+            }
+            deleted_checkpoint_objects += self
+                .delete_prefix(&self.checkpoint_prefix(shard_id, &manifest.checkpoint_id))
+                .await?;
+            deleted_checkpoints += 1;
+        }
+        retained_checkpoint_ids.sort();
+        retained_checkpoint_ids.dedup();
+        Ok(SharedStoreGcReport {
+            shard_id,
+            deleted_checkpoints,
+            deleted_checkpoint_objects,
+            retained_checkpoint_ids,
+            retained_for_cursor_oplog_index: (cursor.last_oplog_index > 0)
+                .then_some(cursor.last_oplog_index),
+            retained_for_cursor_checkpoint_id: cursor_anchor
+                .map(|index| manifests[index].checkpoint_id.clone()),
             ..SharedStoreGcReport::default()
         })
     }
@@ -1374,6 +1454,65 @@ mod tests {
         let safe = replicator.gc_oplog_before_cursor_safe(1, 2).await.unwrap();
         assert_eq!(safe.deleted_oplog_objects, 1);
         assert_eq!(safe.retained_for_cursor_oplog_index, Some(1));
+    }
+
+    #[tokio::test]
+    async fn shared_store_checkpoint_gc_retains_cursor_anchor_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("primary-cache"),
+            dir.path().join("primary-pages"),
+            dir.path().join("primary-index"),
+        );
+        primary.load_shard(1);
+        let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
+        let replicator = SharedStoreReplicator::new("cluster-a", store.clone());
+        let mut manifests = Vec::new();
+
+        for checkpoint_oplog_index in 1..=3 {
+            primary.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("checkpoint-anchor-{checkpoint_oplog_index}"),
+                    value: vec![checkpoint_oplog_index as u8],
+                },
+            });
+            manifests.push(
+                replicator
+                    .publish_checkpoint(1, checkpoint_oplog_index, &primary, &primary.page_store())
+                    .await
+                    .unwrap(),
+            );
+        }
+        replicator
+            .save_replay_cursor(&SharedStoreReplayCursor {
+                shard_id: 1,
+                last_oplog_index: 2,
+                last_replay_time_ms: 42,
+            })
+            .await
+            .unwrap();
+
+        let report = replicator.gc_checkpoints_cursor_safe(1, 1).await.unwrap();
+        assert_eq!(report.deleted_checkpoints, 1);
+        assert_eq!(report.retained_for_cursor_oplog_index, Some(2));
+        assert_eq!(
+            report.retained_for_cursor_checkpoint_id.as_deref(),
+            Some(manifests[1].checkpoint_id.as_str())
+        );
+        assert!(report
+            .retained_checkpoint_ids
+            .contains(&manifests[1].checkpoint_id));
+        assert!(report
+            .retained_checkpoint_ids
+            .contains(&manifests[2].checkpoint_id));
+
+        let remaining = replicator.list_checkpoints(1).await.unwrap();
+        assert_eq!(remaining.len(), 2);
+        assert_eq!(remaining[0].checkpoint_id, manifests[1].checkpoint_id);
+        assert_eq!(remaining[1].checkpoint_id, manifests[2].checkpoint_id);
+        assert!(store.get(&manifests[1].index_key).await.is_ok());
     }
 
     #[derive(Debug)]
