@@ -150,8 +150,11 @@ pub struct PageStoreGcPolicyPlan {
     pub selected_page_segment_ids: Vec<u64>,
     pub selected_physical_bytes: u64,
     pub candidate_count: usize,
+    pub candidate_physical_bytes: u64,
     pub skipped_by_policy_count: usize,
+    pub skipped_by_policy_physical_bytes: u64,
     pub skipped_by_budget_count: usize,
+    pub skipped_by_budget_physical_bytes: u64,
     pub candidates: Vec<PageStoreGcUtilityCandidate>,
 }
 
@@ -675,8 +678,11 @@ impl LocalPageStore {
             self.gc_utility_candidates(retain_from_page_segment_id, live_page_segment_ids)?;
         let mut selected_page_segment_ids = Vec::new();
         let mut selected_physical_bytes = 0_u64;
+        let candidate_physical_bytes = candidates.iter().map(|candidate| candidate.bytes).sum();
         let mut skipped_by_policy_count = 0_usize;
+        let mut skipped_by_policy_physical_bytes = 0_u64;
         let mut skipped_by_budget_count = 0_usize;
+        let mut skipped_by_budget_physical_bytes = 0_u64;
 
         for candidate in &candidates {
             let utility_allowed = policy
@@ -689,6 +695,8 @@ impl LocalPageStore {
                 .unwrap_or(true);
             if !utility_allowed || !age_allowed {
                 skipped_by_policy_count += 1;
+                skipped_by_policy_physical_bytes =
+                    skipped_by_policy_physical_bytes.saturating_add(candidate.bytes);
                 continue;
             }
 
@@ -696,6 +704,8 @@ impl LocalPageStore {
                 && selected_page_segment_ids.len() >= policy.max_destroy_segments
             {
                 skipped_by_budget_count += 1;
+                skipped_by_budget_physical_bytes =
+                    skipped_by_budget_physical_bytes.saturating_add(candidate.bytes);
                 continue;
             }
             if policy.max_destroy_physical_bytes > 0
@@ -703,6 +713,8 @@ impl LocalPageStore {
                     > policy.max_destroy_physical_bytes
             {
                 skipped_by_budget_count += 1;
+                skipped_by_budget_physical_bytes =
+                    skipped_by_budget_physical_bytes.saturating_add(candidate.bytes);
                 continue;
             }
 
@@ -715,8 +727,11 @@ impl LocalPageStore {
             selected_page_segment_ids,
             selected_physical_bytes,
             candidate_count: candidates.len(),
+            candidate_physical_bytes,
             skipped_by_policy_count,
+            skipped_by_policy_physical_bytes,
             skipped_by_budget_count,
+            skipped_by_budget_physical_bytes,
             candidates,
         })
     }
@@ -2770,10 +2785,19 @@ mod tests {
         let plan = store.gc_policy_plan(3, [2_u64], &policy).unwrap();
         assert_eq!(plan.retain_from_page_segment_id, 3);
         assert_eq!(plan.candidate_count, 2);
+        assert_eq!(
+            plan.candidate_physical_bytes,
+            (b"small".len() + b"largest-stale-segment".len()) as u64
+        );
         assert_eq!(plan.selected_page_segment_ids, vec![0]);
         assert_eq!(plan.selected_physical_bytes, b"small".len() as u64);
         assert_eq!(plan.skipped_by_policy_count, 0);
+        assert_eq!(plan.skipped_by_policy_physical_bytes, 0);
         assert_eq!(plan.skipped_by_budget_count, 1);
+        assert_eq!(
+            plan.skipped_by_budget_physical_bytes,
+            b"largest-stale-segment".len() as u64
+        );
         assert_eq!(
             plan.candidates
                 .iter()
