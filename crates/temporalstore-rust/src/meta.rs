@@ -457,6 +457,19 @@ pub struct MetaInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MetaPreflightReport {
+    pub status: Status,
+    pub stats: MetaStats,
+    pub normal_servers: usize,
+    pub frozen_servers: usize,
+    pub normal_proxies: usize,
+    pub frozen_proxies: usize,
+    pub dropped_tables: usize,
+    pub shard_routes: usize,
+    pub degraded_reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", content = "request", rename_all = "snake_case")]
 pub enum MetaMutation {
     RegisterShard(RegisterShardRequest),
@@ -1506,6 +1519,61 @@ impl SingleNodeMeta {
         stats_from_state(&state)
     }
 
+    pub fn preflight_report(&self) -> MetaPreflightReport {
+        let state = self.inner.read().expect("meta lock poisoned");
+        let normal_servers = state
+            .servers
+            .values()
+            .filter(|server| server.state == MetaEntityState::Normal)
+            .count();
+        let frozen_servers = state
+            .servers
+            .values()
+            .filter(|server| server.state == MetaEntityState::Frozen)
+            .count();
+        let normal_proxies = state
+            .proxies
+            .values()
+            .filter(|proxy| proxy.state == MetaEntityState::Normal)
+            .count();
+        let frozen_proxies = state
+            .proxies
+            .values()
+            .filter(|proxy| proxy.state == MetaEntityState::Frozen)
+            .count();
+        let dropped_tables = state
+            .tables
+            .values()
+            .filter(|table| table.info.state == MetaEntityState::Dropped)
+            .count();
+        let mut degraded_reasons = Vec::new();
+        if frozen_servers > 0 {
+            degraded_reasons.push("frozen_servers".to_string());
+        }
+        if frozen_proxies > 0 {
+            degraded_reasons.push("frozen_proxies".to_string());
+        }
+        if normal_servers == 0 && !state.shards.is_empty() {
+            degraded_reasons.push("no_normal_servers_for_registered_shards".to_string());
+        }
+        let status = if degraded_reasons.is_empty() {
+            Status::ok()
+        } else {
+            Status::error("degraded", degraded_reasons.join(","))
+        };
+        MetaPreflightReport {
+            status,
+            stats: stats_from_state(&state),
+            normal_servers,
+            frozen_servers,
+            normal_proxies,
+            frozen_proxies,
+            dropped_tables,
+            shard_routes: state.shards.len(),
+            degraded_reasons,
+        }
+    }
+
     fn set_server_state(&self, request: StateChangeRequest, next: MetaEntityState) -> AckResponse {
         if !self
             .inner
@@ -2058,6 +2126,74 @@ mod tests {
         assert_eq!(server.partition_loads[0].partition_info.table_name, "tbl");
         assert_eq!(server.partition_loads[0].partition_info.storage_bytes, 100);
         assert_eq!(meta.stats().server_heartbeat_total, 1);
+    }
+
+    #[test]
+    fn metaserver_preflight_reports_inventory_and_frozen_resources() {
+        let meta = SingleNodeMeta::default();
+        assert!(
+            meta.register_server(RegisterServerRequest {
+                server_addr: "server-a".to_string(),
+                node_id: 7,
+                location: "zone-a".to_string(),
+                binary_version: "v1".to_string(),
+            })
+            .status
+            .ok
+        );
+        assert!(
+            meta.register_proxy(RegisterProxyRequest {
+                proxy_addr: "proxy-a".to_string(),
+                namespace: "ns".to_string(),
+                location: "zone-a".to_string(),
+                config_version: 1,
+                binary_version: "v1".to_string(),
+            })
+            .status
+            .ok
+        );
+        assert!(
+            meta.register(RegisterShardRequest {
+                shard_id: 1,
+                server_addr: "server-a".to_string(),
+            })
+            .status
+            .ok
+        );
+
+        let healthy = meta.preflight_report();
+        assert!(healthy.status.ok);
+        assert_eq!(healthy.normal_servers, 1);
+        assert_eq!(healthy.normal_proxies, 1);
+        assert_eq!(healthy.shard_routes, 1);
+        assert!(healthy.degraded_reasons.is_empty());
+
+        assert!(
+            meta.freeze_server(StateChangeRequest {
+                endpoint: "server-a".to_string(),
+                freeze_cooldown_ms: 0,
+            })
+            .status
+            .ok
+        );
+        assert!(
+            meta.freeze_proxy(StateChangeRequest {
+                endpoint: "proxy-a".to_string(),
+                freeze_cooldown_ms: 0,
+            })
+            .status
+            .ok
+        );
+        let degraded = meta.preflight_report();
+        assert!(!degraded.status.ok);
+        assert_eq!(degraded.frozen_servers, 1);
+        assert_eq!(degraded.frozen_proxies, 1);
+        assert!(degraded
+            .degraded_reasons
+            .contains(&"frozen_servers".to_string()));
+        assert!(degraded
+            .degraded_reasons
+            .contains(&"frozen_proxies".to_string()));
     }
 
     #[test]

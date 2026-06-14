@@ -33,10 +33,10 @@ pub use control::{
     UnloadShardRequest, UnloadShardResponse,
 };
 pub use data_node::{
-    CompactionRequest, CompactionResponse, DataNodeRuntime, DataNodeRuntimeOptions,
-    DataNodeRuntimeStats, DataNodeTaskKind, DataNodeTaskOutput, DataNodeTaskStatus,
-    DirtyObjectInfo, DumpShardRequest, DumpShardResponse, GcRequest, GcResponse, RequestController,
-    ShardWorkerInfo,
+    CompactionRequest, CompactionResponse, DataNodePreflightReport, DataNodeRuntime,
+    DataNodeRuntimeOptions, DataNodeRuntimeStats, DataNodeTaskKind, DataNodeTaskOutput,
+    DataNodeTaskStatus, DirtyObjectInfo, DumpShardRequest, DumpShardResponse, GcRequest,
+    GcResponse, RequestController, ShardWorkerInfo,
 };
 pub use e2e::{
     AsyncStorageJournal, EndToEndWorkflow, KillSwitches, ReplicaReadPolicy, RoutingClient,
@@ -51,12 +51,12 @@ pub use meta::{
     AckResponse, AddNamespaceRequest, AddTableRequest, FreezeStaleServersRequest, GetShardResponse,
     GetTableTopologyRequest, ListNamespacesResponse, ListProxiesResponse, ListServersResponse,
     ListTablesResponse, LoadFinishRequest, LocalMetaMutationLog, MetaEntityState, MetaInfo,
-    MetaMutation, MetaStats, NamespaceMetaInfo, PartitionLoad, ProxyHeartbeatRequest,
-    ProxyHeartbeatResponse, ProxyMetaInfo, RegisterProxyRequest, RegisterServerRequest,
-    RegisterShardRequest, RegisterShardResponse, ServerEndpoint, ServerHeartbeatRequest,
-    ServerHeartbeatResponse, ServerMetaInfo, ShardLoad, ShardLocation, SingleNodeMeta,
-    StaleResourceReport, StaleServerReport, StateChangeRequest, TableMetaInfo, TablePartition,
-    TableTopologyResponse,
+    MetaMutation, MetaPreflightReport, MetaStats, NamespaceMetaInfo, PartitionLoad,
+    ProxyHeartbeatRequest, ProxyHeartbeatResponse, ProxyMetaInfo, RegisterProxyRequest,
+    RegisterServerRequest, RegisterShardRequest, RegisterShardResponse, ServerEndpoint,
+    ServerHeartbeatRequest, ServerHeartbeatResponse, ServerMetaInfo, ShardLoad, ShardLocation,
+    SingleNodeMeta, StaleResourceReport, StaleServerReport, StateChangeRequest, TableMetaInfo,
+    TablePartition, TableTopologyResponse,
 };
 pub use oplog::{LocalOplogStore, OplogRecord, OplogStats};
 pub use page_store::{
@@ -68,9 +68,10 @@ pub use partition_id::{
     PARTITION_VERSION_MASK, SLOT_COUNT, SLOT_MASK,
 };
 pub use proxy::{
-    ProxyConfigUpdateReport, ProxyInfo, ProxyOpenTableRequest, ProxyOpenTableResponse,
-    ProxyOptions, ProxyReplicaReadPolicy, ProxyService, ProxyStats, ProxyTableBatchExecuteRequest,
-    ProxyTableExecuteRequest, ProxyTableOptionsView,
+    ProxyClientPreflightReport, ProxyConfigUpdateReport, ProxyInfo, ProxyOpenTableRequest,
+    ProxyOpenTableResponse, ProxyOptions, ProxyPreflightReport, ProxyReplicaReadPolicy,
+    ProxyService, ProxyStats, ProxyTableBatchExecuteRequest, ProxyTableExecuteRequest,
+    ProxyTableOptionsView,
 };
 pub use raft::{
     apply_data_raft_membership_from_topology, distributed_raft_readiness,

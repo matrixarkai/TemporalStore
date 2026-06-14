@@ -110,6 +110,34 @@ pub struct ProxyHeartbeatReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyClientPreflightReport {
+    pub route_cache_size: usize,
+    pub open_table_calls: u64,
+    pub execute_requests: u64,
+    pub batch_execute_requests: u64,
+    pub route_cache_hits: u64,
+    pub route_cache_misses: u64,
+    pub route_refreshes: u64,
+    pub backend_errors: u64,
+    pub backend_error_streak: u64,
+    pub continuous_backend_failures: u64,
+    pub meta_sync_errors: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyPreflightReport {
+    pub status: Status,
+    pub meta_addr: String,
+    pub proxy_addr: String,
+    pub namespace: String,
+    pub config_version: u64,
+    pub route_cache_size: usize,
+    pub stats: ProxyStats,
+    pub client: ProxyClientPreflightReport,
+    pub degraded_reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyConfigUpdateReport {
     pub status: Status,
     pub applied: bool,
@@ -228,6 +256,9 @@ impl ProxyService {
             ("GET", "/health") => json_response(200, &Status::ok()),
             ("GET", "/proxy/info") => json_response(200, &self.info()),
             ("GET", "/proxy/heartbeat") => json_response(200, &self.heartbeat_report()),
+            ("GET", "/proxy/preflight") | ("GET", "/ProxyService/Preflight") => {
+                json_response(200, &self.preflight_report())
+            }
             ("GET", "/proxy/config") => {
                 let options = self
                     .inner
@@ -498,6 +529,56 @@ impl ProxyService {
             config_version: proxy_config_version(&options),
             route_cache_size: self.client().route_cache_size(),
             stats: *self.inner.stats.read().expect("proxy stats lock poisoned"),
+        }
+    }
+
+    pub fn preflight_report(&self) -> ProxyPreflightReport {
+        self.sync_client_stats();
+        let options = self.options();
+        let stats = *self.inner.stats.read().expect("proxy stats lock poisoned");
+        let client_stats = self.client().stats();
+        let mut degraded_reasons = Vec::new();
+        if stats.metaserver_errors > 0 || client_stats.meta_sync_errors > 0 {
+            degraded_reasons.push("metaserver_errors".to_string());
+        }
+        if stats.backend_errors > 0 || client_stats.backend_errors > 0 {
+            degraded_reasons.push("backend_errors".to_string());
+        }
+        if stats.continuous_backend_failures > 0 || client_stats.continuous_backend_failures > 0 {
+            degraded_reasons.push("continuous_backend_failures".to_string());
+        }
+        if stats.bad_requests > 0 {
+            degraded_reasons.push("bad_requests".to_string());
+        }
+        let status = if degraded_reasons.is_empty() {
+            Status::ok()
+        } else {
+            Status::error("degraded", degraded_reasons.join(","))
+        };
+        let config_version = proxy_config_version(&options);
+        let route_cache_size = self.client().route_cache_size();
+        ProxyPreflightReport {
+            status,
+            meta_addr: options.meta_addr,
+            proxy_addr: options.proxy_addr,
+            namespace: options.namespace,
+            config_version,
+            route_cache_size,
+            stats,
+            client: ProxyClientPreflightReport {
+                route_cache_size,
+                open_table_calls: client_stats.open_table_calls,
+                execute_requests: client_stats.execute_requests,
+                batch_execute_requests: client_stats.batch_execute_requests,
+                route_cache_hits: client_stats.route_cache_hits,
+                route_cache_misses: client_stats.route_cache_misses,
+                route_refreshes: client_stats.route_refreshes,
+                backend_errors: client_stats.backend_errors,
+                backend_error_streak: client_stats.backend_error_streak,
+                continuous_backend_failures: client_stats.continuous_backend_failures,
+                meta_sync_errors: client_stats.meta_sync_errors,
+            },
+            degraded_reasons,
         }
     }
 
@@ -810,6 +891,44 @@ mod tests {
         assert_eq!(heartbeat.route_cache_size, 1);
         assert_eq!(heartbeat.stats.execute_requests, 2);
         assert_ne!(heartbeat.config_version, 0);
+        let preflight = proxy.preflight_report();
+        assert!(preflight.status.ok);
+        assert_eq!(preflight.route_cache_size, 1);
+        assert_eq!(preflight.client.route_cache_size, 1);
+        assert!(preflight.client.route_refreshes >= 1);
+        assert!(preflight.degraded_reasons.is_empty());
+    }
+
+    #[test]
+    fn proxy_preflight_reports_degraded_bad_request_state() {
+        let proxy = ProxyService::new(ProxyOptions {
+            meta_addr: "127.0.0.1:1".to_string(),
+            namespace: "ns".to_string(),
+            ..ProxyOptions::default()
+        });
+
+        let (code, _) = proxy.handle(HttpRequest {
+            method: "POST".to_string(),
+            path: "/execute".to_string(),
+            body: b"not-json".to_vec(),
+        });
+        assert_eq!(code, 400);
+
+        let preflight = proxy.preflight_report();
+        assert!(!preflight.status.ok);
+        assert_eq!(preflight.status.code, "degraded");
+        assert_eq!(preflight.namespace, "ns");
+        assert_eq!(preflight.stats.bad_requests, 1);
+        assert_eq!(preflight.degraded_reasons, vec!["bad_requests"]);
+
+        let (code, body) = proxy.handle(HttpRequest {
+            method: "GET".to_string(),
+            path: "/ProxyService/Preflight".to_string(),
+            body: Vec::new(),
+        });
+        assert_eq!(code, 200);
+        let routed = parse_json::<ProxyPreflightReport>(&body).unwrap();
+        assert_eq!(routed.stats.bad_requests, 1);
     }
 
     #[test]

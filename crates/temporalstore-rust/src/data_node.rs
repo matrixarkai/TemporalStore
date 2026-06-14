@@ -91,6 +91,16 @@ pub struct DataNodeRuntimeStats {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DataNodePreflightReport {
+    pub status: Status,
+    pub stats: DataNodeRuntimeStats,
+    pub queued_workers: Vec<ShardWorkerInfo>,
+    pub dirty_shards: Vec<ShardId>,
+    pub dirty_objects: Vec<DirtyObjectInfo>,
+    pub degraded_reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ShardWorkerInfo {
     pub shard_id: ShardId,
     pub worker_index: usize,
@@ -798,6 +808,38 @@ impl DataNodeRuntime {
             dump_runs: stats.dump_runs,
             compaction_runs: stats.compaction_runs,
             gc_runs: stats.gc_runs,
+        }
+    }
+
+    pub fn preflight_report(&self) -> DataNodePreflightReport {
+        let stats = self.stats();
+        let mut degraded_reasons = Vec::new();
+        if stats.queue_depth >= stats.max_queue_depth && stats.max_queue_depth > 0 {
+            degraded_reasons.push("foreground_queue_full".to_string());
+        }
+        if stats.background_queue_depth >= stats.max_background_queue_depth
+            && stats.max_background_queue_depth > 0
+        {
+            degraded_reasons.push("background_queue_full".to_string());
+        }
+        if stats.rejected_total > 0 {
+            degraded_reasons.push("rejected_requests".to_string());
+        }
+        if stats.timed_out_total > 0 {
+            degraded_reasons.push("timed_out_requests".to_string());
+        }
+        let status = if degraded_reasons.is_empty() {
+            Status::ok()
+        } else {
+            Status::error("degraded", degraded_reasons.join(","))
+        };
+        DataNodePreflightReport {
+            status,
+            stats,
+            queued_workers: self.queued_shard_worker_infos(),
+            dirty_shards: self.dirty_shards(),
+            dirty_objects: self.dirty_objects(),
+            degraded_reasons,
         }
     }
 
@@ -1531,6 +1573,56 @@ mod tests {
         }
         assert!(runtime.dirty_objects().is_empty());
         assert!(runtime.dirty_shards().is_empty());
+    }
+
+    #[test]
+    fn runtime_preflight_reports_dirty_backlog_and_queue_degradation() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 1,
+                max_background_queue_depth: 1,
+            },
+        );
+        mark_dirty(&runtime.inner.dirty, 1, Some("dirty-key"));
+        let first = runtime.submit_execute(
+            ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "queued".to_string(),
+                    value: b"v".to_vec(),
+                },
+            },
+            RequestController { timeout_ms: 1000 },
+        );
+        assert!(first.status.ok);
+        let rejected = runtime.submit_execute(
+            ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: "queued".to_string(),
+                },
+            },
+            RequestController { timeout_ms: 1000 },
+        );
+        assert_eq!(rejected.status.code, "queue_full");
+
+        let preflight = runtime.preflight_report();
+
+        assert!(!preflight.status.ok);
+        assert!(preflight
+            .degraded_reasons
+            .contains(&"foreground_queue_full".to_string()));
+        assert!(preflight
+            .degraded_reasons
+            .contains(&"rejected_requests".to_string()));
+        assert_eq!(preflight.stats.queue_depth, 1);
+        assert_eq!(preflight.queued_workers.len(), 1);
+        assert_eq!(preflight.dirty_shards, vec![1]);
+        assert_eq!(preflight.dirty_objects.len(), 1);
     }
 
     #[test]
