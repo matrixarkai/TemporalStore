@@ -98,6 +98,13 @@ pub struct PageStoreGcReport {
     pub retained_current_page_segment_ids: Vec<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PageStoreGcUtilityCandidate {
+    pub page_segment_id: u64,
+    pub bytes: u64,
+    pub utility_score: u64,
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PageStoreRollReport {
     pub previous_page_segment_id: u64,
@@ -393,11 +400,89 @@ impl LocalPageStore {
         )
     }
 
+    pub fn gc_segments_before_with_live_refs_utility(
+        &self,
+        retain_from_page_segment_id: u64,
+        live_page_segment_ids: impl IntoIterator<Item = u64>,
+        max_destroy_segments: usize,
+        delayed_destroy: bool,
+    ) -> Result<PageStoreGcReport, PageStoreError> {
+        let live_page_segment_ids = live_page_segment_ids.into_iter().collect::<BTreeSet<_>>();
+        let selected = self
+            .gc_utility_candidates(
+                retain_from_page_segment_id,
+                live_page_segment_ids.iter().copied(),
+            )?
+            .into_iter()
+            .take(max_destroy_segments)
+            .map(|candidate| candidate.page_segment_id)
+            .collect::<BTreeSet<_>>();
+        self.gc_segments_before_with_live_refs_selected(
+            retain_from_page_segment_id,
+            live_page_segment_ids,
+            delayed_destroy,
+            Some(selected),
+        )
+    }
+
+    pub fn gc_utility_candidates(
+        &self,
+        retain_from_page_segment_id: u64,
+        live_page_segment_ids: impl IntoIterator<Item = u64>,
+    ) -> Result<Vec<PageStoreGcUtilityCandidate>, PageStoreError> {
+        let inner = self.inner.lock().expect("page store lock poisoned");
+        let current_page_segment_id = inner.page_segment_id;
+        let live_page_segment_ids = live_page_segment_ids.into_iter().collect::<BTreeSet<_>>();
+        let mut candidates = Vec::new();
+        for page_segment_id in segment_ids_at(&inner.root)? {
+            let below_retention_floor = page_segment_id < retain_from_page_segment_id;
+            let is_current = page_segment_id == current_page_segment_id;
+            let is_live = live_page_segment_ids.contains(&page_segment_id);
+            if below_retention_floor && !is_current && !is_live {
+                let bytes = segment_path(&inner.root, page_segment_id)
+                    .metadata()
+                    .map(|metadata| metadata.len())
+                    .unwrap_or_default();
+                candidates.push(PageStoreGcUtilityCandidate {
+                    page_segment_id,
+                    bytes,
+                    utility_score: page_segment_utility_score(
+                        below_retention_floor,
+                        is_current,
+                        is_live,
+                    ),
+                });
+            }
+        }
+        candidates.sort_by(|left, right| {
+            left.utility_score
+                .cmp(&right.utility_score)
+                .then_with(|| right.bytes.cmp(&left.bytes))
+                .then_with(|| left.page_segment_id.cmp(&right.page_segment_id))
+        });
+        Ok(candidates)
+    }
+
     fn gc_segments_before_with_live_refs_mode(
         &self,
         retain_from_page_segment_id: u64,
         live_page_segment_ids: impl IntoIterator<Item = u64>,
         delayed_destroy: bool,
+    ) -> Result<PageStoreGcReport, PageStoreError> {
+        self.gc_segments_before_with_live_refs_selected(
+            retain_from_page_segment_id,
+            live_page_segment_ids,
+            delayed_destroy,
+            None,
+        )
+    }
+
+    fn gc_segments_before_with_live_refs_selected(
+        &self,
+        retain_from_page_segment_id: u64,
+        live_page_segment_ids: impl IntoIterator<Item = u64>,
+        delayed_destroy: bool,
+        selected_page_segment_ids: Option<BTreeSet<u64>>,
     ) -> Result<PageStoreGcReport, PageStoreError> {
         let inner = self.inner.lock().expect("page store lock poisoned");
         fs::create_dir_all(&inner.root)?;
@@ -415,7 +500,11 @@ impl LocalPageStore {
             let below_retention_floor = page_segment_id < retain_from_page_segment_id;
             let is_current = page_segment_id == current_page_segment_id;
             let is_live = live_page_segment_ids.contains(&page_segment_id);
-            if below_retention_floor && !is_current && !is_live {
+            let is_selected = selected_page_segment_ids
+                .as_ref()
+                .map(|selected| selected.contains(&page_segment_id))
+                .unwrap_or(true);
+            if below_retention_floor && !is_current && !is_live && is_selected {
                 if delayed_destroy {
                     move_segment_to_delayed_destroy(&inner.root, page_segment_id)?;
                     delayed_destroy_ids.push(page_segment_id);
@@ -491,6 +580,16 @@ impl Default for LocalPageStore {
 
 fn segment_path(root: &Path, page_segment_id: u64) -> PathBuf {
     root.join(format!("page_segment_{page_segment_id:020}.seg"))
+}
+
+fn page_segment_utility_score(below_retention_floor: bool, is_current: bool, is_live: bool) -> u64 {
+    if is_current || is_live {
+        100
+    } else if below_retention_floor {
+        0
+    } else {
+        50
+    }
 }
 
 fn delayed_destroy_dir(root: &Path) -> PathBuf {
@@ -1527,5 +1626,43 @@ mod tests {
         assert_eq!(purged, vec![0, 1]);
         assert!(store.delayed_destroy_segment_ids().unwrap().is_empty());
         assert_eq!(store.segment_ids().unwrap(), vec![2, 3]);
+    }
+
+    #[test]
+    fn utility_gc_selects_low_utility_stale_segments_with_bound() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalPageStore::new(dir.path());
+        store.install_segment(0, b"small").unwrap();
+        store.install_segment(1, b"largest-stale-segment").unwrap();
+        store.install_segment(2, b"live-segment").unwrap();
+        store.install_segment(3, b"current-segment").unwrap();
+
+        let candidates = store.gc_utility_candidates(3, [2_u64]).unwrap();
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.page_segment_id)
+                .collect::<Vec<_>>(),
+            vec![1, 0]
+        );
+        assert!(candidates
+            .iter()
+            .all(|candidate| candidate.utility_score == 0));
+
+        let no_op = store
+            .gc_segments_before_with_live_refs_utility(3, [2_u64], 0, true)
+            .unwrap();
+        assert!(no_op.removed_page_segment_ids.is_empty());
+        assert_eq!(store.segment_ids().unwrap(), vec![0, 1, 2, 3]);
+
+        let report = store
+            .gc_segments_before_with_live_refs_utility(3, [2_u64], 1, true)
+            .unwrap();
+        assert_eq!(report.removed_page_segment_ids, vec![1]);
+        assert_eq!(report.delayed_destroy_page_segment_ids, vec![1]);
+        assert_eq!(report.retained_page_segment_ids, vec![0, 2, 3]);
+        assert_eq!(report.retained_live_page_segment_ids, vec![2]);
+        assert_eq!(store.segment_ids().unwrap(), vec![0, 2, 3]);
+        assert_eq!(store.delayed_destroy_segment_ids().unwrap(), vec![1]);
     }
 }
