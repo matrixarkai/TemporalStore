@@ -101,10 +101,20 @@ pub struct DataNodePreflightReport {
     pub status: Status,
     pub stats: DataNodeRuntimeStats,
     pub metaserver: DataNodeMetaHeartbeatReport,
+    pub topology_validation: DataNodeTopologyValidationReport,
     pub queued_workers: Vec<ShardWorkerInfo>,
     pub dirty_shards: Vec<ShardId>,
     pub dirty_objects: Vec<DirtyObjectInfo>,
     pub degraded_reasons: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DataNodeTopologyValidationReport {
+    pub loaded_shard_count: usize,
+    pub loaded_shards: Vec<ShardId>,
+    pub last_meta_topology_version: u64,
+    pub validation_limited: bool,
+    pub limitation_reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -976,11 +986,33 @@ impl DataNodeRuntime {
         DataNodePreflightReport {
             status,
             stats,
+            topology_validation: self.topology_validation_report(&metaserver),
             metaserver,
             queued_workers: self.queued_shard_worker_infos(),
             dirty_shards: self.dirty_shards(),
             dirty_objects: self.dirty_objects(),
             degraded_reasons,
+        }
+    }
+
+    pub fn topology_validation_report(
+        &self,
+        metaserver: &DataNodeMetaHeartbeatReport,
+    ) -> DataNodeTopologyValidationReport {
+        let mut loaded_shards = self
+            .shard_serving_states()
+            .into_iter()
+            .filter(|state| state.loaded)
+            .map(|state| state.shard_id)
+            .collect::<Vec<_>>();
+        loaded_shards.sort_unstable();
+        DataNodeTopologyValidationReport {
+            loaded_shard_count: loaded_shards.len(),
+            loaded_shards,
+            last_meta_topology_version: metaserver.last_topology_version,
+            validation_limited: true,
+            limitation_reason:
+                "metaserver topology partition map is not attached to node preflight".to_string(),
         }
     }
 
@@ -2147,6 +2179,12 @@ mod tests {
         let recovered = runtime.preflight_report();
         assert_eq!(recovered.metaserver.consecutive_failures, 0);
         assert_eq!(recovered.metaserver.last_topology_version, 100);
+        assert_eq!(
+            recovered.topology_validation.last_meta_topology_version,
+            100
+        );
+        assert_eq!(recovered.topology_validation.loaded_shards, vec![7]);
+        assert!(recovered.topology_validation.validation_limited);
         let shard_states = runtime.shard_serving_states();
         assert_eq!(shard_states.len(), 1);
         let shard = &shard_states[0];

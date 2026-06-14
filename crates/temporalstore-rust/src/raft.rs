@@ -6608,6 +6608,8 @@ impl MetaRaftCluster {
                 frozen_tables: 0,
                 dropped_tables: 0,
                 changed_tables: Vec::new(),
+                events: Vec::new(),
+                event_history_truncated: false,
             })
     }
 

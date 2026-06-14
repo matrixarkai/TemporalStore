@@ -179,6 +179,12 @@ pub struct ClientTopologyCacheReport {
     pub route_count: usize,
     pub min_topology_version: u64,
     pub max_topology_version: u64,
+    #[serde(default)]
+    pub authoritative_topology_version: u64,
+    #[serde(default)]
+    pub stale_route_count: usize,
+    #[serde(default)]
+    pub cache_stale: bool,
     pub unknown_topology_version_routes: usize,
     pub ttl_expired_routes: usize,
     pub last_refresh_reason: String,
@@ -581,6 +587,13 @@ impl TemporalStoreClient {
     }
 
     pub fn topology_cache_report(&self) -> ClientTopologyCacheReport {
+        self.topology_cache_report_against(0)
+    }
+
+    pub fn topology_cache_report_against(
+        &self,
+        authoritative_topology_version: u64,
+    ) -> ClientTopologyCacheReport {
         let ttl = Duration::from_millis(self.inner.options.route_cache_ttl_ms);
         let routes = self
             .inner
@@ -619,6 +632,14 @@ impl TemporalStoreClient {
             .iter()
             .filter(|route| route.topology_version == 0)
             .count();
+        let stale_route_count = if authoritative_topology_version == 0 {
+            0
+        } else {
+            routes
+                .iter()
+                .filter(|route| route.topology_version < authoritative_topology_version)
+                .count()
+        };
         let ttl_expired_routes = routes.iter().filter(|route| route.ttl_expired).count();
         let last_refresh_reason = routes
             .iter()
@@ -629,6 +650,9 @@ impl TemporalStoreClient {
             route_count,
             min_topology_version,
             max_topology_version,
+            authoritative_topology_version,
+            stale_route_count,
+            cache_stale: stale_route_count > 0,
             unknown_topology_version_routes,
             ttl_expired_routes,
             last_refresh_reason,
@@ -2585,6 +2609,10 @@ mod tests {
         assert_eq!(report.topology_cache.unknown_topology_version_routes, 1);
         assert_eq!(report.topology_cache.last_refresh_reason, "test_insert");
         assert_eq!(report.topology_cache.routes[0].shard_id, 7);
+        let stale = client.topology_cache_report_against(2);
+        assert!(stale.cache_stale);
+        assert_eq!(stale.authoritative_topology_version, 2);
+        assert_eq!(stale.stale_route_count, 1);
         assert_eq!(report.table_cache_size, 1);
         assert_eq!(report.backend_failure_count, 1);
         assert_eq!(report.stats.open_table_calls, 1);

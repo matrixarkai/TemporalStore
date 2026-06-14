@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -485,6 +485,19 @@ pub struct TopologyVersionReport {
     pub frozen_tables: usize,
     pub dropped_tables: usize,
     pub changed_tables: Vec<TableMetaInfo>,
+    #[serde(default)]
+    pub events: Vec<TopologyChangeEvent>,
+    #[serde(default)]
+    pub event_history_truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TopologyChangeEvent {
+    pub topology_version: u64,
+    pub timestamp_ms: u64,
+    pub kind: String,
+    pub resource: String,
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -669,6 +682,7 @@ pub(crate) struct MetaState {
     counters: MetaCounters,
     next_table_id: u64,
     topology_version: u64,
+    topology_events: VecDeque<TopologyChangeEvent>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -775,6 +789,7 @@ impl SingleNodeMeta {
             counters: counters_from_stats(&snapshot.stats),
             next_table_id,
             topology_version: snapshot.topology_version,
+            topology_events: VecDeque::new(),
         })
     }
 
@@ -869,7 +884,12 @@ impl SingleNodeMeta {
             },
         );
         ensure_server(&mut state, &request.server_addr);
-        state.topology_version += 1;
+        record_topology_event(
+            &mut state,
+            "register_shard",
+            format!("shard:{}", request.shard_id),
+            format!("server_addr={}", request.server_addr),
+        );
         RegisterShardResponse {
             status: Status::ok(),
         }
@@ -912,7 +932,12 @@ impl SingleNodeMeta {
             };
         }
         location.latest_snapshot = Some(request.snapshot);
-        state.topology_version += 1;
+        record_topology_event(
+            &mut state,
+            "publish_shard_snapshot",
+            format!("shard:{}", request.shard_id),
+            "latest_snapshot_updated",
+        );
         AckResponse {
             status: Status::ok(),
         }
@@ -936,8 +961,9 @@ impl SingleNodeMeta {
             }
         }
         let now = now_ms();
+        let server_addr = request.server_addr.clone();
         state.servers.insert(
-            request.server_addr.clone(),
+            server_addr.clone(),
             ServerMetaInfo {
                 server_addr: request.server_addr,
                 node_id: request.node_id,
@@ -954,7 +980,12 @@ impl SingleNodeMeta {
                 shard_states: Vec::new(),
             },
         );
-        state.topology_version += 1;
+        record_topology_event(
+            &mut state,
+            "register_server",
+            format!("server:{server_addr}"),
+            "state=normal",
+        );
         AckResponse {
             status: Status::ok(),
         }
@@ -1141,7 +1172,18 @@ impl SingleNodeMeta {
             };
         }
         state.next_table_id += 1;
-        state.topology_version += 1;
+        let namespace = request.namespace.clone();
+        let table_name = request.table_name.clone();
+        let topology_version = record_topology_event(
+            &mut state,
+            "add_table",
+            format!("table:{namespace}/{table_name}"),
+            format!(
+                "shards={},replicas={}",
+                request.shard_count,
+                request.replica_count.max(1)
+            ),
+        );
         let first_shard_id = if request.use_cpp_partition_ids {
             match PartitionId::new(table_id, 0, 0, request.partition_version as u64) {
                 Ok(partition_id) => partition_id.id(),
@@ -1159,7 +1201,7 @@ impl SingleNodeMeta {
             namespace: request.namespace,
             table_name: request.table_name,
             state: MetaEntityState::Normal,
-            topology_version: state.topology_version,
+            topology_version,
             first_shard_id,
             shard_count: request.shard_count,
             replica_count: request.replica_count.max(1),
@@ -1196,8 +1238,12 @@ impl SingleNodeMeta {
                 status: Status::error("table_not_found", "table already dropped"),
             };
         }
-        state.topology_version += 1;
-        let topology_version = state.topology_version;
+        let topology_version = record_topology_event(
+            &mut state,
+            "delete_table",
+            format!("table:{}/{}", request.namespace, request.table_name),
+            "state=dropped",
+        );
         let table = state
             .tables
             .get_mut(&key)
@@ -1333,8 +1379,12 @@ impl SingleNodeMeta {
                 status: Status::error("not_modified", "table options are unchanged"),
             };
         }
-        state.topology_version += 1;
-        let topology_version = state.topology_version;
+        let topology_version = record_topology_event(
+            &mut state,
+            "update_table",
+            format!("table:{}/{}", request.namespace, request.table_name),
+            format!("shards={new_shard_count},replicas={new_replica_count}"),
+        );
         let table = state
             .tables
             .get_mut(&key)
@@ -1600,15 +1650,21 @@ impl SingleNodeMeta {
             .shards
             .get(&request.shard_id)
             .and_then(|location| location.latest_snapshot.clone());
+        let server_addr = request.server_addr.clone();
         state.shards.insert(
             request.shard_id,
             ShardLocation {
                 shard_id: request.shard_id,
-                server_addr: request.server_addr,
+                server_addr: server_addr.clone(),
                 latest_snapshot,
             },
         );
-        state.topology_version += 1;
+        record_topology_event(
+            &mut state,
+            "finish_load",
+            format!("shard:{}", request.shard_id),
+            format!("server_addr={server_addr}"),
+        );
         AckResponse {
             status: Status::ok(),
         }
@@ -1739,7 +1795,12 @@ impl SingleNodeMeta {
             }
             MetaEntityState::Dropped => {}
         }
-        state.topology_version += 1;
+        record_topology_event(
+            &mut state,
+            "server_state",
+            format!("server:{}", request.endpoint),
+            format!("state={}", next.as_str()),
+        );
         AckResponse {
             status: Status::ok(),
         }
@@ -1793,7 +1854,12 @@ impl SingleNodeMeta {
             }
             MetaEntityState::Dropped => {}
         }
-        state.topology_version += 1;
+        record_topology_event(
+            &mut state,
+            "proxy_state",
+            format!("proxy:{}", request.endpoint),
+            format!("state={}", next.as_str()),
+        );
         AckResponse {
             status: Status::ok(),
         }
@@ -2113,6 +2179,8 @@ fn stats_from_state(state: &MetaState) -> MetaStats {
     }
 }
 
+const TOPOLOGY_EVENT_HISTORY_LIMIT: usize = 256;
+
 fn topology_version_report_from_state(
     state: &MetaState,
     old_topology_version: u64,
@@ -2123,6 +2191,17 @@ fn topology_version_report_from_state(
         .filter(|table| table.info.topology_version > old_topology_version)
         .map(|table| table.info.clone())
         .collect::<Vec<_>>();
+    let events = state
+        .topology_events
+        .iter()
+        .filter(|event| event.topology_version > old_topology_version)
+        .cloned()
+        .collect::<Vec<_>>();
+    let event_history_truncated = old_topology_version < state.topology_version
+        && state
+            .topology_events
+            .front()
+            .is_some_and(|event| old_topology_version < event.topology_version.saturating_sub(1));
     TopologyVersionReport {
         status: Status::ok(),
         current_topology_version: state.topology_version,
@@ -2178,7 +2257,29 @@ fn topology_version_report_from_state(
             .filter(|table| table.info.state == MetaEntityState::Dropped)
             .count(),
         changed_tables,
+        events,
+        event_history_truncated,
     }
+}
+
+fn record_topology_event(
+    state: &mut MetaState,
+    kind: impl Into<String>,
+    resource: impl Into<String>,
+    detail: impl Into<String>,
+) -> u64 {
+    state.topology_version += 1;
+    state.topology_events.push_back(TopologyChangeEvent {
+        topology_version: state.topology_version,
+        timestamp_ms: now_ms(),
+        kind: kind.into(),
+        resource: resource.into(),
+        detail: detail.into(),
+    });
+    while state.topology_events.len() > TOPOLOGY_EVENT_HISTORY_LIMIT {
+        state.topology_events.pop_front();
+    }
+    state.topology_version
 }
 
 fn counters_from_stats(stats: &MetaStats) -> MetaCounters {
@@ -2700,12 +2801,25 @@ mod tests {
         assert_eq!(report.shard_route_count, 1);
         assert_eq!(report.changed_tables.len(), 1);
         assert_eq!(report.changed_tables[0].topology_version, topology_version);
+        assert!(report
+            .events
+            .iter()
+            .any(|event| event.kind == "register_server" && event.resource == "server:s1"));
+        assert!(report
+            .events
+            .iter()
+            .any(|event| event.kind == "register_shard" && event.resource == "shard:10"));
+        assert!(report
+            .events
+            .iter()
+            .any(|event| event.kind == "add_table" && event.resource == "table:ns/tbl"));
 
         let unchanged_report = meta.topology_version_report(TopologyVersionRequest {
             old_topology_version: report.current_topology_version,
         });
         assert!(unchanged_report.unchanged);
         assert!(unchanged_report.changed_tables.is_empty());
+        assert!(unchanged_report.events.is_empty());
 
         let unchanged = meta.get_table_topology(GetTableTopologyRequest {
             namespace: "ns".to_string(),

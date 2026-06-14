@@ -58,6 +58,25 @@ brpc and Thrift are intentionally not part of the Rust target. The Rust open-sou
 
 ## What Was Closed In The Latest Pass
 
+This pass closed another client/proxy/metaserver/nodeserver topology-diagnosis gap:
+
+1. Metaserver now records a bounded topology event history for version-changing operations such as
+   shard registration, snapshot publish, server registration, table add/delete/update,
+   load-finish, and server/proxy state changes.
+2. `/meta/topology_version` and `/meta/topology` now return exact topology events since the
+   caller's old version, plus a truncation marker when the requested boundary predates retained
+   history.
+3. Client topology-cache reports now include authoritative-version comparison fields so callers can
+   mark route caches stale against a metaserver topology report without parsing per-route details.
+4. Data-node preflight now includes a local topology-validation summary with loaded shard ids and
+   the last metaserver topology version observed by heartbeat.
+
+This improves C++-style topology auditability across client, proxy, metaserver, and nodeserver
+surfaces. Full partition-map validation from a node against metaserver topology remains a later
+step because the node does not yet fetch and attach the full authoritative partition map.
+
+## What Was Closed In The Previous Pass
+
 This pass closed a node-server/metaserver heartbeat observability gap:
 
 1. Metaserver heartbeat responses now carry the authoritative topology version and current server
