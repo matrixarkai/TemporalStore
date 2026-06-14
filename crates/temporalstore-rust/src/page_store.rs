@@ -150,6 +150,21 @@ pub struct PageStoreZoneDescriptor {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PageStoreZoneSummary {
+    pub active_zones: u64,
+    pub sealed_zones: u64,
+    pub delayed_destroy_zones: u64,
+    pub purged_zones: u64,
+    pub active_physical_bytes: u64,
+    pub sealed_physical_bytes: u64,
+    pub delayed_destroy_physical_bytes: u64,
+    pub purged_physical_bytes: u64,
+    pub live_physical_bytes: u64,
+    pub reclaimable_physical_bytes: u64,
+    pub total_known_physical_bytes: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PageStoreSegmentReport {
     pub page_segment_id: u64,
     pub physical_bytes: u64,
@@ -777,6 +792,10 @@ impl LocalPageStore {
             .collect()
     }
 
+    pub fn zone_summary(&self) -> PageStoreZoneSummary {
+        summarize_zones(&self.inner.lock().expect("page store lock poisoned").zones)
+    }
+
     pub fn segment_reports(&self) -> Result<Vec<PageStoreSegmentReport>, PageStoreError> {
         let root = self
             .inner
@@ -909,6 +928,51 @@ fn persist_zone_manifest(
     fs::rename(&temp_path, &path)?;
     sync_parent_dir(&path)?;
     Ok(())
+}
+
+fn summarize_zones(zones: &BTreeMap<u64, PageStoreZoneDescriptor>) -> PageStoreZoneSummary {
+    let mut summary = PageStoreZoneSummary::default();
+    for zone in zones.values() {
+        summary.total_known_physical_bytes = summary
+            .total_known_physical_bytes
+            .saturating_add(zone.physical_bytes);
+        match zone.state {
+            PageStoreZoneState::Active => {
+                summary.active_zones = summary.active_zones.saturating_add(1);
+                summary.active_physical_bytes = summary
+                    .active_physical_bytes
+                    .saturating_add(zone.physical_bytes);
+                summary.live_physical_bytes = summary
+                    .live_physical_bytes
+                    .saturating_add(zone.physical_bytes);
+            }
+            PageStoreZoneState::Sealed => {
+                summary.sealed_zones = summary.sealed_zones.saturating_add(1);
+                summary.sealed_physical_bytes = summary
+                    .sealed_physical_bytes
+                    .saturating_add(zone.physical_bytes);
+                summary.live_physical_bytes = summary
+                    .live_physical_bytes
+                    .saturating_add(zone.physical_bytes);
+            }
+            PageStoreZoneState::DelayedDestroy => {
+                summary.delayed_destroy_zones = summary.delayed_destroy_zones.saturating_add(1);
+                summary.delayed_destroy_physical_bytes = summary
+                    .delayed_destroy_physical_bytes
+                    .saturating_add(zone.physical_bytes);
+                summary.reclaimable_physical_bytes = summary
+                    .reclaimable_physical_bytes
+                    .saturating_add(zone.physical_bytes);
+            }
+            PageStoreZoneState::Purged => {
+                summary.purged_zones = summary.purged_zones.saturating_add(1);
+                summary.purged_physical_bytes = summary
+                    .purged_physical_bytes
+                    .saturating_add(zone.physical_bytes);
+            }
+        }
+    }
+    summary
 }
 
 fn ensure_zone_descriptor(
@@ -2001,6 +2065,24 @@ mod tests {
         assert_eq!(zones[1].first_page_id, second.page_id);
         assert_eq!(zones[1].last_page_id, second.page_id);
         assert!(zone_manifest_path(dir.path()).exists());
+        let initial_summary = store.zone_summary();
+        assert_eq!(initial_summary.sealed_zones, 1);
+        assert_eq!(initial_summary.active_zones, 1);
+        assert_eq!(initial_summary.delayed_destroy_zones, 0);
+        assert_eq!(initial_summary.purged_zones, 0);
+        assert_eq!(
+            initial_summary.sealed_physical_bytes,
+            zones[0].physical_bytes
+        );
+        assert_eq!(
+            initial_summary.active_physical_bytes,
+            zones[1].physical_bytes
+        );
+        assert_eq!(
+            initial_summary.live_physical_bytes,
+            zones[0].physical_bytes + zones[1].physical_bytes
+        );
+        assert_eq!(initial_summary.reclaimable_physical_bytes, 0);
 
         let reopened = LocalPageStore::new(dir.path());
         assert_eq!(reopened.zone_descriptors(), zones);
@@ -2013,6 +2095,21 @@ mod tests {
         assert_eq!(delayed[0].state, PageStoreZoneState::DelayedDestroy);
         assert!(delayed[0].physical_bytes > 0);
         assert_eq!(delayed[1].state, PageStoreZoneState::Active);
+        let delayed_summary = reopened.zone_summary();
+        assert_eq!(delayed_summary.delayed_destroy_zones, 1);
+        assert_eq!(delayed_summary.active_zones, 1);
+        assert_eq!(
+            delayed_summary.delayed_destroy_physical_bytes,
+            delayed[0].physical_bytes
+        );
+        assert_eq!(
+            delayed_summary.reclaimable_physical_bytes,
+            delayed[0].physical_bytes
+        );
+        assert_eq!(
+            delayed_summary.live_physical_bytes,
+            delayed[1].physical_bytes
+        );
 
         let purge = reopened
             .purge_delayed_destroy_segments_with_report()
@@ -2022,6 +2119,15 @@ mod tests {
         let purged = LocalPageStore::new(dir.path()).zone_descriptors();
         assert_eq!(purged[0].state, PageStoreZoneState::Purged);
         assert_eq!(purged[1].state, PageStoreZoneState::Active);
+        let purged_summary = LocalPageStore::new(dir.path()).zone_summary();
+        assert_eq!(purged_summary.purged_zones, 1);
+        assert_eq!(purged_summary.active_zones, 1);
+        assert_eq!(
+            purged_summary.purged_physical_bytes,
+            purged[0].physical_bytes
+        );
+        assert_eq!(purged_summary.live_physical_bytes, purged[1].physical_bytes);
+        assert_eq!(purged_summary.reclaimable_physical_bytes, 0);
     }
 
     #[test]

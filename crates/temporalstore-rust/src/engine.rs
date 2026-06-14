@@ -20,7 +20,7 @@ use crate::index_log::LocalIndexLogStore;
 use crate::oplog::LocalOplogStore;
 use crate::page_store::{
     LocalPageStore, PageAddress, PageStoreError, PageStoreOptions, PageStoreSegmentReport,
-    PageStoreStats, PageStoreZoneDescriptor,
+    PageStoreStats, PageStoreZoneDescriptor, PageStoreZoneSummary,
 };
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,
@@ -167,6 +167,8 @@ pub struct StorageRecoveryReport {
     pub active_page_segment_ids: Vec<u64>,
     pub live_page_segment_ids: Vec<u64>,
     pub zone_descriptors: Vec<PageStoreZoneDescriptor>,
+    #[serde(default)]
+    pub zone_summary: PageStoreZoneSummary,
     #[serde(default)]
     pub page_segment_reports: Vec<PageStoreSegmentReport>,
     #[serde(default)]
@@ -1098,6 +1100,7 @@ impl TemporalEngine {
             .unwrap_or_default();
         let active_page_segment_ids = self.page_store.segment_ids().unwrap_or_default();
         let zone_descriptors = self.page_store.zone_descriptors();
+        let zone_summary = self.page_store.zone_summary();
         let page_segment_reports = self.page_store.segment_reports().unwrap_or_default();
         let shards = self.shards.read().expect("engine lock poisoned");
         let addresses = shards
@@ -1196,6 +1199,7 @@ impl TemporalEngine {
             active_page_segment_ids,
             live_page_segment_ids,
             zone_descriptors,
+            zone_summary,
             page_segment_reports,
             page_segment_live_reports,
             total_page_refs,
@@ -4108,6 +4112,21 @@ mod tests {
         assert_eq!(report.zone_descriptors.len(), 2);
         assert_eq!(report.zone_descriptors[0].state, PageStoreZoneState::Sealed);
         assert_eq!(report.zone_descriptors[1].state, PageStoreZoneState::Active);
+        assert_eq!(report.zone_summary.sealed_zones, 1);
+        assert_eq!(report.zone_summary.active_zones, 1);
+        assert_eq!(report.zone_summary.delayed_destroy_zones, 0);
+        assert_eq!(
+            report.zone_summary.sealed_physical_bytes,
+            report.zone_descriptors[0].physical_bytes
+        );
+        assert_eq!(
+            report.zone_summary.active_physical_bytes,
+            report.zone_descriptors[1].physical_bytes
+        );
+        assert_eq!(
+            report.zone_summary.live_physical_bytes,
+            report.zone_descriptors[0].physical_bytes + report.zone_descriptors[1].physical_bytes
+        );
         assert_eq!(report.page_segment_live_reports.len(), 2);
         assert_eq!(report.page_segment_live_reports[0].page_segment_id, 0);
         assert_eq!(report.page_segment_live_reports[0].page_count, 1);
@@ -4262,6 +4281,9 @@ mod tests {
         assert_eq!(report.zone_descriptors.len(), 2);
         assert_eq!(report.zone_descriptors[0].state, PageStoreZoneState::Sealed);
         assert_eq!(report.zone_descriptors[1].state, PageStoreZoneState::Active);
+        assert_eq!(report.zone_summary.sealed_zones, 1);
+        assert_eq!(report.zone_summary.active_zones, 1);
+        assert!(report.zone_summary.live_physical_bytes > 0);
         assert!(page_dir.join("page_zone_manifest.json").exists());
         assert_eq!(
             recovered
