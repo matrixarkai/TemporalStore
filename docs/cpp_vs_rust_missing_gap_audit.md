@@ -1618,6 +1618,11 @@ planning:
     manifest/marker prune planning plus apply logic that retains the latest
     committed generation and its parent chain while removing only obsolete
     forked manifests and their markers.
+25. Closed a partial-install recovery policy gap: Rust now dry-runs stranded
+    slot dump install markers, rolls safe installed markers forward by writing
+    the missing commit marker after manifest validation, and includes manifest
+    prune planning/application plus install roll-forward reports in storage
+    lifecycle output.
 
 Eight storage audit passes completed against C++ storage code:
 

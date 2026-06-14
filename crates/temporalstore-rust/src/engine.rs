@@ -301,6 +301,16 @@ pub struct SlotDumpManifestPruneReport {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlotDumpInstallRollForwardReport {
+    pub shard_id: ShardId,
+    pub manifest_id: String,
+    pub interrupted_phase: String,
+    pub can_roll_forward: bool,
+    pub completed_commit: bool,
+    pub reason: String,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageLifecyclePlan {
     pub shard_id: ShardId,
     pub dirty_slots: Vec<u32>,
@@ -329,6 +339,12 @@ pub struct StorageLifecycleReport {
     pub cache_warmup_page_refs: usize,
     pub delayed_destroy_purged_segments: Vec<u64>,
     pub delayed_destroy_purged_bytes: u64,
+    #[serde(default)]
+    pub manifest_prune_plan: SlotDumpManifestPrunePlan,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_prune_report: Option<SlotDumpManifestPruneReport>,
+    #[serde(default)]
+    pub install_roll_forward_reports: Vec<SlotDumpInstallRollForwardReport>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -366,6 +382,10 @@ pub struct StorageLifecycleRequest {
     pub min_undumped_oplog_records: u64,
     #[serde(default)]
     pub purge_delayed_destroy: bool,
+    #[serde(default)]
+    pub prune_slot_dump_manifests: bool,
+    #[serde(default)]
+    pub roll_forward_slot_dump_installs: bool,
     #[serde(default)]
     pub invalidate_cache: bool,
     #[serde(default)]
@@ -1014,6 +1034,47 @@ impl TemporalEngine {
         })
     }
 
+    pub fn slot_dump_install_roll_forward_reports(
+        &self,
+        shard_id: ShardId,
+    ) -> Vec<SlotDumpInstallRollForwardReport> {
+        self.interrupted_slot_dump_installs(shard_id)
+            .into_iter()
+            .map(|marker| self.slot_dump_install_roll_forward_report(&marker))
+            .collect()
+    }
+
+    pub fn roll_forward_slot_dump_installs(
+        &self,
+        shard_id: ShardId,
+    ) -> Vec<SlotDumpInstallRollForwardReport> {
+        self.interrupted_slot_dump_installs(shard_id)
+            .into_iter()
+            .map(|marker| {
+                let mut report = self.slot_dump_install_roll_forward_report(&marker);
+                if report.can_roll_forward {
+                    match self.persist_slot_dump_install_marker_by_fields(
+                        marker.shard_id,
+                        &marker.manifest_id,
+                        "commit",
+                        marker.oplog_sequence,
+                        marker.index_log_sequence,
+                    ) {
+                        Ok(()) => {
+                            report.completed_commit = true;
+                            report.reason = "commit_marker_written".to_string();
+                        }
+                        Err(err) => {
+                            report.can_roll_forward = false;
+                            report.reason = format!("commit_marker_failed:{err}");
+                        }
+                    }
+                }
+                report
+            })
+            .collect()
+    }
+
     pub fn apply_slot_dump_manifest_prune(&self, shard_id: ShardId) -> SlotDumpManifestPruneReport {
         let plan = self.slot_dump_manifest_prune_plan(shard_id);
         let mut removed_manifest_ids = Vec::new();
@@ -1043,6 +1104,48 @@ impl TemporalEngine {
             plan,
             removed_manifest_ids,
             removed_marker_files,
+        }
+    }
+
+    fn slot_dump_install_roll_forward_report(
+        &self,
+        marker: &SlotDumpInstallMarker,
+    ) -> SlotDumpInstallRollForwardReport {
+        if marker.phase != "install" {
+            return SlotDumpInstallRollForwardReport {
+                shard_id: marker.shard_id,
+                manifest_id: marker.manifest_id.clone(),
+                interrupted_phase: marker.phase.clone(),
+                can_roll_forward: false,
+                completed_commit: false,
+                reason: "not_installed_phase".to_string(),
+            };
+        }
+        let Some(manifest) =
+            slot_dump_manifest_at(&self.index_dir, marker.shard_id, &marker.manifest_id)
+                .ok()
+                .flatten()
+        else {
+            return SlotDumpInstallRollForwardReport {
+                shard_id: marker.shard_id,
+                manifest_id: marker.manifest_id.clone(),
+                interrupted_phase: marker.phase.clone(),
+                can_roll_forward: false,
+                completed_commit: false,
+                reason: "missing_manifest".to_string(),
+            };
+        };
+        let reason = match self.validate_slot_dump_manifest(&manifest) {
+            Ok(()) => "commit_ready".to_string(),
+            Err(status) => format!("manifest_invalid:{}", status.code),
+        };
+        SlotDumpInstallRollForwardReport {
+            shard_id: marker.shard_id,
+            manifest_id: marker.manifest_id.clone(),
+            interrupted_phase: marker.phase.clone(),
+            can_roll_forward: reason == "commit_ready",
+            completed_commit: false,
+            reason,
         }
     }
 
@@ -1255,6 +1358,18 @@ impl TemporalEngine {
         if request.purge_delayed_destroy && !delayed_destroy_reports.is_empty() {
             reasons.push("delayed_destroy_purge".to_string());
         }
+        let manifest_prune_plan = self.slot_dump_manifest_prune_plan(request.shard_id);
+        if !manifest_prune_plan.prunable_manifest_ids.is_empty()
+            || !manifest_prune_plan.prunable_marker_manifest_ids.is_empty()
+        {
+            reasons.push("slot_dump_manifest_prune".to_string());
+        }
+        if !self
+            .interrupted_slot_dump_installs(request.shard_id)
+            .is_empty()
+        {
+            reasons.push("slot_dump_install_roll_forward_check".to_string());
+        }
         if request.invalidate_cache {
             reasons.push("cache_invalidation".to_string());
         }
@@ -1310,6 +1425,15 @@ impl TemporalEngine {
         } else {
             Default::default()
         };
+        let manifest_prune_plan = self.slot_dump_manifest_prune_plan(request.shard_id);
+        let manifest_prune_report = request
+            .prune_slot_dump_manifests
+            .then(|| self.apply_slot_dump_manifest_prune(request.shard_id));
+        let install_roll_forward_reports = if request.roll_forward_slot_dump_installs {
+            self.roll_forward_slot_dump_installs(request.shard_id)
+        } else {
+            self.slot_dump_install_roll_forward_reports(request.shard_id)
+        };
         StorageLifecycleReport {
             shard_id: request.shard_id,
             plan,
@@ -1319,6 +1443,9 @@ impl TemporalEngine {
             cache_warmup_page_refs,
             delayed_destroy_purged_segments: purge_report.purged_page_segment_ids,
             delayed_destroy_purged_bytes: purge_report.purged_physical_bytes,
+            manifest_prune_plan,
+            manifest_prune_report,
+            install_roll_forward_reports,
         }
     }
 
@@ -2333,14 +2460,31 @@ impl TemporalEngine {
         manifest: &SlotDumpManifest,
         phase: &str,
     ) -> Result<(), std::io::Error> {
+        self.persist_slot_dump_install_marker_by_fields(
+            manifest.shard_id,
+            &manifest.manifest_id,
+            phase,
+            manifest.oplog_sequence,
+            manifest.index_log_sequence,
+        )
+    }
+
+    fn persist_slot_dump_install_marker_by_fields(
+        &self,
+        shard_id: ShardId,
+        manifest_id: &str,
+        phase: &str,
+        oplog_sequence: u64,
+        index_log_sequence: u64,
+    ) -> Result<(), std::io::Error> {
         write_slot_dump_install_marker(
             &self.index_dir,
             &SlotDumpInstallMarker {
-                shard_id: manifest.shard_id,
-                manifest_id: manifest.manifest_id.clone(),
+                shard_id,
+                manifest_id: manifest_id.to_string(),
                 phase: phase.to_string(),
-                oplog_sequence: manifest.oplog_sequence,
-                index_log_sequence: manifest.index_log_sequence,
+                oplog_sequence,
+                index_log_sequence,
                 created_unix_ms: now_ms(),
             },
         )
@@ -2559,6 +2703,20 @@ fn slot_dump_manifest_path(
     manifest_id: &str,
 ) -> PathBuf {
     slot_dump_manifest_dir(index_dir, shard_id).join(format!("{manifest_id}.json"))
+}
+
+fn slot_dump_manifest_at(
+    index_dir: &std::path::Path,
+    shard_id: ShardId,
+    manifest_id: &str,
+) -> Result<Option<SlotDumpManifest>, std::io::Error> {
+    let path = slot_dump_manifest_path(index_dir, shard_id, manifest_id);
+    if !path.exists() {
+        return Ok(None);
+    }
+    serde_json::from_slice::<SlotDumpManifest>(&fs::read(path)?)
+        .map(Some)
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))
 }
 
 fn slot_dump_install_marker_path(
@@ -9481,6 +9639,50 @@ mod tests {
     }
 
     #[test]
+    fn slot_dump_install_roll_forward_completes_safe_installed_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "roll".to_string(),
+                value: b"value".to_vec(),
+            },
+        });
+        let manifest = engine
+            .create_slot_dump_manifest(1, Vec::new())
+            .expect("manifest should persist");
+        write_slot_dump_install_marker(
+            &engine.index_dir,
+            &SlotDumpInstallMarker {
+                shard_id: manifest.shard_id,
+                manifest_id: manifest.manifest_id.clone(),
+                phase: "install".to_string(),
+                oplog_sequence: manifest.oplog_sequence,
+                index_log_sequence: manifest.index_log_sequence,
+                created_unix_ms: now_ms(),
+            },
+        )
+        .unwrap();
+
+        let dry_run = engine.slot_dump_install_roll_forward_reports(1);
+        assert_eq!(dry_run.len(), 1);
+        assert!(dry_run[0].can_roll_forward);
+        assert_eq!(dry_run[0].reason, "commit_ready");
+
+        let applied = engine.roll_forward_slot_dump_installs(1);
+        assert_eq!(applied.len(), 1);
+        assert!(applied[0].completed_commit);
+        assert!(engine.interrupted_slot_dump_installs(1).is_empty());
+    }
+
+    #[test]
     fn slot_dump_recovery_reports_broken_manifest_parent_chain() {
         let dir = tempfile::tempdir().unwrap();
         let engine = TemporalEngine::with_local_dirs(
@@ -9584,9 +9786,26 @@ mod tests {
             vec![fork.manifest_id.clone()]
         );
 
-        let report = engine.apply_slot_dump_manifest_prune(1);
+        let lifecycle = engine.apply_storage_lifecycle(StorageLifecycleRequest {
+            shard_id: 1,
+            selected_dump_slots: Vec::new(),
+            max_dump_slots_per_round: 0,
+            min_undumped_oplog_records: 0,
+            purge_delayed_destroy: false,
+            prune_slot_dump_manifests: true,
+            roll_forward_slot_dump_installs: false,
+            invalidate_cache: false,
+            warm_cache: false,
+        });
+        let report = lifecycle
+            .manifest_prune_report
+            .expect("lifecycle should apply manifest prune");
         assert_eq!(report.removed_manifest_ids, vec![fork.manifest_id.clone()]);
         assert_eq!(report.removed_marker_files, 1);
+        assert_eq!(
+            lifecycle.manifest_prune_plan.prunable_manifest_ids,
+            vec![fork.manifest_id.clone()]
+        );
         assert!(slot_dump_manifest_path(&engine.index_dir, 1, &parent.manifest_id).exists());
         assert!(slot_dump_manifest_path(&engine.index_dir, 1, &child.manifest_id).exists());
         assert!(!slot_dump_manifest_path(&engine.index_dir, 1, &fork.manifest_id).exists());
@@ -9690,6 +9909,8 @@ mod tests {
             max_dump_slots_per_round: 0,
             min_undumped_oplog_records: 0,
             purge_delayed_destroy: false,
+            prune_slot_dump_manifests: false,
+            roll_forward_slot_dump_installs: false,
             invalidate_cache: false,
             warm_cache: false,
         });
@@ -9704,6 +9925,8 @@ mod tests {
             max_dump_slots_per_round: 0,
             min_undumped_oplog_records: 0,
             purge_delayed_destroy: false,
+            prune_slot_dump_manifests: false,
+            roll_forward_slot_dump_installs: false,
             invalidate_cache: true,
             warm_cache: false,
         });
@@ -9738,6 +9961,8 @@ mod tests {
             max_dump_slots_per_round: 0,
             min_undumped_oplog_records: 0,
             purge_delayed_destroy: false,
+            prune_slot_dump_manifests: false,
+            roll_forward_slot_dump_installs: false,
             invalidate_cache: false,
             warm_cache: false,
         });
@@ -9747,6 +9972,8 @@ mod tests {
             max_dump_slots_per_round: 0,
             min_undumped_oplog_records: 0,
             purge_delayed_destroy: false,
+            prune_slot_dump_manifests: false,
+            roll_forward_slot_dump_installs: false,
             invalidate_cache: false,
             warm_cache: true,
         });
@@ -9779,6 +10006,8 @@ mod tests {
                 max_dump_slots_per_round: 0,
                 min_undumped_oplog_records: 0,
                 purge_delayed_destroy: false,
+                prune_slot_dump_manifests: false,
+                roll_forward_slot_dump_installs: false,
                 invalidate_cache: false,
                 warm_cache: false,
             });
@@ -9793,6 +10022,8 @@ mod tests {
             max_dump_slots_per_round: 0,
             min_undumped_oplog_records: 99,
             purge_delayed_destroy: false,
+            prune_slot_dump_manifests: false,
+            roll_forward_slot_dump_installs: false,
             invalidate_cache: false,
             warm_cache: false,
         });
@@ -9808,6 +10039,8 @@ mod tests {
             max_dump_slots_per_round: 2,
             min_undumped_oplog_records: 1,
             purge_delayed_destroy: false,
+            prune_slot_dump_manifests: false,
+            roll_forward_slot_dump_installs: false,
             invalidate_cache: false,
             warm_cache: false,
         });
@@ -9822,6 +10055,8 @@ mod tests {
             max_dump_slots_per_round: 0,
             min_undumped_oplog_records: 99,
             purge_delayed_destroy: false,
+            prune_slot_dump_manifests: false,
+            roll_forward_slot_dump_installs: false,
             invalidate_cache: false,
             warm_cache: false,
         });
