@@ -223,6 +223,12 @@ pub struct StorageObjectLifecycleReport {
     pub tombstoned_object_keys: Vec<String>,
 }
 
+impl StorageObjectLifecycleReport {
+    fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageRecoverySegmentLiveReport {
     pub page_segment_id: u64,
@@ -274,6 +280,11 @@ pub struct SlotDumpManifest {
     pub logical_bytes: u64,
     pub physical_bytes: u64,
     pub slot_summaries: Vec<SlotStorageSummary>,
+    #[serde(
+        default,
+        skip_serializing_if = "StorageObjectLifecycleReport::is_empty"
+    )]
+    pub object_lifecycle: StorageObjectLifecycleReport,
     #[serde(default)]
     pub index_bytes: Vec<u8>,
     #[serde(default)]
@@ -1022,8 +1033,19 @@ impl TemporalEngine {
         let manifest_id = format!("{shard_id}-{index_log_sequence}-{created_unix_ms}");
         let parent_manifest_id = latest_slot_dump_manifest_at(&self.index_dir, shard_id)
             .map(|manifest| manifest.manifest_id);
+        let object_lifecycle = self
+            .shards
+            .read()
+            .expect("engine lock poisoned")
+            .get(&shard_id)
+            .map(|shard| {
+                storage_object_lifecycle_report_for_slots(shard_id, shard, &selected_slots, |key| {
+                    self.routing_slot_for_key(shard_id, key)
+                })
+            })
+            .unwrap_or_default();
         let mut manifest = SlotDumpManifest {
-            version: 2,
+            version: 3,
             shard_id,
             manifest_id,
             dump_generation_id: String::new(),
@@ -1049,6 +1071,7 @@ impl TemporalEngine {
                 .map(|summary| summary.physical_bytes)
                 .sum(),
             slot_summaries,
+            object_lifecycle,
             index_bytes,
             index_sha256,
             checksum: String::new(),
@@ -1277,6 +1300,20 @@ impl TemporalEngine {
                     live_page_entries.len()
                 ),
             ));
+        }
+        if manifest.version >= 3 {
+            let expected_object_lifecycle = storage_object_lifecycle_report_for_slots(
+                manifest.shard_id,
+                &restored,
+                &manifest_slots,
+                |key| self.routing_slot_for_key(manifest.shard_id, key),
+            );
+            if manifest.object_lifecycle != expected_object_lifecycle {
+                return Err(Status::error(
+                    "slot_dump_object_lifecycle_mismatch",
+                    "slot dump object lifecycle metadata does not match restored index",
+                ));
+            }
         }
         let referenced_page_segment_ids = live_page_entries
             .iter()
@@ -3092,6 +3129,42 @@ fn slot_dump_generation_id(manifest: &SlotDumpManifest) -> String {
         digest.update(page_segment_id.to_le_bytes());
     }
     digest.update(manifest.index_sha256.as_bytes());
+    if manifest.version >= 3 {
+        digest.update(manifest.object_lifecycle.live_object_ids.to_le_bytes());
+        digest.update(manifest.object_lifecycle.live_page_refs.to_le_bytes());
+        digest.update(manifest.object_lifecycle.stale_object_ids.to_le_bytes());
+        digest.update(
+            manifest
+                .object_lifecycle
+                .tombstoned_object_ids
+                .to_le_bytes(),
+        );
+        digest.update(
+            manifest
+                .object_lifecycle
+                .reused_object_id_conflicts
+                .to_le_bytes(),
+        );
+        digest.update(
+            manifest
+                .object_lifecycle
+                .missing_owner_page_refs
+                .to_le_bytes(),
+        );
+        digest.update(
+            manifest
+                .object_lifecycle
+                .owner_mismatch_page_refs
+                .to_le_bytes(),
+        );
+        for object_id in &manifest.object_lifecycle.reused_object_ids {
+            digest.update(object_id.to_le_bytes());
+        }
+        for key in &manifest.object_lifecycle.tombstoned_object_keys {
+            digest.update(key.as_bytes());
+            digest.update([0]);
+        }
+    }
     digest
         .finalize()
         .iter()
@@ -4697,7 +4770,25 @@ fn storage_object_lifecycle_report(
     shard_id: ShardId,
     shard: &ShardState,
 ) -> StorageObjectLifecycleReport {
-    let entries = collect_live_page_entries(shard);
+    storage_object_lifecycle_report_for_slots(shard_id, shard, &BTreeSet::new(), |_| 0)
+}
+
+fn storage_object_lifecycle_report_for_slots(
+    shard_id: ShardId,
+    shard: &ShardState,
+    selected_slots: &BTreeSet<u32>,
+    routing_slot_for_key: impl Fn(&str) -> u32,
+) -> StorageObjectLifecycleReport {
+    let entries = collect_live_page_entries(shard)
+        .into_iter()
+        .filter(|entry| {
+            let routing_slot = entry
+                .address
+                .routing_slot
+                .unwrap_or_else(|| routing_slot_for_key(&entry.object_key));
+            selected_slots.is_empty() || selected_slots.contains(&routing_slot)
+        })
+        .collect::<Vec<_>>();
     let mut expected_object_ids = BTreeSet::new();
     let mut actual_object_owners = BTreeMap::<u64, BTreeSet<u64>>::new();
     let mut missing_owner_page_refs = 0u64;
@@ -4732,7 +4823,11 @@ fn storage_object_lifecycle_report(
     let tombstoned_object_keys = shard
         .dirty_objects
         .iter()
-        .filter(|key| !record_exists(shard, key))
+        .filter(|key| {
+            let routing_slot = routing_slot_for_key(key);
+            (selected_slots.is_empty() || selected_slots.contains(&routing_slot))
+                && !record_exists(shard, key)
+        })
         .cloned()
         .collect::<Vec<_>>();
 
@@ -10129,8 +10224,17 @@ mod tests {
         let manifest = engine
             .create_slot_dump_manifest(1, Vec::new())
             .expect("manifest should persist");
-        assert_eq!(manifest.version, 2);
+        assert_eq!(manifest.version, 3);
         assert!(!manifest.dump_generation_id.is_empty());
+        assert_eq!(manifest.object_lifecycle.live_object_ids, 1);
+        assert_eq!(manifest.object_lifecycle.live_page_refs, 1);
+
+        let mut legacy_v2 = manifest.clone();
+        legacy_v2.version = 2;
+        legacy_v2.object_lifecycle = StorageObjectLifecycleReport::default();
+        let legacy_generation_id = slot_dump_generation_id(&legacy_v2);
+        legacy_v2.object_lifecycle.live_object_ids = 99;
+        assert_eq!(slot_dump_generation_id(&legacy_v2), legacy_generation_id);
 
         let mut mismatched = manifest.clone();
         mismatched.dump_generation_id = "wrong-generation".to_string();
@@ -10172,6 +10276,68 @@ mod tests {
                 .unwrap_err()
                 .code,
             "slot_dump_generation_conflict"
+        );
+    }
+
+    #[test]
+    fn slot_dump_manifest_rejects_object_lifecycle_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "lifecycle".to_string(),
+                value: b"v1".to_vec(),
+            },
+        });
+        let manifest = engine
+            .create_slot_dump_manifest(1, Vec::new())
+            .expect("manifest should persist");
+        engine
+            .validate_slot_dump_manifest(&manifest)
+            .expect("fresh manifest should validate");
+
+        let mut stale_lifecycle = manifest.clone();
+        stale_lifecycle.object_lifecycle.live_object_ids = stale_lifecycle
+            .object_lifecycle
+            .live_object_ids
+            .saturating_add(1);
+        stale_lifecycle.dump_generation_id = slot_dump_generation_id(&stale_lifecycle);
+        stale_lifecycle.checksum = slot_dump_manifest_checksum(&stale_lifecycle).unwrap();
+        assert_eq!(
+            engine
+                .validate_slot_dump_manifest(&stale_lifecycle)
+                .unwrap_err()
+                .code,
+            "slot_dump_object_lifecycle_mismatch"
+        );
+
+        let mut reused_owner = manifest.clone();
+        {
+            let mut restored = serde_json::from_slice::<ShardState>(&reused_owner.index_bytes)
+                .expect("manifest index should decode");
+            let address = restored
+                .strings
+                .get_mut("lifecycle")
+                .expect("manifest string address");
+            address.object_id = Some(address.object_id.unwrap_or_default().wrapping_add(1));
+            reused_owner.index_bytes = serde_json::to_vec(&restored).unwrap();
+            reused_owner.index_sha256 = sha256_hex_bytes(&reused_owner.index_bytes);
+            reused_owner.dump_generation_id = slot_dump_generation_id(&reused_owner);
+            reused_owner.checksum = slot_dump_manifest_checksum(&reused_owner).unwrap();
+        }
+        assert_eq!(
+            engine
+                .validate_slot_dump_manifest(&reused_owner)
+                .unwrap_err()
+                .code,
+            "slot_dump_object_lifecycle_mismatch"
         );
     }
 
