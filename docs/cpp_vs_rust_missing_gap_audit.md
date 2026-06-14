@@ -1603,6 +1603,11 @@ planning:
     rejects generation mismatches, and install persists accepted generations so
     coherent same-boundary forked manifests for overlapping slots are rejected
     instead of silently replacing an already-installed dump generation.
+22. Closed a storage owner-validation gap: recovery reports now surface
+    object/page/slot owner mismatches and missing legacy owner metadata, while
+    compaction refuses live page refs whose embedded object id or routing slot
+    contradicts the index owner and preserves owner metadata when rewriting
+    live refs into the compacted segment.
 
 Eight storage audit passes completed against C++ storage code:
 

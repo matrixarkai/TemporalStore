@@ -178,6 +178,10 @@ pub struct StorageRecoveryReport {
     pub readable_page_refs: usize,
     #[serde(default)]
     pub unreadable_page_refs: Vec<StorageRecoveryPageError>,
+    #[serde(default)]
+    pub owner_mismatch_page_refs: Vec<StorageRecoveryPageOwnerMismatch>,
+    #[serde(default)]
+    pub missing_owner_page_refs: usize,
     pub all_live_pages_readable: bool,
     #[serde(default)]
     pub boundary: StorageRecoveryBoundaryReport,
@@ -189,6 +193,17 @@ pub struct StorageRecoveryPageError {
     pub offset: u64,
     pub length: u64,
     pub error: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageRecoveryPageOwnerMismatch {
+    pub object_key: String,
+    pub page_segment_id: u64,
+    pub offset: u64,
+    pub expected_object_id: u64,
+    pub actual_object_id: Option<u64>,
+    pub expected_routing_slot: u32,
+    pub actual_routing_slot: Option<u32>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -292,6 +307,10 @@ pub struct StorageRecoveryBoundaryReport {
     pub orphan_page_segment_ids: Vec<u64>,
     pub missing_dump_slot_ids: Vec<u32>,
     pub stale_index_page_refs: Vec<StorageRecoveryPageError>,
+    #[serde(default)]
+    pub owner_mismatch_page_refs: Vec<StorageRecoveryPageOwnerMismatch>,
+    #[serde(default)]
+    pub missing_owner_page_refs: usize,
     pub corrupt_page_segment_ids: Vec<u64>,
     pub unreadable_page_bytes: u64,
 }
@@ -1314,6 +1333,8 @@ impl TemporalEngine {
             orphan_page_segment_ids,
             missing_dump_slot_ids,
             stale_index_page_refs: recovery.unreadable_page_refs,
+            owner_mismatch_page_refs: recovery.owner_mismatch_page_refs,
+            missing_owner_page_refs: recovery.missing_owner_page_refs,
             corrupt_page_segment_ids,
             unreadable_page_bytes,
         }
@@ -1865,6 +1886,8 @@ impl TemporalEngine {
         let total_page_refs = addresses.len();
         let mut readable_page_refs = 0usize;
         let mut unreadable_page_refs = Vec::new();
+        let mut owner_mismatch_page_refs = Vec::new();
+        let mut missing_owner_page_refs = 0usize;
         let mut page_segment_live_reports = page_segment_reports
             .iter()
             .map(|report| {
@@ -1926,6 +1949,11 @@ impl TemporalEngine {
                 }
             }
         }
+        if let Some(shard) = shards.get(&shard_id) {
+            let ownership = self.validate_shard_page_ownership(shard_id, shard);
+            owner_mismatch_page_refs = ownership.mismatches;
+            missing_owner_page_refs = ownership.missing_owner_page_refs;
+        }
         let page_segment_live_reports = page_segment_live_reports
             .into_values()
             .map(|mut report| {
@@ -1960,6 +1988,8 @@ impl TemporalEngine {
             total_page_refs,
             readable_page_refs,
             unreadable_page_refs,
+            owner_mismatch_page_refs,
+            missing_owner_page_refs,
             all_live_pages_readable: total_page_refs == readable_page_refs,
             boundary: StorageRecoveryBoundaryReport::default(),
         }
@@ -2018,11 +2048,59 @@ impl TemporalEngine {
             .collect()
     }
 
+    fn validate_shard_page_ownership(
+        &self,
+        shard_id: ShardId,
+        shard: &ShardState,
+    ) -> StoragePageOwnershipValidation {
+        let mut validation = StoragePageOwnershipValidation::default();
+        for entry in collect_live_page_entries(shard) {
+            let expected_object_id = expected_live_page_object_id(shard_id, &entry);
+            let expected_routing_slot = self.routing_slot_for_key(shard_id, &entry.object_key);
+            let object_mismatch = entry
+                .address
+                .object_id
+                .is_some_and(|actual| actual != expected_object_id);
+            let slot_mismatch = entry
+                .address
+                .routing_slot
+                .is_some_and(|actual| actual != expected_routing_slot);
+            if entry.address.object_id.is_none() || entry.address.routing_slot.is_none() {
+                validation.missing_owner_page_refs =
+                    validation.missing_owner_page_refs.saturating_add(1);
+            }
+            if object_mismatch || slot_mismatch {
+                validation
+                    .mismatches
+                    .push(StorageRecoveryPageOwnerMismatch {
+                        object_key: entry.object_key,
+                        page_segment_id: entry.address.page_segment_id,
+                        offset: entry.address.offset,
+                        expected_object_id,
+                        actual_object_id: entry.address.object_id,
+                        expected_routing_slot,
+                        actual_routing_slot: entry.address.routing_slot,
+                    });
+            }
+        }
+        validation
+    }
+
     pub fn compact_shard_pages(&self, shard_id: ShardId) -> Result<ShardCompactionReport, Status> {
         let mut shards = self.shards.write().expect("engine lock poisoned");
         let Some(shard) = shards.get_mut(&shard_id) else {
             return Err(Status::error("shard_not_loaded", "shard is not loaded"));
         };
+        let ownership = self.validate_shard_page_ownership(shard_id, shard);
+        if !ownership.mismatches.is_empty() {
+            return Err(Status::error(
+                "page_compaction_owner_mismatch",
+                format!(
+                    "refusing compaction because {} live page refs disagree with object/page/slot ownership",
+                    ownership.mismatches.len()
+                ),
+            ));
+        }
         let before_segments = collect_live_page_segment_ids(shard);
         let before = compaction_utility_report(&self.page_store, shard);
         let roll = self
@@ -2094,7 +2172,11 @@ impl TemporalEngine {
                     })?;
                 let new_address = self
                     .page_store
-                    .append(&bytes)
+                    .append_with_page_metadata(
+                        &bytes,
+                        meta.address.object_id,
+                        meta.address.routing_slot,
+                    )
                     .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
                 meta.address = new_address.clone();
                 let _ = self.cache.put(
@@ -3945,52 +4027,83 @@ fn collect_live_page_segment_ids(shard: &ShardState) -> BTreeSet<u64> {
 #[derive(Debug, Clone)]
 struct LivePageEntry {
     object_key: String,
+    kind: &'static str,
+    component: Option<String>,
     address: PageAddress,
+}
+
+#[derive(Debug, Default)]
+struct StoragePageOwnershipValidation {
+    mismatches: Vec<StorageRecoveryPageOwnerMismatch>,
+    missing_owner_page_refs: usize,
 }
 
 fn collect_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
     let mut entries = Vec::new();
     entries.extend(shard.strings.iter().map(|(key, address)| LivePageEntry {
         object_key: key.clone(),
+        kind: "string",
+        component: None,
         address: address.clone(),
     }));
     for (key, fields) in &shard.hashes {
-        entries.extend(fields.values().map(|address| LivePageEntry {
+        entries.extend(fields.iter().map(|(field, address)| LivePageEntry {
             object_key: key.clone(),
+            kind: "hash",
+            component: Some(field.clone()),
             address: address.clone(),
         }));
     }
     for (key, members) in &shard.sets {
-        entries.extend(members.values().map(|address| LivePageEntry {
+        entries.extend(members.iter().map(|(member, address)| LivePageEntry {
             object_key: key.clone(),
+            kind: "set",
+            component: Some(hex::encode(member)),
             address: address.clone(),
         }));
     }
     for (key, series) in &shard.features {
-        entries.extend(series.values().map(|address| LivePageEntry {
+        entries.extend(series.iter().map(|(timestamp_ms, address)| LivePageEntry {
             object_key: key.clone(),
+            kind: "feature",
+            component: Some(timestamp_ms.to_string()),
             address: address.clone(),
         }));
     }
     for (key, series) in &shard.sequences {
-        entries.extend(series.values().map(|address| LivePageEntry {
+        entries.extend(series.iter().map(|(timestamp_ms, address)| LivePageEntry {
             object_key: key.clone(),
+            kind: "sequence",
+            component: Some(timestamp_ms.to_string()),
             address: address.clone(),
         }));
     }
     for (key, series) in &shard.ips {
-        entries.extend(series.values().map(|address| LivePageEntry {
+        entries.extend(series.iter().map(|(timestamp_ms, address)| LivePageEntry {
             object_key: key.clone(),
+            kind: "ips",
+            component: Some(timestamp_ms.to_string()),
             address: address.clone(),
         }));
     }
     for (key, series) in &shard.ips_meta {
-        entries.extend(series.values().map(|meta| LivePageEntry {
+        entries.extend(series.iter().map(|(timestamp_ms, meta)| LivePageEntry {
             object_key: key.clone(),
+            kind: "ips",
+            component: Some(timestamp_ms.to_string()),
             address: meta.address.clone(),
         }));
     }
     entries
+}
+
+fn expected_live_page_object_id(shard_id: ShardId, entry: &LivePageEntry) -> u64 {
+    stable_page_object_id(
+        shard_id,
+        entry.kind,
+        &entry.object_key,
+        entry.component.as_deref(),
+    )
 }
 
 fn slot_storage_summaries(
@@ -4143,7 +4256,7 @@ fn compact_page_addresses<'a>(
             )
         })?;
         let new_address = page_store
-            .append(&bytes)
+            .append_with_page_metadata(&bytes, address.object_id, address.routing_slot)
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
         *address = new_address.clone();
         let _ = cache.put(
@@ -5033,6 +5146,32 @@ mod tests {
         assert_eq!(report.after.stale_page_estimate, 0);
         assert_eq!(report.after.live_ref_density_basis_points, 10_000);
         assert_eq!(engine.live_page_segment_ids(1), vec![1]);
+        {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("loaded shard");
+            let string_address = shard.strings.get("k").expect("string address");
+            let hash_address = shard
+                .hashes
+                .get("h")
+                .and_then(|fields| fields.get("f"))
+                .expect("hash address");
+            assert_eq!(
+                string_address.object_id,
+                Some(stable_page_object_id(1, "string", "k", None))
+            );
+            assert_eq!(
+                string_address.routing_slot,
+                Some(page_routing_slot("k", 0, u32::MAX))
+            );
+            assert_eq!(
+                hash_address.object_id,
+                Some(stable_page_object_id(1, "hash", "h", Some("f")))
+            );
+            assert_eq!(
+                hash_address.routing_slot,
+                Some(page_routing_slot("h", 0, u32::MAX))
+            );
+        }
 
         let gc = page_store
             .gc_segments_before_with_live_refs(1, engine.live_page_segment_ids(1))
@@ -5073,6 +5212,42 @@ mod tests {
                 value: Some(b"hv".to_vec())
             }
         );
+    }
+
+    #[test]
+    fn recovery_reports_owner_mismatch_and_compaction_refuses_it() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: "owned".to_string(),
+                        value: b"value".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+
+        {
+            let mut shards = engine.shards.write().expect("engine lock poisoned");
+            let shard = shards.get_mut(&1).expect("loaded shard");
+            let address = shard.strings.get_mut("owned").expect("string address");
+            address.object_id = Some(address.object_id.unwrap_or_default().wrapping_add(1));
+        }
+
+        let recovery = engine.storage_recovery_report(1);
+        assert_eq!(recovery.owner_mismatch_page_refs.len(), 1);
+        assert_eq!(
+            recovery.owner_mismatch_page_refs[0].expected_object_id,
+            stable_page_object_id(1, "string", "owned", None)
+        );
+        assert_eq!(recovery.boundary.owner_mismatch_page_refs.len(), 1);
+
+        let err = engine.compact_shard_pages(1).unwrap_err();
+        assert_eq!(err.code, "page_compaction_owner_mismatch");
     }
 
     #[test]
