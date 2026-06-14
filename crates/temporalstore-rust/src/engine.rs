@@ -275,6 +275,32 @@ pub struct SlotDumpInstallMarker {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlotDumpManifestChainIssue {
+    pub manifest_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_manifest_id: Option<String>,
+    pub reason: String,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlotDumpManifestPrunePlan {
+    pub shard_id: ShardId,
+    pub retained_manifest_ids: Vec<String>,
+    pub prunable_manifest_ids: Vec<String>,
+    pub prunable_marker_manifest_ids: Vec<String>,
+    pub blocked_manifest_ids: Vec<String>,
+    pub reasons: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlotDumpManifestPruneReport {
+    pub shard_id: ShardId,
+    pub plan: SlotDumpManifestPrunePlan,
+    pub removed_manifest_ids: Vec<String>,
+    pub removed_marker_files: usize,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageLifecyclePlan {
     pub shard_id: ShardId,
     pub dirty_slots: Vec<u32>,
@@ -319,6 +345,8 @@ pub struct StorageRecoveryBoundaryReport {
     pub stale_index_page_refs: Vec<StorageRecoveryPageError>,
     #[serde(default)]
     pub interrupted_slot_dump_installs: Vec<SlotDumpInstallMarker>,
+    #[serde(default)]
+    pub manifest_chain_issues: Vec<SlotDumpManifestChainIssue>,
     #[serde(default)]
     pub owner_mismatch_page_refs: Vec<StorageRecoveryPageOwnerMismatch>,
     #[serde(default)]
@@ -976,6 +1004,48 @@ impl TemporalEngine {
         interrupted_slot_dump_installs_at(&self.index_dir, shard_id).unwrap_or_default()
     }
 
+    pub fn slot_dump_manifest_prune_plan(&self, shard_id: ShardId) -> SlotDumpManifestPrunePlan {
+        slot_dump_manifest_prune_plan_at(&self.index_dir, shard_id).unwrap_or_else(|err| {
+            SlotDumpManifestPrunePlan {
+                shard_id,
+                reasons: vec![format!("slot_dump_prune_plan_failed:{err}")],
+                ..SlotDumpManifestPrunePlan::default()
+            }
+        })
+    }
+
+    pub fn apply_slot_dump_manifest_prune(&self, shard_id: ShardId) -> SlotDumpManifestPruneReport {
+        let plan = self.slot_dump_manifest_prune_plan(shard_id);
+        let mut removed_manifest_ids = Vec::new();
+        for manifest_id in &plan.prunable_manifest_ids {
+            let path = slot_dump_manifest_path(&self.index_dir, shard_id, manifest_id);
+            if fs::remove_file(path).is_ok() {
+                removed_manifest_ids.push(manifest_id.clone());
+            }
+        }
+        let mut removed_marker_files = 0usize;
+        if let Ok(marker_files) = slot_dump_install_marker_files_at(&self.index_dir, shard_id) {
+            let prunable_marker_manifest_ids = plan
+                .prunable_marker_manifest_ids
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            for (marker, path) in marker_files {
+                if prunable_marker_manifest_ids.contains(&marker.manifest_id)
+                    && fs::remove_file(path).is_ok()
+                {
+                    removed_marker_files = removed_marker_files.saturating_add(1);
+                }
+            }
+        }
+        SlotDumpManifestPruneReport {
+            shard_id,
+            plan,
+            removed_manifest_ids,
+            removed_marker_files,
+        }
+    }
+
     pub fn validate_slot_dump_manifest(&self, manifest: &SlotDumpManifest) -> Result<(), Status> {
         let expected = slot_dump_manifest_checksum(manifest)
             .map_err(|_| Status::error("slot_dump_corrupt", "slot dump manifest is corrupt"))?;
@@ -1331,6 +1401,7 @@ impl TemporalEngine {
             .filter(|slot| !latest_dump_slots.contains(slot))
             .collect::<Vec<_>>();
         let interrupted_slot_dump_installs = self.interrupted_slot_dump_installs(shard_id);
+        let manifest_chain_issues = slot_dump_manifest_chain_issues(&manifests);
         let recovery = self.storage_recovery_report_without_boundary(shard_id);
         let corrupt_page_segment_ids = recovery
             .page_segment_reports
@@ -1357,6 +1428,7 @@ impl TemporalEngine {
             missing_dump_slot_ids,
             stale_index_page_refs: recovery.unreadable_page_refs,
             interrupted_slot_dump_installs,
+            manifest_chain_issues,
             owner_mismatch_page_refs: recovery.owner_mismatch_page_refs,
             missing_owner_page_refs: recovery.missing_owner_page_refs,
             corrupt_page_segment_ids,
@@ -2512,10 +2584,10 @@ fn write_slot_dump_install_marker(
     fs::write(path, bytes)
 }
 
-fn list_slot_dump_install_markers_at(
+fn slot_dump_install_marker_files_at(
     index_dir: &std::path::Path,
     shard_id: ShardId,
-) -> Result<Vec<SlotDumpInstallMarker>, std::io::Error> {
+) -> Result<Vec<(SlotDumpInstallMarker, PathBuf)>, std::io::Error> {
     let dir = slot_dump_manifest_dir(index_dir, shard_id);
     let mut markers = Vec::new();
     if !dir.exists() {
@@ -2532,11 +2604,12 @@ fn list_slot_dump_install_markers_at(
         {
             continue;
         }
-        let marker = serde_json::from_slice::<SlotDumpInstallMarker>(&fs::read(entry.path())?)
+        let path = entry.path();
+        let marker = serde_json::from_slice::<SlotDumpInstallMarker>(&fs::read(&path)?)
             .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
-        markers.push(marker);
+        markers.push((marker, path));
     }
-    markers.sort_by_key(|marker| {
+    markers.sort_by_key(|(marker, _)| {
         (
             marker.index_log_sequence,
             marker.created_unix_ms,
@@ -2544,6 +2617,16 @@ fn list_slot_dump_install_markers_at(
         )
     });
     Ok(markers)
+}
+
+fn list_slot_dump_install_markers_at(
+    index_dir: &std::path::Path,
+    shard_id: ShardId,
+) -> Result<Vec<SlotDumpInstallMarker>, std::io::Error> {
+    Ok(slot_dump_install_marker_files_at(index_dir, shard_id)?
+        .into_iter()
+        .map(|(marker, _)| marker)
+        .collect())
 }
 
 fn interrupted_slot_dump_installs_at(
@@ -2579,6 +2662,105 @@ fn slot_dump_install_phase_rank(phase: &str) -> u8 {
         "commit" => 3,
         _ => 0,
     }
+}
+
+fn slot_dump_manifest_chain_issues(
+    manifests: &[SlotDumpManifest],
+) -> Vec<SlotDumpManifestChainIssue> {
+    let manifest_ids = manifests
+        .iter()
+        .map(|manifest| manifest.manifest_id.clone())
+        .collect::<BTreeSet<_>>();
+    manifests
+        .iter()
+        .filter_map(|manifest| {
+            let parent = manifest.parent_manifest_id.as_ref()?;
+            (!manifest_ids.contains(parent)).then(|| SlotDumpManifestChainIssue {
+                manifest_id: manifest.manifest_id.clone(),
+                parent_manifest_id: Some(parent.clone()),
+                reason: "missing_parent_manifest".to_string(),
+            })
+        })
+        .collect()
+}
+
+fn retained_slot_dump_manifest_ids(manifests: &[SlotDumpManifest]) -> BTreeSet<String> {
+    let by_id = manifests
+        .iter()
+        .map(|manifest| (manifest.manifest_id.clone(), manifest))
+        .collect::<BTreeMap<_, _>>();
+    let mut retained = BTreeSet::new();
+    let mut cursor = manifests
+        .iter()
+        .max_by_key(|manifest| (manifest.index_log_sequence, manifest.created_unix_ms))
+        .map(|manifest| manifest.manifest_id.clone());
+    while let Some(manifest_id) = cursor {
+        if !retained.insert(manifest_id.clone()) {
+            break;
+        }
+        cursor = by_id
+            .get(&manifest_id)
+            .and_then(|manifest| manifest.parent_manifest_id.clone());
+    }
+    retained
+}
+
+fn slot_dump_manifest_prune_plan_at(
+    index_dir: &std::path::Path,
+    shard_id: ShardId,
+) -> Result<SlotDumpManifestPrunePlan, std::io::Error> {
+    let manifests = list_slot_dump_manifests_at(index_dir, shard_id)?;
+    let retained = retained_slot_dump_manifest_ids(&manifests);
+    let interrupted = interrupted_slot_dump_installs_at(index_dir, shard_id)?
+        .into_iter()
+        .map(|marker| marker.manifest_id)
+        .collect::<BTreeSet<_>>();
+    let manifest_ids = manifests
+        .iter()
+        .map(|manifest| manifest.manifest_id.clone())
+        .collect::<BTreeSet<_>>();
+    let mut prunable_manifest_ids = Vec::new();
+    let mut blocked_manifest_ids = Vec::new();
+    for manifest in &manifests {
+        if retained.contains(&manifest.manifest_id) {
+            continue;
+        }
+        if interrupted.contains(&manifest.manifest_id) {
+            blocked_manifest_ids.push(manifest.manifest_id.clone());
+        } else {
+            prunable_manifest_ids.push(manifest.manifest_id.clone());
+        }
+    }
+    let prunable_marker_manifest_ids = list_slot_dump_install_markers_at(index_dir, shard_id)?
+        .into_iter()
+        .map(|marker| marker.manifest_id)
+        .filter(|manifest_id| {
+            !retained.contains(manifest_id)
+                && !interrupted.contains(manifest_id)
+                && (prunable_manifest_ids.iter().any(|id| id == manifest_id)
+                    || !manifest_ids.contains(manifest_id))
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let mut reasons = Vec::new();
+    if !prunable_manifest_ids.is_empty() {
+        reasons.push("obsolete_slot_dump_manifest".to_string());
+    }
+    if !prunable_marker_manifest_ids.is_empty() {
+        reasons.push("obsolete_slot_dump_marker".to_string());
+    }
+    if !blocked_manifest_ids.is_empty() {
+        reasons.push("interrupted_install_blocks_prune".to_string());
+    }
+    Ok(SlotDumpManifestPrunePlan {
+        shard_id,
+        retained_manifest_ids: retained.into_iter().collect(),
+        prunable_manifest_ids,
+        prunable_marker_manifest_ids,
+        blocked_manifest_ids,
+        reasons,
+    })
 }
 
 fn list_slot_dump_manifests_at(
@@ -9296,6 +9478,118 @@ mod tests {
         assert_eq!(interrupted[0].phase, "prepare");
         let boundary = engine.storage_recovery_boundary_report(1);
         assert_eq!(boundary.interrupted_slot_dump_installs, interrupted);
+    }
+
+    #[test]
+    fn slot_dump_recovery_reports_broken_manifest_parent_chain() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "chain".to_string(),
+                value: b"v1".to_vec(),
+            },
+        });
+        let parent = engine
+            .create_slot_dump_manifest(1, Vec::new())
+            .expect("parent manifest should persist");
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "chain".to_string(),
+                value: b"v2".to_vec(),
+            },
+        });
+        let child = engine
+            .create_slot_dump_manifest(1, Vec::new())
+            .expect("child manifest should persist");
+        assert_eq!(child.parent_manifest_id, Some(parent.manifest_id.clone()));
+
+        fs::remove_file(slot_dump_manifest_path(
+            &engine.index_dir,
+            1,
+            &parent.manifest_id,
+        ))
+        .unwrap();
+        let boundary = engine.storage_recovery_boundary_report(1);
+        assert_eq!(boundary.manifest_chain_issues.len(), 1);
+        assert_eq!(
+            boundary.manifest_chain_issues[0].manifest_id,
+            child.manifest_id
+        );
+        assert_eq!(
+            boundary.manifest_chain_issues[0].reason,
+            "missing_parent_manifest"
+        );
+    }
+
+    #[test]
+    fn slot_dump_manifest_prune_keeps_latest_parent_chain_and_removes_obsolete_fork() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "prune".to_string(),
+                value: b"v1".to_vec(),
+            },
+        });
+        let parent = engine.create_slot_dump_manifest(1, Vec::new()).unwrap();
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "prune".to_string(),
+                value: b"v2".to_vec(),
+            },
+        });
+        let child = engine.create_slot_dump_manifest(1, Vec::new()).unwrap();
+        let mut fork = parent.clone();
+        fork.manifest_id = format!("{}-fork", fork.manifest_id);
+        fork.parent_manifest_id = None;
+        fork.dump_generation_id = slot_dump_generation_id(&fork);
+        fork.checksum = slot_dump_manifest_checksum(&fork).unwrap();
+        engine.persist_slot_dump_manifest(&fork).unwrap();
+        write_slot_dump_install_marker(
+            &engine.index_dir,
+            &SlotDumpInstallMarker {
+                shard_id: 1,
+                manifest_id: fork.manifest_id.clone(),
+                phase: "commit".to_string(),
+                oplog_sequence: fork.oplog_sequence,
+                index_log_sequence: fork.index_log_sequence,
+                created_unix_ms: now_ms(),
+            },
+        )
+        .unwrap();
+
+        let plan = engine.slot_dump_manifest_prune_plan(1);
+        assert!(plan.retained_manifest_ids.contains(&parent.manifest_id));
+        assert!(plan.retained_manifest_ids.contains(&child.manifest_id));
+        assert_eq!(plan.prunable_manifest_ids, vec![fork.manifest_id.clone()]);
+        assert_eq!(
+            plan.prunable_marker_manifest_ids,
+            vec![fork.manifest_id.clone()]
+        );
+
+        let report = engine.apply_slot_dump_manifest_prune(1);
+        assert_eq!(report.removed_manifest_ids, vec![fork.manifest_id.clone()]);
+        assert_eq!(report.removed_marker_files, 1);
+        assert!(slot_dump_manifest_path(&engine.index_dir, 1, &parent.manifest_id).exists());
+        assert!(slot_dump_manifest_path(&engine.index_dir, 1, &child.manifest_id).exists());
+        assert!(!slot_dump_manifest_path(&engine.index_dir, 1, &fork.manifest_id).exists());
     }
 
     #[test]

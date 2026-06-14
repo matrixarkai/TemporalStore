@@ -1613,6 +1613,11 @@ planning:
     reported as interrupted, and recovery boundary reports surface stranded
     prepare/install markers so partial dump-load installs are visible instead
     of being indistinguishable from ordinary manifest history.
+24. Closed a manifest-chain retention gap: recovery boundary reports now
+    surface broken slot dump parent chains, and Rust exposes conservative
+    manifest/marker prune planning plus apply logic that retains the latest
+    committed generation and its parent chain while removing only obsolete
+    forked manifests and their markers.
 
 Eight storage audit passes completed against C++ storage code:
 
