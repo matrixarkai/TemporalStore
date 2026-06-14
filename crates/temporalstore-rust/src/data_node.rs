@@ -7,7 +7,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::control::{CheckedExecuteRequest, CheckedExecuteResponse};
-use crate::engine::{ShardCompactionUtilityReport, TemporalEngine};
+use crate::engine::{
+    ShardCompactionUtilityReport, SlotDumpManifest, StorageLifecyclePlan, StorageLifecycleReport,
+    StorageLifecycleRequest, TemporalEngine,
+};
 use crate::types::{Command, CommandResponse, ExecuteRequest, ExecuteResponse, ShardId, Status};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -118,6 +121,8 @@ pub struct DirtyObjectInfo {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DumpShardRequest {
     pub shard_id: ShardId,
+    #[serde(default)]
+    pub selected_routing_slots: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -126,6 +131,8 @@ pub struct DumpShardResponse {
     pub shard_id: ShardId,
     pub index_bytes: usize,
     pub dirty_objects_flushed: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot_dump_manifest: Option<SlotDumpManifest>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -179,6 +186,14 @@ pub struct GcResponse {
     pub page_segments_retained_live: usize,
     #[serde(default)]
     pub page_segments_retained_live_physical_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle_plan: Option<StorageLifecyclePlan>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StorageLifecycleResponse {
+    pub status: Status,
+    pub report: StorageLifecycleReport,
 }
 
 #[derive(Debug, Clone)]
@@ -708,8 +723,31 @@ impl DataNodeRuntime {
                     .expect("runtime queue lock poisoned")
                     .has_pending_dump(*shard_id)
             })
-            .map(|shard_id| self.submit_dump(DumpShardRequest { shard_id }, controller))
+            .map(|shard_id| {
+                self.submit_dump(
+                    DumpShardRequest {
+                        shard_id,
+                        selected_routing_slots: Vec::new(),
+                    },
+                    controller,
+                )
+            })
             .collect()
+    }
+
+    pub fn storage_lifecycle_plan(&self, request: StorageLifecycleRequest) -> StorageLifecyclePlan {
+        self.inner.engine.storage_lifecycle_plan(request)
+    }
+
+    pub fn apply_storage_lifecycle(
+        &self,
+        request: StorageLifecycleRequest,
+    ) -> StorageLifecycleResponse {
+        let report = self.inner.engine.apply_storage_lifecycle(request);
+        StorageLifecycleResponse {
+            status: Status::ok(),
+            report,
+        }
     }
 
     pub fn start_dirty_dump_scheduler(
@@ -1040,7 +1078,29 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
             if cancellation.is_requested() {
                 return task_canceled_output(task, "data node dump canceled before dirty flush");
             }
-            let dirty_objects_flushed = clear_dirty_shard(&inner.dirty, request.shard_id);
+            let selected_slots = if request.selected_routing_slots.is_empty() {
+                inner
+                    .engine
+                    .storage_lifecycle_plan(StorageLifecycleRequest {
+                        shard_id: request.shard_id,
+                        selected_dump_slots: Vec::new(),
+                        purge_delayed_destroy: false,
+                        invalidate_cache: false,
+                    })
+                    .selected_dump_slots
+            } else {
+                request.selected_routing_slots.clone()
+            };
+            let slot_dump_manifest = inner
+                .engine
+                .create_slot_dump_manifest(request.shard_id, selected_slots.clone())
+                .ok();
+            let dirty_objects_flushed = clear_dirty_shard_slots(
+                &inner.dirty,
+                &inner.engine,
+                request.shard_id,
+                &selected_slots,
+            );
             inner
                 .stats
                 .lock()
@@ -1051,6 +1111,7 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
                 shard_id: request.shard_id,
                 index_bytes,
                 dirty_objects_flushed,
+                slot_dump_manifest,
             })
         }
         TaskRequest::Compact(request) => {
@@ -1117,6 +1178,7 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
             let mut page_segments_retained_physical_bytes = 0;
             let mut page_segments_retained_live = 0;
             let mut page_segments_retained_live_physical_bytes = 0;
+            let mut lifecycle_plan = None;
             if cancellation.is_requested() {
                 return DataNodeTaskOutput::Gc(GcResponse {
                     status: Status::error(
@@ -1134,6 +1196,7 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
                     page_segments_retained_physical_bytes,
                     page_segments_retained_live,
                     page_segments_retained_live_physical_bytes,
+                    lifecycle_plan,
                 });
             }
             match inner.engine.cache().invalidate_shard(request.shard_id) {
@@ -1162,6 +1225,7 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
                     page_segments_retained_physical_bytes,
                     page_segments_retained_live,
                     page_segments_retained_live_physical_bytes,
+                    lifecycle_plan,
                 });
             }
             if let Some(retain_from_sequence) = request.retain_oplog_from_sequence {
@@ -1195,6 +1259,7 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
                     page_segments_retained_physical_bytes,
                     page_segments_retained_live,
                     page_segments_retained_live_physical_bytes,
+                    lifecycle_plan,
                 });
             }
             if status.ok {
@@ -1228,6 +1293,7 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
                     page_segments_retained_physical_bytes,
                     page_segments_retained_live,
                     page_segments_retained_live_physical_bytes,
+                    lifecycle_plan,
                 });
             }
             if status.ok {
@@ -1253,6 +1319,16 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
                     }
                 }
             }
+            lifecycle_plan = Some(
+                inner
+                    .engine
+                    .storage_lifecycle_plan(StorageLifecycleRequest {
+                        shard_id: request.shard_id,
+                        selected_dump_slots: Vec::new(),
+                        purge_delayed_destroy: false,
+                        invalidate_cache: false,
+                    }),
+            );
             inner
                 .stats
                 .lock()
@@ -1271,6 +1347,7 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
                 page_segments_retained_physical_bytes,
                 page_segments_retained_live,
                 page_segments_retained_live_physical_bytes,
+                lifecycle_plan,
             })
         }
     }
@@ -1308,6 +1385,7 @@ fn task_timeout_output(kind: DataNodeTaskKind) -> DataNodeTaskOutput {
             shard_id: 0,
             index_bytes: 0,
             dirty_objects_flushed: 0,
+            slot_dump_manifest: None,
         }),
         DataNodeTaskKind::Compact => DataNodeTaskOutput::Compact(CompactionResponse {
             status,
@@ -1332,6 +1410,7 @@ fn task_timeout_output(kind: DataNodeTaskKind) -> DataNodeTaskOutput {
             page_segments_retained_physical_bytes: 0,
             page_segments_retained_live: 0,
             page_segments_retained_live_physical_bytes: 0,
+            lifecycle_plan: None,
         }),
     }
 }
@@ -1358,6 +1437,7 @@ fn task_canceled_output(task: &QueuedTask, message: &str) -> DataNodeTaskOutput 
             shard_id,
             index_bytes: 0,
             dirty_objects_flushed: 0,
+            slot_dump_manifest: None,
         }),
         DataNodeTaskKind::Compact => DataNodeTaskOutput::Compact(CompactionResponse {
             status,
@@ -1382,6 +1462,7 @@ fn task_canceled_output(task: &QueuedTask, message: &str) -> DataNodeTaskOutput 
             page_segments_retained_physical_bytes: 0,
             page_segments_retained_live: 0,
             page_segments_retained_live_physical_bytes: 0,
+            lifecycle_plan: None,
         }),
     }
 }
@@ -1443,6 +1524,25 @@ fn clear_dirty_shard(dirty: &Mutex<DirtyTracker>, shard_id: ShardId) -> usize {
     dirty
         .by_key
         .retain(|(dirty_shard_id, _), _| *dirty_shard_id != shard_id);
+    before - dirty.by_key.len()
+}
+
+fn clear_dirty_shard_slots(
+    dirty: &Mutex<DirtyTracker>,
+    engine: &TemporalEngine,
+    shard_id: ShardId,
+    selected_slots: &[u32],
+) -> usize {
+    if selected_slots.is_empty() {
+        return 0;
+    }
+    let selected_slots = selected_slots.iter().copied().collect::<BTreeSet<_>>();
+    let mut dirty = dirty.lock().expect("dirty tracker lock poisoned");
+    let before = dirty.by_key.len();
+    dirty.by_key.retain(|(dirty_shard_id, key), _| {
+        *dirty_shard_id != shard_id
+            || !selected_slots.contains(&engine.routing_slot_for_key(shard_id, key))
+    });
     before - dirty.by_key.len()
 }
 
@@ -1577,7 +1677,10 @@ mod tests {
         assert_eq!(runtime.dirty_objects().len(), 1);
 
         let dump = runtime.submit_dump(
-            DumpShardRequest { shard_id: 1 },
+            DumpShardRequest {
+                shard_id: 1,
+                selected_routing_slots: Vec::new(),
+            },
             RequestController { timeout_ms: 1000 },
         );
         let finished = wait_for_job(&runtime, dump.job_id);
@@ -1586,6 +1689,70 @@ mod tests {
         };
         assert_eq!(output.dirty_objects_flushed, 1);
         assert!(runtime.dirty_objects().is_empty());
+    }
+
+    #[test]
+    fn runtime_dump_can_flush_only_selected_dirty_slots() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let mut key_a = String::new();
+        let mut key_b = String::new();
+        let mut slot_a = 0;
+        for index in 0..128 {
+            let key = format!("slot-key-{index}");
+            let slot = engine.routing_slot_for_key(1, &key);
+            if key_a.is_empty() {
+                key_a = key;
+                slot_a = slot;
+            } else if slot != slot_a {
+                key_b = key;
+                break;
+            }
+        }
+        assert!(!key_b.is_empty(), "test needs two distinct routing slots");
+        let runtime = DataNodeRuntime::new(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 1,
+                max_queue_depth: 8,
+                max_background_queue_depth: 8,
+            },
+        );
+        for key in [&key_a, &key_b] {
+            let job = runtime.submit_execute(
+                ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: key.to_string(),
+                        value: key.as_bytes().to_vec(),
+                    },
+                },
+                RequestController { timeout_ms: 1000 },
+            );
+            assert!(wait_for_job(&runtime, job.job_id).status.ok);
+        }
+        assert_eq!(runtime.dirty_objects().len(), 2);
+
+        let dump = runtime.submit_dump(
+            DumpShardRequest {
+                shard_id: 1,
+                selected_routing_slots: vec![slot_a],
+            },
+            RequestController { timeout_ms: 1000 },
+        );
+        let finished = wait_for_job(&runtime, dump.job_id);
+        let Some(DataNodeTaskOutput::Dump(output)) = finished.output else {
+            panic!("expected dump output");
+        };
+        assert!(output.status.ok);
+        assert_eq!(output.dirty_objects_flushed, 1);
+        assert_eq!(
+            output.slot_dump_manifest.as_ref().unwrap().slot_ids,
+            vec![slot_a]
+        );
+        let remaining = runtime.dirty_objects();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].key, key_b);
     }
 
     #[test]
@@ -2011,7 +2178,10 @@ mod tests {
         let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 8);
 
         let submitted = runtime.submit_dump(
-            DumpShardRequest { shard_id: 1 },
+            DumpShardRequest {
+                shard_id: 1,
+                selected_routing_slots: Vec::new(),
+            },
             RequestController { timeout_ms: 1000 },
         );
         let task = runtime
@@ -2058,7 +2228,10 @@ mod tests {
             kind: DataNodeTaskKind::Dump,
             deadline: Instant::now() + Duration::from_secs(60),
             submitted_at_ms: now_ms(),
-            request: TaskRequest::Dump(DumpShardRequest { shard_id: 1 }),
+            request: TaskRequest::Dump(DumpShardRequest {
+                shard_id: 1,
+                selected_routing_slots: Vec::new(),
+            }),
         };
         runtime
             .inner
@@ -2200,7 +2373,10 @@ mod tests {
         );
 
         let accepted = runtime.submit_dump(
-            DumpShardRequest { shard_id: 1 },
+            DumpShardRequest {
+                shard_id: 1,
+                selected_routing_slots: Vec::new(),
+            },
             RequestController { timeout_ms: 1000 },
         );
         assert!(accepted.status.ok);
@@ -2240,7 +2416,10 @@ mod tests {
             kind: DataNodeTaskKind::Dump,
             deadline: Instant::now() + Duration::from_secs(60),
             submitted_at_ms: now_ms(),
-            request: TaskRequest::Dump(DumpShardRequest { shard_id }),
+            request: TaskRequest::Dump(DumpShardRequest {
+                shard_id,
+                selected_routing_slots: Vec::new(),
+            }),
         }
     }
 

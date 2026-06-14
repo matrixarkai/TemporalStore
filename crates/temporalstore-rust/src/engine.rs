@@ -6,6 +6,7 @@ use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::cache::{CacheKey, CacheStats, MultiLayerCache};
 use crate::control::{
@@ -178,6 +179,8 @@ pub struct StorageRecoveryReport {
     #[serde(default)]
     pub unreadable_page_refs: Vec<StorageRecoveryPageError>,
     pub all_live_pages_readable: bool,
+    #[serde(default)]
+    pub boundary: StorageRecoveryBoundaryReport,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -203,6 +206,91 @@ pub struct StorageRecoverySegmentLiveReport {
     pub live_object_count: u64,
     pub live_routing_slot_count: u64,
     pub live_ref_density_basis_points: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlotStorageSummary {
+    pub routing_slot: u32,
+    pub object_count: u64,
+    pub page_ref_count: u64,
+    pub logical_bytes: u64,
+    pub physical_bytes: u64,
+    pub dirty_object_count: u64,
+    pub dirty_generation: u64,
+    pub last_dump_sequence: u64,
+    #[serde(default)]
+    pub page_segment_ids: Vec<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_compacted_zone: Option<u64>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlotDumpManifest {
+    pub version: u32,
+    pub shard_id: ShardId,
+    pub manifest_id: String,
+    pub created_unix_ms: u64,
+    pub slot_ids: Vec<u32>,
+    pub page_segment_ids: Vec<u64>,
+    pub oplog_sequence: u64,
+    pub index_log_sequence: u64,
+    pub live_page_refs: u64,
+    pub logical_bytes: u64,
+    pub physical_bytes: u64,
+    pub slot_summaries: Vec<SlotStorageSummary>,
+    pub checksum: String,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageLifecyclePlan {
+    pub shard_id: ShardId,
+    pub dirty_slots: Vec<u32>,
+    pub selected_dump_slots: Vec<u32>,
+    pub slot_summaries: Vec<SlotStorageSummary>,
+    pub live_page_segment_ids: Vec<u64>,
+    pub stale_page_segment_ids: Vec<u64>,
+    pub delayed_destroy_page_segment_ids: Vec<u64>,
+    pub reclaimable_physical_bytes: u64,
+    pub reasons: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageLifecycleReport {
+    pub shard_id: ShardId,
+    pub plan: StorageLifecyclePlan,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dump_manifest: Option<SlotDumpManifest>,
+    pub cache_entries_removed: usize,
+    pub cache_disk_bytes_removed: u64,
+    pub delayed_destroy_purged_segments: Vec<u64>,
+    pub delayed_destroy_purged_bytes: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageRecoveryBoundaryReport {
+    pub shard_id: ShardId,
+    pub latest_safe_oplog_sequence: u64,
+    pub latest_safe_index_log_sequence: u64,
+    pub latest_dump_oplog_sequence: u64,
+    pub latest_dump_index_log_sequence: u64,
+    pub selected_replay_oplog_sequence: u64,
+    pub selected_replay_index_log_sequence: u64,
+    pub orphan_page_segment_ids: Vec<u64>,
+    pub missing_dump_slot_ids: Vec<u32>,
+    pub stale_index_page_refs: Vec<StorageRecoveryPageError>,
+    pub corrupt_page_segment_ids: Vec<u64>,
+    pub unreadable_page_bytes: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageLifecycleRequest {
+    pub shard_id: ShardId,
+    #[serde(default)]
+    pub selected_dump_slots: Vec<u32>,
+    #[serde(default)]
+    pub purge_delayed_destroy: bool,
+    #[serde(default)]
+    pub invalidate_cache: bool,
 }
 
 impl TemporalEngine {
@@ -706,6 +794,321 @@ impl TemporalEngine {
         shard_ids
     }
 
+    pub fn slot_storage_summaries(&self, shard_id: ShardId) -> Vec<SlotStorageSummary> {
+        let shards = self.shards.read().expect("engine lock poisoned");
+        let Some(shard) = shards.get(&shard_id) else {
+            return Vec::new();
+        };
+        let info = self
+            .infos
+            .read()
+            .expect("info lock poisoned")
+            .get(&shard_id)
+            .cloned();
+        let start = info
+            .as_ref()
+            .map(|info| info.start_routing_slot)
+            .unwrap_or_default();
+        let end = info
+            .as_ref()
+            .map(|info| info.end_routing_slot)
+            .unwrap_or(u32::MAX);
+        let summaries = slot_storage_summaries(shard, start, end);
+        if let Some(manifest) = latest_slot_dump_manifest_at(&self.index_dir, shard_id) {
+            merge_last_dump_sequence(summaries, &manifest)
+        } else {
+            summaries
+        }
+    }
+
+    pub fn routing_slot_for_key(&self, shard_id: ShardId, key: &str) -> u32 {
+        let info = self
+            .infos
+            .read()
+            .expect("info lock poisoned")
+            .get(&shard_id)
+            .cloned();
+        let start = info
+            .as_ref()
+            .map(|info| info.start_routing_slot)
+            .unwrap_or_default();
+        let end = info
+            .as_ref()
+            .map(|info| info.end_routing_slot)
+            .unwrap_or(u32::MAX);
+        page_routing_slot(key, start, end)
+    }
+
+    pub fn create_slot_dump_manifest(
+        &self,
+        shard_id: ShardId,
+        selected_slots: impl IntoIterator<Item = u32>,
+    ) -> Result<SlotDumpManifest, Status> {
+        let selected_slots = selected_slots.into_iter().collect::<BTreeSet<_>>();
+        let summaries = self.slot_storage_summaries(shard_id);
+        if summaries.is_empty()
+            && !self
+                .shards
+                .read()
+                .expect("engine lock poisoned")
+                .contains_key(&shard_id)
+        {
+            return Err(Status::error("shard_not_loaded", "shard is not loaded"));
+        }
+        let mut slot_summaries = summaries
+            .into_iter()
+            .filter(|summary| {
+                selected_slots.is_empty() || selected_slots.contains(&summary.routing_slot)
+            })
+            .collect::<Vec<_>>();
+        slot_summaries.sort_by_key(|summary| summary.routing_slot);
+        let mut page_segment_ids = slot_summaries
+            .iter()
+            .flat_map(|summary| summary.page_segment_ids.iter().copied())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        page_segment_ids.sort_unstable();
+        let oplog_sequence = self.oplog_store.stats(shard_id).last_sequence;
+        let index_log_sequence = self.index_log_store.stats(shard_id).last_sequence;
+        let created_unix_ms = now_ms();
+        let manifest_id = format!("{shard_id}-{index_log_sequence}-{created_unix_ms}");
+        let mut manifest = SlotDumpManifest {
+            version: 1,
+            shard_id,
+            manifest_id,
+            created_unix_ms,
+            slot_ids: slot_summaries
+                .iter()
+                .map(|summary| summary.routing_slot)
+                .collect(),
+            page_segment_ids,
+            oplog_sequence,
+            index_log_sequence,
+            live_page_refs: slot_summaries
+                .iter()
+                .map(|summary| summary.page_ref_count)
+                .sum(),
+            logical_bytes: slot_summaries
+                .iter()
+                .map(|summary| summary.logical_bytes)
+                .sum(),
+            physical_bytes: slot_summaries
+                .iter()
+                .map(|summary| summary.physical_bytes)
+                .sum(),
+            slot_summaries,
+            checksum: String::new(),
+        };
+        manifest.checksum = slot_dump_manifest_checksum(&manifest)?;
+        self.persist_slot_dump_manifest(&manifest)
+            .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
+        Ok(manifest)
+    }
+
+    pub fn list_slot_dump_manifests(&self, shard_id: ShardId) -> Vec<SlotDumpManifest> {
+        list_slot_dump_manifests_at(&self.index_dir, shard_id).unwrap_or_default()
+    }
+
+    pub fn validate_slot_dump_manifest(&self, manifest: &SlotDumpManifest) -> Result<(), Status> {
+        let expected = slot_dump_manifest_checksum(manifest)
+            .map_err(|_| Status::error("slot_dump_corrupt", "slot dump manifest is corrupt"))?;
+        if manifest.checksum != expected {
+            return Err(Status::error(
+                "slot_dump_checksum_mismatch",
+                "slot dump manifest checksum mismatch",
+            ));
+        }
+        let existing_segments = self
+            .page_store
+            .segment_ids()
+            .map_err(|err| Status::error("slot_dump_invalid", err.to_string()))?
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let missing = manifest
+            .page_segment_ids
+            .iter()
+            .copied()
+            .filter(|id| !existing_segments.contains(id))
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            return Err(Status::error(
+                "slot_dump_missing_page_segments",
+                format!("slot dump references missing page segments: {missing:?}"),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn storage_lifecycle_plan(&self, request: StorageLifecycleRequest) -> StorageLifecyclePlan {
+        let slot_summaries = self.slot_storage_summaries(request.shard_id);
+        let dirty_slots = slot_summaries
+            .iter()
+            .filter(|summary| summary.dirty_object_count > 0)
+            .map(|summary| summary.routing_slot)
+            .collect::<Vec<_>>();
+        let selected_dump_slots = if request.selected_dump_slots.is_empty() {
+            dirty_slots.clone()
+        } else {
+            request.selected_dump_slots.clone()
+        };
+        let live_page_segment_ids = self.live_page_segment_ids(request.shard_id);
+        let live_page_segment_set = live_page_segment_ids
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let stale_page_segment_ids = self
+            .page_store
+            .segment_ids()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|id| !live_page_segment_set.contains(id))
+            .collect::<Vec<_>>();
+        let delayed_destroy_reports = self
+            .page_store
+            .delayed_destroy_segment_reports()
+            .unwrap_or_default();
+        let mut reasons = Vec::new();
+        if !selected_dump_slots.is_empty() {
+            reasons.push("dirty_slot_dump".to_string());
+        }
+        if !stale_page_segment_ids.is_empty() {
+            reasons.push("stale_page_segment_gc".to_string());
+        }
+        if request.purge_delayed_destroy && !delayed_destroy_reports.is_empty() {
+            reasons.push("delayed_destroy_purge".to_string());
+        }
+        if request.invalidate_cache {
+            reasons.push("cache_invalidation".to_string());
+        }
+        StorageLifecyclePlan {
+            shard_id: request.shard_id,
+            dirty_slots,
+            selected_dump_slots,
+            slot_summaries,
+            live_page_segment_ids,
+            stale_page_segment_ids,
+            delayed_destroy_page_segment_ids: delayed_destroy_reports
+                .iter()
+                .map(|report| report.page_segment_id)
+                .collect(),
+            reclaimable_physical_bytes: delayed_destroy_reports
+                .iter()
+                .map(|report| report.physical_bytes)
+                .sum(),
+            reasons,
+        }
+    }
+
+    pub fn apply_storage_lifecycle(
+        &self,
+        request: StorageLifecycleRequest,
+    ) -> StorageLifecycleReport {
+        let plan = self.storage_lifecycle_plan(request.clone());
+        let dump_manifest = if plan.selected_dump_slots.is_empty() {
+            None
+        } else {
+            self.create_slot_dump_manifest(request.shard_id, plan.selected_dump_slots.clone())
+                .ok()
+        };
+        let (cache_entries_removed, cache_disk_bytes_removed) = if request.invalidate_cache {
+            self.cache
+                .invalidate_shard(request.shard_id)
+                .map(|report| (report.memory_entries_removed, report.disk_bytes_removed))
+                .unwrap_or_default()
+        } else {
+            (0, 0)
+        };
+        let purge_report = if request.purge_delayed_destroy {
+            self.page_store
+                .purge_delayed_destroy_segments_with_report()
+                .unwrap_or_default()
+        } else {
+            Default::default()
+        };
+        StorageLifecycleReport {
+            shard_id: request.shard_id,
+            plan,
+            dump_manifest,
+            cache_entries_removed,
+            cache_disk_bytes_removed,
+            delayed_destroy_purged_segments: purge_report.purged_page_segment_ids,
+            delayed_destroy_purged_bytes: purge_report.purged_physical_bytes,
+        }
+    }
+
+    pub fn storage_recovery_boundary_report(
+        &self,
+        shard_id: ShardId,
+    ) -> StorageRecoveryBoundaryReport {
+        let manifests = self.list_slot_dump_manifests(shard_id);
+        let latest_dump_oplog_sequence = manifests
+            .iter()
+            .map(|manifest| manifest.oplog_sequence)
+            .max()
+            .unwrap_or_default();
+        let latest_dump_index_log_sequence = manifests
+            .iter()
+            .map(|manifest| manifest.index_log_sequence)
+            .max()
+            .unwrap_or_default();
+        let latest_safe_oplog_sequence = self.oplog_store.stats(shard_id).last_sequence;
+        let latest_safe_index_log_sequence = self.index_log_store.stats(shard_id).last_sequence;
+        let live_page_segment_ids = self
+            .live_page_segment_ids(shard_id)
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let all_segment_ids = self
+            .page_store
+            .segment_ids()
+            .unwrap_or_default()
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let orphan_page_segment_ids = all_segment_ids
+            .difference(&live_page_segment_ids)
+            .copied()
+            .collect::<Vec<_>>();
+        let latest_dump_slots = manifests
+            .last()
+            .map(|manifest| manifest.slot_ids.iter().copied().collect::<BTreeSet<_>>())
+            .unwrap_or_default();
+        let missing_dump_slot_ids = self
+            .slot_storage_summaries(shard_id)
+            .into_iter()
+            .filter(|summary| summary.dirty_object_count > 0)
+            .map(|summary| summary.routing_slot)
+            .filter(|slot| !latest_dump_slots.contains(slot))
+            .collect::<Vec<_>>();
+        let recovery = self.storage_recovery_report_without_boundary(shard_id);
+        let corrupt_page_segment_ids = recovery
+            .page_segment_reports
+            .iter()
+            .filter(|report| report.has_corruption)
+            .map(|report| report.page_segment_id)
+            .collect::<Vec<_>>();
+        let unreadable_page_bytes = recovery
+            .unreadable_page_refs
+            .iter()
+            .map(|error| error.length)
+            .sum();
+        StorageRecoveryBoundaryReport {
+            shard_id,
+            latest_safe_oplog_sequence,
+            latest_safe_index_log_sequence,
+            latest_dump_oplog_sequence,
+            latest_dump_index_log_sequence,
+            selected_replay_oplog_sequence: latest_dump_oplog_sequence
+                .min(latest_safe_oplog_sequence),
+            selected_replay_index_log_sequence: latest_dump_index_log_sequence
+                .min(latest_safe_index_log_sequence),
+            orphan_page_segment_ids,
+            missing_dump_slot_ids,
+            stale_index_page_refs: recovery.unreadable_page_refs,
+            corrupt_page_segment_ids,
+            unreadable_page_bytes,
+        }
+    }
+
     pub fn prometheus_metrics(&self) -> String {
         let mut out = String::new();
         out.push_str("# HELP temporalstore_shard_records Number of records by shard and kind.\n");
@@ -740,6 +1143,12 @@ impl TemporalEngine {
         out.push_str("# TYPE temporalstore_object_manager_dirty_objects gauge\n");
         out.push_str("# HELP temporalstore_object_manager_dirty_slots Dirty routing slots tracked by shard.\n");
         out.push_str("# TYPE temporalstore_object_manager_dirty_slots gauge\n");
+        out.push_str("# HELP temporalstore_storage_slot_page_refs Live page refs by shard and routing slot.\n");
+        out.push_str("# TYPE temporalstore_storage_slot_page_refs gauge\n");
+        out.push_str("# HELP temporalstore_storage_slot_bytes Live bytes by shard, routing slot, and kind.\n");
+        out.push_str("# TYPE temporalstore_storage_slot_bytes gauge\n");
+        out.push_str("# HELP temporalstore_storage_slot_dirty_objects Dirty objects by shard and routing slot.\n");
+        out.push_str("# TYPE temporalstore_storage_slot_dirty_objects gauge\n");
         out.push_str(
             "# HELP temporalstore_partition_routing_slots Routing slots owned by shard.\n",
         );
@@ -1005,6 +1414,41 @@ impl TemporalEngine {
                 &[("shard_id", stats.shard_id.to_string())],
                 stats.object_manager.dirty_slot_count as u64,
             );
+            for summary in self.slot_storage_summaries(stats.shard_id) {
+                push_metric(
+                    &mut out,
+                    "temporalstore_storage_slot_page_refs",
+                    &[
+                        ("shard_id", stats.shard_id.to_string()),
+                        ("slot", summary.routing_slot.to_string()),
+                    ],
+                    summary.page_ref_count,
+                );
+                for (kind, value) in [
+                    ("logical", summary.logical_bytes),
+                    ("physical", summary.physical_bytes),
+                ] {
+                    push_metric(
+                        &mut out,
+                        "temporalstore_storage_slot_bytes",
+                        &[
+                            ("shard_id", stats.shard_id.to_string()),
+                            ("slot", summary.routing_slot.to_string()),
+                            ("kind", kind.to_string()),
+                        ],
+                        value,
+                    );
+                }
+                push_metric(
+                    &mut out,
+                    "temporalstore_storage_slot_dirty_objects",
+                    &[
+                        ("shard_id", stats.shard_id.to_string()),
+                        ("slot", summary.routing_slot.to_string()),
+                    ],
+                    summary.dirty_object_count,
+                );
+            }
             push_metric(
                 &mut out,
                 "temporalstore_partition_routing_slots",
@@ -1178,6 +1622,12 @@ impl TemporalEngine {
     }
 
     pub fn storage_recovery_report(&self, shard_id: ShardId) -> StorageRecoveryReport {
+        let mut report = self.storage_recovery_report_without_boundary(shard_id);
+        report.boundary = self.storage_recovery_boundary_report(shard_id);
+        report
+    }
+
+    fn storage_recovery_report_without_boundary(&self, shard_id: ShardId) -> StorageRecoveryReport {
         let index_bytes = self
             .index_path(shard_id)
             .metadata()
@@ -1301,6 +1751,7 @@ impl TemporalEngine {
             readable_page_refs,
             unreadable_page_refs,
             all_live_pages_readable: total_page_refs == readable_page_refs,
+            boundary: StorageRecoveryBoundaryReport::default(),
         }
     }
 
@@ -1475,6 +1926,20 @@ impl TemporalEngine {
         self.index_dir.join(format!("shard-{shard_id}.index.json"))
     }
 
+    fn persist_slot_dump_manifest(
+        &self,
+        manifest: &SlotDumpManifest,
+    ) -> Result<(), std::io::Error> {
+        let path =
+            slot_dump_manifest_path(&self.index_dir, manifest.shard_id, &manifest.manifest_id);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let bytes = serde_json::to_vec_pretty(manifest)
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+        fs::write(path, bytes)
+    }
+
     fn load_index(&self, shard_id: ShardId) -> Option<ShardState> {
         let bytes = fs::read(self.index_path(shard_id)).ok()?;
         serde_json::from_slice(&bytes).ok()
@@ -1639,6 +2104,69 @@ fn unique_temp_path(kind: &str) -> PathBuf {
         "temporalstore-rust-{kind}-{}-{nanos}-{counter}",
         std::process::id()
     ))
+}
+
+fn slot_dump_manifest_dir(index_dir: &std::path::Path, shard_id: ShardId) -> PathBuf {
+    index_dir
+        .join("slot-dumps")
+        .join(format!("shard-{shard_id}"))
+}
+
+fn slot_dump_manifest_path(
+    index_dir: &std::path::Path,
+    shard_id: ShardId,
+    manifest_id: &str,
+) -> PathBuf {
+    slot_dump_manifest_dir(index_dir, shard_id).join(format!("{manifest_id}.json"))
+}
+
+fn list_slot_dump_manifests_at(
+    index_dir: &std::path::Path,
+    shard_id: ShardId,
+) -> Result<Vec<SlotDumpManifest>, std::io::Error> {
+    let dir = slot_dump_manifest_dir(index_dir, shard_id);
+    let mut manifests = Vec::new();
+    if !dir.exists() {
+        return Ok(manifests);
+    }
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        if !entry
+            .path()
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext == "json")
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let manifest = serde_json::from_slice::<SlotDumpManifest>(&fs::read(entry.path())?)
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+        manifests.push(manifest);
+    }
+    manifests.sort_by_key(|manifest| (manifest.index_log_sequence, manifest.created_unix_ms));
+    Ok(manifests)
+}
+
+fn latest_slot_dump_manifest_at(
+    index_dir: &std::path::Path,
+    shard_id: ShardId,
+) -> Option<SlotDumpManifest> {
+    list_slot_dump_manifests_at(index_dir, shard_id)
+        .ok()?
+        .into_iter()
+        .last()
+}
+
+fn slot_dump_manifest_checksum(manifest: &SlotDumpManifest) -> Result<String, Status> {
+    let mut payload = manifest.clone();
+    payload.checksum.clear();
+    serde_json::to_vec(&payload)
+        .map(|bytes| {
+            let digest = Sha256::digest(&bytes);
+            digest.iter().map(|byte| format!("{byte:02x}")).collect()
+        })
+        .map_err(|err| Status::error("slot_dump_checksum_failed", err.to_string()))
 }
 
 fn execute_on_shard(
@@ -3146,6 +3674,128 @@ fn collect_live_page_segment_ids(shard: &ShardState) -> BTreeSet<u64> {
         ids.extend(series.values().map(|meta| meta.address.page_segment_id));
     }
     ids
+}
+
+#[derive(Debug, Clone)]
+struct LivePageEntry {
+    object_key: String,
+    address: PageAddress,
+}
+
+fn collect_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
+    let mut entries = Vec::new();
+    entries.extend(shard.strings.iter().map(|(key, address)| LivePageEntry {
+        object_key: key.clone(),
+        address: address.clone(),
+    }));
+    for (key, fields) in &shard.hashes {
+        entries.extend(fields.values().map(|address| LivePageEntry {
+            object_key: key.clone(),
+            address: address.clone(),
+        }));
+    }
+    for (key, members) in &shard.sets {
+        entries.extend(members.values().map(|address| LivePageEntry {
+            object_key: key.clone(),
+            address: address.clone(),
+        }));
+    }
+    for (key, series) in &shard.features {
+        entries.extend(series.values().map(|address| LivePageEntry {
+            object_key: key.clone(),
+            address: address.clone(),
+        }));
+    }
+    for (key, series) in &shard.sequences {
+        entries.extend(series.values().map(|address| LivePageEntry {
+            object_key: key.clone(),
+            address: address.clone(),
+        }));
+    }
+    for (key, series) in &shard.ips {
+        entries.extend(series.values().map(|address| LivePageEntry {
+            object_key: key.clone(),
+            address: address.clone(),
+        }));
+    }
+    for (key, series) in &shard.ips_meta {
+        entries.extend(series.values().map(|meta| LivePageEntry {
+            object_key: key.clone(),
+            address: meta.address.clone(),
+        }));
+    }
+    entries
+}
+
+fn slot_storage_summaries(
+    shard: &ShardState,
+    start_routing_slot: u32,
+    end_routing_slot: u32,
+) -> Vec<SlotStorageSummary> {
+    let mut slots = BTreeMap::<u32, SlotStorageSummary>::new();
+    let mut objects_by_slot = BTreeMap::<u32, BTreeSet<String>>::new();
+    let mut page_segments_by_slot = BTreeMap::<u32, BTreeSet<u64>>::new();
+    for entry in collect_live_page_entries(shard) {
+        let routing_slot = entry
+            .address
+            .routing_slot
+            .unwrap_or_else(|| slot_for_object(&entry.object_key, 0, u32::MAX));
+        let summary = slots.entry(routing_slot).or_insert(SlotStorageSummary {
+            routing_slot,
+            ..SlotStorageSummary::default()
+        });
+        summary.page_ref_count = summary.page_ref_count.saturating_add(1);
+        summary.physical_bytes = summary.physical_bytes.saturating_add(entry.address.length);
+        summary.logical_bytes = summary.logical_bytes.saturating_add(entry.address.length);
+        if let Some(zone_id) = entry.address.zone_id {
+            summary.last_compacted_zone = Some(
+                summary
+                    .last_compacted_zone
+                    .map_or(zone_id, |current| current.max(zone_id)),
+            );
+        }
+        objects_by_slot
+            .entry(routing_slot)
+            .or_default()
+            .insert(entry.object_key);
+        page_segments_by_slot
+            .entry(routing_slot)
+            .or_default()
+            .insert(entry.address.page_segment_id);
+    }
+    for key in &shard.dirty_objects {
+        let routing_slot = page_routing_slot(key, start_routing_slot, end_routing_slot);
+        let summary = slots.entry(routing_slot).or_insert(SlotStorageSummary {
+            routing_slot,
+            ..SlotStorageSummary::default()
+        });
+        summary.dirty_object_count = summary.dirty_object_count.saturating_add(1);
+        summary.dirty_generation = summary.dirty_generation.saturating_add(1);
+    }
+    for (routing_slot, summary) in &mut slots {
+        summary.object_count = objects_by_slot
+            .get(routing_slot)
+            .map(|objects| objects.len() as u64)
+            .unwrap_or_default();
+        summary.page_segment_ids = page_segments_by_slot
+            .get(routing_slot)
+            .map(|ids| ids.iter().copied().collect())
+            .unwrap_or_default();
+    }
+    slots.into_values().collect()
+}
+
+fn merge_last_dump_sequence(
+    mut summaries: Vec<SlotStorageSummary>,
+    manifest: &SlotDumpManifest,
+) -> Vec<SlotStorageSummary> {
+    let dumped_slots = manifest.slot_ids.iter().copied().collect::<BTreeSet<_>>();
+    for summary in &mut summaries {
+        if dumped_slots.contains(&summary.routing_slot) {
+            summary.last_dump_sequence = manifest.index_log_sequence;
+        }
+    }
+    summaries
 }
 
 fn collect_live_page_addresses(shard: &ShardState) -> Vec<PageAddress> {
@@ -7819,8 +8469,163 @@ mod tests {
         assert!(metrics.contains("temporalstore_object_manager_objects{shard_id=\"1\"} 1"));
         assert!(metrics.contains("temporalstore_object_manager_page_refs{shard_id=\"1\"} 1"));
         assert!(metrics.contains("temporalstore_object_manager_dirty_objects{shard_id=\"1\"} 1"));
+        assert!(metrics.contains("temporalstore_storage_slot_page_refs{shard_id=\"1\""));
+        assert!(metrics.contains("temporalstore_storage_slot_bytes{shard_id=\"1\""));
+        assert!(metrics.contains("temporalstore_storage_slot_dirty_objects{shard_id=\"1\""));
         assert!(
             metrics.contains("temporalstore_partition_routing_slots{shard_id=\"1\"} 4294967295")
         );
+    }
+
+    #[test]
+    fn slot_storage_summaries_track_live_refs_dirty_slots_and_manifest_sequence() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard_with(LoadShardRequest {
+            shard_id: 1,
+            load_version: 0,
+            local_node_id: None,
+            shard_uri: String::new(),
+            start_routing_slot: 10,
+            end_routing_slot: 12,
+            readonly: false,
+            table_name: String::new(),
+        });
+        for key in ["alpha", "beta", "gamma"] {
+            assert!(
+                engine
+                    .execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::StringSet {
+                            key: key.to_string(),
+                            value: key.as_bytes().to_vec(),
+                        },
+                    })
+                    .status
+                    .ok
+            );
+        }
+
+        let summaries = engine.slot_storage_summaries(1);
+        assert!(!summaries.is_empty());
+        assert_eq!(
+            summaries
+                .iter()
+                .map(|summary| summary.page_ref_count)
+                .sum::<u64>(),
+            3
+        );
+        assert_eq!(
+            summaries
+                .iter()
+                .map(|summary| summary.dirty_object_count)
+                .sum::<u64>(),
+            3
+        );
+        let dirty_slot = summaries
+            .iter()
+            .find(|summary| summary.dirty_object_count > 0)
+            .unwrap()
+            .routing_slot;
+        let manifest = engine
+            .create_slot_dump_manifest(1, [dirty_slot])
+            .expect("slot dump manifest should persist");
+        engine.validate_slot_dump_manifest(&manifest).unwrap();
+        let summaries = engine.slot_storage_summaries(1);
+        assert!(summaries
+            .iter()
+            .filter(|summary| summary.routing_slot == dirty_slot)
+            .all(|summary| summary.last_dump_sequence == manifest.index_log_sequence));
+    }
+
+    #[test]
+    fn slot_dump_manifest_validation_rejects_checksum_and_missing_segments() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            },
+        });
+        let mut manifest = engine
+            .create_slot_dump_manifest(1, Vec::new())
+            .expect("manifest should persist");
+        manifest.logical_bytes = manifest.logical_bytes.saturating_add(1);
+        assert!(
+            !engine
+                .validate_slot_dump_manifest(&manifest)
+                .unwrap_err()
+                .ok
+        );
+
+        let mut missing = engine
+            .create_slot_dump_manifest(1, Vec::new())
+            .expect("manifest should persist");
+        missing.page_segment_ids.push(999_999);
+        missing.checksum = slot_dump_manifest_checksum(&missing).unwrap();
+        assert!(!engine.validate_slot_dump_manifest(&missing).unwrap_err().ok);
+    }
+
+    #[test]
+    fn storage_lifecycle_plan_and_boundary_report_cover_dirty_and_orphan_segments() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: b"v1".to_vec(),
+            },
+        });
+        engine.page_store().roll_segment().unwrap();
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: b"v2".to_vec(),
+            },
+        });
+
+        let plan = engine.storage_lifecycle_plan(StorageLifecycleRequest {
+            shard_id: 1,
+            selected_dump_slots: Vec::new(),
+            purge_delayed_destroy: false,
+            invalidate_cache: false,
+        });
+        assert!(!plan.dirty_slots.is_empty());
+        assert_eq!(plan.selected_dump_slots, plan.dirty_slots);
+        assert!(plan.reasons.contains(&"dirty_slot_dump".to_string()));
+        assert!(plan.stale_page_segment_ids.contains(&0));
+
+        let report = engine.apply_storage_lifecycle(StorageLifecycleRequest {
+            shard_id: 1,
+            selected_dump_slots: plan.selected_dump_slots.clone(),
+            purge_delayed_destroy: false,
+            invalidate_cache: true,
+        });
+        assert!(report.dump_manifest.is_some());
+        let boundary = engine.storage_recovery_boundary_report(1);
+        assert_eq!(boundary.latest_safe_oplog_sequence, 2);
+        assert_eq!(boundary.latest_dump_oplog_sequence, 2);
+        assert!(boundary.orphan_page_segment_ids.contains(&0));
     }
 }

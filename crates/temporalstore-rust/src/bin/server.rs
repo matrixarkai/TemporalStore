@@ -29,7 +29,7 @@ use temporalstore_rust::{
     RaftControlLeadershipRequest, RaftFailoverReport, RaftMembershipChangeReport, RaftNodeId,
     RaftRpcRuntimeOptions, RaftTransport, ReplicaReplayLoop, ReplicaReplayOptions,
     ReplicaReplayRequest, ReplicaReplayResponse, RequestController, ScanStreamRequest,
-    SetConfigRequest, StreamReadRequest, UnloadShardRequest,
+    SetConfigRequest, StorageLifecycleRequest, StreamReadRequest, UnloadShardRequest,
 };
 use temporalstore_snapshot::{FileObjectStore, S3SnapshotStore};
 
@@ -195,6 +195,39 @@ fn main() {
             ("GET", "/server/dirty_objects") => json_response(200, &runtime.dirty_objects()),
             ("GET", "/server/queued_shard_workers") => {
                 json_response(200, &runtime.queued_shard_worker_infos())
+            }
+            ("GET", path) if path.starts_with("/server/storage/slots/") => {
+                let shard_id = path
+                    .trim_start_matches("/server/storage/slots/")
+                    .parse()
+                    .unwrap_or_default();
+                json_response(200, &engine.slot_storage_summaries(shard_id))
+            }
+            ("GET", path) if path.starts_with("/server/storage/dumps/") => {
+                let shard_id = path
+                    .trim_start_matches("/server/storage/dumps/")
+                    .parse()
+                    .unwrap_or_default();
+                json_response(200, &engine.list_slot_dump_manifests(shard_id))
+            }
+            ("GET", path) if path.starts_with("/server/storage/recovery_boundary/") => {
+                let shard_id = path
+                    .trim_start_matches("/server/storage/recovery_boundary/")
+                    .parse()
+                    .unwrap_or_default();
+                json_response(200, &engine.storage_recovery_boundary_report(shard_id))
+            }
+            ("POST", "/server/storage/lifecycle/plan") => {
+                match parse_json::<StorageLifecycleRequest>(&request.body) {
+                    Ok(req) => json_response(200, &runtime.storage_lifecycle_plan(req)),
+                    Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+                }
+            }
+            ("POST", "/server/storage/lifecycle/apply") => {
+                match parse_json::<StorageLifecycleRequest>(&request.body) {
+                    Ok(req) => json_response(200, &runtime.apply_storage_lifecycle(req)),
+                    Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+                }
             }
             ("GET", "/server/replica_replay_status") => {
                 json_response(200, &replica_replay_loop.status())

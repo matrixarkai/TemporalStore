@@ -36,15 +36,17 @@ pub use data_node::{
     CompactionRequest, CompactionResponse, DataNodePreflightReport, DataNodeRuntime,
     DataNodeRuntimeOptions, DataNodeRuntimeStats, DataNodeTaskKind, DataNodeTaskOutput,
     DataNodeTaskStatus, DirtyObjectInfo, DumpShardRequest, DumpShardResponse, GcRequest,
-    GcResponse, RequestController, ShardWorkerInfo,
+    GcResponse, RequestController, ShardWorkerInfo, StorageLifecycleResponse,
 };
 pub use e2e::{
     AsyncStorageJournal, EndToEndWorkflow, KillSwitches, ReplicaReadPolicy, RoutingClient,
     TemporalStoreClientOptions, WorkflowError, WorkflowProxy,
 };
 pub use engine::{
-    RustStorageObservation, ShardCompactionUtilityReport, StorageRecoveryPageError,
-    StorageRecoveryReport, StorageRecoverySegmentLiveReport, TemporalEngine,
+    RustStorageObservation, ShardCompactionUtilityReport, SlotDumpManifest, SlotStorageSummary,
+    StorageLifecyclePlan, StorageLifecycleReport, StorageLifecycleRequest,
+    StorageRecoveryBoundaryReport, StorageRecoveryPageError, StorageRecoveryReport,
+    StorageRecoverySegmentLiveReport, TemporalEngine,
 };
 pub use index_log::{IndexLogRecord, IndexLogStats, LocalIndexLogStore};
 pub use meta::{
