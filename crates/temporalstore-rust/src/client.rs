@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -174,7 +174,32 @@ pub struct ClientPreflightReport {
     pub stats: ClientStats,
     pub options: ClientOptions,
     pub topology_cache: ClientTopologyCacheReport,
+    #[serde(default)]
+    pub meta_sync: ClientMetaSyncReport,
     pub degraded_reasons: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientMetaSyncReport {
+    pub table_count: usize,
+    pub synced_table_count: usize,
+    pub error_table_count: usize,
+    pub total_sync_generation: u64,
+    pub tables: Vec<ClientMetaSyncTableReport>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientMetaSyncTableReport {
+    pub table: String,
+    pub namespace: String,
+    pub table_name: String,
+    pub sync_generation: u64,
+    pub last_success_unix_ms: u64,
+    pub last_error_unix_ms: u64,
+    pub next_sync_after_unix_ms: u64,
+    pub last_topology_version: u64,
+    pub consecutive_errors: u64,
+    pub last_error: String,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -246,7 +271,21 @@ struct ClientInner {
     routes: Mutex<HashMap<ShardId, CachedRoute>>,
     backend_failures: Mutex<HashMap<String, BackendFailureState>>,
     tables: Mutex<HashMap<String, TableOptions>>,
+    meta_sync_tables: Mutex<HashMap<String, ClientMetaSyncTableState>>,
     stats: Mutex<ClientStats>,
+}
+
+#[derive(Debug, Clone)]
+struct ClientMetaSyncTableState {
+    namespace: String,
+    table_name: String,
+    sync_generation: u64,
+    last_success_unix_ms: u64,
+    last_error_unix_ms: u64,
+    next_sync_after_unix_ms: u64,
+    last_topology_version: u64,
+    consecutive_errors: u64,
+    last_error: String,
 }
 
 #[derive(Debug, Clone)]
@@ -279,6 +318,7 @@ impl TemporalStoreClient {
                 routes: Mutex::default(),
                 backend_failures: Mutex::default(),
                 tables: Mutex::default(),
+                meta_sync_tables: Mutex::default(),
                 stats: Mutex::default(),
             }),
         }
@@ -298,6 +338,7 @@ impl TemporalStoreClient {
             .lock()
             .expect("client table cache lock poisoned")
             .insert(combine_name, options.clone());
+        self.ensure_meta_sync_table_state(&namespace, &table_name);
         self.inner
             .stats
             .lock()
@@ -353,6 +394,7 @@ impl TemporalStoreClient {
     ) -> Result<TableOptions, ClientError> {
         let namespace = namespace.into();
         let table_name = table_name.into();
+        self.ensure_meta_sync_table_state(&namespace, &table_name);
         self.inner
             .stats
             .lock()
@@ -381,6 +423,7 @@ impl TemporalStoreClient {
                     .lock()
                     .expect("client stats lock poisoned")
                     .meta_sync_errors += 1;
+                self.record_meta_sync_error(&namespace, &table_name, &err.to_string());
                 return Err(err.into());
             }
         };
@@ -390,11 +433,13 @@ impl TemporalStoreClient {
                 .lock()
                 .expect("client stats lock poisoned")
                 .meta_sync_errors += 1;
+            self.record_meta_sync_error(&namespace, &table_name, &topology.status.message);
             return Err(ClientError::Status(topology.status.message));
         }
-        let table = topology
-            .table
-            .ok_or_else(|| ClientError::Status("table topology missing".to_string()))?;
+        let table = topology.table.ok_or_else(|| {
+            self.record_meta_sync_error(&namespace, &table_name, "table topology missing");
+            ClientError::Status("table topology missing".to_string())
+        })?;
         let route_topology_version = self
             .current_meta_topology_version()
             .unwrap_or(table.topology_version)
@@ -509,6 +554,7 @@ impl TemporalStoreClient {
         for (shard_id, route) in routes {
             route_cache.insert(shard_id, route);
         }
+        self.record_meta_sync_success(&namespace, &table_name, route_topology_version);
         Ok(options)
     }
 
@@ -651,6 +697,46 @@ impl TemporalStoreClient {
         })
     }
 
+    pub fn meta_sync_report(&self) -> ClientMetaSyncReport {
+        let mut tables = self
+            .inner
+            .meta_sync_tables
+            .lock()
+            .expect("client meta sync table lock poisoned")
+            .iter()
+            .map(|(table, state)| ClientMetaSyncTableReport {
+                table: table.clone(),
+                namespace: state.namespace.clone(),
+                table_name: state.table_name.clone(),
+                sync_generation: state.sync_generation,
+                last_success_unix_ms: state.last_success_unix_ms,
+                last_error_unix_ms: state.last_error_unix_ms,
+                next_sync_after_unix_ms: state.next_sync_after_unix_ms,
+                last_topology_version: state.last_topology_version,
+                consecutive_errors: state.consecutive_errors,
+                last_error: state.last_error.clone(),
+            })
+            .collect::<Vec<_>>();
+        tables.sort_by(|left, right| left.table.cmp(&right.table));
+        let table_count = tables.len();
+        let synced_table_count = tables
+            .iter()
+            .filter(|table| table.last_success_unix_ms > 0 && table.consecutive_errors == 0)
+            .count();
+        let error_table_count = tables
+            .iter()
+            .filter(|table| table.consecutive_errors > 0)
+            .count();
+        let total_sync_generation = tables.iter().map(|table| table.sync_generation).sum();
+        ClientMetaSyncReport {
+            table_count,
+            synced_table_count,
+            error_table_count,
+            total_sync_generation,
+            tables,
+        }
+    }
+
     pub fn close_table(&self, table: &TemporalStoreTable) -> Result<(), ClientError> {
         let removed = self
             .inner
@@ -670,6 +756,11 @@ impl TemporalStoreClient {
                 .lock()
                 .expect("client route cache lock poisoned")
                 .clear();
+            self.inner
+                .meta_sync_tables
+                .lock()
+                .expect("client meta sync table lock poisoned")
+                .remove(&table_combine_name(table.namespace(), table.table_name()));
             Ok(())
         } else {
             Err(ClientError::Status("table not found".to_string()))
@@ -685,6 +776,7 @@ impl TemporalStoreClient {
         let stats = self.stats();
         let route_cache_size = self.route_cache_size();
         let topology_cache = self.topology_cache_report();
+        let meta_sync = self.meta_sync_report();
         let table_cache_size = self
             .inner
             .tables
@@ -700,6 +792,9 @@ impl TemporalStoreClient {
         let mut degraded_reasons = Vec::new();
         if stats.meta_sync_errors > 0 {
             degraded_reasons.push("meta_sync_errors".to_string());
+        }
+        if meta_sync.error_table_count > 0 {
+            degraded_reasons.push("meta_sync_table_errors".to_string());
         }
         if stats.backend_errors > 0 {
             degraded_reasons.push("backend_errors".to_string());
@@ -723,6 +818,7 @@ impl TemporalStoreClient {
             stats,
             options,
             topology_cache,
+            meta_sync,
             degraded_reasons,
         }
     }
@@ -850,6 +946,86 @@ impl TemporalStoreClient {
                     consecutive_failures,
                 },
             );
+    }
+
+    fn ensure_meta_sync_table_state(&self, namespace: &str, table_name: &str) {
+        let key = table_combine_name(namespace, table_name);
+        self.inner
+            .meta_sync_tables
+            .lock()
+            .expect("client meta sync table lock poisoned")
+            .entry(key)
+            .or_insert_with(|| ClientMetaSyncTableState {
+                namespace: namespace.to_string(),
+                table_name: table_name.to_string(),
+                sync_generation: 0,
+                last_success_unix_ms: 0,
+                last_error_unix_ms: 0,
+                next_sync_after_unix_ms: now_unix_ms()
+                    .saturating_add(self.inner.options.meta_sync_interval_ms),
+                last_topology_version: 0,
+                consecutive_errors: 0,
+                last_error: String::new(),
+            });
+    }
+
+    fn record_meta_sync_success(&self, namespace: &str, table_name: &str, topology_version: u64) {
+        let key = table_combine_name(namespace, table_name);
+        let now = now_unix_ms();
+        let mut states = self
+            .inner
+            .meta_sync_tables
+            .lock()
+            .expect("client meta sync table lock poisoned");
+        let state = states
+            .entry(key)
+            .or_insert_with(|| ClientMetaSyncTableState {
+                namespace: namespace.to_string(),
+                table_name: table_name.to_string(),
+                sync_generation: 0,
+                last_success_unix_ms: 0,
+                last_error_unix_ms: 0,
+                next_sync_after_unix_ms: 0,
+                last_topology_version: 0,
+                consecutive_errors: 0,
+                last_error: String::new(),
+            });
+        state.sync_generation = state.sync_generation.saturating_add(1);
+        state.last_success_unix_ms = now;
+        state.next_sync_after_unix_ms =
+            now.saturating_add(self.inner.options.meta_sync_interval_ms);
+        state.last_topology_version = topology_version;
+        state.consecutive_errors = 0;
+        state.last_error.clear();
+    }
+
+    fn record_meta_sync_error(&self, namespace: &str, table_name: &str, error: &str) {
+        let key = table_combine_name(namespace, table_name);
+        let now = now_unix_ms();
+        let mut states = self
+            .inner
+            .meta_sync_tables
+            .lock()
+            .expect("client meta sync table lock poisoned");
+        let state = states
+            .entry(key)
+            .or_insert_with(|| ClientMetaSyncTableState {
+                namespace: namespace.to_string(),
+                table_name: table_name.to_string(),
+                sync_generation: 0,
+                last_success_unix_ms: 0,
+                last_error_unix_ms: 0,
+                next_sync_after_unix_ms: 0,
+                last_topology_version: 0,
+                consecutive_errors: 0,
+                last_error: String::new(),
+            });
+        state.sync_generation = state.sync_generation.saturating_add(1);
+        state.last_error_unix_ms = now;
+        state.next_sync_after_unix_ms =
+            now.saturating_add(self.inner.options.meta_sync_interval_ms);
+        state.consecutive_errors = state.consecutive_errors.saturating_add(1);
+        state.last_error = error.to_string();
     }
 
     pub fn execute(&self, request: ExecuteRequest) -> Result<ExecuteResponse, HttpError> {
@@ -2574,6 +2750,14 @@ fn duration_ms_u64(duration: Duration) -> u64 {
     duration.as_millis().min(u128::from(u64::MAX)) as u64
 }
 
+fn now_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(u128::from(u64::MAX)) as u64
+}
+
 pub fn shard_id_for_key(
     key: &str,
     first_shard_id: ShardId,
@@ -3515,6 +3699,97 @@ mod tests {
         assert_eq!(table.options().drop_percent, 17);
         let routed = table.shard_id_for_key("routing-key");
         assert!((10..14).contains(&routed));
+    }
+
+    #[test]
+    fn client_meta_sync_report_tracks_success_and_table_errors() {
+        let meta_addr = free_local_addr();
+        let meta_addr_for_listener = meta_addr.clone();
+        std::thread::spawn(move || {
+            serve(&meta_addr_for_listener, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    ("POST", "/tables/topology") => {
+                        let req = parse_json::<GetTableTopologyRequest>(&request.body).unwrap();
+                        if req.table_name == "bad" {
+                            return json_response(
+                                200,
+                                &TableTopologyResponse {
+                                    status: Status::error("not_found", "missing table"),
+                                    table: None,
+                                    partitions: Vec::new(),
+                                    unchanged: false,
+                                },
+                            );
+                        }
+                        json_response(
+                            200,
+                            &TableTopologyResponse {
+                                status: Status::ok(),
+                                table: Some(TableMetaInfo {
+                                    table_id: 11,
+                                    namespace: req.namespace,
+                                    table_name: req.table_name,
+                                    state: crate::meta::MetaEntityState::Normal,
+                                    topology_version: 9,
+                                    first_shard_id: 3,
+                                    shard_count: 2,
+                                    replica_count: 1,
+                                    use_cpp_partition_ids: false,
+                                    partition_version: 0,
+                                    serving_options: crate::meta::TableServingOptions::default(),
+                                }),
+                                partitions: Vec::new(),
+                                unchanged: false,
+                            },
+                        )
+                    }
+                    _ => json_response(404, &Status::error("not_found", "not found")),
+                }
+            })
+            .unwrap();
+        });
+        wait_for_http(&meta_addr);
+
+        let client = TemporalStoreClient::with_options(ClientOptions {
+            meta_addr: Some(meta_addr),
+            meta_sync_interval_ms: 25,
+            ..ClientOptions::default()
+        });
+        let table = client.open_table_from_meta("ns", "tbl").unwrap();
+        assert_eq!(table.options().first_shard_id, 3);
+        let err = client.sync_table_topology("ns", "bad").unwrap_err();
+        assert!(err.to_string().contains("missing table"));
+
+        let report = client.meta_sync_report();
+        assert_eq!(report.table_count, 2);
+        assert_eq!(report.synced_table_count, 1);
+        assert_eq!(report.error_table_count, 1);
+        assert_eq!(report.total_sync_generation, 2);
+        let good = report
+            .tables
+            .iter()
+            .find(|table| table.table == "ns/tbl")
+            .unwrap();
+        assert_eq!(good.sync_generation, 1);
+        assert_eq!(good.last_topology_version, 9);
+        assert_eq!(good.consecutive_errors, 0);
+        assert!(good.last_success_unix_ms > 0);
+        assert!(good.next_sync_after_unix_ms >= good.last_success_unix_ms);
+        let bad = report
+            .tables
+            .iter()
+            .find(|table| table.table == "ns/bad")
+            .unwrap();
+        assert_eq!(bad.sync_generation, 1);
+        assert_eq!(bad.consecutive_errors, 1);
+        assert_eq!(bad.last_error, "missing table");
+        assert!(bad.last_error_unix_ms > 0);
+
+        let preflight = client.preflight_report();
+        assert_eq!(preflight.meta_sync.error_table_count, 1);
+        assert!(preflight
+            .degraded_reasons
+            .contains(&"meta_sync_table_errors".to_string()));
     }
 
     #[test]

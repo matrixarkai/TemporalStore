@@ -58,6 +58,23 @@ brpc and Thrift are intentionally not part of the Rust target. The Rust open-sou
 
 ## What Was Closed In The Latest Pass
 
+This pass closed the next client MetaSyncer observability gap:
+
+1. The Rust client now keeps per-open-table MetaSyncer state: sync generation, last success time,
+   last error time, next scheduled sync time, last topology version, consecutive errors, and the
+   last error string.
+2. Client preflight now includes a `meta_sync` report with table counts, synced/error table counts,
+   total generation, and sorted per-table details.
+3. Table open, explicit table-topology sync, request-time topology refresh, and close-table now
+   update or prune the MetaSyncer state alongside the existing table cache.
+4. A regression test covers successful metaserver sync, table-specific metaserver failure, degraded
+   preflight reporting, and the per-table MetaSyncer counters.
+
+This improves C++ `MetaSyncer` diagnosability for client/proxy operators. Remaining work is using
+the report to drive a stoppable production background worker with jitter/backoff controls.
+
+## What Was Closed In The Previous Pass
+
 This pass closed the next client/proxy request-time topology convergence gap:
 
 1. Table execute and batch execute now treat C++ topology statuses such as `meta_changed`,
