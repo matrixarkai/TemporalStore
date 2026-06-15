@@ -3,7 +3,9 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use temporalstore_rust::http::{json_response, parse_json, serve, HttpRequest};
+use temporalstore_rust::http::{
+    json_response, parse_json, post_json_with_options, serve, HttpRequest, HttpRequestOptions,
+};
 use temporalstore_rust::meta::{
     AckResponse, AddNamespaceRequest, AddTableRequest, DeleteTableRequest,
     FreezeStaleServersRequest, GetShardResponse, GetTableTopologyRequest, LoadFinishRequest,
@@ -17,10 +19,13 @@ use temporalstore_rust::raft::{
     ProductionRaftNode, RaftClusterStatus, RaftConfig, RaftNodeId,
 };
 use temporalstore_rust::rebalance::{
-    DeterministicTaskScheduler, SchedulerRunReport, SchedulerTask, SchedulerTaskKind,
-    SchedulerTaskResult, TaskSchedulerOptions, TaskSchedulerSnapshot,
+    DeterministicTaskScheduler, RebalanceStep, SchedulerRunReport, SchedulerTask,
+    SchedulerTaskKind, SchedulerTaskResult, TaskSchedulerOptions, TaskSchedulerSnapshot,
 };
-use temporalstore_rust::{production_readiness_report, types::Status};
+use temporalstore_rust::{
+    production_readiness_report, types::Status, LoadShardRequest, LoadShardResponse,
+    SchedulerLifecycleToken, UnloadShardRequest, UnloadShardResponse,
+};
 
 fn main() {
     let addr = std::env::var("TS_META_BIND_ADDR")
@@ -78,6 +83,20 @@ struct MetaSchedulerRestoreRequest {
     snapshot: TaskSchedulerSnapshot,
 }
 
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+struct MetaSchedulerExecuteRequest {
+    now_ms: u64,
+    node_addr: String,
+    #[serde(default)]
+    dry_run: bool,
+    #[serde(default)]
+    load_request: Option<LoadShardRequest>,
+    #[serde(default)]
+    options: Option<TaskSchedulerOptions>,
+    #[serde(default)]
+    http: HttpRequestOptionsView,
+}
+
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct MetaSchedulerTaskResponse {
     status: Status,
@@ -99,6 +118,56 @@ struct MetaSchedulerSnapshotResponse {
     status: Status,
     snapshot: Option<TaskSchedulerSnapshot>,
     queue_len: usize,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+struct MetaSchedulerExecuteResponse {
+    status: Status,
+    task: Option<SchedulerTask>,
+    #[serde(default)]
+    lifecycle_token: Option<SchedulerLifecycleToken>,
+    node_addr: String,
+    dry_run: bool,
+    calls: Vec<MetaSchedulerNodeCall>,
+    scheduler_report: Option<SchedulerRunReport>,
+    queue_len: usize,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+struct MetaSchedulerNodeCall {
+    path: String,
+    skipped: bool,
+    status: Status,
+}
+
+#[derive(Debug, Clone, Copy, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+struct HttpRequestOptionsView {
+    #[serde(default = "default_connect_timeout_ms")]
+    connect_timeout_ms: u64,
+    #[serde(default = "default_io_timeout_ms")]
+    io_timeout_ms: u64,
+    #[serde(default)]
+    max_retries: usize,
+}
+
+impl Default for HttpRequestOptionsView {
+    fn default() -> Self {
+        Self {
+            connect_timeout_ms: default_connect_timeout_ms(),
+            io_timeout_ms: default_io_timeout_ms(),
+            max_retries: 1,
+        }
+    }
+}
+
+impl From<HttpRequestOptionsView> for HttpRequestOptions {
+    fn from(value: HttpRequestOptionsView) -> Self {
+        Self {
+            connect_timeout_ms: value.connect_timeout_ms,
+            io_timeout_ms: value.io_timeout_ms,
+            max_retries: value.max_retries,
+        }
+    }
 }
 
 impl MetaTaskScheduler {
@@ -196,6 +265,77 @@ impl MetaTaskScheduler {
         }
     }
 
+    fn execute_next(&self, request: MetaSchedulerExecuteRequest) -> MetaSchedulerExecuteResponse {
+        let Some(task) = self.peek_next(request.now_ms) else {
+            return MetaSchedulerExecuteResponse {
+                status: Status::error("scheduler_empty", "no runnable scheduler task"),
+                task: None,
+                lifecycle_token: None,
+                node_addr: request.node_addr,
+                dry_run: request.dry_run,
+                calls: Vec::new(),
+                scheduler_report: None,
+                queue_len: self.queue_len(),
+            };
+        };
+
+        let execution = execute_scheduler_task_on_node(&task, &request);
+        if request.dry_run {
+            return MetaSchedulerExecuteResponse {
+                status: execution.status,
+                task: Some(task),
+                lifecycle_token: execution.lifecycle_token,
+                node_addr: request.node_addr,
+                dry_run: true,
+                calls: execution.calls,
+                scheduler_report: None,
+                queue_len: self.queue_len(),
+            };
+        }
+
+        let result = if execution.status.ok {
+            SchedulerTaskResult::Ok
+        } else {
+            SchedulerTaskResult::RetryLater
+        };
+        let run = self.run_next(MetaSchedulerRunRequest {
+            now_ms: request.now_ms,
+            result,
+            options: request.options,
+        });
+        let status = if execution.status.ok {
+            run.status.clone()
+        } else {
+            execution.status.clone()
+        };
+        MetaSchedulerExecuteResponse {
+            status,
+            task: Some(task),
+            lifecycle_token: execution.lifecycle_token,
+            node_addr: request.node_addr,
+            dry_run: false,
+            calls: execution.calls,
+            scheduler_report: run.report,
+            queue_len: run.queue_len,
+        }
+    }
+
+    fn peek_next(&self, now_ms: u64) -> Option<SchedulerTask> {
+        self.inner
+            .lock()
+            .expect("meta scheduler lock poisoned")
+            .snapshot()
+            .into_iter()
+            .find(|task| task.next_run_time_ms <= now_ms)
+    }
+
+    fn queue_len(&self) -> usize {
+        self.inner
+            .lock()
+            .expect("meta scheduler lock poisoned")
+            .queue_len()
+    }
+
     fn persist_locked(&self, scheduler: &DeterministicTaskScheduler) -> Status {
         match &self.snapshot_path {
             Some(path) => match save_scheduler_snapshot(path, &scheduler.export_snapshot()) {
@@ -205,6 +345,179 @@ impl MetaTaskScheduler {
             None => Status::ok(),
         }
     }
+}
+
+#[derive(Debug)]
+struct SchedulerNodeExecution {
+    status: Status,
+    lifecycle_token: Option<SchedulerLifecycleToken>,
+    calls: Vec<MetaSchedulerNodeCall>,
+}
+
+fn execute_scheduler_task_on_node(
+    task: &SchedulerTask,
+    request: &MetaSchedulerExecuteRequest,
+) -> SchedulerNodeExecution {
+    let SchedulerTaskKind::RebalanceStep(step) = &task.kind else {
+        return SchedulerNodeExecution {
+            status: Status::error(
+                "unsupported_scheduler_task",
+                "remote execution only supports rebalance steps",
+            ),
+            lifecycle_token: None,
+            calls: Vec::new(),
+        };
+    };
+
+    let token = task.lifecycle_token();
+    let mut calls = Vec::new();
+    if let Some(token) = &token {
+        let status = post_status_or_error(
+            &request.node_addr,
+            "/ServerService/RequireLifecycleToken",
+            token,
+            request.http.into(),
+            request.dry_run,
+        );
+        let ok = status.ok;
+        calls.push(MetaSchedulerNodeCall {
+            path: "/ServerService/RequireLifecycleToken".to_string(),
+            skipped: request.dry_run,
+            status,
+        });
+        if !ok {
+            return SchedulerNodeExecution {
+                status: calls.last().unwrap().status.clone(),
+                lifecycle_token: token.clone().into(),
+                calls,
+            };
+        }
+    }
+
+    let status = match step {
+        RebalanceStep::LoadTarget {
+            shard_id,
+            node_id,
+            load_version,
+            ..
+        } => {
+            let Some(mut load) = request.load_request.clone() else {
+                return SchedulerNodeExecution {
+                    status: Status::error(
+                        "missing_load_request",
+                        "LoadTarget execution requires load_request",
+                    ),
+                    lifecycle_token: token,
+                    calls,
+                };
+            };
+            if load.shard_id != *shard_id || load.load_version != *load_version {
+                return SchedulerNodeExecution {
+                    status: Status::error(
+                        "load_request_mismatch",
+                        "load_request shard_id/load_version does not match scheduler task",
+                    ),
+                    lifecycle_token: token,
+                    calls,
+                };
+            }
+            load.local_node_id.get_or_insert(*node_id);
+            let status = post_load_or_error(
+                &request.node_addr,
+                "/ServerService/Load",
+                &load,
+                request.http.into(),
+                request.dry_run,
+            );
+            calls.push(MetaSchedulerNodeCall {
+                path: "/ServerService/Load".to_string(),
+                skipped: request.dry_run,
+                status: status.clone(),
+            });
+            status
+        }
+        RebalanceStep::UnloadSource { shard_id, .. } => {
+            let unload = UnloadShardRequest {
+                shard_id: *shard_id,
+            };
+            let status = post_unload_or_error(
+                &request.node_addr,
+                "/ServerService/Unload",
+                &unload,
+                request.http.into(),
+                request.dry_run,
+            );
+            calls.push(MetaSchedulerNodeCall {
+                path: "/ServerService/Unload".to_string(),
+                skipped: request.dry_run,
+                status: status.clone(),
+            });
+            status
+        }
+        RebalanceStep::FreezeSource { .. } => Status::ok(),
+        RebalanceStep::UpdateMembership { .. } => Status::error(
+            "unsupported_rebalance_step",
+            "membership rebalance steps use the membership executor path",
+        ),
+    };
+
+    SchedulerNodeExecution {
+        status,
+        lifecycle_token: token,
+        calls,
+    }
+}
+
+fn post_status_or_error<T: serde::Serialize>(
+    addr: &str,
+    path: &str,
+    request: &T,
+    options: HttpRequestOptions,
+    dry_run: bool,
+) -> Status {
+    if dry_run {
+        return Status::ok();
+    }
+    post_json_with_options::<_, Status>(addr, path, request, options)
+        .unwrap_or_else(|err| Status::error("node_request_failed", err.to_string()))
+}
+
+fn post_load_or_error(
+    addr: &str,
+    path: &str,
+    request: &LoadShardRequest,
+    options: HttpRequestOptions,
+    dry_run: bool,
+) -> Status {
+    if dry_run {
+        return Status::ok();
+    }
+    post_json_with_options::<_, LoadShardResponse>(addr, path, request, options)
+        .map(|response| response.status)
+        .unwrap_or_else(|err| Status::error("node_request_failed", err.to_string()))
+}
+
+fn post_unload_or_error(
+    addr: &str,
+    path: &str,
+    request: &UnloadShardRequest,
+    options: HttpRequestOptions,
+    dry_run: bool,
+) -> Status {
+    if dry_run {
+        return Status::ok();
+    }
+    post_json_with_options::<_, UnloadShardResponse>(addr, path, request, options)
+        .map(|response| response.status)
+        .unwrap_or_else(|err| Status::error("node_request_failed", err.to_string()))
+}
+
+fn default_connect_timeout_ms() -> u64 {
+    200
+}
+
+fn default_io_timeout_ms() -> u64 {
+    500
 }
 
 fn save_scheduler_snapshot(path: &PathBuf, snapshot: &TaskSchedulerSnapshot) -> io::Result<()> {
@@ -469,6 +782,11 @@ fn handle(
         ("POST", "/meta/scheduler/run_next") => {
             parse_or(&request.body, |req: MetaSchedulerRunRequest| {
                 scheduler.run_next(req)
+            })
+        }
+        ("POST", "/meta/scheduler/execute_next") => {
+            parse_or(&request.body, |req: MetaSchedulerExecuteRequest| {
+                scheduler.execute_next(req)
             })
         }
         ("POST", "/meta/scheduler/restore") => {
@@ -1845,6 +2163,151 @@ mod tests {
     }
 
     #[test]
+    fn metaserver_scheduler_execute_next_dry_run_preserves_queue() {
+        let backend = MetaBackend::Single(SingleNodeMeta::default());
+        let scheduler = MetaTaskScheduler::default();
+        let task_kind = SchedulerTaskKind::RebalanceStep(RebalanceStep::UnloadSource {
+            shard_id: 42,
+            replica_id: 9,
+            node_id: 5,
+        });
+
+        let (code, body) = handle(
+            &backend,
+            &scheduler,
+            HttpRequest {
+                method: "POST".to_string(),
+                path: "/meta/scheduler/submit".to_string(),
+                body: serde_json::to_vec(&serde_json::json!({
+                    "priority": 1,
+                    "now_ms": 700,
+                    "kind": task_kind,
+                }))
+                .unwrap(),
+            },
+        );
+        assert_eq!(code, 200);
+        let submitted: MetaSchedulerTaskResponse = serde_json::from_slice(&body).unwrap();
+        assert!(submitted.status.ok);
+
+        let (code, body) = handle(
+            &backend,
+            &scheduler,
+            HttpRequest {
+                method: "POST".to_string(),
+                path: "/meta/scheduler/execute_next".to_string(),
+                body: serde_json::to_vec(&serde_json::json!({
+                    "now_ms": 700,
+                    "node_addr": "127.0.0.1:1",
+                    "dry_run": true
+                }))
+                .unwrap(),
+            },
+        );
+        assert_eq!(code, 200);
+        let executed: MetaSchedulerExecuteResponse = serde_json::from_slice(&body).unwrap();
+        assert!(executed.status.ok);
+        assert!(executed.dry_run);
+        assert!(executed.scheduler_report.is_none());
+        assert_eq!(executed.queue_len, 1);
+        assert_eq!(executed.calls.len(), 2);
+        assert!(executed.calls.iter().all(|call| call.skipped));
+        assert_eq!(
+            executed.calls[0].path,
+            "/ServerService/RequireLifecycleToken"
+        );
+        assert_eq!(executed.calls[1].path, "/ServerService/Unload");
+        assert_eq!(scheduler.snapshot().queue_len, 1);
+        assert_eq!(submitted.queue_len, 1);
+    }
+
+    #[test]
+    fn metaserver_scheduler_execute_next_installs_token_then_loads_node() {
+        let backend = MetaBackend::Single(SingleNodeMeta::default());
+        let scheduler = MetaTaskScheduler::default();
+        let (node_addr, records) = spawn_recording_nodeserver();
+        let task_kind = SchedulerTaskKind::RebalanceStep(RebalanceStep::LoadTarget {
+            shard_id: 44,
+            replica_id: 8,
+            node_id: 9,
+            load_version: 5,
+        });
+
+        let (code, body) = handle(
+            &backend,
+            &scheduler,
+            HttpRequest {
+                method: "POST".to_string(),
+                path: "/meta/scheduler/submit".to_string(),
+                body: serde_json::to_vec(&serde_json::json!({
+                    "priority": 1,
+                    "now_ms": 900,
+                    "kind": task_kind,
+                }))
+                .unwrap(),
+            },
+        );
+        assert_eq!(code, 200);
+        let submitted: MetaSchedulerTaskResponse = serde_json::from_slice(&body).unwrap();
+        assert!(submitted.status.ok);
+        let submitted_task = submitted.task.unwrap();
+
+        let load_request = LoadShardRequest {
+            shard_id: 44,
+            load_version: 5,
+            local_node_id: None,
+            shard_uri: "memory://metaserver-executor".to_string(),
+            start_routing_slot: 0,
+            end_routing_slot: 1023,
+            readonly: false,
+            table_name: "executor_table".to_string(),
+        };
+        let (code, body) = handle(
+            &backend,
+            &scheduler,
+            HttpRequest {
+                method: "POST".to_string(),
+                path: "/meta/scheduler/execute_next".to_string(),
+                body: serde_json::to_vec(&serde_json::json!({
+                    "now_ms": 900,
+                    "node_addr": node_addr,
+                    "load_request": load_request,
+                    "http": {
+                        "connect_timeout_ms": 1000,
+                        "io_timeout_ms": 1000,
+                        "max_retries": 10
+                    }
+                }))
+                .unwrap(),
+            },
+        );
+        assert_eq!(code, 200);
+        let executed: MetaSchedulerExecuteResponse = serde_json::from_slice(&body).unwrap();
+        assert!(executed.status.ok, "{executed:?}");
+        assert_eq!(executed.queue_len, 0);
+        assert_eq!(
+            executed.scheduler_report.unwrap().result,
+            SchedulerTaskResult::Ok
+        );
+        assert_eq!(executed.calls.len(), 2);
+        assert_eq!(
+            executed.calls[0].path,
+            "/ServerService/RequireLifecycleToken"
+        );
+        assert_eq!(executed.calls[1].path, "/ServerService/Load");
+
+        let records = records.lock().unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].0, "/ServerService/RequireLifecycleToken");
+        assert_eq!(records[0].1["operation"], "load");
+        assert_eq!(records[0].1["task_id"], submitted_task.id);
+        assert_eq!(records[1].0, "/ServerService/Load");
+        assert_eq!(records[1].1["shard_id"], 44);
+        assert_eq!(records[1].1["load_version"], 5);
+        assert_eq!(records[1].1["local_node_id"], 9);
+    }
+
+    #[test]
     fn metaserver_scheduler_persists_snapshot_file_after_mutations() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("scheduler.json");
@@ -1895,5 +2358,46 @@ mod tests {
         assert!(run.status.ok);
         assert_eq!(run.report.unwrap().task_id, submitted.task.unwrap().id);
         assert_eq!(run.queue_len, 0);
+    }
+
+    fn spawn_recording_nodeserver() -> (String, Arc<Mutex<Vec<(String, serde_json::Value)>>>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        drop(listener);
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let server_records = Arc::clone(&records);
+        let server_addr = addr.clone();
+        std::thread::spawn(move || {
+            serve(&server_addr, move |request| {
+                let body = if request.body.is_empty() {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::from_slice(&request.body).unwrap()
+                };
+                server_records
+                    .lock()
+                    .unwrap()
+                    .push((request.path.clone(), body));
+                match request.path.as_str() {
+                    "/ServerService/RequireLifecycleToken" => json_response(200, &Status::ok()),
+                    "/ServerService/Load" => json_response(
+                        200,
+                        &LoadShardResponse {
+                            status: Status::ok(),
+                        },
+                    ),
+                    "/ServerService/Unload" => json_response(
+                        200,
+                        &UnloadShardResponse {
+                            status: Status::ok(),
+                        },
+                    ),
+                    _ => json_response(404, &Status::error("not_found", "unknown path")),
+                }
+            })
+            .unwrap();
+        });
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        (addr, records)
     }
 }

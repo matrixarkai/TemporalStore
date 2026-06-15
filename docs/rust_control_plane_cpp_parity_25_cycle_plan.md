@@ -7,7 +7,7 @@ push.
 ## 25-Cycle Backlog
 
 1. Bridge metaserver scheduler lifecycle tokens to nodeserver admin APIs. Done.
-2. Execute scheduler load/unload/reload tasks against remote nodeserver HTTP endpoints.
+2. Execute scheduler load/unload tasks against remote nodeserver HTTP endpoints. Done.
 3. Add metaserver task result reporting from nodeserver lifecycle responses.
 4. Add scheduler-driven finish-load validation using task id and generation.
 5. Persist expected node lifecycle tokens in metaserver scheduler snapshots.
@@ -43,3 +43,21 @@ Cycle 1 exposes lifecycle tokens end to end at the admin surface:
 
 The next cycle should turn these APIs into an actual scheduler executor that calls remote
 nodeserver load/reload/unload routes.
+
+## Cycle 2 Implemented
+
+Cycle 2 adds the first applied metaserver-to-nodeserver scheduler executor:
+
+- `POST /meta/scheduler/execute_next` peeks the next runnable deterministic scheduler task.
+- Dry-run mode reports the remote node calls without mutating the scheduler queue.
+- Applied `LoadTarget` execution installs the lifecycle token through
+  `/ServerService/RequireLifecycleToken`, then calls `/ServerService/Load`.
+- Applied `UnloadSource` execution installs the lifecycle token, then calls
+  `/ServerService/Unload`.
+- Applied execution advances the scheduler with `Ok` on node success and `RetryLater` on node
+  request/status failure.
+- Regression coverage validates dry-run queue preservation and token-before-load ordering against
+  a fake nodeserver.
+
+The next cycle should add richer task outcome persistence/reporting and then extend the same
+executor shape to reload/freeze and membership-update workflows.
