@@ -12,6 +12,10 @@ The sidecar writes both converted TemporalStore metrics and exporter health metr
 - `temporalstore_vars_exporter_role_samples_scraped{service_role}` counts converted samples by role.
 - `temporalstore_client_validation_up{service_role="client",iteration}` is written by the local validation harness.
 - `temporalstore_client_benchmark_qps{service_role="client",phase,threads,iteration}` is written when `RUN_CLIENT_SCALE=1`.
+- `temporalstore_client_retry_attempts_total{service_role="client",phase,iteration,threads}` and
+  `temporalstore_client_retry_failures_total{service_role="client",phase,iteration,threads}` expose local client retry pressure.
+- `temporalstore_proxy_retry_attempts_total{service_role="proxy",phase,iteration}` and
+  `temporalstore_proxy_retry_failures_total{service_role="proxy",phase,iteration}` expose proxy smoke retry pressure.
 - `temporalstore_raft_gate_*` metrics are written by
   `tools/run_raft_stress_suite_ubuntu22.sh` after raft/failover gates finish,
   including failed gates.
@@ -20,7 +24,7 @@ The sidecar writes both converted TemporalStore metrics and exporter health metr
   `bcache2_metaserver_*{service_role="metaserver",source="metaserver"}`.
 - `temporalstore-alerts.yml` installs local production-readiness alerts for
   service availability, exporter scrape errors, client validation, proxy smoke,
-  client benchmark errors, and raft gate readiness.
+  client benchmark errors, retry exhaustion, and raft gate readiness.
 
 ## Defaults
 

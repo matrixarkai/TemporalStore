@@ -68,6 +68,24 @@ sum by (service_role, source) (increase({__name__=~".*_qps.*"}[1m]))
 sum by (iteration) (temporalstore_client_validation_up)
 ```
 
+6. Client/proxy retry pressure should be visible and failures should stay zero
+
+```promql
+sum by (service_role, phase) (temporalstore_client_retry_attempts_total)
+```
+
+```promql
+sum by (service_role, phase) (temporalstore_client_retry_failures_total)
+```
+
+```promql
+sum by (service_role, phase) (temporalstore_proxy_retry_attempts_total)
+```
+
+```promql
+sum by (service_role, phase) (temporalstore_proxy_retry_failures_total)
+```
+
 7. Raft/fault-tolerance gate evidence from the textfile collector
 
 ```promql

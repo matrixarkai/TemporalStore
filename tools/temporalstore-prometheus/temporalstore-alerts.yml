@@ -61,6 +61,26 @@ groups:
           summary: "TemporalStore client benchmark errors detected"
           description: "The local scale benchmark emitted one or more client-side errors."
 
+      - alert: TemporalStoreClientRetryFailures
+        expr: temporalstore_client_retry_failures_total > 0
+        for: 1m
+        labels:
+          severity: warning
+          component: client
+        annotations:
+          summary: "TemporalStore client retries exhausted"
+          description: "The local client/proxy validation observed retries that still failed after the retry budget."
+
+      - alert: TemporalStoreProxyRetryFailures
+        expr: temporalstore_proxy_retry_failures_total > 0
+        for: 1m
+        labels:
+          severity: warning
+          component: proxy
+        annotations:
+          summary: "TemporalStore proxy retries exhausted"
+          description: "The proxy smoke validation observed retries that still failed after the retry budget."
+
       - alert: TemporalStoreRaftGateNotProductionReady
         expr: temporalstore_raft_gate_production_ready == 0
         for: 1m
