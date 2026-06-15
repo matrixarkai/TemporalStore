@@ -569,7 +569,10 @@ impl ProxyService {
             new_namespace: options.namespace.clone(),
             new_config_version,
         };
-        if previous.namespace == options.namespace && previous_config_version == new_config_version
+        if previous.namespace == options.namespace
+            && previous_config_version == new_config_version
+            && previous.serving_mode == options.serving_mode
+            && previous.drop_percent == options.drop_percent
         {
             return report;
         }
@@ -772,7 +775,7 @@ impl ProxyService {
             &request,
             options.http_options(),
         ) {
-            Ok(response) if response.status.ok => {
+            Ok(response) if response.status.ok || response.status.code == "resource_frozen" => {
                 self.apply_heartbeat_config(&response);
                 response
             }
@@ -789,6 +792,8 @@ impl ProxyService {
                         config_changed: false,
                         namespace: String::new(),
                         config_version: 0,
+                        serving_mode: "not_serving".to_string(),
+                        drop_percent: 0,
                     });
                     if response.status.ok {
                         self.apply_heartbeat_config(&response);
@@ -804,6 +809,8 @@ impl ProxyService {
                 config_changed: false,
                 namespace: String::new(),
                 config_version: 0,
+                serving_mode: "not_serving".to_string(),
+                drop_percent: 0,
             },
         }
     }
@@ -841,7 +848,13 @@ impl ProxyService {
     }
 
     fn apply_heartbeat_config(&self, response: &ProxyHeartbeatResponse) {
-        if !response.config_changed {
+        let serving_mode = proxy_serving_mode_from_meta(&response.serving_mode);
+        let policy_changed = {
+            let options = self.options();
+            serving_mode.is_some_and(|mode| mode != options.serving_mode)
+                || response.drop_percent <= 100 && response.drop_percent != options.drop_percent
+        };
+        if !response.config_changed && !policy_changed {
             return;
         }
         let mut options = self.options();
@@ -850,6 +863,12 @@ impl ProxyService {
         }
         if response.config_version != 0 {
             options.config_version = response.config_version;
+        }
+        if let Some(serving_mode) = serving_mode {
+            options.serving_mode = serving_mode;
+        }
+        if response.drop_percent <= 100 {
+            options.drop_percent = response.drop_percent;
         }
         let _ = self.update_options_report(options);
     }
@@ -976,6 +995,18 @@ fn proxy_policy_rejection(options: &ProxyOptions, commands: &[Command]) -> Optio
         ));
     }
     None
+}
+
+fn proxy_serving_mode_from_meta(value: &str) -> Option<ProxyServingMode> {
+    match value.to_ascii_lowercase().replace('-', "_").as_str() {
+        "" => None,
+        "serving" => Some(ProxyServingMode::Serving),
+        "readonly" | "read_only" => Some(ProxyServingMode::Readonly),
+        "write_disabled" => Some(ProxyServingMode::WriteDisabled),
+        "degraded" => Some(ProxyServingMode::Degraded),
+        "not_serving" | "disabled" | "frozen" | "dropped" => Some(ProxyServingMode::NotServing),
+        _ => None,
+    }
 }
 
 fn proxy_command_is_write(command: &Command) -> bool {
@@ -1878,8 +1909,66 @@ mod tests {
         let options = proxy.options();
         assert_eq!(options.namespace, "serving-ns");
         assert_eq!(options.config_version, 9);
+        assert_eq!(options.serving_mode, ProxyServingMode::Serving);
+        assert_eq!(options.drop_percent, 0);
         assert_eq!(proxy_config_version(&options), 9);
         assert_eq!(proxy.info().stats.heartbeat_total, 1);
+    }
+
+    #[test]
+    fn proxy_heartbeat_applies_metaserver_serving_policy_transition() {
+        let meta = crate::meta::SingleNodeMeta::default();
+        meta.register_proxy(RegisterProxyRequest {
+            proxy_addr: "proxy-frozen-policy".to_string(),
+            namespace: "policy-ns".to_string(),
+            location: "zone-a".to_string(),
+            config_version: 5,
+            binary_version: "v-meta".to_string(),
+        });
+        meta.freeze_proxy(crate::meta::StateChangeRequest {
+            endpoint: "proxy-frozen-policy".to_string(),
+            freeze_cooldown_ms: 0,
+        });
+        let meta_addr = test_addr(18_327);
+        std::thread::spawn({
+            let meta = meta.clone();
+            move || {
+                serve(&meta_addr, move |request| {
+                    match (request.method.as_str(), request.path.as_str()) {
+                        ("POST", "/proxies/heartbeat") => {
+                            let req = parse_json::<ProxyHeartbeatRequest>(&request.body).unwrap();
+                            json_response(200, &meta.proxy_heartbeat(req))
+                        }
+                        _ => json_response(404, &Status::error("not_found", "not found")),
+                    }
+                })
+                .unwrap();
+            }
+        });
+        wait_for_http(&test_addr(18_327));
+
+        let proxy = ProxyService::new(ProxyOptions {
+            meta_addr: test_addr(18_327),
+            proxy_addr: "proxy-frozen-policy".to_string(),
+            namespace: "policy-ns".to_string(),
+            config_version: 5,
+            serving_mode: ProxyServingMode::Serving,
+            route_cache_ttl_ms: 60_000,
+            ..ProxyOptions::default()
+        });
+        let response = proxy.heartbeat_to_meta();
+        assert_eq!(response.status.code, "resource_frozen");
+        assert_eq!(response.serving_mode, "not_serving");
+        let options = proxy.options();
+        assert_eq!(options.serving_mode, ProxyServingMode::NotServing);
+
+        let rejected = proxy.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: "blocked".to_string(),
+            },
+        });
+        assert_eq!(rejected.status.code, "proxy_not_serving");
     }
 
     #[test]

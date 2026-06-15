@@ -6335,6 +6335,8 @@ impl MetaRaftCluster {
                 config_changed: false,
                 namespace: String::new(),
                 config_version: 0,
+                serving_mode: "not_serving".to_string(),
+                drop_percent: 0,
             },
             |meta| meta.proxy_heartbeat(request),
         )

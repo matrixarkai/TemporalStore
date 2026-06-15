@@ -58,6 +58,27 @@ brpc and Thrift are intentionally not part of the Rust target. The Rust open-sou
 
 ## What Was Closed In The Latest Pass
 
+This pass closed the eighth client/proxy/metaserver/nodeserver C++ parity cycle:
+
+1. `ProxyHeartbeatResponse` now carries Rust-native serving policy fields: `serving_mode` and
+   `drop_percent`, with serde defaults for compatibility.
+2. Metaserver maps normal proxies to `serving` and frozen/dropped proxies to `not_serving`.
+3. Frozen proxy heartbeat responses now include `not_serving` and mark the response as a policy
+   change.
+4. Proxy heartbeat handling applies metaserver serving policy updates, including `resource_frozen`
+   heartbeat responses.
+5. Proxy policy enforcement immediately rejects traffic after a frozen heartbeat drives local mode
+   to `NotServing`.
+6. Regression coverage validates metaserver policy fields and proxy application of frozen
+   heartbeat policy.
+
+This closes the heartbeat-side serving-policy convergence gap for proxy freeze/safe-mode behavior.
+Remaining work is route-cache invalidation from metaserver topology events, client/proxy topology
+convergence under table changes, membership-update execution, and full move/failover orchestration
+across metaserver, proxy, client, data-node, and Raft paths.
+
+## What Was Closed In The Previous Pass
+
 This pass closed the seventh client/proxy/metaserver/nodeserver C++ parity cycle:
 
 1. Data-node runtime now rejects foreground writes while a shard lifecycle state is `loading`,

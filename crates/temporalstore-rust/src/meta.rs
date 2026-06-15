@@ -271,6 +271,10 @@ pub struct ProxyHeartbeatResponse {
     pub config_changed: bool,
     pub namespace: String,
     pub config_version: u64,
+    #[serde(default)]
+    pub serving_mode: String,
+    #[serde(default)]
+    pub drop_percent: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1079,27 +1083,35 @@ impl SingleNodeMeta {
                 config_changed: false,
                 namespace: String::new(),
                 config_version: 0,
+                serving_mode: String::new(),
+                drop_percent: 0,
             };
         };
         if proxy.state == MetaEntityState::Frozen {
             return ProxyHeartbeatResponse {
                 status: Status::error("resource_frozen", "proxy frozen"),
-                config_changed: false,
+                config_changed: true,
                 namespace: proxy.namespace.clone(),
                 config_version: proxy.config_version,
+                serving_mode: proxy_serving_mode_for_state(proxy.state).to_string(),
+                drop_percent: 0,
             };
         }
         proxy.last_heartbeat_ms = now_ms();
         if !request.binary_version.is_empty() {
             proxy.binary_version = request.binary_version;
         }
-        let config_changed =
-            proxy.namespace != request.namespace || proxy.config_version > request.config_version;
+        let serving_mode = proxy_serving_mode_for_state(proxy.state).to_string();
+        let config_changed = proxy.namespace != request.namespace
+            || proxy.config_version > request.config_version
+            || proxy.state != MetaEntityState::Normal;
         ProxyHeartbeatResponse {
             status: Status::ok(),
             config_changed,
             namespace: proxy.namespace.clone(),
             config_version: proxy.config_version,
+            serving_mode,
+            drop_percent: 0,
         }
     }
 
@@ -2485,6 +2497,13 @@ fn validate_serving_options(options: &TableServingOptions) -> Result<(), String>
     Ok(())
 }
 
+fn proxy_serving_mode_for_state(state: MetaEntityState) -> &'static str {
+    match state {
+        MetaEntityState::Normal => "serving",
+        MetaEntityState::Frozen | MetaEntityState::Dropped => "not_serving",
+    }
+}
+
 fn apply_serving_options_patch(
     mut options: TableServingOptions,
     patch: &TableServingOptionsPatch,
@@ -3669,7 +3688,24 @@ mod tests {
         assert!(response.status.ok);
         assert!(response.config_changed);
         assert_eq!(response.config_version, 3);
+        assert_eq!(response.serving_mode, "serving");
+        assert_eq!(response.drop_percent, 0);
         assert_eq!(meta.list_proxies().proxies[0].binary_version, "v2");
+
+        let frozen = meta.freeze_proxy(StateChangeRequest {
+            endpoint: "p1".to_string(),
+            freeze_cooldown_ms: 0,
+        });
+        assert!(frozen.status.ok, "{frozen:?}");
+        let response = meta.proxy_heartbeat(ProxyHeartbeatRequest {
+            proxy_addr: "p1".to_string(),
+            namespace: "ns".to_string(),
+            config_version: 3,
+            binary_version: "v3".to_string(),
+        });
+        assert_eq!(response.status.code, "resource_frozen");
+        assert_eq!(response.serving_mode, "not_serving");
+        assert!(response.config_changed);
     }
 
     #[test]

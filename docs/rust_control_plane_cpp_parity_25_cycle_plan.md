@@ -13,7 +13,7 @@ push.
 5. Persist expected node lifecycle tokens in metaserver scheduler snapshots. Done.
 6. Add nodeserver async load/reload/unload jobs with progress and cancellation. Done.
 7. Reject foreground writes during controlled reloading/unloading states. Done.
-8. Add proxy heartbeat application of metaserver serving policy transitions.
+8. Add proxy heartbeat application of metaserver serving policy transitions. Done.
 9. Add proxy route-cache invalidation from metaserver topology events.
 10. Add proxy backend quarantine recovery probes.
 11. Add client background MetaSyncer jitter/backoff worker handle.
@@ -151,3 +151,22 @@ Cycle 7 turns data-node lifecycle transitions into a write-safety barrier:
 
 The next cycle should apply metaserver serving-policy transitions from proxy heartbeats so proxies
 converge on freeze/safe-mode state without waiting for manual route refresh.
+
+## Cycle 8 Implemented
+
+Cycle 8 makes proxy serving policy converge from metaserver heartbeat responses:
+
+- `ProxyHeartbeatResponse` now carries Rust-native serving policy fields: `serving_mode` and
+  `drop_percent`, with serde defaults for compatibility.
+- Metaserver maps normal proxies to `serving` and frozen/dropped proxies to `not_serving`.
+- Frozen proxy heartbeat responses now include `not_serving` and mark the response as a policy
+  change.
+- Proxy heartbeat handling applies metaserver serving policy updates, including `resource_frozen`
+  heartbeat responses.
+- Proxy policy enforcement immediately rejects traffic after a frozen heartbeat drives local mode
+  to `NotServing`.
+- Regression coverage validates metaserver policy fields and proxy application of frozen
+  heartbeat policy.
+
+The next cycle should add proxy route-cache invalidation from metaserver topology events so proxy
+routes converge after topology changes without waiting for backend failures or TTL expiry.
