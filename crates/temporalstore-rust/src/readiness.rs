@@ -56,6 +56,12 @@ impl ProductionReadinessReport {
     pub fn exact_failed_capabilities(&self) -> &[ReadinessCapabilityBlocker] {
         self.failed_capabilities.as_slice()
     }
+
+    pub fn service_summary(&self, service: &str) -> Option<&ServiceReadinessSummary> {
+        self.service_summaries
+            .iter()
+            .find(|summary| summary.service == service)
+    }
 }
 
 pub fn production_readiness_report() -> ProductionReadinessReport {
@@ -489,9 +495,7 @@ mod tests {
 
         for service in ["client", "proxy", "ingestion", "data_node", "metaserver"] {
             let summary = report
-                .service_summaries
-                .iter()
-                .find(|summary| summary.service == service)
+                .service_summary(service)
                 .expect("service summary must exist");
             assert!(!summary.ready, "{service} should still have blockers");
             assert!(
@@ -502,9 +506,7 @@ mod tests {
         }
 
         let data_node = report
-            .service_summaries
-            .iter()
-            .find(|summary| summary.service == "data_node")
+            .service_summary("data_node")
             .expect("data node summary must exist");
         assert_eq!(
             data_node.areas,

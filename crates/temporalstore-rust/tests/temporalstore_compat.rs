@@ -24,10 +24,9 @@ fn execute(engine: &TemporalEngine, command: Command) -> CommandResponse {
 fn production_readiness_service_summary_is_public_api() {
     let report = production_readiness_report();
     let data_node: ServiceReadinessSummary = report
-        .service_summaries
-        .into_iter()
-        .find(|summary| summary.service == "data_node")
-        .expect("data node service summary should be exported");
+        .service_summary("data_node")
+        .expect("data node service summary should be exported")
+        .clone();
     assert!(!data_node.ready);
     assert!(data_node.areas.contains(&"dataserver".to_string()));
     assert!(data_node
