@@ -140,6 +140,7 @@ register_gap() {
 }
 
 raft_pr_command='env BUILD_TYPE="${BUILD_TYPE}" RESULT_DIR="${RESULT_DIR}/raft_pr" ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=300 MEMBERSHIP_OPS=120 THREAD_LIST=2 BENCH_TIMEOUT_S=180 SNAPSHOT_PRESSURE_OPS=100 SNAPSHOT_PRESSURE_THREADS=1 RUN_META_MEMBERSHIP=1 RUN_META_FAILOVER=1 RUN_DATA_MEMBERSHIP=1 RUN_2NODE_SCALE=1 RUN_MIXED_RW=1 RUN_DATA_SNAPSHOT=1 RUN_FAILOVER=1 bash tools/run_raft_stress_suite_ubuntu22.sh'
+metaserver_membership_failover_command='env BUILD_TYPE="${BUILD_TYPE}" RESULT_DIR="${RESULT_DIR}/metaserver_membership_failover" KILL_LEADER_AFTER_ADD=1 bash tools/run_metaserver_raft_membership_ubuntu22.sh'
 raft_release_command='env BUILD_TYPE="${BUILD_TYPE}" RESULT_DIR="${RESULT_DIR}/raft_release" ITERATIONS=5 FAILOVER_ITERATIONS=5 OPS=3000 MEMBERSHIP_OPS=600 THREAD_LIST="2 4" BENCH_TIMEOUT_S=300 bash tools/run_raft_production_gate_ubuntu22.sh'
 prometheus_command='env BUILD_TYPE="${BUILD_TYPE}" RESULT_DIR="${RESULT_DIR}/prometheus" ITERATIONS=1 START_PROMETHEUS=0 RUN_CLIENT_SCALE=1 THREAD_LIST=2 STRING_OPS=200 bash tools/run_prometheus_local_ubuntu22.sh'
 live_raft_metrics_command='env BUILD_TYPE="${BUILD_TYPE}" RESULT_DIR="${RESULT_DIR}/live_raft_metrics" MS_PORT="$((BASE_MS_PORT + 9000))" SERVER_PORT="$((BASE_SERVER_PORT + 5000))" MAX_APPLY_LAG=16 bash tools/run_live_raft_metrics_ubuntu22.sh'
@@ -161,7 +162,7 @@ dependency_cache_command='env RESULT_DIR="${RESULT_DIR}/dependency_cache" RUN_BU
 
 write_header
 
-register_gap 01 "Metaserver failover during membership change" pr partial "run_raft_stress_suite_ubuntu22.sh" "${raft_pr_command}" "Existing suite runs metaserver membership and failover in one PR gate; next step is an interleaved same-window fault."
+register_gap 01 "Metaserver failover during membership change" pr covered "run_metaserver_raft_membership_ubuntu22.sh" "${metaserver_membership_failover_command}" "Metaserver membership gate can add node 3 as a voter, kill the current leader during the membership-change window, elect a new leader, restart/rejoin the killed node, remove node 3, and verify metadata writes after removal."
 register_gap 02 "Data primary kill during scale up/down" pr partial "run_data_raft_scale_up_down_ubuntu22.sh" "${data_primary_kill_scale_command}" "Interleaved gate now runs client traffic, adds a third data node, kills the current data primary during scale-up convergence, validates promoted-primary serving, and records bounded transient client/proxy errors. Source fix avoids metaserver CHECK crash on missing mutable partitions; final covered status waits for refreshed release binary validation."
 register_gap 03 "Removed data-node restart/rejoin safety" pr covered "run_data_raft_scale_up_down_ubuntu22.sh" "${raft_pr_command}" "Data membership gate exercises add/remove and serving validation."
 register_gap 04 "Removed metaserver restart/rejoin safety" pr covered "run_metaserver_raft_membership_ubuntu22.sh" "${raft_pr_command}" "Metaserver membership gate validates raft-backed membership."
