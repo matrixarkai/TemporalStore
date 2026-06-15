@@ -988,6 +988,10 @@ fn handle(
     }
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/health") => json_response(200, &Status::ok()),
+        ("GET", "/metrics") | ("GET", "/MasterService/Metrics") => (
+            200,
+            metaserver_prometheus_metrics(meta, scheduler).into_bytes(),
+        ),
         ("GET", "/readiness") | ("GET", "/cpp_parity") => {
             json_response(200, &production_readiness_report())
         }
@@ -1161,6 +1165,169 @@ fn handle(
             },
         ),
     }
+}
+
+fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskScheduler) -> String {
+    let stats = backend_call!(meta, stats);
+    let servers = backend_call!(meta, list_servers).servers;
+    let proxies = backend_call!(meta, list_proxies).proxies;
+    let namespaces = backend_call!(meta, list_namespaces).namespaces;
+    let tables = backend_call!(meta, list_tables).tables;
+    let scheduler_snapshot = scheduler.snapshot();
+    let scheduler_executions = scheduler.executions();
+    let mut out = String::new();
+
+    out.push_str("# HELP temporalstore_meta_requests_total Metaserver request counters by kind.\n");
+    out.push_str("# TYPE temporalstore_meta_requests_total counter\n");
+    for (kind, value) in [
+        ("register_shard", stats.register_shard_total),
+        ("get_shard", stats.get_shard_total),
+        ("server_register", stats.server_register_total),
+        ("server_heartbeat", stats.server_heartbeat_total),
+        ("proxy_register", stats.proxy_register_total),
+        ("proxy_heartbeat", stats.proxy_heartbeat_total),
+        ("namespace_create", stats.namespace_create_total),
+        ("table_create", stats.table_create_total),
+        ("topology_query", stats.topology_query_total),
+        ("load_finish", stats.load_finish_total),
+    ] {
+        push_meta_metric(
+            &mut out,
+            "temporalstore_meta_requests_total",
+            &[("kind", kind)],
+            value,
+        );
+    }
+
+    out.push_str("# HELP temporalstore_meta_inventory Current metaserver inventory counts.\n");
+    out.push_str("# TYPE temporalstore_meta_inventory gauge\n");
+    for (kind, value) in [
+        ("namespace", namespaces.len() as u64),
+        ("table", tables.len() as u64),
+        ("server", servers.len() as u64),
+        ("proxy", proxies.len() as u64),
+        ("shard", stats.shard_count as u64),
+    ] {
+        push_meta_metric(
+            &mut out,
+            "temporalstore_meta_inventory",
+            &[("kind", kind)],
+            value,
+        );
+    }
+
+    out.push_str(
+        "# HELP temporalstore_meta_resource_state Current metaserver resource counts by state.\n",
+    );
+    out.push_str("# TYPE temporalstore_meta_resource_state gauge\n");
+    for state in ["normal", "frozen", "dropped"] {
+        push_meta_metric(
+            &mut out,
+            "temporalstore_meta_resource_state",
+            &[("resource", "server"), ("state", state)],
+            servers
+                .iter()
+                .filter(|server| server.state.as_str() == state)
+                .count() as u64,
+        );
+        push_meta_metric(
+            &mut out,
+            "temporalstore_meta_resource_state",
+            &[("resource", "proxy"), ("state", state)],
+            proxies
+                .iter()
+                .filter(|proxy| proxy.state.as_str() == state)
+                .count() as u64,
+        );
+        push_meta_metric(
+            &mut out,
+            "temporalstore_meta_resource_state",
+            &[("resource", "table"), ("state", state)],
+            tables
+                .iter()
+                .filter(|table| table.state.as_str() == state)
+                .count() as u64,
+        );
+    }
+
+    out.push_str(
+        "# HELP temporalstore_meta_topology_version Current metaserver topology version.\n",
+    );
+    out.push_str("# TYPE temporalstore_meta_topology_version gauge\n");
+    push_meta_metric(
+        &mut out,
+        "temporalstore_meta_topology_version",
+        &[],
+        stats.topology_version,
+    );
+
+    out.push_str("# HELP temporalstore_meta_scheduler_queue_depth Current metaserver scheduler queue depth.\n");
+    out.push_str("# TYPE temporalstore_meta_scheduler_queue_depth gauge\n");
+    push_meta_metric(
+        &mut out,
+        "temporalstore_meta_scheduler_queue_depth",
+        &[],
+        scheduler_snapshot.queue_len as u64,
+    );
+
+    out.push_str("# HELP temporalstore_meta_scheduler_executions_total Metaserver scheduler execution counters by result.\n");
+    out.push_str("# TYPE temporalstore_meta_scheduler_executions_total counter\n");
+    for result in ["ok", "retry_later", "aborted", "failed"] {
+        let count = scheduler_executions
+            .executions
+            .iter()
+            .filter(|record| scheduler_execution_result_label(record) == result)
+            .count() as u64;
+        push_meta_metric(
+            &mut out,
+            "temporalstore_meta_scheduler_executions_total",
+            &[("result", result)],
+            count,
+        );
+    }
+
+    if let MetaBackend::Raft(runtime) = meta {
+        out.push_str(&runtime.cluster().prometheus_metrics());
+    }
+    out
+}
+
+fn scheduler_execution_result_label(record: &MetaSchedulerExecutionRecord) -> &'static str {
+    if !record.status.ok {
+        return "failed";
+    }
+    match record.scheduler_result {
+        SchedulerTaskResult::Ok => "ok",
+        SchedulerTaskResult::RetryLater => "retry_later",
+        SchedulerTaskResult::Aborted => "aborted",
+    }
+}
+
+fn push_meta_metric(out: &mut String, name: &str, labels: &[(&str, &str)], value: u64) {
+    out.push_str(name);
+    if !labels.is_empty() {
+        out.push('{');
+        for (index, (key, value)) in labels.iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            out.push_str(key);
+            out.push_str("=\"");
+            out.push_str(&escape_meta_metric_label(value));
+            out.push('"');
+        }
+        out.push('}');
+    }
+    out.push(' ');
+    out.push_str(&value.to_string());
+    out.push('\n');
+}
+
+fn escape_meta_metric_label(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('\n', "\\n")
+        .replace('"', "\\\"")
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1612,6 +1779,74 @@ mod tests {
             assert!(!report.cpp_parity_ready);
             assert!(report.missing_count() > 0);
         }
+    }
+
+    #[test]
+    fn metaserver_metrics_expose_inventory_state_and_scheduler() {
+        let meta = SingleNodeMeta::default();
+        meta.register_server(RegisterServerRequest {
+            server_addr: "metrics-server-a".to_string(),
+            node_id: 1,
+            location: "zone-a".to_string(),
+            binary_version: "v1".to_string(),
+        });
+        meta.register_proxy(RegisterProxyRequest {
+            proxy_addr: "metrics-proxy-a".to_string(),
+            namespace: "metrics-ns".to_string(),
+            location: "zone-a".to_string(),
+            config_version: 7,
+            binary_version: "v1".to_string(),
+        });
+        meta.freeze_proxy(StateChangeRequest {
+            endpoint: "metrics-proxy-a".to_string(),
+            freeze_cooldown_ms: 0,
+        });
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "metrics-ns".to_string(),
+        });
+        meta.add_table(AddTableRequest {
+            namespace: "metrics-ns".to_string(),
+            table_name: "metrics-table".to_string(),
+            first_shard_id: 1,
+            shard_count: 1,
+            replica_count: 1,
+            use_cpp_partition_ids: false,
+            partition_version: 0,
+            serving_options: temporalstore_rust::meta::TableServingOptions::default(),
+        });
+        let backend = MetaBackend::Single(meta);
+        let scheduler = MetaTaskScheduler::default();
+        let submitted = scheduler.submit(MetaSchedulerSubmitRequest {
+            priority: 0,
+            now_ms: 1,
+            kind: SchedulerTaskKind::RebalanceStep(RebalanceStep::FreezeSource {
+                shard_id: 1,
+                replica_id: 1,
+                node_id: 1,
+            }),
+        });
+        assert!(submitted.status.ok, "{submitted:?}");
+
+        let (code, body) = handle(
+            &backend,
+            &scheduler,
+            HttpRequest {
+                method: "GET".to_string(),
+                path: "/metrics".to_string(),
+                body: Vec::new(),
+            },
+        );
+        assert_eq!(code, 200);
+        let metrics = String::from_utf8(body).unwrap();
+        assert!(metrics.contains("# TYPE temporalstore_meta_requests_total counter"));
+        assert!(metrics.contains("temporalstore_meta_inventory{kind=\"namespace\"} 1"));
+        assert!(metrics.contains("temporalstore_meta_inventory{kind=\"table\"} 1"));
+        assert!(metrics
+            .contains("temporalstore_meta_resource_state{resource=\"server\",state=\"normal\"} 1"));
+        assert!(metrics
+            .contains("temporalstore_meta_resource_state{resource=\"proxy\",state=\"frozen\"} 1"));
+        assert!(metrics.contains("temporalstore_meta_scheduler_queue_depth 1"));
+        assert!(metrics.contains("temporalstore_meta_topology_version"));
     }
 
     #[test]

@@ -29,8 +29,25 @@ push.
 21. Add metaserver scheduler safety checks for frozen/dropped tables and servers.
 22. Add proxy/client behavior under table freeze/unfreeze during writes.
 23. Add failover test while load/reload/unload task is in flight.
-24. Add control-plane Prometheus metrics for scheduler and lifecycle blockers.
+24. Add control-plane Prometheus metrics for scheduler and lifecycle blockers. Done early in cycle 9.
 25. Final local scale gate requiring client/proxy/meta/nodeserver convergence after move/failover.
+
+## Cycle 9 Implemented
+
+Cycle 9 pulls the control-plane Prometheus gap forward because C++ parity needs scrapeable
+operations state across proxy and metaserver, not only the data-node:
+
+- proxy exposes `GET /metrics` and `GET /ProxyService/Metrics`
+- proxy metrics cover request counters, route-cache entries/events, backend/metaserver errors,
+  serving mode, and drop percent
+- metaserver exposes `GET /metrics` and `GET /MasterService/Metrics`
+- metaserver metrics cover request counters, inventory, resource states, topology version,
+  scheduler queue depth, and scheduler execution results
+- Raft-backed metaserver metrics append existing metaserver Raft Prometheus output
+- tests validate proxy policy/error counters and metaserver inventory/state/scheduler gauges
+
+The next cycle should return to route-cache invalidation from metaserver topology events, then
+client/proxy topology convergence under table changes.
 
 ## Cycle 1 Implemented
 

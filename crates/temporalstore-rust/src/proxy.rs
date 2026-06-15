@@ -299,6 +299,9 @@ impl ProxyService {
         use crate::http::{json_response, parse_json};
         match (request.method.as_str(), request.path.as_str()) {
             ("GET", "/health") => json_response(200, &Status::ok()),
+            ("GET", "/metrics") | ("GET", "/ProxyService/Metrics") => {
+                (200, self.prometheus_metrics().into_bytes())
+            }
             ("GET", "/readiness") | ("GET", "/cpp_parity") => {
                 json_response(200, &crate::production_readiness_report())
             }
@@ -720,6 +723,103 @@ impl ProxyService {
         }
     }
 
+    pub fn prometheus_metrics(&self) -> String {
+        self.sync_client_stats();
+        let options = self.options();
+        let stats = *self.inner.stats.read().expect("proxy stats lock poisoned");
+        let client = self.client().stats();
+        let mut out = String::new();
+        out.push_str("# HELP temporalstore_proxy_requests_total Proxy request counters by kind.\n");
+        out.push_str("# TYPE temporalstore_proxy_requests_total counter\n");
+        for (kind, value) in [
+            ("execute", stats.execute_requests),
+            ("batch_execute", stats.batch_execute_requests),
+            ("bad_request", stats.bad_requests),
+            ("admission_rejection", stats.admission_rejections),
+            ("heartbeat", stats.heartbeat_total),
+            ("auto_register", stats.auto_register_total),
+        ] {
+            push_proxy_metric(
+                &mut out,
+                "temporalstore_proxy_requests_total",
+                &[("kind", kind)],
+                value,
+            );
+        }
+
+        out.push_str(
+            "# HELP temporalstore_proxy_route_cache_entries Current proxy route cache entries.\n",
+        );
+        out.push_str("# TYPE temporalstore_proxy_route_cache_entries gauge\n");
+        push_proxy_metric(
+            &mut out,
+            "temporalstore_proxy_route_cache_entries",
+            &[],
+            self.client().route_cache_size() as u64,
+        );
+
+        out.push_str("# HELP temporalstore_proxy_route_cache_events_total Proxy route cache and refresh events.\n");
+        out.push_str("# TYPE temporalstore_proxy_route_cache_events_total counter\n");
+        for (kind, value) in [
+            ("hit", stats.route_cache_hits),
+            ("miss", stats.route_cache_misses),
+            ("refresh", stats.route_refreshes),
+        ] {
+            push_proxy_metric(
+                &mut out,
+                "temporalstore_proxy_route_cache_events_total",
+                &[("kind", kind)],
+                value,
+            );
+        }
+
+        out.push_str("# HELP temporalstore_proxy_backend_events_total Proxy backend and metaserver failure counters.\n");
+        out.push_str("# TYPE temporalstore_proxy_backend_events_total counter\n");
+        for (kind, value) in [
+            ("backend_error", stats.backend_errors),
+            (
+                "continuous_backend_failure",
+                stats.continuous_backend_failures,
+            ),
+            ("metaserver_error", stats.metaserver_errors),
+            ("client_meta_sync_error", client.meta_sync_errors),
+        ] {
+            push_proxy_metric(
+                &mut out,
+                "temporalstore_proxy_backend_events_total",
+                &[("kind", kind)],
+                value,
+            );
+        }
+
+        out.push_str("# HELP temporalstore_proxy_serving_mode Current proxy serving mode as a one-hot gauge.\n");
+        out.push_str("# TYPE temporalstore_proxy_serving_mode gauge\n");
+        for mode in [
+            ProxyServingMode::Serving,
+            ProxyServingMode::Readonly,
+            ProxyServingMode::WriteDisabled,
+            ProxyServingMode::Degraded,
+            ProxyServingMode::NotServing,
+        ] {
+            push_proxy_metric(
+                &mut out,
+                "temporalstore_proxy_serving_mode",
+                &[("mode", proxy_serving_mode_label(mode))],
+                u64::from(options.serving_mode == mode),
+            );
+        }
+
+        out.push_str("# HELP temporalstore_proxy_drop_percent Current proxy deterministic drop percentage.\n");
+        out.push_str("# TYPE temporalstore_proxy_drop_percent gauge\n");
+        push_proxy_metric(
+            &mut out,
+            "temporalstore_proxy_drop_percent",
+            &[],
+            options.drop_percent as u64,
+        );
+        out
+    }
+
     pub fn refresh_topology_from_meta(&self) -> ProxyTopologyRefreshResponse {
         match self.client().refresh_stale_routes_from_meta() {
             Ok(report) => ProxyTopologyRefreshResponse {
@@ -1009,6 +1109,43 @@ fn proxy_serving_mode_from_meta(value: &str) -> Option<ProxyServingMode> {
     }
 }
 
+fn proxy_serving_mode_label(mode: ProxyServingMode) -> &'static str {
+    match mode {
+        ProxyServingMode::Serving => "serving",
+        ProxyServingMode::Readonly => "readonly",
+        ProxyServingMode::WriteDisabled => "write_disabled",
+        ProxyServingMode::Degraded => "degraded",
+        ProxyServingMode::NotServing => "not_serving",
+    }
+}
+
+fn push_proxy_metric(out: &mut String, name: &str, labels: &[(&str, &str)], value: u64) {
+    out.push_str(name);
+    if !labels.is_empty() {
+        out.push('{');
+        for (index, (key, value)) in labels.iter().enumerate() {
+            if index > 0 {
+                out.push(',');
+            }
+            out.push_str(key);
+            out.push_str("=\"");
+            out.push_str(&escape_proxy_metric_label(value));
+            out.push('"');
+        }
+        out.push('}');
+    }
+    out.push(' ');
+    out.push_str(&value.to_string());
+    out.push('\n');
+}
+
+fn escape_proxy_metric_label(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('\n', "\\n")
+        .replace('"', "\\\"")
+}
+
 fn proxy_command_is_write(command: &Command) -> bool {
     matches!(
         command,
@@ -1200,6 +1337,42 @@ mod tests {
             assert!(!report.cpp_parity_ready);
             assert!(report.missing_count() > 0);
         }
+    }
+
+    #[test]
+    fn proxy_metrics_expose_request_policy_and_backend_counters() {
+        let proxy = ProxyService::new(ProxyOptions {
+            meta_addr: "127.0.0.1:1".to_string(),
+            serving_mode: ProxyServingMode::NotServing,
+            drop_percent: 17,
+            ..ProxyOptions::default()
+        });
+        let rejected = proxy.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: "blocked".to_string(),
+            },
+        });
+        assert_eq!(rejected.status.code, "proxy_not_serving");
+        let refresh = proxy.refresh_topology_from_meta();
+        assert_eq!(refresh.status.code, "refresh_failed");
+
+        let (code, body) = proxy.handle(HttpRequest {
+            method: "GET".to_string(),
+            path: "/metrics".to_string(),
+            body: Vec::new(),
+        });
+        assert_eq!(code, 200);
+        let metrics = String::from_utf8(body).unwrap();
+        assert!(metrics.contains("# TYPE temporalstore_proxy_requests_total counter"));
+        assert!(metrics.contains("temporalstore_proxy_requests_total{kind=\"execute\"} 1"));
+        assert!(
+            metrics.contains("temporalstore_proxy_requests_total{kind=\"admission_rejection\"} 1")
+        );
+        assert!(metrics
+            .contains("temporalstore_proxy_backend_events_total{kind=\"metaserver_error\"} 1"));
+        assert!(metrics.contains("temporalstore_proxy_serving_mode{mode=\"not_serving\"} 1"));
+        assert!(metrics.contains("temporalstore_proxy_drop_percent 17"));
     }
 
     #[test]

@@ -29,7 +29,9 @@ The Rust code now covers the local correctness skeleton for TemporalStore-style 
   to compact placement load signals
 - data-node worker runtime with bounded async queue, job status, dirty-object ids, dump/compact/GC hooks, and load-finish callback endpoint
 - Redis RESP adapter, including conditional `SET NX/XX`, `GET`, `EX`, and `PX`
-- Prometheus scrape output for shard records, cache, page-store, oplog, and data-node runtime counters
+- Prometheus scrape output for shard records, cache, page-store, oplog, data-node runtime
+  counters, proxy request/policy/cache counters, and metaserver inventory/scheduler/resource-state
+  counters
 - S3-compatible snapshot store crate
 - replica replay loop consuming checkpoint index/pages, index-log tail, and oplog tail with a persisted cursor
 - remote HTTP stream source for replica replay over `/read_stream` and `/scan_stream`
@@ -57,6 +59,28 @@ It is still not production C++ TemporalStore parity. The largest missing areas f
 brpc and Thrift are intentionally not part of the Rust target. The Rust open-source target is Rust-native service RPC where needed, HTTP/JSON for admin/debug, RESP for Redis compatibility, and Prometheus text for metrics. S3 and ByteStore live-backend integration are also out of scope for the current parity push.
 
 ## What Was Closed In The Latest Pass
+
+This pass closed the ninth client/proxy/metaserver/nodeserver C++ parity cycle by pulling the
+control-plane Prometheus backlog item forward:
+
+1. Proxy now exposes `GET /metrics` and `GET /ProxyService/Metrics`.
+2. Proxy metrics include execute/batch/bad-request/admission/heartbeat counters, route-cache
+   entries and events, backend/metaserver error counters, current serving mode, and drop percent.
+3. Metaserver now exposes `GET /metrics` and `GET /MasterService/Metrics`.
+4. Metaserver metrics include request counters, namespace/table/server/proxy/shard inventory,
+   server/proxy/table state gauges, topology version, scheduler queue depth, and scheduler
+   execution result counters.
+5. Raft-backed metaserver metrics append existing metaserver Raft Prometheus output, preserving
+   the ByteRaft-style commit/apply/lag scrape surface.
+6. Regression coverage validates proxy metrics after policy rejection and metaserver errors, plus
+   metaserver inventory/state/scheduler metrics after resource registration and freeze.
+
+This improves C++-style distributed operations parity across proxy and metaserver surfaces. It does
+not replace the remaining workflow gaps: route-cache invalidation from metaserver topology events,
+client/proxy topology convergence under table changes, membership-update execution, and full
+move/failover orchestration across metaserver, proxy, client, data-node, and Raft paths.
+
+## What Was Closed In The Previous Pass
 
 This pass closed the eighth client/proxy/metaserver/nodeserver C++ parity cycle:
 
