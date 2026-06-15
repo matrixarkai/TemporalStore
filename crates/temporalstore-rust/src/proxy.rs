@@ -986,6 +986,28 @@ impl ProxyService {
                 area.missing.len() as u64,
             );
         }
+        out.push_str(
+            "# HELP temporalstore_production_readiness_service_ready Production readiness by service.\n",
+        );
+        out.push_str("# TYPE temporalstore_production_readiness_service_ready gauge\n");
+        out.push_str(
+            "# HELP temporalstore_production_readiness_service_blockers Production readiness blockers by service.\n",
+        );
+        out.push_str("# TYPE temporalstore_production_readiness_service_blockers gauge\n");
+        for service in &readiness.service_summaries {
+            push_proxy_metric(
+                &mut out,
+                "temporalstore_production_readiness_service_ready",
+                &[("service", service.service.as_str())],
+                u64::from(service.ready),
+            );
+            push_proxy_metric(
+                &mut out,
+                "temporalstore_production_readiness_service_blockers",
+                &[("service", service.service.as_str())],
+                service.blocker_count as u64,
+            );
+        }
         out
     }
 
@@ -1638,6 +1660,20 @@ mod tests {
         assert!(metrics.contains(&format!(
             "temporalstore_production_readiness_blockers{{area=\"storage_cache\"}} {}",
             storage_cache.missing.len()
+        )));
+        let data_node = readiness.service_summary("data_node").unwrap();
+        assert!(metrics.contains(&format!(
+            "temporalstore_production_readiness_service_ready{{service=\"data_node\"}} {}",
+            u64::from(data_node.ready)
+        )));
+        assert!(metrics.contains(&format!(
+            "temporalstore_production_readiness_service_blockers{{service=\"data_node\"}} {}",
+            data_node.blocker_count
+        )));
+        let client = readiness.service_summary("client").unwrap();
+        assert!(metrics.contains(&format!(
+            "temporalstore_production_readiness_service_blockers{{service=\"client\"}} {}",
+            client.blocker_count
         )));
     }
 
