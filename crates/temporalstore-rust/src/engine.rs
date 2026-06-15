@@ -567,6 +567,24 @@ pub struct StorageProductionReadinessReport {
     pub object_lifecycle: StorageObjectLifecycleReport,
     #[serde(default)]
     pub segment_integrity: StorageSegmentIntegrityReport,
+    #[serde(default)]
+    pub log_compatibility: StorageLogCompatibilityReport,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageLogCompatibilityReport {
+    pub shard_id: ShardId,
+    pub oplog_format: String,
+    pub index_log_format: String,
+    pub rust_native_replay_safe: bool,
+    pub cxx_binary_compatible: bool,
+    pub oplog_last_sequence: u64,
+    pub index_log_last_sequence: u64,
+    pub oplog_records: usize,
+    pub index_log_records: usize,
+    pub oplog_bytes: u64,
+    pub index_log_bytes: u64,
+    pub compatibility_gaps: Vec<String>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1947,6 +1965,7 @@ impl TemporalEngine {
             .as_ref()
             .map(|stats| stats.page_store.clone())
             .unwrap_or_else(|| self.page_store.stats());
+        let log_compatibility = self.storage_log_compatibility_report(shard_id);
         let slot_dump_manifest_count = self.list_slot_dump_manifests(shard_id).len();
         let interrupted_slot_dump_install_count = boundary.interrupted_slot_dump_installs.len();
         let undumped_oplog_records = boundary
@@ -2059,6 +2078,44 @@ impl TemporalEngine {
             boundary,
             object_lifecycle: recovery.object_lifecycle,
             segment_integrity,
+            log_compatibility,
+        }
+    }
+
+    pub fn storage_log_compatibility_report(
+        &self,
+        shard_id: ShardId,
+    ) -> StorageLogCompatibilityReport {
+        let oplog_stats = self.oplog_store.stats(shard_id);
+        let index_log_stats = self.index_log_store.stats(shard_id);
+        let oplog_records = self
+            .oplog_store
+            .scan(shard_id, 0, u64::MAX, u64::MAX)
+            .map(|records| records.len())
+            .unwrap_or_default();
+        let index_log_records = self
+            .index_log_store
+            .scan(shard_id, 0, u64::MAX, u64::MAX)
+            .map(|records| records.len())
+            .unwrap_or_default();
+        StorageLogCompatibilityReport {
+            shard_id,
+            oplog_format: "rust-jsonl-command-v1".to_string(),
+            index_log_format: "rust-jsonl-shard-index-v1".to_string(),
+            rust_native_replay_safe: true,
+            cxx_binary_compatible: false,
+            oplog_last_sequence: oplog_stats.last_sequence,
+            index_log_last_sequence: index_log_stats.last_sequence,
+            oplog_records,
+            index_log_records,
+            oplog_bytes: oplog_stats.bytes_written,
+            index_log_bytes: index_log_stats.bytes_written,
+            compatibility_gaps: vec![
+                "C++ binary/protobuf oplog reader and writer are not implemented".to_string(),
+                "C++ binary/protobuf index-log reader and writer are not implemented".to_string(),
+                "mixed-format migration and golden-log replay suite are not implemented"
+                    .to_string(),
+            ],
         }
     }
 
@@ -11321,7 +11378,62 @@ mod tests {
         assert_eq!(report.segment_integrity.unreadable_page_ref_count, 0);
         assert_eq!(report.unreadable_page_ref_count, 0);
         assert_eq!(report.owner_mismatch_page_ref_count, 0);
+        assert!(report.log_compatibility.rust_native_replay_safe);
+        assert!(!report.log_compatibility.cxx_binary_compatible);
+        assert_eq!(
+            report.log_compatibility.oplog_format,
+            "rust-jsonl-command-v1"
+        );
+        assert_eq!(
+            report.log_compatibility.index_log_format,
+            "rust-jsonl-shard-index-v1"
+        );
         assert!(report.page_store_bytes_written > 0);
+    }
+
+    #[test]
+    fn storage_log_compatibility_report_counts_jsonl_sequences_and_cxx_gaps() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for index in 0..2 {
+            assert!(
+                engine
+                    .execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::StringSet {
+                            key: format!("log-key-{index}"),
+                            value: format!("log-value-{index}").into_bytes(),
+                        },
+                    })
+                    .status
+                    .ok
+            );
+        }
+
+        let report = engine.storage_log_compatibility_report(1);
+        assert_eq!(report.shard_id, 1);
+        assert_eq!(report.oplog_last_sequence, 2);
+        assert_eq!(report.index_log_last_sequence, 2);
+        assert_eq!(report.oplog_records, 2);
+        assert_eq!(report.index_log_records, 2);
+        assert!(report.oplog_bytes > 0);
+        assert!(report.index_log_bytes > 0);
+        assert!(report.rust_native_replay_safe);
+        assert!(!report.cxx_binary_compatible);
+        assert!(report
+            .compatibility_gaps
+            .iter()
+            .any(|gap| gap.contains("C++ binary/protobuf oplog")));
+        assert!(report
+            .compatibility_gaps
+            .iter()
+            .any(|gap| gap.contains("golden-log replay")));
     }
 
     #[test]
