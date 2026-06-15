@@ -4,9 +4,10 @@ use temporalstore_rust::types::{
     FeatureFilter, FeatureFilterOp, FeatureWritePolicy, SequenceFeatureRow, SequenceQuerySpec,
 };
 use temporalstore_rust::{
-    execute_redis_command, Command, CommandResponse, Config, EndToEndWorkflow, ExecuteRequest,
-    FeaturePoint, RespValue, ScanStreamRequest, SetConfigRequest, SharedStoreOplogEntry,
-    SharedStoreReplicator, StreamKind, StreamReadRequest, TemporalEngine,
+    execute_redis_command, production_readiness_report, Command, CommandResponse, Config,
+    EndToEndWorkflow, ExecuteRequest, FeaturePoint, RespValue, ScanStreamRequest,
+    ServiceReadinessSummary, SetConfigRequest, SharedStoreOplogEntry, SharedStoreReplicator,
+    StreamKind, StreamReadRequest, TemporalEngine,
 };
 use temporalstore_snapshot::object_store::FileObjectStore;
 
@@ -17,6 +18,21 @@ fn execute(engine: &TemporalEngine, command: Command) -> CommandResponse {
     });
     assert!(response.status.ok, "{}", response.status.message);
     response.response
+}
+
+#[test]
+fn production_readiness_service_summary_is_public_api() {
+    let report = production_readiness_report();
+    let data_node: ServiceReadinessSummary = report
+        .service_summaries
+        .into_iter()
+        .find(|summary| summary.service == "data_node")
+        .expect("data node service summary should be exported");
+    assert!(!data_node.ready);
+    assert!(data_node.areas.contains(&"dataserver".to_string()));
+    assert!(data_node
+        .areas
+        .contains(&"data_node_distributed_raft".to_string()));
 }
 
 #[test]
