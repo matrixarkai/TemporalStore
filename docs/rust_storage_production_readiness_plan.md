@@ -22,7 +22,7 @@ ByteStore integration remain out of scope for this plan.
 14. Shared-store checkpoint retention under multiple follower cursors.
 15. Oplog/index-log replay boundary fuzz tests.
 16. Crash loop test: write, dump, compact, GC, restart, replay.
-17. Tiny-memory soak test for memory miss -> disk cache -> page store -> cache refill.
+17. Tiny-memory soak test for memory miss -> disk cache -> page store -> cache refill. Done.
 18. Multi-shard storage lifecycle scheduler fairness.
 19. Per-slot dirty generation persistence across restart.
 20. Manifest chain fork detection in scale harness.
@@ -87,3 +87,21 @@ Cycle 3 adds cache policy depth and inspection for storage lifecycle parity:
 
 The next cycle should run the storage-mode harness with tiny memory/disk cache settings through
 dump, load, restart, and replay.
+
+## Cycle 4 Implemented
+
+Cycle 4 adds the combined tiny-cache storage flow requested for production-readiness regression:
+
+- The test writes under a tiny memory cache, forces memory eviction through cache churn, and proves
+  the target page block remains available from disk cache.
+- A slot dump manifest is created, validated, and installed into a restarted engine using the same
+  page and disk-cache directories.
+- The restarted engine serves the restored key from the persistent disk block cache without
+  rereading the page store, then promotes the block back into memory.
+- Slot-aware cache inspection verifies the restored page cache entry, and slot invalidation removes
+  the hot block after the dump/load restart flow.
+- Storage readiness is checked after restart to ensure no corrupt or unreadable page refs are
+  hidden by the cache path.
+
+The next cycle should wire this scenario into the standalone storage-mode harness so the same
+dump/load/restart/cache-churn path runs outside unit-test process state.

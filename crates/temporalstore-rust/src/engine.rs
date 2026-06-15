@@ -7084,7 +7084,13 @@ mod tests {
                 .strings
                 .get("target")
                 .expect("target address should exist");
-            CacheKey::page(1, address.page_segment_id, address.offset, address.length)
+            CacheKey::page_with_slot(
+                1,
+                address.page_segment_id,
+                address.offset,
+                address.length,
+                address.routing_slot,
+            )
         };
         assert_eq!(
             cache.get_memory(&target_page_key),
@@ -7155,7 +7161,13 @@ mod tests {
                 .get("target")
                 .expect("target address should be restored from index")
                 .clone();
-            CacheKey::page(1, address.page_segment_id, address.offset, address.length)
+            CacheKey::page_with_slot(
+                1,
+                address.page_segment_id,
+                address.offset,
+                address.length,
+                address.routing_slot,
+            )
         };
 
         let first_read = restarted.execute(ExecuteRequest {
@@ -11092,6 +11104,132 @@ mod tests {
             .entries
             .iter()
             .any(|entry| entry.selector.starts_with(&format!("slot-{slot}:"))));
+    }
+
+    #[test]
+    fn tiny_cache_dump_load_restart_refills_from_disk_block_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = dir.path().join("cache");
+        let page_dir = dir.path().join("pages");
+        let index_dir = dir.path().join("indexes");
+        let restore_index_dir = dir.path().join("restore-indexes");
+        let engine = TemporalEngine::with_local_dirs(32, &cache_dir, &page_dir, &index_dir);
+        engine.load_shard(1);
+        let target_value = b"dump-load-target-1234".to_vec();
+        for (key, value) in [
+            ("target", target_value.clone()),
+            ("churn-a", b"cache-churn-a-1234".to_vec()),
+            ("churn-b", b"cache-churn-b-1234".to_vec()),
+        ] {
+            assert!(
+                engine
+                    .execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::StringSet {
+                            key: key.to_string(),
+                            value,
+                        },
+                    })
+                    .status
+                    .ok
+            );
+        }
+        let target_page_key = {
+            let shards = engine.shards.read().expect("shards lock poisoned");
+            let address = shards
+                .get(&1)
+                .unwrap()
+                .strings
+                .get("target")
+                .unwrap()
+                .clone();
+            CacheKey::page_with_slot(
+                1,
+                address.page_segment_id,
+                address.offset,
+                address.length,
+                address.routing_slot,
+            )
+        };
+
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "target".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(target_value.clone())
+            }
+        );
+        for key in ["churn-a", "churn-b"] {
+            assert!(
+                engine
+                    .execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::StringGet {
+                            key: key.to_string(),
+                        },
+                    })
+                    .status
+                    .ok
+            );
+        }
+        assert!(engine.cache().stats().memory_evictions > 0);
+        assert!(engine.cache().stats().disk_bytes > 0);
+        assert_eq!(engine.cache().get_memory(&target_page_key), None);
+        let manifest = engine
+            .create_slot_dump_manifest(1, Vec::new())
+            .expect("slot dump manifest should persist");
+        engine.validate_slot_dump_manifest(&manifest).unwrap();
+
+        let restored =
+            TemporalEngine::with_local_dirs(32, &cache_dir, &page_dir, &restore_index_dir);
+        restored.load_shard(1);
+        restored
+            .install_slot_dump_manifest(&manifest)
+            .expect("slot dump should install after restart");
+        let page_reads_before = restored.page_store().stats().reads;
+        let disk_hits_before = restored.cache().stats().disk_hits;
+        let response = restored.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: "target".to_string(),
+            },
+        });
+        assert_eq!(
+            response.response,
+            CommandResponse::Bytes {
+                value: Some(target_value)
+            }
+        );
+        assert_eq!(
+            restored.page_store().stats().reads,
+            page_reads_before,
+            "restored engine should refill from disk block cache before page store"
+        );
+        assert!(restored.cache().stats().disk_hits > disk_hits_before);
+
+        let slot = restored.routing_slot_for_key(1, "target");
+        let cache_report = restored.storage_cache_inspection_report(1);
+        assert!(cache_report
+            .slot_summaries
+            .iter()
+            .any(|summary| summary.routing_slot == slot && summary.entry_count >= 1));
+        let invalidated = restored
+            .invalidate_storage_cache_slot(StorageCacheInvalidateSlotRequest {
+                shard_id: 1,
+                routing_slot: slot,
+            })
+            .unwrap();
+        assert!(invalidated.memory_entries_removed >= 1);
+        let readiness = restored.storage_production_readiness_report(1);
+        assert!(readiness.production_ready, "{readiness:?}");
+        assert_eq!(readiness.unreadable_page_ref_count, 0);
+        assert_eq!(readiness.corrupt_page_segment_count, 0);
     }
 
     #[test]
