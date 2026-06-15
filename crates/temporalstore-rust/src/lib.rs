@@ -106,7 +106,10 @@ pub use raft::{
     RaftWalSegmentReport, ReadIndexResponse, UnavailableDataRaftConsensusBackend, VoteRequest,
     VoteResponse,
 };
-pub use readiness::{production_readiness_report, ProductionReadinessReport, ReadinessArea};
+pub use readiness::{
+    production_readiness_report, ProductionReadinessReport, ReadinessArea,
+    ReadinessCapabilityBlocker,
+};
 pub use rebalance::{
     MembershipUpdatePeerRequest, MembershipUpdatePeerStatus, MembershipUpdateTaskOptions,
     MembershipUpdateTaskPlan, MembershipUpdateTaskReport, RebalanceController, RebalanceError,

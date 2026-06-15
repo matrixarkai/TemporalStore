@@ -14,7 +14,19 @@ pub struct ReadinessArea {
 pub struct ProductionReadinessReport {
     pub production_ready: bool,
     pub cpp_parity_ready: bool,
+    #[serde(default)]
+    pub blocker_count: usize,
+    #[serde(default)]
+    pub failed_areas: Vec<String>,
+    #[serde(default)]
+    pub failed_capabilities: Vec<ReadinessCapabilityBlocker>,
     pub areas: Vec<ReadinessArea>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReadinessCapabilityBlocker {
+    pub area: String,
+    pub capability: String,
 }
 
 impl ProductionReadinessReport {
@@ -27,6 +39,10 @@ impl ProductionReadinessReport {
             .iter()
             .find(|item| item.area == area)
             .map(|item| item.missing.as_slice())
+    }
+
+    pub fn exact_failed_capabilities(&self) -> &[ReadinessCapabilityBlocker] {
+        self.failed_capabilities.as_slice()
     }
 }
 
@@ -302,9 +318,30 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
         },
     ];
     let production_ready = areas.iter().all(|area| area.ready);
+    let failed_areas = areas
+        .iter()
+        .filter(|area| !area.ready || !area.missing.is_empty())
+        .map(|area| area.area.clone())
+        .collect::<Vec<_>>();
+    let failed_capabilities = areas
+        .iter()
+        .flat_map(|area| {
+            area.missing
+                .iter()
+                .map(|capability| ReadinessCapabilityBlocker {
+                    area: area.area.clone(),
+                    capability: capability.clone(),
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let blocker_count = failed_capabilities.len();
     ProductionReadinessReport {
         production_ready,
         cpp_parity_ready: production_ready,
+        blocker_count,
+        failed_areas,
+        failed_capabilities,
         areas,
     }
 }
@@ -318,6 +355,12 @@ mod tests {
         let report = production_readiness_report();
         assert!(!report.production_ready);
         assert!(!report.cpp_parity_ready);
+        assert_eq!(report.blocker_count, report.missing_count());
+        assert_eq!(report.blocker_count, report.failed_capabilities.len());
+        assert!(report.failed_areas.contains(&"storage_cache".to_string()));
+        assert!(report.failed_capabilities.iter().any(|blocker| {
+            blocker.area == "storage_cache" && blocker.capability.contains("ByteStore")
+        }));
         for area in [
             "raft_replication",
             "client",
@@ -378,6 +421,11 @@ mod tests {
             .expect("scale testing area must exist");
         assert!(scale.iter().any(|item| item.contains("AWS scale test")));
         assert!(scale.iter().any(|item| item.contains("p50/p95/p99")));
+        assert!(report
+            .exact_failed_capabilities()
+            .iter()
+            .any(|blocker| blocker.area == "scale_testing"
+                && blocker.capability.contains("latency/throughput")));
 
         let fault_tolerance = report
             .missing_by_area("fault_tolerance")

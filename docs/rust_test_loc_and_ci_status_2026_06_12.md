@@ -54,6 +54,7 @@ Recommended CI gate once workflow-scope credentials are available:
 ```bash
 cargo fmt --all -- --check
 cargo check -p temporalstore-rust --all-targets
+cargo run -p temporalstore-rust --bin readiness_gate
 cargo test -p temporalstore-rust --lib --tests -- --test-threads=1
 for run in 1 2 3; do
   cargo test -p temporalstore-rust tiny_memory_cache --lib -- --test-threads=1
@@ -74,3 +75,8 @@ python3 tools/validate_aws_validation_log.py \
   --job temporalstore-scale-validation \
   --log /tmp/temporalstore-scale-ci.log
 ```
+
+The readiness gate JSON now includes `blocker_count`, `failed_areas`, and
+`failed_capabilities[]` entries with exact area/capability text. The CLI also prints the first
+failed capabilities to stderr before exiting non-zero, so CI logs identify the remaining production
+gaps without requiring a separate JSON parser.

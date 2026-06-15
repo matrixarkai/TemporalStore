@@ -9,9 +9,13 @@ fn main() {
 
     if !report.production_ready {
         eprintln!(
-            "production readiness gate failed: {} blocker(s) remain",
-            report.missing_count()
+            "production readiness gate failed: {} blocker(s) remain across {} area(s)",
+            report.blocker_count,
+            report.failed_areas.len()
         );
+        for blocker in report.exact_failed_capabilities().iter().take(10) {
+            eprintln!("- {}: {}", blocker.area, blocker.capability);
+        }
         std::process::exit(2);
     }
 }
