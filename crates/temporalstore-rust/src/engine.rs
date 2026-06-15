@@ -100,6 +100,7 @@ struct AdmissionLimit {
 }
 
 const FEATURE_ADD_HARD_MAX_SIZE: usize = 100_000;
+const FEATURE_PAGE_MAGIC: &[u8] = b"TSFPG1\n";
 const HOT_PAGE_SEGMENT_ID: u64 = u64::MAX;
 static HOT_PAGE_OFFSET: AtomicU64 = AtomicU64::new(1);
 
@@ -114,6 +115,12 @@ struct IpsPointMeta {
 struct ExecuteOutcome {
     response: CommandResponse,
     mutated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PackedFeaturePage {
+    version: u8,
+    points: Vec<FeaturePoint>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -569,6 +576,8 @@ pub struct StorageProductionReadinessReport {
     pub segment_integrity: StorageSegmentIntegrityReport,
     #[serde(default)]
     pub log_compatibility: StorageLogCompatibilityReport,
+    #[serde(default)]
+    pub page_format_compatibility: StoragePageFormatCompatibilityReport,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -584,6 +593,29 @@ pub struct StorageLogCompatibilityReport {
     pub index_log_records: usize,
     pub oplog_bytes: u64,
     pub index_log_bytes: u64,
+    pub compatibility_gaps: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoragePageFormatCompatibilityReport {
+    pub shard_id: ShardId,
+    pub page_format: String,
+    pub rust_envelope_version: u8,
+    pub rust_native_read_safe: bool,
+    pub cxx_page_header_compatible: bool,
+    pub checksum_protected: bool,
+    pub object_ids_embedded: bool,
+    pub routing_slots_embedded: bool,
+    pub compression_supported: bool,
+    pub active_zones: u64,
+    pub sealed_zones: u64,
+    pub delayed_destroy_zones: u64,
+    pub live_physical_bytes: u64,
+    pub reclaimable_physical_bytes: u64,
+    pub page_store_writes: u64,
+    pub page_store_bytes_written: u64,
+    pub logical_bytes_written: u64,
+    pub compressed_records_written: u64,
     pub compatibility_gaps: Vec<String>,
 }
 
@@ -1966,6 +1998,7 @@ impl TemporalEngine {
             .map(|stats| stats.page_store.clone())
             .unwrap_or_else(|| self.page_store.stats());
         let log_compatibility = self.storage_log_compatibility_report(shard_id);
+        let page_format_compatibility = self.storage_page_format_compatibility_report(shard_id);
         let slot_dump_manifest_count = self.list_slot_dump_manifests(shard_id).len();
         let interrupted_slot_dump_install_count = boundary.interrupted_slot_dump_installs.len();
         let undumped_oplog_records = boundary
@@ -2079,6 +2112,7 @@ impl TemporalEngine {
             object_lifecycle: recovery.object_lifecycle,
             segment_integrity,
             log_compatibility,
+            page_format_compatibility,
         }
     }
 
@@ -2114,6 +2148,40 @@ impl TemporalEngine {
                 "C++ binary/protobuf oplog reader and writer are not implemented".to_string(),
                 "C++ binary/protobuf index-log reader and writer are not implemented".to_string(),
                 "mixed-format migration and golden-log replay suite are not implemented"
+                    .to_string(),
+            ],
+        }
+    }
+
+    pub fn storage_page_format_compatibility_report(
+        &self,
+        shard_id: ShardId,
+    ) -> StoragePageFormatCompatibilityReport {
+        let stats = self.page_store.stats();
+        let zones = self.page_store.zone_summary();
+        StoragePageFormatCompatibilityReport {
+            shard_id,
+            page_format: "rust-page-envelope-v6".to_string(),
+            rust_envelope_version: 6,
+            rust_native_read_safe: true,
+            cxx_page_header_compatible: false,
+            checksum_protected: true,
+            object_ids_embedded: true,
+            routing_slots_embedded: true,
+            compression_supported: true,
+            active_zones: zones.active_zones,
+            sealed_zones: zones.sealed_zones,
+            delayed_destroy_zones: zones.delayed_destroy_zones,
+            live_physical_bytes: zones.live_physical_bytes,
+            reclaimable_physical_bytes: zones.reclaimable_physical_bytes,
+            page_store_writes: stats.writes,
+            page_store_bytes_written: stats.bytes_written,
+            logical_bytes_written: stats.logical_bytes_written,
+            compressed_records_written: stats.compressed_records_written,
+            compatibility_gaps: vec![
+                "C++ protobuf page header reader and writer are not implemented".to_string(),
+                "C++ slot/page layout and page-id allocation are not byte-compatible".to_string(),
+                "mixed Rust-envelope/C++-header migration and golden-page replay suite are not implemented"
                     .to_string(),
             ],
         }
@@ -4261,19 +4329,22 @@ fn execute_on_shard(
             remove_if_expired(shard, &key);
             let series = shard.features.entry(key.clone()).or_default();
             let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
-            for point in points {
-                let timestamp = point.timestamp_ms.to_string();
-                let object_id = stable_page_object_id(shard_id, "feature", &key, Some(&timestamp));
+            let points = sorted_feature_points(points);
+            if !points.is_empty() {
+                let object_id = stable_page_object_id(shard_id, "feature", &key, None);
+                let packed = encode_feature_page(&points);
                 if let Ok(address) = append_value(
                     cache,
                     page_store,
                     shard_id,
-                    &point.value,
+                    &packed,
                     Some(object_id),
                     Some(routing_slot),
                     async_storage,
                 ) {
-                    series.insert(point.timestamp_ms, address);
+                    for point in points {
+                        series.insert(point.timestamp_ms, address.clone());
+                    }
                     mutated = true;
                 }
             }
@@ -4295,29 +4366,37 @@ fn execute_on_shard(
             remove_if_expired(shard, &key);
             let series = shard.features.entry(key.clone()).or_default();
             let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
-            for point in points {
-                let exists = series.contains_key(&point.timestamp_ms);
+            let mut accepted_points = Vec::new();
+            let mut accepted_timestamps = BTreeSet::new();
+            for point in sorted_feature_points(points) {
+                let exists = series.contains_key(&point.timestamp_ms)
+                    || accepted_timestamps.contains(&point.timestamp_ms);
                 let should_write = match policy {
                     FeatureWritePolicy::Upsert => true,
                     FeatureWritePolicy::InsertIfAbsent => !exists,
                     FeatureWritePolicy::ReplaceExisting => exists,
                 };
                 if should_write {
-                    let timestamp = point.timestamp_ms.to_string();
-                    let object_id =
-                        stable_page_object_id(shard_id, "feature", &key, Some(&timestamp));
-                    if let Ok(address) = append_value(
-                        cache,
-                        page_store,
-                        shard_id,
-                        &point.value,
-                        Some(object_id),
-                        Some(routing_slot),
-                        async_storage,
-                    ) {
-                        series.insert(point.timestamp_ms, address);
-                        mutated = true;
+                    accepted_timestamps.insert(point.timestamp_ms);
+                    accepted_points.push(point);
+                }
+            }
+            if !accepted_points.is_empty() {
+                let object_id = stable_page_object_id(shard_id, "feature", &key, None);
+                let packed = encode_feature_page(&accepted_points);
+                if let Ok(address) = append_value(
+                    cache,
+                    page_store,
+                    shard_id,
+                    &packed,
+                    Some(object_id),
+                    Some(routing_slot),
+                    async_storage,
+                ) {
+                    for point in accepted_points {
+                        series.insert(point.timestamp_ms, address.clone());
                     }
+                    mutated = true;
                 }
             }
             while series.len() > feature_max_size {
@@ -4350,12 +4429,13 @@ fn execute_on_shard(
                             .range(start_ms..=end_ms)
                             .take(count.unwrap_or(5000))
                             .filter_map(|(timestamp_ms, address)| {
-                                read_page_bytes(cache, page_store, shard_id, address).map(|value| {
-                                    FeaturePoint {
-                                        timestamp_ms: *timestamp_ms,
-                                        value,
-                                    }
-                                })
+                                read_feature_point(
+                                    cache,
+                                    page_store,
+                                    shard_id,
+                                    *timestamp_ms,
+                                    address,
+                                )
                             })
                             .collect()
                     })
@@ -4379,21 +4459,17 @@ fn execute_on_shard(
                         .range(start_ms..=end_ms)
                         .take(limit)
                         .filter_map(|(timestamp_ms, address)| {
-                            read_page_bytes(cache, page_store, shard_id, address).and_then(
-                                |value| {
+                            read_feature_point(cache, page_store, shard_id, *timestamp_ms, address)
+                                .and_then(|point| {
                                     let row = SequenceFeatureRow::decode_cpp_feature_value(
-                                        *timestamp_ms,
-                                        &value,
+                                        point.timestamp_ms,
+                                        &point.value,
                                     )?;
                                     filters
                                         .iter()
                                         .all(|filter| sequence_filter_matches(&row, filter))
-                                        .then_some(FeaturePoint {
-                                            timestamp_ms: *timestamp_ms,
-                                            value,
-                                        })
-                                },
-                            )
+                                        .then_some(point)
+                                })
                         })
                         .collect()
                 })
@@ -4417,19 +4493,22 @@ fn execute_on_shard(
                 series.remove(&timestamp_ms);
                 mutated = true;
             }
-            for point in points {
-                let timestamp = point.timestamp_ms.to_string();
-                let object_id = stable_page_object_id(shard_id, "feature", &key, Some(&timestamp));
+            let points = sorted_feature_points(points);
+            if !points.is_empty() {
+                let object_id = stable_page_object_id(shard_id, "feature", &key, None);
+                let packed = encode_feature_page(&points);
                 if let Ok(address) = append_value(
                     cache,
                     page_store,
                     shard_id,
-                    &point.value,
+                    &packed,
                     Some(object_id),
                     Some(routing_slot),
                     async_storage,
                 ) {
-                    series.insert(point.timestamp_ms, address);
+                    for point in points {
+                        series.insert(point.timestamp_ms, address.clone());
+                    }
                     mutated = true;
                 }
             }
@@ -4471,8 +4550,9 @@ fn execute_on_shard(
                     series
                         .range(start_ms..=end_ms)
                         .take(count.unwrap_or(5000))
-                        .filter_map(|(_, address)| {
-                            read_page_bytes(cache, page_store, shard_id, address)
+                        .filter_map(|(timestamp_ms, address)| {
+                            read_feature_point(cache, page_store, shard_id, *timestamp_ms, address)
+                                .map(|point| point.value)
                         })
                         .collect::<Vec<_>>()
                 })
@@ -5502,10 +5582,10 @@ fn collect_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
         }));
     }
     for (key, series) in &shard.features {
-        entries.extend(series.iter().map(|(timestamp_ms, address)| LivePageEntry {
+        entries.extend(series.values().map(|address| LivePageEntry {
             object_key: key.clone(),
             kind: "feature",
-            component: Some(timestamp_ms.to_string()),
+            component: None,
             address: address.clone(),
         }));
     }
@@ -6093,6 +6173,51 @@ fn read_page_bytes(
     let bytes = page_store.read(address).ok()?;
     let _ = cache.put(cache_key, bytes.clone());
     Some(bytes)
+}
+
+fn sorted_feature_points(mut points: Vec<FeaturePoint>) -> Vec<FeaturePoint> {
+    let mut by_timestamp = BTreeMap::new();
+    for point in points.drain(..) {
+        by_timestamp.insert(point.timestamp_ms, point);
+    }
+    by_timestamp.into_values().collect()
+}
+
+fn encode_feature_page(points: &[FeaturePoint]) -> Vec<u8> {
+    let page = PackedFeaturePage {
+        version: 1,
+        points: points.to_vec(),
+    };
+    let mut bytes = FEATURE_PAGE_MAGIC.to_vec();
+    if let Ok(mut payload) = serde_json::to_vec(&page) {
+        bytes.append(&mut payload);
+    }
+    bytes
+}
+
+fn decode_feature_page(bytes: &[u8]) -> Option<Vec<FeaturePoint>> {
+    let payload = bytes.strip_prefix(FEATURE_PAGE_MAGIC)?;
+    let page = serde_json::from_slice::<PackedFeaturePage>(payload).ok()?;
+    (page.version == 1).then_some(page.points)
+}
+
+fn read_feature_point(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    timestamp_ms: u64,
+    address: &PageAddress,
+) -> Option<FeaturePoint> {
+    let bytes = read_page_bytes(cache, page_store, shard_id, address)?;
+    if let Some(points) = decode_feature_page(&bytes) {
+        return points
+            .into_iter()
+            .find(|point| point.timestamp_ms == timestamp_ms);
+    }
+    Some(FeaturePoint {
+        timestamp_ms,
+        value: bytes,
+    })
 }
 
 fn cache_entry_routing_slot(entry: &CacheEntryInfo) -> Option<u32> {
@@ -8131,6 +8256,126 @@ mod tests {
                 }]
             }
         );
+    }
+
+    #[test]
+    fn feature_append_packs_many_timestamp_values_into_one_page() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let first = SequenceFeatureRow {
+            timestamp_ms: 10,
+            gid: 1,
+            action_type: 2,
+            duration: 3,
+            author_id: 4,
+        };
+        let second = SequenceFeatureRow {
+            timestamp_ms: 20,
+            gid: 5,
+            action_type: 6,
+            duration: 7,
+            author_id: 8,
+        };
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureAppend {
+                key: "packed-feature".to_string(),
+                points: vec![
+                    FeaturePoint {
+                        timestamp_ms: second.timestamp_ms,
+                        value: second.encode_cpp_feature_value(),
+                    },
+                    FeaturePoint {
+                        timestamp_ms: first.timestamp_ms,
+                        value: first.encode_cpp_feature_value(),
+                    },
+                ],
+            },
+        });
+        assert!(response.status.ok);
+
+        let (first_address, second_address) = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let series = shards
+                .get(&1)
+                .and_then(|shard| shard.features.get("packed-feature"))
+                .expect("feature series should exist");
+            (
+                series.get(&10).expect("first point").clone(),
+                series.get(&20).expect("second point").clone(),
+            )
+        };
+        assert_eq!(first_address, second_address);
+        assert_eq!(
+            first_address.object_id,
+            Some(stable_page_object_id(1, "feature", "packed-feature", None))
+        );
+        let packed_bytes = engine.page_store().read(&first_address).unwrap();
+        let packed_points = decode_feature_page(&packed_bytes).expect("packed feature page");
+        assert_eq!(packed_points.len(), 2);
+        assert_eq!(packed_points[0].timestamp_ms, 10);
+        assert_eq!(packed_points[1].timestamp_ms, 20);
+
+        let query = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureQuery {
+                key: "packed-feature".to_string(),
+                start_ms: 0,
+                end_ms: 30,
+                count: None,
+            },
+        });
+        assert_eq!(
+            query.response,
+            CommandResponse::FeaturePoints {
+                points: vec![
+                    FeaturePoint {
+                        timestamp_ms: 10,
+                        value: first.encode_cpp_feature_value(),
+                    },
+                    FeaturePoint {
+                        timestamp_ms: 20,
+                        value: second.encode_cpp_feature_value(),
+                    },
+                ]
+            }
+        );
+
+        let filtered = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureQueryFiltered {
+                key: "packed-feature".to_string(),
+                start_ms: 0,
+                end_ms: 30,
+                count: None,
+                filters: vec![FeatureFilter {
+                    field: "gid".to_string(),
+                    op: FeatureFilterOp::Equal,
+                    value: 5,
+                }],
+            },
+        });
+        assert_eq!(
+            filtered.response,
+            CommandResponse::FeaturePoints {
+                points: vec![FeaturePoint {
+                    timestamp_ms: 20,
+                    value: second.encode_cpp_feature_value(),
+                }]
+            }
+        );
+
+        let agg = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureAggQuery {
+                key: "packed-feature".to_string(),
+                start_ms: 0,
+                end_ms: 30,
+                aggregator: "count".to_string(),
+                count: None,
+            },
+        });
+        assert_eq!(agg.response, CommandResponse::Aggregate { value: 2 });
     }
 
     #[test]
@@ -11388,6 +11633,14 @@ mod tests {
             report.log_compatibility.index_log_format,
             "rust-jsonl-shard-index-v1"
         );
+        assert!(report.page_format_compatibility.rust_native_read_safe);
+        assert!(!report.page_format_compatibility.cxx_page_header_compatible);
+        assert_eq!(
+            report.page_format_compatibility.page_format,
+            "rust-page-envelope-v6"
+        );
+        assert!(report.page_format_compatibility.checksum_protected);
+        assert!(report.page_format_compatibility.object_ids_embedded);
         assert!(report.page_store_bytes_written > 0);
     }
 
@@ -11434,6 +11687,57 @@ mod tests {
             .compatibility_gaps
             .iter()
             .any(|gap| gap.contains("golden-log replay")));
+    }
+
+    #[test]
+    fn storage_page_format_compatibility_report_counts_zones_and_header_gaps() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: "page-format-key".to_string(),
+                        value: vec![11; 512],
+                    },
+                })
+                .status
+                .ok
+        );
+        engine.page_store().roll_segment().unwrap();
+
+        let report = engine.storage_page_format_compatibility_report(1);
+        assert_eq!(report.shard_id, 1);
+        assert_eq!(report.page_format, "rust-page-envelope-v6");
+        assert_eq!(report.rust_envelope_version, 6);
+        assert!(report.rust_native_read_safe);
+        assert!(!report.cxx_page_header_compatible);
+        assert!(report.checksum_protected);
+        assert!(report.object_ids_embedded);
+        assert!(report.routing_slots_embedded);
+        assert!(report.compression_supported);
+        assert_eq!(report.sealed_zones, 1);
+        assert_eq!(report.active_zones, 1);
+        assert!(report.live_physical_bytes > 0);
+        assert!(report.page_store_writes > 0);
+        assert!(report.page_store_bytes_written > 0);
+        assert!(report.logical_bytes_written >= 512);
+        assert!(report.compressed_records_written > 0);
+        assert!(report
+            .compatibility_gaps
+            .iter()
+            .any(|gap| gap.contains("C++ protobuf page header")));
+        assert!(report
+            .compatibility_gaps
+            .iter()
+            .any(|gap| gap.contains("golden-page replay")));
     }
 
     #[test]

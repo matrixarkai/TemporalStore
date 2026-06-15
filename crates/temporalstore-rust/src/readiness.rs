@@ -274,6 +274,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "storage production report exposes Rust JSONL oplog/index-log format, replay-safe status, sequence/record/byte counts, and C++ binary compatibility gaps"
                     .to_string(),
+                "storage production report exposes Rust page-envelope version, checksum/object-id/routing-slot/compression support, zone bytes, and C++ page-header compatibility gaps"
+                    .to_string(),
             ],
             missing: vec![
                 "binary/protobuf oplog and index-log compatibility".to_string(),
@@ -291,6 +293,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
             covered: vec![
                 "common/string/hash/set plus Redis compatibility subset".to_string(),
                 "feature append/query/replace/delete/agg and 5k sequence test".to_string(),
+                "feature writes pack many timestamp/value entries into one page and the timestamp index shares that page address, matching the C++ storage shape"
+                    .to_string(),
                 "IPS load/snapshot/stat/filter subset and Risk subset with typed client and RESP coverage"
                     .to_string(),
             ],

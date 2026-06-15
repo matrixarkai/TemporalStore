@@ -49,10 +49,11 @@ pub use engine::{
     SlotDumpManifest, SlotStorageSummary, StorageCacheInspectionReport,
     StorageCacheInvalidateSlotRequest, StorageCacheSlotSummary, StorageCacheWarmupReport,
     StorageLifecyclePlan, StorageLifecycleReport, StorageLifecycleRequest,
-    StorageLogCompatibilityReport, StorageProductionReadinessPolicy,
-    StorageProductionReadinessReport, StorageProductionReadinessRequest, StorageReclaimCandidate,
-    StorageRecoveryBoundaryReport, StorageRecoveryPageError, StorageRecoveryReport,
-    StorageRecoverySegmentLiveReport, StorageSegmentIntegrityReport, TemporalEngine,
+    StorageLogCompatibilityReport, StoragePageFormatCompatibilityReport,
+    StorageProductionReadinessPolicy, StorageProductionReadinessReport,
+    StorageProductionReadinessRequest, StorageReclaimCandidate, StorageRecoveryBoundaryReport,
+    StorageRecoveryPageError, StorageRecoveryReport, StorageRecoverySegmentLiveReport,
+    StorageSegmentIntegrityReport, TemporalEngine,
 };
 pub use index_log::{IndexLogRecord, IndexLogStats, LocalIndexLogStore};
 pub use ingestion::{
