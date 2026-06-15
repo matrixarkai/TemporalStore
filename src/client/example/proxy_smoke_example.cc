@@ -10,6 +10,12 @@
 #include "common/status.h"
 #include "thrift/server_types.h"
 
+namespace bcache2 {
+namespace proxy {
+bool EnsureBrpcThriftProtocolRegistered();
+}  // namespace proxy
+}  // namespace bcache2
+
 namespace {
 
 bool CheckStatus(const char* op, const bcache2::thrift::Status& status) {
@@ -34,7 +40,8 @@ bool Call(brpc::Channel* channel, const char* method, const Request& request,
           Response* response) {
     brpc::ThriftStub stub(channel);
     brpc::Controller ctrl;
-    ctrl.set_timeout_ms(5000);
+    const char* timeout_env = std::getenv("PROXY_SMOKE_TIMEOUT_MS");
+    ctrl.set_timeout_ms(timeout_env == nullptr ? 5000 : std::atoi(timeout_env));
     stub.CallMethod(method, &ctrl, &request, response, nullptr);
     return CheckController(method, ctrl) && CheckStatus(method, response->status);
 }
@@ -56,7 +63,13 @@ int main(int argc, char** argv) {
 
     brpc::ChannelOptions options;
     options.protocol = brpc::PROTOCOL_THRIFT;
-    options.timeout_ms = 5000;
+    const char* timeout_env = std::getenv("PROXY_SMOKE_TIMEOUT_MS");
+    options.timeout_ms = timeout_env == nullptr ? 5000 : std::atoi(timeout_env);
+
+    if (!bcache2::proxy::EnsureBrpcThriftProtocolRegistered()) {
+        std::cerr << "failed to register thrift protocol" << std::endl;
+        return 1;
+    }
 
     brpc::Channel channel;
     if (channel.Init(proxy_endpoint.c_str(), "", &options) != 0) {

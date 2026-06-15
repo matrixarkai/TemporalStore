@@ -7,7 +7,9 @@
 #include <byte/thread/async_thread.h>
 #include <gflags/gflags.h>
 
+#include <cstdio>
 #include <memory>
+#include <string>
 #include <utility>
 
 #include "common/bits.h"
@@ -15,21 +17,144 @@
 #include "common/function_closure.h"
 #include "common/scoped_invoker.h"
 #include "partition/partition.h"
+#include "partition/storage/data_raft_consensus.h"
 #include "protocol/metaserver.pb.h"
 #include "server/server.h"
 #include "server/util.h"
+
+DECLARE_string(data_replication_mode);
+DECLARE_string(data_raft_work_dir);
+
+DEFINE_bool(data_raft_enable_experimental_direct_writes, false,
+            "Allow direct write execution while data_replication_mode=raft_consensus. "
+            "This is only for Byteraft backend bring-up tests. Production must keep this false "
+            "until writes are proposed through Raft before local mutation.");
+DEFINE_string(data_raft_read_mode, "leader",
+              "Read policy when data_replication_mode=raft_consensus. Supported values: "
+              "leader, linearizable, bounded_stale, unsafe_any_replica. leader rejects "
+              "secondary reads; linearizable performs ReadIndex on the leader; bounded_stale "
+              "allows secondary reads only when applied lag is within "
+              "data_raft_bounded_stale_max_index_lag; unsafe_any_replica is for bring-up tests.");
+DEFINE_uint64(data_raft_bounded_stale_max_index_lag, 0,
+              "Maximum committed-applied Raft index lag allowed for bounded_stale replica reads.");
+DEFINE_uint64(data_raft_read_index_timeout_ms, 1000,
+              "ReadIndex timeout for linearizable reads in data-node Raft mode.");
 
 namespace bcache2 {
 namespace server {
 
 __thread PartitionManager::ThreadLocalInfo* PartitionManager::thread_info_ = nullptr;
 
+namespace {
+
+bool IsLegacyCmdWrite(const CmdRequest& request) {
+    switch (request.module_case()) {
+        case CmdRequest::kCommonRequest:
+            return request.common_request().cmd_case() != CommonModuleRequest::kTtlRequest;
+        case CmdRequest::kHashRequest:
+            return request.hash_request().cmd_case() != hash::HashModuleRequest::kGetRequest;
+        case CmdRequest::kFeatureRequest:
+            return request.feature_request().cmd_case() !=
+                       feature::FeatureModuleRequest::kQueryRequest &&
+                   request.feature_request().cmd_case() !=
+                       feature::FeatureModuleRequest::kAggQueryRequest;
+        case CmdRequest::kStringRequest:
+            return request.string_request().cmd_case() != str::StringModuleRequest::kGetRequest;
+        case CmdRequest::kSetRequest:
+        case CmdRequest::MODULE_NOT_SET:
+            return true;
+    }
+    return true;
+}
+
+bool IsCmdWrite(const CmdRequest& request) {
+    if (request.module_id() == 0) {
+        return IsLegacyCmdWrite(request);
+    }
+
+    const CmdManager::CmdInfo* cmd =
+        CmdManager::GetCmd(request.module_id(), request.function_id());
+    return cmd == nullptr || cmd->flag == CmdRwFlag::kWrite;
+}
+
+bool HasWriteCmd(const BatchExecuteCmdRequest& request) {
+    for (int i = 0; i < request.request_size(); ++i) {
+        if (IsCmdWrite(request.request(i))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool IsWriteOnlyBatch(const BatchExecuteCmdRequest& request) {
+    for (int i = 0; i < request.request_size(); ++i) {
+        if (!IsCmdWrite(request.request(i))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool IsPrimaryPartition(const partition::Partition* partition) {
+    return partition->GetPartitionID() == partition->GetPrimaryPartitionId();
+}
+
+bool IsDataRaftConsensusMode() {
+    return ::FLAGS_data_replication_mode == "raft_consensus";
+}
+
+std::string ResolvePartitionUriForDataRaft(uint64_t partition_id, const std::string& logical_uri) {
+    if (!IsDataRaftConsensusMode()) {
+        return logical_uri;
+    }
+    return "file://" + FLAGS_data_raft_work_dir + "/local-streams/" +
+           std::to_string(partition_id) + "/partition";
+}
+
+Status CheckDataRaftReadPolicy(partition::Partition* partition) {
+    if (!IsDataRaftConsensusMode()) {
+        return Status::OK();
+    }
+    if (partition == nullptr) {
+        return Status::FailedPrecondition("missing partition");
+    }
+
+    const bool is_primary = IsPrimaryPartition(partition);
+    if (FLAGS_data_raft_read_mode == "leader") {
+        return is_primary ? Status::OK()
+                          : Status::FailedPrecondition(
+                                "data raft secondary read rejected by leader read mode");
+    }
+    if (FLAGS_data_raft_read_mode == "linearizable") {
+        if (!is_primary) {
+            return Status::FailedPrecondition(
+                "data raft linearizable read must be served by the leader");
+        }
+        return partition->DataRaftReadIndex(FLAGS_data_raft_read_index_timeout_ms);
+    }
+    if (FLAGS_data_raft_read_mode == "bounded_stale") {
+        if (is_primary) {
+            return Status::OK();
+        }
+        return partition->CanServeDataRaftBoundedStaleRead(
+            FLAGS_data_raft_bounded_stale_max_index_lag);
+    }
+    if (FLAGS_data_raft_read_mode == "unsafe_any_replica") {
+        return Status::OK();
+    }
+    return Status::InvalidArgument("invalid data_raft_read_mode");
+}
+
+}  // namespace
+
 PartitionManager::PartitionManager(const std::string& cluster_name, Server* server,
-                                   byte::AsyncThreadPool* thread_pool, stream::Env* env,
+                                   byte::AsyncThreadPool* thread_pool,
+                                   byte::AsyncThreadPool* raft_propose_pool, stream::Env* env,
                                    blockcache::BlockCache* blockcache)
     : cluster_name_(cluster_name),
       server_(server),
       thread_pool_(thread_pool),
+      raft_propose_pool_(raft_propose_pool),
       env_(env),
       blockcache_(blockcache) {
     thread_infos_.reset(new ThreadLocalInfo[thread_pool_->ThreadNum()]);
@@ -61,12 +186,13 @@ void PartitionManager::Load(Controller* ctrl, const LoadRequest* request, LoadRe
 
     partition::Partition::Options options;
     options.env = env_;
-    options.uri = request->partition_uri();
+    options.uri = ResolvePartitionUriForDataRaft(partition_id, request->partition_uri());
     options.table_name = request->table_name();
     options.host = server_->GetHost();
     options.host_v6 = server_->GetHostV6();
     options.port = server_->GetListenPort();
     options.partition_id = partition_id;
+    options.owning_thread = GetThread(partition_id);
     options.load_version = request->load_version();
     options.config.MergeFrom(request->config());
     options.persistent_type = request->persistent_type();
@@ -172,7 +298,11 @@ void PartitionManager::LoadAsync(partition::Partition* partition) {
                 .put("Status", status)
                 .put("PartitionId", partition_id);
         }
-        ReportLoadResult(partition_id, std::move(status));
+        byte::AsyncThreadPool* report_pool =
+            raft_propose_pool_ != nullptr ? raft_propose_pool_ : thread_pool_;
+        report_pool->PushTask(partition_id, NewFuncClosure([this, partition_id, status] {
+            ReportLoadResult(partition_id, status);
+        }));
     };
     GetThread(partition->GetPartitionID())->Invoke(NewCoFuncClosure(func));
 }
@@ -215,6 +345,32 @@ void PartitionManager::Unload(Controller* ctrl, const UnloadRequest* request,
 
 void PartitionManager::BatchExecuteCmd(Controller* ctrl, const BatchExecuteCmdRequest* request,
                                        BatchExecuteCmdResponse* response, Closure<void>* callback) {
+    BatchExecuteContext* context = NewBatchExecuteContext(ctrl, request, response, callback);
+    const uint64_t partition_id = request->partition_id();
+    byte::AsyncThreadPool* execute_pool =
+        raft_propose_pool_ != nullptr ? raft_propose_pool_ : thread_pool_;
+    execute_pool->PushTask(partition_id, NewFuncClosure([this, context, partition_id] {
+        ThreadLocalInfo* previous_thread_info = thread_info_;
+        thread_info_ = &thread_infos_[partition_id % thread_pool_->ThreadNum()];
+        BatchExecuteCmdInternal(context);
+        thread_info_ = previous_thread_info;
+    }));
+}
+
+void PartitionManager::BatchExecuteCmdLocally(Controller* ctrl,
+                                              const BatchExecuteCmdRequest* request,
+                                              BatchExecuteCmdResponse* response,
+                                              Closure<void>* callback) {
+    BatchExecuteContext* context = NewBatchExecuteContext(ctrl, request, response, callback);
+    ThreadLocalInfo* previous_thread_info = thread_info_;
+    thread_info_ = &thread_infos_[request->partition_id() % thread_pool_->ThreadNum()];
+    BatchExecuteCmdInternal(context);
+    thread_info_ = previous_thread_info;
+}
+
+PartitionManager::BatchExecuteContext* PartitionManager::NewBatchExecuteContext(
+        Controller* ctrl, const BatchExecuteCmdRequest* request, BatchExecuteCmdResponse* response,
+        Closure<void>* callback) {
     BatchExecuteContext* context = new BatchExecuteContext;
     context->ctrl = ctrl;
     context->request = request;
@@ -251,24 +407,74 @@ void PartitionManager::BatchExecuteCmd(Controller* ctrl, const BatchExecuteCmdRe
             continue;
         }
     }
-    GetThread(request->partition_id())
-        ->Invoke(NewClosure(this, &PartitionManager::BatchExecuteCmdInternal, context));
+    return context;
 }
 
 void PartitionManager::BatchExecuteCmdInternal(BatchExecuteContext* context) {
+    const bool has_write_cmd = HasWriteCmd(*context->request);
     LOG_CALL_DEBUG()
         .put("PartitionId", context->request->partition_id())
         .put("LoadVersion", context->request->load_version())
+        .put("PinPrimary", context->request->pin_primary())
+        .put("HasWriteCmd", has_write_cmd)
         .put("TraceId", context->ctrl->trace_id());
 
     ScopedInvoker done(context->callback);
     auto it = thread_info_->partition_map.find(context->request->partition_id());
+    const bool need_primary = context->request->pin_primary() || has_write_cmd;
     if (it == thread_info_->partition_map.end() ||
-        (context->request->pin_primary() &&
-        (it->second->GetPartitionID() != it->second->GetPrimaryPartitionId()))) {
+        (need_primary && !IsPrimaryPartition(it->second.get()))) {
         // client should refresh table topo
         context->ctrl->set_status(Status::TopomError("Partition not exists or not primary"));
         return;
+    }
+
+    if (has_write_cmd && IsDataRaftConsensusMode() &&
+        !FLAGS_data_raft_enable_experimental_direct_writes) {
+        LOG_INFO("Data raft write batch received")
+            .put("PartitionId", context->request->partition_id())
+            .put("RequestSize", context->request->request_size())
+            .put("PinPrimary", context->request->pin_primary())
+            .put("TraceId", context->ctrl->trace_id());
+        if (!IsWriteOnlyBatch(*context->request)) {
+            context->ctrl->set_status(Status::FailedPrecondition(
+                "data_replication_mode=raft_consensus currently accepts write-only batches. "
+                "Mixed read/write batches are rejected until read-index and committed response "
+                "plumbing are complete."));
+            return;
+        }
+        uint64_t request_id = context->ctrl->trace_id();
+        if (request_id == 0) {
+            request_id = butil::fast_rand();
+        }
+        partition::Partition* partition = it->second.get();
+        done.Release();
+        byte::AsyncThreadPool* propose_pool =
+            raft_propose_pool_ != nullptr ? raft_propose_pool_ : thread_pool_;
+        propose_pool->PushTask(context->request->partition_id(),
+                               NewFuncClosure([partition, context, request_id] {
+            std::unique_ptr<BatchExecuteContext> context_guard(context);
+            uint64_t committed_index = 0;
+            Status raft_status =
+                partition->ProposeDataRaftCommand(*context->request, request_id, &committed_index,
+                                                  context->response);
+            LOG_INFO("Data raft write batch finished")
+                .put("PartitionId", context->request->partition_id())
+                .put("RequestId", request_id)
+                .put("CommittedIndex", committed_index)
+                .put("Status", raft_status);
+            context->ctrl->set_status(raft_status.ok() ? Status::OK() : raft_status);
+            context->callback->Run();
+        }));
+        return;
+    }
+
+    if (!has_write_cmd) {
+        Status read_policy_status = CheckDataRaftReadPolicy(it->second.get());
+        if (!read_policy_status.ok()) {
+            context->ctrl->set_status(read_policy_status);
+            return;
+        }
     }
 
     if (stopping_ &&
@@ -289,6 +495,15 @@ void PartitionManager::BatchExecuteCmdInternal(BatchExecuteContext* context) {
         if (!context->ctrls[i].status().ok()) {
             ++context->complete_count;
         }
+    }
+    if (context->complete_count == context->request->request_size()) {
+        std::unique_ptr<BatchExecuteContext> context_release_guard(context);
+        for (int i = 0; i < context->request->request_size(); ++i) {
+            CmdResponse* cmd_response = context->response->add_response();
+            cmd_response->mutable_status()->CopyFrom(context->ctrls[i].status().ToRpcStatus());
+        }
+        context->callback->Run();
+        return;
     }
 
     for (int i = 0; i < request_size; ++i) {
@@ -405,6 +620,110 @@ void PartitionManager::ScanPartitionStream(Controller* ctrl,
     it->second->ScanPartitionStream(ctrl, request, response, callback);
 }
 
+void PartitionManager::ApplyDataRaftLog(Controller* ctrl,
+                                        const ApplyDataRaftLogRequest* request,
+                                        ApplyDataRaftLogResponse* response,
+                                        Closure<void>* callback) {
+    if (thread_info_ == nullptr) {
+        GetThread(request->partition_id())
+            ->Invoke(NewClosure(this, &PartitionManager::ApplyDataRaftLog, ctrl, request,
+                                response, callback));
+        return;
+    }
+
+    ScopedInvoker done(callback);
+    auto it = thread_info_->partition_map.find(request->partition_id());
+    if (it == thread_info_->partition_map.end()) {
+        ctrl->set_status(Status::NotFound("Partition not exists"));
+        return;
+    }
+
+    uint64_t applied_raft_index = 0;
+    uint64_t applied_oplog_sequence = 0;
+    Status status = it->second->ApplyDataRaftLog(request->raft_index(),
+                                                request->committed_log(),
+                                                &applied_raft_index,
+                                                &applied_oplog_sequence);
+    ctrl->set_status(status);
+    if (status.ok()) {
+        response->set_applied_raft_index(applied_raft_index);
+        response->set_applied_oplog_sequence(applied_oplog_sequence);
+    }
+}
+
+void PartitionManager::GetDataRaftStatus(
+    Controller* ctrl, const GetDataRaftStatusRequest* request,
+    GetDataRaftStatusResponse* response, Closure<void>* callback) {
+    if (thread_info_ == nullptr) {
+        GetThread(request->partition_id())
+            ->Invoke(NewClosure(this, &PartitionManager::GetDataRaftStatus, ctrl, request,
+                                response, callback));
+        return;
+    }
+
+    ScopedInvoker done(callback);
+    auto it = thread_info_->partition_map.find(request->partition_id());
+    if (it == thread_info_->partition_map.end()) {
+        ctrl->set_status(Status::NotFound("Partition not exists"));
+        return;
+    }
+
+    partition::DataRaftStatus status;
+    Status result = it->second->GetDataRaftStatus(&status);
+    ctrl->set_status(result);
+    if (!result.ok()) {
+        return;
+    }
+    response->set_running(status.running);
+    response->set_leader(status.leader);
+    response->set_learner(status.learner);
+    response->set_term(status.term);
+    response->set_leader_replica_id(status.leader_replica_id);
+    response->set_committed_index(status.committed_index);
+    response->set_applied_index(status.applied_index);
+    response->set_first_index(status.first_index);
+    response->set_last_index(status.last_index);
+    response->set_pending_config_change_index(status.pending_config_change_index);
+    response->set_voter_count(status.voter_count);
+    response->set_learner_count(status.learner_count);
+    response->set_fatal_event_count(status.fatal_event_count);
+    response->set_snapshot_creating(status.snapshot_creating);
+    response->set_snapshot_loading(status.snapshot_loading);
+}
+
+void PartitionManager::TriggerDataRaftSnapshot(
+    Controller* ctrl, const TriggerDataRaftSnapshotRequest* request,
+    TriggerDataRaftSnapshotResponse* response, Closure<void>* callback) {
+    if (thread_info_ == nullptr) {
+        GetThread(request->partition_id())
+            ->Invoke(NewClosure(this, &PartitionManager::TriggerDataRaftSnapshot, ctrl, request,
+                                response, callback));
+        return;
+    }
+
+    ScopedInvoker done(callback);
+    auto it = thread_info_->partition_map.find(request->partition_id());
+    if (it == thread_info_->partition_map.end()) {
+        ctrl->set_status(Status::NotFound("Partition not exists"));
+        return;
+    }
+
+    partition::Partition* partition = it->second.get();
+    done.Release();
+    byte::AsyncThreadPool* snapshot_pool =
+        raft_propose_pool_ != nullptr ? raft_propose_pool_ : thread_pool_;
+    snapshot_pool->PushTask(request->partition_id(),
+                            NewFuncClosure([partition, ctrl, response, callback] {
+        ScopedInvoker async_done(callback);
+        uint64_t snapshot_index = 0;
+        Status status = partition->TriggerDataRaftSnapshot(&snapshot_index);
+        ctrl->set_status(status);
+        if (status.ok()) {
+            response->set_snapshot_index(snapshot_index);
+        }
+    }));
+}
+
 void PartitionManager::SetConfig(Controller* ctrl, const SetConfigRequest* request,
                                  SetConfigResponse* response, Closure<void>* callback) {
     if (thread_info_ == nullptr) {
@@ -453,8 +772,8 @@ void PartitionManager::UpdateMembership(Controller* ctrl, const UpdateMembership
                                         AckResponse* response, Closure<void>* callback) {
     if (thread_info_ == nullptr) {
         GetThread(request->partition_id())
-            ->Invoke(NewClosure(this, &PartitionManager::UpdateMembership, ctrl, request, response,
-                                callback));
+            ->Invoke(NewCoClosure(this, &PartitionManager::UpdateMembership, ctrl, request,
+                                  response, callback));
         return;
     }
 

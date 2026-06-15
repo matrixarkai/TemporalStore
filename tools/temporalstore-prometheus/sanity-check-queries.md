@@ -14,31 +14,155 @@ up{job="temporalstore_node_exporter"}
 time() - node_textfile_mtime_seconds
 ```
 
-3. We can see server metrics and meta metrics separately
+3. TemporalStore `/vars` scrape targets are healthy
+
+```promql
+temporalstore_vars_exporter_target_up
+```
+
+```promql
+temporalstore_service_role_up
+```
+
+```promql
+sum(temporalstore_vars_exporter_scrape_errors_total)
+```
+
+```promql
+temporalstore_vars_exporter_target_samples_scraped
+```
+
+```promql
+temporalstore_vars_exporter_role_samples_scraped
+```
+
+4. We can see server metrics and meta metrics separately
 
 ```promql
 count({__name__=~"bcache2_.*"})
 ```
 
 ```promql
-sum by (source) ({__name__=~"bcache2_server_.*"})
+sum by (service_role, source) ({__name__=~"bcache2_server_.*|temporalstore_nodeserver_.*"})
 ```
 
 ```promql
-sum by (source) ({__name__=~"bcache2_metaserver_.*"})
-```
-
-4. Core runtime counters/throughput should move with traffic
-
-```promql
-sum by (source) (increase({__name__=~".*_success.*"}[5m]))
+sum by (service_role, source) ({__name__=~"bcache2_metaserver_.*"})
 ```
 
 ```promql
-sum by (source) (increase({__name__=~".*_qps.*"}[1m]))
+sum by (service_role, source) (temporalstore_vars_exporter_target_samples_scraped{service_role="proxy"})
 ```
 
-5. Watch hot storage/repl/cmd classes
+5. Core runtime counters/throughput should move with traffic
+
+```promql
+sum by (service_role, source) (increase({__name__=~".*_success.*"}[5m]))
+```
+
+```promql
+sum by (service_role, source) (increase({__name__=~".*_qps.*"}[1m]))
+```
+
+```promql
+sum by (iteration) (temporalstore_client_validation_up)
+```
+
+7. Raft/fault-tolerance gate evidence from the textfile collector
+
+```promql
+temporalstore_raft_gate_case_pass
+```
+
+```promql
+temporalstore_raft_gate_production_ready
+```
+
+```promql
+temporalstore_raft_gate_production_check_pass
+```
+
+```promql
+temporalstore_raft_gate_metaserver_failover_ms
+```
+
+```promql
+temporalstore_raft_gate_data_post_failover_write_read_ms
+```
+
+```promql
+temporalstore_raft_gate_data_background_failover_active_at_kill
+```
+
+```promql
+temporalstore_raft_gate_data_background_failover_zero_errors
+```
+
+```promql
+temporalstore_raft_gate_data_background_failover_elapsed_ms
+```
+
+```promql
+temporalstore_raft_gate_data_post_failover_after_write_raft_max_apply_lag
+```
+
+```promql
+temporalstore_raft_gate_data_post_failover_after_write_raft_max_fatal_events
+```
+
+```promql
+temporalstore_raft_gate_data_secondary_visibility_p99_us
+```
+
+```promql
+temporalstore_raft_gate_metaserver_membership_metaserver_membership_add_remove_ms
+```
+
+```promql
+temporalstore_raft_gate_metaserver_membership_membership_nodes_after_add
+```
+
+```promql
+temporalstore_raft_gate_metaserver_membership_membership_nodes_after_remove
+```
+
+```promql
+temporalstore_raft_gate_data_membership_after_scale_up_active_replicas
+```
+
+```promql
+temporalstore_raft_gate_data_membership_server3_after_scale_up_voter_count
+```
+
+```promql
+temporalstore_raft_gate_data_membership_server3_after_scale_up_fatal_event_count
+```
+
+```promql
+temporalstore_raft_gate_data_membership_after_scale_up_raft_max_apply_lag
+```
+
+```promql
+temporalstore_raft_gate_data_membership_after_scale_down_raft_max_apply_lag
+```
+
+```promql
+temporalstore_raft_gate_data_membership_after_drop_raft_max_apply_lag
+```
+
+```promql
+temporalstore_raft_gate_data_membership_scale_down_server3_active_partitions
+```
+
+```promql
+temporalstore_raft_gate_data_membership_drop_server3_active_partitions
+```
+
+```promql
+temporalstore_raft_gate_snapshot_snapshot_file_count_after_restart
+```
+
+8. Watch hot storage/repl/cmd classes
 
 ```promql
 sum by (source) ({__name__=~".*(index|slot|page|replicator|gc|oplogger).*"})

@@ -33,6 +33,7 @@ class MetaTinker : public LoopThread {
     Status Fetch(metaserver::ListServerPartitionResponse* response);
     using NodePartition = metaserver::ListServerPartitionResponse_Partition;
     void TinkPartition(const NodePartition& np);
+    void LoadPartition(const NodePartition& np);
     void UnloadPartition(uint64_t pid);
 
  private:
@@ -47,4 +48,3 @@ class MetaTinker : public LoopThread {
 
 }  // namespace server
 }  // namespace bcache2
-

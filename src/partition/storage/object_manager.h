@@ -183,7 +183,11 @@ class ObjectManager {
             .put("ModeId", model_id);
         SlotNode* slot = index_->GetOrCreateSlot(slot_id);
         if (!slot->InMemory()) {
-            return Status::FailedPrecondition("Slot not in memory");
+            if (slot->GetPageNum() != 0 || slot->GetObjectNum() != 0 ||
+                slot_context_manager_->GetSlotLogNum(slot_id) != 0) {
+                return Status::FailedPrecondition("Slot not in memory");
+            }
+            slot->SetInMemory(true);
         }
 
         if (expire) {

@@ -81,8 +81,9 @@ void MetaTinker::DoLoop() {
 
             bool local_exist = local_partition_ids.count(p.id()) > 0;
             if (p.state() == PartitionState::P_NORMAL && !local_exist) {
-                LOG_ERROR("partition in metaserver but not exists in local!!!")
+                LOG_WARNING("partition assigned in metaserver but missing locally, try to load")
                     .put("partition_id", p.id());
+                LoadPartition(p);
                 continue;
             }
             if (local_exist) {
@@ -166,6 +167,21 @@ Status MetaTinker::Fetch(metaserver::ListServerPartitionResponse* response) {
     return Status::OK();
 }
 
+struct OneWayClosure : public Closure<void> {
+    void Run() override {
+        if (cntl && !cntl->status().ok()) {
+            LOG_WARNING("meta tinker async partition operation failed")
+                .put("status", cntl->status());
+        }
+        delete this;
+    }
+    bool IsSelfDelete() const override { return true; }
+
+    std::shared_ptr<google::protobuf::Message> request;
+    std::shared_ptr<google::protobuf::Message> response;
+    std::shared_ptr<Controller> cntl;
+};
+
 void MetaTinker::TinkPartition(const NodePartition& p) {
     if (p.has_membership()) {
         Controller cntl;
@@ -208,14 +224,42 @@ void MetaTinker::TinkPartition(const NodePartition& p) {
     }
 }
 
-struct OneWayClosure : public Closure<void> {
-    void Run() override { delete this; }
-    bool IsSelfDelete() const override { return true; }
+void MetaTinker::LoadPartition(const NodePartition& p) {
+    if (p.partition_uri().empty() || p.table_name().empty()) {
+        LOG_ERROR("partition assigned in metaserver but load metadata is incomplete")
+            .put("partition_id", p.id())
+            .put("partition_uri_empty", p.partition_uri().empty())
+            .put("table_name_empty", p.table_name().empty());
+        return;
+    }
 
-    std::shared_ptr<google::protobuf::Message> request;
-    std::shared_ptr<google::protobuf::Message> response;
-    std::shared_ptr<Controller> cntl;
-};
+    auto request = std::make_shared<LoadRequest>();
+    request->set_partition_id(p.id());
+    request->set_load_version(p.load_version());
+    request->set_partition_uri(p.partition_uri());
+    request->set_start_slot(p.start_slot());
+    request->set_end_slot(p.end_slot());
+    request->set_persistent_type(p.persistent_type());
+    request->set_readonly(p.readonly());
+    request->set_table_name(p.table_name());
+    request->set_sync(false);
+    *request->mutable_config() = p.config();
+    if (p.has_membership()) {
+        *request->mutable_membership() = p.membership();
+    }
+
+    auto response = std::make_shared<LoadResponse>();
+    OneWayClosure* cb = new OneWayClosure();
+    cb->request = request;
+    cb->response = response;
+    cb->cntl = std::make_shared<Controller>();
+    LOG_WARNING("try to auto-load metaserver assigned partition")
+        .put("partition_id", request->partition_id())
+        .put("load_version", request->load_version())
+        .put("readonly", request->readonly())
+        .put("table_name", request->table_name());
+    partition_manager_->Load(cb->cntl.get(), request.get(), response.get(), cb);
+}
 
 void MetaTinker::UnloadPartition(uint64_t pid) {
     auto request = std::make_shared<UnloadRequest>();

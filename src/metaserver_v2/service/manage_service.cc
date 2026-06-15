@@ -633,6 +633,13 @@ void ManageServiceImpl::FinishLoadPartition(google::protobuf::RpcController* con
 
     PartitionState state = partition->GetState();
     if (state != PartitionState::P_LOADING) {
+        Status load_result = Status::FromRpcStatus(request->load_result());
+        if (state == PartitionState::P_NORMAL && load_result.ok()) {
+            LOG_INFO("partition load finish is already committed, treat as idempotent success")
+                .put("partition_id", id);
+            response->mutable_status()->set_code(kOK);
+            return;
+        }
         *response->mutable_status() =
             Status::FailedPrecondition("partition state wrong").ToRpcStatus();
         return;
@@ -770,4 +777,3 @@ Status ManageServiceImpl::SanitizeRequest(brpc::Controller* cntl, RequestId* id)
 
 }  // namespace metaserver
 }  // namespace bcache2
-

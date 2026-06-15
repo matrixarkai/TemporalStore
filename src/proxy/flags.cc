@@ -34,3 +34,18 @@ DEFINE_string(proxy_vau, "", "vau");
 DEFINE_uint64(proxy_heartbeat_timeout_ms, 5000, "heartbeat timeout in milliseconds");
 BRPC_VALIDATE_GFLAG(proxy_heartbeat_timeout_ms, brpc::PassValidate);
 DEFINE_bool(proxy_auto_register, true, "auto register to metaserver");
+
+DEFINE_string(proxy_ingestion_account, "bjmeetsfo",
+              "Account/namespace this proxy is scoped to when proxy_ingestion_enforce_account is true.");
+DEFINE_bool(proxy_ingestion_enforce_account, false,
+            "Reject proxy requests whose namespace_name does not match proxy_ingestion_account.");
+DEFINE_uint64(proxy_ingestion_max_inflight, 0,
+              "Maximum concurrent proxy ingestion requests for this proxy process. 0 means unlimited.");
+DEFINE_uint64(proxy_ingestion_max_write_inflight, 0,
+              "Maximum concurrent proxy write-ingestion requests. 0 means unlimited.");
+DEFINE_bool(proxy_pin_primary_reads, true,
+            "Route proxy reads to primary partitions for read-after-write safety. Set false to allow follower/locality reads.");
+DEFINE_int64(proxy_backend_io_timeout_ms, 5000,
+             "Backend data-node RPC timeout for proxy table operations.");
+DEFINE_int64(proxy_backend_connect_timeout_ms, 1000,
+             "Backend data-node connect timeout for proxy table operations.");

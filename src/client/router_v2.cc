@@ -3,6 +3,7 @@
 
 #include <byte/algorithm/crc64.h>
 
+#include <iterator>
 #include <memory>
 #include <string>
 #include <utility>
@@ -23,7 +24,30 @@ Status RouterV2::GetPartitionSetId(const std::string& key, uint64_t* pset_id) co
         LOG_WARNING("Partition not exist").put("Key", key).put("Slot", slot_id);
         return Status::Internal("Slot not found");
     }
-    auto iter = --slot_map_.upper_bound(slot_id);
+    auto upper = slot_map_.upper_bound(slot_id);
+    if (upper == slot_map_.begin()) {
+        if (slot_map_.size() == 1) {
+            *pset_id = upper->second;
+            return Status::OK();
+        }
+        LOG_WARNING("Partition not found for slot before first range")
+            .put("Key", key)
+            .put("Slot", slot_id);
+        return Status::Internal("Slot not found");
+    }
+    auto iter = std::prev(upper);
+    auto pset = partition_map_.find(iter->second);
+    if (pset == partition_map_.end()) {
+        LOG_WARNING("Partition set not found").put("Key", key).put("Slot", slot_id);
+        return Status::Internal("Partition info not found");
+    }
+    if (slot_id > pset->second->end_slot_id && slot_map_.size() != 1) {
+        LOG_WARNING("Partition not found for slot after range")
+            .put("Key", key)
+            .put("Slot", slot_id)
+            .put("RangeEnd", pset->second->end_slot_id);
+        return Status::Internal("Slot not found");
+    }
     *pset_id = iter->second;
     return Status::OK();
 }

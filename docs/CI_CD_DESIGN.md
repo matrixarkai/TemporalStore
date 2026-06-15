@@ -82,6 +82,38 @@ flowchart LR
   Rollout --> Observe["Post-Deploy Observation"]
 ```
 
+Local production-readiness gate:
+
+```bash
+ITERATIONS=3 BUILD_TYPE=Release bash tools/run_production_readiness_local_ubuntu22.sh
+```
+
+The gate repeats build, unit, API smoke, Prometheus scrape validation, queue
+ingestion replay, Redis live-storage checks, and raft membership/failover stress.
+Each run writes `summary.txt` and `cases.csv` under the result directory so CI,
+release automation, and humans can inspect the exact pass/fail surface.
+
+For CI/release validation, enable the dedicated test build so unit tests are not
+silently skipped by a release-only artifact:
+
+```bash
+ITERATIONS=3 BUILD_TYPE=Release RUN_TEST_BUILD=1 \
+  bash tools/run_production_readiness_local_ubuntu22.sh
+```
+
+The unit phase discovers CTest tests before execution and fails the gate if zero
+runnable tests are found. Raft depth is selected with `RAFT_GATE_LEVEL=pr`,
+`nightly`, or `release`; nightly/release levels repeat membership, failover, and
+mixed read/write scenarios with broader thread coverage. The raft gate covers
+both control-plane and data-plane fault tolerance: metaserver add/remove,
+metaserver leader-kill failover with metadata read/write verification, data-node
+membership, data-node mixed read/write, data-node snapshot/restart guard, and
+data-node primary-down failover.
+Each raft run also writes `metrics.json` and Prometheus text `metrics.prom`
+beside `cases.csv`, including case pass/fail, case duration, metaserver failover
+RTO, data failover attempts/RTO, secondary visibility lag, snapshot artifact
+counts, and 2-node QPS.
+
 ## 4. CI Jobs
 
 ### 4.1 Source Hygiene
@@ -176,6 +208,8 @@ Run before merging storage/replication changes:
 - secondary rebuild from page/index plus recent oplog
 - split-brain guard: stale primary rejects writes after promotion
 - promotion guard: secondary cannot promote if replay lag is unsafe
+- metaserver leader-kill guard: a new metaserver leader can serve existing
+  metadata and commit new metadata after the old leader is killed
 
 Important correctness rule:
 

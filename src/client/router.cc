@@ -15,24 +15,13 @@
 namespace bcache2 {
 namespace client {
 
-static inline uint32_t Roundup(uint32_t n, uint32_t base) { return (n / base + 1) * base; }
-
 Status RouterV1::GetPartitionId(const std::string& key, uint64_t* partition_id) const {
     uint32_t slot_id = GetSlotId(key);
     if (partition_map_.size() < 1) {
         LOG_WARNING("Partition not exist").put("Key", key).put("Slot", slot_id);
         return Status::Internal("Slot not found");
     }
-    // ! assumption here: slots are even distributed across partitions
-    uint32_t slot_num_in_partition = kSlotCount / partition_map_.size();
-    uint32_t big_size = (kSlotCount % partition_map_.size()) * (slot_num_in_partition + 1);
-    uint32_t end_slot_id;
-    if (slot_id >= big_size) {
-        end_slot_id = Roundup((slot_id - big_size), slot_num_in_partition) + big_size;
-    } else {
-        end_slot_id = Roundup(slot_id, slot_num_in_partition + 1);
-    }
-    auto iter = slot_map_.find(end_slot_id);
+    auto iter = slot_map_.lower_bound(slot_id);
     if (iter != slot_map_.end()) {
         *partition_id = iter->second;
         return Status::OK();

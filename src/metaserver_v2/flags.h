@@ -52,6 +52,7 @@ DECLARE_uint64(metaserver_meta_query_max_concurrency);
 
 DECLARE_uint64(metaserver_meta_check_routine_interval_sec);
 DECLARE_uint64(metaserver_meta_check_max_freeze_partition_per_min);
+DECLARE_uint64(metaserver_missing_partition_reboot_grace_sec);
 
 DECLARE_uint64(metaserver_raft_max_applied_log_bytes);
 DECLARE_bool(metaserver_raft_metrics_on);
