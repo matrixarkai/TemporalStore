@@ -148,6 +148,7 @@ ingestion_command='env RESULT_DIR="${RESULT_DIR}/ingestion" ITERATIONS=2 RECORDS
 fault_injection_command='env BUILD_TYPE="${BUILD_TYPE}" RESULT_DIR="${RESULT_DIR}/fault_injection" RUN_PORT_BLOCK=1 RUN_DISK_PATH=1 bash tools/run_fault_injection_gate_ubuntu22.sh'
 rebalance_command='env BUILD_TYPE="${BUILD_TYPE}" RESULT_DIR="${RESULT_DIR}/rebalance" OPS=240 THREADS=2 RUN_DATA_RAFT_REBALANCE=1 RUN_SHARED_STORE_REBALANCE=0 bash tools/run_rebalance_local_ubuntu22.sh'
 data_raft_5node_command='env BUILD_TYPE="${BUILD_TYPE}" RESULT_DIR="${RESULT_DIR}/data_raft_5node" OPS=600 THREAD_LIST="2" bash tools/run_data_raft_5node_scale_ubuntu22.sh'
+stale_restart_command='env BUILD_TYPE="${BUILD_TYPE}" RESULT_DIR="${RESULT_DIR}/stale_restart" OPS=120 THREADS=2 bash tools/run_stale_local_data_restart_gate_ubuntu22.sh'
 soak_command='env BUILD_TYPE="${BUILD_TYPE}" RESULT_DIR="${RESULT_DIR}/soak" SOAK_MINUTES="${SOAK_MINUTES:-30}" SOAK_QUEUE_LEVEL=quick RUN_QUEUE_EXECUTION=1 bash tools/run_soak_profile_ubuntu22.sh'
 remote_auth_command='env RESULT_DIR="${RESULT_DIR}/remote_auth" REMOTE_TIMEOUT_S=30 bash tools/run_remote_auth_gate_ubuntu22.sh'
 
@@ -168,7 +169,7 @@ register_gap 12 "Snapshot restore under write pressure" pr partial "run_data_raf
 register_gap 13 "Metaserver snapshot restore gate" manual planned "run_metaserver_raft_snapshot_restore_ubuntu22.sh" "" "No dedicated metaserver snapshot restore gate is present."
 register_gap 14 "Follower-read bounded-stale SLA gate" pr partial "run_raft_stress_suite_ubuntu22.sh" "${raft_pr_command}" "Secondary visibility p99 assertions exist; formal follower-read SLA gate should become explicit."
 register_gap 15 "Network timeout/port-block fault gate" pr covered "tools/run_fault_injection_gate_ubuntu22.sh" "${fault_injection_command}" "Local gate reserves a metaserver port and verifies the service harness fails fast with a bounded diagnostic."
-register_gap 16 "Process restart with stale local data gate" manual planned "tools/run_stale_local_data_restart_gate_ubuntu22.sh" "" "Needs explicit restart with stale data directories."
+register_gap 16 "Process restart with stale local data gate" pr partial "tools/run_stale_local_data_restart_gate_ubuntu22.sh" "${stale_restart_command}" "Dedicated gate exercises data-node restart from existing raft/storage directories after writes; explicit corrupted-stale rejection remains follow-up."
 register_gap 17 "Disk/path failure simulation" pr covered "tools/run_fault_injection_gate_ubuntu22.sh" "" "Covered by the same local fault-injection gate, which rejects invalid storage paths before service startup."
 register_gap 18 "Prometheus alert rules" quick covered "tools/temporalstore-prometheus/temporalstore-alerts.yml" "test -f tools/temporalstore-prometheus/temporalstore-alerts.yml && grep -q TemporalStoreServiceDown tools/temporalstore-prometheus/temporalstore-alerts.yml" "Alert rules are installed into Prometheus config by this queue change."
 register_gap 19 "CI full-gate mode for Docker Prometheus" quick covered "run_ci_guard_ubuntu22.sh" "${ci_command}" "CI guard can run full API/prometheus/ingestion smoke with START_PROMETHEUS governed by the production gate."
