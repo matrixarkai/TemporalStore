@@ -25,7 +25,8 @@ mkdir -p "${RESULT_DIR}"
 
 BIN="${BIN:-${ROOT}/build-ubuntu22/${BUILD_TYPE,,}/src/client/example/queue_ingestion_replay_example}"
 if [[ "${FORCE_BUILD}" != "1" && -x "${BIN}" ]]; then
-  if ! "${BIN}" --help 2>&1 | grep -q -- "--partitions"; then
+  bin_help="$("${BIN}" --help 2>&1 || true)"
+  if ! grep -q -- "--partitions" <<< "${bin_help}"; then
     FORCE_BUILD=1
   fi
 fi
