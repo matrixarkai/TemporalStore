@@ -24,6 +24,11 @@ FORCE_BUILD="${FORCE_BUILD:-0}"
 mkdir -p "${RESULT_DIR}"
 
 BIN="${BIN:-${ROOT}/build-ubuntu22/${BUILD_TYPE,,}/src/client/example/queue_ingestion_replay_example}"
+if [[ "${FORCE_BUILD}" != "1" && -x "${BIN}" ]]; then
+  if ! "${BIN}" --help 2>&1 | grep -q -- "--partitions"; then
+    FORCE_BUILD=1
+  fi
+fi
 if [[ "${FORCE_BUILD}" == "1" || ! -x "${BIN}" ]]; then
   BUILD_TARGETS=queue_ingestion_replay_example \
   BCACHE2_BUILD_TESTS=OFF \

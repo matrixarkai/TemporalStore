@@ -50,6 +50,7 @@ syntax_check() {
     "${ROOT}/tools/run_ci_guard_ubuntu22.sh" \
     "${ROOT}/tools/run_prometheus_local_ubuntu22.sh" \
     "${ROOT}/tools/run_production_readiness_local_ubuntu22.sh" \
+    "${ROOT}/tools/run_production_gap_queue_ubuntu22.sh" \
     "${ROOT}/tools/run_raft_production_gate_ubuntu22.sh" \
     "${ROOT}/tools/run_raft_stress_suite_ubuntu22.sh" \
     "${ROOT}/tools/run_data_raft_scale_up_down_ubuntu22.sh"

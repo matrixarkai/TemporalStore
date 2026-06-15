@@ -1,0 +1,102 @@
+groups:
+  - name: temporalstore.local.production
+    rules:
+      - alert: TemporalStoreServiceDown
+        expr: temporalstore_service_role_up{service_role=~"nodeserver|metaserver|proxy"} == 0
+        for: 30s
+        labels:
+          severity: critical
+          component: temporalstore
+        annotations:
+          summary: "TemporalStore service role is down"
+          description: "The {{ $labels.service_role }} /vars endpoint is not reachable from the local Prometheus exporter."
+
+      - alert: TemporalStoreVarsExporterScrapeErrors
+        expr: increase(temporalstore_vars_exporter_scrape_errors_total[2m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          component: prometheus
+        annotations:
+          summary: "TemporalStore /vars scrape errors detected"
+          description: "The vars-to-Prometheus exporter is failing to scrape one or more configured targets."
+
+      - alert: TemporalStoreClientValidationMissing
+        expr: absent(temporalstore_client_validation_up)
+        for: 5m
+        labels:
+          severity: warning
+          component: client
+        annotations:
+          summary: "TemporalStore client validation metric is missing"
+          description: "The local validation harness has not published temporalstore_client_validation_up."
+
+      - alert: TemporalStoreClientValidationFailed
+        expr: temporalstore_client_validation_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: client
+        annotations:
+          summary: "TemporalStore client validation failed"
+          description: "A local client validation iteration reported failure."
+
+      - alert: TemporalStoreProxySmokeFailure
+        expr: temporalstore_proxy_smoke_success == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: proxy
+        annotations:
+          summary: "TemporalStore proxy smoke failed"
+          description: "The proxy smoke validation metric reported failure."
+
+      - alert: TemporalStoreClientBenchmarkErrors
+        expr: temporalstore_client_benchmark_errors > 0
+        for: 1m
+        labels:
+          severity: warning
+          component: client
+        annotations:
+          summary: "TemporalStore client benchmark errors detected"
+          description: "The local scale benchmark emitted one or more client-side errors."
+
+      - alert: TemporalStoreRaftGateNotProductionReady
+        expr: temporalstore_raft_gate_production_ready == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: raft
+        annotations:
+          summary: "TemporalStore raft production gate failed"
+          description: "The raft production gate reported that failover, lag, membership, or snapshot readiness is not production-ready."
+
+      - alert: TemporalStoreRaftGateFailures
+        expr: temporalstore_raft_gate_failed_cases > 0
+        for: 1m
+        labels:
+          severity: critical
+          component: raft
+        annotations:
+          summary: "TemporalStore raft gate has failed cases"
+          description: "The latest raft gate summary contains failed cases."
+
+      - alert: TemporalStoreIngestionDeadLetters
+        expr: temporalstore_ingestion_dead_letters_total > 0
+        for: 1m
+        labels:
+          severity: warning
+          component: ingestion
+        annotations:
+          summary: "TemporalStore ingestion dead letters detected"
+          description: "Queue ingestion replay or worker metrics reported dead-lettered records."
+
+      - alert: TemporalStoreIngestionLagHigh
+        expr: temporalstore_ingestion_max_partition_lag_records > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: ingestion
+        annotations:
+          summary: "TemporalStore ingestion partition lag is non-zero"
+          description: "At least one ingestion partition still has uncommitted lag after the validation window."
