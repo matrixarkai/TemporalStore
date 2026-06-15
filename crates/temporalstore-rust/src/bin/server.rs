@@ -367,9 +367,21 @@ fn main() {
             ("POST", "/execute") => match parse_json::<ExecuteRequest>(&request.body) {
                 Ok(req) => {
                     if let Some(raft_state) = &raft_state {
-                        json_response(200, &execute_via_server_raft(raft_state, req))
+                        match runtime.validate_foreground_write_allowed(
+                            req.shard_id,
+                            std::slice::from_ref(&req.command),
+                        ) {
+                            Ok(()) => json_response(200, &execute_via_server_raft(raft_state, req)),
+                            Err(status) => json_response(
+                                200,
+                                &ExecuteResponse {
+                                    status,
+                                    response: temporalstore_rust::CommandResponse::Empty,
+                                },
+                            ),
+                        }
                     } else {
-                        json_response(200, &engine.execute(req))
+                        json_response(200, &runtime.execute(req))
                     }
                 }
                 Err(err) => json_response(
@@ -382,7 +394,7 @@ fn main() {
             },
             ("POST", "/execute_checked") => {
                 match parse_json::<CheckedExecuteRequest>(&request.body) {
-                    Ok(req) => json_response(200, &engine.execute_checked(req)),
+                    Ok(req) => json_response(200, &runtime.execute_checked(req)),
                     Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
                 }
             }
@@ -403,12 +415,12 @@ fn main() {
                 }
             }
             ("POST", "/batch_execute") => match parse_json::<BatchExecuteRequest>(&request.body) {
-                Ok(req) => json_response(200, &engine.batch_execute(req)),
+                Ok(req) => json_response(200, &runtime.batch_execute(req)),
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
             },
             ("POST", "/batch_execute_checked") => {
                 match parse_json::<CheckedBatchExecuteRequest>(&request.body) {
-                    Ok(req) => json_response(200, &engine.batch_execute_checked(req)),
+                    Ok(req) => json_response(200, &runtime.batch_execute_checked(req)),
                     Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
                 }
             }
@@ -584,9 +596,21 @@ fn handle_cpp_server_service_route(
             match parse_json::<ExecuteRequest>(&request.body) {
                 Ok(req) => {
                     if let Some(raft_state) = raft_state {
-                        json_response(200, &execute_via_server_raft(raft_state, req))
+                        match runtime.validate_foreground_write_allowed(
+                            req.shard_id,
+                            std::slice::from_ref(&req.command),
+                        ) {
+                            Ok(()) => json_response(200, &execute_via_server_raft(raft_state, req)),
+                            Err(status) => json_response(
+                                200,
+                                &ExecuteResponse {
+                                    status,
+                                    response: temporalstore_rust::CommandResponse::Empty,
+                                },
+                            ),
+                        }
                     } else {
-                        json_response(200, &engine.execute(req))
+                        json_response(200, &runtime.execute(req))
                     }
                 }
                 Err(err) => json_response(
@@ -600,7 +624,7 @@ fn handle_cpp_server_service_route(
         }
         ("POST", "/ServerService/BatchExecuteCmd") => {
             match parse_json::<BatchExecuteRequest>(&request.body) {
-                Ok(req) => json_response(200, &engine.batch_execute(req)),
+                Ok(req) => json_response(200, &runtime.batch_execute(req)),
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
             }
         }

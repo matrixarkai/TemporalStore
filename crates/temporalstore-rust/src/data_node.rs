@@ -7,8 +7,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::control::{
-    CheckedExecuteRequest, CheckedExecuteResponse, LoadShardRequest, LoadShardResponse,
-    UnloadShardRequest, UnloadShardResponse,
+    CheckedBatchExecuteRequest, CheckedBatchExecuteResponse, CheckedExecuteRequest,
+    CheckedExecuteResponse, LoadShardRequest, LoadShardResponse, UnloadShardRequest,
+    UnloadShardResponse,
 };
 use crate::engine::{
     ShardCompactionUtilityReport, SlotDumpManifest, StorageLifecyclePlan, StorageLifecycleReport,
@@ -18,7 +19,10 @@ use crate::meta::{
     ServerHeartbeatResponse, ServerRuntimeLoad, ServerShardServingState, TableTopologyResponse,
 };
 use crate::rebalance::SchedulerLifecycleToken;
-use crate::types::{Command, CommandResponse, ExecuteRequest, ExecuteResponse, ShardId, Status};
+use crate::types::{
+    BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,
+    ExecuteResponse, ShardId, Status,
+};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DataNodeRuntimeOptions {
@@ -754,6 +758,111 @@ impl DataNodeRuntime {
             DataNodeTaskKind::Unload,
             controller,
         )
+    }
+
+    pub fn validate_foreground_write_allowed(
+        &self,
+        shard_id: ShardId,
+        commands: &[Command],
+    ) -> Result<(), Status> {
+        validate_foreground_write_allowed_inner(&self.inner, shard_id, commands)
+    }
+
+    pub fn execute(&self, request: ExecuteRequest) -> ExecuteResponse {
+        if let Err(status) = validate_foreground_write_allowed_inner(
+            &self.inner,
+            request.shard_id,
+            std::slice::from_ref(&request.command),
+        ) {
+            return ExecuteResponse {
+                status,
+                response: CommandResponse::Empty,
+            };
+        }
+        let response = self.inner.engine.execute(request.clone());
+        if response.status.ok && is_write_command(&request.command) {
+            mark_dirty(
+                &self.inner.dirty,
+                request.shard_id,
+                command_key(&request.command),
+            );
+        }
+        response
+    }
+
+    pub fn execute_checked(&self, request: CheckedExecuteRequest) -> CheckedExecuteResponse {
+        if let Err(status) = validate_foreground_write_allowed_inner(
+            &self.inner,
+            request.shard_id,
+            std::slice::from_ref(&request.command),
+        ) {
+            return CheckedExecuteResponse {
+                status: status.clone(),
+                response: ExecuteResponse {
+                    status,
+                    response: CommandResponse::Empty,
+                },
+            };
+        }
+        let response = self.inner.engine.execute_checked(request.clone());
+        if response.status.ok && is_write_command(&request.command) {
+            mark_dirty(
+                &self.inner.dirty,
+                request.shard_id,
+                command_key(&request.command),
+            );
+        }
+        response
+    }
+
+    pub fn batch_execute(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
+        if let Err(status) = validate_foreground_write_allowed_inner(
+            &self.inner,
+            request.shard_id,
+            &request.commands,
+        ) {
+            return BatchExecuteResponse {
+                status,
+                responses: Vec::new(),
+            };
+        }
+        let response = self.inner.engine.batch_execute(request.clone());
+        mark_dirty_for_successful_commands(
+            &self.inner.dirty,
+            request.shard_id,
+            &request.commands,
+            &response.responses,
+        );
+        response
+    }
+
+    pub fn batch_execute_checked(
+        &self,
+        request: CheckedBatchExecuteRequest,
+    ) -> CheckedBatchExecuteResponse {
+        if let Err(status) = validate_foreground_write_allowed_inner(
+            &self.inner,
+            request.shard_id,
+            &request.commands,
+        ) {
+            return CheckedBatchExecuteResponse {
+                status: status.clone(),
+                response: BatchExecuteResponse {
+                    status,
+                    responses: Vec::new(),
+                },
+            };
+        }
+        let response = self.inner.engine.batch_execute_checked(request.clone());
+        if response.status.ok {
+            mark_dirty_for_successful_commands(
+                &self.inner.dirty,
+                request.shard_id,
+                &request.commands,
+                &response.response.responses,
+            );
+        }
+        response
     }
 
     pub fn submit_execute(
@@ -1728,6 +1837,38 @@ fn validate_lifecycle_token_inner(
     Ok(())
 }
 
+fn validate_foreground_write_allowed_inner(
+    inner: &DataNodeRuntimeInner,
+    shard_id: ShardId,
+    commands: &[Command],
+) -> Result<(), Status> {
+    if !commands.iter().any(is_write_command) {
+        return Ok(());
+    }
+    let lifecycle = inner
+        .lifecycle
+        .lock()
+        .expect("runtime lifecycle lock poisoned")
+        .get(&shard_id)
+        .cloned();
+    let Some(lifecycle) = lifecycle else {
+        return Ok(());
+    };
+    if matches!(
+        lifecycle.state.as_str(),
+        "loading" | "reloading" | "unloading"
+    ) {
+        return Err(Status::error(
+            "lifecycle_write_blocked",
+            format!(
+                "foreground write rejected while shard {} is {} for {}",
+                shard_id, lifecycle.state, lifecycle.operation
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn final_loaded_lifecycle_state(readonly: bool, status: &Status) -> &'static str {
     if !status.ok {
         "failed"
@@ -1842,6 +1983,16 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
             DataNodeTaskOutput::Unload(unload_shard_with_inner(inner, request.clone()))
         }
         TaskRequest::Execute(request) => {
+            if let Err(status) = validate_foreground_write_allowed_inner(
+                inner,
+                request.shard_id,
+                std::slice::from_ref(&request.command),
+            ) {
+                return DataNodeTaskOutput::Execute(ExecuteResponse {
+                    status,
+                    response: CommandResponse::Empty,
+                });
+            }
             let response = inner.engine.execute(request.clone());
             if response.status.ok && is_write_command(&request.command) {
                 mark_dirty(
@@ -1853,6 +2004,19 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
             DataNodeTaskOutput::Execute(response)
         }
         TaskRequest::CheckedExecute(request) => {
+            if let Err(status) = validate_foreground_write_allowed_inner(
+                inner,
+                request.shard_id,
+                std::slice::from_ref(&request.command),
+            ) {
+                return DataNodeTaskOutput::CheckedExecute(CheckedExecuteResponse {
+                    status: status.clone(),
+                    response: ExecuteResponse {
+                        status,
+                        response: CommandResponse::Empty,
+                    },
+                });
+            }
             let response = inner.engine.execute_checked(request.clone());
             if response.status.ok && is_write_command(&request.command) {
                 mark_dirty(
@@ -2376,6 +2540,19 @@ fn dirty_shards(dirty: &Mutex<DirtyTracker>) -> Vec<ShardId> {
         .collect()
 }
 
+fn mark_dirty_for_successful_commands(
+    dirty: &Mutex<DirtyTracker>,
+    shard_id: ShardId,
+    commands: &[Command],
+    responses: &[ExecuteResponse],
+) {
+    for (command, response) in commands.iter().zip(responses.iter()) {
+        if response.status.ok && is_write_command(command) {
+            mark_dirty(dirty, shard_id, command_key(command));
+        }
+    }
+}
+
 fn command_key(command: &Command) -> Option<&str> {
     match command {
         Command::CommonDelete { key }
@@ -2713,6 +2890,113 @@ mod tests {
         };
         assert!(output.status.ok, "{output:?}");
         assert_eq!(runtime.lifecycle_report().loaded_shard_count, 0);
+    }
+
+    #[test]
+    fn runtime_rejects_foreground_writes_during_lifecycle_transition() {
+        let runtime = DataNodeRuntime::new_without_workers_for_test(TemporalEngine::default(), 8);
+        let load = runtime.load_shard_with(crate::control::LoadShardRequest {
+            shard_id: 7,
+            table_name: "tbl".to_string(),
+            shard_uri: "local://tbl/7".to_string(),
+            start_routing_slot: 10,
+            end_routing_slot: 19,
+            readonly: false,
+            load_version: 42,
+            local_node_id: Some(3),
+        });
+        assert!(load.status.ok, "{load:?}");
+        let seed = runtime.execute(ExecuteRequest {
+            shard_id: 7,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            },
+        });
+        assert!(seed.status.ok, "{seed:?}");
+
+        record_lifecycle_state_inner(&runtime.inner, 7, "reloading", "reload", 43, None);
+
+        let write = runtime.execute(ExecuteRequest {
+            shard_id: 7,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: b"blocked".to_vec(),
+            },
+        });
+        assert_eq!(write.status.code, "lifecycle_write_blocked");
+        let checked = runtime.execute_checked(CheckedExecuteRequest {
+            shard_id: 7,
+            load_version: 42,
+            command: Command::StringDelete {
+                key: "k".to_string(),
+            },
+        });
+        assert_eq!(checked.status.code, "lifecycle_write_blocked");
+        let batch = runtime.batch_execute(BatchExecuteRequest {
+            shard_id: 7,
+            commands: vec![Command::HashSet {
+                key: "h".to_string(),
+                field: "f".to_string(),
+                value: b"v".to_vec(),
+            }],
+        });
+        assert_eq!(batch.status.code, "lifecycle_write_blocked");
+
+        let read = runtime.execute(ExecuteRequest {
+            shard_id: 7,
+            command: Command::StringGet {
+                key: "k".to_string(),
+            },
+        });
+        assert!(read.status.ok, "{read:?}");
+        assert_eq!(
+            read.response,
+            CommandResponse::Bytes {
+                value: Some(b"v".to_vec())
+            }
+        );
+    }
+
+    #[test]
+    fn runtime_rejects_queued_foreground_write_during_lifecycle_transition() {
+        let runtime = DataNodeRuntime::new_without_workers_for_test(TemporalEngine::default(), 8);
+        let load = runtime.load_shard_with(crate::control::LoadShardRequest {
+            shard_id: 7,
+            table_name: "tbl".to_string(),
+            shard_uri: "local://tbl/7".to_string(),
+            start_routing_slot: 10,
+            end_routing_slot: 19,
+            readonly: false,
+            load_version: 42,
+            local_node_id: Some(3),
+        });
+        assert!(load.status.ok, "{load:?}");
+        record_lifecycle_state_inner(&runtime.inner, 7, "unloading", "unload", 42, None);
+        let submitted = runtime.submit_execute(
+            ExecuteRequest {
+                shard_id: 7,
+                command: Command::StringSet {
+                    key: "queued".to_string(),
+                    value: b"v".to_vec(),
+                },
+            },
+            RequestController { timeout_ms: 1000 },
+        );
+        let task = runtime
+            .inner
+            .queue
+            .lock()
+            .expect("runtime queue lock poisoned")
+            .pop_ready()
+            .expect("queued write should be ready");
+        assert_eq!(task.job_id, submitted.job_id);
+
+        let output = execute_task(&runtime.inner, &task);
+        let DataNodeTaskOutput::Execute(response) = output else {
+            panic!("expected execute output");
+        };
+        assert_eq!(response.status.code, "lifecycle_write_blocked");
     }
 
     #[test]

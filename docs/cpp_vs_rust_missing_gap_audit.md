@@ -58,6 +58,28 @@ brpc and Thrift are intentionally not part of the Rust target. The Rust open-sou
 
 ## What Was Closed In The Latest Pass
 
+This pass closed the seventh client/proxy/metaserver/nodeserver C++ parity cycle:
+
+1. Data-node runtime now rejects foreground writes while a shard lifecycle state is `loading`,
+   `reloading`, or `unloading`.
+2. The guard covers sync execute, checked execute, batch execute, checked batch execute, and queued
+   foreground execute jobs.
+3. Read commands remain allowed during lifecycle transitions.
+4. Server and C++-style ServerService write routes now use runtime guarded execution instead of
+   bypassing the runtime through direct engine calls.
+5. Raft-backed server writes check the same lifecycle guard before proposing local writes.
+6. Guarded sync writes now mark dirty keys on success, improving storage dump/GC accounting for
+   non-async foreground writes.
+7. Regression coverage validates sync, checked, batch, and queued write rejection during lifecycle
+   transitions while reads continue to serve.
+
+This makes lifecycle transitions a real C++-style write barrier on the data-node. Remaining work is
+proxy heartbeat application of metaserver serving policy transitions, proxy/client topology
+convergence, membership-update execution, and full move/failover orchestration across metaserver,
+proxy, client, data-node, and Raft paths.
+
+## What Was Closed In The Previous Pass
+
 This pass closed the sixth client/proxy/metaserver/nodeserver C++ parity cycle:
 
 1. Data-node runtime task kinds now include async `Load`, `Reload`, and `Unload` lifecycle jobs.

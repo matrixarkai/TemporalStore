@@ -12,7 +12,7 @@ push.
 4. Add scheduler-driven finish-load validation using task id and generation. Done.
 5. Persist expected node lifecycle tokens in metaserver scheduler snapshots. Done.
 6. Add nodeserver async load/reload/unload jobs with progress and cancellation. Done.
-7. Reject foreground writes during controlled reloading/unloading states.
+7. Reject foreground writes during controlled reloading/unloading states. Done.
 8. Add proxy heartbeat application of metaserver serving policy transitions.
 9. Add proxy route-cache invalidation from metaserver topology events.
 10. Add proxy backend quarantine recovery probes.
@@ -131,3 +131,23 @@ Cycle 6 makes nodeserver lifecycle transitions first-class async jobs:
 The next cycle should reject foreground writes while a shard is in controlled loading, reloading,
 or unloading state so lifecycle jobs become a true write-safety barrier instead of only queued
 work.
+
+## Cycle 7 Implemented
+
+Cycle 7 turns data-node lifecycle transitions into a write-safety barrier:
+
+- Data-node runtime now rejects foreground writes while a shard lifecycle state is `loading`,
+  `reloading`, or `unloading`.
+- The guard applies to sync execute, checked execute, batch execute, checked batch execute, and
+  queued foreground execute jobs.
+- Read commands remain allowed during lifecycle transitions.
+- Server and C++-style ServerService write routes now use runtime guarded execution instead of
+  bypassing the runtime through direct engine calls.
+- Raft-backed server writes check the same lifecycle guard before proposing a local write.
+- Guarded sync writes now mark dirty keys on success, improving storage dump/GC accounting for
+  non-async foreground writes.
+- Regression coverage validates sync, checked, batch, and queued write rejection while reads still
+  succeed.
+
+The next cycle should apply metaserver serving-policy transitions from proxy heartbeats so proxies
+converge on freeze/safe-mode state without waiting for manual route refresh.
