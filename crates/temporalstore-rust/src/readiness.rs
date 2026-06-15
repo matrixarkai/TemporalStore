@@ -252,6 +252,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "memory plus disk read-through cache with zstd block envelope".to_string(),
                 "shared-store checkpoint/oplog replay model and GC tests".to_string(),
+                "storage recovery integrity report summarizes indexed/discovered/live/orphan/corrupt segments, stale refs, unreadable bytes, and ownership mismatches"
+                    .to_string(),
             ],
             missing: vec![
                 "binary/protobuf oplog and index-log compatibility".to_string(),

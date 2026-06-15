@@ -92,3 +92,9 @@ The proxy C++ parity plan now treats consul-style service registration as covere
 by the Rust-native metaserver registry path: auto-register on heartbeat `not_found`,
 heartbeat TTL/stale detection, `/proxy/service_discovery` admin inspection, and
 Prometheus `temporalstore_proxy_service_registry_*` metrics.
+
+Storage recovery reports now include `segment_integrity`, an aggregate C++-style
+page/zone integrity summary with indexed, discovered, live, orphan, corrupt,
+unreadable, stale-ref, and owner-mismatch counts. Storage production readiness
+also carries this report and emits `storage_segment_integrity_failed` when the
+aggregate health check is not clean.

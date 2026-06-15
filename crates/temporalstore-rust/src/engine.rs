@@ -187,6 +187,8 @@ pub struct StorageRecoveryReport {
     pub all_live_pages_readable: bool,
     #[serde(default)]
     pub boundary: StorageRecoveryBoundaryReport,
+    #[serde(default)]
+    pub segment_integrity: StorageSegmentIntegrityReport,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -244,6 +246,23 @@ pub struct StorageRecoverySegmentLiveReport {
     pub live_object_count: u64,
     pub live_routing_slot_count: u64,
     pub live_ref_density_basis_points: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageSegmentIntegrityReport {
+    pub shard_id: ShardId,
+    pub indexed_page_segment_count: usize,
+    pub discovered_page_segment_count: usize,
+    pub live_page_segment_count: usize,
+    pub orphan_page_segment_count: usize,
+    pub stale_page_ref_count: usize,
+    pub corrupt_page_segment_count: usize,
+    pub unreadable_page_ref_count: usize,
+    pub unreadable_page_bytes: u64,
+    pub owner_mismatch_page_ref_count: usize,
+    pub missing_owner_page_ref_count: usize,
+    pub reclaim_required: bool,
+    pub integrity_ok: bool,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -495,6 +514,8 @@ pub struct StorageProductionReadinessReport {
     pub page_store_bytes_written: u64,
     pub boundary: StorageRecoveryBoundaryReport,
     pub object_lifecycle: StorageObjectLifecycleReport,
+    #[serde(default)]
+    pub segment_integrity: StorageSegmentIntegrityReport,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1698,6 +1719,7 @@ impl TemporalEngine {
     ) -> StorageProductionReadinessReport {
         let boundary = self.storage_recovery_boundary_report(shard_id);
         let recovery = self.storage_recovery_report_without_boundary(shard_id);
+        let segment_integrity = storage_segment_integrity_report(shard_id, &recovery, &boundary);
         let plan = self.storage_lifecycle_plan(StorageLifecycleRequest {
             shard_id,
             selected_dump_slots: Vec::new(),
@@ -1751,6 +1773,13 @@ impl TemporalEngine {
         }
         if !boundary.manifest_chain_issues.is_empty() {
             blockers.push("broken_slot_dump_manifest_chain".to_string());
+        }
+        if !segment_integrity.integrity_ok
+            && !blockers
+                .iter()
+                .any(|blocker| blocker == "storage_segment_integrity_failed")
+        {
+            blockers.push("storage_segment_integrity_failed".to_string());
         }
 
         let mut warnings = Vec::new();
@@ -1826,6 +1855,7 @@ impl TemporalEngine {
             page_store_bytes_written: page_store.bytes_written,
             boundary,
             object_lifecycle: recovery.object_lifecycle,
+            segment_integrity,
         }
     }
 
@@ -2511,6 +2541,8 @@ impl TemporalEngine {
     pub fn storage_recovery_report(&self, shard_id: ShardId) -> StorageRecoveryReport {
         let mut report = self.storage_recovery_report_without_boundary(shard_id);
         report.boundary = self.storage_recovery_boundary_report(shard_id);
+        report.segment_integrity =
+            storage_segment_integrity_report(shard_id, &report, &report.boundary);
         report
     }
 
@@ -2657,6 +2689,7 @@ impl TemporalEngine {
             object_lifecycle,
             all_live_pages_readable: total_page_refs == readable_page_refs,
             boundary: StorageRecoveryBoundaryReport::default(),
+            segment_integrity: StorageSegmentIntegrityReport::default(),
         }
     }
 
@@ -5005,6 +5038,51 @@ fn collect_live_page_segment_ids(shard: &ShardState) -> BTreeSet<u64> {
     ids
 }
 
+fn storage_segment_integrity_report(
+    shard_id: ShardId,
+    recovery: &StorageRecoveryReport,
+    boundary: &StorageRecoveryBoundaryReport,
+) -> StorageSegmentIntegrityReport {
+    let indexed_page_segment_count = recovery.active_page_segment_ids.len();
+    let discovered_page_segment_count = recovery.page_segment_reports.len();
+    let live_page_segment_count = recovery.live_page_segment_ids.len();
+    let orphan_page_segment_count = boundary.orphan_page_segment_ids.len();
+    let stale_page_ref_count = boundary.stale_index_page_refs.len();
+    let corrupt_page_segment_count = boundary.corrupt_page_segment_ids.len();
+    let unreadable_page_ref_count = recovery.unreadable_page_refs.len();
+    let unreadable_page_bytes = boundary.unreadable_page_bytes;
+    let owner_mismatch_page_ref_count = boundary.owner_mismatch_page_refs.len();
+    let missing_owner_page_ref_count = boundary.missing_owner_page_refs;
+    let reclaim_required = orphan_page_segment_count > 0
+        || recovery
+            .page_segment_live_reports
+            .iter()
+            .any(|report| report.stale_page_estimate > 0);
+    let integrity_ok = stale_page_ref_count == 0
+        && corrupt_page_segment_count == 0
+        && unreadable_page_ref_count == 0
+        && unreadable_page_bytes == 0
+        && owner_mismatch_page_ref_count == 0
+        && missing_owner_page_ref_count == 0
+        && recovery.all_live_pages_readable;
+
+    StorageSegmentIntegrityReport {
+        shard_id,
+        indexed_page_segment_count,
+        discovered_page_segment_count,
+        live_page_segment_count,
+        orphan_page_segment_count,
+        stale_page_ref_count,
+        corrupt_page_segment_count,
+        unreadable_page_ref_count,
+        unreadable_page_bytes,
+        owner_mismatch_page_ref_count,
+        missing_owner_page_ref_count,
+        reclaim_required,
+        integrity_ok,
+    }
+}
+
 #[derive(Debug, Clone)]
 struct LivePageEntry {
     object_key: String,
@@ -6312,6 +6390,9 @@ mod tests {
 
         let recovery = engine.storage_recovery_report(1);
         assert_eq!(recovery.owner_mismatch_page_refs.len(), 1);
+        assert!(!recovery.segment_integrity.integrity_ok);
+        assert_eq!(recovery.segment_integrity.owner_mismatch_page_ref_count, 1);
+        assert_eq!(recovery.segment_integrity.missing_owner_page_ref_count, 0);
         assert_eq!(recovery.object_lifecycle.live_object_ids, 1);
         assert_eq!(recovery.object_lifecycle.live_page_refs, 1);
         assert_eq!(recovery.object_lifecycle.owner_mismatch_page_refs, 1);
@@ -6426,6 +6507,12 @@ mod tests {
         assert_eq!(report.total_page_refs, 2);
         assert_eq!(report.readable_page_refs, 2);
         assert!(report.all_live_pages_readable);
+        assert!(report.segment_integrity.integrity_ok);
+        assert!(!report.segment_integrity.reclaim_required);
+        assert_eq!(report.segment_integrity.indexed_page_segment_count, 2);
+        assert_eq!(report.segment_integrity.discovered_page_segment_count, 2);
+        assert_eq!(report.segment_integrity.live_page_segment_count, 2);
+        assert_eq!(report.segment_integrity.unreadable_page_ref_count, 0);
         assert_eq!(report.zone_descriptors.len(), 2);
         assert_eq!(report.zone_descriptors[0].state, PageStoreZoneState::Sealed);
         assert_eq!(report.zone_descriptors[1].state, PageStoreZoneState::Active);
@@ -10862,6 +10949,8 @@ mod tests {
         assert!(report
             .warnings
             .contains(&"dirty_slots_pending_dump".to_string()));
+        assert!(report.segment_integrity.integrity_ok);
+        assert_eq!(report.segment_integrity.unreadable_page_ref_count, 0);
         assert_eq!(report.unreadable_page_ref_count, 0);
         assert_eq!(report.owner_mismatch_page_ref_count, 0);
         assert!(report.page_store_bytes_written > 0);
@@ -10994,6 +11083,12 @@ mod tests {
         assert!(report
             .blockers
             .contains(&"unreadable_live_page_refs".to_string()));
+        assert!(report
+            .blockers
+            .contains(&"storage_segment_integrity_failed".to_string()));
+        assert!(!report.segment_integrity.integrity_ok);
+        assert!(report.segment_integrity.corrupt_page_segment_count > 0);
+        assert!(report.segment_integrity.unreadable_page_ref_count > 0);
         assert!(report.corrupt_page_segment_count > 0);
         assert!(report.unreadable_page_ref_count > 0);
     }
