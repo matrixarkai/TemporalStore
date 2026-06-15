@@ -382,8 +382,10 @@ run_ingestion_gate() {
     RECORDS="${INGESTION_RECORDS:-1000}" \
     BATCH_SIZE="${INGESTION_BATCH_SIZE:-128}" \
     SOURCES="${INGESTION_SOURCES:-api kafka flink}" \
+    PARTITIONS="${INGESTION_PARTITIONS:-8}" \
     DEAD_LETTER_EVERY="${INGESTION_DEAD_LETTER_EVERY:-97}" \
     FAIL_FIRST_ATTEMPT_EVERY="${INGESTION_FAIL_FIRST_ATTEMPT_EVERY:-53}" \
+    POISON_EVERY="${INGESTION_POISON_EVERY:-211}" \
     DRY_RUN=1 \
     RESULT_DIR="${RESULT_DIR}/ingestion_$(date +%s%N)" \
     bash "${ROOT}/tools/run_queue_ingestion_replay_ubuntu22.sh"
