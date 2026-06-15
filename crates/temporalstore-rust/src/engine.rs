@@ -1612,6 +1612,28 @@ impl TemporalEngine {
                 "slot dump slot summaries do not match restored index page ownership",
             ));
         }
+        let expected_logical_bytes = expected_slot_summaries
+            .iter()
+            .map(|summary| summary.logical_bytes)
+            .sum::<u64>();
+        let expected_physical_bytes = expected_slot_summaries
+            .iter()
+            .map(|summary| summary.physical_bytes)
+            .sum::<u64>();
+        if manifest.logical_bytes != expected_logical_bytes
+            || manifest.physical_bytes != expected_physical_bytes
+        {
+            return Err(Status::error(
+                "slot_dump_byte_accounting_mismatch",
+                format!(
+                    "slot dump byte totals logical={} physical={} do not match restored index logical={} physical={}",
+                    manifest.logical_bytes,
+                    manifest.physical_bytes,
+                    expected_logical_bytes,
+                    expected_physical_bytes
+                ),
+            ));
+        }
         if manifest.version >= 3 {
             let expected_object_lifecycle = storage_object_lifecycle_report_for_slots(
                 manifest.shard_id,
@@ -12118,6 +12140,43 @@ mod tests {
                 .unwrap_err()
                 .code,
             "slot_dump_slot_summary_mismatch"
+        );
+    }
+
+    #[test]
+    fn slot_dump_manifest_rejects_byte_accounting_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "byte-accounting".to_string(),
+                value: b"v1".to_vec(),
+            },
+        });
+        let manifest = engine
+            .create_slot_dump_manifest(1, Vec::new())
+            .expect("manifest should persist");
+        engine
+            .validate_slot_dump_manifest(&manifest)
+            .expect("fresh manifest should validate");
+
+        let mut stale_bytes = manifest.clone();
+        stale_bytes.logical_bytes = stale_bytes.logical_bytes.saturating_add(1);
+        stale_bytes.checksum = slot_dump_manifest_checksum(&stale_bytes).unwrap();
+
+        assert_eq!(
+            engine
+                .validate_slot_dump_manifest(&stale_bytes)
+                .unwrap_err()
+                .code,
+            "slot_dump_byte_accounting_mismatch"
         );
     }
 
