@@ -58,6 +58,26 @@ brpc and Thrift are intentionally not part of the Rust target. The Rust open-sou
 
 ## What Was Closed In The Latest Pass
 
+This pass closed the fourth client/proxy/metaserver/nodeserver C++ parity cycle:
+
+1. `LoadFinishRequest` now carries optional `scheduler_task_id` and `scheduler_generation`
+   fields.
+2. Legacy finish-load callbacks without scheduler identity remain backward compatible.
+3. When scheduler identity is present, the metaserver HTTP finish-load route validates it against
+   the recent scheduler execution ledger before applying topology mutation.
+4. Validation requires a matching successful load execution for shard id, task id, generation, node
+   address, and load version.
+5. Stale or mismatched scheduler finish-load callbacks fail closed before mutating topology.
+6. Regression coverage validates a scheduler-approved finish-load callback and stale generation
+   rejection.
+
+This tightens the C++-style metaserver load lifecycle by preventing stale scheduler completions
+from winning topology updates. Remaining work is durable scheduler token/execution persistence,
+reload/freeze routing, membership-update execution, and full move workflow orchestration across
+metaserver, proxy, client, data-node, and Raft failover paths.
+
+## What Was Closed In The Previous Pass
+
 This pass closed the first API/Kafka/Flink ingestion gap:
 
 1. Added a 20-cycle ingestion parity backlog in

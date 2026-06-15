@@ -411,6 +411,72 @@ impl MetaTaskScheduler {
         }
     }
 
+    fn validate_finish_load(&self, request: &LoadFinishRequest) -> Result<(), Status> {
+        match (request.scheduler_task_id, request.scheduler_generation) {
+            (None, None) => return Ok(()),
+            (Some(_), Some(_)) => {}
+            _ => {
+                return Err(Status::error(
+                    "invalid_scheduler_finish_load",
+                    "finish_load must include both scheduler_task_id and scheduler_generation",
+                ));
+            }
+        }
+        let task_id = request.scheduler_task_id.unwrap();
+        let generation = request.scheduler_generation.unwrap();
+        let executions = self
+            .executions
+            .lock()
+            .expect("meta scheduler executions lock poisoned");
+        let Some(record) = executions.iter().rev().find(|record| {
+            record.task_id == task_id
+                && record.lifecycle_token.as_ref().is_some_and(|token| {
+                    token.task_id == task_id
+                        && token.generation == generation
+                        && token.shard_id == request.shard_id
+                        && token.operation == "load"
+                })
+        }) else {
+            return Err(Status::error(
+                "scheduler_finish_load_not_found",
+                "no matching scheduler load execution found for finish_load",
+            ));
+        };
+        if record.node_addr != request.server_addr {
+            return Err(Status::error(
+                "scheduler_finish_load_node_mismatch",
+                "finish_load server does not match scheduler execution node",
+            ));
+        }
+        if !record.status.ok {
+            return Err(Status::error(
+                "scheduler_finish_load_not_ready",
+                "scheduler execution did not complete successfully",
+            ));
+        }
+        let Some(token) = &record.lifecycle_token else {
+            return Err(Status::error(
+                "scheduler_finish_load_not_found",
+                "scheduler execution has no lifecycle token",
+            ));
+        };
+        if token.load_version != request.load_version {
+            return Err(Status::error(
+                "scheduler_finish_load_version_mismatch",
+                "finish_load load_version does not match scheduler token",
+            ));
+        }
+        if let Some(state) = &record.lifecycle_state {
+            if state.load_version != request.load_version || state.state == "failed" {
+                return Err(Status::error(
+                    "scheduler_finish_load_state_mismatch",
+                    "nodeserver lifecycle state does not confirm the requested load",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn record_execution(&self, record: MetaSchedulerExecutionRecord) {
         let mut executions = self
             .executions
@@ -970,7 +1036,10 @@ fn handle(
         }
         ("POST", "/partitions/finish_load") | ("POST", "/finish_load") => {
             parse_or(&request.body, |req: LoadFinishRequest| {
-                backend_call!(meta, finish_load, req)
+                match scheduler.validate_finish_load(&req) {
+                    Ok(()) => backend_call!(meta, finish_load, req),
+                    Err(status) => AckResponse { status },
+                }
             })
         }
         ("POST", "/servers/freeze") => parse_or(&request.body, |req: StateChangeRequest| {
@@ -2462,6 +2531,67 @@ mod tests {
                 .operation,
             "load"
         );
+
+        let (code, body) = handle(
+            &backend,
+            &scheduler,
+            HttpRequest {
+                method: "POST".to_string(),
+                path: "/servers/register".to_string(),
+                body: serde_json::to_vec(&RegisterServerRequest {
+                    server_addr: node_addr.clone(),
+                    node_id: 9,
+                    location: "zone-a".to_string(),
+                    binary_version: "v1".to_string(),
+                })
+                .unwrap(),
+            },
+        );
+        assert_eq!(code, 200);
+        let registered: AckResponse = serde_json::from_slice(&body).unwrap();
+        assert!(registered.status.ok);
+
+        let (code, body) = handle(
+            &backend,
+            &scheduler,
+            HttpRequest {
+                method: "POST".to_string(),
+                path: "/partitions/finish_load".to_string(),
+                body: serde_json::to_vec(&LoadFinishRequest {
+                    server_addr: node_addr.clone(),
+                    shard_id: 44,
+                    load_version: 5,
+                    status: Status::ok(),
+                    scheduler_task_id: Some(submitted_task.id),
+                    scheduler_generation: Some(900),
+                })
+                .unwrap(),
+            },
+        );
+        assert_eq!(code, 200);
+        let finish: AckResponse = serde_json::from_slice(&body).unwrap();
+        assert!(finish.status.ok, "{finish:?}");
+
+        let (code, body) = handle(
+            &backend,
+            &scheduler,
+            HttpRequest {
+                method: "POST".to_string(),
+                path: "/partitions/finish_load".to_string(),
+                body: serde_json::to_vec(&LoadFinishRequest {
+                    server_addr: node_addr.clone(),
+                    shard_id: 44,
+                    load_version: 5,
+                    status: Status::ok(),
+                    scheduler_task_id: Some(submitted_task.id),
+                    scheduler_generation: Some(899),
+                })
+                .unwrap(),
+            },
+        );
+        assert_eq!(code, 200);
+        let stale_finish: AckResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(stale_finish.status.code, "scheduler_finish_load_not_found");
 
         let records = records.lock().unwrap();
         assert_eq!(records.len(), 3);

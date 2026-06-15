@@ -537,6 +537,10 @@ pub struct LoadFinishRequest {
     pub shard_id: ShardId,
     pub load_version: u64,
     pub status: Status,
+    #[serde(default)]
+    pub scheduler_task_id: Option<u64>,
+    #[serde(default)]
+    pub scheduler_generation: Option<u64>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -3064,6 +3068,8 @@ mod tests {
             shard_id: 42,
             load_version: 1,
             status: Status::ok(),
+            scheduler_task_id: None,
+            scheduler_generation: None,
         });
         assert_eq!(finish.status.code, "resource_frozen");
 
@@ -3086,6 +3092,8 @@ mod tests {
             shard_id: 42,
             load_version: 1,
             status: Status::ok(),
+            scheduler_task_id: None,
+            scheduler_generation: None,
         });
         assert!(finish.status.ok);
     }
@@ -3678,6 +3686,8 @@ mod tests {
             shard_id: 42,
             load_version: 9,
             status: Status::ok(),
+            scheduler_task_id: None,
+            scheduler_generation: None,
         });
         assert!(ack.status.ok);
         assert_eq!(meta.get(42).location.unwrap().server_addr, "s1");
@@ -3692,6 +3702,8 @@ mod tests {
             shard_id: 7,
             load_version: 1,
             status: Status::ok(),
+            scheduler_task_id: None,
+            scheduler_generation: None,
         });
         assert_eq!(missing.status.code, "server_not_found");
 
@@ -3720,6 +3732,8 @@ mod tests {
             shard_id: 7,
             load_version: 8,
             status: Status::ok(),
+            scheduler_task_id: None,
+            scheduler_generation: None,
         });
         assert_eq!(stale.status.code, "stale_load_version");
 
@@ -3732,6 +3746,8 @@ mod tests {
             shard_id: 7,
             load_version: 10,
             status: Status::ok(),
+            scheduler_task_id: None,
+            scheduler_generation: None,
         });
         assert_eq!(frozen.status.code, "resource_frozen");
     }

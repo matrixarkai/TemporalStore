@@ -9,7 +9,7 @@ push.
 1. Bridge metaserver scheduler lifecycle tokens to nodeserver admin APIs. Done.
 2. Execute scheduler load/unload tasks against remote nodeserver HTTP endpoints. Done.
 3. Add metaserver task result reporting from nodeserver lifecycle responses. Done.
-4. Add scheduler-driven finish-load validation using task id and generation.
+4. Add scheduler-driven finish-load validation using task id and generation. Done.
 5. Persist expected node lifecycle tokens in metaserver scheduler snapshots.
 6. Add nodeserver async load/reload/unload jobs with progress and cancellation.
 7. Reject foreground writes during controlled reloading/unloading states.
@@ -77,3 +77,20 @@ Cycle 3 makes scheduler execution observable from metaserver:
 
 The next cycle should add scheduler-driven finish-load validation using task id/generation so
 metaserver can reject stale completion callbacks during move workflows.
+
+## Cycle 4 Implemented
+
+Cycle 4 closes the stale finish-load callback gap:
+
+- `LoadFinishRequest` now carries optional `scheduler_task_id` and `scheduler_generation` fields.
+- Legacy finish-load callbacks without scheduler identity remain backward compatible.
+- When scheduler identity is present, metaserver validates it against the recent scheduler
+  execution ledger before applying `finish_load`.
+- Validation requires a matching successful load execution for shard id, task id, generation, node
+  address, and load version.
+- Stale or mismatched scheduler finish-load callbacks fail closed before mutating topology.
+- Regression coverage validates a scheduler-approved finish-load callback and a stale generation
+  rejection.
+
+The next cycle should persist expected node lifecycle tokens in scheduler snapshots so these
+validation records can survive metaserver restart.

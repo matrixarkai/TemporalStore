@@ -1613,6 +1613,8 @@ fn update_membership_with_finish_callback(
                     shard_id,
                     load_version: info.load_version,
                     status: status.clone(),
+                    scheduler_task_id: None,
+                    scheduler_generation: None,
                 },
             );
         }
