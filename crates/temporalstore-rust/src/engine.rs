@@ -441,6 +441,8 @@ pub struct StorageLifecycleReport {
     pub cache_disk_bytes_removed: u64,
     #[serde(default)]
     pub cache_warmup_page_refs: usize,
+    #[serde(default)]
+    pub cache_warmup: StorageCacheWarmupReport,
     pub delayed_destroy_purged_segments: Vec<u64>,
     pub delayed_destroy_purged_bytes: u64,
     #[serde(default)]
@@ -451,6 +453,19 @@ pub struct StorageLifecycleReport {
     pub install_roll_forward_reports: Vec<SlotDumpInstallRollForwardReport>,
     #[serde(default)]
     pub object_lifecycle: StorageObjectLifecycleReport,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageCacheWarmupReport {
+    pub shard_id: ShardId,
+    pub selected_slots: Vec<u32>,
+    pub considered_page_refs: usize,
+    pub skipped_page_refs: usize,
+    pub already_cached_page_refs: usize,
+    pub page_store_reads: usize,
+    pub warmed_page_refs: usize,
+    pub failed_page_refs: usize,
+    pub warmed_bytes: u64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1838,11 +1853,16 @@ impl TemporalEngine {
         } else {
             (0, 0)
         };
-        let cache_warmup_page_refs = if request.warm_cache {
-            self.warm_cache_from_page_index(request.shard_id, plan.selected_dump_slots.clone())
+        let cache_warmup = if request.warm_cache {
+            self.storage_cache_warmup_report(request.shard_id, plan.selected_dump_slots.clone())
         } else {
-            0
+            StorageCacheWarmupReport {
+                shard_id: request.shard_id,
+                selected_slots: plan.selected_dump_slots.clone(),
+                ..StorageCacheWarmupReport::default()
+            }
         };
+        let cache_warmup_page_refs = cache_warmup.warmed_page_refs;
         let purge_report = if request.purge_delayed_destroy {
             self.page_store
                 .purge_delayed_destroy_segments_with_report()
@@ -1875,6 +1895,7 @@ impl TemporalEngine {
             cache_entries_removed,
             cache_disk_bytes_removed,
             cache_warmup_page_refs,
+            cache_warmup,
             delayed_destroy_purged_segments: purge_report.purged_page_segment_ids,
             delayed_destroy_purged_bytes: purge_report.purged_physical_bytes,
             manifest_prune_plan,
@@ -2046,20 +2067,35 @@ impl TemporalEngine {
         shard_id: ShardId,
         selected_slots: impl IntoIterator<Item = u32>,
     ) -> usize {
+        self.storage_cache_warmup_report(shard_id, selected_slots)
+            .warmed_page_refs
+    }
+
+    pub fn storage_cache_warmup_report(
+        &self,
+        shard_id: ShardId,
+        selected_slots: impl IntoIterator<Item = u32>,
+    ) -> StorageCacheWarmupReport {
         let selected_slots = selected_slots.into_iter().collect::<BTreeSet<_>>();
+        let mut report = StorageCacheWarmupReport {
+            shard_id,
+            selected_slots: selected_slots.iter().copied().collect(),
+            ..StorageCacheWarmupReport::default()
+        };
         let shards = self.shards.read().expect("engine lock poisoned");
         let Some(shard) = shards.get(&shard_id) else {
-            return 0;
+            return report;
         };
-        let mut warmed = 0usize;
         for entry in collect_live_page_entries(shard) {
             let routing_slot = entry
                 .address
                 .routing_slot
                 .unwrap_or_else(|| self.routing_slot_for_key(shard_id, &entry.object_key));
             if !selected_slots.is_empty() && !selected_slots.contains(&routing_slot) {
+                report.skipped_page_refs = report.skipped_page_refs.saturating_add(1);
                 continue;
             }
+            report.considered_page_refs = report.considered_page_refs.saturating_add(1);
             let key = CacheKey::page_with_slot(
                 shard_id,
                 entry.address.page_segment_id,
@@ -2068,14 +2104,25 @@ impl TemporalEngine {
                 entry.address.routing_slot,
             );
             if self.cache.get(&key).ok().flatten().is_some() {
-                warmed = warmed.saturating_add(1);
+                report.already_cached_page_refs = report.already_cached_page_refs.saturating_add(1);
+                report.warmed_page_refs = report.warmed_page_refs.saturating_add(1);
             } else if let Ok(bytes) = self.page_store.read(&entry.address) {
-                if self.cache.put(key, bytes).is_ok() {
-                    warmed = warmed.saturating_add(1);
+                report.page_store_reads = report.page_store_reads.saturating_add(1);
+                let byte_len = bytes.len() as u64;
+                match self.cache.put(key, bytes) {
+                    Ok(()) => {
+                        report.warmed_page_refs = report.warmed_page_refs.saturating_add(1);
+                        report.warmed_bytes = report.warmed_bytes.saturating_add(byte_len);
+                    }
+                    Err(_) => {
+                        report.failed_page_refs = report.failed_page_refs.saturating_add(1);
+                    }
                 }
+            } else {
+                report.failed_page_refs = report.failed_page_refs.saturating_add(1);
             }
         }
-        warmed
+        report
     }
 
     pub fn storage_cache_inspection_report(
@@ -11457,7 +11504,65 @@ mod tests {
             warm_cache: true,
         });
         assert!(report.cache_warmup_page_refs >= 1);
+        assert_eq!(
+            report.cache_warmup.warmed_page_refs,
+            report.cache_warmup_page_refs
+        );
+        assert!(report.cache_warmup.considered_page_refs >= 1);
+        assert!(report.cache_warmup.page_store_reads >= 1);
+        assert!(report.cache_warmup.warmed_bytes >= 128);
+        assert_eq!(report.cache_warmup.failed_page_refs, 0);
         assert!(engine.cache().stats().puts >= 1);
+    }
+
+    #[test]
+    fn storage_cache_warmup_report_filters_slots_and_counts_cache_hits() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        let first_key = "warm-slot-a";
+        let first_slot = engine.routing_slot_for_key(1, first_key);
+        let second_key = (0..100)
+            .map(|index| format!("warm-slot-b-{index}"))
+            .find(|key| engine.routing_slot_for_key(1, key) != first_slot)
+            .expect("test should find a key in another slot");
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: first_key.to_string(),
+                value: b"value-a".to_vec(),
+            },
+        });
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: second_key,
+                value: b"value-b".to_vec(),
+            },
+        });
+        engine.cache().invalidate_shard(1).unwrap();
+
+        let slot = first_slot;
+        let first = engine.storage_cache_warmup_report(1, [slot]);
+        assert_eq!(first.selected_slots, vec![slot]);
+        assert_eq!(first.considered_page_refs, 1);
+        assert_eq!(first.skipped_page_refs, 1);
+        assert_eq!(first.page_store_reads, 1);
+        assert_eq!(first.already_cached_page_refs, 0);
+        assert_eq!(first.failed_page_refs, 0);
+        assert!(first.warmed_bytes > 0);
+
+        let second = engine.storage_cache_warmup_report(1, [slot]);
+        assert_eq!(second.considered_page_refs, 1);
+        assert_eq!(second.skipped_page_refs, 1);
+        assert_eq!(second.page_store_reads, 0);
+        assert_eq!(second.already_cached_page_refs, 1);
+        assert_eq!(second.warmed_page_refs, 1);
     }
 
     #[test]

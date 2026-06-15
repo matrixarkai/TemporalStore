@@ -270,12 +270,14 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "memory cache supports pinned hot/page blocks with eviction skip accounting, inspection, and Prometheus metrics"
                     .to_string(),
+                "storage lifecycle cache warmup returns selected slots, page-ref hits/fills/failures, page-store read count, and warmed bytes"
+                    .to_string(),
             ],
             missing: vec![
                 "binary/protobuf oplog and index-log compatibility".to_string(),
                 "atomic dump/load/install pipeline plus C++ zone/page-header compaction parity"
                     .to_string(),
-                "production SSD cache admission, eviction, warmup, pinning, and observability"
+                "production SSD cache tiering policy, admission tuning, and live pressure validation"
                     .to_string(),
                 "ByteStore/S3 live backend integration tied to follower cursors/Raft snapshots"
                     .to_string(),
