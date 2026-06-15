@@ -87,3 +87,8 @@ Proxy `/metrics` also exports `temporalstore_production_readiness_ready` and
 `temporalstore_production_readiness_blockers` gauges, including per-area blocker
 counts, so Prometheus can alert on any production-readiness regression or remaining
 gap without scraping the JSON readiness endpoint.
+
+The proxy C++ parity plan now treats consul-style service registration as covered
+by the Rust-native metaserver registry path: auto-register on heartbeat `not_found`,
+heartbeat TTL/stale detection, `/proxy/service_discovery` admin inspection, and
+Prometheus `temporalstore_proxy_service_registry_*` metrics.

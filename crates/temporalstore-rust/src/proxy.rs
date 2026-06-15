@@ -39,6 +39,8 @@ pub struct ProxyOptions {
     pub max_retries: usize,
     pub refresh_route_on_backend_error: bool,
     pub backend_continuous_failed_time_ms: u64,
+    #[serde(default = "default_service_registry_ttl_ms")]
+    pub service_registry_ttl_ms: u64,
     #[serde(default)]
     pub serving_mode: ProxyServingMode,
     #[serde(default)]
@@ -88,6 +90,7 @@ impl Default for ProxyOptions {
             max_retries: 0,
             refresh_route_on_backend_error: true,
             backend_continuous_failed_time_ms: 10_000,
+            service_registry_ttl_ms: default_service_registry_ttl_ms(),
             serving_mode: ProxyServingMode::Serving,
             drop_percent: 0,
         }
@@ -108,6 +111,40 @@ pub struct ProxyStats {
     pub admission_rejections: u64,
     pub heartbeat_total: u64,
     pub auto_register_total: u64,
+}
+
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyServiceDiscoveryStats {
+    pub heartbeat_success_total: u64,
+    pub heartbeat_failure_total: u64,
+    pub registration_success_total: u64,
+    pub registration_failure_total: u64,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyServiceDiscoveryReport {
+    pub service_name: String,
+    pub proxy_addr: String,
+    pub namespace: String,
+    pub location: String,
+    pub meta_addr: String,
+    pub ttl_ms: u64,
+    pub registered: bool,
+    pub stale: bool,
+    pub last_heartbeat_age_ms: Option<u64>,
+    pub last_success_ms: Option<u64>,
+    pub last_error_ms: Option<u64>,
+    pub last_error: Option<Status>,
+    pub stats: ProxyServiceDiscoveryStats,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct ProxyServiceDiscoveryState {
+    registered: bool,
+    last_success_ms: Option<u64>,
+    last_error_ms: Option<u64>,
+    last_error: Option<Status>,
+    stats: ProxyServiceDiscoveryStats,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -163,6 +200,8 @@ pub struct ProxyPreflightReport {
     pub client: ProxyClientPreflightReport,
     #[serde(default)]
     pub policy: ProxyPolicyReport,
+    #[serde(default)]
+    pub service_discovery: ProxyServiceDiscoveryReport,
     pub degraded_reasons: Vec<String>,
 }
 
@@ -279,6 +318,7 @@ struct ProxyInner {
     client: RwLock<TemporalStoreClient>,
     last_client_stats: RwLock<ClientStats>,
     stats: RwLock<ProxyStats>,
+    service_discovery: RwLock<ProxyServiceDiscoveryState>,
     boot_time_ms: u64,
 }
 
@@ -290,6 +330,7 @@ impl ProxyService {
                 options: RwLock::new(options),
                 last_client_stats: RwLock::default(),
                 stats: RwLock::default(),
+                service_discovery: RwLock::default(),
                 boot_time_ms: now_ms(),
             }),
         }
@@ -316,6 +357,9 @@ impl ProxyService {
             }
             ("GET", "/proxy/policy") | ("GET", "/ProxyService/GetPolicy") => {
                 json_response(200, &self.policy_report())
+            }
+            ("GET", "/proxy/service_discovery") | ("GET", "/ProxyService/GetServiceDiscovery") => {
+                json_response(200, &self.service_discovery_report())
             }
             ("GET", "/proxy/client_preflight") | ("GET", "/ProxyService/ClientPreflight") => {
                 json_response(200, &self.client().preflight_report())
@@ -649,6 +693,7 @@ impl ProxyService {
             };
         let authoritative_topology_version = topology_cache.authoritative_topology_version;
         let topology_cache_stale = topology_cache.cache_stale;
+        let service_discovery = self.service_discovery_report_with_options(&options);
         let mut degraded_reasons = Vec::new();
         if stats.metaserver_errors > 0 || client_stats.meta_sync_errors > 0 {
             degraded_reasons.push("metaserver_errors".to_string());
@@ -673,6 +718,9 @@ impl ProxyService {
         }
         if !topology_check_status.ok {
             degraded_reasons.push("topology_check_failed".to_string());
+        }
+        if service_discovery.stale {
+            degraded_reasons.push("service_discovery_stale".to_string());
         }
         let status = if degraded_reasons.is_empty() {
             Status::ok()
@@ -707,6 +755,7 @@ impl ProxyService {
                 meta_sync_errors: client_stats.meta_sync_errors,
             },
             policy,
+            service_discovery,
             degraded_reasons,
         }
     }
@@ -724,6 +773,47 @@ impl ProxyService {
             ),
             rejecting_all: matches!(options.serving_mode, ProxyServingMode::NotServing),
             admission_rejections: stats.admission_rejections,
+        }
+    }
+
+    pub fn service_discovery_report(&self) -> ProxyServiceDiscoveryReport {
+        let options = self.options();
+        self.service_discovery_report_with_options(&options)
+    }
+
+    fn service_discovery_report_with_options(
+        &self,
+        options: &ProxyOptions,
+    ) -> ProxyServiceDiscoveryReport {
+        let state = self
+            .inner
+            .service_discovery
+            .read()
+            .expect("proxy service discovery lock poisoned")
+            .clone();
+        let now = now_ms();
+        let last_heartbeat_age_ms = state
+            .last_success_ms
+            .map(|last_success| now.saturating_sub(last_success));
+        let ttl_ms = options.service_registry_ttl_ms.max(1);
+        let stale = !state.registered
+            || last_heartbeat_age_ms
+                .map(|age| age > ttl_ms)
+                .unwrap_or(true);
+        ProxyServiceDiscoveryReport {
+            service_name: "temporalstore-proxy".to_string(),
+            proxy_addr: options.proxy_addr.clone(),
+            namespace: options.namespace.clone(),
+            location: options.location.clone(),
+            meta_addr: options.meta_addr.clone(),
+            ttl_ms,
+            registered: state.registered,
+            stale,
+            last_heartbeat_age_ms,
+            last_success_ms: state.last_success_ms,
+            last_error_ms: state.last_error_ms,
+            last_error: state.last_error,
+            stats: state.stats,
         }
     }
 
@@ -822,6 +912,50 @@ impl ProxyService {
             options.drop_percent as u64,
         );
 
+        let service_discovery = self.service_discovery_report_with_options(&options);
+        out.push_str("# HELP temporalstore_proxy_service_registry_state Proxy service-discovery registration state.\n");
+        out.push_str("# TYPE temporalstore_proxy_service_registry_state gauge\n");
+        push_proxy_metric(
+            &mut out,
+            "temporalstore_proxy_service_registry_state",
+            &[("state", "registered")],
+            u64::from(service_discovery.registered),
+        );
+        push_proxy_metric(
+            &mut out,
+            "temporalstore_proxy_service_registry_state",
+            &[("state", "stale")],
+            u64::from(service_discovery.stale),
+        );
+
+        out.push_str("# HELP temporalstore_proxy_service_registry_events_total Proxy service-discovery heartbeat and registration events.\n");
+        out.push_str("# TYPE temporalstore_proxy_service_registry_events_total counter\n");
+        for (kind, value) in [
+            (
+                "heartbeat_success",
+                service_discovery.stats.heartbeat_success_total,
+            ),
+            (
+                "heartbeat_failure",
+                service_discovery.stats.heartbeat_failure_total,
+            ),
+            (
+                "registration_success",
+                service_discovery.stats.registration_success_total,
+            ),
+            (
+                "registration_failure",
+                service_discovery.stats.registration_failure_total,
+            ),
+        ] {
+            push_proxy_metric(
+                &mut out,
+                "temporalstore_proxy_service_registry_events_total",
+                &[("kind", kind)],
+                value,
+            );
+        }
+
         let readiness = crate::production_readiness_report();
         out.push_str(
             "# HELP temporalstore_production_readiness_ready Production readiness gate state.\n",
@@ -911,6 +1045,7 @@ impl ProxyService {
             options.http_options(),
         ) {
             Ok(response) if response.status.ok || response.status.code == "resource_frozen" => {
+                self.record_service_discovery_heartbeat(&response.status);
                 self.apply_heartbeat_config(&response);
                 response
             }
@@ -931,22 +1066,33 @@ impl ProxyService {
                         drop_percent: 0,
                     });
                     if response.status.ok {
+                        self.record_service_discovery_heartbeat(&response.status);
                         self.apply_heartbeat_config(&response);
+                    } else {
+                        self.record_service_discovery_error(&response.status);
                     }
                     response
                 } else {
+                    self.record_service_discovery_error(&response.status);
                     response
                 }
             }
-            Ok(response) => response,
-            Err(err) => ProxyHeartbeatResponse {
-                status: Status::error("metaserver_error", err.to_string()),
-                config_changed: false,
-                namespace: String::new(),
-                config_version: 0,
-                serving_mode: "not_serving".to_string(),
-                drop_percent: 0,
-            },
+            Ok(response) => {
+                self.record_service_discovery_error(&response.status);
+                response
+            }
+            Err(err) => {
+                let status = Status::error("metaserver_error", err.to_string());
+                self.record_service_discovery_error(&status);
+                ProxyHeartbeatResponse {
+                    status,
+                    config_changed: false,
+                    namespace: String::new(),
+                    config_version: 0,
+                    serving_mode: "not_serving".to_string(),
+                    drop_percent: 0,
+                }
+            }
         }
     }
 
@@ -965,7 +1111,7 @@ impl ProxyService {
             .write()
             .expect("proxy stats lock poisoned")
             .auto_register_total += 1;
-        post_json_with_options::<_, AckResponse>(
+        let response = post_json_with_options::<_, AckResponse>(
             &options.meta_addr,
             "/proxies/register",
             &RegisterProxyRequest {
@@ -979,7 +1125,9 @@ impl ProxyService {
         )
         .unwrap_or_else(|err| AckResponse {
             status: Status::error("metaserver_error", err.to_string()),
-        })
+        });
+        self.record_service_discovery_registration(&response.status);
+        response
     }
 
     fn apply_heartbeat_config(&self, response: &ProxyHeartbeatResponse) {
@@ -1006,6 +1154,54 @@ impl ProxyService {
             options.drop_percent = response.drop_percent;
         }
         let _ = self.update_options_report(options);
+    }
+
+    fn record_service_discovery_heartbeat(&self, status: &Status) {
+        let mut state = self
+            .inner
+            .service_discovery
+            .write()
+            .expect("proxy service discovery lock poisoned");
+        if status.ok || status.code == "resource_frozen" {
+            state.registered = true;
+            state.last_success_ms = Some(now_ms());
+            state.last_error = None;
+            state.stats.heartbeat_success_total += 1;
+        } else {
+            state.last_error_ms = Some(now_ms());
+            state.last_error = Some(status.clone());
+            state.stats.heartbeat_failure_total += 1;
+        }
+    }
+
+    fn record_service_discovery_registration(&self, status: &Status) {
+        let mut state = self
+            .inner
+            .service_discovery
+            .write()
+            .expect("proxy service discovery lock poisoned");
+        if status.ok {
+            state.registered = true;
+            state.last_success_ms = Some(now_ms());
+            state.last_error = None;
+            state.stats.registration_success_total += 1;
+        } else {
+            state.registered = false;
+            state.last_error_ms = Some(now_ms());
+            state.last_error = Some(status.clone());
+            state.stats.registration_failure_total += 1;
+        }
+    }
+
+    fn record_service_discovery_error(&self, status: &Status) {
+        let mut state = self
+            .inner
+            .service_discovery
+            .write()
+            .expect("proxy service discovery lock poisoned");
+        state.last_error_ms = Some(now_ms());
+        state.last_error = Some(status.clone());
+        state.stats.heartbeat_failure_total += 1;
     }
 
     fn get_shard(&self, shard_id: ShardId, count_error: bool) -> Result<GetShardResponse, Status> {
@@ -1286,6 +1482,10 @@ fn default_proxy_addr() -> String {
     "127.0.0.1:17000".to_string()
 }
 
+fn default_service_registry_ttl_ms() -> u64 {
+    30_000
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1416,6 +1616,13 @@ mod tests {
             .contains("temporalstore_proxy_backend_events_total{kind=\"metaserver_error\"} 1"));
         assert!(metrics.contains("temporalstore_proxy_serving_mode{mode=\"not_serving\"} 1"));
         assert!(metrics.contains("temporalstore_proxy_drop_percent 17"));
+        assert!(
+            metrics.contains("temporalstore_proxy_service_registry_state{state=\"registered\"} 0")
+        );
+        assert!(metrics.contains("temporalstore_proxy_service_registry_state{state=\"stale\"} 1"));
+        assert!(metrics.contains(
+            "temporalstore_proxy_service_registry_events_total{kind=\"heartbeat_failure\"} 0"
+        ));
         assert!(metrics.contains("# TYPE temporalstore_production_readiness_ready gauge"));
         assert!(metrics.contains("temporalstore_production_readiness_ready 0"));
         let readiness = crate::production_readiness_report();
@@ -2204,6 +2411,22 @@ mod tests {
         let info = proxy.info();
         assert_eq!(info.stats.heartbeat_total, 1);
         assert_eq!(info.stats.auto_register_total, 1);
+        let discovery = proxy.service_discovery_report();
+        assert!(discovery.registered);
+        assert!(!discovery.stale);
+        assert_eq!(discovery.service_name, "temporalstore-proxy");
+        assert_eq!(discovery.stats.registration_success_total, 1);
+        assert_eq!(discovery.stats.heartbeat_success_total, 1);
+
+        let (code, body) = proxy.handle(HttpRequest {
+            method: "GET".to_string(),
+            path: "/proxy/service_discovery".to_string(),
+            body: Vec::new(),
+        });
+        assert_eq!(code, 200);
+        let routed = parse_json::<ProxyServiceDiscoveryReport>(&body).unwrap();
+        assert!(routed.registered);
+        assert!(!routed.stale);
     }
 
     #[test]

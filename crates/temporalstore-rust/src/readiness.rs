@@ -94,12 +94,13 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "C++ service-name admin aliases expose proxy info, heartbeat/config, and embedded client preflight"
                     .to_string(),
+                "Rust-native service discovery replacement for consul via proxy auto-register, heartbeat TTL, admin inspection, and Prometheus stale/registered metrics"
+                    .to_string(),
             ],
             missing: vec![
                 "tonic proxy service and streaming/callback request shape".to_string(),
                 "brpc/thrift wire-compatible command-specific proxy methods such as Get, Set, FeatureAdd, RiskHset, HMGet, HMSet, HGetAll, and HLen"
                     .to_string(),
-                "service discovery/registration replacement for consul".to_string(),
             ],
         },
         ReadinessArea {
@@ -361,6 +362,16 @@ mod tests {
         assert!(report.failed_capabilities.iter().any(|blocker| {
             blocker.area == "storage_cache" && blocker.capability.contains("ByteStore")
         }));
+        let proxy = report
+            .areas
+            .iter()
+            .find(|area| area.area == "proxy")
+            .expect("proxy area must exist");
+        assert!(proxy
+            .covered
+            .iter()
+            .any(|item| item.contains("service discovery replacement")));
+        assert!(!proxy.missing.iter().any(|item| item.contains("consul")));
         for area in [
             "raft_replication",
             "client",

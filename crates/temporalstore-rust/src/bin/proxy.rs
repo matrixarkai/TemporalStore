@@ -23,6 +23,7 @@ fn main() {
             "TS_PROXY_BACKEND_CONTINUOUS_FAILED_TIME_MS",
             10_000,
         ),
+        service_registry_ttl_ms: env_u64("TS_PROXY_SERVICE_REGISTRY_TTL_MS", 30_000),
         serving_mode: env_serving_mode("TS_PROXY_SERVING_MODE", ProxyServingMode::Serving),
         drop_percent: env_u8("TS_PROXY_DROP_PERCENT", 0),
     };
