@@ -700,7 +700,7 @@ impl DataNodeRuntime {
     }
 
     pub fn unload_shard_with(&self, request: UnloadShardRequest) -> UnloadShardResponse {
-        unload_shard_with_inner(&self.inner, request)
+        unload_shard_with_inner(&self.inner, request, true)
     }
 
     pub fn require_lifecycle_token(&self, token: SchedulerLifecycleToken) {
@@ -1723,6 +1723,7 @@ fn reload_shard_with_inner(
 fn unload_shard_with_inner(
     inner: &DataNodeRuntimeInner,
     request: UnloadShardRequest,
+    reject_when_busy: bool,
 ) -> UnloadShardResponse {
     let load_version = inner
         .engine
@@ -1730,6 +1731,24 @@ fn unload_shard_with_inner(
         .info
         .map(|info| info.load_version)
         .unwrap_or_default();
+    if reject_when_busy && shard_has_queued_or_running_work(inner, request.shard_id) {
+        let status = Status::error(
+            "shard_busy",
+            format!(
+                "cannot unload shard {} while data node work is queued or running",
+                request.shard_id
+            ),
+        );
+        record_lifecycle_state_inner(
+            inner,
+            request.shard_id,
+            "failed",
+            "unload",
+            load_version,
+            Some(status.clone()),
+        );
+        return UnloadShardResponse { status };
+    }
     if let Err(status) =
         validate_lifecycle_token_inner(inner, request.shard_id, "unload", load_version)
     {
@@ -1766,6 +1785,16 @@ fn unload_shard_with_inner(
         Some(response.status.clone()),
     );
     response
+}
+
+fn shard_has_queued_or_running_work(inner: &DataNodeRuntimeInner, shard_id: ShardId) -> bool {
+    let queue = inner.queue.lock().expect("runtime queue lock poisoned");
+    queue.running_shards.contains(&shard_id)
+        || queue
+            .by_shard
+            .get(&shard_id)
+            .map(|queued| !queued.is_empty())
+            .unwrap_or(false)
 }
 
 fn record_lifecycle_state_inner(
@@ -1980,7 +2009,7 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
                     "data node unload canceled before lifecycle start",
                 );
             }
-            DataNodeTaskOutput::Unload(unload_shard_with_inner(inner, request.clone()))
+            DataNodeTaskOutput::Unload(unload_shard_with_inner(inner, request.clone(), false))
         }
         TaskRequest::Execute(request) => {
             if let Err(status) = validate_foreground_write_allowed_inner(
@@ -2767,6 +2796,100 @@ mod tests {
         assert_eq!(unloaded.loaded_shard_count, 0);
         assert_eq!(unloaded.transitions[0].state, "unloaded");
         assert_eq!(unloaded.transitions[0].operation, "unload");
+    }
+
+    #[test]
+    fn runtime_direct_unload_rejects_busy_shard_without_unloading() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(7);
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 8,
+                max_background_queue_depth: 4,
+            },
+        );
+
+        let queued = runtime.submit_dump(
+            DumpShardRequest {
+                shard_id: 7,
+                selected_routing_slots: Vec::new(),
+            },
+            RequestController { timeout_ms: 1000 },
+        );
+        assert!(queued.status.ok, "{queued:?}");
+
+        let unload = runtime.unload_shard_with(crate::control::UnloadShardRequest { shard_id: 7 });
+        assert_eq!(unload.status.code, "shard_busy");
+        let lifecycle = runtime.lifecycle_report();
+        assert_eq!(lifecycle.loaded_shard_count, 1);
+        assert_eq!(lifecycle.failed_count, 1);
+        assert_eq!(lifecycle.transitions[0].state, "failed");
+        assert_eq!(lifecycle.transitions[0].operation, "unload");
+        assert_eq!(
+            lifecycle.transitions[0].last_status.as_ref().unwrap().code,
+            "shard_busy"
+        );
+    }
+
+    #[test]
+    fn runtime_queued_unload_waits_for_prior_shard_work() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(7);
+        let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 8);
+
+        let write = runtime.submit_execute(
+            ExecuteRequest {
+                shard_id: 7,
+                command: Command::StringSet {
+                    key: "before-unload".to_string(),
+                    value: b"value".to_vec(),
+                },
+            },
+            RequestController { timeout_ms: 1000 },
+        );
+        let unload = runtime.submit_unload(
+            crate::control::UnloadShardRequest { shard_id: 7 },
+            RequestController { timeout_ms: 1000 },
+        );
+        assert!(write.status.ok, "{write:?}");
+        assert!(unload.status.ok, "{unload:?}");
+
+        let first = runtime
+            .inner
+            .queue
+            .lock()
+            .expect("runtime queue lock poisoned")
+            .pop_ready()
+            .expect("first shard task should be ready");
+        assert_eq!(first.job_id, write.job_id);
+        let output = execute_task(&runtime.inner, &first);
+        let DataNodeTaskOutput::Execute(response) = output else {
+            panic!("expected execute output");
+        };
+        assert!(response.status.ok, "{response:?}");
+        runtime
+            .inner
+            .queue
+            .lock()
+            .expect("runtime queue lock poisoned")
+            .finish_shard(7);
+
+        let second = runtime
+            .inner
+            .queue
+            .lock()
+            .expect("runtime queue lock poisoned")
+            .pop_ready()
+            .expect("queued unload should be ready after prior work");
+        assert_eq!(second.job_id, unload.job_id);
+        let output = execute_task(&runtime.inner, &second);
+        let DataNodeTaskOutput::Unload(response) = output else {
+            panic!("expected unload output");
+        };
+        assert!(response.status.ok, "{response:?}");
+        assert_eq!(runtime.lifecycle_report().loaded_shard_count, 0);
     }
 
     #[test]

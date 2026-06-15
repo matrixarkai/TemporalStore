@@ -21,7 +21,8 @@ push.
 13. Add client route refresh from proxy/meta topology-version headers.
 14. Add metaserver stuck-transition report for loading/reloading/unloading shards.
 15. Add metaserver repair task creation for missing primaries and under-replicated shards.
-16. Add cross-service move workflow: load target, update membership, unload source.
+16. Add cross-service move workflow: load target, update membership, unload source. Unload
+    busy-safety sub-slice done in cycle 13.
 17. Add Raft-backed metaserver replay for scheduler lifecycle tokens.
 18. Add multi-proxy stale-cache convergence harness.
 19. Add multi-client background MetaSyncer scale harness.
@@ -93,6 +94,23 @@ Cycle 12 adds stale-table write policy enforcement:
 
 The next cycle should focus on multi-proxy/multi-client table-change convergence and table
 freeze/unfreeze write behavior.
+
+## Cycle 13 Implemented
+
+Cycle 13 tightens the nodeserver unload side of controlled move safety:
+
+- Direct `unload_shard_with` now checks the shard-affine data-node lane before changing local
+  state.
+- If foreground or background work is queued/running for the shard, direct unload returns
+  `shard_busy`, records a failed unload lifecycle transition, and leaves the shard loaded.
+- Queued unload jobs keep the existing C++-style scheduler behavior: they wait behind prior
+  shard work and then unload once the lane is clear.
+- Regression coverage validates both direct busy rejection and queued unload serialization.
+- Local scale validation passed with 4 initial raft nodes, scale-out to 5 nodes, 3 failovers,
+  shared-store comparison enabled, and max replica lag 0.
+
+The next cycle should wire the same busy-safety signal into the metaserver scheduler executor so
+move/unload tasks retry instead of racing active shard work.
 
 ## Cycle 1 Implemented
 
