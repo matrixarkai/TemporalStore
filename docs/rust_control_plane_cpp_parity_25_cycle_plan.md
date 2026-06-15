@@ -14,7 +14,7 @@ push.
 6. Add nodeserver async load/reload/unload jobs with progress and cancellation. Done.
 7. Reject foreground writes during controlled reloading/unloading states. Done.
 8. Add proxy heartbeat application of metaserver serving policy transitions. Done.
-9. Add proxy route-cache invalidation from metaserver topology events.
+9. Add proxy route-cache invalidation from metaserver topology events. Done in cycle 10.
 10. Add proxy backend quarantine recovery probes.
 11. Add client background MetaSyncer jitter/backoff worker handle.
 12. Add client stale-table policy enforcement before network writes.
@@ -48,6 +48,21 @@ operations state across proxy and metaserver, not only the data-node:
 
 The next cycle should return to route-cache invalidation from metaserver topology events, then
 client/proxy topology convergence under table changes.
+
+## Cycle 10 Implemented
+
+Cycle 10 closes the direct route-cache invalidation gap:
+
+- client exposes a metaserver topology invalidation report for cached routes
+- route-affecting topology events invalidate unknown-version direct shard routes and older cached
+  routes
+- opened table routes keep using the existing table topology refresh path after invalidation
+- proxy execute/batch/table paths run the invalidation check before routing
+- the check is best-effort so request execution is not blocked by older/fake metaserver surfaces
+- regression coverage moves shard 1 from data-node A to data-node B and verifies the next proxy
+  write lands on B without manual refresh
+
+The next cycle should focus on table-change convergence under multi-proxy/multi-client load.
 
 ## Cycle 1 Implemented
 

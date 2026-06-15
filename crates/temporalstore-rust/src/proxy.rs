@@ -425,6 +425,7 @@ impl ProxyService {
         {
             return execute_error(status.code, status.message);
         }
+        self.invalidate_cached_routes_if_meta_changed();
         let response = self
             .client()
             .execute_with_options(request, RequestOptions::default())
@@ -445,6 +446,7 @@ impl ProxyService {
                 responses: Vec::new(),
             };
         }
+        self.invalidate_cached_routes_if_meta_changed();
         let response = self
             .client()
             .batch_execute_with_options(request, RequestOptions::default())
@@ -509,6 +511,7 @@ impl ProxyService {
         {
             return execute_error(status.code, status.message);
         }
+        self.invalidate_cached_routes_if_meta_changed();
         let response = self
             .table_for_request(request.namespace, request.table_name)
             .and_then(|table| table.execute(request.command))
@@ -532,6 +535,7 @@ impl ProxyService {
                 responses: Vec::new(),
             };
         }
+        self.invalidate_cached_routes_if_meta_changed();
         let response = self
             .table_for_request(request.namespace, request.table_name)
             .and_then(|table| table.batch_execute(request.commands))
@@ -1050,6 +1054,14 @@ impl ProxyService {
         status
     }
 
+    fn invalidate_cached_routes_if_meta_changed(&self) {
+        if self.client().route_cache_size() == 0 {
+            return;
+        }
+        let _ = self.client().invalidate_routes_from_meta_topology();
+        self.sync_client_stats();
+    }
+
     fn inc_bad_request(&self) {
         self.inner
             .stats
@@ -1442,6 +1454,114 @@ mod tests {
         );
         assert!(preflight.client.route_refreshes >= 1);
         assert!(preflight.degraded_reasons.is_empty());
+    }
+
+    #[test]
+    fn proxy_invalidates_direct_route_cache_after_metaserver_topology_change() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let engine_a = TemporalEngine::with_local_dirs(
+            1024,
+            dir_a.path().join("cache"),
+            dir_a.path().join("pages"),
+            dir_a.path().join("indexes"),
+        );
+        engine_a.load_shard(1);
+        start_server(test_addr(18_328), engine_a.clone());
+
+        let dir_b = tempfile::tempdir().unwrap();
+        let engine_b = TemporalEngine::with_local_dirs(
+            1024,
+            dir_b.path().join("cache"),
+            dir_b.path().join("pages"),
+            dir_b.path().join("indexes"),
+        );
+        engine_b.load_shard(1);
+        start_server(test_addr(18_329), engine_b.clone());
+
+        let meta = crate::meta::SingleNodeMeta::default();
+        meta.register_server(crate::meta::RegisterServerRequest {
+            server_addr: test_addr(18_328),
+            node_id: 1,
+            location: "zone-a".to_string(),
+            binary_version: "v-a".to_string(),
+        });
+        meta.register(RegisterShardRequest {
+            shard_id: 1,
+            server_addr: test_addr(18_328),
+        });
+        start_meta_service(test_addr(18_330), meta.clone());
+        wait_for_http(&test_addr(18_328));
+        wait_for_http(&test_addr(18_329));
+        wait_for_http(&test_addr(18_330));
+
+        let proxy = ProxyService::new(ProxyOptions {
+            meta_addr: test_addr(18_330),
+            route_cache_ttl_ms: 60_000,
+            ..ProxyOptions::default()
+        });
+        assert!(
+            proxy
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: "moved".to_string(),
+                        value: b"before".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+        assert_eq!(proxy.info().route_cache_size, 1);
+
+        meta.register_server(crate::meta::RegisterServerRequest {
+            server_addr: test_addr(18_329),
+            node_id: 2,
+            location: "zone-b".to_string(),
+            binary_version: "v-b".to_string(),
+        });
+        meta.register(RegisterShardRequest {
+            shard_id: 1,
+            server_addr: test_addr(18_329),
+        });
+
+        assert!(
+            proxy
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: "moved".to_string(),
+                        value: b"after".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+        assert_eq!(
+            engine_a
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "moved".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"before".to_vec())
+            }
+        );
+        assert_eq!(
+            engine_b
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "moved".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"after".to_vec())
+            }
+        );
     }
 
     #[test]

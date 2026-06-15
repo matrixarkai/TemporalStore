@@ -60,6 +60,26 @@ brpc and Thrift are intentionally not part of the Rust target. The Rust open-sou
 
 ## What Was Closed In The Latest Pass
 
+This pass closed the tenth client/proxy/metaserver/nodeserver C++ parity cycle:
+
+1. Client now has a C++-style metaserver topology invalidation path for cached routes.
+2. The invalidation path asks metaserver for topology events, classifies route-affecting changes,
+   and drops unknown-version direct shard routes plus routes older than the authoritative topology.
+3. Open table routes continue to use the existing table topology refresh path after invalidation.
+4. Proxy request handling invokes the invalidation check before execute, batch execute, table
+   execute, and table batch execute.
+5. The check is best-effort, so older/fake metaserver test surfaces that do not expose topology
+   version do not block request execution.
+6. Regression coverage validates that a direct shard route cached through the proxy is invalidated
+   after metaserver moves the shard to a new data-node, and the next write lands on the new node.
+
+This closes a concrete proxy/client topology-convergence gap for direct route-cache entries. The
+remaining route work is deeper table-change convergence under multi-proxy/multi-client load,
+membership-update execution, and full move/failover orchestration across metaserver, proxy, client,
+data-node, and Raft paths.
+
+## What Was Closed In The Previous Pass
+
 This pass closed the ninth client/proxy/metaserver/nodeserver C++ parity cycle by pulling the
 control-plane Prometheus backlog item forward:
 

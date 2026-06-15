@@ -243,6 +243,20 @@ pub struct ClientTopologyRefreshReport {
     pub stale_before_refresh: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientTopologyInvalidationReport {
+    pub status: Status,
+    pub old_topology_version: u64,
+    pub current_topology_version: u64,
+    pub route_count_before: usize,
+    pub invalidated_routes: usize,
+    pub refreshed_tables: Vec<String>,
+    pub skipped_tables: Vec<String>,
+    pub refresh_all: bool,
+    pub event_count: usize,
+    pub stale_before_invalidation: bool,
+}
+
 impl ClientStats {
     fn record_backend_error(&mut self, became_continuous: bool) {
         self.backend_errors += 1;
@@ -659,6 +673,93 @@ impl TemporalStoreClient {
             refresh_all,
             event_count: topology.events.len(),
             stale_before_refresh: old_topology_version < topology.current_topology_version,
+        })
+    }
+
+    pub fn invalidate_routes_from_meta_topology(
+        &self,
+    ) -> Result<ClientTopologyInvalidationReport, ClientError> {
+        let before = self.topology_cache_report();
+        if before.route_count == 0 {
+            return Ok(ClientTopologyInvalidationReport {
+                status: Status::ok(),
+                old_topology_version: 0,
+                current_topology_version: 0,
+                route_count_before: 0,
+                invalidated_routes: 0,
+                refreshed_tables: Vec::new(),
+                skipped_tables: Vec::new(),
+                refresh_all: false,
+                event_count: 0,
+                stale_before_invalidation: false,
+            });
+        }
+        let old_topology_version = before.max_topology_version;
+        let meta_addr = self
+            .inner
+            .options
+            .meta_addr
+            .as_ref()
+            .ok_or_else(|| ClientError::Status("meta_addr is required".to_string()))?;
+        let topology: TopologyVersionReport = post_json_with_options(
+            meta_addr,
+            "/meta/topology_version",
+            &TopologyVersionRequest {
+                old_topology_version,
+            },
+            self.inner.options.http_options(),
+        )?;
+        if !topology.status.ok {
+            return Err(ClientError::Status(topology.status.message));
+        }
+
+        let stale_before_invalidation = old_topology_version < topology.current_topology_version
+            || (before.unknown_topology_version_routes > 0 && !topology.unchanged);
+        let route_affecting_change = topology.event_history_truncated
+            || topology.events.iter().any(topology_event_affects_routes)
+            || (topology.events.is_empty()
+                && old_topology_version < topology.current_topology_version);
+        let invalidated_routes = if stale_before_invalidation && route_affecting_change {
+            let mut routes = self
+                .inner
+                .routes
+                .lock()
+                .expect("client route cache lock poisoned");
+            let before_len = routes.len();
+            routes.retain(|_, route| {
+                route.topology_version > 0
+                    && route.topology_version >= topology.current_topology_version
+            });
+            before_len.saturating_sub(routes.len())
+        } else {
+            0
+        };
+
+        let refresh = if route_affecting_change && !self.open_table_keys().is_empty() {
+            Some(self.refresh_stale_routes_from_meta()?)
+        } else {
+            None
+        };
+        Ok(ClientTopologyInvalidationReport {
+            status: refresh
+                .as_ref()
+                .map(|report| report.status.clone())
+                .unwrap_or_else(Status::ok),
+            old_topology_version,
+            current_topology_version: topology.current_topology_version,
+            route_count_before: before.route_count,
+            invalidated_routes,
+            refreshed_tables: refresh
+                .as_ref()
+                .map(|report| report.refreshed_tables.clone())
+                .unwrap_or_default(),
+            skipped_tables: refresh
+                .as_ref()
+                .map(|report| report.skipped_tables.clone())
+                .unwrap_or_default(),
+            refresh_all: route_affecting_change,
+            event_count: topology.events.len(),
+            stale_before_invalidation,
         })
     }
 
@@ -2744,6 +2845,22 @@ fn is_write(command: &Command) -> bool {
 
 fn table_combine_name(namespace: &str, table_name: &str) -> String {
     format!("{namespace}/{table_name}")
+}
+
+fn topology_event_affects_routes(event: &crate::meta::TopologyChangeEvent) -> bool {
+    event.resource.starts_with("table:")
+        || matches!(
+            event.kind.as_str(),
+            "register_shard"
+                | "finish_load"
+                | "publish_shard_snapshot"
+                | "register_server"
+                | "server_state"
+                | "add_table"
+                | "delete_table"
+                | "update_table"
+                | "table_state"
+        )
 }
 
 fn duration_ms_u64(duration: Duration) -> u64 {
