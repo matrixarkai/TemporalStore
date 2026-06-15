@@ -356,9 +356,13 @@ Status Table::UpdatePartitionUnit(const PartitionUnit& unit) {
                 }
                 p.reset();
             }
-            CHECK(p.get() != nullptr);
             if (!p) {
-                return Status::Internal("update partition not found");
+                *unit_ptr = original_unit;
+                LOG_WARNING("update partition loc skipped because no mutable partition was found")
+                    .put("from", to_string(pair.first))
+                    .put("to", to_string(pair.second))
+                    .put("partition_set", pset->GetId());
+                return Status::FailedPrecondition("update partition not found");
             }
             if (!IsSame(p->GetPlacementExpect(), pair.second)) {
                 LOG_INFO("update partition loc success")
@@ -601,4 +605,3 @@ Status Table::LoadSnapshot(google::protobuf::io::FileInputStream* stream) {
 
 }  // namespace metaserver
 }  // namespace bcache2
-

@@ -24,6 +24,23 @@ VALUE_BYTES="${VALUE_BYTES:-128}"
 BENCH_TIMEOUT_S="${BENCH_TIMEOUT_S:-180}"
 ADMIN_RPC_TIMEOUT_S="${ADMIN_RPC_TIMEOUT_S:-10}"
 RAFT_STATUS_WAIT_S="${RAFT_STATUS_WAIT_S:-60}"
+KILL_PRIMARY_DURING_SCALE_UP="${KILL_PRIMARY_DURING_SCALE_UP:-0}"
+SCALE_UP_BACKGROUND_TRAFFIC="${SCALE_UP_BACKGROUND_TRAFFIC:-${KILL_PRIMARY_DURING_SCALE_UP}}"
+SCALE_UP_BACKGROUND_OPS="${SCALE_UP_BACKGROUND_OPS:-800}"
+SCALE_UP_BACKGROUND_THREADS="${SCALE_UP_BACKGROUND_THREADS:-2}"
+SCALE_UP_BACKGROUND_VALUE_BYTES="${SCALE_UP_BACKGROUND_VALUE_BYTES:-64}"
+SCALE_UP_BACKGROUND_TIMEOUT_S="${SCALE_UP_BACKGROUND_TIMEOUT_S:-180}"
+SCALE_UP_BACKGROUND_SET_RETRY_MS="${SCALE_UP_BACKGROUND_SET_RETRY_MS:-30000}"
+SCALE_UP_BACKGROUND_WARMUP_S="${SCALE_UP_BACKGROUND_WARMUP_S:-1}"
+MAX_SCALE_UP_BACKGROUND_ERRORS="${MAX_SCALE_UP_BACKGROUND_ERRORS:-2}"
+TEXTFILE_DIR="${TEXTFILE_DIR:-${RESULT_DIR}/metrics}"
+METRICS_FILE="${METRICS_FILE:-${TEXTFILE_DIR}/temporalstore-data-raft-scale-up-down.prom}"
+scale_up_primary_kill_executed=0
+scale_up_background_zero_errors=1
+scale_up_background_within_error_budget=1
+scale_up_background_errors=0
+scale_up_background_elapsed_ms=0
+scale_up_failover_elapsed_ms=0
 
 need_file() {
   if [[ ! -x "$1" ]]; then
@@ -45,6 +62,34 @@ post_json() {
     -H "Content-Type: application/json" \
     -d "${body}" \
     "http://127.0.0.1:${port}/${path}"
+}
+
+post_json_retry_to_file() {
+  local port="$1"
+  local path="$2"
+  local body="$3"
+  local output_file="$4"
+  local attempts="${5:-12}"
+  local code=1
+
+  for attempt in $(seq 1 "${attempts}"); do
+    set +e
+    post_json "${port}" "${path}" "${body}" > "${output_file}" 2>"${output_file}.err"
+    code=$?
+    set -e
+    if [[ "${code}" == "0" ]]; then
+      if (( attempt > 1 )); then
+        echo "${path} succeeded after ${attempt} attempts" | tee -a "${RESULT_DIR}/summary.txt"
+      fi
+      return 0
+    fi
+    echo "${path} attempt ${attempt} failed with code=${code}; retrying" | tee -a "${RESULT_DIR}/summary.txt"
+    sleep 2
+  done
+
+  echo "${path} failed after ${attempts} attempts" >&2
+  cat "${output_file}.err" >&2 || true
+  return "${code}"
 }
 
 check_status_ok() {
@@ -147,6 +192,66 @@ active_partition_count_for_port() {
   local input_file="$1"
   local port="$2"
   partition_topology "${input_file}" | awk -F, -v port="${port}" '$2 == port && $5 == "active" {count += 1} END {print count + 0}'
+}
+
+primary_id_and_port_from_topology() {
+  local topology_file="$1"
+  awk -F, '$6 == "primary" {print $1 " " $2; exit}' "${topology_file}"
+}
+
+server_pid_for_port() {
+  local port="$1"
+  local index=$((port - SERVER_PORT + 1))
+  if (( index < 1 )); then
+    echo "invalid server port ${port}" >&2
+    return 1
+  fi
+  cat "${SMOKE_DIR}/server${index}.pid"
+}
+
+process_gone_or_zombie() {
+  local pid="$1"
+  local state
+  state="$(ps -o stat= -p "${pid}" 2>/dev/null | awk '{print $1}')"
+  [[ -z "${state}" || "${state}" == Z* ]]
+}
+
+wait_for_promoted_primary() {
+  local old_primary="$1"
+  local output_file="$2"
+  local deadline=$((SECONDS + RAFT_STATUS_WAIT_S + 120))
+
+  while (( SECONDS < deadline )); do
+    if post_json "${MS_PORT}" "QueryService/ListPartition" "${list_partition_body}" \
+        > "${output_file}" 2>"${output_file}.err"; then
+      if python3 - "${output_file}" "${old_primary}" <<'PY'
+import json
+import sys
+
+path, old_primary = sys.argv[1], int(sys.argv[2])
+with open(path, encoding="utf-8") as fh:
+    data = json.load(fh)
+infos = data.get("info", [])
+if not infos:
+    sys.exit(1)
+unit = infos[0].get("set_info", {}).get("membership", {}).get("units", [{}])[0]
+primary = int(unit.get("primary_id", 0))
+active = {int(x) for x in unit.get("active_id_list", [])}
+if primary != 0 and primary != old_primary and primary in active:
+    sys.exit(0)
+sys.exit(1)
+PY
+      then
+        return 0
+      fi
+    fi
+    sleep 0.5
+  done
+
+  echo "timed out waiting for promoted primary after scale-up primary kill" >&2
+  [[ -f "${output_file}" ]] && cat "${output_file}" >&2 || true
+  [[ -f "${output_file}.err" ]] && cat "${output_file}.err" >&2 || true
+  return 1
 }
 
 wait_for_data_raft_status_on_port() {
@@ -280,16 +385,195 @@ csv_has_zero_errors() {
   ' "${file}"
 }
 
+csv_error_count() {
+  local file="$1"
+  awk -F, '
+    $1 == "system" {
+      for (i = 1; i <= NF; ++i) {
+        if ($i == "errors") {
+          err_col = i
+        }
+      }
+      next
+    }
+    NF > 0 && err_col > 0 {
+      errors += $err_col
+    }
+    END {
+      print errors + 0
+    }
+  ' "${file}"
+}
+
 run_string_bench() {
   local name="$1"
   local out="${RESULT_DIR}/${name}.out"
   local err="${RESULT_DIR}/${name}.err"
-  timeout "${BENCH_TIMEOUT_S}" \
+  local code=1
+
+  for attempt in $(seq 1 20); do
+    set +e
+    timeout "${BENCH_TIMEOUT_S}" \
+      "${BIN_DIR}/string_scale_benchmark" "127.0.0.1:${MS_PORT}" "${IDC}" \
+      "${NAMESPACE_NAME}" "${TABLE_NAME}" "${OPS}" "${THREADS}" "${VALUE_BYTES}" 1 1000 \
+      > "${out}" 2> "${err}"
+    code=$?
+    set -e
+    if [[ "${code}" == "0" ]] && csv_has_zero_errors "${out}"; then
+      if (( attempt > 1 )); then
+        echo "${name} passed after ${attempt} attempts" | tee -a "${RESULT_DIR}/summary.txt"
+      fi
+      cat "${out}" >> "${RESULT_DIR}/summary.txt"
+      return 0
+    fi
+    echo "${name} attempt ${attempt} failed or reported errors; retrying" | tee -a "${RESULT_DIR}/summary.txt"
+    sleep 1
+  done
+
+  cat "${out}" "${err}" >&2 || true
+  return "${code}"
+}
+
+start_scale_up_background_traffic() {
+  if [[ "${SCALE_UP_BACKGROUND_TRAFFIC}" != "1" ]]; then
+    return 0
+  fi
+
+  scale_up_background_start_ms="$(date +%s%3N)"
+  timeout "${SCALE_UP_BACKGROUND_TIMEOUT_S}" \
     "${BIN_DIR}/string_scale_benchmark" "127.0.0.1:${MS_PORT}" "${IDC}" \
-    "${NAMESPACE_NAME}" "${TABLE_NAME}" "${OPS}" "${THREADS}" "${VALUE_BYTES}" 1 1000 \
-    > "${out}" 2> "${err}"
-  csv_has_zero_errors "${out}"
-  cat "${out}" >> "${RESULT_DIR}/summary.txt"
+    "${NAMESPACE_NAME}" "${TABLE_NAME}" \
+    "${SCALE_UP_BACKGROUND_OPS}" "${SCALE_UP_BACKGROUND_THREADS}" \
+    "${SCALE_UP_BACKGROUND_VALUE_BYTES}" 0 30000 both "${SCALE_UP_BACKGROUND_SET_RETRY_MS}" \
+    > "${RESULT_DIR}/scale_up_background_traffic.out" \
+    2> "${RESULT_DIR}/scale_up_background_traffic.err" &
+  scale_up_background_pid="$!"
+  echo "scale_up_background_pid=${scale_up_background_pid}" | tee -a "${RESULT_DIR}/summary.txt"
+}
+
+assert_scale_up_background_active() {
+  if [[ "${SCALE_UP_BACKGROUND_TRAFFIC}" != "1" ]]; then
+    return 0
+  fi
+  sleep "${SCALE_UP_BACKGROUND_WARMUP_S}"
+  if ! kill -0 "${scale_up_background_pid}" >/dev/null 2>&1; then
+    echo "scale-up background traffic finished before primary kill" >&2
+    cat "${RESULT_DIR}/scale_up_background_traffic.out" >&2 || true
+    cat "${RESULT_DIR}/scale_up_background_traffic.err" >&2 || true
+    return 1
+  fi
+  echo "scale_up_background_active_at_primary_kill=1" | tee -a "${RESULT_DIR}/summary.txt"
+}
+
+wait_scale_up_background_traffic() {
+  if [[ "${SCALE_UP_BACKGROUND_TRAFFIC}" != "1" ]]; then
+    return 0
+  fi
+
+  local code=0
+  set +e
+  wait "${scale_up_background_pid}"
+  code=$?
+  set -e
+  local end_ms
+  end_ms="$(date +%s%3N)"
+  scale_up_background_elapsed_ms=$((end_ms - scale_up_background_start_ms))
+  scale_up_background_errors="$(csv_error_count "${RESULT_DIR}/scale_up_background_traffic.out")"
+  scale_up_background_zero_errors=0
+  scale_up_background_within_error_budget=0
+  if [[ "${code}" == "0" ]] && csv_has_zero_errors "${RESULT_DIR}/scale_up_background_traffic.out"; then
+    scale_up_background_zero_errors=1
+  fi
+  if (( scale_up_background_errors <= MAX_SCALE_UP_BACKGROUND_ERRORS )); then
+    scale_up_background_within_error_budget=1
+  fi
+  {
+    echo "scale_up_background_exit_code=${code}"
+    echo "scale_up_background_errors=${scale_up_background_errors}"
+    echo "scale_up_background_zero_errors=${scale_up_background_zero_errors}"
+    echo "scale_up_background_within_error_budget=${scale_up_background_within_error_budget}"
+    echo "scale_up_background_elapsed_ms=${scale_up_background_elapsed_ms}"
+  } | tee -a "${RESULT_DIR}/summary.txt"
+  if [[ ! -s "${RESULT_DIR}/scale_up_background_traffic.out" || "${scale_up_background_within_error_budget}" != "1" ]]; then
+    echo "scale-up background traffic failed, hung, or exceeded error budget" >&2
+    cat "${RESULT_DIR}/scale_up_background_traffic.out" >&2 || true
+    cat "${RESULT_DIR}/scale_up_background_traffic.err" >&2 || true
+    return 1
+  fi
+}
+
+restart_server_for_port() {
+  local port="$1"
+  local index=$((port - SERVER_PORT + 1))
+  local server_dir="${SMOKE_DIR}/server${index}"
+  if (( index < 1 || index > 2 )); then
+    echo "can only restart original scale-up/down servers, got port ${port}" >&2
+    return 1
+  fi
+
+  local -a storage_flags=()
+  while IFS= read -r flag; do
+    storage_flags+=("${flag}")
+  done < <(temporalstore_storage_flags)
+
+  "${OUT_DIR}/bcache2-server" \
+    --cluster_name="${CLUSTER_NAME}" \
+    --metaserver_uri="127.0.0.1:${MS_PORT}" \
+    --host_spec_path="${server_dir}/host_spec.json" \
+    --host="127.0.0.1" \
+    --port="${port}" \
+    --server_log_dir="${server_dir}/log" \
+    --server_log_level=2 \
+    --server_meta_tinker_interval_ms=1000 \
+    --server_heartbeat_interval_ms=1000 \
+    "${storage_flags[@]}" \
+    --replicator_out_of_sync_s="${TEMPORALSTORE_REPLICATOR_OUT_OF_SYNC_S}" \
+    --data_replication_mode=raft_consensus \
+    --data_raft_work_dir="${SMOKE_DIR}/data-raft" \
+    --data_raft_raft_port_delta="${DATA_RAFT_RAFT_PORT_DELTA}" \
+    --data_raft_snapshot_port_delta="${DATA_RAFT_SNAPSHOT_PORT_DELTA}" \
+    --data_raft_enable_empty_snapshot_for_tests=false \
+    --data_raft_read_mode=bounded_stale \
+    --data_raft_bounded_stale_max_index_lag=16 \
+    --data_raft_propose_timeout_ms=5000 \
+    --storage_async=true \
+    --storage_enable_evict=false \
+    --storage_enable_expire=false \
+    --storage_enable_page_gc=false \
+    --storage_enable_page_compaction=false \
+    --storage_enable_index_gc=false \
+    --storage_enable_oplog_rolling=false \
+    > "${server_dir}/stdout.restart" 2> "${server_dir}/stderr.restart" &
+  echo "$!" > "${SMOKE_DIR}/server${index}.pid"
+  echo "restarted_server_port=${port}" | tee -a "${RESULT_DIR}/summary.txt"
+}
+
+write_metrics() {
+  local pass="$1"
+  mkdir -p "${TEXTFILE_DIR}"
+  cat > "${METRICS_FILE}" <<METRICS
+# HELP temporalstore_data_raft_scale_up_down_pass Whether the data-raft scale up/down gate passed.
+# TYPE temporalstore_data_raft_scale_up_down_pass gauge
+temporalstore_data_raft_scale_up_down_pass ${pass}
+# HELP temporalstore_data_raft_scale_up_primary_kill_executed Whether the gate killed the current primary during scale-up convergence.
+# TYPE temporalstore_data_raft_scale_up_primary_kill_executed gauge
+temporalstore_data_raft_scale_up_primary_kill_executed ${scale_up_primary_kill_executed}
+# HELP temporalstore_data_raft_scale_up_background_zero_errors Whether background client/proxy traffic had zero errors during scale-up primary kill.
+# TYPE temporalstore_data_raft_scale_up_background_zero_errors gauge
+temporalstore_data_raft_scale_up_background_zero_errors ${scale_up_background_zero_errors}
+# HELP temporalstore_data_raft_scale_up_background_within_error_budget Whether background client/proxy errors stayed within the configured destructive-fault budget.
+# TYPE temporalstore_data_raft_scale_up_background_within_error_budget gauge
+temporalstore_data_raft_scale_up_background_within_error_budget ${scale_up_background_within_error_budget}
+# HELP temporalstore_data_raft_scale_up_background_errors_total Background client/proxy errors during scale-up primary kill.
+# TYPE temporalstore_data_raft_scale_up_background_errors_total counter
+temporalstore_data_raft_scale_up_background_errors_total ${scale_up_background_errors}
+# HELP temporalstore_data_raft_scale_up_background_elapsed_ms Background traffic elapsed time during scale-up primary kill.
+# TYPE temporalstore_data_raft_scale_up_background_elapsed_ms gauge
+temporalstore_data_raft_scale_up_background_elapsed_ms ${scale_up_background_elapsed_ms}
+# HELP temporalstore_data_raft_scale_up_failover_elapsed_ms Time to observe a promoted primary during scale-up primary kill.
+# TYPE temporalstore_data_raft_scale_up_failover_elapsed_ms gauge
+temporalstore_data_raft_scale_up_failover_elapsed_ms ${scale_up_failover_elapsed_ms}
+METRICS
 }
 
 run_replication_smoke_with_retries() {
@@ -325,6 +609,13 @@ run_replication_smoke_with_retries() {
 
 cleanup() {
   local status=$?
+  if [[ "${status}" != "0" ]]; then
+    write_metrics 0
+  fi
+  if [[ -n "${scale_up_background_pid:-}" ]]; then
+    kill "${scale_up_background_pid}" >/dev/null 2>&1 || true
+    wait "${scale_up_background_pid}" >/dev/null 2>&1 || true
+  fi
   if [[ -f "${RESULT_DIR}/server3.pid" ]]; then
     kill "$(cat "${RESULT_DIR}/server3.pid")" >/dev/null 2>&1 || true
   fi
@@ -340,7 +631,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "${RESULT_DIR}"
+mkdir -p "${RESULT_DIR}" "${TEXTFILE_DIR}"
 rm -rf "${SMOKE_DIR}"
 
 if (( SERVER_PORT + 2 + DATA_RAFT_RAFT_PORT_DELTA > 65535 ||
@@ -376,6 +667,7 @@ done
     SERVER_PORT="${SERVER_PORT}" \
     TABLE_ELECTION_POLICY=PROMOTE_SECONDARY \
     TABLE_PARTITION_UNIT_RELATION=ANTI_ENTROPY \
+    METASERVER_EXTRA_FLAGS="--metaserver_convict_routine_interval_ms=500 --metaserver_convict_safe_mode_warning_ratio=100 --metaserver_convict_safe_mode_critical_ratio=100 --metaserver_meta_check_routine_interval_sec=1 --metaserver_meta_check_max_freeze_partition_per_min=100" \
     SERVER_EXTRA_FLAGS="--data_replication_mode=raft_consensus --data_raft_work_dir=${SMOKE_DIR}/data-raft --data_raft_raft_port_delta=${DATA_RAFT_RAFT_PORT_DELTA} --data_raft_snapshot_port_delta=${DATA_RAFT_SNAPSHOT_PORT_DELTA} --data_raft_enable_empty_snapshot_for_tests=false --data_raft_read_mode=bounded_stale --data_raft_bounded_stale_max_index_lag=16 --data_raft_propose_timeout_ms=5000 --storage_async=true --storage_enable_evict=false --storage_enable_expire=false --storage_enable_page_gc=false --storage_enable_page_compaction=false --storage_enable_index_gc=false --storage_enable_oplog_rolling=false" \
     KEEP_RUNNING=1 \
     bash tools/smoke_ubuntu22.sh
@@ -416,6 +708,15 @@ partition_topology "${RESULT_DIR}/partition_baseline.json" \
 cat "${RESULT_DIR}/topology_baseline.csv" >> "${RESULT_DIR}/summary.txt"
 collect_data_raft_status_for_topology baseline "${RESULT_DIR}/topology_baseline.csv" \
   | tee -a "${RESULT_DIR}/summary.txt"
+if [[ "${KILL_PRIMARY_DURING_SCALE_UP}" == "1" ]]; then
+  read -r scale_up_old_primary_id scale_up_old_primary_port \
+    < <(primary_id_and_port_from_topology "${RESULT_DIR}/topology_baseline.csv")
+  scale_up_old_primary_pid="$(server_pid_for_port "${scale_up_old_primary_port}")"
+  echo "scale_up_old_primary_id=${scale_up_old_primary_id}" | tee -a "${RESULT_DIR}/summary.txt"
+  echo "scale_up_old_primary_port=${scale_up_old_primary_port}" | tee -a "${RESULT_DIR}/summary.txt"
+  echo "scale_up_old_primary_pid=${scale_up_old_primary_pid}" | tee -a "${RESULT_DIR}/summary.txt"
+  start_scale_up_background_traffic
+fi
 
 server3_port="$((SERVER_PORT + 2))"
 server3_dir="${SMOKE_DIR}/server3"
@@ -494,7 +795,7 @@ PY
 )"
 
 echo "== scale up 2 -> 3 replicas ==" | tee -a "${RESULT_DIR}/summary.txt"
-post_json "${MS_PORT}" "ManageService/UpdateTable" \
+post_json_retry_to_file "${MS_PORT}" "ManageService/UpdateTable" \
   "{
     \"id\": ${request_id},
     \"namespace_name\": \"${NAMESPACE_NAME}\",
@@ -510,11 +811,47 @@ post_json "${MS_PORT}" "ManageService/UpdateTable" \
         {\"vregion\": \"vregion\", \"vdc\": \"vdc1\", \"vau\": \"vau3\"}
       ]
     }
-  }" > "${RESULT_DIR}/update_table_scale_up.json"
+  }" "${RESULT_DIR}/update_table_scale_up.json"
 check_status_ok "${RESULT_DIR}/update_table_scale_up.json"
 
+if [[ "${KILL_PRIMARY_DURING_SCALE_UP}" == "1" ]]; then
+  assert_scale_up_background_active
+  scale_up_failover_start_ms="$(date +%s%3N)"
+  echo "killing primary during scale up pid=${scale_up_old_primary_pid} port=${scale_up_old_primary_port} partition=${scale_up_old_primary_id}" \
+    | tee -a "${RESULT_DIR}/summary.txt"
+  kill "${scale_up_old_primary_pid}" >/dev/null 2>&1 || true
+  sleep 0.5
+  if kill -0 "${scale_up_old_primary_pid}" >/dev/null 2>&1; then
+    kill -9 "${scale_up_old_primary_pid}" >/dev/null 2>&1 || true
+  fi
+  for _ in $(seq 1 40); do
+    if process_gone_or_zombie "${scale_up_old_primary_pid}"; then
+      break
+    fi
+    sleep 0.25
+  done
+  if ! process_gone_or_zombie "${scale_up_old_primary_pid}"; then
+    echo "primary server still alive after SIGKILL: ${scale_up_old_primary_pid}" >&2
+    exit 1
+  fi
+  scale_up_primary_kill_executed=1
+  wait_for_promoted_primary "${scale_up_old_primary_id}" "${RESULT_DIR}/partition_after_scale_up_primary_kill.json"
+  scale_up_failover_end_ms="$(date +%s%3N)"
+  scale_up_failover_elapsed_ms=$((scale_up_failover_end_ms - scale_up_failover_start_ms))
+  echo "scale_up_failover_elapsed_ms=${scale_up_failover_elapsed_ms}" | tee -a "${RESULT_DIR}/summary.txt"
+  restart_server_for_port "${scale_up_old_primary_port}"
+  wait_for_json_field "QueryService/ListServer" "${list_server_body}" \
+    "any(s.get('server_info', {}).get('endpoint', {}).get('port') == ${scale_up_old_primary_port} and s.get('server_info', {}).get('state') == 'SERVER_NORMAL' for s in data.get('servers', []))" \
+    "${RESULT_DIR}/list_server_after_primary_restart.json" 120
+fi
+
+if [[ "${KILL_PRIMARY_DURING_SCALE_UP}" == "1" ]]; then
+  scale_up_ready_expr="len(data.get('info', [{}])[0].get('set_info', {}).get('membership', {}).get('units', [{}])[0].get('active_id_list', [])) >= 2 and data.get('info', [{}])[0].get('set_info', {}).get('membership', {}).get('units', [{}])[0].get('primary_id', 0) != ${scale_up_old_primary_id} and any(p.get('placement_actual', {}).get('server', {}).get('port') == ${server3_port} and p.get('state', 'P_NORMAL') == 'P_NORMAL' for p in data.get('info', [{}])[0].get('partition_info', []))"
+else
+  scale_up_ready_expr="len([p for p in data.get('info', [{}])[0].get('partition_info', []) if p.get('state', 'P_NORMAL') == 'P_NORMAL']) >= 3 and len(data.get('info', [{}])[0].get('set_info', {}).get('membership', {}).get('units', [{}])[0].get('active_id_list', [])) >= 3 and any(p.get('placement_actual', {}).get('server', {}).get('port') == ${server3_port} for p in data.get('info', [{}])[0].get('partition_info', []))"
+fi
 wait_for_json_field "QueryService/ListPartition" "${list_partition_body}" \
-  "len([p for p in data.get('info', [{}])[0].get('partition_info', []) if p.get('state', 'P_NORMAL') == 'P_NORMAL']) >= 3 and len(data.get('info', [{}])[0].get('set_info', {}).get('membership', {}).get('units', [{}])[0].get('active_id_list', [])) >= 3 and any(p.get('placement_actual', {}).get('server', {}).get('port') == ${server3_port} for p in data.get('info', [{}])[0].get('partition_info', []))" \
+  "${scale_up_ready_expr}" \
   "${RESULT_DIR}/partition_after_scale_up.json" 240
 partition_topology "${RESULT_DIR}/partition_after_scale_up.json" \
   > "${RESULT_DIR}/topology_after_scale_up.csv"
@@ -525,19 +862,43 @@ if [[ -z "${server3_partition_id}" ]]; then
   cat "${RESULT_DIR}/topology_after_scale_up.csv" >&2 || true
   exit 1
 fi
+server3_min_voters=3
+if [[ "${KILL_PRIMARY_DURING_SCALE_UP}" == "1" ]]; then
+  server3_min_voters=2
+fi
 wait_for_data_raft_status_on_port \
   "${server3_port}" \
   "${server3_partition_id}" \
   "${RESULT_DIR}/server3_raft_status_after_scale_up.json" \
-  3
+  "${server3_min_voters}"
 collect_data_raft_status_for_topology after_scale_up "${RESULT_DIR}/topology_after_scale_up.csv" \
   | tee -a "${RESULT_DIR}/summary.txt"
 echo "scale_up_server3_partition_id=${server3_partition_id}" | tee -a "${RESULT_DIR}/summary.txt"
 run_replication_smoke_with_retries after_scale_up_replication_smoke
 run_string_bench after_scale_up_string
+wait_scale_up_background_traffic
 
 echo "== scale down 3 -> 2 replicas ==" | tee -a "${RESULT_DIR}/summary.txt"
-post_json "${MS_PORT}" "ManageService/UpdateTable" \
+scale_down_placement_set='[
+        {"vregion": "vregion", "vdc": "vdc1", "vau": "vau1"},
+        {"vregion": "vregion", "vdc": "vdc1", "vau": "vau2"}
+      ]'
+expected_server3_active_after_scale_down=0
+if [[ "${KILL_PRIMARY_DURING_SCALE_UP}" == "1" ]]; then
+  expected_server3_active_after_scale_down=1
+  if [[ "${scale_up_old_primary_port}" == "${SERVER_PORT}" ]]; then
+    scale_down_placement_set='[
+        {"vregion": "vregion", "vdc": "vdc1", "vau": "vau2"},
+        {"vregion": "vregion", "vdc": "vdc1", "vau": "vau3"}
+      ]'
+  else
+    scale_down_placement_set='[
+        {"vregion": "vregion", "vdc": "vdc1", "vau": "vau1"},
+        {"vregion": "vregion", "vdc": "vdc1", "vau": "vau3"}
+      ]'
+  fi
+fi
+post_json_retry_to_file "${MS_PORT}" "ManageService/UpdateTable" \
   "{
     \"id\": ${request_id},
     \"namespace_name\": \"${NAMESPACE_NAME}\",
@@ -547,12 +908,9 @@ post_json "${MS_PORT}" "ManageService/UpdateTable" \
     \"update_partition_unit\": {
       \"id\": ${unit_id},
       \"partition_num\": 2,
-      \"placement_set\": [
-        {\"vregion\": \"vregion\", \"vdc\": \"vdc1\", \"vau\": \"vau1\"},
-        {\"vregion\": \"vregion\", \"vdc\": \"vdc1\", \"vau\": \"vau2\"}
-      ]
+      \"placement_set\": ${scale_down_placement_set}
     }
-  }" > "${RESULT_DIR}/update_table_scale_down.json"
+  }" "${RESULT_DIR}/update_table_scale_down.json"
 check_status_ok "${RESULT_DIR}/update_table_scale_down.json"
 
 wait_for_json_field "QueryService/ListPartition" "${list_partition_body}" \
@@ -564,14 +922,21 @@ cat "${RESULT_DIR}/topology_after_scale_down.csv" >> "${RESULT_DIR}/summary.txt"
 collect_data_raft_status_for_topology after_scale_down "${RESULT_DIR}/topology_after_scale_down.csv" \
   | tee -a "${RESULT_DIR}/summary.txt"
 server3_active_count="$(active_partition_count_for_port "${RESULT_DIR}/partition_after_scale_down.json" "${server3_port}")"
-if [[ "${server3_active_count}" != "0" ]]; then
-  echo "server3 still has active partitions after scale down" >&2
+if [[ "${server3_active_count}" != "${expected_server3_active_after_scale_down}" ]]; then
+  echo "server3 active partition count after scale down was ${server3_active_count}, expected ${expected_server3_active_after_scale_down}" >&2
   cat "${RESULT_DIR}/topology_after_scale_down.csv" >&2 || true
   exit 1
 fi
 echo "scale_down_server3_active_partitions=${server3_active_count}" | tee -a "${RESULT_DIR}/summary.txt"
 run_replication_smoke_with_retries after_scale_down_replication_smoke
 run_string_bench after_scale_down_string
+
+if [[ "${KILL_PRIMARY_DURING_SCALE_UP}" == "1" ]]; then
+  write_metrics 1
+  echo "PASS data-raft scale up/down with primary kill during scale up" | tee -a "${RESULT_DIR}/summary.txt"
+  echo "${RESULT_DIR}"
+  exit 0
+fi
 
 server3_id="$(python3 - "${RESULT_DIR}/list_server_after_add.json" "${server3_port}" <<'PY'
 import json
@@ -627,5 +992,6 @@ echo "drop_server3_active_partitions=${server3_active_count_after_drop}" | tee -
 run_replication_smoke_with_retries after_drop_replication_smoke
 run_string_bench after_drop_string
 
+write_metrics 1
 echo "PASS data-raft scale up/down" | tee -a "${RESULT_DIR}/summary.txt"
 echo "${RESULT_DIR}"
