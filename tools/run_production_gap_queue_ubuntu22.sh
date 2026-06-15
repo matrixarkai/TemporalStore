@@ -147,6 +147,7 @@ shared_scale_command='env BUILD_TYPE="${BUILD_TYPE}" RESULT_DIR="${RESULT_DIR}/s
 ingestion_command='env RESULT_DIR="${RESULT_DIR}/ingestion" ITERATIONS=2 RECORDS=1200 BATCH_SIZE=128 SOURCES=api,kafka,flink DEAD_LETTER_EVERY=97 FAIL_FIRST_ATTEMPT_EVERY=53 POISON_EVERY=211 bash tools/run_queue_ingestion_replay_ubuntu22.sh'
 fault_injection_command='env BUILD_TYPE="${BUILD_TYPE}" RESULT_DIR="${RESULT_DIR}/fault_injection" RUN_PORT_BLOCK=1 RUN_DISK_PATH=1 bash tools/run_fault_injection_gate_ubuntu22.sh'
 rebalance_command='env BUILD_TYPE="${BUILD_TYPE}" RESULT_DIR="${RESULT_DIR}/rebalance" OPS=240 THREADS=2 RUN_DATA_RAFT_REBALANCE=1 RUN_SHARED_STORE_REBALANCE=0 bash tools/run_rebalance_local_ubuntu22.sh'
+data_raft_5node_command='env BUILD_TYPE="${BUILD_TYPE}" RESULT_DIR="${RESULT_DIR}/data_raft_5node" OPS=600 THREAD_LIST="2" bash tools/run_data_raft_5node_scale_ubuntu22.sh'
 soak_command='env BUILD_TYPE="${BUILD_TYPE}" RESULT_DIR="${RESULT_DIR}/soak" SOAK_MINUTES="${SOAK_MINUTES:-30}" SOAK_QUEUE_LEVEL=quick RUN_QUEUE_EXECUTION=1 bash tools/run_soak_profile_ubuntu22.sh'
 remote_auth_command='env RESULT_DIR="${RESULT_DIR}/remote_auth" REMOTE_TIMEOUT_S=30 bash tools/run_remote_auth_gate_ubuntu22.sh'
 
@@ -161,7 +162,7 @@ register_gap 06 "Live raft gauges from data node/metaserver" quick partial "raft
 register_gap 07 "Client/proxy retry metrics" quick partial "run_prometheus_local_ubuntu22.sh" "${prometheus_command}" "Client benchmark and proxy validation metrics exist; per-retry counters should be added to client/proxy service paths."
 register_gap 08 "Ingestion queue/backpressure metrics" quick partial "run_queue_ingestion_replay_ubuntu22.sh" "${ingestion_command}" "Replay exposes retries, DLQ, checkpoint, watermark, and lag; live queue-worker backpressure awaits real broker worker."
 register_gap 09 "Cache/storage fallback metrics" quick planned "run_prometheus_local_ubuntu22.sh" "${prometheus_command}" "Prometheus path exists; storage/cache fallback counters need service instrumentation."
-register_gap 10 "5-node data raft local scale" nightly planned "run_raft_stress_suite_ubuntu22.sh" "" "Current executable local raft scale is 2-node/3-replica oriented; add 5-node profile before release gate."
+register_gap 10 "5-node data raft local scale" nightly partial "run_data_raft_5node_scale_ubuntu22.sh" "${data_raft_5node_command}" "Five data-node raft cluster gate starts 5 servers with 3 replicas and validates write/read plus replication smoke; sustained 5-node perf remains nightly/release work."
 register_gap 11 "3-replica sustained write/read lag" pr covered "run_raft_stress_suite_ubuntu22.sh" "${raft_pr_command}" "Mixed read/write and secondary visibility assertions cover lag in short PR mode; release mode increases duration."
 register_gap 12 "Snapshot restore under write pressure" pr partial "run_data_raft_snapshot_restore_ubuntu22.sh" "${raft_pr_command}" "Snapshot restore gate exists; write-pressure overlap should be hardened in the data snapshot script."
 register_gap 13 "Metaserver snapshot restore gate" manual planned "run_metaserver_raft_snapshot_restore_ubuntu22.sh" "" "No dedicated metaserver snapshot restore gate is present."
