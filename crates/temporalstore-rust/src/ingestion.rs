@@ -158,6 +158,14 @@ pub struct IngestionStateReport {
     pub dead_letters: Vec<IngestionDeadLetter>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IngestionReadinessReport {
+    pub production_ready: bool,
+    pub covered: Vec<String>,
+    pub missing: Vec<String>,
+    pub blocker_count: usize,
+}
+
 impl Default for IngestionStateReport {
     fn default() -> Self {
         Self {
@@ -167,6 +175,35 @@ impl Default for IngestionStateReport {
             flink_checkpoints: Vec::new(),
             dead_letters: Vec::new(),
         }
+    }
+}
+
+pub fn ingestion_readiness_report() -> IngestionReadinessReport {
+    let covered = vec![
+        "proxy/table ingestion route accepts API, Kafka, and Flink sourced records".to_string(),
+        "durable Kafka offset ledger rejects duplicate committed offsets before executing writes"
+            .to_string(),
+        "Flink checkpoint precommit, commit, and abort lifecycle is durably tracked".to_string(),
+        "dead-letter records preserve source, shard, status, and failed index".to_string(),
+        "Kafka lag and ingestion/dead-letter counters are exposed through state reports"
+            .to_string(),
+        "ingestion state is persisted through atomic temp-file rename".to_string(),
+    ];
+    let missing = vec![
+        "network Kafka consumer group runtime with partition assignment, rebalance, and backpressure"
+            .to_string(),
+        "network Flink sink/source connector with checkpoint handshake over the production API"
+            .to_string(),
+        "Raft failover and restart harness that proves offset/checkpoint idempotence end-to-end"
+            .to_string(),
+        "Prometheus ingestion lag/dead-letter metrics from live proxy and data-node processes"
+            .to_string(),
+    ];
+    IngestionReadinessReport {
+        production_ready: missing.is_empty(),
+        blocker_count: missing.len(),
+        covered,
+        missing,
     }
 }
 
@@ -809,5 +846,28 @@ mod tests {
             },
         });
         assert_eq!(missing.response, CommandResponse::Bytes { value: None });
+    }
+
+    #[test]
+    fn ingestion_readiness_report_tracks_done_and_remaining_production_gaps() {
+        let report = ingestion_readiness_report();
+        assert!(!report.production_ready);
+        assert_eq!(report.blocker_count, report.missing.len());
+        assert!(report
+            .covered
+            .iter()
+            .any(|item| item.contains("durable Kafka offset ledger")));
+        assert!(report
+            .covered
+            .iter()
+            .any(|item| item.contains("Flink checkpoint precommit")));
+        assert!(report
+            .missing
+            .iter()
+            .any(|item| item.contains("consumer group runtime")));
+        assert!(report
+            .missing
+            .iter()
+            .any(|item| item.contains("Raft failover")));
     }
 }

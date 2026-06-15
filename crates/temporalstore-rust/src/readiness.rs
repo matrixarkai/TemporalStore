@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::ingestion::ingestion_readiness_report;
 use crate::raft::distributed_raft_readiness;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -48,6 +49,7 @@ impl ProductionReadinessReport {
 
 pub fn production_readiness_report() -> ProductionReadinessReport {
     let raft = distributed_raft_readiness();
+    let ingestion = ingestion_readiness_report();
     let areas = vec![
         ReadinessArea {
             area: "raft_replication".to_string(),
@@ -223,6 +225,12 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
             ],
         },
         ReadinessArea {
+            area: "ingestion".to_string(),
+            ready: ingestion.production_ready,
+            covered: ingestion.covered,
+            missing: ingestion.missing,
+        },
+        ReadinessArea {
             area: "fault_tolerance".to_string(),
             ready: false,
             covered: vec![
@@ -389,6 +397,7 @@ mod tests {
             "metaserver",
             "data_node_distributed_raft",
             "dataserver",
+            "ingestion",
             "fault_tolerance",
             "storage_cache",
             "feature_modules",
@@ -447,6 +456,20 @@ mod tests {
             .iter()
             .any(|blocker| blocker.area == "scale_testing"
                 && blocker.capability.contains("latency/throughput")));
+
+        let ingestion = report
+            .areas
+            .iter()
+            .find(|area| area.area == "ingestion")
+            .expect("ingestion area must exist");
+        assert!(ingestion
+            .covered
+            .iter()
+            .any(|item| item.contains("durable Kafka offset ledger")));
+        assert!(ingestion
+            .missing
+            .iter()
+            .any(|item| item.contains("consumer group runtime")));
 
         let fault_tolerance = report
             .missing_by_area("fault_tolerance")
