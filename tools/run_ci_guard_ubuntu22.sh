@@ -62,6 +62,7 @@ syntax_check() {
     "${ROOT}/tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh" \
     "${ROOT}/tools/run_live_raft_metrics_ubuntu22.sh" \
     "${ROOT}/tools/run_cache_fallback_metrics_ubuntu22.sh" \
+    "${ROOT}/tools/run_follower_read_sla_ubuntu22.sh" \
     "${ROOT}/tools/run_fault_injection_gate_ubuntu22.sh" \
     "${ROOT}/tools/run_remote_auth_gate_ubuntu22.sh" \
     "${ROOT}/tools/run_soak_profile_ubuntu22.sh"
