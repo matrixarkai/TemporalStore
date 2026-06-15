@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::cache::{CacheKey, CacheStats, MultiLayerCache};
+use crate::cache::{CacheEntryInfo, CacheGcReport, CacheKey, CacheStats, MultiLayerCache};
 use crate::control::{
     CheckedBatchExecuteRequest, CheckedBatchExecuteResponse, CheckedExecuteRequest,
     CheckedExecuteResponse, Config, GetConfigResponse, GetInfoResponse, GetStatsResponse,
@@ -495,6 +495,28 @@ pub struct StorageProductionReadinessReport {
     pub page_store_bytes_written: u64,
     pub boundary: StorageRecoveryBoundaryReport,
     pub object_lifecycle: StorageObjectLifecycleReport,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageCacheSlotSummary {
+    pub routing_slot: u32,
+    pub entry_count: usize,
+    pub memory_bytes: u64,
+    pub disk_bytes: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageCacheInspectionReport {
+    pub shard_id: ShardId,
+    pub stats: CacheStats,
+    pub entries: Vec<CacheEntryInfo>,
+    pub slot_summaries: Vec<StorageCacheSlotSummary>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageCacheInvalidateSlotRequest {
+    pub shard_id: ShardId,
+    pub routing_slot: u32,
 }
 
 impl TemporalEngine {
@@ -1822,11 +1844,12 @@ impl TemporalEngine {
             if !selected_slots.is_empty() && !selected_slots.contains(&routing_slot) {
                 continue;
             }
-            let key = CacheKey::page(
+            let key = CacheKey::page_with_slot(
                 shard_id,
                 entry.address.page_segment_id,
                 entry.address.offset,
                 entry.address.length,
+                entry.address.routing_slot,
             );
             if self.cache.get(&key).ok().flatten().is_some() {
                 warmed = warmed.saturating_add(1);
@@ -1837,6 +1860,43 @@ impl TemporalEngine {
             }
         }
         warmed
+    }
+
+    pub fn storage_cache_inspection_report(
+        &self,
+        shard_id: ShardId,
+    ) -> StorageCacheInspectionReport {
+        let entries = self.cache.entries_for_shard(shard_id);
+        let mut slot_summaries = BTreeMap::<u32, StorageCacheSlotSummary>::new();
+        for entry in &entries {
+            let Some(routing_slot) = cache_entry_routing_slot(entry) else {
+                continue;
+            };
+            let summary = slot_summaries
+                .entry(routing_slot)
+                .or_insert(StorageCacheSlotSummary {
+                    routing_slot,
+                    ..StorageCacheSlotSummary::default()
+                });
+            summary.entry_count = summary.entry_count.saturating_add(1);
+            summary.memory_bytes = summary.memory_bytes.saturating_add(entry.memory_bytes);
+            summary.disk_bytes = summary.disk_bytes.saturating_add(entry.disk_bytes);
+        }
+        StorageCacheInspectionReport {
+            shard_id,
+            stats: self.cache.stats(),
+            entries,
+            slot_summaries: slot_summaries.into_values().collect(),
+        }
+    }
+
+    pub fn invalidate_storage_cache_slot(
+        &self,
+        request: StorageCacheInvalidateSlotRequest,
+    ) -> Result<CacheGcReport, Status> {
+        self.cache
+            .invalidate_slot(request.shard_id, request.routing_slot)
+            .map_err(|err| Status::error("cache_slot_invalidation_failed", err.to_string()))
     }
 
     pub fn storage_recovery_boundary_report(
@@ -2034,6 +2094,19 @@ impl TemporalEngine {
                 ("puts", stats.cache.puts),
                 ("invalidations", stats.cache.invalidations),
                 ("memory_evictions", stats.cache.memory_evictions),
+                (
+                    "memory_admission_accepted",
+                    stats.cache.memory_admission_accepted,
+                ),
+                (
+                    "memory_admission_rejected",
+                    stats.cache.memory_admission_rejected,
+                ),
+                ("memory_fills", stats.cache.memory_fills),
+                ("disk_fills", stats.cache.disk_fills),
+                ("refill_failures", stats.cache.refill_failures),
+                ("eviction_capacity", stats.cache.eviction_capacity),
+                ("eviction_oversize", stats.cache.eviction_oversize),
                 ("compressed_puts", stats.cache.compressed_puts),
                 ("compressed_hits", stats.cache.compressed_hits),
             ] {
@@ -2768,11 +2841,12 @@ impl TemporalEngine {
                     .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
                 meta.address = new_address.clone();
                 let _ = self.cache.put(
-                    CacheKey::page(
+                    CacheKey::page_with_slot(
                         shard_id,
                         new_address.page_segment_id,
                         new_address.offset,
                         new_address.length,
+                        new_address.routing_slot,
                     ),
                     bytes,
                 );
@@ -5241,11 +5315,12 @@ fn compact_page_addresses<'a>(
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
         *address = new_address.clone();
         let _ = cache.put(
-            CacheKey::page(
+            CacheKey::page_with_slot(
                 shard_id,
                 new_address.page_segment_id,
                 new_address.offset,
                 new_address.length,
+                new_address.routing_slot,
             ),
             bytes,
         );
@@ -5278,11 +5353,12 @@ fn append_value(
     };
     let bytes = bytes.to_vec();
     cache.put_memory_only(
-        CacheKey::page(
+        CacheKey::page_with_slot(
             shard_id,
             address.page_segment_id,
             address.offset,
             address.length,
+            address.routing_slot,
         ),
         bytes,
     );
@@ -5542,11 +5618,12 @@ fn read_page_bytes(
     shard_id: ShardId,
     address: &PageAddress,
 ) -> Option<Vec<u8>> {
-    let cache_key = CacheKey::page(
+    let cache_key = CacheKey::page_with_slot(
         shard_id,
         address.page_segment_id,
         address.offset,
         address.length,
+        address.routing_slot,
     );
     if let Ok(Some(bytes)) = cache.get(&cache_key) {
         return Some(bytes);
@@ -5554,6 +5631,16 @@ fn read_page_bytes(
     let bytes = page_store.read(address).ok()?;
     let _ = cache.put(cache_key, bytes.clone());
     Some(bytes)
+}
+
+fn cache_entry_routing_slot(entry: &CacheEntryInfo) -> Option<u32> {
+    entry
+        .selector
+        .strip_prefix("slot-")?
+        .split(':')
+        .next()?
+        .parse()
+        .ok()
 }
 
 fn parse_i64(bytes: &Vec<u8>) -> Option<i64> {
@@ -10939,6 +11026,68 @@ mod tests {
         });
         assert!(report.cache_warmup_page_refs >= 1);
         assert!(engine.cache().stats().puts >= 1);
+    }
+
+    #[test]
+    fn storage_cache_inspection_reports_slot_entries_and_invalidates_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        let key = "slot-cache-key";
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: key.to_string(),
+                        value: b"slot-cache-value".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+        engine.cache().invalidate_shard(1).unwrap();
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: key.to_string(),
+                    },
+                })
+                .status
+                .ok
+        );
+
+        let slot = engine.routing_slot_for_key(1, key);
+        let report = engine.storage_cache_inspection_report(1);
+        assert!(report.stats.disk_fills >= 1);
+        assert!(report
+            .entries
+            .iter()
+            .any(|entry| entry.selector.starts_with(&format!("slot-{slot}:"))));
+        assert!(report
+            .slot_summaries
+            .iter()
+            .any(|summary| summary.routing_slot == slot && summary.entry_count >= 1));
+
+        let invalidated = engine
+            .invalidate_storage_cache_slot(StorageCacheInvalidateSlotRequest {
+                shard_id: 1,
+                routing_slot: slot,
+            })
+            .unwrap();
+        assert!(invalidated.memory_entries_removed >= 1);
+        let after = engine.storage_cache_inspection_report(1);
+        assert!(!after
+            .entries
+            .iter()
+            .any(|entry| entry.selector.starts_with(&format!("slot-{slot}:"))));
     }
 
     #[test]

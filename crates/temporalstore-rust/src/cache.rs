@@ -20,7 +20,7 @@ pub enum CacheError {
     UnsupportedCodec(u8),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CacheKey {
     pub shard_id: ShardId,
     pub record_key: String,
@@ -80,6 +80,25 @@ impl CacheKey {
         }
     }
 
+    pub fn page_with_slot(
+        shard_id: ShardId,
+        page_segment_id: u64,
+        offset: u64,
+        length: u64,
+        routing_slot: Option<u32>,
+    ) -> Self {
+        let selector = match routing_slot {
+            Some(slot) => format!("slot-{slot}:{offset}:{length}"),
+            None => format!("{offset}:{length}"),
+        };
+        Self {
+            shard_id,
+            record_key: format!("segment-{page_segment_id:020}"),
+            namespace: "page".to_string(),
+            selector,
+        }
+    }
+
     fn disk_name(&self) -> String {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.hash(&mut hasher);
@@ -95,6 +114,20 @@ pub struct CacheStats {
     pub puts: u64,
     pub invalidations: u64,
     pub memory_evictions: u64,
+    #[serde(default)]
+    pub memory_admission_accepted: u64,
+    #[serde(default)]
+    pub memory_admission_rejected: u64,
+    #[serde(default)]
+    pub memory_fills: u64,
+    #[serde(default)]
+    pub disk_fills: u64,
+    #[serde(default)]
+    pub refill_failures: u64,
+    #[serde(default)]
+    pub eviction_capacity: u64,
+    #[serde(default)]
+    pub eviction_oversize: u64,
     pub compressed_puts: u64,
     pub compressed_hits: u64,
     pub compression_bytes_saved: u64,
@@ -136,6 +169,16 @@ pub struct CacheGcReport {
     pub disk_bytes_removed: u64,
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CacheEntryInfo {
+    pub shard_id: ShardId,
+    pub namespace: String,
+    pub record_key: String,
+    pub selector: String,
+    pub memory_bytes: u64,
+    pub disk_bytes: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct MultiLayerCache {
     inner: Arc<RwLock<CacheInner>>,
@@ -148,6 +191,7 @@ struct CacheInner {
     disk_dir: PathBuf,
     block_options: CacheBlockOptions,
     memory: HashMap<CacheKey, Vec<u8>>,
+    disk_index: HashMap<CacheKey, u64>,
     order: VecDeque<CacheKey>,
     stats: CacheStats,
 }
@@ -175,6 +219,7 @@ impl MultiLayerCache {
                 disk_dir,
                 block_options,
                 memory: HashMap::new(),
+                disk_index: HashMap::new(),
                 order: VecDeque::new(),
                 stats: CacheStats::default(),
             })),
@@ -202,7 +247,9 @@ impl MultiLayerCache {
                 if is_encoded_compressed_block(&block) {
                     inner.stats.compressed_hits += 1;
                 }
-                inner.put_memory(key.clone(), decoded.clone());
+                if !inner.put_memory(key.clone(), decoded.clone()) {
+                    inner.stats.refill_failures += 1;
+                }
                 Ok(Some(decoded))
             }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -240,7 +287,9 @@ impl MultiLayerCache {
         let block_len = block.len();
         write_cache_block_atomic(&path, &block)?;
         inner.stats.puts += 1;
+        inner.stats.disk_fills += 1;
         inner.stats.disk_bytes = inner.stats.disk_bytes.saturating_add(block_len as u64);
+        inner.disk_index.insert(key.clone(), block_len as u64);
         inner.put_memory(key, value);
         Ok(())
     }
@@ -248,7 +297,9 @@ impl MultiLayerCache {
     pub fn put_memory_only(&self, key: CacheKey, value: Vec<u8>) {
         let mut inner = self.inner.write().expect("cache lock poisoned");
         inner.stats.puts += 1;
-        inner.put_memory(key, value);
+        if !inner.put_memory(key, value) {
+            inner.stats.refill_failures += 1;
+        }
     }
 
     pub fn invalidate(&self, key: &CacheKey) -> Result<(), CacheError> {
@@ -257,6 +308,7 @@ impl MultiLayerCache {
             inner.memory_bytes = inner.memory_bytes.saturating_sub(value.len());
         }
         let _ = fs::remove_file(inner.disk_path(key));
+        inner.disk_index.remove(key);
         inner.stats.invalidations += 1;
         inner.stats.memory_bytes = inner.memory_bytes as u64;
         Ok(())
@@ -282,12 +334,15 @@ impl MultiLayerCache {
             inner
                 .memory
                 .keys()
+                .chain(inner.disk_index.keys())
                 .filter(|key| {
                     key.shard_id == shard_id
                         && key.namespace == namespace
                         && key.record_key == record_key
                 })
                 .cloned()
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
                 .collect::<Vec<_>>()
         };
         for key in keys {
@@ -311,6 +366,7 @@ impl MultiLayerCache {
             }
         }
         inner.order.retain(|key| key.shard_id != shard_id);
+        inner.disk_index.retain(|key, _| key.shard_id != shard_id);
 
         let shard_disk_dir = inner.disk_dir.join(format!("shard-{shard_id}"));
         let disk_bytes_before = dir_size(&shard_disk_dir).unwrap_or_default();
@@ -327,6 +383,100 @@ impl MultiLayerCache {
             memory_entries_removed,
             disk_bytes_removed: disk_bytes_before,
         })
+    }
+
+    pub fn invalidate_slot(
+        &self,
+        shard_id: ShardId,
+        routing_slot: u32,
+    ) -> Result<CacheGcReport, CacheError> {
+        let mut inner = self.inner.write().expect("cache lock poisoned");
+        let prefix = format!("slot-{routing_slot}:");
+        let slot_keys = inner
+            .memory
+            .keys()
+            .chain(inner.disk_index.keys())
+            .filter(|key| key.shard_id == shard_id && key.selector.starts_with(&prefix))
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let memory_entries_removed = slot_keys
+            .iter()
+            .filter(|key| inner.memory.contains_key(*key))
+            .count();
+        let mut disk_bytes_removed = 0u64;
+        for key in &slot_keys {
+            if let Some(value) = inner.memory.remove(key) {
+                inner.memory_bytes = inner.memory_bytes.saturating_sub(value.len());
+            }
+            let path = inner.disk_path(key);
+            disk_bytes_removed = disk_bytes_removed.saturating_add(
+                inner
+                    .disk_index
+                    .remove(key)
+                    .or_else(|| path.metadata().ok().map(|metadata| metadata.len()))
+                    .unwrap_or_default(),
+            );
+            let _ = fs::remove_file(path);
+        }
+        inner
+            .order
+            .retain(|key| !(key.shard_id == shard_id && key.selector.starts_with(&prefix)));
+        inner.stats.invalidations = inner
+            .stats
+            .invalidations
+            .saturating_add(memory_entries_removed as u64);
+        inner.stats.memory_bytes = inner.memory_bytes as u64;
+        inner.stats.disk_bytes = dir_size(&inner.disk_dir).unwrap_or(inner.stats.disk_bytes);
+        Ok(CacheGcReport {
+            shard_id,
+            memory_entries_removed,
+            disk_bytes_removed,
+        })
+    }
+
+    pub fn entries_for_shard(&self, shard_id: ShardId) -> Vec<CacheEntryInfo> {
+        let inner = self.inner.read().expect("cache lock poisoned");
+        let keys = inner
+            .memory
+            .keys()
+            .chain(inner.disk_index.keys())
+            .filter(|key| key.shard_id == shard_id)
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut entries = keys
+            .into_iter()
+            .map(|key| {
+                let memory_bytes = inner
+                    .memory
+                    .get(&key)
+                    .map(|value| value.len() as u64)
+                    .unwrap_or_default();
+                let disk_bytes = inner.disk_index.get(&key).copied().unwrap_or_else(|| {
+                    inner
+                        .disk_path(&key)
+                        .metadata()
+                        .map(|metadata| metadata.len())
+                        .unwrap_or_default()
+                });
+                CacheEntryInfo {
+                    shard_id: key.shard_id,
+                    namespace: key.namespace,
+                    record_key: key.record_key,
+                    selector: key.selector,
+                    memory_bytes,
+                    disk_bytes,
+                }
+            })
+            .collect::<Vec<_>>();
+        entries.sort_by(|left, right| {
+            left.namespace
+                .cmp(&right.namespace)
+                .then(left.record_key.cmp(&right.record_key))
+                .then(left.selector.cmp(&right.selector))
+        });
+        entries
     }
 
     pub fn stats(&self) -> CacheStats {
@@ -471,10 +621,14 @@ impl CacheInner {
             .join(key.disk_name())
     }
 
-    fn put_memory(&mut self, key: CacheKey, value: Vec<u8>) {
+    fn put_memory(&mut self, key: CacheKey, value: Vec<u8>) -> bool {
         if self.memory_capacity_bytes == 0 || value.len() > self.memory_capacity_bytes {
-            return;
+            self.stats.memory_admission_rejected += 1;
+            self.stats.eviction_oversize += 1;
+            return false;
         }
+        self.stats.memory_admission_accepted += 1;
+        self.stats.memory_fills += 1;
         if let Some(old) = self.memory.insert(key.clone(), value.clone()) {
             self.memory_bytes = self.memory_bytes.saturating_sub(old.len());
         } else {
@@ -488,9 +642,11 @@ impl CacheInner {
             if let Some(old_value) = self.memory.remove(&oldest) {
                 self.memory_bytes = self.memory_bytes.saturating_sub(old_value.len());
                 self.stats.memory_evictions += 1;
+                self.stats.eviction_capacity += 1;
             }
         }
         self.stats.memory_bytes = self.memory_bytes as u64;
+        true
     }
 }
 
@@ -561,6 +717,48 @@ mod tests {
         assert_eq!(cache.get(&first).unwrap(), Some(b"12345".to_vec()));
         assert_eq!(cache.stats().disk_hits, 1);
         assert!(cache.stats().memory_evictions >= 1);
+        assert!(cache.stats().eviction_capacity >= 1);
+    }
+
+    #[test]
+    fn cache_records_memory_admission_rejection_for_oversized_blocks() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = MultiLayerCache::new(4, dir.path());
+        let key = CacheKey::string(1, "oversized");
+
+        cache.put(key.clone(), b"too-large".to_vec()).unwrap();
+
+        let stats = cache.stats();
+        assert_eq!(stats.disk_fills, 1);
+        assert_eq!(stats.memory_admission_rejected, 1);
+        assert_eq!(stats.eviction_oversize, 1);
+        assert_eq!(stats.refill_failures, 0);
+        assert_eq!(cache.get_memory(&key), None);
+        assert_eq!(cache.get(&key).unwrap(), Some(b"too-large".to_vec()));
+        assert_eq!(cache.stats().refill_failures, 1);
+    }
+
+    #[test]
+    fn cache_inspection_and_slot_invalidation_are_slot_aware() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = MultiLayerCache::new(1024, dir.path());
+        let slot_five = CacheKey::page_with_slot(1, 10, 20, 4, Some(5));
+        let slot_six = CacheKey::page_with_slot(1, 11, 30, 4, Some(6));
+
+        cache.put(slot_five.clone(), b"five".to_vec()).unwrap();
+        cache.put(slot_six.clone(), b"six!".to_vec()).unwrap();
+
+        let entries = cache.entries_for_shard(1);
+        assert_eq!(entries.len(), 2);
+        assert!(entries
+            .iter()
+            .any(|entry| entry.selector.starts_with("slot-5:")));
+
+        let report = cache.invalidate_slot(1, 5).unwrap();
+        assert_eq!(report.memory_entries_removed, 1);
+        assert!(report.disk_bytes_removed > 0);
+        assert_eq!(cache.get(&slot_five).unwrap(), None);
+        assert_eq!(cache.get(&slot_six).unwrap(), Some(b"six!".to_vec()));
     }
 
     #[test]

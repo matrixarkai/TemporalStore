@@ -17,7 +17,7 @@ ByteStore integration remain out of scope for this plan.
 9. Live page owner validation in every compaction apply path.
 10. Page segment quarantine on corruption before GC.
 11. Zone-level reclaim budget enforcement under sustained writes.
-12. Disk cache admission policy under memory pressure.
+12. Disk cache admission policy under memory pressure. Done.
 13. Cache warmup budget and backpressure controls.
 14. Shared-store checkpoint retention under multiple follower cursors.
 15. Oplog/index-log replay boundary fuzz tests.
@@ -65,3 +65,25 @@ Cycle 2 adds policy-driven storage readiness gates for production scale validati
 
 The next cycle should add an end-to-end storage-mode harness pass that posts a strict readiness
 policy after dump, compact, GC, restart, and replay.
+
+## Cycle 3 Implemented
+
+Cycle 3 adds cache policy depth and inspection for storage lifecycle parity:
+
+- Memory-cache admission now records accepted/rejected decisions and oversize rejection counters.
+- Cache fill paths record disk fills, memory fills, capacity evictions, oversize evictions, and
+  refill failures.
+- Page cache keys now carry routing-slot metadata, allowing slot-scoped cache inspection and
+  invalidation after dump/compaction workflows.
+- `StorageCacheInspectionReport` exposes shard cache entries and per-slot memory/disk byte
+  summaries.
+- REST and C++-style admin routes expose cache inspection and slot invalidation:
+  `/server/storage/cache/{shard_id}`, `/server/storage/cache/invalidate_slot`,
+  `ServerService/GetStorageCache`, and `ServerService/InvalidateStorageCacheSlot`.
+- Prometheus cache operation metrics now include admission, fill, eviction-reason, and refill
+  failure counters.
+- Regression coverage validates oversized-block admission rejection, capacity eviction reasons,
+  slot-aware inspection, and slot invalidation.
+
+The next cycle should run the storage-mode harness with tiny memory/disk cache settings through
+dump, load, restart, and replay.

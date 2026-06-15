@@ -33,8 +33,8 @@ use temporalstore_rust::{
     RaftMembershipChangeReport, RaftNodeId, RaftRpcRuntimeOptions, RaftTransport,
     ReplicaReplayLoop, ReplicaReplayOptions, ReplicaReplayRequest, ReplicaReplayResponse,
     RequestController, ScanStreamRequest, SchedulerLifecycleToken, SetConfigRequest,
-    SlotDumpManifest, StorageLifecycleRequest, StorageProductionReadinessRequest,
-    StreamReadRequest, UnloadShardRequest,
+    SlotDumpManifest, StorageCacheInvalidateSlotRequest, StorageLifecycleRequest,
+    StorageProductionReadinessRequest, StreamReadRequest, UnloadShardRequest,
 };
 use temporalstore_snapshot::{FileObjectStore, S3SnapshotStore};
 
@@ -303,6 +303,22 @@ fn main() {
                     .parse()
                     .unwrap_or_default();
                 json_response(200, &runtime.storage_production_readiness_report(shard_id))
+            }
+            ("GET", path) if path.starts_with("/server/storage/cache/") => {
+                let shard_id = path
+                    .trim_start_matches("/server/storage/cache/")
+                    .parse()
+                    .unwrap_or_default();
+                json_response(200, &engine.storage_cache_inspection_report(shard_id))
+            }
+            ("POST", "/server/storage/cache/invalidate_slot") => {
+                match parse_json::<StorageCacheInvalidateSlotRequest>(&request.body) {
+                    Ok(req) => match engine.invalidate_storage_cache_slot(req) {
+                        Ok(report) => json_response(200, &report),
+                        Err(status) => json_response(500, &status),
+                    },
+                    Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+                }
             }
             ("POST", "/server/storage/readiness") => {
                 match parse_json::<StorageProductionReadinessRequest>(&request.body) {
@@ -806,6 +822,23 @@ fn handle_cpp_server_service_route(
                     ),
                     Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
                 },
+            }
+        }
+        ("POST", "/ServerService/GetStorageCache") => {
+            match parse_json::<ShardIdRouteRequest>(&request.body) {
+                Ok(req) => {
+                    json_response(200, &engine.storage_cache_inspection_report(req.shard_id))
+                }
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        ("POST", "/ServerService/InvalidateStorageCacheSlot") => {
+            match parse_json::<StorageCacheInvalidateSlotRequest>(&request.body) {
+                Ok(req) => match engine.invalidate_storage_cache_slot(req) {
+                    Ok(report) => json_response(200, &report),
+                    Err(status) => json_response(500, &status),
+                },
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
             }
         }
         ("POST", "/ServerService/ReadPartitionStream") => {

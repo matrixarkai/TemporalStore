@@ -20,7 +20,7 @@ pub mod replica_replay;
 pub mod shared_store;
 pub mod types;
 
-pub use cache::{CacheKey, CacheStats, MultiLayerCache};
+pub use cache::{CacheEntryInfo, CacheGcReport, CacheKey, CacheStats, MultiLayerCache};
 pub use client::{
     crc64_jones, key_is_dropped_by_percent, shard_id_for_key, slot_id_for_key, stable_key_hash,
     ClientError, ClientOptions, ClientPreflightReport, ClientStats, RequestOptions, TableOptions,
@@ -46,6 +46,7 @@ pub use e2e::{
 };
 pub use engine::{
     RustStorageObservation, ShardCompactionUtilityReport, SlotDumpManifest, SlotStorageSummary,
+    StorageCacheInspectionReport, StorageCacheInvalidateSlotRequest, StorageCacheSlotSummary,
     StorageLifecyclePlan, StorageLifecycleReport, StorageLifecycleRequest,
     StorageProductionReadinessPolicy, StorageProductionReadinessReport,
     StorageProductionReadinessRequest, StorageRecoveryBoundaryReport, StorageRecoveryPageError,
