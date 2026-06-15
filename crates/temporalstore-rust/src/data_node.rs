@@ -1,4 +1,6 @@
 use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::fs;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
@@ -397,6 +399,7 @@ struct DataNodeRuntimeInner {
     meta_heartbeat: Mutex<DataNodeMetaHeartbeatReport>,
     lifecycle: Mutex<HashMap<ShardId, DataNodeShardLifecycleState>>,
     lifecycle_tokens: Mutex<HashMap<(ShardId, String), SchedulerLifecycleToken>>,
+    lifecycle_snapshot_path: Option<PathBuf>,
     next_job_id: AtomicU64,
 }
 
@@ -632,6 +635,26 @@ struct DirtyTracker {
 
 impl DataNodeRuntime {
     pub fn new(engine: TemporalEngine, options: DataNodeRuntimeOptions) -> Self {
+        Self::new_with_optional_lifecycle_snapshot_path(
+            engine,
+            options,
+            lifecycle_snapshot_path_from_env(),
+        )
+    }
+
+    pub fn new_with_lifecycle_snapshot_path(
+        engine: TemporalEngine,
+        options: DataNodeRuntimeOptions,
+        path: impl Into<PathBuf>,
+    ) -> Self {
+        Self::new_with_optional_lifecycle_snapshot_path(engine, options, Some(path.into()))
+    }
+
+    fn new_with_optional_lifecycle_snapshot_path(
+        engine: TemporalEngine,
+        options: DataNodeRuntimeOptions,
+        lifecycle_snapshot_path: Option<PathBuf>,
+    ) -> Self {
         let inner = Arc::new(DataNodeRuntimeInner {
             engine,
             options: DataNodeRuntimeOptions {
@@ -648,8 +671,10 @@ impl DataNodeRuntime {
             meta_heartbeat: Mutex::default(),
             lifecycle: Mutex::default(),
             lifecycle_tokens: Mutex::default(),
+            lifecycle_snapshot_path,
             next_job_id: AtomicU64::new(1),
         });
+        restore_lifecycle_snapshot_from_path_inner(&inner);
         for _ in 0..inner.options.worker_threads {
             let worker = Arc::clone(&inner);
             thread::spawn(move || worker_loop(worker));
@@ -678,26 +703,36 @@ impl DataNodeRuntime {
         engine: TemporalEngine,
         options: DataNodeRuntimeOptions,
     ) -> Self {
-        Self {
-            inner: Arc::new(DataNodeRuntimeInner {
-                engine,
-                options: DataNodeRuntimeOptions {
-                    worker_threads: 0,
-                    max_queue_depth: options.max_queue_depth.max(1),
-                    max_background_queue_depth: options.max_background_queue_depth.max(1),
-                },
-                queue: Mutex::default(),
-                queue_signal: Condvar::new(),
-                jobs: Mutex::default(),
-                canceled: Mutex::default(),
-                dirty: Mutex::default(),
-                stats: Mutex::default(),
-                meta_heartbeat: Mutex::default(),
-                lifecycle: Mutex::default(),
-                lifecycle_tokens: Mutex::default(),
-                next_job_id: AtomicU64::new(1),
-            }),
-        }
+        Self::new_without_workers_with_options_and_lifecycle_snapshot_path(engine, options, None)
+    }
+
+    #[cfg(test)]
+    fn new_without_workers_with_options_and_lifecycle_snapshot_path(
+        engine: TemporalEngine,
+        options: DataNodeRuntimeOptions,
+        lifecycle_snapshot_path: Option<PathBuf>,
+    ) -> Self {
+        let inner = Arc::new(DataNodeRuntimeInner {
+            engine,
+            options: DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: options.max_queue_depth.max(1),
+                max_background_queue_depth: options.max_background_queue_depth.max(1),
+            },
+            queue: Mutex::default(),
+            queue_signal: Condvar::new(),
+            jobs: Mutex::default(),
+            canceled: Mutex::default(),
+            dirty: Mutex::default(),
+            stats: Mutex::default(),
+            meta_heartbeat: Mutex::default(),
+            lifecycle: Mutex::default(),
+            lifecycle_tokens: Mutex::default(),
+            lifecycle_snapshot_path,
+            next_job_id: AtomicU64::new(1),
+        });
+        restore_lifecycle_snapshot_from_path_inner(&inner);
+        Self { inner }
     }
 
     pub fn load_shard_with(&self, request: LoadShardRequest) -> LoadShardResponse {
@@ -718,6 +753,7 @@ impl DataNodeRuntime {
             .lock()
             .expect("runtime lifecycle token lock poisoned")
             .insert((token.shard_id, token.operation.clone()), token);
+        persist_lifecycle_snapshot_inner(&self.inner);
     }
 
     pub fn lifecycle_tokens(&self) -> Vec<SchedulerLifecycleToken> {
@@ -734,45 +770,15 @@ impl DataNodeRuntime {
     }
 
     pub fn lifecycle_snapshot(&self) -> DataNodeLifecycleSnapshot {
-        let mut transitions = self.lifecycle_states();
-        transitions.sort_by_key(|state| (state.shard_id, state.operation.clone()));
-        DataNodeLifecycleSnapshot {
-            format_version: 1,
-            transitions,
-            tokens: self.lifecycle_tokens(),
-        }
+        lifecycle_snapshot_inner(&self.inner)
     }
 
     pub fn restore_lifecycle_snapshot(&self, snapshot: DataNodeLifecycleSnapshot) -> Status {
-        if snapshot.format_version != 1 {
-            return Status::error(
-                "bad_lifecycle_snapshot",
-                "unsupported data node lifecycle snapshot version",
-            );
+        let status = restore_lifecycle_snapshot_inner(&self.inner, snapshot);
+        if status.ok {
+            persist_lifecycle_snapshot_inner(&self.inner);
         }
-        {
-            let mut lifecycle = self
-                .inner
-                .lifecycle
-                .lock()
-                .expect("runtime lifecycle lock poisoned");
-            lifecycle.clear();
-            for state in snapshot.transitions {
-                lifecycle.insert(state.shard_id, state);
-            }
-        }
-        {
-            let mut tokens = self
-                .inner
-                .lifecycle_tokens
-                .lock()
-                .expect("runtime lifecycle token lock poisoned");
-            tokens.clear();
-            for token in snapshot.tokens {
-                tokens.insert((token.shard_id, token.operation.clone()), token);
-            }
-        }
-        Status::ok()
+        status
     }
 
     pub fn submit_load(
@@ -1838,6 +1844,97 @@ fn unload_shard_with_inner(
     response
 }
 
+fn lifecycle_snapshot_path_from_env() -> Option<PathBuf> {
+    std::env::var_os("TS_DATA_NODE_LIFECYCLE_SNAPSHOT").map(PathBuf::from)
+}
+
+fn lifecycle_snapshot_inner(inner: &DataNodeRuntimeInner) -> DataNodeLifecycleSnapshot {
+    let mut transitions = inner
+        .lifecycle
+        .lock()
+        .expect("runtime lifecycle lock poisoned")
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    transitions.sort_by_key(|state| (state.shard_id, state.operation.clone()));
+    let mut tokens = inner
+        .lifecycle_tokens
+        .lock()
+        .expect("runtime lifecycle token lock poisoned")
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    tokens.sort_by_key(|token| (token.shard_id, token.operation.clone()));
+    DataNodeLifecycleSnapshot {
+        format_version: 1,
+        transitions,
+        tokens,
+    }
+}
+
+fn restore_lifecycle_snapshot_inner(
+    inner: &DataNodeRuntimeInner,
+    snapshot: DataNodeLifecycleSnapshot,
+) -> Status {
+    if snapshot.format_version != 1 {
+        return Status::error(
+            "bad_lifecycle_snapshot",
+            "unsupported data node lifecycle snapshot version",
+        );
+    }
+    {
+        let mut lifecycle = inner
+            .lifecycle
+            .lock()
+            .expect("runtime lifecycle lock poisoned");
+        lifecycle.clear();
+        for state in snapshot.transitions {
+            lifecycle.insert(state.shard_id, state);
+        }
+    }
+    {
+        let mut tokens = inner
+            .lifecycle_tokens
+            .lock()
+            .expect("runtime lifecycle token lock poisoned");
+        tokens.clear();
+        for token in snapshot.tokens {
+            tokens.insert((token.shard_id, token.operation.clone()), token);
+        }
+    }
+    Status::ok()
+}
+
+fn restore_lifecycle_snapshot_from_path_inner(inner: &DataNodeRuntimeInner) {
+    let Some(path) = &inner.lifecycle_snapshot_path else {
+        return;
+    };
+    let Ok(bytes) = fs::read(path) else {
+        return;
+    };
+    if let Ok(snapshot) = serde_json::from_slice::<DataNodeLifecycleSnapshot>(&bytes) {
+        let _ = restore_lifecycle_snapshot_inner(inner, snapshot);
+    }
+}
+
+fn persist_lifecycle_snapshot_inner(inner: &DataNodeRuntimeInner) {
+    let Some(path) = &inner.lifecycle_snapshot_path else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() && fs::create_dir_all(parent).is_err() {
+            return;
+        }
+    }
+    let Ok(bytes) = serde_json::to_vec_pretty(&lifecycle_snapshot_inner(inner)) else {
+        return;
+    };
+    let tmp_path = path.with_extension("tmp");
+    if fs::write(&tmp_path, bytes).is_ok() {
+        let _ = fs::rename(&tmp_path, path);
+    }
+}
+
 fn shard_has_queued_or_running_work(inner: &DataNodeRuntimeInner, shard_id: ShardId) -> bool {
     let queue = inner.queue.lock().expect("runtime queue lock poisoned");
     queue.running_shards.contains(&shard_id)
@@ -1879,6 +1976,7 @@ fn record_lifecycle_state_inner(
                 scheduler_generation: token.as_ref().map(|token| token.generation),
             },
         );
+    persist_lifecycle_snapshot_inner(inner);
 }
 
 fn validate_lifecycle_token_inner(
@@ -2699,6 +2797,7 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn runtime_reports_cpp_style_shard_worker_ownership() {
@@ -3095,6 +3194,103 @@ mod tests {
         assert_eq!(lifecycle.readonly_count, 1);
         assert_eq!(lifecycle.failed_count, 0);
         assert_eq!(lifecycle.transitions[0].scheduler_task_id, Some(22));
+    }
+
+    #[test]
+    fn runtime_auto_persists_lifecycle_snapshot_across_transitions() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("data-node-lifecycle.json");
+        let runtime = DataNodeRuntime::new_without_workers_with_options_and_lifecycle_snapshot_path(
+            TemporalEngine::default(),
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+            Some(path.clone()),
+        );
+
+        runtime.require_lifecycle_token(SchedulerLifecycleToken {
+            task_id: 31,
+            shard_id: 8,
+            operation: "load".to_string(),
+            load_version: 42,
+            generation: 800,
+        });
+        let saved: DataNodeLifecycleSnapshot =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved.tokens.len(), 1);
+        assert!(saved.transitions.is_empty());
+
+        let load = runtime.load_shard_with(crate::control::LoadShardRequest {
+            shard_id: 8,
+            table_name: "storage_lifecycle".to_string(),
+            shard_uri: "local://storage-lifecycle/8".to_string(),
+            start_routing_slot: 10,
+            end_routing_slot: 19,
+            readonly: false,
+            load_version: 42,
+            local_node_id: Some(3),
+        });
+        assert!(load.status.ok, "{load:?}");
+        let saved: DataNodeLifecycleSnapshot =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved.transitions[0].operation, "load");
+        assert_eq!(saved.transitions[0].state, "serving");
+        assert_eq!(saved.transitions[0].scheduler_task_id, Some(31));
+
+        let restored =
+            DataNodeRuntime::new_without_workers_with_options_and_lifecycle_snapshot_path(
+                TemporalEngine::default(),
+                DataNodeRuntimeOptions {
+                    worker_threads: 0,
+                    max_queue_depth: 4,
+                    max_background_queue_depth: 2,
+                },
+                Some(path.clone()),
+            );
+        assert_eq!(restored.lifecycle_snapshot(), saved);
+        assert_eq!(restored.lifecycle_report().transitions[0].operation, "load");
+
+        restored.require_lifecycle_token(SchedulerLifecycleToken {
+            task_id: 32,
+            shard_id: 8,
+            operation: "reload".to_string(),
+            load_version: 43,
+            generation: 801,
+        });
+        let reload = restored.reload_shard_with(crate::control::LoadShardRequest {
+            shard_id: 8,
+            table_name: "storage_lifecycle_reloaded".to_string(),
+            shard_uri: "local://storage-lifecycle/8-reload".to_string(),
+            start_routing_slot: 10,
+            end_routing_slot: 19,
+            readonly: true,
+            load_version: 43,
+            local_node_id: Some(3),
+        });
+        assert!(reload.status.ok, "{reload:?}");
+        let saved: DataNodeLifecycleSnapshot =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved.transitions[0].operation, "reload");
+        assert_eq!(saved.transitions[0].state, "readonly");
+        assert_eq!(saved.transitions[0].scheduler_task_id, Some(32));
+
+        restored.require_lifecycle_token(SchedulerLifecycleToken {
+            task_id: 33,
+            shard_id: 8,
+            operation: "unload".to_string(),
+            load_version: 43,
+            generation: 802,
+        });
+        let unload = restored.unload_shard_with(crate::control::UnloadShardRequest { shard_id: 8 });
+        assert!(unload.status.ok, "{unload:?}");
+        let saved: DataNodeLifecycleSnapshot =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved.tokens.len(), 3);
+        assert_eq!(saved.transitions[0].operation, "unload");
+        assert_eq!(saved.transitions[0].state, "unloaded");
+        assert_eq!(saved.transitions[0].scheduler_task_id, Some(33));
     }
 
     #[test]

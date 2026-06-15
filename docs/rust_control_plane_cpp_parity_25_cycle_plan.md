@@ -422,3 +422,18 @@ Cycle 11 moves lifecycle restart recovery into the metaserver scheduler harness:
 
 The next cycle should persist this lifecycle snapshot automatically during real data-node
 load/reload/unload transitions rather than requiring an explicit test/admin save call.
+
+## Cycle 12 Implemented
+
+Cycle 12 makes data-node lifecycle snapshots part of the runtime storage lifecycle:
+
+- `DataNodeRuntime` can now bind to a lifecycle snapshot path, including
+  `TS_DATA_NODE_LIFECYCLE_SNAPSHOT` for process startup.
+- Runtime construction restores an existing snapshot before worker startup.
+- Scheduler lifecycle token installation and lifecycle state transitions automatically persist the
+  snapshot, covering load, reload, unload, failed, and transitional states.
+- Regression coverage validates five storage checks: token-only persistence, load persistence,
+  constructor restore, reload persistence, and unload persistence with scheduler metadata.
+
+The next cycle should expose lifecycle snapshot persistence status in data-node preflight/admin
+reports and add startup diagnostics for unreadable or stale lifecycle snapshot files.
