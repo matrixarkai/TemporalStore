@@ -90,6 +90,13 @@ impl ProductionReadinessReport {
             .collect()
     }
 
+    pub fn known_services(&self) -> Vec<&str> {
+        self.service_summaries
+            .iter()
+            .map(|summary| summary.service.as_str())
+            .collect()
+    }
+
     pub fn failed_capabilities_for_service(
         &self,
         service: &str,
@@ -641,6 +648,10 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             blocked_services,
+            vec!["client", "proxy", "ingestion", "data_node", "metaserver"]
+        );
+        assert_eq!(
+            report.known_services(),
             vec!["client", "proxy", "ingestion", "data_node", "metaserver"]
         );
         assert!(!report.service_ready("unknown_service"));

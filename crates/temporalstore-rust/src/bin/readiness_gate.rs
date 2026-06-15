@@ -1,25 +1,46 @@
 use temporalstore_rust::{production_readiness_report, ProductionReadinessReport};
 
 fn main() {
-    let service_filter = parse_service_filter(std::env::args().skip(1));
+    let options = parse_gate_options(std::env::args().skip(1));
     let report = production_readiness_report();
+
+    if options.list_services {
+        for service in report.known_services() {
+            println!("{service}");
+        }
+        return;
+    }
+
+    if let Some(service) = options.service_report.as_deref() {
+        let Some(gate) = report.service_gate_report(service) else {
+            print_unknown_service_error(&report, service);
+            std::process::exit(2);
+        };
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&gate).expect("service gate report must serialize")
+        );
+        if !gate.ready {
+            eprintln!(
+                "production readiness gate failed for service {service}: {} blocker(s)",
+                gate.blocker_count
+            );
+            for blocker in gate.failed_capabilities.iter().take(10) {
+                eprintln!("- {}: {}", blocker.area, blocker.capability);
+            }
+            std::process::exit(2);
+        }
+        return;
+    }
+
     println!(
         "{}",
         serde_json::to_string_pretty(&report).expect("readiness report must serialize")
     );
 
-    if let Some(service) = service_filter.as_deref() {
+    if let Some(service) = options.service_filter.as_deref() {
         let Some(gate) = report.service_gate_report(service) else {
-            eprintln!("production readiness gate failed: unknown service {service}");
-            eprintln!(
-                "known services: {}",
-                report
-                    .service_summaries
-                    .iter()
-                    .map(|summary| summary.service.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
+            print_unknown_service_error(&report, service);
             std::process::exit(2);
         };
         if !gate.ready {
@@ -51,17 +72,43 @@ fn main() {
     }
 }
 
-fn parse_service_filter(args: impl IntoIterator<Item = String>) -> Option<String> {
+#[derive(Debug, Default, PartialEq, Eq)]
+struct GateOptions {
+    service_filter: Option<String>,
+    service_report: Option<String>,
+    list_services: bool,
+}
+
+fn parse_gate_options(args: impl IntoIterator<Item = String>) -> GateOptions {
+    let mut options = GateOptions::default();
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
+        if arg == "--list-services" {
+            options.list_services = true;
+            continue;
+        }
         if arg == "--service" {
-            return args.next();
+            options.service_filter = args.next();
+            continue;
         }
         if let Some(service) = arg.strip_prefix("--service=") {
-            return Some(service.to_string());
+            options.service_filter = Some(service.to_string());
+            continue;
+        }
+        if arg == "--service-report" {
+            options.service_report = args.next();
+            continue;
+        }
+        if let Some(service) = arg.strip_prefix("--service-report=") {
+            options.service_report = Some(service.to_string());
         }
     }
-    None
+    options
+}
+
+fn print_unknown_service_error(report: &ProductionReadinessReport, service: &str) {
+    eprintln!("production readiness gate failed: unknown service {service}");
+    eprintln!("known services: {}", report.known_services().join(", "));
 }
 
 fn service_failure_lines(report: &ProductionReadinessReport) -> Vec<String> {
@@ -95,16 +142,43 @@ mod tests {
     use super::*;
 
     #[test]
-    fn readiness_gate_parses_service_filter() {
+    fn readiness_gate_parses_service_options() {
         assert_eq!(
-            parse_service_filter(["--service".to_string(), "proxy".to_string()]),
-            Some("proxy".to_string())
+            parse_gate_options(["--service".to_string(), "proxy".to_string()]),
+            GateOptions {
+                service_filter: Some("proxy".to_string()),
+                service_report: None,
+                list_services: false,
+            }
         );
         assert_eq!(
-            parse_service_filter(["--service=metaserver".to_string()]),
-            Some("metaserver".to_string())
+            parse_gate_options(["--service=metaserver".to_string()]),
+            GateOptions {
+                service_filter: Some("metaserver".to_string()),
+                service_report: None,
+                list_services: false,
+            }
         );
-        assert_eq!(parse_service_filter(["--json".to_string()]), None);
+        assert_eq!(
+            parse_gate_options(["--service-report".to_string(), "data_node".to_string()]),
+            GateOptions {
+                service_filter: None,
+                service_report: Some("data_node".to_string()),
+                list_services: false,
+            }
+        );
+        assert_eq!(
+            parse_gate_options(["--list-services".to_string()]),
+            GateOptions {
+                service_filter: None,
+                service_report: None,
+                list_services: true,
+            }
+        );
+        assert_eq!(
+            parse_gate_options(["--json".to_string()]),
+            GateOptions::default()
+        );
     }
 
     #[test]

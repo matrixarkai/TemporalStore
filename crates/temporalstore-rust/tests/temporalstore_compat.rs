@@ -23,6 +23,10 @@ fn execute(engine: &TemporalEngine, command: Command) -> CommandResponse {
 #[test]
 fn production_readiness_service_summary_is_public_api() {
     let report = production_readiness_report();
+    assert_eq!(
+        report.known_services(),
+        vec!["client", "proxy", "ingestion", "data_node", "metaserver"]
+    );
     let data_node: ServiceReadinessSummary = report
         .service_summary("data_node")
         .expect("data node service summary should be exported")
