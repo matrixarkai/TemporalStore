@@ -26,7 +26,8 @@ push.
 17. Add Raft-backed metaserver replay for scheduler lifecycle tokens. Controlled reload
     scheduler step done in cycle 15; load/reload/unload workflow harness done in cycle 16;
     raft-backed workflow route coverage done in cycle 17.
-18. Add multi-proxy stale-cache convergence harness.
+18. Add multi-proxy stale-cache convergence harness. Nodeserver-disappears scheduler retry
+    failure pass done in cycle 18.
 19. Add multi-client background MetaSyncer scale harness.
 20. Add nodeserver restart recovery of lifecycle token/transition state.
 21. Add metaserver scheduler safety checks for frozen/dropped tables and servers.
@@ -183,6 +184,21 @@ Cycle 17 replays the scheduler lifecycle workflow through the raft-backed metase
 
 The next cycle should add a failure pass where the nodeserver disappears during load/reload/unload
 and the scheduler records retryable execution state instead of losing the task.
+
+## Cycle 18 Implemented
+
+Cycle 18 adds the first destructive scheduler failure pass:
+
+- A metaserver scheduler test now submits a controlled `LoadTarget` task and executes it against
+  a reserved-but-unserved loopback address to simulate a disappeared nodeserver.
+- The failure path records `node_request_failed`, fetches lifecycle as best-effort, maps the
+  execution to `RetryLater`, increments retry count, sets deterministic backoff, and leaves the
+  scheduler task queued.
+- The execution ledger records the retryable failure without a lifecycle state, preserving
+  operator visibility and future retry/replay state.
+
+The next cycle should extend the disappeared-node pass across reload and unload, then persist the
+retry state through scheduler snapshot/restart.
 
 ## Cycle 1 Implemented
 

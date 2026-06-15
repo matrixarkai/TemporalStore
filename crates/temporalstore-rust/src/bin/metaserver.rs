@@ -3473,6 +3473,85 @@ mod tests {
     }
 
     #[test]
+    fn metaserver_scheduler_retries_when_nodeserver_disappears_during_load() {
+        let backend = MetaBackend::Single(SingleNodeMeta::default());
+        let scheduler = MetaTaskScheduler::default();
+        let task = submit_scheduler_task(
+            &backend,
+            &scheduler,
+            700,
+            RebalanceStep::LoadTarget {
+                shard_id: 46,
+                replica_id: 8,
+                node_id: 9,
+                load_version: 10,
+            },
+        );
+        let missing_node_addr = reserve_unused_loopback_addr();
+
+        let executed = execute_scheduler_task_with_options(
+            &backend,
+            &scheduler,
+            700,
+            &missing_node_addr,
+            Some(LoadShardRequest {
+                shard_id: 46,
+                load_version: 10,
+                local_node_id: None,
+                shard_uri: "memory://missing-node/load".to_string(),
+                start_routing_slot: 0,
+                end_routing_slot: 1023,
+                readonly: false,
+                table_name: "missing_node_table".to_string(),
+            }),
+            Some(TaskSchedulerOptions {
+                base_postpone_ms: 75,
+                max_postpone_ms: 75,
+                max_retry_times: 3,
+                max_inflight: 1,
+            }),
+            HttpRequestOptionsView {
+                connect_timeout_ms: 10,
+                io_timeout_ms: 10,
+                max_retries: 0,
+            },
+        );
+        assert_eq!(executed.status.code, "node_request_failed");
+        assert_eq!(executed.queue_len, 1);
+        assert_eq!(executed.lifecycle_token.as_ref().unwrap().operation, "load");
+        assert_eq!(executed.calls.len(), 2);
+        assert_eq!(
+            executed.calls[0].path,
+            "/ServerService/RequireLifecycleToken"
+        );
+        assert_eq!(executed.calls[0].status.code, "node_request_failed");
+        assert_eq!(executed.calls[1].path, "/ServerService/GetLifecycle");
+        assert_eq!(
+            executed.calls[1].status.code,
+            "node_lifecycle_fetch_failed"
+        );
+        assert!(executed.node_lifecycle.is_none());
+        assert!(executed.lifecycle_state.is_none());
+        let report = executed.scheduler_report.unwrap();
+        assert_eq!(report.task_id, task.id);
+        assert_eq!(report.result, SchedulerTaskResult::RetryLater);
+        assert_eq!(report.retry_times, 1);
+        assert_eq!(report.next_run_time_ms, Some(775));
+        assert!(!report.aborted);
+        assert_eq!(scheduler.snapshot().queue_len, 1);
+
+        let executions = scheduler.executions();
+        assert_eq!(executions.executions.len(), 1);
+        let record = &executions.executions[0];
+        assert_eq!(record.task_id, task.id);
+        assert_eq!(record.scheduler_result, SchedulerTaskResult::RetryLater);
+        assert_eq!(record.retry_times, 1);
+        assert_eq!(record.next_run_time_ms, Some(775));
+        assert_eq!(record.status.code, "node_request_failed");
+        assert!(record.lifecycle_state.is_none());
+    }
+
+    #[test]
     fn metaserver_scheduler_persists_snapshot_file_after_mutations() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("scheduler.json");
@@ -3982,6 +4061,30 @@ mod tests {
         node_addr: &str,
         load_request: Option<LoadShardRequest>,
     ) -> MetaSchedulerExecuteResponse {
+        execute_scheduler_task_with_options(
+            backend,
+            scheduler,
+            now_ms,
+            node_addr,
+            load_request,
+            None,
+            HttpRequestOptionsView {
+                connect_timeout_ms: 1000,
+                io_timeout_ms: 1000,
+                max_retries: 10,
+            },
+        )
+    }
+
+    fn execute_scheduler_task_with_options(
+        backend: &MetaBackend,
+        scheduler: &MetaTaskScheduler,
+        now_ms: u64,
+        node_addr: &str,
+        load_request: Option<LoadShardRequest>,
+        options: Option<TaskSchedulerOptions>,
+        http: HttpRequestOptionsView,
+    ) -> MetaSchedulerExecuteResponse {
         let (code, body) = handle(
             backend,
             scheduler,
@@ -3992,16 +4095,20 @@ mod tests {
                     "now_ms": now_ms,
                     "node_addr": node_addr,
                     "load_request": load_request,
-                    "http": {
-                        "connect_timeout_ms": 1000,
-                        "io_timeout_ms": 1000,
-                        "max_retries": 10
-                    }
+                    "options": options,
+                    "http": http
                 }))
                 .unwrap(),
             },
         );
         assert_eq!(code, 200);
         serde_json::from_slice(&body).unwrap()
+    }
+
+    fn reserve_unused_loopback_addr() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        drop(listener);
+        addr
     }
 }
