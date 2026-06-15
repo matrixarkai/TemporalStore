@@ -250,3 +250,23 @@ groups:
         annotations:
           summary: "TemporalStore 5-node data raft scale gate failed"
           description: "The 5-node data raft scale gate did not prove five normal servers, replica distribution, replication smoke, and zero-error reads/writes."
+
+      - alert: TemporalStoreRemoteAuthGateFailed
+        expr: temporalstore_remote_auth_gate_pass == 0
+        for: 1m
+        labels:
+          severity: warning
+          component: ci
+        annotations:
+          summary: "TemporalStore remote auth gate failed"
+          description: "The non-interactive git remote auth gate could not validate the bjmeetsfo/TemporalStore remote and ls-remote path."
+
+      - alert: TemporalStoreRemoteAuthUnexpectedRemote
+        expr: temporalstore_remote_auth_expected_remote_match == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: ci
+        annotations:
+          summary: "TemporalStore remote points at an unexpected repository"
+          description: "The remote auth gate did not match the expected bjmeetsfo/TemporalStore remote URL."

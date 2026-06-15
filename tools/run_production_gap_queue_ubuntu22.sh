@@ -183,7 +183,7 @@ register_gap 21 "Full 5-repeat raft production gate" release covered "run_raft_p
 register_gap 22 "30-minute soak profile" nightly covered "tools/run_soak_profile_ubuntu22.sh" "${soak_command}" "Nightly soak wrapper repeatedly runs the executable quick queue for the configured duration; default target is 30 minutes."
 register_gap 23 "Multi-tenant noisy-neighbor gate" pr covered "tools/run_multitenant_noisy_neighbor_ubuntu22.sh" "${multitenant_command}" "Local gate runs noisy and victim namespaces concurrently, verifies victim/noisy correctness, emits Prometheus isolation metrics, and fails when victim p99 or QPS violates the configured SLA."
 register_gap 24 "Failover/lag/rebalance runbook" quick covered "docs/production_gap_queue_runbook.md" "test -f docs/production_gap_queue_runbook.md && grep -q Failover docs/production_gap_queue_runbook.md" "Runbook is installed by this queue change."
-register_gap 25 "Push/remote CI once WSL auth is fixed" manual partial "tools/run_remote_auth_gate_ubuntu22.sh" "${remote_auth_command}" "Remote auth is a bounded manual gate because this WSL session still requires gh or Git Credential Manager setup."
+register_gap 25 "Push/remote CI once WSL auth is fixed" quick covered "tools/run_remote_auth_gate_ubuntu22.sh" "${remote_auth_command}" "Remote auth gate validates the bjmeetsfo/TemporalStore remote, proves non-interactive git ls-remote with terminal prompts disabled, and emits Prometheus textfile evidence for guarded push workflows."
 
 python3 - "${CSV}" "${SUMMARY}" <<'PY'
 import csv

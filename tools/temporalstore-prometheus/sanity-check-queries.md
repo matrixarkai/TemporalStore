@@ -216,7 +216,25 @@ temporalstore_data_raft_5node_servers_with_replicas
 temporalstore_data_raft_5node_benchmark_errors_total
 ```
 
-14. Raft/fault-tolerance gate evidence from the textfile collector
+14. Remote auth gate evidence
+
+```promql
+temporalstore_remote_auth_gate_pass
+```
+
+```promql
+temporalstore_remote_auth_expected_remote_match
+```
+
+```promql
+temporalstore_remote_auth_ls_remote_exit_code
+```
+
+```promql
+temporalstore_remote_auth_visible_refs
+```
+
+15. Raft/fault-tolerance gate evidence from the textfile collector
 
 ```promql
 temporalstore_raft_gate_case_pass
