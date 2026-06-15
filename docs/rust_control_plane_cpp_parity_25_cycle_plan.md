@@ -24,7 +24,7 @@ push.
 16. Add cross-service move workflow: load target, update membership, unload source. Unload
     busy-safety sub-slice done in cycle 13; scheduler retry classification done in cycle 14.
 17. Add Raft-backed metaserver replay for scheduler lifecycle tokens. Controlled reload
-    scheduler step done in cycle 15.
+    scheduler step done in cycle 15; load/reload/unload workflow harness done in cycle 16.
 18. Add multi-proxy stale-cache convergence harness.
 19. Add multi-client background MetaSyncer scale harness.
 20. Add nodeserver restart recovery of lifecycle token/transition state.
@@ -151,6 +151,22 @@ Cycle 15 adds controlled reload as a first-class scheduler lifecycle step:
 
 The next cycle should add a cross-service harness that exercises load -> reload -> unload under
 metaserver scheduling, then replay the same scheduler mutations through raft-backed meta.
+
+## Cycle 16 Implemented
+
+Cycle 16 adds a scheduler-driven lifecycle workflow harness:
+
+- A stateful fake nodeserver now accepts scheduler lifecycle tokens, applies load, reload, and
+  unload calls, and reports the latest lifecycle transition through `/ServerService/GetLifecycle`.
+- The metaserver scheduler test submits and executes `LoadTarget`, `ReloadTarget`, and
+  `UnloadSource` tasks in sequence against the same node surface.
+- The workflow validates token installation before each node action, `local_node_id` injection
+  for load/reload, lifecycle-state matching for serving/readonly/unloaded states, queue drain
+  after each task, and execution-ledger ordering.
+- This closes the first local cross-service harness gap for controlled load -> reload -> unload.
+
+The next cycle should replay the same scheduler workflow through the raft-backed metaserver path
+and then add a failure pass where a node disappears during a lifecycle step.
 
 ## Cycle 1 Implemented
 

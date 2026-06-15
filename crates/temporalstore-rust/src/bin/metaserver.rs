@@ -3188,6 +3188,142 @@ mod tests {
     }
 
     #[test]
+    fn metaserver_scheduler_drives_load_reload_unload_lifecycle_workflow() {
+        let backend = MetaBackend::Single(SingleNodeMeta::default());
+        let scheduler = MetaTaskScheduler::default();
+        let (node_addr, records) = spawn_stateful_lifecycle_nodeserver();
+
+        let load_task = submit_scheduler_task(
+            &backend,
+            &scheduler,
+            100,
+            RebalanceStep::LoadTarget {
+                shard_id: 44,
+                replica_id: 8,
+                node_id: 9,
+                load_version: 5,
+            },
+        );
+        let load = execute_scheduler_task(
+            &backend,
+            &scheduler,
+            100,
+            &node_addr,
+            Some(LoadShardRequest {
+                shard_id: 44,
+                load_version: 5,
+                local_node_id: None,
+                shard_uri: "memory://workflow/load".to_string(),
+                start_routing_slot: 0,
+                end_routing_slot: 1023,
+                readonly: false,
+                table_name: "workflow_table".to_string(),
+            }),
+        );
+        assert!(load.status.ok, "{load:?}");
+        assert_eq!(
+            load.scheduler_report.unwrap().result,
+            SchedulerTaskResult::Ok
+        );
+        let load_state = load.lifecycle_state.as_ref().unwrap();
+        assert_eq!(load_state.operation, "load");
+        assert_eq!(load_state.state, "serving");
+        assert_eq!(load_state.load_version, 5);
+        assert_eq!(load_state.scheduler_task_id, Some(load_task.id));
+        assert_eq!(load.queue_len, 0);
+
+        let reload_task = submit_scheduler_task(
+            &backend,
+            &scheduler,
+            200,
+            RebalanceStep::ReloadTarget {
+                shard_id: 44,
+                replica_id: 8,
+                node_id: 9,
+                load_version: 6,
+            },
+        );
+        let reload = execute_scheduler_task(
+            &backend,
+            &scheduler,
+            200,
+            &node_addr,
+            Some(LoadShardRequest {
+                shard_id: 44,
+                load_version: 6,
+                local_node_id: None,
+                shard_uri: "memory://workflow/reload".to_string(),
+                start_routing_slot: 0,
+                end_routing_slot: 1023,
+                readonly: true,
+                table_name: "workflow_table".to_string(),
+            }),
+        );
+        assert!(reload.status.ok, "{reload:?}");
+        assert_eq!(
+            reload.scheduler_report.unwrap().result,
+            SchedulerTaskResult::Ok
+        );
+        let reload_state = reload.lifecycle_state.as_ref().unwrap();
+        assert_eq!(reload_state.operation, "reload");
+        assert_eq!(reload_state.state, "readonly");
+        assert_eq!(reload_state.load_version, 6);
+        assert_eq!(reload_state.scheduler_task_id, Some(reload_task.id));
+        assert_eq!(reload.queue_len, 0);
+
+        let unload_task = submit_scheduler_task(
+            &backend,
+            &scheduler,
+            300,
+            RebalanceStep::UnloadSource {
+                shard_id: 44,
+                replica_id: 8,
+                node_id: 9,
+            },
+        );
+        let unload = execute_scheduler_task(&backend, &scheduler, 300, &node_addr, None);
+        assert!(unload.status.ok, "{unload:?}");
+        assert_eq!(
+            unload.scheduler_report.unwrap().result,
+            SchedulerTaskResult::Ok
+        );
+        let unload_state = unload.lifecycle_state.as_ref().unwrap();
+        assert_eq!(unload_state.operation, "unload");
+        assert_eq!(unload_state.state, "unloaded");
+        assert_eq!(unload_state.scheduler_task_id, Some(unload_task.id));
+        assert_eq!(unload.queue_len, 0);
+
+        let executions = scheduler.executions();
+        assert_eq!(executions.executions.len(), 3);
+        let operations = executions
+            .executions
+            .iter()
+            .map(|record| record.lifecycle_state.as_ref().unwrap().operation.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(operations, vec!["load", "reload", "unload"]);
+
+        let records = records.lock().unwrap();
+        let paths = records
+            .iter()
+            .map(|record| record.0.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            vec![
+                "/ServerService/RequireLifecycleToken",
+                "/ServerService/Load",
+                "/ServerService/GetLifecycle",
+                "/ServerService/RequireLifecycleToken",
+                "/ServerService/Reload",
+                "/ServerService/GetLifecycle",
+                "/ServerService/RequireLifecycleToken",
+                "/ServerService/Unload",
+                "/ServerService/GetLifecycle",
+            ]
+        );
+    }
+
+    #[test]
     fn metaserver_scheduler_persists_snapshot_file_after_mutations() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("scheduler.json");
@@ -3517,5 +3653,206 @@ mod tests {
         });
         std::thread::sleep(std::time::Duration::from_millis(25));
         (addr, records)
+    }
+
+    fn spawn_stateful_lifecycle_nodeserver(
+    ) -> (String, Arc<Mutex<Vec<(String, serde_json::Value)>>>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        drop(listener);
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let lifecycle = Arc::new(Mutex::new(StatefulLifecycleNode::default()));
+        let server_records = Arc::clone(&records);
+        let server_lifecycle = Arc::clone(&lifecycle);
+        let server_addr = addr.clone();
+        std::thread::spawn(move || {
+            serve(&server_addr, move |request| {
+                let body = if request.body.is_empty() {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::from_slice(&request.body).unwrap()
+                };
+                server_records
+                    .lock()
+                    .unwrap()
+                    .push((request.path.clone(), body));
+                match request.path.as_str() {
+                    "/ServerService/RequireLifecycleToken" => {
+                        let token: SchedulerLifecycleToken =
+                            serde_json::from_slice(&request.body).unwrap();
+                        server_lifecycle.lock().unwrap().token = Some(token);
+                        json_response(200, &Status::ok())
+                    }
+                    "/ServerService/Load" => {
+                        let load: LoadShardRequest = serde_json::from_slice(&request.body).unwrap();
+                        server_lifecycle
+                            .lock()
+                            .unwrap()
+                            .transition_from_load("load", "serving", &load);
+                        json_response(
+                            200,
+                            &LoadShardResponse {
+                                status: Status::ok(),
+                            },
+                        )
+                    }
+                    "/ServerService/Reload" => {
+                        let load: LoadShardRequest = serde_json::from_slice(&request.body).unwrap();
+                        server_lifecycle
+                            .lock()
+                            .unwrap()
+                            .transition_from_load("reload", "readonly", &load);
+                        json_response(
+                            200,
+                            &LoadShardResponse {
+                                status: Status::ok(),
+                            },
+                        )
+                    }
+                    "/ServerService/Unload" => {
+                        let unload: UnloadShardRequest =
+                            serde_json::from_slice(&request.body).unwrap();
+                        server_lifecycle
+                            .lock()
+                            .unwrap()
+                            .transition_from_unload(&unload);
+                        json_response(
+                            200,
+                            &UnloadShardResponse {
+                                status: Status::ok(),
+                            },
+                        )
+                    }
+                    "/ServerService/GetLifecycle" => {
+                        let report = server_lifecycle.lock().unwrap().report();
+                        json_response(200, &report)
+                    }
+                    _ => json_response(404, &Status::error("not_found", "unknown path")),
+                }
+            })
+            .unwrap();
+        });
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        (addr, records)
+    }
+
+    #[derive(Debug, Default)]
+    struct StatefulLifecycleNode {
+        token: Option<SchedulerLifecycleToken>,
+        transition: Option<DataNodeShardLifecycleState>,
+        loaded: bool,
+        readonly: bool,
+        load_version: u64,
+    }
+
+    impl StatefulLifecycleNode {
+        fn transition_from_load(&mut self, operation: &str, state: &str, load: &LoadShardRequest) {
+            self.loaded = true;
+            self.readonly = load.readonly;
+            self.load_version = load.load_version;
+            self.transition =
+                Some(self.transition_state(load.shard_id, state, operation, load.load_version));
+        }
+
+        fn transition_from_unload(&mut self, unload: &UnloadShardRequest) {
+            self.loaded = false;
+            self.readonly = false;
+            self.transition = Some(self.transition_state(
+                unload.shard_id,
+                "unloaded",
+                "unload",
+                self.load_version,
+            ));
+        }
+
+        fn transition_state(
+            &self,
+            shard_id: u64,
+            state: &str,
+            operation: &str,
+            load_version: u64,
+        ) -> DataNodeShardLifecycleState {
+            DataNodeShardLifecycleState {
+                shard_id,
+                state: state.to_string(),
+                operation: operation.to_string(),
+                load_version,
+                updated_at_ms: 1_000 + load_version,
+                last_status: Some(Status::ok()),
+                scheduler_task_id: self.token.as_ref().map(|token| token.task_id),
+                scheduler_generation: self.token.as_ref().map(|token| token.generation),
+            }
+        }
+
+        fn report(&self) -> DataNodeLifecycleReport {
+            DataNodeLifecycleReport {
+                loaded_shard_count: usize::from(self.loaded),
+                serving_count: usize::from(self.loaded && !self.readonly),
+                readonly_count: usize::from(self.loaded && self.readonly),
+                queued_count: 0,
+                running_count: 0,
+                unloading_count: 0,
+                failed_count: 0,
+                max_load_version: self.load_version,
+                shards: Vec::new(),
+                transitions: self.transition.clone().into_iter().collect(),
+            }
+        }
+    }
+
+    fn submit_scheduler_task(
+        backend: &MetaBackend,
+        scheduler: &MetaTaskScheduler,
+        now_ms: u64,
+        step: RebalanceStep,
+    ) -> SchedulerTask {
+        let (code, body) = handle(
+            backend,
+            scheduler,
+            HttpRequest {
+                method: "POST".to_string(),
+                path: "/meta/scheduler/submit".to_string(),
+                body: serde_json::to_vec(&serde_json::json!({
+                    "priority": 1,
+                    "now_ms": now_ms,
+                    "kind": SchedulerTaskKind::RebalanceStep(step),
+                }))
+                .unwrap(),
+            },
+        );
+        assert_eq!(code, 200);
+        let submitted: MetaSchedulerTaskResponse = serde_json::from_slice(&body).unwrap();
+        assert!(submitted.status.ok, "{submitted:?}");
+        submitted.task.unwrap()
+    }
+
+    fn execute_scheduler_task(
+        backend: &MetaBackend,
+        scheduler: &MetaTaskScheduler,
+        now_ms: u64,
+        node_addr: &str,
+        load_request: Option<LoadShardRequest>,
+    ) -> MetaSchedulerExecuteResponse {
+        let (code, body) = handle(
+            backend,
+            scheduler,
+            HttpRequest {
+                method: "POST".to_string(),
+                path: "/meta/scheduler/execute_next".to_string(),
+                body: serde_json::to_vec(&serde_json::json!({
+                    "now_ms": now_ms,
+                    "node_addr": node_addr,
+                    "load_request": load_request,
+                    "http": {
+                        "connect_timeout_ms": 1000,
+                        "io_timeout_ms": 1000,
+                        "max_retries": 10
+                    }
+                }))
+                .unwrap(),
+            },
+        );
+        assert_eq!(code, 200);
+        serde_json::from_slice(&body).unwrap()
     }
 }
