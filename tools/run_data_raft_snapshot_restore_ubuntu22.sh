@@ -22,6 +22,8 @@ OPS="${OPS:-240}"
 THREADS="${THREADS:-2}"
 VALUE_BYTES="${VALUE_BYTES:-128}"
 BENCH_TIMEOUT_S="${BENCH_TIMEOUT_S:-120}"
+SNAPSHOT_PRESSURE_OPS="${SNAPSHOT_PRESSURE_OPS:-100}"
+SNAPSHOT_PRESSURE_THREADS="${SNAPSHOT_PRESSURE_THREADS:-1}"
 SNAPSHOT_WAIT_S="${SNAPSHOT_WAIT_S:-60}"
 RESTART_WAIT_S="${RESTART_WAIT_S:-60}"
 SNAPSHOT_MAX_APPLIED_LOG_BYTES="${SNAPSHOT_MAX_APPLIED_LOG_BYTES:-4096}"
@@ -348,6 +350,8 @@ fi
 echo "result_dir=${RESULT_DIR}" | tee "${RESULT_DIR}/summary.txt"
 echo "leader=${leader}" | tee -a "${RESULT_DIR}/summary.txt"
 echo "snapshot_max_applied_log_bytes=${SNAPSHOT_MAX_APPLIED_LOG_BYTES}" | tee -a "${RESULT_DIR}/summary.txt"
+echo "snapshot_pressure_ops=${SNAPSHOT_PRESSURE_OPS}" | tee -a "${RESULT_DIR}/summary.txt"
+echo "snapshot_pressure_threads=${SNAPSHOT_PRESSURE_THREADS}" | tee -a "${RESULT_DIR}/summary.txt"
 
 echo "== pre-write replication smoke ==" | tee -a "${RESULT_DIR}/summary.txt"
 set +e
@@ -400,10 +404,38 @@ for key in (
 ):
     print(f"data_raft_status_before_snapshot_{key}={int(data.get(key, 0))}")
 PY
+
+echo "== snapshot write pressure ==" | tee -a "${RESULT_DIR}/summary.txt"
+set +e
+timeout "${BENCH_TIMEOUT_S}" \
+  "${BIN_DIR}/string_scale_benchmark" "${leader}" "${IDC}" "${NAMESPACE_NAME}" "${TABLE_NAME}" \
+  "${SNAPSHOT_PRESSURE_OPS}" "${SNAPSHOT_PRESSURE_THREADS}" "${VALUE_BYTES}" 1 1000 set \
+  > "${RESULT_DIR}/snapshot_pressure_writes.out" \
+  2> "${RESULT_DIR}/snapshot_pressure_writes.err" &
+pressure_pid="$!"
+sleep 0.2
 post_json "${SERVER_PORT}" "ServerService/TriggerDataRaftSnapshot" \
   "{\"partition_id\":${primary_partition_id}}" \
   > "${RESULT_DIR}/trigger_snapshot.json"
+trigger_code=$?
+wait "${pressure_pid}"
+pressure_code=$?
+set -e
+if [[ "${trigger_code}" != "0" ]]; then
+  echo "TRIGGER_SNAPSHOT_FAILED_UNDER_WRITE_PRESSURE code=${trigger_code}" \
+    | tee -a "${RESULT_DIR}/summary.txt"
+  cat "${RESULT_DIR}/trigger_snapshot.json" 2>/dev/null | tee -a "${RESULT_DIR}/summary.txt" || true
+  exit 7
+fi
 check_status_ok "${RESULT_DIR}/trigger_snapshot.json"
+if [[ "${pressure_code}" != "0" ]] || ! csv_has_zero_errors "${RESULT_DIR}/snapshot_pressure_writes.out"; then
+  echo "SNAPSHOT_PRESSURE_WRITES_FAILED code=${pressure_code}" | tee -a "${RESULT_DIR}/summary.txt"
+  cat "${RESULT_DIR}/snapshot_pressure_writes.out" \
+      "${RESULT_DIR}/snapshot_pressure_writes.err" \
+    | tee -a "${RESULT_DIR}/summary.txt"
+  exit 8
+fi
+cat "${RESULT_DIR}/snapshot_pressure_writes.out" | tee -a "${RESULT_DIR}/summary.txt"
 snapshot_index="$(python3 - "${RESULT_DIR}/trigger_snapshot.json" <<'PY'
 import json
 import sys
