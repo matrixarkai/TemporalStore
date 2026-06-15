@@ -6364,6 +6364,18 @@ impl MetaRaftCluster {
         }
     }
 
+    pub fn freeze_table(&self, request: DeleteTableRequest) -> AckResponse {
+        AckResponse {
+            status: self.mutation_status(MetaMutation::FreezeTable(request)),
+        }
+    }
+
+    pub fn unfreeze_table(&self, request: DeleteTableRequest) -> AckResponse {
+        AckResponse {
+            status: self.mutation_status(MetaMutation::UnfreezeTable(request)),
+        }
+    }
+
     pub fn finish_load(&self, request: LoadFinishRequest) -> AckResponse {
         AckResponse {
             status: self.mutation_status(MetaMutation::FinishLoad(request)),

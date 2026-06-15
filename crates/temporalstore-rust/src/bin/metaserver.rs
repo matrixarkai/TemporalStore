@@ -556,6 +556,12 @@ fn handle(
                 backend_call!(meta, update_table, req)
             })
         }
+        ("POST", "/tables/freeze") => parse_or(&request.body, |req: DeleteTableRequest| {
+            backend_call!(meta, freeze_table, req)
+        }),
+        ("POST", "/tables/unfreeze") => parse_or(&request.body, |req: DeleteTableRequest| {
+            backend_call!(meta, unfreeze_table, req)
+        }),
         ("GET", "/tables") => json_response(200, &backend_call!(meta, list_tables)),
         ("POST", "/tables/topology") | ("POST", "/table_topology") => {
             parse_or(&request.body, |req: GetTableTopologyRequest| {

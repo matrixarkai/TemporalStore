@@ -58,6 +58,25 @@ brpc and Thrift are intentionally not part of the Rust target. The Rust open-sou
 
 ## What Was Closed In The Latest Pass
 
+This pass closed the next metaserver lifecycle-guard gap:
+
+1. The metaserver now exposes table freeze/unfreeze transitions using the existing Rust table state
+   model and records those transitions in topology history and the local mutation log.
+2. Frozen tables no longer serve table topology and cannot be updated until unfrozen.
+3. `finish_load` is stricter: servers must already be registered and normal, frozen/dropped table
+   ownership blocks the load-finish route update, and stale load versions are rejected when the
+   server has reported a newer shard load version.
+4. The metaserver HTTP surface now includes `POST /tables/freeze` and `POST /tables/unfreeze`.
+5. Regression coverage validates frozen table topology/update/finish-load rejection, unfreeze
+   recovery, unknown-server finish-load rejection, stale load-version rejection, and frozen-server
+   rejection.
+
+This improves C++-style table/shard lifecycle safety without adding brpc/Thrift. Remaining
+metaserver work includes richer creating/loading/dropping transitional states and tying these
+transitions into scheduler-driven repair/rebalance workflows.
+
+## What Was Closed In The Previous Pass
+
 This pass closed the next proxy serving-policy gap:
 
 1. Proxy options now include a Rust-native serving mode: `serving`, `readonly`, `write_disabled`,

@@ -591,6 +591,8 @@ pub enum MetaMutation {
     AddTable(AddTableRequest),
     DeleteTable(DeleteTableRequest),
     UpdateTable(UpdateTableRequest),
+    FreezeTable(DeleteTableRequest),
+    UnfreezeTable(DeleteTableRequest),
     FinishLoad(LoadFinishRequest),
     FreezeServer(StateChangeRequest),
     DropServer(StateChangeRequest),
@@ -1255,6 +1257,16 @@ impl SingleNodeMeta {
         }
     }
 
+    pub fn freeze_table(&self, request: DeleteTableRequest) -> AckResponse {
+        self.record_mutation(MetaMutation::FreezeTable(request.clone()));
+        self.apply_set_table_state(request, MetaEntityState::Frozen)
+    }
+
+    pub fn unfreeze_table(&self, request: DeleteTableRequest) -> AckResponse {
+        self.record_mutation(MetaMutation::UnfreezeTable(request.clone()));
+        self.apply_set_table_state(request, MetaEntityState::Normal)
+    }
+
     pub fn update_table(&self, request: UpdateTableRequest) -> AckResponse {
         self.record_mutation(MetaMutation::UpdateTable(request.clone()));
         self.apply_update_table(request)
@@ -1288,6 +1300,11 @@ impl SingleNodeMeta {
         if existing.state == MetaEntityState::Dropped {
             return AckResponse {
                 status: Status::error("table_not_found", "table is dropped"),
+            };
+        }
+        if existing.state == MetaEntityState::Frozen {
+            return AckResponse {
+                status: Status::error("resource_frozen", "table is frozen"),
             };
         }
         if matches!(request.shard_count, Some(0)) {
@@ -1415,6 +1432,14 @@ impl SingleNodeMeta {
         if table.info.state == MetaEntityState::Dropped {
             return TableTopologyResponse {
                 status: Status::error("table_not_found", "table is dropped"),
+                table: Some(table.info.clone()),
+                partitions: Vec::new(),
+                unchanged: false,
+            };
+        }
+        if table.info.state == MetaEntityState::Frozen {
+            return TableTopologyResponse {
+                status: Status::error("resource_frozen", "table is frozen"),
                 table: Some(table.info.clone()),
                 partitions: Vec::new(),
                 unchanged: false,
@@ -1645,7 +1670,49 @@ impl SingleNodeMeta {
                 status: request.status,
             };
         }
-        ensure_server(&mut state, &request.server_addr);
+        let Some(server) = state.servers.get(&request.server_addr) else {
+            return AckResponse {
+                status: Status::error(
+                    "server_not_found",
+                    "server must register before finish_load",
+                ),
+            };
+        };
+        if server.state != MetaEntityState::Normal {
+            return AckResponse {
+                status: Status::error("resource_frozen", "server is not serving"),
+            };
+        }
+        if let Some(newer_state) = server
+            .shard_states
+            .iter()
+            .filter(|state| state.shard_id == request.shard_id)
+            .map(|state| state.load_version)
+            .max()
+            .filter(|load_version| *load_version > request.load_version)
+        {
+            return AckResponse {
+                status: Status::error(
+                    "stale_load_version",
+                    format!(
+                        "finish_load version {} is older than server-reported version {newer_state}",
+                        request.load_version
+                    ),
+                ),
+            };
+        }
+        if let Some(table) = table_for_shard(&state, request.shard_id) {
+            if table.info.state == MetaEntityState::Dropped {
+                return AckResponse {
+                    status: Status::error("table_not_found", "table is dropped"),
+                };
+            }
+            if table.info.state == MetaEntityState::Frozen {
+                return AckResponse {
+                    status: Status::error("resource_frozen", "table is frozen"),
+                };
+            }
+        }
         let latest_snapshot = state
             .shards
             .get(&request.shard_id)
@@ -1865,6 +1932,50 @@ impl SingleNodeMeta {
         }
     }
 
+    fn apply_set_table_state(
+        &self,
+        request: DeleteTableRequest,
+        next: MetaEntityState,
+    ) -> AckResponse {
+        if request.namespace.is_empty() || request.table_name.is_empty() {
+            return AckResponse {
+                status: Status::error("bad_request", "namespace and table_name are required"),
+            };
+        }
+        let mut state = self.inner.write().expect("meta lock poisoned");
+        let key = table_key(&request.namespace, &request.table_name);
+        let Some(existing) = state.tables.get(&key).map(|table| table.info.state) else {
+            return AckResponse {
+                status: Status::error("table_not_found", "table not found"),
+            };
+        };
+        if existing == MetaEntityState::Dropped {
+            return AckResponse {
+                status: Status::error("table_not_found", "table is dropped"),
+            };
+        }
+        if existing == next {
+            return AckResponse {
+                status: Status::error("not_modified", "table state is unchanged"),
+            };
+        }
+        let topology_version = record_topology_event(
+            &mut state,
+            "table_state",
+            format!("table:{}/{}", request.namespace, request.table_name),
+            format!("state={}", next.as_str()),
+        );
+        let table = state
+            .tables
+            .get_mut(&key)
+            .expect("table exists after state validation");
+        table.info.state = next;
+        table.info.topology_version = topology_version;
+        AckResponse {
+            status: Status::ok(),
+        }
+    }
+
     fn record_mutation(&self, mutation: MetaMutation) {
         if let Some(log) = &self.mutation_log {
             log.append(&mutation)
@@ -1884,6 +1995,14 @@ impl SingleNodeMeta {
             MetaMutation::AddTable(request) => self.apply_add_table(request).status,
             MetaMutation::DeleteTable(request) => self.apply_delete_table(request).status,
             MetaMutation::UpdateTable(request) => self.apply_update_table(request).status,
+            MetaMutation::FreezeTable(request) => {
+                self.apply_set_table_state(request, MetaEntityState::Frozen)
+                    .status
+            }
+            MetaMutation::UnfreezeTable(request) => {
+                self.apply_set_table_state(request, MetaEntityState::Normal)
+                    .status
+            }
             MetaMutation::FinishLoad(request) => self.apply_finish_load(request).status,
             MetaMutation::FreezeServer(request) => {
                 self.apply_set_server_state(request, MetaEntityState::Frozen)
@@ -2072,6 +2191,16 @@ fn table_shard_id(
         return Ok(table.first_shard_id + offset);
     }
     PartitionId::new(table.table_id, offset, 0, table.partition_version as u64).map(PartitionId::id)
+}
+
+fn table_for_shard<'a>(state: &'a MetaState, shard_id: ShardId) -> Option<&'a TableRecord> {
+    state.tables.values().find(|table| {
+        (0..table.info.shard_count).any(|offset| {
+            table_shard_id(&table.info, offset)
+                .map(|candidate| candidate == shard_id)
+                .unwrap_or(false)
+        })
+    })
 }
 
 fn push_replica(
@@ -2880,6 +3009,88 @@ mod tests {
     }
 
     #[test]
+    fn metaserver_freeze_table_blocks_topology_update_and_finish_load_until_unfrozen() {
+        let meta = SingleNodeMeta::default();
+        meta.register_server(RegisterServerRequest {
+            server_addr: "s1".to_string(),
+            node_id: 1,
+            location: "z".to_string(),
+            binary_version: "v".to_string(),
+        });
+        assert!(
+            meta.add_table(AddTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "tbl".to_string(),
+                first_shard_id: 42,
+                shard_count: 1,
+                replica_count: 1,
+                use_cpp_partition_ids: false,
+                partition_version: 0,
+                serving_options: crate::meta::TableServingOptions::default(),
+            })
+            .status
+            .ok
+        );
+
+        let frozen = meta.freeze_table(DeleteTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+        });
+        assert!(frozen.status.ok);
+        assert_eq!(meta.list_tables().tables[0].state, MetaEntityState::Frozen);
+
+        let topology = meta.get_table_topology(GetTableTopologyRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+            old_topology_version: 0,
+        });
+        assert_eq!(topology.status.code, "resource_frozen");
+        assert!(topology.partitions.is_empty());
+
+        let update = meta.update_table(UpdateTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+            shard_count: Some(2),
+            replica_count: None,
+            first_shard_id: None,
+            use_cpp_partition_ids: None,
+            partition_version: None,
+            serving_options: None,
+        });
+        assert_eq!(update.status.code, "resource_frozen");
+
+        let finish = meta.finish_load(LoadFinishRequest {
+            server_addr: "s1".to_string(),
+            shard_id: 42,
+            load_version: 1,
+            status: Status::ok(),
+        });
+        assert_eq!(finish.status.code, "resource_frozen");
+
+        let unfrozen = meta.unfreeze_table(DeleteTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+        });
+        assert!(unfrozen.status.ok);
+        assert_eq!(meta.list_tables().tables[0].state, MetaEntityState::Normal);
+
+        let topology = meta.get_table_topology(GetTableTopologyRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+            old_topology_version: 0,
+        });
+        assert!(topology.status.ok);
+        assert_eq!(topology.partitions.len(), 1);
+        let finish = meta.finish_load(LoadFinishRequest {
+            server_addr: "s1".to_string(),
+            shard_id: 42,
+            load_version: 1,
+            status: Status::ok(),
+        });
+        assert!(finish.status.ok);
+    }
+
+    #[test]
     fn metaserver_update_table_expands_topology_and_guards_unsafe_changes() {
         let meta = SingleNodeMeta::default();
         meta.add_table(AddTableRequest {
@@ -3471,6 +3682,58 @@ mod tests {
         assert!(ack.status.ok);
         assert_eq!(meta.get(42).location.unwrap().server_addr, "s1");
         assert_eq!(meta.stats().load_finish_total, 1);
+    }
+
+    #[test]
+    fn metaserver_finish_load_rejects_unknown_frozen_and_stale_servers() {
+        let meta = SingleNodeMeta::default();
+        let missing = meta.finish_load(LoadFinishRequest {
+            server_addr: "missing".to_string(),
+            shard_id: 7,
+            load_version: 1,
+            status: Status::ok(),
+        });
+        assert_eq!(missing.status.code, "server_not_found");
+
+        meta.register_server(RegisterServerRequest {
+            server_addr: "s1".to_string(),
+            node_id: 1,
+            location: "z".to_string(),
+            binary_version: "v".to_string(),
+        });
+        meta.server_heartbeat(ServerHeartbeatRequest {
+            server_addr: "s1".to_string(),
+            boot_time_ms: 1,
+            binary_version: "v".to_string(),
+            shard_loads: Vec::new(),
+            partition_loads: Vec::new(),
+            runtime_load: ServerRuntimeLoad::default(),
+            shard_states: vec![ServerShardServingState {
+                shard_id: 7,
+                load_version: 9,
+                serving_state: "serving".to_string(),
+                ..ServerShardServingState::default()
+            }],
+        });
+        let stale = meta.finish_load(LoadFinishRequest {
+            server_addr: "s1".to_string(),
+            shard_id: 7,
+            load_version: 8,
+            status: Status::ok(),
+        });
+        assert_eq!(stale.status.code, "stale_load_version");
+
+        meta.freeze_server(StateChangeRequest {
+            endpoint: "s1".to_string(),
+            freeze_cooldown_ms: 0,
+        });
+        let frozen = meta.finish_load(LoadFinishRequest {
+            server_addr: "s1".to_string(),
+            shard_id: 7,
+            load_version: 10,
+            status: Status::ok(),
+        });
+        assert_eq!(frozen.status.code, "resource_frozen");
     }
 
     #[test]
