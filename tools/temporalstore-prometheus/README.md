@@ -16,6 +16,10 @@ The sidecar writes both converted TemporalStore metrics and exporter health metr
   `temporalstore_client_retry_failures_total{service_role="client",phase,iteration,threads}` expose local client retry pressure.
 - `temporalstore_proxy_retry_attempts_total{service_role="proxy",phase,iteration}` and
   `temporalstore_proxy_retry_failures_total{service_role="proxy",phase,iteration}` expose proxy smoke retry pressure.
+- `temporalstore_ingestion_*` metrics are written by
+  `tools/run_queue_ingestion_replay_ubuntu22.sh` and cover replay input,
+  dedupe, retries, dead letters, checkpoints, watermark, max partition lag,
+  backpressure records, committed QPS, and validation health.
 - `temporalstore_raft_gate_*` metrics are written by
   `tools/run_raft_stress_suite_ubuntu22.sh` after raft/failover gates finish,
   including failed gates.
@@ -24,7 +28,8 @@ The sidecar writes both converted TemporalStore metrics and exporter health metr
   `bcache2_metaserver_*{service_role="metaserver",source="metaserver"}`.
 - `temporalstore-alerts.yml` installs local production-readiness alerts for
   service availability, exporter scrape errors, client validation, proxy smoke,
-  client benchmark errors, retry exhaustion, and raft gate readiness.
+  client benchmark errors, retry exhaustion, ingestion lag/backpressure, and
+  raft gate readiness.
 
 ## Defaults
 
