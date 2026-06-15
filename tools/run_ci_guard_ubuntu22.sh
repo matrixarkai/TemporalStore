@@ -65,6 +65,7 @@ syntax_check() {
     "${ROOT}/tools/run_follower_read_sla_ubuntu22.sh" \
     "${ROOT}/tools/run_fault_injection_gate_ubuntu22.sh" \
     "${ROOT}/tools/run_remote_auth_gate_ubuntu22.sh" \
+    "${ROOT}/tools/run_dependency_cache_gate_ubuntu22.sh" \
     "${ROOT}/tools/run_soak_profile_ubuntu22.sh"
   PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile \
     "${ROOT}/tools/summarize_raft_gate_results.py" \
@@ -85,6 +86,14 @@ raft_summary_tests() {
     cd "${ROOT}/tools"
     PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v test_summarize_raft_gate_results.py
   )
+}
+
+dependency_cache_gate() {
+  env RESULT_DIR="${RESULT_DIR}/dependency_cache_$(date +%s%N)" \
+    RUN_BUILD_SMOKE="${DEPENDENCY_CACHE_RUN_BUILD_SMOKE:-0}" \
+    BUILD_TYPE="${DEPENDENCY_CACHE_BUILD_TYPE:-Release}" \
+    BUILD_TARGETS="${DEPENDENCY_CACHE_BUILD_TARGETS:-bcache2-server}" \
+    "${ROOT}/tools/run_dependency_cache_gate_ubuntu22.sh"
 }
 
 full_gate_smoke() {
@@ -110,6 +119,7 @@ log "run_full_gate=${RUN_FULL_GATE}"
 overall_failed=0
 for iteration in $(seq 1 "${ITERATIONS}"); do
   run_case "${iteration}" syntax syntax_check || overall_failed=1
+  run_case "${iteration}" dependency_cache dependency_cache_gate || overall_failed=1
   run_case "${iteration}" prometheus_unit prometheus_unit_tests || overall_failed=1
   run_case "${iteration}" raft_summary raft_summary_tests || overall_failed=1
   if [[ "${RUN_FULL_GATE}" == "1" ]]; then

@@ -270,3 +270,23 @@ groups:
         annotations:
           summary: "TemporalStore remote points at an unexpected repository"
           description: "The remote auth gate did not match the expected bjmeetsfo/TemporalStore remote URL."
+
+      - alert: TemporalStoreDependencyCacheGateFailed
+        expr: temporalstore_dependency_cache_gate_pass == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: ci
+        annotations:
+          summary: "TemporalStore dependency-cache CI gate failed"
+          description: "The Ubuntu 22 dependency-cache gate could not prove build tools, local dependency symlinks, build knobs, and script syntax."
+
+      - alert: TemporalStoreDependencyCacheOptionalArtifactsMissing
+        expr: temporalstore_dependency_cache_optional_missing > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: ci
+        annotations:
+          summary: "TemporalStore optional dependency-cache artifacts are missing"
+          description: "The dependency-cache gate is passing with system packages or link shims, but some reusable optional artifacts are unavailable."
