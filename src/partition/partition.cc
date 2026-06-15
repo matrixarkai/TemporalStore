@@ -1701,9 +1701,28 @@ Status Partition::ProposeDataRaftCommand(const BatchExecuteCmdRequest& request,
     if (data_raft_consensus_ == nullptr) {
         return Status::FailedPrecondition("data raft consensus backend is not initialized");
     }
-    if (!data_raft_consensus_->IsLeader()) {
-        if (GetPrimaryPartitionId() == options_.partition_id) {
+    if (!data_raft_consensus_->IsLeader() && GetPrimaryPartitionId() == options_.partition_id) {
+        bool should_campaign = false;
+        {
+            std::unique_lock<std::mutex> lock(data_raft_campaign_mu_);
+            if (!data_raft_campaign_inflight_) {
+                data_raft_campaign_inflight_ = true;
+                should_campaign = true;
+            } else {
+                data_raft_campaign_cv_.wait_for(lock, std::chrono::milliseconds(1200), [this] {
+                    return !data_raft_campaign_inflight_ || data_raft_consensus_->IsLeader();
+                });
+            }
+        }
+
+        if (should_campaign) {
             Status campaign_status = data_raft_consensus_->Campaign(1000, true);
+            {
+                std::lock_guard<std::mutex> lock(data_raft_campaign_mu_);
+                data_raft_campaign_inflight_ = false;
+            }
+            data_raft_campaign_cv_.notify_all();
+
             if (campaign_status.ok() && data_raft_consensus_->IsLeader()) {
                 LOG_INFO("Data raft metadata primary campaigned leadership for write")
                     .put("PartitionId", options_.partition_id)
