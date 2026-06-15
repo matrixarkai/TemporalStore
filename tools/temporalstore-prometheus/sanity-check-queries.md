@@ -148,7 +148,21 @@ temporalstore_follower_read_errors_total
 temporalstore_follower_read_background_errors_total
 ```
 
-10. Raft/fault-tolerance gate evidence from the textfile collector
+10. Multi-tenant noisy-neighbor isolation
+
+```promql
+temporalstore_multitenant_noisy_neighbor_pass
+```
+
+```promql
+temporalstore_multitenant_benchmark_p99_us{tenant_role="victim"}
+```
+
+```promql
+temporalstore_multitenant_benchmark_min_qps{tenant_role="victim"}
+```
+
+11. Raft/fault-tolerance gate evidence from the textfile collector
 
 ```promql
 temporalstore_raft_gate_case_pass
