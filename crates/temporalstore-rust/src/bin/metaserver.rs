@@ -1811,6 +1811,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
+    use temporalstore_rust::data_node::DataNodeLifecycleSnapshot;
     use temporalstore_rust::http::HttpRequest;
     use temporalstore_rust::meta::{MetaEntityState, ShardSnapshotRef, TableTopologyResponse};
     use temporalstore_rust::rebalance::RebalanceStep;
@@ -3324,6 +3326,164 @@ mod tests {
     }
 
     #[test]
+    fn metaserver_scheduler_reload_survives_nodeserver_lifecycle_snapshot_restart() {
+        let dir = tempdir().unwrap();
+        let backend = MetaBackend::Single(SingleNodeMeta::default());
+        let scheduler = MetaTaskScheduler::default();
+        let (source_addr, source_records) = spawn_stateful_lifecycle_nodeserver();
+
+        let load_task = submit_scheduler_task(
+            &backend,
+            &scheduler,
+            100,
+            RebalanceStep::LoadTarget {
+                shard_id: 54,
+                replica_id: 8,
+                node_id: 9,
+                load_version: 10,
+            },
+        );
+        let load = execute_scheduler_task(
+            &backend,
+            &scheduler,
+            100,
+            &source_addr,
+            Some(LoadShardRequest {
+                shard_id: 54,
+                load_version: 10,
+                local_node_id: None,
+                shard_uri: "memory://restart-harness/load".to_string(),
+                start_routing_slot: 0,
+                end_routing_slot: 1023,
+                readonly: false,
+                table_name: "restart_harness".to_string(),
+            }),
+        );
+        assert!(load.status.ok, "{load:?}");
+        assert_eq!(load.lifecycle_state.as_ref().unwrap().operation, "load");
+        assert_eq!(
+            load.lifecycle_state.as_ref().unwrap().scheduler_task_id,
+            Some(load_task.id)
+        );
+
+        let snapshot_path = dir.path().join("node-lifecycle-snapshot.json");
+        let save = post_json_with_options::<_, StatefulLifecycleSnapshotFileResponse>(
+            &source_addr,
+            "/ServerService/SaveLifecycleSnapshot",
+            &StatefulLifecycleSnapshotFileRequest {
+                path: snapshot_path.clone(),
+            },
+            HttpRequestOptions {
+                connect_timeout_ms: 1000,
+                io_timeout_ms: 1000,
+                max_retries: 10,
+            },
+        )
+        .unwrap();
+        assert!(save.status.ok, "{save:?}");
+        assert!(snapshot_path.exists());
+        assert_eq!(save.snapshot.as_ref().unwrap().tokens.len(), 1);
+        assert_eq!(
+            save.snapshot.as_ref().unwrap().transitions[0].scheduler_task_id,
+            Some(load_task.id)
+        );
+
+        let (restarted_addr, restarted_records) = spawn_stateful_lifecycle_nodeserver();
+        let restore = post_json_with_options::<_, StatefulLifecycleSnapshotFileResponse>(
+            &restarted_addr,
+            "/ServerService/LoadLifecycleSnapshot",
+            &StatefulLifecycleSnapshotFileRequest {
+                path: snapshot_path.clone(),
+            },
+            HttpRequestOptions {
+                connect_timeout_ms: 1000,
+                io_timeout_ms: 1000,
+                max_retries: 10,
+            },
+        )
+        .unwrap();
+        assert!(restore.status.ok, "{restore:?}");
+        assert_eq!(
+            restore.snapshot.as_ref().unwrap().transitions[0].shard_id,
+            54
+        );
+
+        let reload_task = submit_scheduler_task(
+            &backend,
+            &scheduler,
+            200,
+            RebalanceStep::ReloadTarget {
+                shard_id: 54,
+                replica_id: 8,
+                node_id: 9,
+                load_version: 11,
+            },
+        );
+        let reload = execute_scheduler_task(
+            &backend,
+            &scheduler,
+            200,
+            &restarted_addr,
+            Some(LoadShardRequest {
+                shard_id: 54,
+                load_version: 11,
+                local_node_id: None,
+                shard_uri: "memory://restart-harness/reload".to_string(),
+                start_routing_slot: 0,
+                end_routing_slot: 1023,
+                readonly: true,
+                table_name: "restart_harness".to_string(),
+            }),
+        );
+        assert!(reload.status.ok, "{reload:?}");
+        assert_eq!(
+            reload.scheduler_report.as_ref().unwrap().result,
+            SchedulerTaskResult::Ok
+        );
+        let reload_state = reload.lifecycle_state.as_ref().unwrap();
+        assert_eq!(reload_state.operation, "reload");
+        assert_eq!(reload_state.state, "readonly");
+        assert_eq!(reload_state.load_version, 11);
+        assert_eq!(reload_state.scheduler_task_id, Some(reload_task.id));
+        assert_eq!(
+            reload_state.scheduler_generation,
+            Some(reload.lifecycle_token.as_ref().unwrap().generation)
+        );
+        assert_eq!(reload.node_lifecycle.as_ref().unwrap().readonly_count, 1);
+
+        let source_paths = source_records
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|record| record.0.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            source_paths,
+            vec![
+                "/ServerService/RequireLifecycleToken",
+                "/ServerService/Load",
+                "/ServerService/GetLifecycle",
+                "/ServerService/SaveLifecycleSnapshot",
+            ]
+        );
+        let restarted_paths = restarted_records
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|record| record.0.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            restarted_paths,
+            vec![
+                "/ServerService/LoadLifecycleSnapshot",
+                "/ServerService/RequireLifecycleToken",
+                "/ServerService/Reload",
+                "/ServerService/GetLifecycle",
+            ]
+        );
+    }
+
+    #[test]
     fn raft_backed_metaserver_scheduler_drives_lifecycle_workflow() {
         let runtime = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
             engine: ProductionRaftEngineKind::OpenRaft,
@@ -3928,6 +4088,24 @@ mod tests {
                         let report = server_lifecycle.lock().unwrap().report();
                         json_response(200, &report)
                     }
+                    "/ServerService/SaveLifecycleSnapshot" => {
+                        let request: StatefulLifecycleSnapshotFileRequest =
+                            serde_json::from_slice(&request.body).unwrap();
+                        let response = server_lifecycle
+                            .lock()
+                            .unwrap()
+                            .save_snapshot_file(request.path);
+                        json_response(200, &response)
+                    }
+                    "/ServerService/LoadLifecycleSnapshot" => {
+                        let request: StatefulLifecycleSnapshotFileRequest =
+                            serde_json::from_slice(&request.body).unwrap();
+                        let response = server_lifecycle
+                            .lock()
+                            .unwrap()
+                            .load_snapshot_file(request.path);
+                        json_response(200, &response)
+                    }
                     _ => json_response(404, &Status::error("not_found", "unknown path")),
                 }
             })
@@ -3935,6 +4113,18 @@ mod tests {
         });
         std::thread::sleep(std::time::Duration::from_millis(25));
         (addr, records)
+    }
+
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    struct StatefulLifecycleSnapshotFileRequest {
+        path: PathBuf,
+    }
+
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+    struct StatefulLifecycleSnapshotFileResponse {
+        status: Status,
+        #[serde(default)]
+        snapshot: Option<DataNodeLifecycleSnapshot>,
     }
 
     #[derive(Debug, Default)]
@@ -3997,6 +4187,88 @@ mod tests {
                 max_load_version: self.load_version,
                 shards: Vec::new(),
                 transitions: self.transition.clone().into_iter().collect(),
+            }
+        }
+
+        fn snapshot(&self) -> DataNodeLifecycleSnapshot {
+            DataNodeLifecycleSnapshot {
+                format_version: 1,
+                transitions: self.transition.clone().into_iter().collect(),
+                tokens: self.token.clone().into_iter().collect(),
+            }
+        }
+
+        fn restore_snapshot(&mut self, snapshot: DataNodeLifecycleSnapshot) -> Status {
+            if snapshot.format_version != 1 {
+                return Status::error(
+                    "bad_lifecycle_snapshot",
+                    "unsupported data node lifecycle snapshot version",
+                );
+            }
+            self.token = snapshot.tokens.into_iter().next();
+            self.transition = snapshot.transitions.into_iter().next();
+            self.loaded = self
+                .transition
+                .as_ref()
+                .map(|state| state.state != "unloaded")
+                .unwrap_or(false);
+            self.readonly = self
+                .transition
+                .as_ref()
+                .map(|state| state.state == "readonly")
+                .unwrap_or(false);
+            self.load_version = self
+                .transition
+                .as_ref()
+                .map(|state| state.load_version)
+                .unwrap_or_default();
+            Status::ok()
+        }
+
+        fn save_snapshot_file(&self, path: PathBuf) -> StatefulLifecycleSnapshotFileResponse {
+            let snapshot = self.snapshot();
+            if let Some(parent) = path.parent() {
+                if let Err(err) = fs::create_dir_all(parent) {
+                    return StatefulLifecycleSnapshotFileResponse {
+                        status: Status::error("lifecycle_snapshot_io", err.to_string()),
+                        snapshot: None,
+                    };
+                }
+            }
+            match serde_json::to_vec_pretty(&snapshot)
+                .map_err(|err| err.to_string())
+                .and_then(|bytes| fs::write(&path, bytes).map_err(|err| err.to_string()))
+            {
+                Ok(()) => StatefulLifecycleSnapshotFileResponse {
+                    status: Status::ok(),
+                    snapshot: Some(snapshot),
+                },
+                Err(err) => StatefulLifecycleSnapshotFileResponse {
+                    status: Status::error("lifecycle_snapshot_io", err),
+                    snapshot: None,
+                },
+            }
+        }
+
+        fn load_snapshot_file(&mut self, path: PathBuf) -> StatefulLifecycleSnapshotFileResponse {
+            let snapshot = match fs::read(&path)
+                .map_err(|err| err.to_string())
+                .and_then(|bytes| {
+                    serde_json::from_slice::<DataNodeLifecycleSnapshot>(&bytes)
+                        .map_err(|err| err.to_string())
+                }) {
+                Ok(snapshot) => snapshot,
+                Err(err) => {
+                    return StatefulLifecycleSnapshotFileResponse {
+                        status: Status::error("lifecycle_snapshot_io", err),
+                        snapshot: None,
+                    };
+                }
+            };
+            let status = self.restore_snapshot(snapshot.clone());
+            StatefulLifecycleSnapshotFileResponse {
+                snapshot: status.ok.then_some(snapshot),
+                status,
             }
         }
     }

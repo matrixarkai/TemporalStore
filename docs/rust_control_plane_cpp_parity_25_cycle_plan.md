@@ -405,3 +405,20 @@ Cycle 10 validates data-node lifecycle snapshot recovery through an HTTP restart
 
 The next cycle should move this same restart workflow into the metaserver scheduler harness so a
 metaserver-issued reload survives node restart without manually invoking lifecycle snapshot routes.
+
+## Cycle 11 Implemented
+
+Cycle 11 moves lifecycle restart recovery into the metaserver scheduler harness:
+
+- The stateful lifecycle nodeserver test double now supports `SaveLifecycleSnapshot` and
+  `LoadLifecycleSnapshot` using the same data-node snapshot envelope.
+- The scheduler workflow now proves a metaserver-issued load can be snapshotted, restored into a
+  restarted node, and followed by a metaserver-issued reload.
+- The reload after restore validates scheduler task id, scheduler generation, readonly state, load
+  version, and lifecycle report convergence through the scheduler execution path.
+- The scenario covers five parity checks: scheduler-issued load, node snapshot save, restarted-node
+  snapshot load, scheduler-issued reload after restart, and call ordering through the C++-style
+  ServerService lifecycle surface.
+
+The next cycle should persist this lifecycle snapshot automatically during real data-node
+load/reload/unload transitions rather than requiring an explicit test/admin save call.
