@@ -9,7 +9,7 @@ fn main() {
     );
 
     if let Some(service) = service_filter.as_deref() {
-        let Some(summary) = report.service_summary(service) else {
+        let Some(gate) = report.service_gate_report(service) else {
             eprintln!("production readiness gate failed: unknown service {service}");
             eprintln!(
                 "known services: {}",
@@ -22,19 +22,15 @@ fn main() {
             );
             std::process::exit(2);
         };
-        if !report.service_ready(service) {
+        if !gate.ready {
             eprintln!(
                 "production readiness gate failed for service {service}: {} blocker(s)",
-                summary.blocker_count
+                gate.blocker_count
             );
             for line in service_failure_lines_for_service(&report, service) {
                 eprintln!("{line}");
             }
-            for blocker in report
-                .failed_capabilities_for_service(service)
-                .iter()
-                .take(10)
-            {
+            for blocker in gate.failed_capabilities.iter().take(10) {
                 eprintln!("- {}: {}", blocker.area, blocker.capability);
             }
             std::process::exit(2);

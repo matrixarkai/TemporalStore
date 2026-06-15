@@ -52,6 +52,13 @@ fn production_readiness_service_summary_is_public_api() {
         .blocked_services()
         .iter()
         .any(|summary| summary.service == "data_node"));
+    let gate = report
+        .service_gate_report("data_node")
+        .expect("data node service gate report should be exported");
+    assert_eq!(gate.service, "data_node");
+    assert!(!gate.ready);
+    assert_eq!(gate.blocker_count, data_node.blocker_count);
+    assert_eq!(gate.failed_capabilities.len(), data_node.blocker_count);
 }
 
 #[test]

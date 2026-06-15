@@ -45,6 +45,16 @@ pub struct ServiceReadinessSummary {
     pub failed_capabilities: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServiceReadinessGateReport {
+    pub service: String,
+    pub ready: bool,
+    pub blocker_count: usize,
+    pub blocker_classes: Vec<String>,
+    pub next_action: String,
+    pub failed_capabilities: Vec<ReadinessCapabilityBlocker>,
+}
+
 impl ProductionReadinessReport {
     pub fn missing_count(&self) -> usize {
         self.areas.iter().map(|area| area.missing.len()).sum()
@@ -91,6 +101,22 @@ impl ProductionReadinessReport {
             .iter()
             .filter(|blocker| summary.areas.iter().any(|area| area == &blocker.area))
             .collect()
+    }
+
+    pub fn service_gate_report(&self, service: &str) -> Option<ServiceReadinessGateReport> {
+        let summary = self.service_summary(service)?;
+        Some(ServiceReadinessGateReport {
+            service: summary.service.clone(),
+            ready: self.service_ready(service),
+            blocker_count: summary.blocker_count,
+            blocker_classes: summary.blocker_classes.clone(),
+            next_action: summary.next_action.clone(),
+            failed_capabilities: self
+                .failed_capabilities_for_service(service)
+                .into_iter()
+                .cloned()
+                .collect(),
+        })
     }
 }
 
@@ -594,6 +620,15 @@ mod tests {
                 summary.blocker_count,
                 "{service} typed blockers should match summary count"
             );
+            let gate = report
+                .service_gate_report(service)
+                .expect("service gate report must exist");
+            assert_eq!(gate.service, service);
+            assert_eq!(gate.ready, summary.ready);
+            assert_eq!(gate.blocker_count, summary.blocker_count);
+            assert_eq!(gate.blocker_classes, summary.blocker_classes);
+            assert_eq!(gate.next_action, summary.next_action);
+            assert_eq!(gate.failed_capabilities.len(), summary.blocker_count);
             assert!(
                 !report.service_ready(service),
                 "{service} should be false for service-level gates until blockers are closed"
@@ -609,6 +644,7 @@ mod tests {
             vec!["client", "proxy", "ingestion", "data_node", "metaserver"]
         );
         assert!(!report.service_ready("unknown_service"));
+        assert!(report.service_gate_report("unknown_service").is_none());
 
         assert_eq!(
             report

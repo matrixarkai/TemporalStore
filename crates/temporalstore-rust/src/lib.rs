@@ -112,7 +112,7 @@ pub use raft::{
 };
 pub use readiness::{
     production_readiness_report, ProductionReadinessReport, ReadinessArea,
-    ReadinessCapabilityBlocker, ServiceReadinessSummary,
+    ReadinessCapabilityBlocker, ServiceReadinessGateReport, ServiceReadinessSummary,
 };
 pub use rebalance::{
     MembershipUpdatePeerRequest, MembershipUpdatePeerStatus, MembershipUpdateTaskOptions,
