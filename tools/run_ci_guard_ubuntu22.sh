@@ -60,6 +60,7 @@ syntax_check() {
     "${ROOT}/tools/run_stale_local_data_restart_gate_ubuntu22.sh" \
     "${ROOT}/tools/run_multitenant_noisy_neighbor_ubuntu22.sh" \
     "${ROOT}/tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh" \
+    "${ROOT}/tools/run_live_raft_metrics_ubuntu22.sh" \
     "${ROOT}/tools/run_fault_injection_gate_ubuntu22.sh" \
     "${ROOT}/tools/run_remote_auth_gate_ubuntu22.sh" \
     "${ROOT}/tools/run_soak_profile_ubuntu22.sh"
