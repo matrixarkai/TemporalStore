@@ -220,3 +220,23 @@ groups:
         annotations:
           summary: "TemporalStore metaserver snapshot files missing"
           description: "The metaserver snapshot restore gate did not observe local snapshot files before restart."
+
+      - alert: TemporalStoreStaleLocalDataRestartFailed
+        expr: temporalstore_stale_local_data_restart_pass == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: data-node
+        annotations:
+          summary: "TemporalStore stale local data restart gate failed"
+          description: "The stale local data restart gate did not prove restart from persisted raft/storage state."
+
+      - alert: TemporalStoreStaleLocalDataGuardMissing
+        expr: temporalstore_stale_local_data_guard_present == 0
+        for: 1m
+        labels:
+          severity: warning
+          component: data-node
+        annotations:
+          summary: "TemporalStore stale local data guard missing"
+          description: "The stale local data restart gate did not find expected missing/malformed applied-index guards."

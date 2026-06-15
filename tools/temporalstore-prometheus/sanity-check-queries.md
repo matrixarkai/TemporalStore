@@ -180,7 +180,25 @@ temporalstore_metaserver_snapshot_restore_restart_ms
 temporalstore_metaserver_snapshot_restore_raft_nodes{phase="after_restore"}
 ```
 
-12. Raft/fault-tolerance gate evidence from the textfile collector
+12. Stale local data restart evidence
+
+```promql
+temporalstore_stale_local_data_restart_pass
+```
+
+```promql
+temporalstore_stale_local_data_files{kind="applied_index"}
+```
+
+```promql
+temporalstore_stale_local_data_files{kind="wal"}
+```
+
+```promql
+temporalstore_stale_local_data_guard_present
+```
+
+13. Raft/fault-tolerance gate evidence from the textfile collector
 
 ```promql
 temporalstore_raft_gate_case_pass
