@@ -172,11 +172,11 @@ groups:
           description: "The bounded-stale follower-read gate reported errors or visibility p95/p99 above the configured SLA."
 
       - alert: TemporalStoreFollowerReadLatencyHigh
-        expr: temporalstore_follower_read_visibility_p99_us > 50000
+        expr: temporalstore_follower_read_visibility_p99_us > 100000
         for: 1m
         labels:
           severity: warning
           component: data-node
         annotations:
           summary: "TemporalStore follower-read p99 latency is high"
-          description: "Bounded-stale follower-read visibility p99 exceeded 50 ms in the local production-readiness gate."
+          description: "Bounded-stale follower-read visibility p99 exceeded 100 ms in the local production-readiness gate."

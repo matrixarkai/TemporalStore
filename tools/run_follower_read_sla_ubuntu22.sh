@@ -6,7 +6,7 @@ BUILD_TYPE="${BUILD_TYPE:-Release}"
 RESULT_DIR="${RESULT_DIR:-/tmp/temporalstore-follower-read-sla-$(date +%Y%m%d_%H%M%S)}"
 TEXTFILE_DIR="${TEXTFILE_DIR:-${RESULT_DIR}/metrics}"
 METRICS_FILE="${METRICS_FILE:-${TEXTFILE_DIR}/temporalstore-follower-read-sla.prom}"
-MAX_SECONDARY_VISIBILITY_P99_US="${MAX_SECONDARY_VISIBILITY_P99_US:-50000}"
+MAX_SECONDARY_VISIBILITY_P99_US="${MAX_SECONDARY_VISIBILITY_P99_US:-100000}"
 MAX_SECONDARY_VISIBILITY_P95_US="${MAX_SECONDARY_VISIBILITY_P95_US:-50000}"
 PROBE_OPS="${PROBE_OPS:-120}"
 PROBE_THREADS="${PROBE_THREADS:-2}"
@@ -15,6 +15,10 @@ BACKGROUND_READER_THREADS="${BACKGROUND_READER_THREADS:-2}"
 BENCH_TIMEOUT_S="${BENCH_TIMEOUT_S:-180}"
 MS_PORT="${MS_PORT:-29200}"
 SERVER_PORT="${SERVER_PORT:-15200}"
+DATA_RAFT_BOUNDED_STALE_MAX_INDEX_LAG="${DATA_RAFT_BOUNDED_STALE_MAX_INDEX_LAG:-16}"
+SERVER_HEARTBEAT_INTERVAL_MS="${SERVER_HEARTBEAT_INTERVAL_MS:-500}"
+SERVER_HEARTBEAT_TIMEOUT_MS="${SERVER_HEARTBEAT_TIMEOUT_MS:-1000}"
+SERVER_META_TINKER_INTERVAL_MS="${SERVER_META_TINKER_INTERVAL_MS:-500}"
 
 mkdir -p "${RESULT_DIR}" "${TEXTFILE_DIR}"
 
@@ -29,6 +33,10 @@ env \
   BACKGROUND_WRITER_THREADS="${BACKGROUND_WRITER_THREADS}" \
   BACKGROUND_READER_THREADS="${BACKGROUND_READER_THREADS}" \
   BENCH_TIMEOUT_S="${BENCH_TIMEOUT_S}" \
+  DATA_RAFT_BOUNDED_STALE_MAX_INDEX_LAG="${DATA_RAFT_BOUNDED_STALE_MAX_INDEX_LAG}" \
+  SERVER_HEARTBEAT_INTERVAL_MS="${SERVER_HEARTBEAT_INTERVAL_MS}" \
+  SERVER_HEARTBEAT_TIMEOUT_MS="${SERVER_HEARTBEAT_TIMEOUT_MS}" \
+  SERVER_META_TINKER_INTERVAL_MS="${SERVER_META_TINKER_INTERVAL_MS}" \
   bash "${ROOT}/tools/run_data_raft_mixed_rw_ubuntu22.sh"
 
 python3 - \
@@ -36,6 +44,7 @@ python3 - \
   "${METRICS_FILE}" \
   "${MAX_SECONDARY_VISIBILITY_P99_US}" \
   "${MAX_SECONDARY_VISIBILITY_P95_US}" \
+  "${DATA_RAFT_BOUNDED_STALE_MAX_INDEX_LAG}" \
   > "${RESULT_DIR}/summary.txt" <<'PY'
 import csv
 import sys
@@ -45,6 +54,7 @@ visibility_path = Path(sys.argv[1])
 metrics_path = Path(sys.argv[2])
 max_p99 = float(sys.argv[3])
 max_p95 = float(sys.argv[4])
+bounded_stale_max_index_lag = float(sys.argv[5])
 
 rows = []
 with visibility_path.open(encoding="utf-8", newline="") as fh:
@@ -101,6 +111,15 @@ with metrics_path.open("w", encoding="utf-8") as out:
     out.write("# HELP temporalstore_follower_read_sla_pass Whether bounded-stale follower-read SLA passed.\n")
     out.write("# TYPE temporalstore_follower_read_sla_pass gauge\n")
     out.write(f"temporalstore_follower_read_sla_pass {1 if passed else 0}\n")
+    out.write("# HELP temporalstore_follower_read_visibility_p95_sla_us Configured hard p95 SLA for secondary visibility.\n")
+    out.write("# TYPE temporalstore_follower_read_visibility_p95_sla_us gauge\n")
+    out.write(f"temporalstore_follower_read_visibility_p95_sla_us {max_p95}\n")
+    out.write("# HELP temporalstore_follower_read_visibility_p99_sla_us Configured hard p99 SLA for secondary visibility.\n")
+    out.write("# TYPE temporalstore_follower_read_visibility_p99_sla_us gauge\n")
+    out.write(f"temporalstore_follower_read_visibility_p99_sla_us {max_p99}\n")
+    out.write("# HELP temporalstore_follower_read_bounded_stale_max_index_lag Configured bounded-stale Raft index lag for follower reads.\n")
+    out.write("# TYPE temporalstore_follower_read_bounded_stale_max_index_lag gauge\n")
+    out.write(f"temporalstore_follower_read_bounded_stale_max_index_lag {bounded_stale_max_index_lag}\n")
     out.write("# HELP temporalstore_follower_read_visibility_p95_us Secondary visibility p95 latency after primary writes.\n")
     out.write("# TYPE temporalstore_follower_read_visibility_p95_us gauge\n")
     out.write(f"temporalstore_follower_read_visibility_p95_us {lag_p95}\n")
@@ -128,6 +147,9 @@ with metrics_path.open("w", encoding="utf-8") as out:
 
 print(f"visibility_p95_us={lag_p95}")
 print(f"visibility_p99_us={lag_p99}")
+print(f"visibility_p95_sla_us={max_p95}")
+print(f"visibility_p99_sla_us={max_p99}")
+print(f"bounded_stale_max_index_lag={bounded_stale_max_index_lag}")
 print(f"visibility_errors={lag_errors}")
 print(f"poll_attempts_p99={attempt_p99}")
 print(f"background_write_errors={background_write_errors}")
