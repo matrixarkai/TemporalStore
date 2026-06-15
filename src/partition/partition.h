@@ -218,6 +218,9 @@ class Partition {
     };
     std::mutex data_raft_pending_mu_;
     std::unordered_map<uint64_t, std::shared_ptr<PendingDataRaftApply>> data_raft_pending_;
+    std::mutex data_raft_campaign_mu_;
+    std::condition_variable data_raft_campaign_cv_;
+    bool data_raft_campaign_inflight_ = false;
     std::mutex data_raft_snapshot_mu_;
     std::mutex data_raft_membership_mu_;
     std::atomic<uint64_t> data_raft_applied_index_{0};
