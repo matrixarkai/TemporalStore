@@ -359,8 +359,16 @@ void PageStore::ReadPage(Controller* ctrl, PageIndex index, PageInfo* page_info,
     BYTE_ASSERT(task->zone != nullptr);
     if (FLAGS_enable_blockcache && blockcache_) {
         auto unique_id = GetUniqueID(&task->page_index);
+        metrics_.blockcache_get_qps->get()->Increment();
+        if (read_path_test_counters_) {
+            ++read_path_test_counters_->blockcache_gets;
+        }
         auto status = blockcache_->Get(unique_id, &task->buffer);
         if (status.ok()) {
+            metrics_.blockcache_hit_qps->get()->Increment();
+            if (read_path_test_counters_) {
+                ++read_path_test_counters_->blockcache_hits;
+            }
             task->page_in_cache = true;
             task->ctrl->set_status(status);
             byte::InvokeInCurrentThread(
@@ -368,6 +376,10 @@ void PageStore::ReadPage(Controller* ctrl, PageIndex index, PageInfo* page_info,
             return;
         }
     }
+    if (read_path_test_counters_) {
+        ++read_path_test_counters_->persistent_reads;
+    }
+    metrics_.persistent_read_qps->get()->Increment();
     task->zone->metrics.read_qps->get()->Increment();
     task->zone->metrics.read_throughput->get()->Add(index.page_size);
     task->zone->stream->Read(ctrl, ExtractZoneOffset(index.address), &task->buffer[0],

@@ -130,6 +130,9 @@ struct PageStoreMetrics {
     std::unique_ptr<MetricsEnv::HistogramHolder> page_size;
     std::unique_ptr<MetricsEnv::HistogramHolder> compressed_page_size;
     std::unique_ptr<MetricsEnv::HistogramHolder> compress_ratio;
+    std::unique_ptr<MetricsEnv::CounterHolder> blockcache_get_qps;
+    std::unique_ptr<MetricsEnv::CounterHolder> blockcache_hit_qps;
+    std::unique_ptr<MetricsEnv::CounterHolder> persistent_read_qps;
 
     void Init(MetricsManager* metrics_manager) {
         zone_count = metrics_manager->Get<MetricsEnv::Guage>("page_store.zone_count", {});
@@ -139,6 +142,12 @@ struct PageStoreMetrics {
             metrics_manager->Get<MetricsEnv::Histogram>("page_store.compressed_page_size", {});
         compress_ratio =
             metrics_manager->Get<MetricsEnv::Histogram>("page_store.compress_ratio", {});
+        blockcache_get_qps =
+            metrics_manager->Get<MetricsEnv::Counter>("page_store.blockcache_get_qps", {});
+        blockcache_hit_qps =
+            metrics_manager->Get<MetricsEnv::Counter>("page_store.blockcache_hit_qps", {});
+        persistent_read_qps =
+            metrics_manager->Get<MetricsEnv::Counter>("page_store.persistent_read_qps", {});
     }
 };
 

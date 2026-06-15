@@ -190,6 +190,8 @@ scrape_and_validate_metrics() {
          "${PROM_FILE}" "metaserver role up" && \
        require_metric 'temporalstore_vars_exporter_target_samples_scraped{service_role="nodeserver"' \
          "${PROM_FILE}" "nodeserver sample count" && \
+       require_metric 'bcache2_server_partition_page_store_persistent_read_qps' \
+         "${PROM_FILE}" "page-store persistent read metric" && \
        require_metric 'temporalstore_client_validation_up' \
          "${CLIENT_FILE}" "client validation" && \
        require_metric 'temporalstore_proxy_artifact_present' \
