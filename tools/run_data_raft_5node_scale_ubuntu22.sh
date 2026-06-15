@@ -9,6 +9,8 @@ BUILD_FLAVOR="$(printf '%s' "${BUILD_TYPE}" | tr '[:upper:]' '[:lower:]')"
 OUT_DIR="${OUT_DIR:-${ROOT}/output-ubuntu22/${BUILD_FLAVOR}}"
 BIN_DIR="${BIN_DIR:-${ROOT}/build-ubuntu22/${BUILD_FLAVOR}/src/client/example}"
 RESULT_DIR="${RESULT_DIR:-/tmp/temporalstore-data-raft-5node-scale-$(date +%Y%m%d_%H%M%S)}"
+TEXTFILE_DIR="${TEXTFILE_DIR:-${RESULT_DIR}/metrics}"
+METRICS_FILE="${METRICS_FILE:-${TEXTFILE_DIR}/temporalstore-data-raft-5node.prom}"
 SMOKE_DIR="${SMOKE_DIR:-${RESULT_DIR}/cluster}"
 CLUSTER_NAME="${CLUSTER_NAME:-raft_5node_scale}"
 NAMESPACE_NAME="${NAMESPACE_NAME:-ns1}"
@@ -118,7 +120,41 @@ with open(sys.argv[2], "w", encoding="utf-8") as out:
 PY
 }
 
-mkdir -p "${RESULT_DIR}"
+wait_for_partition_placement() {
+  local attempts="${1:-180}"
+  for _ in $(seq 1 "${attempts}"); do
+    if curl -fsS -m 5 -H "Content-Type: application/json" -d "${list_partition_body}" \
+      "http://127.0.0.1:${MS_PORT}/QueryService/ListPartition" \
+      > "${RESULT_DIR}/list_partition.json"; then
+      if python3 - "${RESULT_DIR}/list_partition.json" <<'PY'
+import json
+import sys
+
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+ports = set()
+replicas = 0
+for table in data.get("info", []):
+    for partition in table.get("partition_info", []):
+        server = partition.get("placement_actual", {}).get("server", {})
+        port = server.get("port")
+        if port:
+            ports.add(int(port))
+            replicas += 1
+ok = replicas >= 3 and len(ports) >= 3
+sys.exit(0 if ok else 1)
+PY
+      then
+        return 0
+      fi
+    fi
+    sleep 1
+  done
+  echo "timed out waiting for partition placement_actual ports" >&2
+  cat "${RESULT_DIR}/list_partition.json" >&2 || true
+  return 1
+}
+
+mkdir -p "${RESULT_DIR}" "${TEXTFILE_DIR}"
 rm -rf "${SMOKE_DIR}"
 
 if (( SERVER_PORT + 4 + DATA_RAFT_RAFT_PORT_DELTA > 65535 ||
@@ -208,8 +244,7 @@ if len(normal) < 5:
 PY
 echo "normal_servers=5" | tee -a "${RESULT_DIR}/summary.txt"
 
-curl -fsS -m 5 -H "Content-Type: application/json" -d "${list_partition_body}" \
-  "http://127.0.0.1:${MS_PORT}/QueryService/ListPartition" > "${RESULT_DIR}/list_partition.json"
+wait_for_partition_placement 180
 parse_partition_distribution "${RESULT_DIR}/list_partition.json" "${RESULT_DIR}/partition_distribution.csv"
 cat "${RESULT_DIR}/partition_distribution.csv" | tee -a "${RESULT_DIR}/summary.txt"
 python3 - "${RESULT_DIR}/partition_distribution.csv" <<'PY'
@@ -270,10 +305,96 @@ PY
 done
 
 if [[ "${failed}" != "0" ]]; then
+  cat > "${METRICS_FILE}" <<EOF
+# HELP temporalstore_data_raft_5node_scale_pass Whether 5-node data raft scale gate passed.
+# TYPE temporalstore_data_raft_5node_scale_pass gauge
+temporalstore_data_raft_5node_scale_pass 0
+EOF
   echo "FAIL data-raft 5-node scale"
   echo "${RESULT_DIR}"
   exit 1
 fi
 
+python3 - \
+  "${RESULT_DIR}/list_server.json" \
+  "${RESULT_DIR}/partition_distribution.csv" \
+  "${RESULT_DIR}/results.csv" \
+  "${METRICS_FILE}" <<'PY'
+import csv
+import json
+import sys
+from pathlib import Path
+
+servers_path = Path(sys.argv[1])
+distribution_path = Path(sys.argv[2])
+results_path = Path(sys.argv[3])
+metrics_path = Path(sys.argv[4])
+
+servers = json.loads(servers_path.read_text(encoding="utf-8"))
+normal_servers = sum(
+    1
+    for server in servers.get("servers", [])
+    if server.get("server_info", {}).get("state") == "SERVER_NORMAL"
+)
+dist_rows = list(csv.DictReader(distribution_path.open(encoding="utf-8")))
+result_rows = list(csv.DictReader(results_path.open(encoding="utf-8")))
+total_partitions = sum(int(row["partition_count"]) for row in dist_rows)
+servers_with_replicas = len([row for row in dist_rows if int(row["partition_count"]) > 0])
+total_errors = sum(float(row.get("errors") or 0) for row in result_rows)
+exit_failures = sum(1 for row in result_rows if str(row.get("exit_code", "1")) != "0")
+passed = (
+    normal_servers >= 5
+    and servers_with_replicas >= 3
+    and total_partitions >= 3
+    and total_errors == 0
+    and exit_failures == 0
+)
+
+metrics_path.parent.mkdir(parents=True, exist_ok=True)
+with metrics_path.open("w", encoding="utf-8") as out:
+    out.write("# HELP temporalstore_data_raft_5node_scale_pass Whether 5-node data raft scale gate passed.\n")
+    out.write("# TYPE temporalstore_data_raft_5node_scale_pass gauge\n")
+    out.write(f"temporalstore_data_raft_5node_scale_pass {1 if passed else 0}\n")
+    out.write("# HELP temporalstore_data_raft_5node_normal_servers Normal data servers observed by the gate.\n")
+    out.write("# TYPE temporalstore_data_raft_5node_normal_servers gauge\n")
+    out.write(f"temporalstore_data_raft_5node_normal_servers {normal_servers}\n")
+    out.write("# HELP temporalstore_data_raft_5node_servers_with_replicas Servers holding table replicas.\n")
+    out.write("# TYPE temporalstore_data_raft_5node_servers_with_replicas gauge\n")
+    out.write(f"temporalstore_data_raft_5node_servers_with_replicas {servers_with_replicas}\n")
+    out.write("# HELP temporalstore_data_raft_5node_partition_replicas Table replica count by server port.\n")
+    out.write("# TYPE temporalstore_data_raft_5node_partition_replicas gauge\n")
+    for row in dist_rows:
+        out.write(
+            "temporalstore_data_raft_5node_partition_replicas"
+            f"{{server_port=\"{row['server_port']}\"}} {row['partition_count']}\n"
+        )
+    out.write("# HELP temporalstore_data_raft_5node_benchmark_errors_total Benchmark errors by thread count.\n")
+    out.write("# TYPE temporalstore_data_raft_5node_benchmark_errors_total counter\n")
+    out.write("# HELP temporalstore_data_raft_5node_benchmark_set_qps Set QPS by thread count.\n")
+    out.write("# TYPE temporalstore_data_raft_5node_benchmark_set_qps gauge\n")
+    out.write("# HELP temporalstore_data_raft_5node_benchmark_get_qps Get QPS by thread count.\n")
+    out.write("# TYPE temporalstore_data_raft_5node_benchmark_get_qps gauge\n")
+    for row in result_rows:
+        threads = row["threads"]
+        out.write(
+            f"temporalstore_data_raft_5node_benchmark_errors_total"
+            f"{{threads=\"{threads}\"}} {float(row.get('errors') or 0)}\n"
+        )
+        out.write(
+            f"temporalstore_data_raft_5node_benchmark_set_qps"
+            f"{{threads=\"{threads}\"}} {float(row.get('set_qps') or 0)}\n"
+        )
+        out.write(
+            f"temporalstore_data_raft_5node_benchmark_get_qps"
+            f"{{threads=\"{threads}\"}} {float(row.get('get_qps') or 0)}\n"
+        )
+
+print(f"metrics_file={metrics_path}")
+print(f"data_raft_5node_scale_pass={1 if passed else 0}")
+if not passed:
+    raise SystemExit("5-node data raft metrics check failed")
+PY
+cat "${METRICS_FILE}" >> "${RESULT_DIR}/summary.txt"
+grep -q '^temporalstore_data_raft_5node_scale_pass 1' "${METRICS_FILE}"
 echo "PASS data-raft 5-node scale"
 echo "${RESULT_DIR}"

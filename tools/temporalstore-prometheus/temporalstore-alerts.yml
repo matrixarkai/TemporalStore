@@ -240,3 +240,13 @@ groups:
         annotations:
           summary: "TemporalStore stale local data guard missing"
           description: "The stale local data restart gate did not find expected missing/malformed applied-index guards."
+
+      - alert: TemporalStoreDataRaft5NodeScaleFailed
+        expr: temporalstore_data_raft_5node_scale_pass == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: data-node
+        annotations:
+          summary: "TemporalStore 5-node data raft scale gate failed"
+          description: "The 5-node data raft scale gate did not prove five normal servers, replica distribution, replication smoke, and zero-error reads/writes."

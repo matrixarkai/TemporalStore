@@ -198,7 +198,25 @@ temporalstore_stale_local_data_files{kind="wal"}
 temporalstore_stale_local_data_guard_present
 ```
 
-13. Raft/fault-tolerance gate evidence from the textfile collector
+13. 5-node data raft scale evidence
+
+```promql
+temporalstore_data_raft_5node_scale_pass
+```
+
+```promql
+temporalstore_data_raft_5node_normal_servers
+```
+
+```promql
+temporalstore_data_raft_5node_servers_with_replicas
+```
+
+```promql
+temporalstore_data_raft_5node_benchmark_errors_total
+```
+
+14. Raft/fault-tolerance gate evidence from the textfile collector
 
 ```promql
 temporalstore_raft_gate_case_pass
