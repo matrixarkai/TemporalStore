@@ -16,6 +16,8 @@ MS_SNAPSHOT_PORT="${MS_SNAPSHOT_PORT:-36120}"
 REQUEST_OPERATOR="${REQUEST_OPERATOR:-meta_raft_membership}"
 ADMIN_RPC_TIMEOUT_S="${ADMIN_RPC_TIMEOUT_S:-8}"
 MEMBERSHIP_WAIT_ATTEMPTS="${MEMBERSHIP_WAIT_ATTEMPTS:-120}"
+KILL_LEADER_AFTER_ADD="${KILL_LEADER_AFTER_ADD:-0}"
+leader_killed_after_add=0
 
 need_file() {
   if [[ ! -x "$1" ]]; then
@@ -136,6 +138,18 @@ id_to_port() {
   echo $((MS_PORT + (id - 1) * MS_PORT_STEP))
 }
 
+port_to_id() {
+  local port="$1"
+  echo "$(((port - MS_PORT) / MS_PORT_STEP + 1))"
+}
+
+process_gone_or_zombie() {
+  local pid="$1"
+  local state
+  state="$(ps -o stat= -p "${pid}" 2>/dev/null | awk '{print $1}')"
+  [[ -z "${state}" || "${state}" == Z* ]]
+}
+
 assert_port_down() {
   local port="$1"
   local attempts="${2:-20}"
@@ -254,6 +268,10 @@ wait_for_json_field \
   60
 
 start_metaserver 3 "${peers_3}"
+node3_role="LEARNER"
+if [[ "${KILL_LEADER_AFTER_ADD}" == "1" ]]; then
+  node3_role="NORMAL"
+fi
 
 add_node_body="{
   \"id\": ${request_id},
@@ -261,7 +279,7 @@ add_node_body="{
     \"peer_id\": 3,
     \"raft_addr\": \"127.0.0.1:$((MS_RAFT_PORT + 2))\",
     \"snapshot_addr\": \"127.0.0.1:$((MS_SNAPSHOT_PORT + 2))\",
-    \"role\": \"LEARNER\"
+    \"role\": \"${node3_role}\"
   }
 }"
 post_json "${leader_port}" "RaftControlService/AddNode" "${add_node_body}" \
@@ -306,6 +324,45 @@ PY
 )"
 echo "node3_stale_read_namespace=${namespace_before}" | tee -a "${RESULT_DIR}/summary.txt"
 echo "node3_applied_index_after_add=${node3_applied_index}" | tee -a "${RESULT_DIR}/summary.txt"
+
+if [[ "${KILL_LEADER_AFTER_ADD}" == "1" ]]; then
+  leader_id="$(port_to_id "${leader_port}")"
+  leader_pid="$(cat "${RESULT_DIR}/metaserver${leader_id}.pid")"
+  echo "leader_kill_after_add_port=127.0.0.1:${leader_port}" | tee -a "${RESULT_DIR}/summary.txt"
+  echo "leader_kill_after_add_pid=${leader_pid}" | tee -a "${RESULT_DIR}/summary.txt"
+  kill "${leader_pid}" >/dev/null 2>&1 || true
+  sleep 0.5
+  if kill -0 "${leader_pid}" >/dev/null 2>&1; then
+    kill -9 "${leader_pid}" >/dev/null 2>&1 || true
+  fi
+  for _ in $(seq 1 40); do
+    if process_gone_or_zombie "${leader_pid}"; then
+      break
+    fi
+    sleep 0.25
+  done
+  if ! process_gone_or_zombie "${leader_pid}"; then
+    echo "metaserver leader still alive after SIGKILL: ${leader_pid}" >&2
+    exit 1
+  fi
+  rm -f "${RESULT_DIR}/metaserver${leader_id}.pid"
+  assert_port_down "${leader_port}"
+  leader_killed_after_add=1
+  leader_port="$(find_leader_port 160)" || {
+    echo "timed out waiting for new leader after membership-change leader kill" >&2
+    exit 1
+  }
+  echo "leader_after_membership_kill=127.0.0.1:${leader_port}" | tee -a "${RESULT_DIR}/summary.txt"
+  start_metaserver "${leader_id}" "${peers_3}"
+  wait_for_json_field \
+    "$(id_to_port "${leader_id}")" \
+    "QueryService/QueryClusterStatus" \
+    "{\"id\":${request_id},\"read_stale\":true}" \
+    "data.get('status', {}).get('code', 0) == 0 and data.get('cluster_name') == '${CLUSTER_NAME}' and len(data.get('raft_nodes', [])) == 3 and data.get('raft_applied_index', 0) > 0" \
+    "${RESULT_DIR}/restarted_leader_cluster_status_after_add.json" \
+    "${MEMBERSHIP_WAIT_ATTEMPTS}"
+  echo "leader_restarted_after_membership_kill=127.0.0.1:$(id_to_port "${leader_id}")" | tee -a "${RESULT_DIR}/summary.txt"
+fi
 
 remove_node_body="{
   \"id\": ${request_id},
@@ -373,6 +430,7 @@ wait_for_json_field \
 membership_elapsed_ms="$(( $(date +%s%3N) - membership_start_ms ))"
 echo "namespace_before_add=${namespace_before}" | tee -a "${RESULT_DIR}/summary.txt"
 echo "namespace_after_remove=${namespace_name}" | tee -a "${RESULT_DIR}/summary.txt"
+echo "leader_killed_after_add=${leader_killed_after_add}" | tee -a "${RESULT_DIR}/summary.txt"
 echo "metaserver_membership_add_remove_ms=${membership_elapsed_ms}" | tee -a "${RESULT_DIR}/summary.txt"
 
 echo "PASS metaserver raft membership add/remove" | tee -a "${RESULT_DIR}/summary.txt"
