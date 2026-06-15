@@ -55,6 +55,7 @@ syntax_check() {
     "${ROOT}/tools/run_raft_stress_suite_ubuntu22.sh" \
     "${ROOT}/tools/run_data_raft_scale_up_down_ubuntu22.sh"
   bash -n \
+    "${ROOT}/tools/run_rebalance_local_ubuntu22.sh" \
     "${ROOT}/tools/run_fault_injection_gate_ubuntu22.sh" \
     "${ROOT}/tools/run_remote_auth_gate_ubuntu22.sh" \
     "${ROOT}/tools/run_soak_profile_ubuntu22.sh"
