@@ -234,7 +234,29 @@ temporalstore_remote_auth_ls_remote_exit_code
 temporalstore_remote_auth_visible_refs
 ```
 
-15. Raft/fault-tolerance gate evidence from the textfile collector
+15. Dependency-cache CI gate evidence
+
+```promql
+temporalstore_dependency_cache_gate_pass
+```
+
+```promql
+temporalstore_dependency_cache_critical_missing
+```
+
+```promql
+temporalstore_dependency_cache_tool_missing
+```
+
+```promql
+temporalstore_dependency_cache_build_knob_missing
+```
+
+```promql
+temporalstore_dependency_cache_optional_missing
+```
+
+16. Raft/fault-tolerance gate evidence from the textfile collector
 
 ```promql
 temporalstore_raft_gate_case_pass

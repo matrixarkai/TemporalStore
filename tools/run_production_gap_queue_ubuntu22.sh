@@ -156,6 +156,7 @@ multitenant_command='env BUILD_TYPE="${BUILD_TYPE}" RESULT_DIR="${RESULT_DIR}/mu
 metaserver_snapshot_command='env BUILD_TYPE="${BUILD_TYPE}" RESULT_DIR="${RESULT_DIR}/metaserver_snapshot" MS_PORT="$((BASE_MS_PORT + 16000))" MS_RAFT_PORT="$((BASE_MS_PORT + 16010))" MS_SNAPSHOT_PORT="$((BASE_MS_PORT + 16020))" LOG_CHURN_NAMESPACES=12 bash tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh'
 soak_command='env BUILD_TYPE="${BUILD_TYPE}" RESULT_DIR="${RESULT_DIR}/soak" SOAK_MINUTES="${SOAK_MINUTES:-30}" SOAK_QUEUE_LEVEL=quick RUN_QUEUE_EXECUTION=1 bash tools/run_soak_profile_ubuntu22.sh'
 remote_auth_command='env RESULT_DIR="${RESULT_DIR}/remote_auth" REMOTE_TIMEOUT_S=30 bash tools/run_remote_auth_gate_ubuntu22.sh'
+dependency_cache_command='env RESULT_DIR="${RESULT_DIR}/dependency_cache" RUN_BUILD_SMOKE=0 BUILD_TYPE="${BUILD_TYPE}" BUILD_TARGETS=bcache2-server bash tools/run_dependency_cache_gate_ubuntu22.sh'
 
 write_header
 
@@ -178,7 +179,7 @@ register_gap 16 "Process restart with stale local data gate" pr covered "tools/r
 register_gap 17 "Disk/path failure simulation" pr covered "tools/run_fault_injection_gate_ubuntu22.sh" "" "Covered by the same local fault-injection gate, which rejects invalid storage paths before service startup."
 register_gap 18 "Prometheus alert rules" quick covered "tools/temporalstore-prometheus/temporalstore-alerts.yml" "test -f tools/temporalstore-prometheus/temporalstore-alerts.yml && grep -q TemporalStoreServiceDown tools/temporalstore-prometheus/temporalstore-alerts.yml" "Alert rules are installed into Prometheus config by this queue change."
 register_gap 19 "CI full-gate mode for Docker Prometheus" quick covered "run_ci_guard_ubuntu22.sh" "${ci_command}" "CI guard can run full API/prometheus/ingestion smoke with START_PROMETHEUS governed by the production gate."
-register_gap 20 "Build/test CI with dependency cache" manual partial "tools/build_ubuntu22.sh + CI design" "" "Local cache reuse is documented; remote workflow update still requires workflow-scope branch handling."
+register_gap 20 "Build/test CI with dependency cache" quick covered "tools/run_dependency_cache_gate_ubuntu22.sh" "${dependency_cache_command}" "Dedicated CI gate validates Ubuntu 22 build tools, local byte/byteraft dependency-cache symlinks, build-script cache knobs, cached release-binary evidence, optional reusable system/static libraries, and Prometheus textfile metrics."
 register_gap 21 "Full 5-repeat raft production gate" release covered "run_raft_production_gate_ubuntu22.sh" "${raft_release_command}" "Release gate is executable and repeats raft/failover production assertions 5 times."
 register_gap 22 "30-minute soak profile" nightly covered "tools/run_soak_profile_ubuntu22.sh" "${soak_command}" "Nightly soak wrapper repeatedly runs the executable quick queue for the configured duration; default target is 30 minutes."
 register_gap 23 "Multi-tenant noisy-neighbor gate" pr covered "tools/run_multitenant_noisy_neighbor_ubuntu22.sh" "${multitenant_command}" "Local gate runs noisy and victim namespaces concurrently, verifies victim/noisy correctness, emits Prometheus isolation metrics, and fails when victim p99 or QPS violates the configured SLA."
