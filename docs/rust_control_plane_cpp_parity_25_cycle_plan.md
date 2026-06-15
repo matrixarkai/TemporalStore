@@ -388,3 +388,20 @@ Cycle 9 exposes durable data-node lifecycle snapshots through the nodeserver com
 
 The next cycle should use these snapshot routes from a process-level nodeserver restart harness so
 metaserver-directed load/reload/unload workflows prove recovery through the real HTTP boundary.
+
+## Cycle 10 Implemented
+
+Cycle 10 validates data-node lifecycle snapshot recovery through an HTTP restart boundary:
+
+- A test-only nodeserver HTTP harness now exposes the same C++-style `ServerService` lifecycle
+  snapshot routes used by orchestration clients.
+- The restart scenario saves scheduler tokens and lifecycle transitions from one HTTP server
+  instance, starts a second runtime, loads the snapshot through HTTP, and verifies the restored
+  state through `GetLifecycleSnapshot`.
+- The recovered reload path proves the restored scheduler token is consumed by the restarted
+  node, preserving scheduler task id and generation metadata in the lifecycle report.
+- The scenario covers five parity checks: HTTP save, durable file presence, HTTP load, restored
+  token/transition inspection, and scheduler-tagged reload after restart.
+
+The next cycle should move this same restart workflow into the metaserver scheduler harness so a
+metaserver-issued reload survives node restart without manually invoking lifecycle snapshot routes.

@@ -3468,6 +3468,146 @@ mod tests {
     }
 
     #[test]
+    fn cpp_server_service_lifecycle_snapshot_survives_http_restart_boundary() {
+        let dir = tempdir().unwrap();
+        let source_engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("source-cache"),
+            dir.path().join("source-pages"),
+            dir.path().join("source-index"),
+        );
+        let source_runtime =
+            DataNodeRuntime::new(source_engine.clone(), DataNodeRuntimeOptions::default());
+        let source_addr =
+            start_lifecycle_snapshot_server(source_engine.clone(), source_runtime.clone());
+
+        let load_token = SchedulerLifecycleToken {
+            task_id: 200,
+            shard_id: 77,
+            operation: "load".to_string(),
+            load_version: 11,
+            generation: 901,
+        };
+        let reload_token = SchedulerLifecycleToken {
+            task_id: 201,
+            shard_id: 77,
+            operation: "reload".to_string(),
+            load_version: 12,
+            generation: 902,
+        };
+        for token in [&load_token, &reload_token] {
+            let status =
+                post_json::<_, Status>(&source_addr, "/ServerService/RequireLifecycleToken", token)
+                    .unwrap();
+            assert!(status.ok, "{status:?}");
+        }
+
+        let loaded = post_json::<_, LoadShardResponse>(
+            &source_addr,
+            "/ServerService/Load",
+            &LoadShardRequest {
+                shard_id: 77,
+                load_version: 11,
+                local_node_id: Some(7),
+                shard_uri: "local://restart/source-77".to_string(),
+                start_routing_slot: 700,
+                end_routing_slot: 799,
+                readonly: false,
+                table_name: "restart_table".to_string(),
+            },
+        )
+        .unwrap();
+        assert!(loaded.status.ok, "{loaded:?}");
+
+        let snapshot_path = dir.path().join("restart-lifecycle-snapshot.json");
+        let saved = post_json::<_, LifecycleSnapshotFileResponse>(
+            &source_addr,
+            "/ServerService/SaveLifecycleSnapshot",
+            &LifecycleSnapshotFileRequest {
+                path: snapshot_path.clone(),
+            },
+        )
+        .unwrap();
+        assert!(saved.status.ok, "{saved:?}");
+        assert!(snapshot_path.exists());
+        assert_eq!(saved.snapshot.as_ref().unwrap().tokens.len(), 2);
+        assert_eq!(
+            saved.snapshot.as_ref().unwrap().transitions[0].scheduler_task_id,
+            Some(200)
+        );
+
+        let restarted_engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("restarted-cache"),
+            dir.path().join("restarted-pages"),
+            dir.path().join("restarted-index"),
+        );
+        let restarted_runtime =
+            DataNodeRuntime::new(restarted_engine.clone(), DataNodeRuntimeOptions::default());
+        let restarted_addr =
+            start_lifecycle_snapshot_server(restarted_engine.clone(), restarted_runtime.clone());
+
+        let loaded_snapshot = post_json::<_, LifecycleSnapshotFileResponse>(
+            &restarted_addr,
+            "/ServerService/LoadLifecycleSnapshot",
+            &LifecycleSnapshotFileRequest {
+                path: snapshot_path.clone(),
+            },
+        )
+        .unwrap();
+        assert!(loaded_snapshot.status.ok, "{loaded_snapshot:?}");
+        assert_eq!(loaded_snapshot.snapshot.as_ref().unwrap().tokens.len(), 2);
+
+        let restored_snapshot = get_json_with_options::<DataNodeLifecycleSnapshot>(
+            &restarted_addr,
+            "/ServerService/GetLifecycleSnapshot",
+            HttpRequestOptions {
+                connect_timeout_ms: 100,
+                io_timeout_ms: 100,
+                max_retries: 0,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            restored_snapshot.tokens,
+            vec![load_token.clone(), reload_token.clone()]
+        );
+        assert_eq!(restored_snapshot.transitions[0].shard_id, 77);
+
+        let reloaded = post_json::<_, LoadShardResponse>(
+            &restarted_addr,
+            "/ServerService/Reload",
+            &LoadShardRequest {
+                shard_id: 77,
+                load_version: 12,
+                local_node_id: Some(8),
+                shard_uri: "local://restart/reloaded-77".to_string(),
+                start_routing_slot: 800,
+                end_routing_slot: 899,
+                readonly: true,
+                table_name: "restart_table_reloaded".to_string(),
+            },
+        )
+        .unwrap();
+        assert!(reloaded.status.ok, "{reloaded:?}");
+        let lifecycle =
+            get_json_with_options::<temporalstore_rust::data_node::DataNodeLifecycleReport>(
+                &restarted_addr,
+                "/ServerService/GetLifecycle",
+                HttpRequestOptions {
+                    connect_timeout_ms: 100,
+                    io_timeout_ms: 100,
+                    max_retries: 0,
+                },
+            )
+            .unwrap();
+        assert_eq!(lifecycle.transitions[0].operation, "reload");
+        assert_eq!(lifecycle.transitions[0].scheduler_task_id, Some(201));
+        assert_eq!(lifecycle.transitions[0].scheduler_generation, Some(902));
+        assert_eq!(lifecycle.readonly_count, 1);
+    }
+
+    #[test]
     fn server_cpp_async_lifecycle_alias_submits_load_job() {
         let dir = tempdir().unwrap();
         let engine = TemporalEngine::with_local_dirs(
@@ -3958,6 +4098,38 @@ mod tests {
         });
         wait_for_http(&primary_addr);
         primary_addr
+    }
+
+    fn start_lifecycle_snapshot_server(engine: TemporalEngine, runtime: DataNodeRuntime) -> String {
+        let server_addr = free_local_addr();
+        let bind_addr = server_addr.clone();
+        let advertised_addr = server_addr.clone();
+        let engine_for_server = engine.clone();
+        let runtime_for_server = runtime.clone();
+        let data_raft_appliers: Arc<Mutex<BTreeMap<u64, DataRaftCommittedLogApplier>>> =
+            Arc::default();
+        thread::spawn(move || {
+            serve(&bind_addr, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    ("GET", "/health") => json_response(200, &Status::ok()),
+                    _ => handle_cpp_server_service_route(
+                        &request,
+                        &engine_for_server,
+                        &runtime_for_server,
+                        None,
+                        "",
+                        &advertised_addr,
+                        &data_raft_appliers,
+                    )
+                    .unwrap_or_else(|| {
+                        json_response(404, &Status::error("not_found", "unknown route"))
+                    }),
+                }
+            })
+            .unwrap()
+        });
+        wait_for_http(&server_addr);
+        server_addr
     }
 
     fn start_meta_route_server(shard_id: u64, primary_addr: String) -> String {
