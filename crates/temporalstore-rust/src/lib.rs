@@ -6,6 +6,7 @@ pub mod e2e;
 pub mod engine;
 pub mod http;
 pub mod index_log;
+pub mod ingestion;
 pub mod meta;
 pub mod oplog;
 pub mod page_store;
@@ -50,6 +51,10 @@ pub use engine::{
     StorageRecoveryReport, StorageRecoverySegmentLiveReport, TemporalEngine,
 };
 pub use index_log::{IndexLogRecord, IndexLogStats, LocalIndexLogStore};
+pub use ingestion::{
+    IngestionBatchReport, IngestionBatchRequest, IngestionRecord, IngestionRecordResult,
+    IngestionSource,
+};
 pub use meta::{
     AckResponse, AddNamespaceRequest, AddTableRequest, FreezeStaleServersRequest, GetShardResponse,
     GetTableTopologyRequest, ListNamespacesResponse, ListProxiesResponse, ListServersResponse,

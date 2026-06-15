@@ -58,6 +58,25 @@ brpc and Thrift are intentionally not part of the Rust target. The Rust open-sou
 
 ## What Was Closed In The Latest Pass
 
+This pass closed the first API/Kafka/Flink ingestion gap:
+
+1. Added a 20-cycle ingestion parity backlog in
+   `docs/rust_ingestion_api_kafka_flink_20_cycle_plan.md`.
+2. Added Rust-native `IngestionSource` envelopes for API request ids, Kafka
+   topic/partition/offset records, and Flink job/operator/subtask/checkpoint/record positions.
+3. Added `IngestionBatchRequest` and `IngestionBatchReport` with per-record source, status, and
+   engine response reporting.
+4. Added `TemporalEngine::ingest_batch`, which validates source metadata, detects duplicate Kafka
+   offsets inside a batch, and executes accepted records through the existing engine batch path.
+5. Regression coverage proves API, Kafka, and Flink records mutate engine state, and duplicate
+   Kafka offsets are rejected without nooping valid records.
+
+This is not yet a production Kafka or Flink connector. It closes the shared ingestion API and
+normalization layer needed before adding nodeserver HTTP routes, proxy table routing, durable
+offset/checkpoint ledgers, connector lag metrics, and restart/failover harnesses.
+
+## What Was Closed In The Previous Pass
+
 This pass closed the third client/proxy/metaserver/nodeserver C++ parity cycle:
 
 1. Applied metaserver scheduler execution now fetches `/ServerService/GetLifecycle` after the
