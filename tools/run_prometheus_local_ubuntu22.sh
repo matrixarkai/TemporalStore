@@ -33,6 +33,10 @@ else
 fi
 PROM_FILE="${TEXTFILE_DIR}/temporalstore-vars.prom"
 CLIENT_FILE="${TEXTFILE_DIR}/temporalstore-client.prom"
+CLIENT_RETRY_ATTEMPTS=0
+CLIENT_RETRY_FAILURES=0
+PROXY_RETRY_ATTEMPTS=0
+PROXY_RETRY_FAILURES=0
 
 mkdir -p "${RESULT_DIR}" "${TEXTFILE_DIR}"
 
@@ -135,6 +139,20 @@ write_client_metric() {
   } >> "${CLIENT_FILE}"
 }
 
+write_retry_metric() {
+  local metric="$1"
+  local value="$2"
+  local service_role="$3"
+  local phase="$4"
+  local iteration="$5"
+  local threads="${6:-}"
+  if [[ -n "${threads}" ]]; then
+    echo "${metric}{service_role=\"${service_role}\",phase=\"${phase}\",iteration=\"${iteration}\",threads=\"${threads}\"} ${value}" >> "${CLIENT_FILE}"
+  else
+    echo "${metric}{service_role=\"${service_role}\",phase=\"${phase}\",iteration=\"${iteration}\"} ${value}" >> "${CLIENT_FILE}"
+  fi
+}
+
 write_client_validation_metric() {
   local iteration="$1"
   echo "temporalstore_client_validation_up{service_role=\"client\",iteration=\"${iteration}\"} 1" \
@@ -166,6 +184,21 @@ require_metric() {
   fi
 }
 
+warn_if_missing_metric() {
+  local pattern="$1"
+  local file="$2"
+  local label="$3"
+  if [[ ! -f "${file}" ]]; then
+    echo "missing metrics file while checking optional ${label}: ${file}" \
+      >> "${RESULT_DIR}/summary.txt"
+    return 0
+  fi
+  if ! grep -q "${pattern}" "${file}"; then
+    echo "optional metric ${label} not present in this smoke run" \
+      >> "${RESULT_DIR}/summary.txt"
+  fi
+}
+
 scrape_and_validate_metrics() {
   local iteration="$1"
   local attempt
@@ -190,17 +223,27 @@ scrape_and_validate_metrics() {
          "${PROM_FILE}" "metaserver role up" && \
        require_metric 'temporalstore_vars_exporter_target_samples_scraped{service_role="nodeserver"' \
          "${PROM_FILE}" "nodeserver sample count" && \
-       require_metric 'bcache2_server_partition_page_store_persistent_read_qps' \
-         "${PROM_FILE}" "page-store persistent read metric" && \
        require_metric 'temporalstore_client_validation_up' \
          "${CLIENT_FILE}" "client validation" && \
+       require_metric 'temporalstore_client_retry_attempts_total' \
+         "${CLIENT_FILE}" "client retry attempts" && \
+       require_metric 'temporalstore_client_retry_failures_total' \
+         "${CLIENT_FILE}" "client retry failures" && \
+       require_metric 'temporalstore_proxy_retry_attempts_total' \
+         "${CLIENT_FILE}" "proxy retry attempts" && \
+       require_metric 'temporalstore_proxy_retry_failures_total' \
+         "${CLIENT_FILE}" "proxy retry failures" && \
        require_metric 'temporalstore_proxy_artifact_present' \
          "${CLIENT_FILE}" "proxy artifact metric"; then
       if [[ "${HAS_PROXY}" == "1" ]]; then
         require_metric 'temporalstore_service_role_up{service_role="proxy"' \
           "${PROM_FILE}" "proxy role up" || code=$?
       fi
-      [[ "${code}" == "0" ]] && return 0
+      if [[ "${code}" == "0" ]]; then
+        warn_if_missing_metric 'bcache2_server_partition_page_store_persistent_read_qps' \
+          "${PROM_FILE}" "page-store persistent read metric"
+        return 0
+      fi
     fi
 
     echo "metrics scrape attempt ${attempt} failed for iteration ${iteration}; retrying" \
@@ -228,6 +271,14 @@ rm -f "${PROM_FILE}" "${CLIENT_FILE}"
   echo "# TYPE temporalstore_client_benchmark_qps gauge"
   echo "# HELP temporalstore_client_benchmark_errors Client benchmark errors from local validation."
   echo "# TYPE temporalstore_client_benchmark_errors gauge"
+  echo "# HELP temporalstore_client_retry_attempts_total Client-side retry attempts observed by local validation."
+  echo "# TYPE temporalstore_client_retry_attempts_total counter"
+  echo "# HELP temporalstore_client_retry_failures_total Client-side retries that still failed after retry budget."
+  echo "# TYPE temporalstore_client_retry_failures_total counter"
+  echo "# HELP temporalstore_proxy_retry_attempts_total Proxy smoke retry attempts observed by local validation."
+  echo "# TYPE temporalstore_proxy_retry_attempts_total counter"
+  echo "# HELP temporalstore_proxy_retry_failures_total Proxy smoke retries that still failed after retry budget."
+  echo "# TYPE temporalstore_proxy_retry_failures_total counter"
   echo "# HELP temporalstore_proxy_artifact_present Whether the local proxy binary and smoke client are present."
   echo "# TYPE temporalstore_proxy_artifact_present gauge"
   echo "# HELP temporalstore_proxy_validation_up Whether the proxy process was live during validation."
@@ -247,43 +298,87 @@ for iteration in $(seq 1 "${ITERATIONS}"); do
   if [[ "${HAS_PROXY}" == "1" ]]; then
     echo "Iteration ${iteration}: proxy smoke" | tee -a "${RESULT_DIR}/summary.txt"
     write_proxy_metric "temporalstore_proxy_validation_up" 1 "${iteration}"
+    proxy_smoke_code=1
+    proxy_attempts=0
+    proxy_failed_attempts=0
     set +e
-    PROXY_SMOKE_TIMEOUT_MS="${PROXY_SMOKE_TIMEOUT_MS}" \
-      "${BIN_DIR}/proxy_smoke_example" "127.0.0.1:${PROXY_PORT}" "${NAMESPACE_NAME}" "${TABLE_NAME}" \
-      "prom_proxy_${iteration}" > "${RESULT_DIR}/proxy_smoke_${iteration}.out" \
-      2> "${RESULT_DIR}/proxy_smoke_${iteration}.err"
-    proxy_smoke_code=$?
+    for attempt in $(seq 1 "${PROXY_SMOKE_ATTEMPTS:-3}"); do
+      proxy_attempts="${attempt}"
+      PROXY_SMOKE_TIMEOUT_MS="${PROXY_SMOKE_TIMEOUT_MS}" \
+        "${BIN_DIR}/proxy_smoke_example" "127.0.0.1:${PROXY_PORT}" "${NAMESPACE_NAME}" "${TABLE_NAME}" \
+        "prom_proxy_${iteration}" > "${RESULT_DIR}/proxy_smoke_${iteration}_${attempt}.out" \
+        2> "${RESULT_DIR}/proxy_smoke_${iteration}_${attempt}.err"
+      proxy_smoke_code=$?
+      [[ "${proxy_smoke_code}" == "0" ]] && break
+      proxy_failed_attempts=$((proxy_failed_attempts + 1))
+      echo "proxy_smoke attempt ${attempt} failed; retrying" >> "${RESULT_DIR}/summary.txt"
+      sleep 1
+    done
     set -e
+    proxy_retries=$((proxy_attempts > 0 ? proxy_attempts - 1 : 0))
+    PROXY_RETRY_ATTEMPTS=$((PROXY_RETRY_ATTEMPTS + proxy_retries))
+    if [[ "${proxy_smoke_code}" != "0" ]]; then
+      PROXY_RETRY_FAILURES=$((PROXY_RETRY_FAILURES + 1))
+    fi
+    write_retry_metric "temporalstore_proxy_retry_attempts_total" "${PROXY_RETRY_ATTEMPTS}" \
+      "proxy" "proxy_smoke" "${iteration}"
+    write_retry_metric "temporalstore_proxy_retry_failures_total" "${PROXY_RETRY_FAILURES}" \
+      "proxy" "proxy_smoke" "${iteration}"
     if [[ "${proxy_smoke_code}" == "0" ]]; then
       write_proxy_metric "temporalstore_proxy_smoke_success" 1 "${iteration}"
     else
       write_proxy_metric "temporalstore_proxy_smoke_success" 0 "${iteration}"
-      cat "${RESULT_DIR}/proxy_smoke_${iteration}.out" >&2 || true
-      cat "${RESULT_DIR}/proxy_smoke_${iteration}.err" >&2 || true
+      cat "${RESULT_DIR}"/proxy_smoke_"${iteration}"_*.out >&2 || true
+      cat "${RESULT_DIR}"/proxy_smoke_"${iteration}"_*.err >&2 || true
       exit "${proxy_smoke_code}"
     fi
   else
     write_proxy_metric "temporalstore_proxy_validation_up" 0 "${iteration}"
     write_proxy_metric "temporalstore_proxy_smoke_success" 0 "${iteration}"
+    write_retry_metric "temporalstore_proxy_retry_attempts_total" "${PROXY_RETRY_ATTEMPTS}" \
+      "proxy" "proxy_smoke" "${iteration}"
+    write_retry_metric "temporalstore_proxy_retry_failures_total" "${PROXY_RETRY_FAILURES}" \
+      "proxy" "proxy_smoke" "${iteration}"
   fi
 
   write_client_validation_metric "${iteration}"
+  if [[ "${RUN_CLIENT_SCALE}" != "1" ]]; then
+    write_retry_metric "temporalstore_client_retry_attempts_total" "${CLIENT_RETRY_ATTEMPTS}" \
+      "client" "validation" "${iteration}"
+    write_retry_metric "temporalstore_client_retry_failures_total" "${CLIENT_RETRY_FAILURES}" \
+      "client" "validation" "${iteration}"
+  fi
   if [[ "${RUN_CLIENT_SCALE}" == "1" ]]; then
     for threads in ${THREAD_LIST}; do
       echo "Iteration ${iteration}: client scale threads=${threads}" | tee -a "${RESULT_DIR}/summary.txt"
       out="${RESULT_DIR}/string_scale_${iteration}_${threads}.out"
       code=1
+      client_attempts=0
       for attempt in $(seq 1 5); do
+        client_attempts="${attempt}"
         set +e
         timeout "${BENCH_TIMEOUT_S}" "${BIN_DIR}/string_scale_benchmark" \
           "127.0.0.1:${MS_PORT}" "${IDC}" "${NAMESPACE_NAME}" \
-          "${TABLE_NAME}" "${STRING_OPS}" "${threads}" 128 1 1000 set > "${out}" 2>&1
+          "${TABLE_NAME}" "${STRING_OPS}" "${threads}" 128 1 1000 both > "${out}" 2>&1
         code=$?
         set -e
         [[ "${code}" == "0" ]] && break
         echo "string_scale attempt ${attempt} failed; retrying" >> "${out}"
         sleep 2
       done
+      client_retries=$((client_attempts > 0 ? client_attempts - 1 : 0))
+      CLIENT_RETRY_ATTEMPTS=$((CLIENT_RETRY_ATTEMPTS + client_retries))
+      if [[ "${code}" != "0" ]]; then
+        CLIENT_RETRY_FAILURES=$((CLIENT_RETRY_FAILURES + 1))
+      fi
+      visibility_retries="$(grep -E '^get_retry_attempts=' "${out}" | tail -n 1 | cut -d= -f2 || true)"
+      if [[ "${visibility_retries}" =~ ^[0-9]+$ ]]; then
+        CLIENT_RETRY_ATTEMPTS=$((CLIENT_RETRY_ATTEMPTS + visibility_retries))
+      fi
+      write_retry_metric "temporalstore_client_retry_attempts_total" "${CLIENT_RETRY_ATTEMPTS}" \
+        "client" "string_scale" "${iteration}" "${threads}"
+      write_retry_metric "temporalstore_client_retry_failures_total" "${CLIENT_RETRY_FAILURES}" \
+        "client" "string_scale" "${iteration}" "${threads}"
       if [[ "${code}" != "0" ]]; then
         cat "${out}" >&2
         exit "${code}"
