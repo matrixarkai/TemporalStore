@@ -120,12 +120,31 @@ pub struct DataNodePreflightReport {
     pub stats: DataNodeRuntimeStats,
     #[serde(default)]
     pub lifecycle: DataNodeLifecycleReport,
+    #[serde(default)]
+    pub lifecycle_persistence: DataNodeLifecyclePersistenceReport,
     pub metaserver: DataNodeMetaHeartbeatReport,
     pub topology_validation: DataNodeTopologyValidationReport,
     pub queued_workers: Vec<ShardWorkerInfo>,
     pub dirty_shards: Vec<ShardId>,
     pub dirty_objects: Vec<DirtyObjectInfo>,
     pub degraded_reasons: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DataNodeLifecyclePersistenceReport {
+    pub enabled: bool,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub last_restore_status: Option<Status>,
+    pub last_restore_at_ms: u64,
+    pub restore_success_total: u64,
+    pub restore_failure_total: u64,
+    #[serde(default)]
+    pub last_persist_status: Option<Status>,
+    pub last_persist_at_ms: u64,
+    pub persist_success_total: u64,
+    pub persist_failure_total: u64,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -400,6 +419,7 @@ struct DataNodeRuntimeInner {
     lifecycle: Mutex<HashMap<ShardId, DataNodeShardLifecycleState>>,
     lifecycle_tokens: Mutex<HashMap<(ShardId, String), SchedulerLifecycleToken>>,
     lifecycle_snapshot_path: Option<PathBuf>,
+    lifecycle_persistence: Mutex<DataNodeLifecyclePersistenceReport>,
     next_job_id: AtomicU64,
 }
 
@@ -671,6 +691,9 @@ impl DataNodeRuntime {
             meta_heartbeat: Mutex::default(),
             lifecycle: Mutex::default(),
             lifecycle_tokens: Mutex::default(),
+            lifecycle_persistence: Mutex::new(lifecycle_persistence_report_for_path(
+                lifecycle_snapshot_path.as_ref(),
+            )),
             lifecycle_snapshot_path,
             next_job_id: AtomicU64::new(1),
         });
@@ -728,6 +751,9 @@ impl DataNodeRuntime {
             meta_heartbeat: Mutex::default(),
             lifecycle: Mutex::default(),
             lifecycle_tokens: Mutex::default(),
+            lifecycle_persistence: Mutex::new(lifecycle_persistence_report_for_path(
+                lifecycle_snapshot_path.as_ref(),
+            )),
             lifecycle_snapshot_path,
             next_job_id: AtomicU64::new(1),
         });
@@ -771,6 +797,14 @@ impl DataNodeRuntime {
 
     pub fn lifecycle_snapshot(&self) -> DataNodeLifecycleSnapshot {
         lifecycle_snapshot_inner(&self.inner)
+    }
+
+    pub fn lifecycle_persistence_report(&self) -> DataNodeLifecyclePersistenceReport {
+        self.inner
+            .lifecycle_persistence
+            .lock()
+            .expect("runtime lifecycle persistence lock poisoned")
+            .clone()
     }
 
     pub fn restore_lifecycle_snapshot(&self, snapshot: DataNodeLifecycleSnapshot) -> Status {
@@ -1299,6 +1333,23 @@ impl DataNodeRuntime {
         if metaserver.forbid_auto_register {
             degraded_reasons.push("metaserver_forbid_auto_register".to_string());
         }
+        let lifecycle_persistence = self.lifecycle_persistence_report();
+        if lifecycle_persistence
+            .last_restore_status
+            .as_ref()
+            .map(|status| !status.ok)
+            .unwrap_or(false)
+        {
+            degraded_reasons.push("lifecycle_snapshot_restore_failed".to_string());
+        }
+        if lifecycle_persistence
+            .last_persist_status
+            .as_ref()
+            .map(|status| !status.ok)
+            .unwrap_or(false)
+        {
+            degraded_reasons.push("lifecycle_snapshot_persist_failed".to_string());
+        }
         let status = if degraded_reasons.is_empty() {
             Status::ok()
         } else {
@@ -1308,6 +1359,7 @@ impl DataNodeRuntime {
             status,
             stats,
             lifecycle: self.lifecycle_report(),
+            lifecycle_persistence,
             topology_validation: self.topology_validation_report(&metaserver),
             metaserver,
             queued_workers: self.queued_shard_worker_infos(),
@@ -1848,6 +1900,16 @@ fn lifecycle_snapshot_path_from_env() -> Option<PathBuf> {
     std::env::var_os("TS_DATA_NODE_LIFECYCLE_SNAPSHOT").map(PathBuf::from)
 }
 
+fn lifecycle_persistence_report_for_path(
+    path: Option<&PathBuf>,
+) -> DataNodeLifecyclePersistenceReport {
+    DataNodeLifecyclePersistenceReport {
+        enabled: path.is_some(),
+        path: path.map(|path| path.display().to_string()),
+        ..DataNodeLifecyclePersistenceReport::default()
+    }
+}
+
 fn lifecycle_snapshot_inner(inner: &DataNodeRuntimeInner) -> DataNodeLifecycleSnapshot {
     let mut transitions = inner
         .lifecycle
@@ -1909,11 +1971,24 @@ fn restore_lifecycle_snapshot_from_path_inner(inner: &DataNodeRuntimeInner) {
     let Some(path) = &inner.lifecycle_snapshot_path else {
         return;
     };
-    let Ok(bytes) = fs::read(path) else {
-        return;
+    let status = match fs::read(path) {
+        Ok(bytes) => match serde_json::from_slice::<DataNodeLifecycleSnapshot>(&bytes) {
+            Ok(snapshot) => restore_lifecycle_snapshot_inner(inner, snapshot),
+            Err(err) => Status::error("bad_lifecycle_snapshot", err.to_string()),
+        },
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Status::ok(),
+        Err(err) => Status::error("lifecycle_snapshot_io", err.to_string()),
     };
-    if let Ok(snapshot) = serde_json::from_slice::<DataNodeLifecycleSnapshot>(&bytes) {
-        let _ = restore_lifecycle_snapshot_inner(inner, snapshot);
+    let mut report = inner
+        .lifecycle_persistence
+        .lock()
+        .expect("runtime lifecycle persistence lock poisoned");
+    report.last_restore_at_ms = now_ms();
+    report.last_restore_status = Some(status.clone());
+    if status.ok {
+        report.restore_success_total += 1;
+    } else {
+        report.restore_failure_total += 1;
     }
 }
 
@@ -1921,17 +1996,40 @@ fn persist_lifecycle_snapshot_inner(inner: &DataNodeRuntimeInner) {
     let Some(path) = &inner.lifecycle_snapshot_path else {
         return;
     };
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() && fs::create_dir_all(parent).is_err() {
-            return;
+    let result: Result<(), Status> = if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)
+                .map_err(|err| Status::error("lifecycle_snapshot_io", err.to_string()))
+        } else {
+            Ok(())
         }
+    } else {
+        Ok(())
     }
-    let Ok(bytes) = serde_json::to_vec_pretty(&lifecycle_snapshot_inner(inner)) else {
-        return;
+    .and_then(|_| {
+        serde_json::to_vec_pretty(&lifecycle_snapshot_inner(inner))
+            .map_err(|err| Status::error("bad_lifecycle_snapshot", err.to_string()))
+    })
+    .and_then(|bytes| {
+        let tmp_path = path.with_extension("tmp");
+        fs::write(&tmp_path, bytes)
+            .and_then(|_| fs::rename(&tmp_path, path))
+            .map_err(|err| Status::error("lifecycle_snapshot_io", err.to_string()))
+    });
+    let status = match result {
+        Ok(()) => Status::ok(),
+        Err(status) => status,
     };
-    let tmp_path = path.with_extension("tmp");
-    if fs::write(&tmp_path, bytes).is_ok() {
-        let _ = fs::rename(&tmp_path, path);
+    let mut report = inner
+        .lifecycle_persistence
+        .lock()
+        .expect("runtime lifecycle persistence lock poisoned");
+    report.last_persist_at_ms = now_ms();
+    report.last_persist_status = Some(status.clone());
+    if status.ok {
+        report.persist_success_total += 1;
+    } else {
+        report.persist_failure_total += 1;
     }
 }
 
@@ -3221,6 +3319,12 @@ mod tests {
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(saved.tokens.len(), 1);
         assert!(saved.transitions.is_empty());
+        let report = runtime.lifecycle_persistence_report();
+        assert!(report.enabled);
+        assert_eq!(report.path.as_deref(), Some(path.to_str().unwrap()));
+        assert_eq!(report.persist_success_total, 1);
+        assert_eq!(report.persist_failure_total, 0);
+        assert_eq!(report.last_persist_status.as_ref().unwrap().code, "ok");
 
         let load = runtime.load_shard_with(crate::control::LoadShardRequest {
             shard_id: 8,
@@ -3238,6 +3342,7 @@ mod tests {
         assert_eq!(saved.transitions[0].operation, "load");
         assert_eq!(saved.transitions[0].state, "serving");
         assert_eq!(saved.transitions[0].scheduler_task_id, Some(31));
+        assert!(runtime.lifecycle_persistence_report().persist_success_total >= 3);
 
         let restored =
             DataNodeRuntime::new_without_workers_with_options_and_lifecycle_snapshot_path(
@@ -3251,6 +3356,10 @@ mod tests {
             );
         assert_eq!(restored.lifecycle_snapshot(), saved);
         assert_eq!(restored.lifecycle_report().transitions[0].operation, "load");
+        let report = restored.lifecycle_persistence_report();
+        assert_eq!(report.restore_success_total, 1);
+        assert_eq!(report.restore_failure_total, 0);
+        assert_eq!(report.last_restore_status.as_ref().unwrap().code, "ok");
 
         restored.require_lifecycle_token(SchedulerLifecycleToken {
             task_id: 32,
@@ -3291,6 +3400,38 @@ mod tests {
         assert_eq!(saved.transitions[0].operation, "unload");
         assert_eq!(saved.transitions[0].state, "unloaded");
         assert_eq!(saved.transitions[0].scheduler_task_id, Some(33));
+    }
+
+    #[test]
+    fn runtime_reports_bad_lifecycle_snapshot_restore_in_preflight() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("bad-data-node-lifecycle.json");
+        fs::write(&path, b"{not json").unwrap();
+
+        let runtime = DataNodeRuntime::new_without_workers_with_options_and_lifecycle_snapshot_path(
+            TemporalEngine::default(),
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+            Some(path.clone()),
+        );
+        let report = runtime.lifecycle_persistence_report();
+        assert!(report.enabled);
+        assert_eq!(report.restore_success_total, 0);
+        assert_eq!(report.restore_failure_total, 1);
+        assert_eq!(
+            report.last_restore_status.as_ref().unwrap().code,
+            "bad_lifecycle_snapshot"
+        );
+
+        let preflight = runtime.preflight_report();
+        assert_eq!(preflight.status.code, "degraded");
+        assert!(preflight
+            .degraded_reasons
+            .contains(&"lifecycle_snapshot_restore_failed".to_string()));
+        assert_eq!(preflight.lifecycle_persistence, report);
     }
 
     #[test]

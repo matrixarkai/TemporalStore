@@ -437,3 +437,21 @@ Cycle 12 makes data-node lifecycle snapshots part of the runtime storage lifecyc
 
 The next cycle should expose lifecycle snapshot persistence status in data-node preflight/admin
 reports and add startup diagnostics for unreadable or stale lifecycle snapshot files.
+
+## Cycle 13 Implemented
+
+Cycle 13 makes lifecycle snapshot persistence observable for storage operations:
+
+- Data-node preflight now includes lifecycle snapshot persistence status, configured path, last
+  restore/persist status, timestamps, and success/failure counters.
+- Startup restore failures for unreadable or invalid lifecycle snapshot files are surfaced as
+  degraded preflight reasons instead of disappearing silently.
+- Server admin routes expose `GetLifecyclePersistence` through the C++-style `ServerService`
+  surface and `/server/lifecycle/persistence` through REST.
+- Prometheus metrics now report lifecycle snapshot enablement and restore/persist success/failure
+  counters.
+- Regression coverage validates five observability checks: enabled path reporting, persist success,
+  constructor restore status, bad restore failure status, and preflight degradation.
+
+The next cycle should expand page/index recovery consistency reports for orphan pages, missing
+index refs, stale refs, corrupt page bytes, and chosen replay boundary.

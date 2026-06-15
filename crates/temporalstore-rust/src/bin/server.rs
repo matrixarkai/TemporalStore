@@ -221,6 +221,9 @@ fn main() {
             ("GET", "/server/runtime_stats") => json_response(200, &runtime.stats()),
             ("GET", "/server/preflight") => json_response(200, &runtime.preflight_report()),
             ("GET", "/server/lifecycle") => json_response(200, &runtime.lifecycle_report()),
+            ("GET", "/server/lifecycle/persistence") => {
+                json_response(200, &runtime.lifecycle_persistence_report())
+            }
             ("GET", "/server/lifecycle/tokens") => json_response(200, &runtime.lifecycle_tokens()),
             ("GET", "/server/lifecycle/snapshot") => {
                 json_response(200, &runtime.lifecycle_snapshot())
@@ -814,6 +817,9 @@ fn handle_cpp_server_service_route(
         ("GET", "/ServerService/GetRuntimeStats") => json_response(200, &runtime.stats()),
         ("GET", "/ServerService/Preflight") => json_response(200, &runtime.preflight_report()),
         ("GET", "/ServerService/GetLifecycle") => json_response(200, &runtime.lifecycle_report()),
+        ("GET", "/ServerService/GetLifecyclePersistence") => {
+            json_response(200, &runtime.lifecycle_persistence_report())
+        }
         ("GET", "/ServerService/ListLifecycleTokens") => {
             json_response(200, &runtime.lifecycle_tokens())
         }
@@ -2005,6 +2011,42 @@ fn append_runtime_metrics(out: &mut String, runtime: &DataNodeRuntime) {
     out.push_str("temporalstore_data_node_dirty_shards ");
     out.push_str(&stats.dirty_shard_count.to_string());
     out.push('\n');
+    let lifecycle_persistence = runtime.lifecycle_persistence_report();
+    out.push_str("# HELP temporalstore_data_node_lifecycle_snapshot_enabled Whether automatic lifecycle snapshot persistence is enabled.\n");
+    out.push_str("# TYPE temporalstore_data_node_lifecycle_snapshot_enabled gauge\n");
+    out.push_str("temporalstore_data_node_lifecycle_snapshot_enabled ");
+    out.push_str(if lifecycle_persistence.enabled {
+        "1"
+    } else {
+        "0"
+    });
+    out.push('\n');
+    out.push_str("# HELP temporalstore_data_node_lifecycle_snapshot_events_total Lifecycle snapshot persistence events.\n");
+    out.push_str("# TYPE temporalstore_data_node_lifecycle_snapshot_events_total counter\n");
+    for (kind, value) in [
+        (
+            "restore_success",
+            lifecycle_persistence.restore_success_total,
+        ),
+        (
+            "restore_failure",
+            lifecycle_persistence.restore_failure_total,
+        ),
+        (
+            "persist_success",
+            lifecycle_persistence.persist_success_total,
+        ),
+        (
+            "persist_failure",
+            lifecycle_persistence.persist_failure_total,
+        ),
+    ] {
+        out.push_str("temporalstore_data_node_lifecycle_snapshot_events_total{kind=\"");
+        out.push_str(kind);
+        out.push_str("\"} ");
+        out.push_str(&value.to_string());
+        out.push('\n');
+    }
 }
 
 fn append_replica_replay_metrics(out: &mut String, status: &ReplicaReplayLoopStatus) {
@@ -3889,6 +3931,7 @@ mod tests {
             "/ServerService/GetRuntimeStats",
             "/ServerService/Preflight",
             "/ServerService/GetLifecycle",
+            "/ServerService/GetLifecyclePersistence",
             "/ServerService/ListDirtyObjects",
             "/ServerService/ListQueuedShardWorkers",
         ] {
