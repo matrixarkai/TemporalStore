@@ -49,8 +49,13 @@ jobs:
           report = json.load(open("target/production_readiness_report.json"))
           print(f"production_ready={report['production_ready']}")
           print(f"blocker_count={report['blocker_count']}")
-          for blocker in report["failed_capabilities"][:20]:
-              print(f"- {blocker['area']}: {blocker['capability']}")
+          for service in report["service_summaries"]:
+              print(
+                  f"- service {service['service']}: "
+                  f"ready={service['ready']} "
+                  f"blockers={service['blocker_count']} "
+                  f"next_action={service['next_action']}"
+              )
           PY
           if [ "$status" -ne 0 ] && [ "$status" -ne 2 ]; then
             echo "readiness_gate exited with unexpected status $status" >&2
@@ -65,3 +70,63 @@ jobs:
             target/production_readiness_report.json
             target/production_readiness_gate.log
 
+  service-readiness:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - client
+          - proxy
+          - ingestion
+          - data_node
+          - metaserver
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run service readiness gate
+        shell: bash
+        run: |
+          mkdir -p target/service-readiness
+          set +e
+          cargo run -p temporalstore-rust --bin readiness_gate -- --service "${{ matrix.service }}" \
+            > "target/service-readiness/${{ matrix.service }}.json" \
+            2> "target/service-readiness/${{ matrix.service }}.log"
+          status=$?
+          set -e
+          cat "target/service-readiness/${{ matrix.service }}.log"
+          python3 - <<'PY'
+          import json
+          import os
+          service = os.environ["SERVICE"]
+          report = json.load(open(f"target/service-readiness/{service}.json"))
+          summary = next(item for item in report["service_summaries"] if item["service"] == service)
+          print(f"service={service}")
+          print(f"ready={summary['ready']}")
+          print(f"blocker_count={summary['blocker_count']}")
+          print(f"classes={','.join(summary['blocker_classes'])}")
+          print(f"next_action={summary['next_action']}")
+          for blocker in summary["failed_capabilities"][:20]:
+              print(f"- {blocker}")
+          PY
+          if [ "$status" -ne 0 ] && [ "$status" -ne 2 ]; then
+            echo "readiness_gate --service ${{ matrix.service }} exited with unexpected status $status" >&2
+            exit "$status"
+          fi
+        env:
+          SERVICE: ${{ matrix.service }}
+
+      - name: Upload service readiness artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-service-readiness-${{ matrix.service }}
+          path: |
+            target/service-readiness/${{ matrix.service }}.json
+            target/service-readiness/${{ matrix.service }}.log
