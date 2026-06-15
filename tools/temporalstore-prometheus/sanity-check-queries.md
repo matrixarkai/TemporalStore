@@ -130,7 +130,25 @@ temporalstore_cache_fallback_persistent_read_metric_present
 temporalstore_cache_fallback_unit_assertions_present
 ```
 
-9. Raft/fault-tolerance gate evidence from the textfile collector
+9. Follower-read bounded-stale SLA
+
+```promql
+temporalstore_follower_read_sla_pass
+```
+
+```promql
+temporalstore_follower_read_visibility_p99_us
+```
+
+```promql
+temporalstore_follower_read_errors_total
+```
+
+```promql
+temporalstore_follower_read_background_errors_total
+```
+
+10. Raft/fault-tolerance gate evidence from the textfile collector
 
 ```promql
 temporalstore_raft_gate_case_pass

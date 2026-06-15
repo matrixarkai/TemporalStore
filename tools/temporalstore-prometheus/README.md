@@ -24,6 +24,9 @@ The sidecar writes both converted TemporalStore metrics and exporter health metr
   `tools/run_cache_fallback_metrics_ubuntu22.sh` and prove blockcache get/hit,
   persistent-read fallback instrumentation, unit-test assertions, and exporter
   coverage for the cache fallback path.
+- `temporalstore_follower_read_*` metrics are written by
+  `tools/run_follower_read_sla_ubuntu22.sh` and prove bounded-stale follower
+  reads stay within p95/p99 SLA while background reads and writes continue.
 - `temporalstore_raft_gate_*` metrics are written by
   `tools/run_raft_stress_suite_ubuntu22.sh` after raft/failover gates finish,
   including failed gates.
@@ -33,7 +36,7 @@ The sidecar writes both converted TemporalStore metrics and exporter health metr
 - `temporalstore-alerts.yml` installs local production-readiness alerts for
   service availability, exporter scrape errors, client validation, proxy smoke,
   client benchmark errors, retry exhaustion, ingestion lag/backpressure, cache
-  fallback evidence, and raft gate readiness.
+  fallback evidence, follower-read SLA, and raft gate readiness.
 
 ## Defaults
 
