@@ -58,6 +58,25 @@ brpc and Thrift are intentionally not part of the Rust target. The Rust open-sou
 
 ## What Was Closed In The Latest Pass
 
+This pass closed the first storage production-readiness cycle:
+
+1. Added a 25-cycle Rust storage production readiness plan in
+   `docs/rust_storage_production_readiness_plan.md`.
+2. Added `StorageProductionReadinessReport`, a fail-closed readiness gate over recovery boundary,
+   corrupt page segments, unreadable live refs, owner/object lifecycle mismatch, interrupted slot
+   dump installs, dirty slots, stale/orphan page segments, cache stats, and page-store stats.
+3. Exposed the report through direct server admin route
+   `GET /server/storage/readiness/{shard_id}` and C++-style alias
+   `POST /ServerService/GetStorageReadiness`.
+4. Regression coverage validates dirty slots remain warnings, corrupt live page segments are
+   blockers, and the C++-style server alias returns the readiness report.
+
+This does not claim full C++ storage parity. It creates the production gate needed for the next
+storage cycles: configurable thresholds, background readiness scanning, durable readiness snapshots,
+quarantine/repair commands, and storage-mode scale validation.
+
+## What Was Closed In The Previous Pass
+
 This pass closed the next metaserver-to-nodeserver lifecycle coordination gap:
 
 1. Deterministic metaserver scheduler tasks can now derive Rust-native lifecycle tokens from

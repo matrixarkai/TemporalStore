@@ -447,6 +447,29 @@ pub struct StorageLifecycleRequest {
     pub warm_cache: bool,
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageProductionReadinessReport {
+    pub shard_id: ShardId,
+    pub production_ready: bool,
+    pub blockers: Vec<String>,
+    pub warnings: Vec<String>,
+    pub dirty_slot_count: usize,
+    pub stale_page_segment_count: usize,
+    pub orphan_page_segment_count: usize,
+    pub corrupt_page_segment_count: usize,
+    pub unreadable_page_ref_count: usize,
+    pub owner_mismatch_page_ref_count: usize,
+    pub missing_owner_page_ref_count: u64,
+    pub reused_object_id_conflict_count: u64,
+    pub interrupted_slot_dump_install_count: usize,
+    pub slot_dump_manifest_count: usize,
+    pub cache_memory_bytes: u64,
+    pub cache_disk_bytes: u64,
+    pub page_store_bytes_written: u64,
+    pub boundary: StorageRecoveryBoundaryReport,
+    pub object_lifecycle: StorageObjectLifecycleReport,
+}
+
 impl TemporalEngine {
     pub fn new(cache: MultiLayerCache) -> Self {
         Self::with_cache_and_page_store(cache, LocalPageStore::default())
@@ -1602,6 +1625,101 @@ impl TemporalEngine {
             manifest_prune_report,
             install_roll_forward_reports,
             object_lifecycle,
+        }
+    }
+
+    pub fn storage_production_readiness_report(
+        &self,
+        shard_id: ShardId,
+    ) -> StorageProductionReadinessReport {
+        let boundary = self.storage_recovery_boundary_report(shard_id);
+        let recovery = self.storage_recovery_report_without_boundary(shard_id);
+        let plan = self.storage_lifecycle_plan(StorageLifecycleRequest {
+            shard_id,
+            selected_dump_slots: Vec::new(),
+            max_dump_slots_per_round: 0,
+            min_undumped_oplog_records: 0,
+            purge_delayed_destroy: false,
+            prune_slot_dump_manifests: false,
+            follower_replay_cursors: Vec::new(),
+            roll_forward_slot_dump_installs: false,
+            invalidate_cache: false,
+            warm_cache: false,
+        });
+        let stats = self
+            .loaded_shard_stats()
+            .into_iter()
+            .find(|stats| stats.shard_id == shard_id);
+        let cache = stats
+            .as_ref()
+            .map(|stats| stats.cache.clone())
+            .unwrap_or_else(|| self.cache.stats());
+        let page_store = stats
+            .as_ref()
+            .map(|stats| stats.page_store.clone())
+            .unwrap_or_else(|| self.page_store.stats());
+        let slot_dump_manifest_count = self.list_slot_dump_manifests(shard_id).len();
+        let interrupted_slot_dump_install_count = boundary.interrupted_slot_dump_installs.len();
+        let mut blockers = Vec::new();
+        if !boundary.stale_index_page_refs.is_empty() {
+            blockers.push("stale_index_page_refs".to_string());
+        }
+        if !boundary.corrupt_page_segment_ids.is_empty() {
+            blockers.push("corrupt_page_segments".to_string());
+        }
+        if boundary.unreadable_page_bytes > 0 || !recovery.all_live_pages_readable {
+            blockers.push("unreadable_live_page_refs".to_string());
+        }
+        if !boundary.owner_mismatch_page_refs.is_empty() {
+            blockers.push("owner_mismatch_page_refs".to_string());
+        }
+        if boundary.object_lifecycle.missing_owner_page_refs > 0 {
+            blockers.push("missing_owner_page_refs".to_string());
+        }
+        if boundary.object_lifecycle.reused_object_id_conflicts > 0 {
+            blockers.push("reused_object_id_conflicts".to_string());
+        }
+        if interrupted_slot_dump_install_count > 0 {
+            blockers.push("interrupted_slot_dump_installs".to_string());
+        }
+        if !boundary.manifest_chain_issues.is_empty() {
+            blockers.push("broken_slot_dump_manifest_chain".to_string());
+        }
+
+        let mut warnings = Vec::new();
+        if !plan.dirty_slots.is_empty() {
+            warnings.push("dirty_slots_pending_dump".to_string());
+        }
+        if !plan.stale_page_segment_ids.is_empty() {
+            warnings.push("stale_page_segments_pending_gc".to_string());
+        }
+        if !boundary.orphan_page_segment_ids.is_empty() {
+            warnings.push("orphan_page_segments_pending_gc".to_string());
+        }
+        if slot_dump_manifest_count == 0 && recovery.total_page_refs > 0 {
+            warnings.push("no_slot_dump_manifest_for_live_pages".to_string());
+        }
+
+        StorageProductionReadinessReport {
+            shard_id,
+            production_ready: blockers.is_empty(),
+            blockers,
+            warnings,
+            dirty_slot_count: plan.dirty_slots.len(),
+            stale_page_segment_count: plan.stale_page_segment_ids.len(),
+            orphan_page_segment_count: boundary.orphan_page_segment_ids.len(),
+            corrupt_page_segment_count: boundary.corrupt_page_segment_ids.len(),
+            unreadable_page_ref_count: recovery.unreadable_page_refs.len(),
+            owner_mismatch_page_ref_count: boundary.owner_mismatch_page_refs.len(),
+            missing_owner_page_ref_count: boundary.object_lifecycle.missing_owner_page_refs,
+            reused_object_id_conflict_count: boundary.object_lifecycle.reused_object_id_conflicts,
+            interrupted_slot_dump_install_count,
+            slot_dump_manifest_count,
+            cache_memory_bytes: cache.memory_bytes,
+            cache_disk_bytes: cache.disk_bytes,
+            page_store_bytes_written: page_store.bytes_written,
+            boundary,
+            object_lifecycle: recovery.object_lifecycle,
         }
     }
 
@@ -10529,6 +10647,84 @@ mod tests {
         assert_eq!(boundary.latest_safe_oplog_sequence, 2);
         assert_eq!(boundary.latest_dump_oplog_sequence, 2);
         assert!(boundary.orphan_page_segment_ids.contains(&0));
+    }
+
+    #[test]
+    fn storage_production_readiness_reports_warnings_without_blocking_dirty_shard() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: "ready-key".to_string(),
+                        value: b"ready-value".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+
+        let report = engine.storage_production_readiness_report(1);
+        assert!(report.production_ready, "{report:?}");
+        assert!(report.blockers.is_empty());
+        assert_eq!(report.dirty_slot_count, 1);
+        assert!(report
+            .warnings
+            .contains(&"dirty_slots_pending_dump".to_string()));
+        assert_eq!(report.unreadable_page_ref_count, 0);
+        assert_eq!(report.owner_mismatch_page_ref_count, 0);
+        assert!(report.page_store_bytes_written > 0);
+    }
+
+    #[test]
+    fn storage_production_readiness_blocks_corrupt_live_page_segments() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: "corrupt-key".to_string(),
+                        value: b"corrupt-value".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+        let segment_id = engine.live_page_segment_ids(1)[0];
+        let mut bytes = engine.page_store().read_segment(segment_id).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0xff;
+        engine
+            .page_store()
+            .install_segment(segment_id, &bytes)
+            .unwrap();
+
+        let report = engine.storage_production_readiness_report(1);
+        assert!(!report.production_ready, "{report:?}");
+        assert!(report
+            .blockers
+            .contains(&"corrupt_page_segments".to_string()));
+        assert!(report
+            .blockers
+            .contains(&"unreadable_live_page_refs".to_string()));
+        assert!(report.corrupt_page_segment_count > 0);
+        assert!(report.unreadable_page_ref_count > 0);
     }
 
     #[test]

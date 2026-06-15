@@ -258,6 +258,13 @@ fn main() {
                     .unwrap_or_default();
                 json_response(200, &engine.storage_recovery_boundary_report(shard_id))
             }
+            ("GET", path) if path.starts_with("/server/storage/readiness/") => {
+                let shard_id = path
+                    .trim_start_matches("/server/storage/readiness/")
+                    .parse()
+                    .unwrap_or_default();
+                json_response(200, &runtime.storage_production_readiness_report(shard_id))
+            }
             ("POST", "/server/storage/lifecycle/plan") => {
                 match parse_json::<StorageLifecycleRequest>(&request.body) {
                     Ok(req) => json_response(200, &runtime.storage_lifecycle_plan(req)),
@@ -570,6 +577,15 @@ fn handle_cpp_server_service_route(
         ("POST", "/ServerService/GetStats") => {
             match parse_json::<ShardIdRouteRequest>(&request.body) {
                 Ok(req) => json_response(200, &engine.get_stats(req.shard_id)),
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        ("POST", "/ServerService/GetStorageReadiness") => {
+            match parse_json::<ShardIdRouteRequest>(&request.body) {
+                Ok(req) => json_response(
+                    200,
+                    &runtime.storage_production_readiness_report(req.shard_id),
+                ),
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
             }
         }
@@ -2860,6 +2876,26 @@ mod tests {
             let status: serde_json::Value = serde_json::from_slice(&body).unwrap();
             assert_eq!(status["status"]["ok"], true, "{path}: {status}");
         }
+
+        let storage_readiness = HttpRequest {
+            method: "POST".to_string(),
+            path: "/ServerService/GetStorageReadiness".to_string(),
+            body: serde_json::to_vec(&serde_json::json!({ "shard_id": 44 })).unwrap(),
+        };
+        let (code, body) = handle_cpp_server_service_route(
+            &storage_readiness,
+            &engine,
+            &runtime,
+            None,
+            "",
+            "server-a",
+            &data_raft_appliers,
+        )
+        .unwrap();
+        assert_eq!(code, 200);
+        let readiness: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(readiness["shard_id"], 44);
+        assert_eq!(readiness["production_ready"], true);
 
         let committed_log = serialize_data_raft_log(&DataRaftLogCodecEntry {
             shard_id: 44,
