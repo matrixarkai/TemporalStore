@@ -102,12 +102,27 @@ pub struct DataNodeRuntimeStats {
 pub struct DataNodePreflightReport {
     pub status: Status,
     pub stats: DataNodeRuntimeStats,
+    #[serde(default)]
+    pub lifecycle: DataNodeLifecycleReport,
     pub metaserver: DataNodeMetaHeartbeatReport,
     pub topology_validation: DataNodeTopologyValidationReport,
     pub queued_workers: Vec<ShardWorkerInfo>,
     pub dirty_shards: Vec<ShardId>,
     pub dirty_objects: Vec<DirtyObjectInfo>,
     pub degraded_reasons: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DataNodeLifecycleReport {
+    pub loaded_shard_count: usize,
+    pub serving_count: usize,
+    pub readonly_count: usize,
+    pub queued_count: usize,
+    pub running_count: usize,
+    pub unloading_count: usize,
+    pub failed_count: usize,
+    pub max_load_version: u64,
+    pub shards: Vec<ServerShardServingState>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1005,12 +1020,56 @@ impl DataNodeRuntime {
         DataNodePreflightReport {
             status,
             stats,
+            lifecycle: self.lifecycle_report(),
             topology_validation: self.topology_validation_report(&metaserver),
             metaserver,
             queued_workers: self.queued_shard_worker_infos(),
             dirty_shards: self.dirty_shards(),
             dirty_objects: self.dirty_objects(),
             degraded_reasons,
+        }
+    }
+
+    pub fn lifecycle_report(&self) -> DataNodeLifecycleReport {
+        let mut shards = self.shard_serving_states();
+        shards.sort_by_key(|state| state.shard_id);
+        let loaded_shard_count = shards.iter().filter(|state| state.loaded).count();
+        let serving_count = shards
+            .iter()
+            .filter(|state| state.serving_state == "serving")
+            .count();
+        let readonly_count = shards.iter().filter(|state| state.readonly).count();
+        let queued_count = shards
+            .iter()
+            .filter(|state| state.serving_state == "queued")
+            .count();
+        let running_count = shards
+            .iter()
+            .filter(|state| state.serving_state == "running")
+            .count();
+        let unloading_count = shards
+            .iter()
+            .filter(|state| state.serving_state == "unloading")
+            .count();
+        let failed_count = shards
+            .iter()
+            .filter(|state| state.serving_state == "failed")
+            .count();
+        let max_load_version = shards
+            .iter()
+            .map(|state| state.load_version)
+            .max()
+            .unwrap_or_default();
+        DataNodeLifecycleReport {
+            loaded_shard_count,
+            serving_count,
+            readonly_count,
+            queued_count,
+            running_count,
+            unloading_count,
+            failed_count,
+            max_load_version,
+            shards,
         }
     }
 
@@ -2013,6 +2072,52 @@ mod tests {
                 worker_threads: 4,
             }
         );
+    }
+
+    #[test]
+    fn runtime_lifecycle_report_counts_loaded_readonly_and_preflight() {
+        let engine = TemporalEngine::default();
+        assert!(
+            engine
+                .load_shard_with(crate::control::LoadShardRequest {
+                    shard_id: 7,
+                    table_name: "tbl".to_string(),
+                    shard_uri: "local://tbl/7".to_string(),
+                    start_routing_slot: 10,
+                    end_routing_slot: 19,
+                    readonly: true,
+                    load_version: 42,
+                    local_node_id: Some(3),
+                })
+                .status
+                .ok
+        );
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        );
+
+        let lifecycle = runtime.lifecycle_report();
+        assert_eq!(lifecycle.loaded_shard_count, 1);
+        assert_eq!(lifecycle.serving_count, 0);
+        assert_eq!(lifecycle.readonly_count, 1);
+        assert_eq!(lifecycle.queued_count, 0);
+        assert_eq!(lifecycle.running_count, 0);
+        assert_eq!(lifecycle.unloading_count, 0);
+        assert_eq!(lifecycle.failed_count, 0);
+        assert_eq!(lifecycle.max_load_version, 42);
+        assert_eq!(lifecycle.shards.len(), 1);
+        assert_eq!(lifecycle.shards[0].shard_id, 7);
+        assert_eq!(lifecycle.shards[0].serving_state, "readonly");
+        assert!(lifecycle.shards[0].readonly);
+        assert_eq!(lifecycle.shards[0].table_name, "tbl");
+
+        let preflight = runtime.preflight_report();
+        assert_eq!(preflight.lifecycle, lifecycle);
     }
 
     #[test]

@@ -626,6 +626,51 @@ impl TemporalEngine {
         }
     }
 
+    pub fn reload_shard_with(&self, request: LoadShardRequest) -> LoadShardResponse {
+        let existing = self
+            .infos
+            .read()
+            .expect("info lock poisoned")
+            .get(&request.shard_id)
+            .cloned();
+        let Some(existing) = existing else {
+            return self.load_shard_with(request);
+        };
+        if request.load_version < existing.load_version {
+            return LoadShardResponse {
+                status: Status::error(
+                    "stale_load_version",
+                    format!(
+                        "reload version {} is older than loaded version {}",
+                        request.load_version, existing.load_version
+                    ),
+                ),
+            };
+        }
+        self.infos.write().expect("info lock poisoned").insert(
+            request.shard_id,
+            ShardInfo {
+                shard_id: request.shard_id,
+                loaded: true,
+                table_name: request.table_name,
+                shard_uri: request.shard_uri,
+                start_routing_slot: request.start_routing_slot,
+                end_routing_slot: request.end_routing_slot,
+                readonly: request.readonly,
+                load_version: request.load_version,
+                local_node_id: request.local_node_id,
+                membership_version: existing.membership_version,
+                replica_membership_version: existing.replica_membership_version,
+                membership_valid: existing.membership_valid,
+                replica_node_ids: existing.replica_node_ids,
+                leader_node_id: existing.leader_node_id,
+            },
+        );
+        LoadShardResponse {
+            status: Status::ok(),
+        }
+    }
+
     pub fn execute(&self, request: ExecuteRequest) -> ExecuteResponse {
         self.execute_with_storage_override(request, None)
     }
@@ -8182,6 +8227,86 @@ mod tests {
         let second_unload = engine.unload_shard_with(UnloadShardRequest { shard_id: 7 });
         assert!(!second_unload.status.ok);
         assert_eq!(second_unload.status.code, "shard_not_found");
+    }
+
+    #[test]
+    fn engine_reload_shard_updates_metadata_and_rejects_stale_version() {
+        let engine = TemporalEngine::default();
+        assert!(
+            engine
+                .load_shard_with(LoadShardRequest {
+                    shard_id: 7,
+                    load_version: 42,
+                    local_node_id: Some(2),
+                    shard_uri: "file:///tmp/shard-7".to_string(),
+                    start_routing_slot: 10,
+                    end_routing_slot: 20,
+                    readonly: false,
+                    table_name: "old_table".to_string(),
+                })
+                .status
+                .ok
+        );
+        assert!(
+            engine
+                .update_membership(MembershipUpdateRequest {
+                    shard_id: 7,
+                    membership_version: 3,
+                    replica_membership_version: 4,
+                    replica_node_ids: vec![1, 2, 3],
+                    leader_node_id: Some(1),
+                })
+                .ok
+        );
+
+        let stale = engine.reload_shard_with(LoadShardRequest {
+            shard_id: 7,
+            load_version: 41,
+            local_node_id: Some(9),
+            shard_uri: "file:///tmp/stale".to_string(),
+            start_routing_slot: 100,
+            end_routing_slot: 200,
+            readonly: true,
+            table_name: "stale_table".to_string(),
+        });
+        assert!(!stale.status.ok);
+        assert_eq!(stale.status.code, "stale_load_version");
+        let unchanged = engine.get_info(7).info.unwrap();
+        assert_eq!(unchanged.load_version, 42);
+        assert_eq!(unchanged.table_name, "old_table");
+        assert!(!unchanged.readonly);
+
+        let reload = engine.reload_shard_with(LoadShardRequest {
+            shard_id: 7,
+            load_version: 43,
+            local_node_id: Some(9),
+            shard_uri: "file:///tmp/shard-7-reloaded".to_string(),
+            start_routing_slot: 100,
+            end_routing_slot: 200,
+            readonly: true,
+            table_name: "new_table".to_string(),
+        });
+        assert!(reload.status.ok, "{reload:?}");
+        let info = engine.get_info(7).info.unwrap();
+        assert_eq!(info.load_version, 43);
+        assert_eq!(info.local_node_id, Some(9));
+        assert_eq!(info.table_name, "new_table");
+        assert_eq!(info.start_routing_slot, 100);
+        assert_eq!(info.end_routing_slot, 200);
+        assert!(info.readonly);
+        assert_eq!(info.replica_node_ids, vec![1, 2, 3]);
+        assert_eq!(info.membership_version, 3);
+        assert_eq!(info.replica_membership_version, 4);
+        assert!(info.membership_valid);
+
+        let write = engine.execute(ExecuteRequest {
+            shard_id: 7,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            },
+        });
+        assert_eq!(write.status.code, "readonly_shard");
     }
 
     #[test]

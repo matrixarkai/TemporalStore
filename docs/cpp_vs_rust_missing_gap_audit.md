@@ -58,6 +58,27 @@ brpc and Thrift are intentionally not part of the Rust target. The Rust open-sou
 
 ## What Was Closed In The Latest Pass
 
+This pass closed the next node-server load lifecycle gap:
+
+1. The engine now supports version-gated shard reload: missing shards still load normally, loaded
+   shards reject stale load versions, and accepted reloads update table/URI/slot/readonly metadata
+   without dropping membership state.
+2. The data-node runtime now exposes a lifecycle report with loaded, serving, readonly, queued,
+   running, unloading, failed, max-load-version, and per-shard serving-state accounting.
+3. Preflight now embeds the lifecycle report so operators can see node serving state alongside
+   metaserver heartbeat, topology validation, queue, dirty-object, and runtime counters.
+4. Server routes now include direct Rust admin endpoints `POST /reload` and `GET /server/lifecycle`
+   plus C++-style aliases `POST /ServerService/Reload` and `GET /ServerService/GetLifecycle`.
+5. Regression coverage validates stale reload rejection, metadata update, membership preservation,
+   readonly transition enforcement, lifecycle/preflight accounting, and C++ alias route behavior.
+
+This improves C++ `NodeServer` load/reload observability and serving-state parity without adding
+brpc/Thrift. Remaining node-server work includes richer transitional loading/unloading states,
+scheduler-driven reload orchestration, and a multi-node move/failover harness that exercises these
+states end to end.
+
+## What Was Closed In The Previous Pass
+
 This pass closed the next metaserver lifecycle-guard gap:
 
 1. The metaserver now exposes table freeze/unfreeze transitions using the existing Rust table state

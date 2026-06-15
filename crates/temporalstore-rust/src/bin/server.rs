@@ -218,6 +218,7 @@ fn main() {
             ("GET", "/server/info") => json_response(200, &engine.loaded_shard_stats()),
             ("GET", "/server/runtime_stats") => json_response(200, &runtime.stats()),
             ("GET", "/server/preflight") => json_response(200, &runtime.preflight_report()),
+            ("GET", "/server/lifecycle") => json_response(200, &runtime.lifecycle_report()),
             ("POST", "/server/topology/validate") | ("POST", "/ServerService/ValidateTopology") => {
                 match parse_json::<ServerTopologyValidationRequest>(&request.body) {
                     Ok(req) => json_response(
@@ -316,6 +317,10 @@ fn main() {
             }
             ("POST", "/load") => match parse_json::<LoadShardRequest>(&request.body) {
                 Ok(req) => json_response(200, &engine.load_shard_with(req)),
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            },
+            ("POST", "/reload") => match parse_json::<LoadShardRequest>(&request.body) {
+                Ok(req) => json_response(200, &engine.reload_shard_with(req)),
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
             },
             ("POST", "/unload") => match parse_json::<UnloadShardRequest>(&request.body) {
@@ -502,6 +507,10 @@ fn handle_cpp_server_service_route(
             Ok(req) => json_response(200, &engine.load_shard_with(req)),
             Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
         },
+        ("POST", "/ServerService/Reload") => match parse_json::<LoadShardRequest>(&request.body) {
+            Ok(req) => json_response(200, &engine.reload_shard_with(req)),
+            Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+        },
         ("POST", "/ServerService/Unload") => {
             match parse_json::<UnloadShardRequest>(&request.body) {
                 Ok(req) => json_response(200, &engine.unload_shard_with(req)),
@@ -592,6 +601,7 @@ fn handle_cpp_server_service_route(
         }
         ("GET", "/ServerService/GetRuntimeStats") => json_response(200, &runtime.stats()),
         ("GET", "/ServerService/Preflight") => json_response(200, &runtime.preflight_report()),
+        ("GET", "/ServerService/GetLifecycle") => json_response(200, &runtime.lifecycle_report()),
         ("GET", "/ServerService/ListDirtyObjects") => json_response(200, &runtime.dirty_objects()),
         ("GET", "/ServerService/ListQueuedShardWorkers") => {
             json_response(200, &runtime.queued_shard_worker_infos())
@@ -2702,6 +2712,68 @@ mod tests {
         let status: LoadShardResponse = serde_json::from_slice(&body).unwrap();
         assert!(status.status.ok, "{status:?}");
 
+        let stale_reload = HttpRequest {
+            method: "POST".to_string(),
+            path: "/ServerService/Reload".to_string(),
+            body: serde_json::to_vec(&LoadShardRequest {
+                shard_id: 44,
+                load_version: 6,
+                local_node_id: Some(2),
+                shard_uri: "local://cpp-alias/stale-shard-44".to_string(),
+                start_routing_slot: 10,
+                end_routing_slot: 20,
+                readonly: true,
+                table_name: "stale_cpp_alias".to_string(),
+            })
+            .unwrap(),
+        };
+        let (code, body) = handle_cpp_server_service_route(
+            &stale_reload,
+            &engine,
+            &runtime,
+            None,
+            "",
+            "server-a",
+            &data_raft_appliers,
+        )
+        .unwrap();
+        assert_eq!(code, 200);
+        let status: LoadShardResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status.status.code, "stale_load_version");
+
+        let reload = HttpRequest {
+            method: "POST".to_string(),
+            path: "/ServerService/Reload".to_string(),
+            body: serde_json::to_vec(&LoadShardRequest {
+                shard_id: 44,
+                load_version: 8,
+                local_node_id: Some(2),
+                shard_uri: "local://cpp-alias/reloaded-shard-44".to_string(),
+                start_routing_slot: 10,
+                end_routing_slot: 20,
+                readonly: false,
+                table_name: "cpp_alias_reloaded".to_string(),
+            })
+            .unwrap(),
+        };
+        let (code, body) = handle_cpp_server_service_route(
+            &reload,
+            &engine,
+            &runtime,
+            None,
+            "",
+            "server-a",
+            &data_raft_appliers,
+        )
+        .unwrap();
+        assert_eq!(code, 200);
+        let status: LoadShardResponse = serde_json::from_slice(&body).unwrap();
+        assert!(status.status.ok, "{status:?}");
+        let info = engine.get_info(44).info.unwrap();
+        assert_eq!(info.load_version, 8);
+        assert_eq!(info.local_node_id, Some(2));
+        assert_eq!(info.table_name, "cpp_alias_reloaded");
+
         let execute = HttpRequest {
             method: "POST".to_string(),
             path: "/ServerService/ExecuteCmd".to_string(),
@@ -2919,6 +2991,7 @@ mod tests {
         for path in [
             "/ServerService/GetRuntimeStats",
             "/ServerService/Preflight",
+            "/ServerService/GetLifecycle",
             "/ServerService/ListDirtyObjects",
             "/ServerService/ListQueuedShardWorkers",
         ] {
