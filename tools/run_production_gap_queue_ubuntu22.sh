@@ -149,6 +149,7 @@ fault_injection_command='env BUILD_TYPE="${BUILD_TYPE}" RESULT_DIR="${RESULT_DIR
 rebalance_command='env BUILD_TYPE="${BUILD_TYPE}" RESULT_DIR="${RESULT_DIR}/rebalance" OPS=240 THREADS=2 RUN_DATA_RAFT_REBALANCE=1 RUN_SHARED_STORE_REBALANCE=0 bash tools/run_rebalance_local_ubuntu22.sh'
 data_raft_5node_command='env BUILD_TYPE="${BUILD_TYPE}" RESULT_DIR="${RESULT_DIR}/data_raft_5node" OPS=600 THREAD_LIST="2" bash tools/run_data_raft_5node_scale_ubuntu22.sh'
 stale_restart_command='env BUILD_TYPE="${BUILD_TYPE}" RESULT_DIR="${RESULT_DIR}/stale_restart" OPS=120 THREADS=2 bash tools/run_stale_local_data_restart_gate_ubuntu22.sh'
+multitenant_command='env BUILD_TYPE="${BUILD_TYPE}" RESULT_DIR="${RESULT_DIR}/multitenant" NOISY_OPS=600 NOISY_THREADS=4 VICTIM_OPS=120 VICTIM_THREADS=1 bash tools/run_multitenant_noisy_neighbor_ubuntu22.sh'
 soak_command='env BUILD_TYPE="${BUILD_TYPE}" RESULT_DIR="${RESULT_DIR}/soak" SOAK_MINUTES="${SOAK_MINUTES:-30}" SOAK_QUEUE_LEVEL=quick RUN_QUEUE_EXECUTION=1 bash tools/run_soak_profile_ubuntu22.sh'
 remote_auth_command='env RESULT_DIR="${RESULT_DIR}/remote_auth" REMOTE_TIMEOUT_S=30 bash tools/run_remote_auth_gate_ubuntu22.sh'
 
@@ -176,7 +177,7 @@ register_gap 19 "CI full-gate mode for Docker Prometheus" quick covered "run_ci_
 register_gap 20 "Build/test CI with dependency cache" manual partial "tools/build_ubuntu22.sh + CI design" "" "Local cache reuse is documented; remote workflow update still requires workflow-scope branch handling."
 register_gap 21 "Full 5-repeat raft production gate" release covered "run_raft_production_gate_ubuntu22.sh" "${raft_release_command}" "Release gate is executable and repeats raft/failover production assertions 5 times."
 register_gap 22 "30-minute soak profile" nightly covered "tools/run_soak_profile_ubuntu22.sh" "${soak_command}" "Nightly soak wrapper repeatedly runs the executable quick queue for the configured duration; default target is 30 minutes."
-register_gap 23 "Multi-tenant noisy-neighbor gate" manual planned "tools/run_multitenant_noisy_neighbor_ubuntu22.sh" "" "Proxy tenant quota exists; multi-tenant noisy-neighbor gate remains missing."
+register_gap 23 "Multi-tenant noisy-neighbor gate" pr partial "tools/run_multitenant_noisy_neighbor_ubuntu22.sh" "${multitenant_command}" "Local gate runs noisy and victim namespaces concurrently and verifies victim read/write success; strict quota enforcement remains a follow-up."
 register_gap 24 "Failover/lag/rebalance runbook" quick covered "docs/production_gap_queue_runbook.md" "test -f docs/production_gap_queue_runbook.md && grep -q Failover docs/production_gap_queue_runbook.md" "Runbook is installed by this queue change."
 register_gap 25 "Push/remote CI once WSL auth is fixed" manual partial "tools/run_remote_auth_gate_ubuntu22.sh" "${remote_auth_command}" "Remote auth is a bounded manual gate because this WSL session still requires gh or Git Credential Manager setup."
 
