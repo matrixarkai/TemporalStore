@@ -162,7 +162,25 @@ temporalstore_multitenant_benchmark_p99_us{tenant_role="victim"}
 temporalstore_multitenant_benchmark_min_qps{tenant_role="victim"}
 ```
 
-11. Raft/fault-tolerance gate evidence from the textfile collector
+11. Metaserver snapshot restore evidence
+
+```promql
+temporalstore_metaserver_snapshot_restore_pass
+```
+
+```promql
+temporalstore_metaserver_snapshot_files{phase="before_restart"}
+```
+
+```promql
+temporalstore_metaserver_snapshot_restore_restart_ms
+```
+
+```promql
+temporalstore_metaserver_snapshot_restore_raft_nodes{phase="after_restore"}
+```
+
+12. Raft/fault-tolerance gate evidence from the textfile collector
 
 ```promql
 temporalstore_raft_gate_case_pass
