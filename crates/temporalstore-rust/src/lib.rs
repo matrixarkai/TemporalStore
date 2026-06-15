@@ -47,7 +47,8 @@ pub use e2e::{
 pub use engine::{
     RustStorageObservation, ShardCompactionUtilityReport, SlotDumpManifest, SlotStorageSummary,
     StorageLifecyclePlan, StorageLifecycleReport, StorageLifecycleRequest,
-    StorageProductionReadinessReport, StorageRecoveryBoundaryReport, StorageRecoveryPageError,
+    StorageProductionReadinessPolicy, StorageProductionReadinessReport,
+    StorageProductionReadinessRequest, StorageRecoveryBoundaryReport, StorageRecoveryPageError,
     StorageRecoveryReport, StorageRecoverySegmentLiveReport, TemporalEngine,
 };
 pub use index_log::{IndexLogRecord, IndexLogStats, LocalIndexLogStore};

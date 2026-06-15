@@ -33,7 +33,8 @@ use temporalstore_rust::{
     RaftMembershipChangeReport, RaftNodeId, RaftRpcRuntimeOptions, RaftTransport,
     ReplicaReplayLoop, ReplicaReplayOptions, ReplicaReplayRequest, ReplicaReplayResponse,
     RequestController, ScanStreamRequest, SchedulerLifecycleToken, SetConfigRequest,
-    SlotDumpManifest, StorageLifecycleRequest, StreamReadRequest, UnloadShardRequest,
+    SlotDumpManifest, StorageLifecycleRequest, StorageProductionReadinessRequest,
+    StreamReadRequest, UnloadShardRequest,
 };
 use temporalstore_snapshot::{FileObjectStore, S3SnapshotStore};
 
@@ -302,6 +303,18 @@ fn main() {
                     .parse()
                     .unwrap_or_default();
                 json_response(200, &runtime.storage_production_readiness_report(shard_id))
+            }
+            ("POST", "/server/storage/readiness") => {
+                match parse_json::<StorageProductionReadinessRequest>(&request.body) {
+                    Ok(req) => json_response(
+                        200,
+                        &runtime.storage_production_readiness_report_with_policy(
+                            req.shard_id,
+                            req.policy,
+                        ),
+                    ),
+                    Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+                }
             }
             ("POST", "/server/storage/lifecycle/plan") => {
                 match parse_json::<StorageLifecycleRequest>(&request.body) {
@@ -780,12 +793,19 @@ fn handle_cpp_server_service_route(
             }
         }
         ("POST", "/ServerService/GetStorageReadiness") => {
-            match parse_json::<ShardIdRouteRequest>(&request.body) {
+            match parse_json::<StorageProductionReadinessRequest>(&request.body) {
                 Ok(req) => json_response(
                     200,
-                    &runtime.storage_production_readiness_report(req.shard_id),
+                    &runtime
+                        .storage_production_readiness_report_with_policy(req.shard_id, req.policy),
                 ),
-                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+                Err(_) => match parse_json::<ShardIdRouteRequest>(&request.body) {
+                    Ok(req) => json_response(
+                        200,
+                        &runtime.storage_production_readiness_report(req.shard_id),
+                    ),
+                    Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+                },
             }
         }
         ("POST", "/ServerService/ReadPartitionStream") => {

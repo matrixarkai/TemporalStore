@@ -8,7 +8,7 @@ ByteStore integration remain out of scope for this plan.
 
 1. Storage production readiness gate across recovery, lifecycle, cache, and page-store health. Done.
 2. End-to-end readiness route coverage in the storage-mode harness.
-3. Configurable readiness policy thresholds for dirty slots, stale zones, and dump lag.
+3. Configurable readiness policy thresholds for dirty slots, stale zones, and dump lag. Done.
 4. Durable readiness snapshots for post-crash comparison.
 5. Background readiness scanner integrated with data-node preflight.
 6. Readiness Prometheus gauges and blocker counters.
@@ -46,3 +46,22 @@ Cycle 1 added `StorageProductionReadinessReport`, combining:
 
 Production readiness is intentionally strict for corruption and ownership blockers, but dirty slots
 and stale/orphan segments remain warnings because lifecycle GC/dump can resolve them online.
+
+## Cycle 2 Implemented
+
+Cycle 2 adds policy-driven storage readiness gates for production scale validation:
+
+- `StorageProductionReadinessPolicy` can promote dirty slots, stale segments, orphan segments,
+  dump lag, missing slot-dump manifests, and warnings into hard blockers.
+- The default report remains backward compatible: online dirty/stale/orphan work stays a warning
+  unless a stricter policy is supplied.
+- `StorageProductionReadinessReport` now echoes the applied policy and reports undumped oplog
+  records so operators can see the exact dump-lag boundary chosen.
+- REST `POST /server/storage/readiness` and C++-style
+  `ServerService/GetStorageReadiness` accept policy-aware requests while preserving the existing
+  shard-only request shape.
+- Regression coverage validates five strict-readiness checks: dirty-slot threshold, undumped oplog
+  threshold, required manifest, warning promotion, and default compatibility.
+
+The next cycle should add an end-to-end storage-mode harness pass that posts a strict readiness
+policy after dump, compact, GC, restart, and replay.

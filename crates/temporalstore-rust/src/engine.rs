@@ -448,14 +448,41 @@ pub struct StorageLifecycleRequest {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageProductionReadinessPolicy {
+    #[serde(default)]
+    pub max_dirty_slots: Option<usize>,
+    #[serde(default)]
+    pub max_stale_page_segments: Option<usize>,
+    #[serde(default)]
+    pub max_orphan_page_segments: Option<usize>,
+    #[serde(default)]
+    pub max_undumped_oplog_records: Option<u64>,
+    #[serde(default)]
+    pub require_slot_dump_manifest: bool,
+    #[serde(default)]
+    pub block_on_warnings: bool,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageProductionReadinessRequest {
+    pub shard_id: ShardId,
+    #[serde(default)]
+    pub policy: StorageProductionReadinessPolicy,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageProductionReadinessReport {
     pub shard_id: ShardId,
+    #[serde(default)]
+    pub policy: StorageProductionReadinessPolicy,
     pub production_ready: bool,
     pub blockers: Vec<String>,
     pub warnings: Vec<String>,
     pub dirty_slot_count: usize,
     pub stale_page_segment_count: usize,
     pub orphan_page_segment_count: usize,
+    #[serde(default)]
+    pub undumped_oplog_records: u64,
     pub corrupt_page_segment_count: usize,
     pub unreadable_page_ref_count: usize,
     pub owner_mismatch_page_ref_count: usize,
@@ -1632,6 +1659,17 @@ impl TemporalEngine {
         &self,
         shard_id: ShardId,
     ) -> StorageProductionReadinessReport {
+        self.storage_production_readiness_report_with_policy(
+            shard_id,
+            StorageProductionReadinessPolicy::default(),
+        )
+    }
+
+    pub fn storage_production_readiness_report_with_policy(
+        &self,
+        shard_id: ShardId,
+        policy: StorageProductionReadinessPolicy,
+    ) -> StorageProductionReadinessReport {
         let boundary = self.storage_recovery_boundary_report(shard_id);
         let recovery = self.storage_recovery_report_without_boundary(shard_id);
         let plan = self.storage_lifecycle_plan(StorageLifecycleRequest {
@@ -1660,6 +1698,9 @@ impl TemporalEngine {
             .unwrap_or_else(|| self.page_store.stats());
         let slot_dump_manifest_count = self.list_slot_dump_manifests(shard_id).len();
         let interrupted_slot_dump_install_count = boundary.interrupted_slot_dump_installs.len();
+        let undumped_oplog_records = boundary
+            .latest_safe_oplog_sequence
+            .saturating_sub(boundary.latest_dump_oplog_sequence);
         let mut blockers = Vec::new();
         if !boundary.stale_index_page_refs.is_empty() {
             blockers.push("stale_index_page_refs".to_string());
@@ -1699,15 +1740,54 @@ impl TemporalEngine {
         if slot_dump_manifest_count == 0 && recovery.total_page_refs > 0 {
             warnings.push("no_slot_dump_manifest_for_live_pages".to_string());
         }
+        if policy
+            .max_dirty_slots
+            .map(|limit| plan.dirty_slots.len() > limit)
+            .unwrap_or(false)
+        {
+            blockers.push("dirty_slots_exceed_policy".to_string());
+        }
+        if policy
+            .max_stale_page_segments
+            .map(|limit| plan.stale_page_segment_ids.len() > limit)
+            .unwrap_or(false)
+        {
+            blockers.push("stale_page_segments_exceed_policy".to_string());
+        }
+        if policy
+            .max_orphan_page_segments
+            .map(|limit| boundary.orphan_page_segment_ids.len() > limit)
+            .unwrap_or(false)
+        {
+            blockers.push("orphan_page_segments_exceed_policy".to_string());
+        }
+        if policy
+            .max_undumped_oplog_records
+            .map(|limit| undumped_oplog_records > limit)
+            .unwrap_or(false)
+        {
+            blockers.push("undumped_oplog_records_exceed_policy".to_string());
+        }
+        if policy.require_slot_dump_manifest
+            && slot_dump_manifest_count == 0
+            && recovery.total_page_refs > 0
+        {
+            blockers.push("slot_dump_manifest_required".to_string());
+        }
+        if policy.block_on_warnings && !warnings.is_empty() {
+            blockers.push("warnings_exceed_policy".to_string());
+        }
 
         StorageProductionReadinessReport {
             shard_id,
+            policy,
             production_ready: blockers.is_empty(),
             blockers,
             warnings,
             dirty_slot_count: plan.dirty_slots.len(),
             stale_page_segment_count: plan.stale_page_segment_ids.len(),
             orphan_page_segment_count: boundary.orphan_page_segment_ids.len(),
+            undumped_oplog_records,
             corrupt_page_segment_count: boundary.corrupt_page_segment_ids.len(),
             unreadable_page_ref_count: recovery.unreadable_page_refs.len(),
             owner_mismatch_page_ref_count: boundary.owner_mismatch_page_refs.len(),
@@ -10682,6 +10762,94 @@ mod tests {
         assert_eq!(report.unreadable_page_ref_count, 0);
         assert_eq!(report.owner_mismatch_page_ref_count, 0);
         assert!(report.page_store_bytes_written > 0);
+    }
+
+    #[test]
+    fn storage_production_readiness_policy_can_block_dirty_dump_lag_and_missing_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: "policy-key".to_string(),
+                        value: b"policy-value".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+
+        let report = engine.storage_production_readiness_report_with_policy(
+            1,
+            StorageProductionReadinessPolicy {
+                max_dirty_slots: Some(0),
+                max_undumped_oplog_records: Some(0),
+                require_slot_dump_manifest: true,
+                ..StorageProductionReadinessPolicy::default()
+            },
+        );
+
+        assert!(!report.production_ready, "{report:?}");
+        assert_eq!(report.policy.max_dirty_slots, Some(0));
+        assert_eq!(report.dirty_slot_count, 1);
+        assert!(report.undumped_oplog_records > 0);
+        assert!(report
+            .blockers
+            .contains(&"dirty_slots_exceed_policy".to_string()));
+        assert!(report
+            .blockers
+            .contains(&"undumped_oplog_records_exceed_policy".to_string()));
+        assert!(report
+            .blockers
+            .contains(&"slot_dump_manifest_required".to_string()));
+    }
+
+    #[test]
+    fn storage_production_readiness_policy_can_promote_warnings_to_blockers() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: "warn-key".to_string(),
+                        value: b"warn-value".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+
+        let report = engine.storage_production_readiness_report_with_policy(
+            1,
+            StorageProductionReadinessPolicy {
+                block_on_warnings: true,
+                ..StorageProductionReadinessPolicy::default()
+            },
+        );
+
+        assert!(!report.production_ready, "{report:?}");
+        assert!(report
+            .warnings
+            .contains(&"dirty_slots_pending_dump".to_string()));
+        assert!(report
+            .blockers
+            .contains(&"warnings_exceed_policy".to_string()));
     }
 
     #[test]

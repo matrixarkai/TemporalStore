@@ -15,7 +15,8 @@ use crate::control::{
 };
 use crate::engine::{
     ShardCompactionUtilityReport, SlotDumpManifest, StorageLifecyclePlan, StorageLifecycleReport,
-    StorageLifecycleRequest, StorageProductionReadinessReport, TemporalEngine,
+    StorageLifecycleRequest, StorageProductionReadinessPolicy, StorageProductionReadinessReport,
+    TemporalEngine,
 };
 use crate::meta::{
     ServerHeartbeatResponse, ServerRuntimeLoad, ServerShardServingState, TableTopologyResponse,
@@ -1157,6 +1158,16 @@ impl DataNodeRuntime {
         self.inner
             .engine
             .storage_production_readiness_report(shard_id)
+    }
+
+    pub fn storage_production_readiness_report_with_policy(
+        &self,
+        shard_id: ShardId,
+        policy: StorageProductionReadinessPolicy,
+    ) -> StorageProductionReadinessReport {
+        self.inner
+            .engine
+            .storage_production_readiness_report_with_policy(shard_id, policy)
     }
 
     pub fn apply_storage_lifecycle(
