@@ -32,6 +32,8 @@ contract without requiring a live broker or proxy:
 - `--fail_first_attempt_every=N`: injects deterministic retryable write failures.
 - `--dead_letter_every=N`: injects deterministic malformed records and verifies they do not block good
   records in the same replay.
+- `--poison_every=N`: injects valid records that exhaust retries and move to the dead-letter path.
+- `--partitions=N`: validates source partition accounting, committed watermark, and max partition lag.
 
 Use `proxy_ingestion_pressure_example` and `proxy_smoke_example` for live proxy RPC validation. A real
 Kafka/Flink connector should combine this replay contract with the same proxy write path.
@@ -46,6 +48,8 @@ DUPLICATE_EVERY=17 \
 SOURCES='api kafka flink' \
 FAIL_FIRST_ATTEMPT_EVERY=53 \
 DEAD_LETTER_EVERY=97 \
+POISON_EVERY=211 \
+PARTITIONS=8 \
 bash tools/run_queue_ingestion_replay_ubuntu22.sh
 ```
 
@@ -57,6 +61,7 @@ iterations=8
 records=5000
 batch_size=256
 duplicate_every=17
+poison_every=211
 sources=api kafka flink
 ```
 
@@ -73,6 +78,15 @@ into the same record identity and replay contract.
 | Flink ingestion | Deterministic checkpointed offset replay using the same dedupe key and commit metrics. | Add a Java/Flink connector module or external reference implementation when the public API stabilizes. |
 | Proxy ingestion | Live thrift `Set/Get` pressure through `bcache2-proxy`, tenant quota, timeouts, and metrics. | Add multi-tenant auth integration and long-running soak against cloud object storage. |
 | Data-node/metaserver | Production gate can combine ingestion replay with API, metrics, and raft gates. | Add broker restart/failover tests once real broker-backed workers land. |
+
+The current local gap-fill loops cover:
+
+- Configurable source partition count instead of a fixed 8-partition assumption.
+- Retry-exhausted poison records that are counted separately from malformed records.
+- Committed watermark output for Flink-style checkpoint decisions.
+- Max partition lag output for Kafka-style operational readiness.
+- Runner assertions for API, Kafka, and Flink modes across duplicate, retry, poison, dead-letter,
+  checkpoint, watermark, and lag behavior.
 
 ## What The Local Test Starts
 

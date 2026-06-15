@@ -7,7 +7,6 @@
 #include <sstream>
 #include <string>
 #include <thread>
-#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -22,9 +21,11 @@ struct Options {
     int records = 1000;
     int batch_size = 128;
     int value_size = 128;
+    int partitions = 8;
     int duplicate_every = 0;
     int dead_letter_every = 0;
     int fail_first_attempt_every = 0;
+    int poison_every = 0;
     int max_retries = 3;
     int retry_backoff_ms = 2;
     bool dry_run = true;
@@ -49,16 +50,22 @@ struct Metrics {
     int64_t failed = 0;
     int64_t retries = 0;
     int64_t dead_letter_records = 0;
+    int64_t retry_exhausted_records = 0;
     int64_t checkpointed_partitions = 0;
     int64_t max_checkpoint_offset = -1;
+    int64_t committed_watermark_offset = -1;
+    int64_t max_partition_lag = 0;
     std::map<int, int64_t> checkpoint_offsets;
+    std::map<int, int64_t> input_high_offsets;
 };
 
 void Usage(const char* argv0) {
     std::cerr << "usage: " << argv0 << " [--dry_run=0|1] [--proxy=host:port] "
               << "[--input=csv] [--records=N] [--batch_size=N] [--value_size=N] "
+              << "[--partitions=N] "
               << "[--duplicate_every=N] [--dead_letter_every=N] "
-              << "[--fail_first_attempt_every=N] [--namespace=ns] [--table=table] "
+              << "[--fail_first_attempt_every=N] [--poison_every=N] "
+              << "[--namespace=ns] [--table=table] "
               << "[--source=kafka|flink|pubsub] [--max_retries=N] [--retry_backoff_ms=N]"
               << std::endl;
 }
@@ -105,12 +112,16 @@ bool ParseOptions(int argc, char** argv, Options* options) {
             if (!ParseInt(value, &options->batch_size)) return false;
         } else if (name == "value_size") {
             if (!ParseInt(value, &options->value_size)) return false;
+        } else if (name == "partitions") {
+            if (!ParseInt(value, &options->partitions)) return false;
         } else if (name == "duplicate_every") {
             if (!ParseInt(value, &options->duplicate_every)) return false;
         } else if (name == "dead_letter_every") {
             if (!ParseInt(value, &options->dead_letter_every)) return false;
         } else if (name == "fail_first_attempt_every") {
             if (!ParseInt(value, &options->fail_first_attempt_every)) return false;
+        } else if (name == "poison_every") {
+            if (!ParseInt(value, &options->poison_every)) return false;
         } else if (name == "max_retries") {
             if (!ParseInt(value, &options->max_retries)) return false;
         } else if (name == "retry_backoff_ms") {
@@ -121,9 +132,10 @@ bool ParseOptions(int argc, char** argv, Options* options) {
         }
     }
     if (options->batch_size <= 0 || options->records <= 0 || options->value_size <= 0 ||
+        options->partitions <= 0 ||
         options->max_retries < 0 || options->retry_backoff_ms < 0 ||
         options->duplicate_every < 0 || options->dead_letter_every < 0 ||
-        options->fail_first_attempt_every < 0) {
+        options->fail_first_attempt_every < 0 || options->poison_every < 0) {
         Usage(argv[0]);
         return false;
     }
@@ -178,7 +190,7 @@ std::vector<QueueRecord> GenerateRecords(const Options& options) {
     for (int i = 0; i < options.records; ++i) {
         QueueRecord record;
         record.source = options.source;
-        record.partition = i % 8;
+        record.partition = i % options.partitions;
         record.offset = i;
         record.namespace_name = options.namespace_name;
         record.table_name = options.table_name;
@@ -235,10 +247,22 @@ bool ShouldFailFirstAttempt(const Options& options, const QueueRecord& record) {
            record.offset % options.fail_first_attempt_every == 0;
 }
 
+bool ShouldPoison(const Options& options, const QueueRecord& record) {
+    return options.poison_every > 0 && record.offset > 0 &&
+           record.offset % options.poison_every == 0;
+}
+
 void UpdateCheckpoint(const QueueRecord& record, Metrics* metrics) {
     auto it = metrics->checkpoint_offsets.find(record.partition);
     if (it == metrics->checkpoint_offsets.end() || record.offset > it->second) {
         metrics->checkpoint_offsets[record.partition] = record.offset;
+    }
+}
+
+void UpdateInputHighOffset(const QueueRecord& record, Metrics* metrics) {
+    auto it = metrics->input_high_offsets.find(record.partition);
+    if (it == metrics->input_high_offsets.end() || record.offset > it->second) {
+        metrics->input_high_offsets[record.partition] = record.offset;
     }
 }
 
@@ -252,6 +276,20 @@ bool FlushBatch(const Options& options, const std::vector<QueueRecord>& batch, M
         }
         bool committed = false;
         for (int attempt = 0; attempt <= options.max_retries; ++attempt) {
+            if (ShouldPoison(options, record)) {
+                if (attempt < options.max_retries) {
+                    ++metrics->retries;
+                    if (options.retry_backoff_ms > 0) {
+                        std::this_thread::sleep_for(
+                                std::chrono::milliseconds(options.retry_backoff_ms));
+                    }
+                    continue;
+                }
+                ++metrics->retry_exhausted_records;
+                ++metrics->dead_letter_records;
+                committed = false;
+                break;
+            }
             if (attempt == 0 && ShouldFailFirstAttempt(options, record)) {
                 ++metrics->retries;
                 if (options.retry_backoff_ms > 0) {
@@ -265,7 +303,7 @@ bool FlushBatch(const Options& options, const std::vector<QueueRecord>& batch, M
         if (committed) {
             ++metrics->committed;
             UpdateCheckpoint(record, metrics);
-        } else {
+        } else if (!ShouldPoison(options, record)) {
             ++metrics->failed;
             ok = false;
         }
@@ -284,6 +322,7 @@ bool Replay(const Options& options, const std::vector<QueueRecord>& input, Metri
             ++metrics->dead_letter_records;
             continue;
         }
+        UpdateInputHighOffset(record, metrics);
         const auto dedupe_key = DedupeKey(record);
         if (!seen_offsets.insert(dedupe_key).second) {
             ++metrics->duplicate_records;
@@ -301,8 +340,20 @@ bool Replay(const Options& options, const std::vector<QueueRecord>& input, Metri
     }
     metrics->checkpointed_partitions =
             static_cast<int64_t>(metrics->checkpoint_offsets.size());
+    bool first_watermark = true;
     for (const auto& iter : metrics->checkpoint_offsets) {
         metrics->max_checkpoint_offset = std::max(metrics->max_checkpoint_offset, iter.second);
+        if (first_watermark || iter.second < metrics->committed_watermark_offset) {
+            metrics->committed_watermark_offset = iter.second;
+            first_watermark = false;
+        }
+    }
+    for (const auto& iter : metrics->input_high_offsets) {
+        const auto checkpoint_it = metrics->checkpoint_offsets.find(iter.first);
+        const int64_t checkpoint =
+                checkpoint_it == metrics->checkpoint_offsets.end() ? -1 : checkpoint_it->second;
+        metrics->max_partition_lag =
+                std::max(metrics->max_partition_lag, iter.second - checkpoint);
     }
     return ok;
 }
@@ -337,10 +388,16 @@ int main(int argc, char** argv) {
     std::cout << "failed=" << metrics.failed << std::endl;
     std::cout << "retries=" << metrics.retries << std::endl;
     std::cout << "dead_letter_records=" << metrics.dead_letter_records << std::endl;
+    std::cout << "retry_exhausted_records=" << metrics.retry_exhausted_records << std::endl;
     std::cout << "checkpointed_partitions=" << metrics.checkpointed_partitions << std::endl;
     std::cout << "max_checkpoint_offset=" << metrics.max_checkpoint_offset << std::endl;
+    std::cout << "committed_watermark_offset=" << metrics.committed_watermark_offset << std::endl;
+    std::cout << "max_partition_lag=" << metrics.max_partition_lag << std::endl;
     std::cout << "elapsed_ms=" << elapsed_ms << std::endl;
     std::cout << "committed_qps=" << qps << std::endl;
 
-    return ok && metrics.failed == 0 && metrics.committed == metrics.unique_records ? 0 : 1;
+    return ok && metrics.failed == 0 &&
+                   metrics.committed + metrics.retry_exhausted_records == metrics.unique_records
+               ? 0
+               : 1;
 }
