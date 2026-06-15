@@ -260,6 +260,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "shard index persistence and slot-dump install use temp-file fsync plus rename instead of direct overwrite"
                     .to_string(),
+                "memory cache supports pinned hot/page blocks with eviction skip accounting, inspection, and Prometheus metrics"
+                    .to_string(),
             ],
             missing: vec![
                 "binary/protobuf oplog and index-log compatibility".to_string(),

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
 use std::io::Write;
@@ -128,6 +128,16 @@ pub struct CacheStats {
     pub eviction_capacity: u64,
     #[serde(default)]
     pub eviction_oversize: u64,
+    #[serde(default)]
+    pub pinned_entries: u64,
+    #[serde(default)]
+    pub pinned_bytes: u64,
+    #[serde(default)]
+    pub pin_operations: u64,
+    #[serde(default)]
+    pub unpin_operations: u64,
+    #[serde(default)]
+    pub eviction_pinned_skips: u64,
     pub compressed_puts: u64,
     pub compressed_hits: u64,
     pub compression_bytes_saved: u64,
@@ -177,6 +187,8 @@ pub struct CacheEntryInfo {
     pub selector: String,
     pub memory_bytes: u64,
     pub disk_bytes: u64,
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -192,6 +204,7 @@ struct CacheInner {
     block_options: CacheBlockOptions,
     memory: HashMap<CacheKey, Vec<u8>>,
     disk_index: HashMap<CacheKey, u64>,
+    pinned: HashSet<CacheKey>,
     order: VecDeque<CacheKey>,
     stats: CacheStats,
 }
@@ -220,6 +233,7 @@ impl MultiLayerCache {
                 block_options,
                 memory: HashMap::new(),
                 disk_index: HashMap::new(),
+                pinned: HashSet::new(),
                 order: VecDeque::new(),
                 stats: CacheStats::default(),
             })),
@@ -302,6 +316,21 @@ impl MultiLayerCache {
         }
     }
 
+    pub fn pin(&self, key: CacheKey) {
+        let mut inner = self.inner.write().expect("cache lock poisoned");
+        inner.pinned.insert(key);
+        inner.stats.pin_operations = inner.stats.pin_operations.saturating_add(1);
+        inner.refresh_pin_stats();
+    }
+
+    pub fn unpin(&self, key: &CacheKey) {
+        let mut inner = self.inner.write().expect("cache lock poisoned");
+        if inner.pinned.remove(key) {
+            inner.stats.unpin_operations = inner.stats.unpin_operations.saturating_add(1);
+        }
+        inner.refresh_pin_stats();
+    }
+
     pub fn invalidate(&self, key: &CacheKey) -> Result<(), CacheError> {
         let mut inner = self.inner.write().expect("cache lock poisoned");
         if let Some(value) = inner.memory.remove(key) {
@@ -309,8 +338,10 @@ impl MultiLayerCache {
         }
         let _ = fs::remove_file(inner.disk_path(key));
         inner.disk_index.remove(key);
+        inner.pinned.remove(key);
         inner.stats.invalidations += 1;
         inner.stats.memory_bytes = inner.memory_bytes as u64;
+        inner.refresh_pin_stats();
         Ok(())
     }
 
@@ -319,8 +350,10 @@ impl MultiLayerCache {
         if let Some(value) = inner.memory.remove(key) {
             inner.memory_bytes = inner.memory_bytes.saturating_sub(value.len());
         }
+        inner.pinned.remove(key);
         inner.stats.invalidations += 1;
         inner.stats.memory_bytes = inner.memory_bytes as u64;
+        inner.refresh_pin_stats();
     }
 
     pub fn invalidate_record(
@@ -367,6 +400,7 @@ impl MultiLayerCache {
         }
         inner.order.retain(|key| key.shard_id != shard_id);
         inner.disk_index.retain(|key, _| key.shard_id != shard_id);
+        inner.pinned.retain(|key| key.shard_id != shard_id);
 
         let shard_disk_dir = inner.disk_dir.join(format!("shard-{shard_id}"));
         let disk_bytes_before = dir_size(&shard_disk_dir).unwrap_or_default();
@@ -378,6 +412,7 @@ impl MultiLayerCache {
         inner.stats.invalidations += memory_entries_removed as u64;
         inner.stats.memory_bytes = inner.memory_bytes as u64;
         inner.stats.disk_bytes = inner.stats.disk_bytes.saturating_sub(disk_bytes_before);
+        inner.refresh_pin_stats();
         Ok(CacheGcReport {
             shard_id,
             memory_entries_removed,
@@ -419,6 +454,7 @@ impl MultiLayerCache {
                     .unwrap_or_default(),
             );
             let _ = fs::remove_file(path);
+            inner.pinned.remove(key);
         }
         inner
             .order
@@ -429,6 +465,7 @@ impl MultiLayerCache {
             .saturating_add(memory_entries_removed as u64);
         inner.stats.memory_bytes = inner.memory_bytes as u64;
         inner.stats.disk_bytes = dir_size(&inner.disk_dir).unwrap_or(inner.stats.disk_bytes);
+        inner.refresh_pin_stats();
         Ok(CacheGcReport {
             shard_id,
             memory_entries_removed,
@@ -448,6 +485,7 @@ impl MultiLayerCache {
         let mut entries = keys
             .into_iter()
             .map(|key| {
+                let pinned = inner.pinned.contains(&key);
                 let memory_bytes = inner
                     .memory
                     .get(&key)
@@ -467,6 +505,7 @@ impl MultiLayerCache {
                     selector: key.selector,
                     memory_bytes,
                     disk_bytes,
+                    pinned,
                 }
             })
             .collect::<Vec<_>>();
@@ -484,6 +523,8 @@ impl MultiLayerCache {
         CacheStats {
             memory_bytes: inner.memory_bytes as u64,
             disk_bytes: dir_size(&inner.disk_dir).unwrap_or(inner.stats.disk_bytes),
+            pinned_entries: inner.pinned.len() as u64,
+            pinned_bytes: inner.pinned_memory_bytes(),
             ..inner.stats
         }
     }
@@ -495,6 +536,7 @@ impl MultiLayerCache {
         inner.order.clear();
         inner.memory_bytes = 0;
         inner.stats.memory_bytes = 0;
+        inner.refresh_pin_stats();
     }
 }
 
@@ -636,17 +678,48 @@ impl CacheInner {
         }
         self.memory_bytes += value.len();
         while self.memory_bytes > self.memory_capacity_bytes {
-            let Some(oldest) = self.order.pop_front() else {
+            let mut evicted = false;
+            let order_len = self.order.len();
+            for _ in 0..order_len {
+                let Some(oldest) = self.order.pop_front() else {
+                    break;
+                };
+                if self.pinned.contains(&oldest) {
+                    self.stats.eviction_pinned_skips =
+                        self.stats.eviction_pinned_skips.saturating_add(1);
+                    self.order.push_back(oldest);
+                    continue;
+                }
+                if let Some(old_value) = self.memory.remove(&oldest) {
+                    self.memory_bytes = self.memory_bytes.saturating_sub(old_value.len());
+                    self.stats.memory_evictions += 1;
+                    self.stats.eviction_capacity += 1;
+                    evicted = true;
+                    break;
+                }
+            }
+            if !evicted {
+                self.stats.eviction_pinned_skips =
+                    self.stats.eviction_pinned_skips.saturating_add(1);
                 break;
-            };
-            if let Some(old_value) = self.memory.remove(&oldest) {
-                self.memory_bytes = self.memory_bytes.saturating_sub(old_value.len());
-                self.stats.memory_evictions += 1;
-                self.stats.eviction_capacity += 1;
             }
         }
         self.stats.memory_bytes = self.memory_bytes as u64;
+        self.refresh_pin_stats();
         true
+    }
+
+    fn pinned_memory_bytes(&self) -> u64 {
+        self.pinned
+            .iter()
+            .filter_map(|key| self.memory.get(key))
+            .map(|value| value.len() as u64)
+            .sum()
+    }
+
+    fn refresh_pin_stats(&mut self) {
+        self.stats.pinned_entries = self.pinned.len() as u64;
+        self.stats.pinned_bytes = self.pinned_memory_bytes();
     }
 }
 
@@ -736,6 +809,44 @@ mod tests {
         assert_eq!(cache.get_memory(&key), None);
         assert_eq!(cache.get(&key).unwrap(), Some(b"too-large".to_vec()));
         assert_eq!(cache.stats().refill_failures, 1);
+    }
+
+    #[test]
+    fn pinned_memory_entries_survive_capacity_eviction() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = MultiLayerCache::new(10, dir.path());
+        let pinned = CacheKey::string(1, "pinned");
+        let first = CacheKey::string(1, "first");
+        let second = CacheKey::string(1, "second");
+
+        cache.put(pinned.clone(), b"pin".to_vec()).unwrap();
+        cache.pin(pinned.clone());
+        cache.put(first.clone(), b"11111".to_vec()).unwrap();
+        cache.put(second.clone(), b"22222".to_vec()).unwrap();
+
+        assert_eq!(cache.get_memory(&pinned), Some(b"pin".to_vec()));
+        assert_eq!(cache.stats().pinned_entries, 1);
+        assert_eq!(cache.stats().pinned_bytes, 3);
+        assert!(cache.stats().eviction_pinned_skips > 0);
+
+        cache.unpin(&pinned);
+        assert_eq!(cache.stats().pinned_entries, 0);
+    }
+
+    #[test]
+    fn invalidation_clears_pinned_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = MultiLayerCache::new(16, dir.path());
+        let key = CacheKey::page_with_slot(1, 10, 0, 4, Some(7));
+
+        cache.put(key.clone(), b"page".to_vec()).unwrap();
+        cache.pin(key.clone());
+        assert_eq!(cache.stats().pinned_entries, 1);
+
+        cache.invalidate(&key).unwrap();
+        assert_eq!(cache.stats().pinned_entries, 0);
+        assert_eq!(cache.stats().pinned_bytes, 0);
+        assert!(cache.entries_for_shard(1).is_empty());
     }
 
     #[test]

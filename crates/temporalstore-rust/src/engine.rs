@@ -560,6 +560,10 @@ pub struct StorageCacheSlotSummary {
     pub entry_count: usize,
     pub memory_bytes: u64,
     pub disk_bytes: u64,
+    #[serde(default)]
+    pub pinned_entries: usize,
+    #[serde(default)]
+    pub pinned_bytes: u64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2093,6 +2097,10 @@ impl TemporalEngine {
             summary.entry_count = summary.entry_count.saturating_add(1);
             summary.memory_bytes = summary.memory_bytes.saturating_add(entry.memory_bytes);
             summary.disk_bytes = summary.disk_bytes.saturating_add(entry.disk_bytes);
+            if entry.pinned {
+                summary.pinned_entries = summary.pinned_entries.saturating_add(1);
+                summary.pinned_bytes = summary.pinned_bytes.saturating_add(entry.memory_bytes);
+            }
         }
         StorageCacheInspectionReport {
             shard_id,
@@ -2319,6 +2327,10 @@ impl TemporalEngine {
                 ("refill_failures", stats.cache.refill_failures),
                 ("eviction_capacity", stats.cache.eviction_capacity),
                 ("eviction_oversize", stats.cache.eviction_oversize),
+                ("pinned_entries", stats.cache.pinned_entries),
+                ("pin_operations", stats.cache.pin_operations),
+                ("unpin_operations", stats.cache.unpin_operations),
+                ("eviction_pinned_skips", stats.cache.eviction_pinned_skips),
                 ("compressed_puts", stats.cache.compressed_puts),
                 ("compressed_hits", stats.cache.compressed_hits),
             ] {

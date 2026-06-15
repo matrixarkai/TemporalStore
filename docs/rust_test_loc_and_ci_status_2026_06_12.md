@@ -113,3 +113,8 @@ Shard index persistence now uses an atomic temp-file write, fsync, and rename
 path for normal index saves and slot-dump installs. Recovery reports expose
 `index_write_atomic` so storage crash-safety audits can verify the safer writer is
 active.
+
+Storage cache now supports pinned memory entries for hot/page blocks. Pinned
+entries are skipped during capacity eviction, pin/unpin operations and pinned
+eviction skips are counted, cache inspection reports pinned slot bytes, and
+Prometheus exports the pinning counters.
