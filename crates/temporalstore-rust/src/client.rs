@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -186,6 +187,46 @@ pub struct ClientMetaSyncReport {
     pub error_table_count: usize,
     pub total_sync_generation: u64,
     pub tables: Vec<ClientMetaSyncTableReport>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientMetaSyncLoopOptions {
+    pub tick_ms: u64,
+    pub max_tables_per_tick: usize,
+}
+
+impl Default for ClientMetaSyncLoopOptions {
+    fn default() -> Self {
+        Self {
+            tick_ms: 1_000,
+            max_tables_per_tick: 128,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ClientMetaSyncLoopHandle {
+    stop: Arc<AtomicBool>,
+    join: Option<thread::JoinHandle<()>>,
+}
+
+impl ClientMetaSyncLoopHandle {
+    pub fn stop(&self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+
+    pub fn is_stopped(&self) -> bool {
+        self.stop.load(Ordering::Relaxed)
+    }
+
+    pub fn stop_and_join(mut self) -> thread::Result<()> {
+        self.stop();
+        if let Some(join) = self.join.take() {
+            join.join()
+        } else {
+            Ok(())
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -778,24 +819,47 @@ impl TemporalStoreClient {
 
     pub fn start_meta_sync_loop(&self, interval_ms: u64) -> thread::JoinHandle<()> {
         let client = self.clone();
-        let interval = Duration::from_millis(interval_ms.max(1));
+        let options = ClientMetaSyncLoopOptions {
+            tick_ms: interval_ms.max(1),
+            ..ClientMetaSyncLoopOptions::default()
+        };
         thread::spawn(move || loop {
-            let tables = client
-                .inner
-                .tables
-                .lock()
-                .expect("client table cache lock poisoned")
-                .keys()
-                .cloned()
-                .collect::<Vec<_>>();
-            for table in tables {
-                if let Some((namespace, table_name)) = table.split_once('/') {
-                    let _ =
-                        client.sync_table_topology(namespace.to_string(), table_name.to_string());
-                }
-            }
-            thread::sleep(interval);
+            client.run_due_meta_sync_once(options);
+            thread::sleep(Duration::from_millis(options.tick_ms));
         })
+    }
+
+    pub fn start_meta_sync_loop_handle(
+        &self,
+        options: ClientMetaSyncLoopOptions,
+    ) -> ClientMetaSyncLoopHandle {
+        let client = self.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_for_thread = stop.clone();
+        let join = thread::spawn(move || {
+            let options = ClientMetaSyncLoopOptions {
+                tick_ms: options.tick_ms.max(1),
+                max_tables_per_tick: options.max_tables_per_tick.max(1),
+            };
+            while !stop_for_thread.load(Ordering::Relaxed) {
+                client.run_due_meta_sync_once(options);
+                sleep_meta_sync_tick(options.tick_ms, &stop_for_thread);
+            }
+        });
+        ClientMetaSyncLoopHandle {
+            stop,
+            join: Some(join),
+        }
+    }
+
+    pub fn run_due_meta_sync_once(&self, options: ClientMetaSyncLoopOptions) -> usize {
+        let now = now_unix_ms();
+        let tables = self.due_meta_sync_tables(now, options.max_tables_per_tick.max(1));
+        let count = tables.len();
+        for (namespace, table_name) in tables {
+            let _ = self.sync_table_topology(namespace, table_name);
+        }
+        count
     }
 
     pub fn meta_sync_report(&self) -> ClientMetaSyncReport {
@@ -1006,6 +1070,31 @@ impl TemporalStoreClient {
             .len()
     }
 
+    fn due_meta_sync_tables(&self, now_ms: u64, max_tables: usize) -> Vec<(String, String)> {
+        let table_keys = self.open_table_keys();
+        let states = self
+            .inner
+            .meta_sync_tables
+            .lock()
+            .expect("client meta sync table lock poisoned");
+        table_keys
+            .into_iter()
+            .filter_map(|table| {
+                let due = states
+                    .get(&table)
+                    .map(|state| state.next_sync_after_unix_ms <= now_ms)
+                    .unwrap_or(true);
+                due.then(|| {
+                    table.split_once('/').map(|(namespace, table_name)| {
+                        (namespace.to_string(), table_name.to_string())
+                    })
+                })
+                .flatten()
+            })
+            .take(max_tables)
+            .collect()
+    }
+
     #[cfg(test)]
     pub fn insert_cached_route_for_test(&self, shard_id: ShardId, primary_addr: impl Into<String>) {
         self.inner
@@ -1123,9 +1212,14 @@ impl TemporalStoreClient {
             });
         state.sync_generation = state.sync_generation.saturating_add(1);
         state.last_error_unix_ms = now;
-        state.next_sync_after_unix_ms =
-            now.saturating_add(self.inner.options.meta_sync_interval_ms);
         state.consecutive_errors = state.consecutive_errors.saturating_add(1);
+        let backoff_ms = self
+            .inner
+            .options
+            .topo_error_retry_interval_ms
+            .saturating_mul(state.consecutive_errors.max(1))
+            .min(self.inner.options.meta_sync_interval_ms.max(1));
+        state.next_sync_after_unix_ms = now.saturating_add(backoff_ms);
         state.last_error = error.to_string();
     }
 
@@ -2863,6 +2957,18 @@ fn topology_event_affects_routes(event: &crate::meta::TopologyChangeEvent) -> bo
         )
 }
 
+fn sleep_meta_sync_tick(tick_ms: u64, stop: &AtomicBool) {
+    let deadline = Instant::now() + Duration::from_millis(tick_ms.max(1));
+    while Instant::now() < deadline {
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+        thread::sleep(
+            Duration::from_millis(10).min(deadline.saturating_duration_since(Instant::now())),
+        );
+    }
+}
+
 fn duration_ms_u64(duration: Duration) -> u64 {
     duration.as_millis().min(u128::from(u64::MAX)) as u64
 }
@@ -3901,6 +4007,7 @@ mod tests {
         assert_eq!(bad.consecutive_errors, 1);
         assert_eq!(bad.last_error, "missing table");
         assert!(bad.last_error_unix_ms > 0);
+        assert!(bad.next_sync_after_unix_ms > bad.last_error_unix_ms);
 
         let preflight = client.preflight_report();
         assert_eq!(preflight.meta_sync.error_table_count, 1);
@@ -4382,22 +4489,29 @@ mod tests {
 
         let client = TemporalStoreClient::with_options(ClientOptions {
             meta_addr: Some(meta_addr),
+            meta_sync_interval_ms: 10,
+            topo_error_retry_interval_ms: 5,
             ..ClientOptions::default()
         });
         let table = client.open_table_from_meta("ns", "tbl").unwrap();
         assert!((10..12).contains(&table.shard_id_for_key("k")));
         first_shard.store(20, std::sync::atomic::Ordering::Relaxed);
-        let _syncer = client.start_meta_sync_loop(10);
+        let syncer = client.start_meta_sync_loop_handle(ClientMetaSyncLoopOptions {
+            tick_ms: 5,
+            max_tables_per_tick: 1,
+        });
 
         let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline {
             let shard = table.shard_id_for_key("k");
             if (20..22).contains(&shard) {
                 assert!(client.stats().meta_sync_total >= 2);
+                syncer.stop_and_join().unwrap();
                 return;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
+        syncer.stop_and_join().unwrap();
         panic!("client meta sync loop did not refresh table options");
     }
 

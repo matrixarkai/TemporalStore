@@ -60,6 +60,26 @@ brpc and Thrift are intentionally not part of the Rust target. The Rust open-sou
 
 ## What Was Closed In The Latest Pass
 
+This pass closed the eleventh client/proxy/metaserver/nodeserver C++ parity cycle:
+
+1. Client background metaserver sync now has a managed worker handle with `stop`,
+   `is_stopped`, and `stop_and_join`.
+2. The managed loop honors per-table `next_sync_after_unix_ms` instead of refreshing every cached
+   table on every tick.
+3. A one-shot `run_due_meta_sync_once` path exposes the same due-table scheduler for tests and
+   future proxy/control-plane integration.
+4. Sync errors now schedule bounded retry backoff using `topo_error_retry_interval_ms`, capped by
+   `meta_sync_interval_ms`.
+5. The legacy `start_meta_sync_loop(interval_ms)` API remains available for existing callers.
+6. Regression coverage validates managed background sync updates an existing table handle and
+   stops cleanly.
+
+This improves C++-style client MetaSyncer lifecycle/backoff parity. Remaining work is multi-proxy
+and multi-client convergence under table changes, membership-update execution, and full
+move/failover orchestration.
+
+## What Was Closed In The Previous Pass
+
 This pass closed the tenth client/proxy/metaserver/nodeserver C++ parity cycle:
 
 1. Client now has a C++-style metaserver topology invalidation path for cached routes.
