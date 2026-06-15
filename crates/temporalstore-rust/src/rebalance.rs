@@ -50,6 +50,12 @@ pub enum RebalanceStep {
         node_id: RaftNodeId,
         load_version: u64,
     },
+    ReloadTarget {
+        shard_id: ShardId,
+        replica_id: u64,
+        node_id: RaftNodeId,
+        load_version: u64,
+    },
     UpdateMembership {
         shard_id: ShardId,
         active_replica_ids: Vec<u64>,
@@ -409,6 +415,11 @@ impl SchedulerTask {
                 load_version,
                 ..
             } => (*shard_id, "load", *load_version),
+            RebalanceStep::ReloadTarget {
+                shard_id,
+                load_version,
+                ..
+            } => (*shard_id, "reload", *load_version),
             RebalanceStep::UnloadSource { shard_id, .. } => (*shard_id, "unload", 0),
             RebalanceStep::FreezeSource { shard_id, .. } => (*shard_id, "freeze", 0),
             RebalanceStep::UpdateMembership { shard_id, .. } => (*shard_id, "membership", 0),
@@ -1142,9 +1153,26 @@ mod tests {
         assert_eq!(token.load_version, 99);
         assert_eq!(token.generation, 42);
 
-        let unload = scheduler.submit(
+        let reload = scheduler.submit(
             0,
             43,
+            SchedulerTaskKind::RebalanceStep(RebalanceStep::ReloadTarget {
+                shard_id: 7,
+                replica_id: 3,
+                node_id: 2,
+                load_version: 100,
+            }),
+        );
+        let token = reload.lifecycle_token().unwrap();
+        assert_eq!(token.task_id, reload.id);
+        assert_eq!(token.shard_id, 7);
+        assert_eq!(token.operation, "reload");
+        assert_eq!(token.load_version, 100);
+        assert_eq!(token.generation, 43);
+
+        let unload = scheduler.submit(
+            0,
+            44,
             SchedulerTaskKind::RebalanceStep(RebalanceStep::UnloadSource {
                 shard_id: 7,
                 replica_id: 1,
@@ -1155,7 +1183,7 @@ mod tests {
         assert_eq!(token.task_id, unload.id);
         assert_eq!(token.operation, "unload");
         assert_eq!(token.load_version, 0);
-        assert_eq!(token.generation, 43);
+        assert_eq!(token.generation, 44);
     }
 
     #[test]

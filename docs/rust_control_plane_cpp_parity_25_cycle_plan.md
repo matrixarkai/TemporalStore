@@ -23,7 +23,8 @@ push.
 15. Add metaserver repair task creation for missing primaries and under-replicated shards.
 16. Add cross-service move workflow: load target, update membership, unload source. Unload
     busy-safety sub-slice done in cycle 13; scheduler retry classification done in cycle 14.
-17. Add Raft-backed metaserver replay for scheduler lifecycle tokens.
+17. Add Raft-backed metaserver replay for scheduler lifecycle tokens. Controlled reload
+    scheduler step done in cycle 15.
 18. Add multi-proxy stale-cache convergence harness.
 19. Add multi-client background MetaSyncer scale harness.
 20. Add nodeserver restart recovery of lifecycle token/transition state.
@@ -131,6 +132,25 @@ Cycle 14 wires nodeserver unload busy-safety into metaserver scheduler execution
 
 The next cycle should use this retry signal in a cross-service move harness that performs load,
 membership update, busy unload retry, and eventual unload convergence.
+
+## Cycle 15 Implemented
+
+Cycle 15 adds controlled reload as a first-class scheduler lifecycle step:
+
+- `RebalanceStep::ReloadTarget` now carries shard, replica, node, and load version metadata.
+- Scheduler lifecycle tokens now distinguish `reload` from `load` and carry the reload
+  load-version/generation for nodeserver validation.
+- Metaserver scheduler execution installs the reload lifecycle token, calls
+  `/ServerService/Reload`, fetches `/ServerService/GetLifecycle`, and records the matched reload
+  lifecycle state in the execution ledger.
+- Request mismatch and missing reload request paths reuse the same fail-fast validation as
+  controlled load.
+- Regression coverage validates reload token issuance, node call ordering, local node id
+  injection, readonly reload lifecycle state matching, scheduler report success, and execution
+  ledger recording.
+
+The next cycle should add a cross-service harness that exercises load -> reload -> unload under
+metaserver scheduling, then replay the same scheduler mutations through raft-backed meta.
 
 ## Cycle 1 Implemented
 
