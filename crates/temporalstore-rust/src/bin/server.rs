@@ -1,10 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use temporalstore_rust::data_node::DataNodeTopologyValidationReport;
+use temporalstore_rust::data_node::{DataNodeLifecycleSnapshot, DataNodeTopologyValidationReport};
 use temporalstore_rust::engine::TemporalEngine;
 use temporalstore_rust::http::{
     get_json_with_options, json_response, parse_json, post_json, serve, HttpRequest,
@@ -220,12 +221,35 @@ fn main() {
             ("GET", "/server/preflight") => json_response(200, &runtime.preflight_report()),
             ("GET", "/server/lifecycle") => json_response(200, &runtime.lifecycle_report()),
             ("GET", "/server/lifecycle/tokens") => json_response(200, &runtime.lifecycle_tokens()),
+            ("GET", "/server/lifecycle/snapshot") => {
+                json_response(200, &runtime.lifecycle_snapshot())
+            }
             ("POST", "/server/lifecycle/tokens/require") => {
                 match parse_json::<SchedulerLifecycleToken>(&request.body) {
                     Ok(token) => {
                         runtime.require_lifecycle_token(token);
                         json_response(200, &Status::ok())
                     }
+                    Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+                }
+            }
+            ("POST", "/server/lifecycle/snapshot/restore") => {
+                match parse_json::<DataNodeLifecycleSnapshot>(&request.body) {
+                    Ok(snapshot) => {
+                        json_response(200, &runtime.restore_lifecycle_snapshot(snapshot))
+                    }
+                    Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+                }
+            }
+            ("POST", "/server/lifecycle/snapshot/save") => {
+                match parse_json::<LifecycleSnapshotFileRequest>(&request.body) {
+                    Ok(req) => json_response(200, &save_lifecycle_snapshot_file(&runtime, req)),
+                    Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+                }
+            }
+            ("POST", "/server/lifecycle/snapshot/load") => {
+                match parse_json::<LifecycleSnapshotFileRequest>(&request.body) {
+                    Ok(req) => json_response(200, &load_lifecycle_snapshot_file(&runtime, req)),
                     Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
                 }
             }
@@ -542,6 +566,86 @@ struct ApplyDataRaftLogRouteResponse {
     applied_oplog_sequence: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct LifecycleSnapshotFileRequest {
+    path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct LifecycleSnapshotFileResponse {
+    status: Status,
+    #[serde(default)]
+    snapshot: Option<DataNodeLifecycleSnapshot>,
+}
+
+fn save_lifecycle_snapshot_file(
+    runtime: &DataNodeRuntime,
+    request: LifecycleSnapshotFileRequest,
+) -> LifecycleSnapshotFileResponse {
+    let snapshot = runtime.lifecycle_snapshot();
+    if let Some(parent) = request.path.parent() {
+        if !parent.as_os_str().is_empty() {
+            if let Err(err) = fs::create_dir_all(parent) {
+                return LifecycleSnapshotFileResponse {
+                    status: Status::error("lifecycle_snapshot_io", err.to_string()),
+                    snapshot: None,
+                };
+            }
+        }
+    }
+    let bytes = match serde_json::to_vec_pretty(&snapshot) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            return LifecycleSnapshotFileResponse {
+                status: Status::error("bad_lifecycle_snapshot", err.to_string()),
+                snapshot: None,
+            };
+        }
+    };
+    let tmp_path = request.path.with_extension("tmp");
+    if let Err(err) = fs::write(&tmp_path, bytes).and_then(|_| fs::rename(&tmp_path, &request.path))
+    {
+        let _ = fs::remove_file(&tmp_path);
+        return LifecycleSnapshotFileResponse {
+            status: Status::error("lifecycle_snapshot_io", err.to_string()),
+            snapshot: None,
+        };
+    }
+    LifecycleSnapshotFileResponse {
+        status: Status::ok(),
+        snapshot: Some(snapshot),
+    }
+}
+
+fn load_lifecycle_snapshot_file(
+    runtime: &DataNodeRuntime,
+    request: LifecycleSnapshotFileRequest,
+) -> LifecycleSnapshotFileResponse {
+    let bytes = match fs::read(&request.path) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            return LifecycleSnapshotFileResponse {
+                status: Status::error("lifecycle_snapshot_io", err.to_string()),
+                snapshot: None,
+            };
+        }
+    };
+    let snapshot = match serde_json::from_slice::<DataNodeLifecycleSnapshot>(&bytes) {
+        Ok(snapshot) => snapshot,
+        Err(err) => {
+            return LifecycleSnapshotFileResponse {
+                status: Status::error("bad_lifecycle_snapshot", err.to_string()),
+                snapshot: None,
+            };
+        }
+    };
+    let status = runtime.restore_lifecycle_snapshot(snapshot.clone());
+    LifecycleSnapshotFileResponse {
+        snapshot: status.ok.then_some(snapshot),
+        status,
+    }
+}
+
 fn handle_cpp_server_service_route(
     request: &HttpRequest,
     engine: &TemporalEngine,
@@ -701,12 +805,33 @@ fn handle_cpp_server_service_route(
         ("GET", "/ServerService/ListLifecycleTokens") => {
             json_response(200, &runtime.lifecycle_tokens())
         }
+        ("GET", "/ServerService/GetLifecycleSnapshot") => {
+            json_response(200, &runtime.lifecycle_snapshot())
+        }
         ("POST", "/ServerService/RequireLifecycleToken") => {
             match parse_json::<SchedulerLifecycleToken>(&request.body) {
                 Ok(token) => {
                     runtime.require_lifecycle_token(token);
                     json_response(200, &Status::ok())
                 }
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        ("POST", "/ServerService/RestoreLifecycleSnapshot") => {
+            match parse_json::<DataNodeLifecycleSnapshot>(&request.body) {
+                Ok(snapshot) => json_response(200, &runtime.restore_lifecycle_snapshot(snapshot)),
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        ("POST", "/ServerService/SaveLifecycleSnapshot") => {
+            match parse_json::<LifecycleSnapshotFileRequest>(&request.body) {
+                Ok(req) => json_response(200, &save_lifecycle_snapshot_file(runtime, req)),
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        ("POST", "/ServerService/LoadLifecycleSnapshot") => {
+            match parse_json::<LifecycleSnapshotFileRequest>(&request.body) {
+                Ok(req) => json_response(200, &load_lifecycle_snapshot_file(runtime, req)),
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
             }
         }
@@ -3146,6 +3271,200 @@ mod tests {
             &data_raft_appliers
         )
         .is_none());
+    }
+
+    #[test]
+    fn cpp_server_service_lifecycle_snapshot_routes_restore_scheduler_state() {
+        let dir = tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("source-cache"),
+            dir.path().join("source-pages"),
+            dir.path().join("source-index"),
+        );
+        let runtime = DataNodeRuntime::new(engine.clone(), DataNodeRuntimeOptions::default());
+        let data_raft_appliers: Arc<Mutex<BTreeMap<u64, DataRaftCommittedLogApplier>>> =
+            Arc::default();
+
+        let token = SchedulerLifecycleToken {
+            task_id: 121,
+            shard_id: 55,
+            operation: "load".to_string(),
+            load_version: 9,
+            generation: 700,
+        };
+        let (code, body) = handle_cpp_server_service_route(
+            &HttpRequest {
+                method: "POST".to_string(),
+                path: "/ServerService/RequireLifecycleToken".to_string(),
+                body: serde_json::to_vec(&token).unwrap(),
+            },
+            &engine,
+            &runtime,
+            None,
+            "",
+            "server-a",
+            &data_raft_appliers,
+        )
+        .unwrap();
+        assert_eq!(code, 200);
+        let status: Status = serde_json::from_slice(&body).unwrap();
+        assert!(status.ok, "{status:?}");
+
+        let load = LoadShardRequest {
+            shard_id: 55,
+            load_version: 9,
+            local_node_id: Some(4),
+            shard_uri: "local://snapshot/shard-55".to_string(),
+            start_routing_slot: 100,
+            end_routing_slot: 199,
+            readonly: false,
+            table_name: "snapshot_table".to_string(),
+        };
+        let (code, body) = handle_cpp_server_service_route(
+            &HttpRequest {
+                method: "POST".to_string(),
+                path: "/ServerService/Load".to_string(),
+                body: serde_json::to_vec(&load).unwrap(),
+            },
+            &engine,
+            &runtime,
+            None,
+            "",
+            "server-a",
+            &data_raft_appliers,
+        )
+        .unwrap();
+        assert_eq!(code, 200);
+        let loaded: LoadShardResponse = serde_json::from_slice(&body).unwrap();
+        assert!(loaded.status.ok, "{loaded:?}");
+
+        let (code, body) = handle_cpp_server_service_route(
+            &HttpRequest {
+                method: "GET".to_string(),
+                path: "/ServerService/GetLifecycleSnapshot".to_string(),
+                body: Vec::new(),
+            },
+            &engine,
+            &runtime,
+            None,
+            "",
+            "server-a",
+            &data_raft_appliers,
+        )
+        .unwrap();
+        assert_eq!(code, 200);
+        let snapshot: DataNodeLifecycleSnapshot = serde_json::from_slice(&body).unwrap();
+        assert_eq!(snapshot.tokens, vec![token.clone()]);
+        assert_eq!(snapshot.transitions.len(), 1);
+        assert_eq!(snapshot.transitions[0].scheduler_task_id, Some(121));
+
+        let restored_engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("restored-cache"),
+            dir.path().join("restored-pages"),
+            dir.path().join("restored-index"),
+        );
+        let restored =
+            DataNodeRuntime::new(restored_engine.clone(), DataNodeRuntimeOptions::default());
+        let (code, body) = handle_cpp_server_service_route(
+            &HttpRequest {
+                method: "POST".to_string(),
+                path: "/ServerService/RestoreLifecycleSnapshot".to_string(),
+                body: serde_json::to_vec(&snapshot).unwrap(),
+            },
+            &restored_engine,
+            &restored,
+            None,
+            "",
+            "server-b",
+            &data_raft_appliers,
+        )
+        .unwrap();
+        assert_eq!(code, 200);
+        let status: Status = serde_json::from_slice(&body).unwrap();
+        assert!(status.ok, "{status:?}");
+        assert_eq!(restored.lifecycle_tokens(), vec![token.clone()]);
+        assert_eq!(restored.lifecycle_report().transitions[0].shard_id, 55);
+
+        let snapshot_path = dir.path().join("lifecycle-snapshot.json");
+        let request = LifecycleSnapshotFileRequest {
+            path: snapshot_path.clone(),
+        };
+        let (code, body) = handle_cpp_server_service_route(
+            &HttpRequest {
+                method: "POST".to_string(),
+                path: "/ServerService/SaveLifecycleSnapshot".to_string(),
+                body: serde_json::to_vec(&request).unwrap(),
+            },
+            &engine,
+            &runtime,
+            None,
+            "",
+            "server-a",
+            &data_raft_appliers,
+        )
+        .unwrap();
+        assert_eq!(code, 200);
+        let saved: LifecycleSnapshotFileResponse = serde_json::from_slice(&body).unwrap();
+        assert!(saved.status.ok, "{saved:?}");
+        assert!(snapshot_path.exists());
+        assert_eq!(saved.snapshot.unwrap().tokens, vec![token.clone()]);
+
+        let file_engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("file-cache"),
+            dir.path().join("file-pages"),
+            dir.path().join("file-index"),
+        );
+        let file_restored =
+            DataNodeRuntime::new(file_engine.clone(), DataNodeRuntimeOptions::default());
+        let (code, body) = handle_cpp_server_service_route(
+            &HttpRequest {
+                method: "POST".to_string(),
+                path: "/ServerService/LoadLifecycleSnapshot".to_string(),
+                body: serde_json::to_vec(&request).unwrap(),
+            },
+            &file_engine,
+            &file_restored,
+            None,
+            "",
+            "server-c",
+            &data_raft_appliers,
+        )
+        .unwrap();
+        assert_eq!(code, 200);
+        let loaded: LifecycleSnapshotFileResponse = serde_json::from_slice(&body).unwrap();
+        assert!(loaded.status.ok, "{loaded:?}");
+        assert_eq!(loaded.snapshot.unwrap().tokens, vec![token.clone()]);
+        assert_eq!(file_restored.lifecycle_tokens(), vec![token]);
+        assert_eq!(
+            file_restored.lifecycle_report().transitions[0].operation,
+            "load"
+        );
+
+        let (code, body) = handle_cpp_server_service_route(
+            &HttpRequest {
+                method: "POST".to_string(),
+                path: "/ServerService/RestoreLifecycleSnapshot".to_string(),
+                body: serde_json::to_vec(&DataNodeLifecycleSnapshot {
+                    format_version: 99,
+                    transitions: Vec::new(),
+                    tokens: Vec::new(),
+                })
+                .unwrap(),
+            },
+            &file_engine,
+            &file_restored,
+            None,
+            "",
+            "server-c",
+            &data_raft_appliers,
+        )
+        .unwrap();
+        assert_eq!(code, 200);
+        let status: Status = serde_json::from_slice(&body).unwrap();
+        assert_eq!(status.code, "bad_lifecycle_snapshot");
     }
 
     #[test]

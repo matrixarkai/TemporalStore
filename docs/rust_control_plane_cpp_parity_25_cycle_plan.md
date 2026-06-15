@@ -371,3 +371,20 @@ Cycle 8 makes proxy serving policy converge from metaserver heartbeat responses:
 
 The next cycle should add proxy route-cache invalidation from metaserver topology events so proxy
 routes converge after topology changes without waiting for backend failures or TTL expiry.
+
+## Cycle 9 Implemented
+
+Cycle 9 exposes durable data-node lifecycle snapshots through the nodeserver compatibility surface:
+
+- REST routes now export, restore, save, and load data-node lifecycle snapshots under
+  `/server/lifecycle/snapshot`.
+- C++-style `ServerService` aliases expose the same lifecycle snapshot operations for scheduler,
+  proxy, and metaserver orchestration tests.
+- File-backed save/load persists scheduler lifecycle tokens and shard lifecycle transitions so a
+  restarted node can recover controlled load/reload/unload state before accepting scheduler
+  callbacks.
+- Route-level regression coverage validates snapshot export, direct restore, file save/load,
+  scheduler token recovery, transition recovery, and unsupported snapshot-version rejection.
+
+The next cycle should use these snapshot routes from a process-level nodeserver restart harness so
+metaserver-directed load/reload/unload workflows prove recovery through the real HTTP boundary.
