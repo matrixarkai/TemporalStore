@@ -47,6 +47,11 @@ fn production_readiness_service_summary_is_public_api() {
     assert!(typed_blockers
         .iter()
         .any(|blocker| blocker.area == "data_node_distributed_raft"));
+    assert!(!report.service_ready("data_node"));
+    assert!(report
+        .blocked_services()
+        .iter()
+        .any(|summary| summary.service == "data_node"));
 }
 
 #[test]

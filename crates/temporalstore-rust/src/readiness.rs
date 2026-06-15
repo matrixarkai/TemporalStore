@@ -67,6 +67,19 @@ impl ProductionReadinessReport {
             .find(|summary| summary.service == service)
     }
 
+    pub fn service_ready(&self, service: &str) -> bool {
+        self.service_summary(service)
+            .map(|summary| summary.ready && summary.blocker_count == 0)
+            .unwrap_or(false)
+    }
+
+    pub fn blocked_services(&self) -> Vec<&ServiceReadinessSummary> {
+        self.service_summaries
+            .iter()
+            .filter(|summary| !summary.ready || summary.blocker_count > 0)
+            .collect()
+    }
+
     pub fn failed_capabilities_for_service(
         &self,
         service: &str,
@@ -581,7 +594,21 @@ mod tests {
                 summary.blocker_count,
                 "{service} typed blockers should match summary count"
             );
+            assert!(
+                !report.service_ready(service),
+                "{service} should be false for service-level gates until blockers are closed"
+            );
         }
+        let blocked_services = report
+            .blocked_services()
+            .iter()
+            .map(|summary| summary.service.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            blocked_services,
+            vec!["client", "proxy", "ingestion", "data_node", "metaserver"]
+        );
+        assert!(!report.service_ready("unknown_service"));
 
         assert_eq!(
             report
