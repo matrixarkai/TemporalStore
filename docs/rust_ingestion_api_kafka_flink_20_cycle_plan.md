@@ -9,6 +9,7 @@ connector contracts.
 1. Add Rust-native ingestion envelopes for API, Kafka, and Flink sources, normalize them into
    engine batch execution, validate offsets/checkpoints, and report per-record results. Done.
 2. Expose `/ingest/batch` on nodeserver with direct engine execution and per-record reporting.
+   Done.
 3. Add proxy/table ingestion route that resolves table topology and splits records by shard.
 4. Add Kafka source config structs, consumer group metadata, and offset commit planning reports.
 5. Add Kafka idempotency ledger by topic/partition/offset with bounded retention.
@@ -43,3 +44,19 @@ Cycle 1 creates the shared ingestion contract:
 
 The next cycle should expose this through the nodeserver HTTP surface so ingestion callers do not
 need direct engine access.
+
+## Cycle 2 Implemented
+
+Cycle 2 exposes ingestion through the nodeserver HTTP surface:
+
+- `/ingest/batch` now parses `IngestionBatchRequest` and executes accepted records through
+  `TemporalEngine::ingest_batch`.
+- C++-style aliases `/ServerService/IngestBatch` and `/IngestionService/IngestBatch` share the
+  same implementation and response contract.
+- Route coverage proves API, Kafka, and Flink-sourced records mutate TemporalStore internals rather
+  than returning a noop success.
+- REST helper coverage proves duplicate Kafka topic/partition/offset records are rejected while the
+  first valid record still commits.
+
+The next cycle should add proxy/table ingestion routing so callers can ingest by table/routing key
+without precomputing the destination shard id.

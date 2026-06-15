@@ -263,6 +263,19 @@ offset/checkpoint ledgers, connector lag metrics, and restart/failover harnesses
 
 ## What Was Closed In The Previous Pass
 
+The second API/Kafka/Flink ingestion pass exposes the shared ingestion contract on the nodeserver:
+
+1. Added `/ingest/batch` with direct `TemporalEngine::ingest_batch` execution and per-record
+   reporting.
+2. Added C++-style `/ServerService/IngestBatch` and `/IngestionService/IngestBatch` aliases.
+3. Added route coverage proving API, Kafka, and Flink records write through TemporalStore internals.
+4. Added duplicate Kafka offset coverage proving the duplicate is rejected while the valid record
+   still commits.
+
+This is still not a production Kafka consumer or Flink sink. The next ingestion parity gaps are
+proxy/table routing, durable offset/checkpoint ledgers, connector lag/dead-letter reporting, and
+restart/failover harnesses.
+
 This pass closed the third client/proxy/metaserver/nodeserver C++ parity cycle:
 
 1. Applied metaserver scheduler execution now fetches `/ServerService/GetLifecycle` after the

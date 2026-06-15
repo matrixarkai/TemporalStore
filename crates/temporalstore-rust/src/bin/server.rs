@@ -11,6 +11,7 @@ use temporalstore_rust::http::{
     get_json_with_options, json_response, parse_json, post_json, serve, HttpRequest,
     HttpRequestOptions,
 };
+use temporalstore_rust::ingestion::IngestionBatchRequest;
 use temporalstore_rust::meta::{
     AckResponse, GetShardResponse, GetTableTopologyRequest, LoadFinishRequest, PartitionLoad,
     RegisterServerRequest, RegisterShardRequest, RegisterShardResponse, ServerHeartbeatRequest,
@@ -442,6 +443,7 @@ fn main() {
                 Ok(req) => json_response(200, &runtime.batch_execute(req)),
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
             },
+            ("POST", "/ingest/batch") => ingest_batch_route(&engine, &request.body),
             ("POST", "/batch_execute_checked") => {
                 match parse_json::<CheckedBatchExecuteRequest>(&request.body) {
                     Ok(req) => json_response(200, &runtime.batch_execute_checked(req)),
@@ -646,6 +648,13 @@ fn load_lifecycle_snapshot_file(
     }
 }
 
+fn ingest_batch_route(engine: &TemporalEngine, body: &[u8]) -> (u16, Vec<u8>) {
+    match parse_json::<IngestionBatchRequest>(body) {
+        Ok(req) => json_response(200, &engine.ingest_batch(req)),
+        Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+    }
+}
+
 fn handle_cpp_server_service_route(
     request: &HttpRequest,
     engine: &TemporalEngine,
@@ -731,6 +740,9 @@ fn handle_cpp_server_service_route(
                 Ok(req) => json_response(200, &runtime.batch_execute(req)),
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
             }
+        }
+        ("POST", "/ServerService/IngestBatch") | ("POST", "/IngestionService/IngestBatch") => {
+            ingest_batch_route(engine, &request.body)
         }
         ("POST", "/ServerService/ApplyDataRaftLog") => {
             match parse_json::<ApplyDataRaftLogRouteRequest>(&request.body) {
@@ -2185,6 +2197,7 @@ mod tests {
 
     use tempfile::tempdir;
     use temporalstore_rust::http::get_json_with_options;
+    use temporalstore_rust::ingestion::{IngestionBatchReport, IngestionRecord, IngestionSource};
     use temporalstore_rust::raft::{serialize_data_raft_log, DataRaftLogCodecEntry};
     use temporalstore_rust::types::{Command, CommandResponse};
     use temporalstore_rust::{
@@ -3656,6 +3669,193 @@ mod tests {
         assert!(async_status.status.ok, "{async_status:?}");
         assert_eq!(async_status.kind, DataNodeTaskKind::Load);
         assert!(async_status.output.is_none());
+    }
+
+    #[test]
+    fn server_ingest_batch_routes_execute_api_kafka_and_flink_records() {
+        let dir = tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("index"),
+        );
+        engine.load_shard(7);
+        let runtime = DataNodeRuntime::new(engine.clone(), DataNodeRuntimeOptions::default());
+        let data_raft_appliers: Arc<Mutex<BTreeMap<u64, DataRaftCommittedLogApplier>>> =
+            Arc::default();
+        let request = IngestionBatchRequest {
+            stop_on_error: false,
+            records: vec![
+                IngestionRecord {
+                    source: IngestionSource::Api {
+                        request_id: "api-route-1".to_string(),
+                    },
+                    shard_id: 7,
+                    command: Command::StringSet {
+                        key: "api-ingest-route".to_string(),
+                        value: b"api-value".to_vec(),
+                    },
+                },
+                IngestionRecord {
+                    source: IngestionSource::Kafka {
+                        topic: "route-topic".to_string(),
+                        partition: 0,
+                        offset: 10,
+                        key: Some("hash-key".to_string()),
+                        timestamp_ms: Some(99),
+                    },
+                    shard_id: 7,
+                    command: Command::HashSet {
+                        key: "kafka-hash".to_string(),
+                        field: "field".to_string(),
+                        value: b"kafka-value".to_vec(),
+                    },
+                },
+                IngestionRecord {
+                    source: IngestionSource::Flink {
+                        job_id: "flink-job".to_string(),
+                        operator_uid: "sink".to_string(),
+                        subtask_index: 1,
+                        checkpoint_id: 42,
+                        record_index: 2,
+                    },
+                    shard_id: 7,
+                    command: Command::FeatureAppend {
+                        key: "flink-feature".to_string(),
+                        points: vec![temporalstore_rust::FeaturePoint {
+                            timestamp_ms: 42,
+                            value: b"flink-value".to_vec(),
+                        }],
+                    },
+                },
+            ],
+        };
+
+        for path in [
+            "/ServerService/IngestBatch",
+            "/IngestionService/IngestBatch",
+        ] {
+            let (code, body) = handle_cpp_server_service_route(
+                &HttpRequest {
+                    method: "POST".to_string(),
+                    path: path.to_string(),
+                    body: serde_json::to_vec(&request).unwrap(),
+                },
+                &engine,
+                &runtime,
+                None,
+                "",
+                "server-a",
+                &data_raft_appliers,
+            )
+            .unwrap();
+            assert_eq!(code, 200, "{path}");
+            let report: IngestionBatchReport = serde_json::from_slice(&body).unwrap();
+            assert!(report.status.ok, "{path}: {report:?}");
+            assert_eq!(report.accepted_count, 3);
+            assert_eq!(report.failed_count, 0);
+        }
+
+        let read = engine.execute(ExecuteRequest {
+            shard_id: 7,
+            command: Command::StringGet {
+                key: "api-ingest-route".to_string(),
+            },
+        });
+        assert_eq!(
+            read.response,
+            CommandResponse::Bytes {
+                value: Some(b"api-value".to_vec())
+            }
+        );
+        let hash = engine.execute(ExecuteRequest {
+            shard_id: 7,
+            command: Command::HashGet {
+                key: "kafka-hash".to_string(),
+                field: "field".to_string(),
+            },
+        });
+        assert_eq!(
+            hash.response,
+            CommandResponse::Bytes {
+                value: Some(b"kafka-value".to_vec())
+            }
+        );
+    }
+
+    #[test]
+    fn server_ingest_batch_rest_route_rejects_duplicate_kafka_offset_without_noop() {
+        let dir = tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("index"),
+        );
+        engine.load_shard(7);
+        let request = IngestionBatchRequest {
+            stop_on_error: false,
+            records: vec![
+                IngestionRecord {
+                    source: IngestionSource::Kafka {
+                        topic: "dup-topic".to_string(),
+                        partition: 1,
+                        offset: 99,
+                        key: None,
+                        timestamp_ms: None,
+                    },
+                    shard_id: 7,
+                    command: Command::StringSet {
+                        key: "first-offset".to_string(),
+                        value: b"accepted".to_vec(),
+                    },
+                },
+                IngestionRecord {
+                    source: IngestionSource::Kafka {
+                        topic: "dup-topic".to_string(),
+                        partition: 1,
+                        offset: 99,
+                        key: None,
+                        timestamp_ms: None,
+                    },
+                    shard_id: 7,
+                    command: Command::StringSet {
+                        key: "duplicate-offset".to_string(),
+                        value: b"rejected".to_vec(),
+                    },
+                },
+            ],
+        };
+
+        let (code, body) = ingest_batch_route(&engine, &serde_json::to_vec(&request).unwrap());
+        assert_eq!(code, 200);
+        let report: IngestionBatchReport = serde_json::from_slice(&body).unwrap();
+        assert_eq!(report.status.code, "partial_ingestion_failure");
+        assert_eq!(report.accepted_count, 1);
+        assert_eq!(report.failed_count, 1);
+        assert_eq!(report.duplicate_count, 1);
+        assert_eq!(report.results[1].status.code, "duplicate_ingestion_record");
+
+        let accepted = engine.execute(ExecuteRequest {
+            shard_id: 7,
+            command: Command::StringGet {
+                key: "first-offset".to_string(),
+            },
+        });
+        assert_eq!(
+            accepted.response,
+            CommandResponse::Bytes {
+                value: Some(b"accepted".to_vec())
+            }
+        );
+        let duplicate = engine.execute(ExecuteRequest {
+            shard_id: 7,
+            command: Command::StringGet {
+                key: "duplicate-offset".to_string(),
+            },
+        });
+        assert_eq!(duplicate.response, CommandResponse::Bytes { value: None });
     }
 
     #[test]
