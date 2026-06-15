@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <map>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -57,11 +58,9 @@ class RouterV1 : public Router {
     Status GetPartitionId(const std::string& key, uint64_t* partition_id) const;
 
  private:
-    static const uint32_t kSlotCount = 1U << 30;
-
     uint64_t version_ = 0;
     // end_slot_id : partition_id
-    std::unordered_map<uint64_t, uint64_t> slot_map_;
+    std::map<uint64_t, uint64_t> slot_map_;
     // will be used with brpc DoublyBufferedData, unique_ptr not supported
     std::unordered_map<uint64_t, std::shared_ptr<Partition>> partition_map_;
 };

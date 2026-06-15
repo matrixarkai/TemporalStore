@@ -88,6 +88,135 @@ bool RetryUntil(int max_wait_ms, int sleep_ms, Fn fn) {
 bool OpenTable(const std::string& metaserver, const std::string& idc,
                const std::string& namespace_name, const std::string& table_name,
                bool pin_primary, std::unique_ptr<bcache2::client::Client>* client,
+               std::unique_ptr<bcache2::client::Table>* table);
+
+bool RunGetPhase(const std::string& metaserver, const std::string& idc,
+                 const std::string& namespace_name, const std::string& table_name,
+                 bool pin_primary, int ops, int threads, int value_bytes,
+                 const std::string& prefix, const std::string& expected_value,
+                 int retry_ms, Summary* raw_summary, Summary* visibility_summary) {
+    std::vector<int64_t> raw_samples(static_cast<size_t>(ops), 0);
+    std::vector<int64_t> visibility_samples(static_cast<size_t>(ops), 0);
+    std::vector<uint8_t> success(static_cast<size_t>(ops), 0);
+    std::atomic<int> errors{0};
+    std::atomic<int> retry_attempts{0};
+    std::atomic<int> ready{0};
+    std::atomic<bool> start{false};
+    std::vector<std::thread> workers;
+    workers.reserve(threads);
+
+    auto wall_begin = std::chrono::steady_clock::now();
+    for (int t = 0; t < threads; ++t) {
+        workers.emplace_back([&, t] {
+            std::unique_ptr<bcache2::client::Client> client;
+            std::unique_ptr<bcache2::client::Table> table;
+            if (!OpenTable(metaserver, idc, namespace_name, table_name, pin_primary, &client,
+                           &table)) {
+                errors.fetch_add(1);
+                ready.fetch_add(1);
+                return;
+            }
+            ready.fetch_add(1);
+            while (!start.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+
+            for (int i = t; i < ops; i += threads) {
+                const std::string key = prefix + ":" + std::to_string(i);
+                const auto visibility_begin = std::chrono::steady_clock::now();
+                const auto deadline =
+                    visibility_begin + std::chrono::milliseconds(std::max(0, retry_ms));
+                bool ok = false;
+                int attempts = 0;
+                int64_t success_raw_us = 0;
+                do {
+                    ++attempts;
+                    std::string got;
+                    const auto raw_begin = std::chrono::steady_clock::now();
+                    bcache2::Status status = table->Get(key, &got);
+                    const auto raw_end = std::chrono::steady_clock::now();
+                    if (status.ok() && got == expected_value) {
+                        success_raw_us =
+                            std::chrono::duration_cast<std::chrono::microseconds>(raw_end -
+                                                                                  raw_begin)
+                                .count();
+                        ok = true;
+                        break;
+                    }
+                    if (retry_ms <= 0) {
+                        break;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                } while (std::chrono::steady_clock::now() < deadline);
+
+                if (!ok && retry_ms > 0) {
+                    std::string got;
+                    const auto raw_begin = std::chrono::steady_clock::now();
+                    bcache2::Status status = table->Get(key, &got);
+                    const auto raw_end = std::chrono::steady_clock::now();
+                    ++attempts;
+                    if (status.ok() && got == expected_value) {
+                        success_raw_us =
+                            std::chrono::duration_cast<std::chrono::microseconds>(raw_end -
+                                                                                  raw_begin)
+                                .count();
+                        ok = true;
+                    }
+                }
+
+                retry_attempts.fetch_add(std::max(0, attempts - 1));
+                if (!ok) {
+                    errors.fetch_add(1);
+                    continue;
+                }
+
+                const auto visibility_end = std::chrono::steady_clock::now();
+                success[static_cast<size_t>(i)] = 1;
+                raw_samples[static_cast<size_t>(i)] = success_raw_us;
+                visibility_samples[static_cast<size_t>(i)] =
+                    std::chrono::duration_cast<std::chrono::microseconds>(visibility_end -
+                                                                          visibility_begin)
+                        .count();
+            }
+        });
+    }
+
+    while (ready.load(std::memory_order_acquire) < threads) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    wall_begin = std::chrono::steady_clock::now();
+    start.store(true, std::memory_order_release);
+    for (auto& worker : workers) {
+        worker.join();
+    }
+    const auto wall_end = std::chrono::steady_clock::now();
+    const int64_t total_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(wall_end - wall_begin).count();
+
+    std::vector<int64_t> raw_success_samples;
+    std::vector<int64_t> visibility_success_samples;
+    raw_success_samples.reserve(static_cast<size_t>(ops));
+    visibility_success_samples.reserve(static_cast<size_t>(ops));
+    for (int i = 0; i < ops; ++i) {
+        if (success[static_cast<size_t>(i)] != 0) {
+            raw_success_samples.push_back(raw_samples[static_cast<size_t>(i)]);
+            visibility_success_samples.push_back(visibility_samples[static_cast<size_t>(i)]);
+        }
+    }
+
+    *raw_summary = Summarize("get_raw_success_attempt", std::move(raw_success_samples), threads,
+                             value_bytes, errors.load(), total_ms);
+    *visibility_summary = Summarize("get_visibility_retry", std::move(visibility_success_samples),
+                                    threads, value_bytes, errors.load(), total_ms);
+    if (retry_attempts.load() > 0) {
+        std::cerr << "get_retry_attempts=" << retry_attempts.load() << std::endl;
+    }
+    return errors.load() == 0;
+}
+
+bool OpenTable(const std::string& metaserver, const std::string& idc,
+               const std::string& namespace_name, const std::string& table_name,
+               bool pin_primary, std::unique_ptr<bcache2::client::Client>* client,
                std::unique_ptr<bcache2::client::Table>* table) {
     bcache2::client::ClientOptions client_options;
     client_options.af = bcache2::client::AddressFamily::kIp4;
@@ -180,11 +309,11 @@ bool RunPhase(const std::string& phase, const std::string& metaserver, const std
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc < 5 || argc > 10) {
+    if (argc < 5 || argc > 12) {
         std::cout << "usage: " << argv[0]
                   << " <metaserver_host:port> <idc> <namespace> <table> [ops=20000]"
                      " [threads=32] [value_bytes=128] [pin_primary_reads=1]"
-                     " [replica_wait_ms=1000]"
+                     " [replica_wait_ms=1000] [mode=both|set|get] [set_retry_ms=0]"
                   << std::endl;
         return 2;
     }
@@ -198,9 +327,15 @@ int main(int argc, char** argv) {
     const int value_bytes = argc > 7 ? std::atoi(argv[7]) : 128;
     const bool pin_primary_reads = argc > 8 ? std::atoi(argv[8]) != 0 : true;
     const int replica_wait_ms = argc > 9 ? std::atoi(argv[9]) : 1000;
+    const std::string mode = argc > 10 ? argv[10] : "both";
+    const int set_retry_ms = argc > 11 ? std::atoi(argv[11]) : 0;
 
     if (ops <= 0 || threads <= 0 || value_bytes <= 0) {
         std::cerr << "ops, threads, and value_bytes must be positive" << std::endl;
+        return 2;
+    }
+    if (mode != "both" && mode != "set" && mode != "get") {
+        std::cerr << "mode must be one of: both, set, get" << std::endl;
         return 2;
     }
 
@@ -210,35 +345,52 @@ int main(int argc, char** argv) {
     const std::string value(static_cast<size_t>(value_bytes), 'x');
 
     Summary set_summary;
-    if (!RunPhase("set", metaserver, idc, namespace_name, table_name, true, ops, threads,
-                  value_bytes,
+    std::atomic<int> set_errors_logged{0};
+    if (!RunPhase(mode == "get" ? "seed_set" : "set", metaserver, idc, namespace_name,
+                  table_name, true, ops, threads, value_bytes,
                   [&](bcache2::client::Table* table, int i) {
-                      return table->Set(prefix + ":" + std::to_string(i), value).ok();
+                      bcache2::Status status =
+                          table->Set(prefix + ":" + std::to_string(i), value);
+                      if (!status.ok() && set_retry_ms > 0) {
+                          const auto deadline = std::chrono::steady_clock::now() +
+                                                std::chrono::milliseconds(set_retry_ms);
+                          do {
+                              std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                              status = table->Set(prefix + ":" + std::to_string(i), value);
+                          } while (!status.ok() && std::chrono::steady_clock::now() < deadline);
+                      }
+                      if (!status.ok() && set_errors_logged.fetch_add(1) < 10) {
+                          std::cerr << "set failed index=" << i
+                                    << " status=" << status.ToString() << std::endl;
+                      }
+                      return status.ok();
                   },
                   &set_summary)) {
-        PrintSummary(set_summary);
+        if (mode != "get") {
+            PrintSummary(set_summary);
+        }
         return 1;
     }
-    PrintSummary(set_summary);
+    if (mode != "get") {
+        PrintSummary(set_summary);
+    }
+    if (mode == "set") {
+        return 0;
+    }
 
     std::this_thread::sleep_for(std::chrono::milliseconds(replica_wait_ms));
 
-    Summary get_summary;
-    if (!RunPhase("get", metaserver, idc, namespace_name, table_name, pin_primary_reads, ops,
-                  threads, value_bytes,
-                  [&](bcache2::client::Table* table, int i) {
-                      const std::string key = prefix + ":" + std::to_string(i);
-                      const int retry_ms = pin_primary_reads ? 0 : std::max(replica_wait_ms, 30000);
-                      return RetryUntil(retry_ms, 20, [&]() {
-                          std::string got;
-                          bcache2::Status status = table->Get(key, &got);
-                          return status.ok() && got == value;
-                      });
-                  },
-                  &get_summary)) {
-        PrintSummary(get_summary);
+    Summary get_raw_summary;
+    Summary get_visibility_summary;
+    const int retry_ms = pin_primary_reads ? 0 : std::max(replica_wait_ms, 30000);
+    if (!RunGetPhase(metaserver, idc, namespace_name, table_name, pin_primary_reads, ops, threads,
+                     value_bytes, prefix, value, retry_ms, &get_raw_summary,
+                     &get_visibility_summary)) {
+        PrintSummary(get_raw_summary);
+        PrintSummary(get_visibility_summary);
         return 1;
     }
-    PrintSummary(get_summary);
+    PrintSummary(get_raw_summary);
+    PrintSummary(get_visibility_summary);
     return 0;
 }

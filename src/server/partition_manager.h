@@ -24,7 +24,8 @@ class Server;
 class PartitionManager {
  public:
     PartitionManager(const std::string& cluster_name, Server* server,
-                     byte::AsyncThreadPool* thread_pool, stream::Env* env,
+                     byte::AsyncThreadPool* thread_pool, byte::AsyncThreadPool* raft_propose_pool,
+                     stream::Env* env,
                      blockcache::BlockCache* blockcache = nullptr);
     virtual ~PartitionManager();
 
@@ -35,6 +36,8 @@ class PartitionManager {
                 Closure<void>* callback);
     void BatchExecuteCmd(Controller* ctrl, const BatchExecuteCmdRequest* request,
                          BatchExecuteCmdResponse* response, Closure<void>* callback);
+    void BatchExecuteCmdLocally(Controller* ctrl, const BatchExecuteCmdRequest* request,
+                                BatchExecuteCmdResponse* response, Closure<void>* callback);
 
     void GetInfo(Controller* ctrl, const GetInfoRequest* request, GetInfoResponse* response,
                  Closure<void>* callback);
@@ -42,6 +45,14 @@ class PartitionManager {
                              ReadPartitionStreamResponse* response, Closure<void>* callback);
     void ScanPartitionStream(Controller* ctrl, const ScanPartitionStreamRequest* request,
                              ScanPartitionStreamResponse* response, Closure<void>* callback);
+    void ApplyDataRaftLog(Controller* ctrl, const ApplyDataRaftLogRequest* request,
+                          ApplyDataRaftLogResponse* response, Closure<void>* callback);
+    void GetDataRaftStatus(Controller* ctrl, const GetDataRaftStatusRequest* request,
+                           GetDataRaftStatusResponse* response, Closure<void>* callback);
+    void TriggerDataRaftSnapshot(Controller* ctrl,
+                                 const TriggerDataRaftSnapshotRequest* request,
+                                 TriggerDataRaftSnapshotResponse* response,
+                                 Closure<void>* callback);
 
     void SetConfig(Controller* ctrl, const SetConfigRequest* request, SetConfigResponse* response,
                    Closure<void>* callback);
@@ -76,6 +87,10 @@ class PartitionManager {
         int complete_count = 0;
     };
 
+    BatchExecuteContext* NewBatchExecuteContext(Controller* ctrl,
+                                                const BatchExecuteCmdRequest* request,
+                                                BatchExecuteCmdResponse* response,
+                                                Closure<void>* callback);
     void BatchExecuteCmdInternal(BatchExecuteContext* context);
     void OnExecuteCmdDone(BatchExecuteContext* context, int index);
 
@@ -88,6 +103,7 @@ class PartitionManager {
     const std::string cluster_name_;
     Server* server_ = nullptr;
     byte::AsyncThreadPool* thread_pool_ = nullptr;
+    byte::AsyncThreadPool* raft_propose_pool_ = nullptr;
     stream::Env* env_ = nullptr;
     std::unique_ptr<ThreadLocalInfo[]> thread_infos_;
     static __thread ThreadLocalInfo* thread_info_;

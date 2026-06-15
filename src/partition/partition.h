@@ -13,9 +13,13 @@
 #endif
 #include <protocol/info.pb.h>
 
+#include <atomic>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "butil/endpoint.h"
 #include "common/controller.h"
@@ -43,6 +47,10 @@ DECLARE_bool(storage_async);
 DECLARE_bool(partition_commit_oplog);
 DECLARE_bool(start_storage_manager_when_loading);
 
+namespace byte {
+class AsyncThread;
+}
+
 namespace bcache2 {
 namespace partition {
 
@@ -55,6 +63,8 @@ class StorageManager;
 class PageStore;
 class PageGc;
 class PageCompactor;
+class DataRaftConsensusBackend;
+struct DataRaftStatus;
 
 class Partition {
  public:
@@ -73,6 +83,7 @@ class Partition {
         bcache2::blockcache::BlockCache* blockcache = nullptr;
         bool readonly = false;
         MembershipInfo membership;
+        byte::AsyncThread* owning_thread = nullptr;
     };
 
     explicit Partition(const Options& options);
@@ -100,6 +111,7 @@ class Partition {
                     Status* response_status, Closure<void>* callback);
 
     bool Readonly() const { return readonly_; }
+    bool IsApplyingDataRaftEntry() const { return data_raft_applying_; }
     bool IsLoaded() const { return stage_ == PartitionLoadStage::LOADED; }
     bool IsLoading() const { return stage_ == PartitionLoadStage::LOADING; }
     bool IsUnloading() const { return stage_ == PartitionLoadStage::UNLOADING; }
@@ -116,8 +128,22 @@ class Partition {
                              ReadPartitionStreamResponse* response, Closure<void>* callback);
     void ScanPartitionStream(Controller* ctrl, const ScanPartitionStreamRequest* request,
                              ScanPartitionStreamResponse* response, Closure<void>* callback);
+    Status ApplyDataRaftLog(uint64_t raft_index, const std::string& committed_log,
+                            uint64_t* applied_raft_index, uint64_t* applied_oplog_sequence);
+    Status ApplyDataRaftCommand(uint64_t raft_index, const std::string& committed_command);
+    Status ApplyDataRaftEntry(uint64_t raft_index, const std::string& committed_entry,
+                              uint64_t* applied_raft_index, uint64_t* applied_oplog_sequence);
+    Status ProposeDataRaftCommand(const BatchExecuteCmdRequest& request, uint64_t request_id,
+                                  uint64_t* committed_index, BatchExecuteCmdResponse* response);
+    Status DataRaftReadIndex(uint64_t timeout_ms);
+    Status CanServeDataRaftBoundedStaleRead(uint64_t max_stale_index_lag) const;
+    Status GetDataRaftStatus(DataRaftStatus* status) const;
+    Status TriggerDataRaftSnapshot(uint64_t* snapshot_index);
+    Status CreateDataRaftSnapshot(const std::string& path, uint64_t* applied_index);
+    Status LoadDataRaftSnapshot(const std::string& path);
 
     uint64_t GetPrimaryPartitionId() const { return primary_partition_id_; }
+    uint64_t GetDataRaftGroupPartitionId() const { return data_raft_group_partition_id_; }
     void InitMembership();
     Status UpdateMembership(const MembershipInfo& info);
     Status GetStats(PartitionStats* stats);
@@ -136,6 +162,14 @@ class Partition {
     Status SetupReplicator();
     Status LoadStream(const std::string& uri, PartitionStreamKind stream_kind, uint32_t zone_id,
                       std::unique_ptr<stream::Stream>* stream_ptr);
+    Status ApplyDataRaftEntryOnOwnerThread(uint64_t raft_index,
+                                           const std::string& committed_entry,
+                                           uint64_t* applied_raft_index,
+                                           uint64_t* applied_oplog_sequence);
+    Status RebuildLocalStateAfterDataRaftSnapshot();
+    std::string DataRaftAppliedIndexPath() const;
+    Status LoadDataRaftAppliedIndex();
+    Status PersistDataRaftAppliedIndex(uint64_t raft_index);
     void OnExecuteCmdDone(CmdContext* ctx, Closure<void>* callback);
 
     Options options_;
@@ -150,6 +184,7 @@ class Partition {
     PartitionInfo remote_info_;
 
     uint64_t primary_partition_id_{0};
+    uint64_t data_raft_group_partition_id_{0};
     uint32_t partition_unit_id_{0};
     uint64_t partition_unit_version_{0};
     MembershipInfo membership_info_;
@@ -172,7 +207,21 @@ class Partition {
     std::unique_ptr<CmdExecutor> cmd_executor_;
     std::unique_ptr<StorageManager> storage_manager_;
     std::unique_ptr<Replicator> replicator_;
+    std::unique_ptr<DataRaftConsensusBackend> data_raft_consensus_;
     std::unique_ptr<CmdExecutorManager> cmd_;
+
+    struct PendingDataRaftApply {
+        bool done = false;
+        Status status = Status::OK();
+        BatchExecuteCmdResponse response;
+        std::condition_variable cv;
+    };
+    std::mutex data_raft_pending_mu_;
+    std::unordered_map<uint64_t, std::shared_ptr<PendingDataRaftApply>> data_raft_pending_;
+    std::mutex data_raft_snapshot_mu_;
+    std::mutex data_raft_membership_mu_;
+    std::atomic<uint64_t> data_raft_applied_index_{0};
+    bool data_raft_applying_ = false;
 
     std::unique_ptr<MetricsEnv::CounterHolder> load_success_;
     std::unique_ptr<MetricsEnv::CounterHolder> load_failed_;
@@ -206,6 +255,13 @@ inline void Partition::ExecuteCmd(Controller* ctrl, uint16_t module_id, uint16_t
 
 inline void Partition::OnExecuteCmdDone(CmdContext* ctx, Closure<void>* callback) {
     BYTE_ASSERT(inflight_io_count_ > 0) << inflight_io_count_;
+
+    if (UNLIKELY(data_raft_consensus_ != nullptr || IsApplyingDataRaftEntry())) {
+        delete ctx;
+        callback->Run();
+        inflight_io_count_--;
+        return;
+    }
 
     if (LIKELY(options_.persistent_type == PersistentType::PERSISTENT_ASYNC &&
                FLAGS_storage_async)) {

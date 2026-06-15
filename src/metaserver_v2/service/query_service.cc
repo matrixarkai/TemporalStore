@@ -312,13 +312,27 @@ void QueryServiceImpl::ListServerPartition(google::protobuf::RpcController* cont
             }
 
             auto np = nps->add_partitions();
-            np->set_id(id);
-            *np->mutable_config() = table->GetConfig();
-            np->set_state(partition->GetState());
-            PartitionSet* pset = partition->GetPartitionSet();
-            if (pset) {
-                *np->mutable_membership() = pset->GetMembershipInfo();
+            LoadRequest load_request;
+            status = SerializeToLoadRequest(partition, false /* async_load */, &load_request);
+            if (!status.ok()) {
+                LOG_ERROR("failed to serialize partition load metadata")
+                    .put("partition_id", id)
+                    .put("node", node->GetId())
+                    .put("status", status);
+                *response->mutable_status() = status.ToRpcStatus();
+                return;
             }
+            np->set_id(id);
+            np->set_state(partition->GetState());
+            np->set_load_version(load_request.load_version());
+            np->set_partition_uri(load_request.partition_uri());
+            np->set_start_slot(load_request.start_slot());
+            np->set_end_slot(load_request.end_slot());
+            np->set_persistent_type(load_request.persistent_type());
+            np->set_readonly(load_request.readonly());
+            np->set_table_name(load_request.table_name());
+            *np->mutable_config() = load_request.config();
+            *np->mutable_membership() = load_request.membership();
         }  // for each partition of node
     }      // for each node
 }

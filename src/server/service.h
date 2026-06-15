@@ -9,13 +9,44 @@
 #include <unordered_map>
 
 #include "brpc/controller.h"
+#include "bvar/bvar.h"
 #include "common/logging.h"
 #include "common/metrics.h"
+#include "common/time.h"
 #include "protocol/server.pb.h"
 #include "server/partition_manager.h"
 
 namespace bcache2 {
 namespace server {
+
+struct ServerServiceMetrics {
+    bvar::Adder<uint64_t> request_total;
+    bvar::Adder<uint64_t> request_success_total;
+    bvar::Adder<uint64_t> request_failed_total;
+    bvar::Adder<uint64_t> raft_apply_total;
+    bvar::LatencyRecorder request_latency_us;
+
+    void Expose(const std::string& prefix) {
+        request_total.expose_as(prefix, "request_total");
+        request_success_total.expose_as(prefix, "request_success_total");
+        request_failed_total.expose_as(prefix, "request_failed_total");
+        raft_apply_total.expose_as(prefix, "raft_apply_total");
+        request_latency_us.expose(prefix, "request");
+    }
+
+    void Record(const std::string& type_name, bool ok, int64_t latency_us) {
+        request_total << 1;
+        if (type_name.find("ApplyDataRaftLog") != std::string::npos) {
+            raft_apply_total << 1;
+        }
+        if (ok) {
+            request_success_total << 1;
+        } else {
+            request_failed_total << 1;
+        }
+        request_latency_us << latency_us;
+    }
+};
 
 // unified call entry for partition manager
 template <typename Request, typename Response>
@@ -26,8 +57,9 @@ class PartitionManagerCallHelper {
                                                                       Response*, Closure<void>*),
                                      google::protobuf::RpcController* ctrl, const Request* request,
                                      Response* response, google::protobuf::Closure* done,
-                                     byte::LogLevel log_level) {
+                                     byte::LogLevel log_level, ServerServiceMetrics* metrics) {
         brpc::Controller* brpc_ctrl = static_cast<brpc::Controller*>(ctrl);
+        auto request_cost = std::make_shared<TimeCost>();
         LOG_MESSAGE(log_level, "RPC Received")
             .put("Remote", brpc_ctrl->remote_side())
             .put("TraceId", request->opt().trace_id())
@@ -35,11 +67,15 @@ class PartitionManagerCallHelper {
             .put("Request", request->ShortDebugString());
 
         Controller* new_ctrl = new Controller(request->opt().trace_id());
-        auto func = [ctrl, request, response, done, log_level, new_ctrl] {
+        auto func = [ctrl, request, response, done, log_level, new_ctrl, metrics, request_cost] {
             std::unique_ptr<Controller> _ctrl(new_ctrl);
             response->mutable_status()->set_code(Code::kOK);
             if (!new_ctrl->status().ok()) {
                 response->mutable_status()->CopyFrom(new_ctrl->status().ToRpcStatus());
+            }
+            if (metrics != nullptr) {
+                metrics->Record(request->GetTypeName(), response->status().code() == Code::kOK,
+                                request_cost->GetElapsedInUs());
             }
 
             brpc::Controller* brpc_ctrl = static_cast<brpc::Controller*>(ctrl);
@@ -57,8 +93,8 @@ class PartitionManagerCallHelper {
 
 class ServiceImpl : public ServerService {
  public:
-    explicit ServiceImpl(PartitionManager* partition_manager)
-        : partition_manager_(partition_manager) {}
+    ServiceImpl(PartitionManager* partition_manager, ServerServiceMetrics* metrics)
+        : partition_manager_(partition_manager), metrics_(metrics) {}
     virtual ~ServiceImpl() {}
 
     void Load(google::protobuf::RpcController* ctrl, const LoadRequest* request,
@@ -88,6 +124,8 @@ class ServiceImpl : public ServerService {
                     batch_response->status().code() != kOK) {
                     *(response->mutable_response()->mutable_status()) = batch_response->status();
                 }
+            } else if (batch_response->status().code() != kOK) {
+                *(response->mutable_response()->mutable_status()) = batch_response->status();
             }
             delete batch_request;
             delete batch_response;
@@ -120,6 +158,29 @@ class ServiceImpl : public ServerService {
         CallPartitionManager(&PartitionManager::ScanPartitionStream, ctrl, request, response, done,
                              byte::LOG_LEVEL_DEBUG);
     }
+    void ApplyDataRaftLog(::google::protobuf::RpcController* ctrl,
+                          const ::bcache2::ApplyDataRaftLogRequest* request,
+                          ::bcache2::ApplyDataRaftLogResponse* response,
+                          ::google::protobuf::Closure* done) override {
+        CallPartitionManager(&PartitionManager::ApplyDataRaftLog, ctrl, request, response, done,
+                             byte::LOG_LEVEL_DEBUG);
+    }
+    void GetDataRaftStatus(
+        ::google::protobuf::RpcController* ctrl,
+        const ::bcache2::GetDataRaftStatusRequest* request,
+        ::bcache2::GetDataRaftStatusResponse* response,
+        ::google::protobuf::Closure* done) override {
+        CallPartitionManager(&PartitionManager::GetDataRaftStatus, ctrl, request, response, done,
+                             byte::LOG_LEVEL_DEBUG);
+    }
+    void TriggerDataRaftSnapshot(
+        ::google::protobuf::RpcController* ctrl,
+        const ::bcache2::TriggerDataRaftSnapshotRequest* request,
+        ::bcache2::TriggerDataRaftSnapshotResponse* response,
+        ::google::protobuf::Closure* done) override {
+        CallPartitionManager(&PartitionManager::TriggerDataRaftSnapshot, ctrl, request, response,
+                             done, byte::LOG_LEVEL_INFO);
+    }
     void SetConfig(google::protobuf::RpcController* ctrl, const SetConfigRequest* request,
                    SetConfigResponse* response, google::protobuf::Closure* done) override {
         CallPartitionManager(&PartitionManager::SetConfig, ctrl, request, response, done,
@@ -150,10 +211,11 @@ class ServiceImpl : public ServerService {
                               Response* response, google::protobuf::Closure* done,
                               byte::LogLevel log_level) {
         PartitionManagerCallHelper<Request, Response>::CallPartitionManager(
-            partition_manager_, method, ctrl, request, response, done, log_level);
+            partition_manager_, method, ctrl, request, response, done, log_level, metrics_);
     }
 
     PartitionManager* partition_manager_ = nullptr;
+    ServerServiceMetrics* metrics_ = nullptr;
 
     DISALLOW_COPY_AND_ASSIGN(ServiceImpl);
 };

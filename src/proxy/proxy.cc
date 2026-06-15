@@ -14,6 +14,8 @@
 namespace bcache2 {
 namespace proxy {
 
+bool EnsureBrpcThriftProtocolRegistered();
+
 DEFINE_string(proxy_cmdb_jwt_uri, "", "cmdb jwt uri");
 DEFINE_string(proxy_cmdb_key, "", "cmdb api key");
 DEFINE_string(proxy_cmdb_host, "", "cmdb host");
@@ -87,6 +89,11 @@ Status Proxy::Start(Options opts) {
     }
 
     LOG_INFO("start rpc server");
+    if (!EnsureBrpcThriftProtocolRegistered()) {
+        return Status::FailedPrecondition(
+            "BRPC thrift protocol is unavailable; rebuild BRPC with thrift framed protocol or "
+            "provide BRPC_SOURCE_DIR for the proxy compatibility build");
+    }
     brpc::ServerOptions options;
     options.thrift_service = new Bcache2ThriftService(client_.get());
     if (server_.Start(opts.listen_port, &options) != 0) {

@@ -72,6 +72,17 @@ void MetaCheckRoutine::HandleServerHeartbeat(const ServerHeartbeatEvent* e) {
         return;
     }
 
+    bool inside_reboot_grace = false;
+    if (e->request.boot_time_us() > 0 && FLAGS_metaserver_missing_partition_reboot_grace_sec > 0) {
+        const int64_t now_us = butil::gettimeofday_us();
+        const int64_t boot_age_us = now_us - e->request.boot_time_us();
+        inside_reboot_grace =
+            boot_age_us >= 0 &&
+            boot_age_us <
+                static_cast<int64_t>(FLAGS_metaserver_missing_partition_reboot_grace_sec) *
+                    1'000'000;
+    }
+
     const Endpoint& ep = e->request.endpoint();
     ServerPtr server = metabase_->GetServerLocationManager()->Get(ep);
     if (!server || server->GetState() != ServerState::SERVER_NORMAL) {
@@ -103,6 +114,13 @@ void MetaCheckRoutine::HandleServerHeartbeat(const ServerHeartbeatEvent* e) {
             if (iter != remote_partition_ids.end()) {
                 partition->SetRealTimeStats(iter->second);
             } else {
+                if (inside_reboot_grace) {
+                    LOG_INFO("partition missing during server reboot grace, skip freeze")
+                        .put("partition", *partition)
+                        .put("server", ep)
+                        .put("grace_sec", FLAGS_metaserver_missing_partition_reboot_grace_sec);
+                    continue;
+                }
                 LOG_INFO("partition not found in server")
                     .put("partition", *partition)
                     .put("server", ep);

@@ -97,6 +97,9 @@ BRPC_VALIDATE_GFLAG(metaserver_meta_check_routine_interval_sec, brpc::PassValida
 DEFINE_uint64(metaserver_meta_check_max_freeze_partition_per_min, 10,
               "max count of partition which could be frozen");
 BRPC_VALIDATE_GFLAG(metaserver_meta_check_max_freeze_partition_per_min, brpc::PassValidate);
+DEFINE_uint64(metaserver_missing_partition_reboot_grace_sec, 30,
+              "grace window before freezing missing partitions after a server reboot");
+BRPC_VALIDATE_GFLAG(metaserver_missing_partition_reboot_grace_sec, brpc::PassValidate);
 
 DEFINE_uint64(metaserver_raft_max_applied_log_bytes, 10 * 64 * 1024 * 1024,
               "applied log limit, default 10 files for 64mb");

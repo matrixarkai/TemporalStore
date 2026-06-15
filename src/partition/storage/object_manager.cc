@@ -159,6 +159,14 @@ void ObjectManager::LoadObject(Controller* ctrl, uint64_t slot_id, bool is_backg
         return;
     }
 
+    if (slot->GetPageNum() == 0 && slot->GetObjectNum() == 0 &&
+        slot_context_manager_->GetSlotLogNum(slot_id) == 0) {
+        slot->SetInMemory(true);
+        ctrl->set_status(Status::OK());
+        byte::InvokeInCurrentThread(callback);
+        return;
+    }
+
     if (!slot->Loading()) {
         LOG_DEBUG("Start load slot")
             .put("PartitionId", partition_->GetPartitionID())

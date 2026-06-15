@@ -368,6 +368,13 @@ message ListServerPartitionResponse {
         PartitionState state = 2;
         MembershipInfo membership = 3;
         Config config = 4;
+        uint64 load_version = 5;
+        string partition_uri = 6;
+        uint32 start_slot = 7;
+        uint32 end_slot = 8;
+        PersistentType persistent_type = 9;
+        bool readonly = 10;
+        string table_name = 11;
     }
     message NodePartitions {
         uint64 node_id = 1;
