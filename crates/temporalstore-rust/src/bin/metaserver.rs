@@ -82,6 +82,8 @@ struct MetaSchedulerRestoreRequest {
 struct MetaSchedulerTaskResponse {
     status: Status,
     task: Option<SchedulerTask>,
+    #[serde(default)]
+    lifecycle_token: Option<temporalstore_rust::SchedulerLifecycleToken>,
     queue_len: usize,
 }
 
@@ -140,6 +142,7 @@ impl MetaTaskScheduler {
         };
         MetaSchedulerTaskResponse {
             status: persist_status,
+            lifecycle_token: task.lifecycle_token(),
             task: Some(task),
             queue_len,
         }
@@ -1734,6 +1737,10 @@ mod tests {
         let low: MetaSchedulerTaskResponse = serde_json::from_slice(&body).unwrap();
         assert!(low.status.ok);
         assert_eq!(low.queue_len, 1);
+        let low_token = low.lifecycle_token.unwrap();
+        assert_eq!(low_token.shard_id, 7);
+        assert_eq!(low_token.operation, "freeze");
+        assert_eq!(low_token.generation, 100);
 
         let (code, body) = handle(
             &backend,
@@ -1753,6 +1760,10 @@ mod tests {
         let high: MetaSchedulerTaskResponse = serde_json::from_slice(&body).unwrap();
         assert!(high.status.ok);
         assert_eq!(high.queue_len, 2);
+        let high_token = high.lifecycle_token.unwrap();
+        assert_eq!(high_token.shard_id, 7);
+        assert_eq!(high_token.operation, "unload");
+        assert_eq!(high_token.generation, 100);
 
         let (code, body) = handle(
             &backend,

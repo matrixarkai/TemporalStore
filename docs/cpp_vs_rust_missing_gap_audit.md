@@ -58,6 +58,25 @@ brpc and Thrift are intentionally not part of the Rust target. The Rust open-sou
 
 ## What Was Closed In The Latest Pass
 
+This pass closed the first client/proxy/metaserver/nodeserver C++ parity cycle:
+
+1. Added a 25-cycle control-plane parity backlog in
+   `docs/rust_control_plane_cpp_parity_25_cycle_plan.md`.
+2. Metaserver scheduler submit responses now include lifecycle tokens for rebalance steps, carrying
+   task id, shard id, operation, load version, and generation.
+3. Nodeserver now accepts lifecycle tokens through `POST /server/lifecycle/tokens/require` and
+   `POST /ServerService/RequireLifecycleToken`.
+4. Nodeserver now lists installed tokens through `GET /server/lifecycle/tokens` and
+   `GET /ServerService/ListLifecycleTokens`.
+5. Regression coverage validates metaserver token emission and C++-style nodeserver token
+   install/list/use on load lifecycle transitions.
+
+This bridges the scheduler-to-node lifecycle contract at the admin API layer. Remaining work is a
+real metaserver scheduler executor that calls remote nodeserver load/reload/unload endpoints and
+records task outcomes.
+
+## What Was Closed In The Previous Pass
+
 This pass closed the first storage production-readiness cycle:
 
 1. Added a 25-cycle Rust storage production readiness plan in

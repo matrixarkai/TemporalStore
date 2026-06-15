@@ -30,8 +30,8 @@ use temporalstore_rust::{
     ProductionRaftSecurity, RaftConfig, RaftControlLeadershipRequest, RaftFailoverReport,
     RaftMembershipChangeReport, RaftNodeId, RaftRpcRuntimeOptions, RaftTransport,
     ReplicaReplayLoop, ReplicaReplayOptions, ReplicaReplayRequest, ReplicaReplayResponse,
-    RequestController, ScanStreamRequest, SetConfigRequest, SlotDumpManifest,
-    StorageLifecycleRequest, StreamReadRequest, UnloadShardRequest,
+    RequestController, ScanStreamRequest, SchedulerLifecycleToken, SetConfigRequest,
+    SlotDumpManifest, StorageLifecycleRequest, StreamReadRequest, UnloadShardRequest,
 };
 use temporalstore_snapshot::{FileObjectStore, S3SnapshotStore};
 
@@ -219,6 +219,16 @@ fn main() {
             ("GET", "/server/runtime_stats") => json_response(200, &runtime.stats()),
             ("GET", "/server/preflight") => json_response(200, &runtime.preflight_report()),
             ("GET", "/server/lifecycle") => json_response(200, &runtime.lifecycle_report()),
+            ("GET", "/server/lifecycle/tokens") => json_response(200, &runtime.lifecycle_tokens()),
+            ("POST", "/server/lifecycle/tokens/require") => {
+                match parse_json::<SchedulerLifecycleToken>(&request.body) {
+                    Ok(token) => {
+                        runtime.require_lifecycle_token(token);
+                        json_response(200, &Status::ok())
+                    }
+                    Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+                }
+            }
             ("POST", "/server/topology/validate") | ("POST", "/ServerService/ValidateTopology") => {
                 match parse_json::<ServerTopologyValidationRequest>(&request.body) {
                     Ok(req) => json_response(
@@ -618,6 +628,18 @@ fn handle_cpp_server_service_route(
         ("GET", "/ServerService/GetRuntimeStats") => json_response(200, &runtime.stats()),
         ("GET", "/ServerService/Preflight") => json_response(200, &runtime.preflight_report()),
         ("GET", "/ServerService/GetLifecycle") => json_response(200, &runtime.lifecycle_report()),
+        ("GET", "/ServerService/ListLifecycleTokens") => {
+            json_response(200, &runtime.lifecycle_tokens())
+        }
+        ("POST", "/ServerService/RequireLifecycleToken") => {
+            match parse_json::<SchedulerLifecycleToken>(&request.body) {
+                Ok(token) => {
+                    runtime.require_lifecycle_token(token);
+                    json_response(200, &Status::ok())
+                }
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
         ("GET", "/ServerService/ListDirtyObjects") => json_response(200, &runtime.dirty_objects()),
         ("GET", "/ServerService/ListQueuedShardWorkers") => {
             json_response(200, &runtime.queued_shard_worker_infos())
@@ -2699,6 +2721,50 @@ mod tests {
             Arc::default();
         let runtime = DataNodeRuntime::new(engine.clone(), DataNodeRuntimeOptions::default());
 
+        let token = SchedulerLifecycleToken {
+            task_id: 99,
+            shard_id: 44,
+            operation: "load".to_string(),
+            load_version: 7,
+            generation: 100,
+        };
+        let require_token = HttpRequest {
+            method: "POST".to_string(),
+            path: "/ServerService/RequireLifecycleToken".to_string(),
+            body: serde_json::to_vec(&token).unwrap(),
+        };
+        let (code, body) = handle_cpp_server_service_route(
+            &require_token,
+            &engine,
+            &runtime,
+            None,
+            "",
+            "server-a",
+            &data_raft_appliers,
+        )
+        .unwrap();
+        assert_eq!(code, 200);
+        let status: Status = serde_json::from_slice(&body).unwrap();
+        assert!(status.ok, "{status:?}");
+
+        let (code, body) = handle_cpp_server_service_route(
+            &HttpRequest {
+                method: "GET".to_string(),
+                path: "/ServerService/ListLifecycleTokens".to_string(),
+                body: Vec::new(),
+            },
+            &engine,
+            &runtime,
+            None,
+            "",
+            "server-a",
+            &data_raft_appliers,
+        )
+        .unwrap();
+        assert_eq!(code, 200);
+        let tokens: Vec<SchedulerLifecycleToken> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(tokens, vec![token]);
+
         let load = HttpRequest {
             method: "POST".to_string(),
             path: "/ServerService/Load".to_string(),
@@ -2727,6 +2793,9 @@ mod tests {
         assert_eq!(code, 200);
         let status: LoadShardResponse = serde_json::from_slice(&body).unwrap();
         assert!(status.status.ok, "{status:?}");
+        let lifecycle = runtime.lifecycle_report();
+        assert_eq!(lifecycle.transitions[0].scheduler_task_id, Some(99));
+        assert_eq!(lifecycle.transitions[0].scheduler_generation, Some(100));
 
         let stale_reload = HttpRequest {
             method: "POST".to_string(),
