@@ -21,6 +21,8 @@ pub struct ProductionReadinessReport {
     pub failed_areas: Vec<String>,
     #[serde(default)]
     pub failed_capabilities: Vec<ReadinessCapabilityBlocker>,
+    #[serde(default)]
+    pub service_summaries: Vec<ServiceReadinessSummary>,
     pub areas: Vec<ReadinessArea>,
 }
 
@@ -28,6 +30,15 @@ pub struct ProductionReadinessReport {
 pub struct ReadinessCapabilityBlocker {
     pub area: String,
     pub capability: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServiceReadinessSummary {
+    pub service: String,
+    pub ready: bool,
+    pub areas: Vec<String>,
+    pub blocker_count: usize,
+    pub failed_capabilities: Vec<String>,
 }
 
 impl ProductionReadinessReport {
@@ -363,14 +374,56 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
         })
         .collect::<Vec<_>>();
     let blocker_count = failed_capabilities.len();
+    let service_summaries = service_readiness_summaries(&areas);
     ProductionReadinessReport {
         production_ready,
         cpp_parity_ready: production_ready,
         blocker_count,
         failed_areas,
         failed_capabilities,
+        service_summaries,
         areas,
     }
+}
+
+fn service_readiness_summaries(areas: &[ReadinessArea]) -> Vec<ServiceReadinessSummary> {
+    [
+        ("client", vec!["client"]),
+        ("proxy", vec!["proxy"]),
+        ("ingestion", vec!["ingestion"]),
+        (
+            "data_node",
+            vec!["dataserver", "data_node_distributed_raft"],
+        ),
+        ("metaserver", vec!["metaserver"]),
+    ]
+    .into_iter()
+    .map(|(service, area_names)| {
+        let selected = area_names
+            .iter()
+            .filter_map(|name| areas.iter().find(|area| area.area == *name))
+            .collect::<Vec<_>>();
+        let failed_capabilities = selected
+            .iter()
+            .flat_map(|area| {
+                area.missing
+                    .iter()
+                    .map(|capability| format!("{}: {capability}", area.area))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        ServiceReadinessSummary {
+            service: service.to_string(),
+            ready: !selected.is_empty()
+                && selected
+                    .iter()
+                    .all(|area| area.ready && area.missing.is_empty()),
+            areas: area_names.into_iter().map(str::to_string).collect(),
+            blocker_count: failed_capabilities.len(),
+            failed_capabilities,
+        }
+    })
+    .collect()
 }
 
 #[cfg(test)]
@@ -419,6 +472,55 @@ mod tests {
             );
         }
         assert!(report.missing_count() >= 20);
+    }
+
+    #[test]
+    fn production_readiness_report_summarizes_requested_service_readiness() {
+        let report = production_readiness_report();
+        let services = report
+            .service_summaries
+            .iter()
+            .map(|summary| summary.service.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            services,
+            vec!["client", "proxy", "ingestion", "data_node", "metaserver"]
+        );
+
+        for service in ["client", "proxy", "ingestion", "data_node", "metaserver"] {
+            let summary = report
+                .service_summaries
+                .iter()
+                .find(|summary| summary.service == service)
+                .expect("service summary must exist");
+            assert!(!summary.ready, "{service} should still have blockers");
+            assert!(
+                summary.blocker_count > 0,
+                "{service} should expose exact failed capabilities"
+            );
+            assert_eq!(summary.blocker_count, summary.failed_capabilities.len());
+        }
+
+        let data_node = report
+            .service_summaries
+            .iter()
+            .find(|summary| summary.service == "data_node")
+            .expect("data node summary must exist");
+        assert_eq!(
+            data_node.areas,
+            vec![
+                "dataserver".to_string(),
+                "data_node_distributed_raft".to_string()
+            ]
+        );
+        assert!(data_node
+            .failed_capabilities
+            .iter()
+            .any(|capability| capability.starts_with("dataserver:")));
+        assert!(data_node
+            .failed_capabilities
+            .iter()
+            .any(|capability| capability.starts_with("data_node_distributed_raft:")));
     }
 
     #[test]
