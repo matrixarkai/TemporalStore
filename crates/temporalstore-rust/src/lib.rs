@@ -34,10 +34,10 @@ pub use control::{
 };
 pub use data_node::{
     CompactionRequest, CompactionResponse, DataNodeLifecycleReport, DataNodePreflightReport,
-    DataNodeRuntime, DataNodeRuntimeOptions, DataNodeRuntimeStats, DataNodeTaskKind,
-    DataNodeTaskOutput, DataNodeTaskStatus, DirtyObjectInfo, DumpShardRequest, DumpShardResponse,
-    GcRequest, GcResponse, RequestController, ShardWorkerInfo, StorageLifecycleResponse,
-    StorageLifecycleScheduler,
+    DataNodeRuntime, DataNodeRuntimeOptions, DataNodeRuntimeStats, DataNodeShardLifecycleState,
+    DataNodeTaskKind, DataNodeTaskOutput, DataNodeTaskStatus, DirtyObjectInfo, DumpShardRequest,
+    DumpShardResponse, GcRequest, GcResponse, RequestController, ShardWorkerInfo,
+    StorageLifecycleResponse, StorageLifecycleScheduler,
 };
 pub use e2e::{
     AsyncStorageJournal, EndToEndWorkflow, KillSwitches, ReplicaReadPolicy, RoutingClient,

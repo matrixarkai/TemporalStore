@@ -6,7 +6,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::control::{CheckedExecuteRequest, CheckedExecuteResponse};
+use crate::control::{
+    CheckedExecuteRequest, CheckedExecuteResponse, LoadShardRequest, LoadShardResponse,
+    UnloadShardRequest, UnloadShardResponse,
+};
 use crate::engine::{
     ShardCompactionUtilityReport, SlotDumpManifest, StorageLifecyclePlan, StorageLifecycleReport,
     StorageLifecycleRequest, TemporalEngine,
@@ -123,6 +126,19 @@ pub struct DataNodeLifecycleReport {
     pub failed_count: usize,
     pub max_load_version: u64,
     pub shards: Vec<ServerShardServingState>,
+    #[serde(default)]
+    pub transitions: Vec<DataNodeShardLifecycleState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DataNodeShardLifecycleState {
+    pub shard_id: ShardId,
+    pub state: String,
+    pub operation: String,
+    pub load_version: u64,
+    pub updated_at_ms: u64,
+    #[serde(default)]
+    pub last_status: Option<Status>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -355,6 +371,7 @@ struct DataNodeRuntimeInner {
     dirty: Mutex<DirtyTracker>,
     stats: Mutex<MutableRuntimeStats>,
     meta_heartbeat: Mutex<DataNodeMetaHeartbeatReport>,
+    lifecycle: Mutex<HashMap<ShardId, DataNodeShardLifecycleState>>,
     next_job_id: AtomicU64,
 }
 
@@ -594,6 +611,7 @@ impl DataNodeRuntime {
             dirty: Mutex::default(),
             stats: Mutex::default(),
             meta_heartbeat: Mutex::default(),
+            lifecycle: Mutex::default(),
             next_job_id: AtomicU64::new(1),
         });
         for _ in 0..inner.options.worker_threads {
@@ -639,9 +657,73 @@ impl DataNodeRuntime {
                 dirty: Mutex::default(),
                 stats: Mutex::default(),
                 meta_heartbeat: Mutex::default(),
+                lifecycle: Mutex::default(),
                 next_job_id: AtomicU64::new(1),
             }),
         }
+    }
+
+    pub fn load_shard_with(&self, request: LoadShardRequest) -> LoadShardResponse {
+        self.record_lifecycle_state(
+            request.shard_id,
+            "loading",
+            "load",
+            request.load_version,
+            None,
+        );
+        let response = self.inner.engine.load_shard_with(request.clone());
+        self.record_lifecycle_state(
+            request.shard_id,
+            final_loaded_lifecycle_state(request.readonly, &response.status),
+            "load",
+            request.load_version,
+            Some(response.status.clone()),
+        );
+        response
+    }
+
+    pub fn reload_shard_with(&self, request: LoadShardRequest) -> LoadShardResponse {
+        self.record_lifecycle_state(
+            request.shard_id,
+            "reloading",
+            "reload",
+            request.load_version,
+            None,
+        );
+        let response = self.inner.engine.reload_shard_with(request.clone());
+        self.record_lifecycle_state(
+            request.shard_id,
+            final_loaded_lifecycle_state(request.readonly, &response.status),
+            "reload",
+            request.load_version,
+            Some(response.status.clone()),
+        );
+        response
+    }
+
+    pub fn unload_shard_with(&self, request: UnloadShardRequest) -> UnloadShardResponse {
+        let load_version = self
+            .inner
+            .engine
+            .get_info(request.shard_id)
+            .info
+            .map(|info| info.load_version)
+            .unwrap_or_default();
+        self.record_lifecycle_state(request.shard_id, "unloading", "unload", load_version, None);
+        let response = self.inner.engine.unload_shard_with(request.clone());
+        let state = if response.status.ok {
+            "unloaded"
+        } else {
+            "failed"
+        };
+        self.record_lifecycle_state(
+            request.shard_id,
+            state,
+            "unload",
+            load_version,
+            Some(response.status.clone()),
+        );
+        response
     }
 
     pub fn submit_execute(
@@ -1033,6 +1115,8 @@ impl DataNodeRuntime {
     pub fn lifecycle_report(&self) -> DataNodeLifecycleReport {
         let mut shards = self.shard_serving_states();
         shards.sort_by_key(|state| state.shard_id);
+        let mut transitions = self.lifecycle_states();
+        transitions.sort_by_key(|state| state.shard_id);
         let loaded_shard_count = shards.iter().filter(|state| state.loaded).count();
         let serving_count = shards
             .iter()
@@ -1051,13 +1135,22 @@ impl DataNodeRuntime {
             .iter()
             .filter(|state| state.serving_state == "unloading")
             .count();
-        let failed_count = shards
+        let failed_shards = shards
             .iter()
             .filter(|state| state.serving_state == "failed")
-            .count();
+            .map(|state| state.shard_id)
+            .chain(
+                transitions
+                    .iter()
+                    .filter(|state| state.state == "failed")
+                    .map(|state| state.shard_id),
+            )
+            .collect::<BTreeSet<_>>();
+        let failed_count = failed_shards.len();
         let max_load_version = shards
             .iter()
             .map(|state| state.load_version)
+            .chain(transitions.iter().map(|state| state.load_version))
             .max()
             .unwrap_or_default();
         DataNodeLifecycleReport {
@@ -1070,7 +1163,43 @@ impl DataNodeRuntime {
             failed_count,
             max_load_version,
             shards,
+            transitions,
         }
+    }
+
+    pub fn lifecycle_states(&self) -> Vec<DataNodeShardLifecycleState> {
+        self.inner
+            .lifecycle
+            .lock()
+            .expect("runtime lifecycle lock poisoned")
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    fn record_lifecycle_state(
+        &self,
+        shard_id: ShardId,
+        state: &str,
+        operation: &str,
+        load_version: u64,
+        last_status: Option<Status>,
+    ) {
+        self.inner
+            .lifecycle
+            .lock()
+            .expect("runtime lifecycle lock poisoned")
+            .insert(
+                shard_id,
+                DataNodeShardLifecycleState {
+                    shard_id,
+                    state: state.to_string(),
+                    operation: operation.to_string(),
+                    load_version,
+                    updated_at_ms: now_ms(),
+                    last_status,
+                },
+            );
     }
 
     pub fn topology_validation_report(
@@ -1258,13 +1387,27 @@ impl DataNodeRuntime {
         let queued_shards = queue.by_shard.keys().copied().collect::<BTreeSet<_>>();
         let running_shards = queue.running_shards.clone();
         drop(queue);
+        let lifecycle_by_shard = self
+            .inner
+            .lifecycle
+            .lock()
+            .expect("runtime lifecycle lock poisoned")
+            .clone();
 
         self.inner
             .engine
             .loaded_shard_stats()
             .into_iter()
             .map(|stats| {
-                let serving_state = if running_shards.contains(&stats.shard_id) {
+                let lifecycle_state = lifecycle_by_shard
+                    .get(&stats.shard_id)
+                    .map(|state| state.state.as_str());
+                let serving_state = if matches!(
+                    lifecycle_state,
+                    Some("loading" | "reloading" | "unloading" | "failed")
+                ) {
+                    lifecycle_state.unwrap()
+                } else if running_shards.contains(&stats.shard_id) {
                     "running"
                 } else if queued_shards.contains(&stats.shard_id) {
                     "queued"
@@ -1377,6 +1520,16 @@ impl DataNodeRuntime {
             .expect("runtime stats lock poisoned")
             .submitted_total += 1;
         status
+    }
+}
+
+fn final_loaded_lifecycle_state(readonly: bool, status: &Status) -> &'static str {
+    if !status.ok {
+        "failed"
+    } else if readonly {
+        "readonly"
+    } else {
+        "serving"
     }
 }
 
@@ -2115,9 +2268,87 @@ mod tests {
         assert_eq!(lifecycle.shards[0].serving_state, "readonly");
         assert!(lifecycle.shards[0].readonly);
         assert_eq!(lifecycle.shards[0].table_name, "tbl");
+        assert_eq!(lifecycle.transitions.len(), 0);
 
         let preflight = runtime.preflight_report();
         assert_eq!(preflight.lifecycle, lifecycle);
+    }
+
+    #[test]
+    fn runtime_load_reload_unload_records_lifecycle_transitions() {
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            TemporalEngine::default(),
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        );
+
+        let load = runtime.load_shard_with(crate::control::LoadShardRequest {
+            shard_id: 7,
+            table_name: "tbl".to_string(),
+            shard_uri: "local://tbl/7".to_string(),
+            start_routing_slot: 10,
+            end_routing_slot: 19,
+            readonly: false,
+            load_version: 42,
+            local_node_id: Some(3),
+        });
+        assert!(load.status.ok, "{load:?}");
+        let lifecycle = runtime.lifecycle_report();
+        assert_eq!(lifecycle.serving_count, 1);
+        assert_eq!(lifecycle.failed_count, 0);
+        assert_eq!(lifecycle.transitions.len(), 1);
+        assert_eq!(lifecycle.transitions[0].state, "serving");
+        assert_eq!(lifecycle.transitions[0].operation, "load");
+        assert_eq!(lifecycle.transitions[0].load_version, 42);
+
+        let stale = runtime.reload_shard_with(crate::control::LoadShardRequest {
+            shard_id: 7,
+            table_name: "stale".to_string(),
+            shard_uri: "local://tbl/stale".to_string(),
+            start_routing_slot: 20,
+            end_routing_slot: 29,
+            readonly: true,
+            load_version: 41,
+            local_node_id: Some(3),
+        });
+        assert_eq!(stale.status.code, "stale_load_version");
+        let failed = runtime.lifecycle_report();
+        assert_eq!(failed.failed_count, 1);
+        assert_eq!(failed.shards[0].serving_state, "failed");
+        assert_eq!(failed.transitions[0].state, "failed");
+        assert_eq!(failed.transitions[0].operation, "reload");
+        assert_eq!(
+            failed.transitions[0].last_status.as_ref().unwrap().code,
+            "stale_load_version"
+        );
+
+        let reload = runtime.reload_shard_with(crate::control::LoadShardRequest {
+            shard_id: 7,
+            table_name: "tbl-new".to_string(),
+            shard_uri: "local://tbl/7-new".to_string(),
+            start_routing_slot: 20,
+            end_routing_slot: 29,
+            readonly: true,
+            load_version: 43,
+            local_node_id: Some(4),
+        });
+        assert!(reload.status.ok, "{reload:?}");
+        let readonly = runtime.lifecycle_report();
+        assert_eq!(readonly.readonly_count, 1);
+        assert_eq!(readonly.failed_count, 0);
+        assert_eq!(readonly.transitions[0].state, "readonly");
+        assert_eq!(readonly.transitions[0].operation, "reload");
+        assert_eq!(readonly.transitions[0].load_version, 43);
+
+        let unload = runtime.unload_shard_with(crate::control::UnloadShardRequest { shard_id: 7 });
+        assert!(unload.status.ok, "{unload:?}");
+        let unloaded = runtime.lifecycle_report();
+        assert_eq!(unloaded.loaded_shard_count, 0);
+        assert_eq!(unloaded.transitions[0].state, "unloaded");
+        assert_eq!(unloaded.transitions[0].operation, "unload");
     }
 
     #[test]

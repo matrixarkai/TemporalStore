@@ -316,15 +316,15 @@ fn main() {
                 json_response(200, &runtime.shard_worker_info(shard_id))
             }
             ("POST", "/load") => match parse_json::<LoadShardRequest>(&request.body) {
-                Ok(req) => json_response(200, &engine.load_shard_with(req)),
+                Ok(req) => json_response(200, &runtime.load_shard_with(req)),
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
             },
             ("POST", "/reload") => match parse_json::<LoadShardRequest>(&request.body) {
-                Ok(req) => json_response(200, &engine.reload_shard_with(req)),
+                Ok(req) => json_response(200, &runtime.reload_shard_with(req)),
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
             },
             ("POST", "/unload") => match parse_json::<UnloadShardRequest>(&request.body) {
-                Ok(req) => json_response(200, &engine.unload_shard_with(req)),
+                Ok(req) => json_response(200, &runtime.unload_shard_with(req)),
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
             },
             ("POST", "/execute") => match parse_json::<ExecuteRequest>(&request.body) {
@@ -504,16 +504,16 @@ fn handle_cpp_server_service_route(
 ) -> Option<(u16, Vec<u8>)> {
     let response = match (request.method.as_str(), request.path.as_str()) {
         ("POST", "/ServerService/Load") => match parse_json::<LoadShardRequest>(&request.body) {
-            Ok(req) => json_response(200, &engine.load_shard_with(req)),
+            Ok(req) => json_response(200, &runtime.load_shard_with(req)),
             Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
         },
         ("POST", "/ServerService/Reload") => match parse_json::<LoadShardRequest>(&request.body) {
-            Ok(req) => json_response(200, &engine.reload_shard_with(req)),
+            Ok(req) => json_response(200, &runtime.reload_shard_with(req)),
             Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
         },
         ("POST", "/ServerService/Unload") => {
             match parse_json::<UnloadShardRequest>(&request.body) {
-                Ok(req) => json_response(200, &engine.unload_shard_with(req)),
+                Ok(req) => json_response(200, &runtime.unload_shard_with(req)),
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
             }
         }
@@ -2773,6 +2773,11 @@ mod tests {
         assert_eq!(info.load_version, 8);
         assert_eq!(info.local_node_id, Some(2));
         assert_eq!(info.table_name, "cpp_alias_reloaded");
+        let lifecycle = runtime.lifecycle_report();
+        assert_eq!(lifecycle.transitions.len(), 1);
+        assert_eq!(lifecycle.transitions[0].shard_id, 44);
+        assert_eq!(lifecycle.transitions[0].state, "serving");
+        assert_eq!(lifecycle.transitions[0].operation, "reload");
 
         let execute = HttpRequest {
             method: "POST".to_string(),
@@ -2943,6 +2948,10 @@ mod tests {
         assert_eq!(code, 200);
         let status: UnloadShardResponse = serde_json::from_slice(&body).unwrap();
         assert!(status.status.ok, "{status:?}");
+        let lifecycle = runtime.lifecycle_report();
+        assert_eq!(lifecycle.loaded_shard_count, 0);
+        assert_eq!(lifecycle.transitions[0].state, "unloaded");
+        assert_eq!(lifecycle.transitions[0].operation, "unload");
 
         let unknown = HttpRequest {
             method: "POST".to_string(),
