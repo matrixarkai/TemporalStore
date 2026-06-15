@@ -821,6 +821,37 @@ impl ProxyService {
             &[],
             options.drop_percent as u64,
         );
+
+        let readiness = crate::production_readiness_report();
+        out.push_str(
+            "# HELP temporalstore_production_readiness_ready Production readiness gate state.\n",
+        );
+        out.push_str("# TYPE temporalstore_production_readiness_ready gauge\n");
+        push_proxy_metric(
+            &mut out,
+            "temporalstore_production_readiness_ready",
+            &[],
+            u64::from(readiness.production_ready),
+        );
+
+        out.push_str(
+            "# HELP temporalstore_production_readiness_blockers Production readiness blockers.\n",
+        );
+        out.push_str("# TYPE temporalstore_production_readiness_blockers gauge\n");
+        push_proxy_metric(
+            &mut out,
+            "temporalstore_production_readiness_blockers",
+            &[],
+            readiness.blocker_count as u64,
+        );
+        for area in &readiness.areas {
+            push_proxy_metric(
+                &mut out,
+                "temporalstore_production_readiness_blockers",
+                &[("area", area.area.as_str())],
+                area.missing.len() as u64,
+            );
+        }
         out
     }
 
@@ -1385,6 +1416,22 @@ mod tests {
             .contains("temporalstore_proxy_backend_events_total{kind=\"metaserver_error\"} 1"));
         assert!(metrics.contains("temporalstore_proxy_serving_mode{mode=\"not_serving\"} 1"));
         assert!(metrics.contains("temporalstore_proxy_drop_percent 17"));
+        assert!(metrics.contains("# TYPE temporalstore_production_readiness_ready gauge"));
+        assert!(metrics.contains("temporalstore_production_readiness_ready 0"));
+        let readiness = crate::production_readiness_report();
+        assert!(metrics.contains(&format!(
+            "temporalstore_production_readiness_blockers {}",
+            readiness.blocker_count
+        )));
+        let storage_cache = readiness
+            .areas
+            .iter()
+            .find(|area| area.area == "storage_cache")
+            .unwrap();
+        assert!(metrics.contains(&format!(
+            "temporalstore_production_readiness_blockers{{area=\"storage_cache\"}} {}",
+            storage_cache.missing.len()
+        )));
     }
 
     #[test]

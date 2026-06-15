@@ -1,0 +1,67 @@
+name: Rust production readiness
+
+on:
+  pull_request:
+    branches:
+      - rust-main
+  push:
+    branches:
+      - rust-main
+  workflow_dispatch:
+
+jobs:
+  rust-production-readiness:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Compile all Rust targets
+        run: cargo check -p temporalstore-rust --all-targets
+
+      - name: Run Rust unit and integration tests
+        run: cargo test -p temporalstore-rust --lib --tests -- --test-threads=1
+
+      - name: Capture production readiness report
+        shell: bash
+        run: |
+          set +e
+          cargo run -p temporalstore-rust --bin readiness_gate \
+            > target/production_readiness_report.json \
+            2> target/production_readiness_gate.log
+          status=$?
+          set -e
+          cat target/production_readiness_gate.log
+          python3 - <<'PY'
+          import json
+          report = json.load(open("target/production_readiness_report.json"))
+          print(f"production_ready={report['production_ready']}")
+          print(f"blocker_count={report['blocker_count']}")
+          for blocker in report["failed_capabilities"][:20]:
+              print(f"- {blocker['area']}: {blocker['capability']}")
+          PY
+          if [ "$status" -ne 0 ] && [ "$status" -ne 2 ]; then
+            echo "readiness_gate exited with unexpected status $status" >&2
+            exit "$status"
+          fi
+
+      - name: Upload production readiness artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-production-readiness
+          path: |
+            target/production_readiness_report.json
+            target/production_readiness_gate.log
+

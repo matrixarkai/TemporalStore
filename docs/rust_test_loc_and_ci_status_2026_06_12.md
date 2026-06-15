@@ -44,12 +44,14 @@ local validation and deployment scripts:
 - `tools/scale_test_aws_existing_eks.sh`
 - `tools/validate_aws_validation_log.py`
 
-A GitHub Actions workflow was prepared locally for `rust-main`, but pushing a
-workflow file requires an OAuth token with GitHub `workflow` scope. The current
-push token rejected `.github/workflows/rust-ci.yml`, so the pushable change keeps
-the Rust test enhancement and this CI status record.
+A GitHub Actions workflow template is tracked at
+`docs/ci/rust-production-readiness.workflow.yml`. It runs Rust format, check,
+unit/integration tests, captures the production readiness report, and uploads
+the readiness JSON/log as artifacts. Installing it under `.github/workflows/`
+requires a GitHub token with `workflow` scope; the current push token rejects
+workflow-file updates.
 
-Recommended CI gate once workflow-scope credentials are available:
+The local equivalent is:
 
 ```bash
 cargo fmt --all -- --check
@@ -80,3 +82,8 @@ The readiness gate JSON now includes `blocker_count`, `failed_areas`, and
 `failed_capabilities[]` entries with exact area/capability text. The CLI also prints the first
 failed capabilities to stderr before exiting non-zero, so CI logs identify the remaining production
 gaps without requiring a separate JSON parser.
+
+Proxy `/metrics` also exports `temporalstore_production_readiness_ready` and
+`temporalstore_production_readiness_blockers` gauges, including per-area blocker
+counts, so Prometheus can alert on any production-readiness regression or remaining
+gap without scraping the JSON readiness endpoint.
