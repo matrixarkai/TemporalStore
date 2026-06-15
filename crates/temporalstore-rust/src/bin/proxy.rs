@@ -1,5 +1,5 @@
 use temporalstore_rust::http::serve;
-use temporalstore_rust::{ProxyOptions, ProxyService};
+use temporalstore_rust::{ProxyOptions, ProxyService, ProxyServingMode};
 
 fn main() {
     let addr = std::env::var("TS_PROXY_BIND_ADDR")
@@ -23,6 +23,8 @@ fn main() {
             "TS_PROXY_BACKEND_CONTINUOUS_FAILED_TIME_MS",
             10_000,
         ),
+        serving_mode: env_serving_mode("TS_PROXY_SERVING_MODE", ProxyServingMode::Serving),
+        drop_percent: env_u8("TS_PROXY_DROP_PERCENT", 0),
     };
     let proxy = ProxyService::new(options);
     let heartbeat_interval_ms = env_u64("TS_PROXY_HEARTBEAT_INTERVAL_MS", 10_000);
@@ -53,5 +55,28 @@ fn env_bool(name: &str, default: bool) -> bool {
             "0" | "false" | "no" | "off" => Some(false),
             _ => None,
         })
+        .unwrap_or(default)
+}
+
+fn env_u8(name: &str, default: u8) -> u8 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
+}
+
+fn env_serving_mode(name: &str, default: ProxyServingMode) -> ProxyServingMode {
+    std::env::var(name)
+        .ok()
+        .and_then(
+            |value| match value.to_ascii_lowercase().replace('-', "_").as_str() {
+                "serving" => Some(ProxyServingMode::Serving),
+                "readonly" | "read_only" => Some(ProxyServingMode::Readonly),
+                "write_disabled" => Some(ProxyServingMode::WriteDisabled),
+                "degraded" => Some(ProxyServingMode::Degraded),
+                "not_serving" | "disabled" => Some(ProxyServingMode::NotServing),
+                _ => None,
+            },
+        )
         .unwrap_or(default)
 }

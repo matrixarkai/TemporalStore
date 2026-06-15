@@ -72,9 +72,9 @@ pub use partition_id::{
 };
 pub use proxy::{
     ProxyClientPreflightReport, ProxyConfigUpdateReport, ProxyInfo, ProxyOpenTableRequest,
-    ProxyOpenTableResponse, ProxyOptions, ProxyPreflightReport, ProxyReplicaReadPolicy,
-    ProxyService, ProxyStats, ProxyTableBatchExecuteRequest, ProxyTableExecuteRequest,
-    ProxyTableOptionsView,
+    ProxyOpenTableResponse, ProxyOptions, ProxyPolicyReport, ProxyPreflightReport,
+    ProxyReplicaReadPolicy, ProxyService, ProxyServingMode, ProxyStats,
+    ProxyTableBatchExecuteRequest, ProxyTableExecuteRequest, ProxyTableOptionsView,
 };
 pub use raft::{
     apply_data_raft_membership_from_topology, distributed_raft_readiness,

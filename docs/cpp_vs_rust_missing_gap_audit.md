@@ -58,6 +58,26 @@ brpc and Thrift are intentionally not part of the Rust target. The Rust open-sou
 
 ## What Was Closed In The Latest Pass
 
+This pass closed the next proxy serving-policy gap:
+
+1. Proxy options now include a Rust-native serving mode: `serving`, `readonly`, `write_disabled`,
+   `degraded`, and `not_serving`.
+2. Proxy admission now rejects writes in readonly/write-disabled modes, rejects all traffic in
+   not-serving mode, and applies proxy-level deterministic `drop_percent` traffic shedding before
+   forwarding to the embedded client/backend path.
+3. Proxy preflight now reports the effective serving policy, admission rejection count, and degraded
+   reasons for non-serving/default-degraded states.
+4. `GET /proxy/policy` and `GET /ProxyService/GetPolicy` expose the policy report directly for
+   admin/debug clients.
+5. Regression coverage validates write blocking, not-serving read rejection, drop-percent
+   rejection, policy routing, and preflight degradation.
+
+This improves C++ proxy operational parity around serving state and admission controls. Remaining
+proxy work includes tying policy transitions to metaserver scheduler events and expanding the
+cross-service topology-move harness.
+
+## What Was Closed In The Previous Pass
+
 This pass closed the next client MetaSyncer observability gap:
 
 1. The Rust client now keeps per-open-table MetaSyncer state: sync generation, last success time,

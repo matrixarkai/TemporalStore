@@ -5,8 +5,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::client::{
-    ClientOptions, ClientStats, ClientTopologyCacheReport, ClientTopologyRefreshReport,
-    ReplicaReadPolicy, RequestOptions, TableOptions, TemporalStoreClient,
+    key_is_dropped_by_percent, ClientOptions, ClientStats, ClientTopologyCacheReport,
+    ClientTopologyRefreshReport, ReplicaReadPolicy, RequestOptions, TableOptions,
+    TemporalStoreClient,
 };
 use crate::http::{get_json_with_options, post_json_with_options, HttpRequest, HttpRequestOptions};
 use crate::meta::GetShardResponse;
@@ -38,6 +39,21 @@ pub struct ProxyOptions {
     pub max_retries: usize,
     pub refresh_route_on_backend_error: bool,
     pub backend_continuous_failed_time_ms: u64,
+    #[serde(default)]
+    pub serving_mode: ProxyServingMode,
+    #[serde(default)]
+    pub drop_percent: u8,
+}
+
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProxyServingMode {
+    #[default]
+    Serving,
+    Readonly,
+    WriteDisabled,
+    Degraded,
+    NotServing,
 }
 
 impl ProxyOptions {
@@ -72,6 +88,8 @@ impl Default for ProxyOptions {
             max_retries: 0,
             refresh_route_on_backend_error: true,
             backend_continuous_failed_time_ms: 10_000,
+            serving_mode: ProxyServingMode::Serving,
+            drop_percent: 0,
         }
     }
 }
@@ -87,6 +105,7 @@ pub struct ProxyStats {
     pub continuous_backend_failures: u64,
     pub metaserver_errors: u64,
     pub bad_requests: u64,
+    pub admission_rejections: u64,
     pub heartbeat_total: u64,
     pub auto_register_total: u64,
 }
@@ -142,7 +161,19 @@ pub struct ProxyPreflightReport {
     pub topology_check_status: Option<Status>,
     pub stats: ProxyStats,
     pub client: ProxyClientPreflightReport,
+    #[serde(default)]
+    pub policy: ProxyPolicyReport,
     pub degraded_reasons: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyPolicyReport {
+    pub serving_mode: ProxyServingMode,
+    pub drop_percent: u8,
+    pub serving_reads: bool,
+    pub serving_writes: bool,
+    pub rejecting_all: bool,
+    pub admission_rejections: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -280,6 +311,9 @@ impl ProxyService {
             ("GET", "/proxy/preflight") | ("GET", "/ProxyService/Preflight") => {
                 json_response(200, &self.preflight_report())
             }
+            ("GET", "/proxy/policy") | ("GET", "/ProxyService/GetPolicy") => {
+                json_response(200, &self.policy_report())
+            }
             ("GET", "/proxy/client_preflight") | ("GET", "/ProxyService/ClientPreflight") => {
                 json_response(200, &self.client().preflight_report())
             }
@@ -383,6 +417,11 @@ impl ProxyService {
             .write()
             .expect("proxy stats lock poisoned")
             .execute_requests += 1;
+        if let Some(status) =
+            self.check_admission_for_commands(std::slice::from_ref(&request.command))
+        {
+            return execute_error(status.code, status.message);
+        }
         let response = self
             .client()
             .execute_with_options(request, RequestOptions::default())
@@ -397,6 +436,12 @@ impl ProxyService {
             .write()
             .expect("proxy stats lock poisoned")
             .batch_execute_requests += 1;
+        if let Some(status) = self.check_admission_for_commands(&request.commands) {
+            return BatchExecuteResponse {
+                status,
+                responses: Vec::new(),
+            };
+        }
         let response = self
             .client()
             .batch_execute_with_options(request, RequestOptions::default())
@@ -456,6 +501,11 @@ impl ProxyService {
             .write()
             .expect("proxy stats lock poisoned")
             .execute_requests += 1;
+        if let Some(status) =
+            self.check_admission_for_commands(std::slice::from_ref(&request.command))
+        {
+            return execute_error(status.code, status.message);
+        }
         let response = self
             .table_for_request(request.namespace, request.table_name)
             .and_then(|table| table.execute(request.command))
@@ -473,6 +523,12 @@ impl ProxyService {
             .write()
             .expect("proxy stats lock poisoned")
             .batch_execute_requests += 1;
+        if let Some(status) = self.check_admission_for_commands(&request.commands) {
+            return BatchExecuteResponse {
+                status,
+                responses: Vec::new(),
+            };
+        }
         let response = self
             .table_for_request(request.namespace, request.table_name)
             .and_then(|table| table.batch_execute(request.commands))
@@ -596,6 +652,12 @@ impl ProxyService {
         if stats.bad_requests > 0 {
             degraded_reasons.push("bad_requests".to_string());
         }
+        if stats.admission_rejections > 0 {
+            degraded_reasons.push("admission_rejections".to_string());
+        }
+        if options.serving_mode != ProxyServingMode::Serving {
+            degraded_reasons.push(format!("serving_mode:{:?}", options.serving_mode));
+        }
         if topology_cache_stale {
             degraded_reasons.push("topology_cache_stale".to_string());
         }
@@ -608,6 +670,7 @@ impl ProxyService {
             Status::error("degraded", degraded_reasons.join(","))
         };
         let config_version = proxy_config_version(&options);
+        let policy = self.policy_report();
         ProxyPreflightReport {
             status,
             meta_addr: options.meta_addr,
@@ -633,7 +696,24 @@ impl ProxyService {
                 continuous_backend_failures: client_stats.continuous_backend_failures,
                 meta_sync_errors: client_stats.meta_sync_errors,
             },
+            policy,
             degraded_reasons,
+        }
+    }
+
+    pub fn policy_report(&self) -> ProxyPolicyReport {
+        let options = self.options();
+        let stats = *self.inner.stats.read().expect("proxy stats lock poisoned");
+        ProxyPolicyReport {
+            serving_mode: options.serving_mode,
+            drop_percent: options.drop_percent.min(100),
+            serving_reads: !matches!(options.serving_mode, ProxyServingMode::NotServing),
+            serving_writes: matches!(
+                options.serving_mode,
+                ProxyServingMode::Serving | ProxyServingMode::Degraded
+            ),
+            rejecting_all: matches!(options.serving_mode, ProxyServingMode::NotServing),
+            admission_rejections: stats.admission_rejections,
         }
     }
 
@@ -838,6 +918,19 @@ impl ProxyService {
             .clone()
     }
 
+    fn check_admission_for_commands(&self, commands: &[Command]) -> Option<Status> {
+        let options = self.options();
+        let status = proxy_policy_rejection(&options, commands);
+        if status.is_some() {
+            self.inner
+                .stats
+                .write()
+                .expect("proxy stats lock poisoned")
+                .admission_rejections += 1;
+        }
+        status
+    }
+
     fn inc_bad_request(&self) {
         self.inner
             .stats
@@ -851,6 +944,130 @@ fn execute_error(code: impl Into<String>, message: impl Into<String>) -> Execute
     ExecuteResponse {
         status: Status::error(code, message),
         response: CommandResponse::Empty,
+    }
+}
+
+fn proxy_policy_rejection(options: &ProxyOptions, commands: &[Command]) -> Option<Status> {
+    if matches!(options.serving_mode, ProxyServingMode::NotServing) {
+        return Some(Status::error("proxy_not_serving", "proxy is not serving"));
+    }
+    let has_write = commands.iter().any(proxy_command_is_write);
+    if has_write
+        && matches!(
+            options.serving_mode,
+            ProxyServingMode::Readonly | ProxyServingMode::WriteDisabled
+        )
+    {
+        return Some(Status::error(
+            "proxy_write_disabled",
+            "proxy is not accepting writes",
+        ));
+    }
+    let drop_percent = options.drop_percent.min(100);
+    if drop_percent > 0
+        && commands
+            .iter()
+            .filter_map(proxy_command_key)
+            .any(|key| key_is_dropped_by_percent(key, drop_percent))
+    {
+        return Some(Status::error(
+            "proxy_traffic_dropped",
+            "request dropped by proxy drop_percent",
+        ));
+    }
+    None
+}
+
+fn proxy_command_is_write(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::CommonDelete { .. }
+            | Command::CommonExpire { .. }
+            | Command::StringSet { .. }
+            | Command::StringSetEx { .. }
+            | Command::StringSetConditional { .. }
+            | Command::StringDelete { .. }
+            | Command::HashSet { .. }
+            | Command::HashMultiSet { .. }
+            | Command::HashIncrBy { .. }
+            | Command::HashDelete { .. }
+            | Command::SetAdd { .. }
+            | Command::SetRemove { .. }
+            | Command::FeatureAppend { .. }
+            | Command::FeatureAppendWithPolicy { .. }
+            | Command::FeatureReplace { .. }
+            | Command::FeatureDelete { .. }
+            | Command::SequenceAdd { .. }
+            | Command::IpsAdd { .. }
+            | Command::IpsAddWithOptions { .. }
+            | Command::IpsLoad { .. }
+            | Command::IpsRemove { .. }
+            | Command::IpsDelete { .. }
+            | Command::RiskIncrement { .. }
+            | Command::RiskIncrementWithOptions { .. }
+            | Command::RiskChangeAdd { .. }
+            | Command::RiskSet { .. }
+            | Command::RiskSetAndGet { .. }
+            | Command::RiskFolSet { .. }
+    )
+}
+
+fn proxy_command_key(command: &Command) -> Option<&str> {
+    match command {
+        Command::CommonDelete { key }
+        | Command::CommonExpire { key, .. }
+        | Command::CommonTtl { key }
+        | Command::CommonExists { key }
+        | Command::StringSet { key, .. }
+        | Command::StringSetEx { key, .. }
+        | Command::StringSetConditional { key, .. }
+        | Command::StringGet { key }
+        | Command::StringDelete { key }
+        | Command::HashSet { key, .. }
+        | Command::HashGet { key, .. }
+        | Command::HashMultiGet { key, .. }
+        | Command::HashMultiSet { key, .. }
+        | Command::HashIncrBy { key, .. }
+        | Command::HashGetAll { key }
+        | Command::HashLen { key }
+        | Command::HashDelete { key, .. }
+        | Command::SetAdd { key, .. }
+        | Command::SetMembers { key }
+        | Command::SetRemove { key, .. }
+        | Command::FeatureAppend { key, .. }
+        | Command::FeatureAppendWithPolicy { key, .. }
+        | Command::FeatureQuery { key, .. }
+        | Command::FeatureQueryFiltered { key, .. }
+        | Command::FeatureReplace { key, .. }
+        | Command::FeatureDelete { key }
+        | Command::FeatureAggQuery { key, .. }
+        | Command::SequenceAdd { key, .. }
+        | Command::SequenceQuery { key, .. }
+        | Command::IpsAdd { key, .. }
+        | Command::IpsAddWithOptions { key, .. }
+        | Command::IpsLoad { key, .. }
+        | Command::IpsQueryLast { key, .. }
+        | Command::IpsQueryRange { key, .. }
+        | Command::IpsQueryRangeWithOptions { key, .. }
+        | Command::IpsSnapshot { key, .. }
+        | Command::IpsStat { key, .. }
+        | Command::IpsFilter { key, .. }
+        | Command::IpsRemove { key, .. }
+        | Command::IpsDelete { key }
+        | Command::IpsCount { key, .. }
+        | Command::RiskIncrement { key, .. }
+        | Command::RiskIncrementWithOptions { key, .. }
+        | Command::RiskChangeAdd { key, .. }
+        | Command::RiskCount { key, .. }
+        | Command::RiskQuery { key, .. }
+        | Command::RiskDetail { key, .. }
+        | Command::RiskSet { key, .. }
+        | Command::RiskSetAndGet { key, .. }
+        | Command::RiskFamilyQuery { key, .. }
+        | Command::RiskFolSet { key, .. }
+        | Command::RiskFolQuery { key }
+        | Command::RiskManager { key } => Some(key),
+        Command::IpsBatchQueryLast { .. } | Command::SequenceBatchQuery { .. } => None,
     }
 }
 
@@ -874,6 +1091,7 @@ fn proxy_client_from_options(options: &ProxyOptions) -> TemporalStoreClient {
         max_retries: options.max_retries,
         route_cache_ttl_ms: options.route_cache_ttl_ms,
         topo_error_retry_interval_ms: options.backend_continuous_failed_time_ms,
+        drop_percent: options.drop_percent.min(100),
         ..ClientOptions::default()
     })
 }
@@ -1052,6 +1270,73 @@ mod tests {
         assert_eq!(code, 200);
         let routed = parse_json::<ProxyPreflightReport>(&body).unwrap();
         assert_eq!(routed.stats.bad_requests, 1);
+    }
+
+    #[test]
+    fn proxy_policy_blocks_writes_not_serving_and_drop_percent() {
+        let readonly = ProxyService::new(ProxyOptions {
+            meta_addr: "127.0.0.1:1".to_string(),
+            serving_mode: ProxyServingMode::Readonly,
+            ..ProxyOptions::default()
+        });
+        let write = readonly.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            },
+        });
+        assert_eq!(write.status.code, "proxy_write_disabled");
+        assert_eq!(readonly.policy_report().admission_rejections, 1);
+        let preflight = readonly.preflight_report();
+        assert_eq!(preflight.policy.serving_mode, ProxyServingMode::Readonly);
+        assert!(!preflight.policy.serving_writes);
+        assert!(preflight
+            .degraded_reasons
+            .iter()
+            .any(|reason| reason == "admission_rejections"));
+        assert!(preflight
+            .degraded_reasons
+            .iter()
+            .any(|reason| reason == "serving_mode:Readonly"));
+
+        let not_serving = ProxyService::new(ProxyOptions {
+            meta_addr: "127.0.0.1:1".to_string(),
+            serving_mode: ProxyServingMode::NotServing,
+            ..ProxyOptions::default()
+        });
+        let read = not_serving.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: "k".to_string(),
+            },
+        });
+        assert_eq!(read.status.code, "proxy_not_serving");
+        assert!(not_serving.policy_report().rejecting_all);
+
+        let dropper = ProxyService::new(ProxyOptions {
+            meta_addr: "127.0.0.1:1".to_string(),
+            drop_percent: 100,
+            ..ProxyOptions::default()
+        });
+        let dropped = dropper.table_batch_execute(ProxyTableBatchExecuteRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+            commands: vec![Command::StringGet {
+                key: "drop-me".to_string(),
+            }],
+        });
+        assert_eq!(dropped.status.code, "proxy_traffic_dropped");
+
+        let (code, body) = dropper.handle(HttpRequest {
+            method: "GET".to_string(),
+            path: "/ProxyService/GetPolicy".to_string(),
+            body: Vec::new(),
+        });
+        assert_eq!(code, 200);
+        let policy = parse_json::<ProxyPolicyReport>(&body).unwrap();
+        assert_eq!(policy.drop_percent, 100);
+        assert_eq!(policy.admission_rejections, 1);
     }
 
     #[test]
