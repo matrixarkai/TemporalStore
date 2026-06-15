@@ -547,6 +547,12 @@ pub struct StorageRecoveryBoundaryReport {
     #[serde(default)]
     pub interrupted_slot_dump_installs: Vec<SlotDumpInstallMarker>,
     #[serde(default)]
+    pub prepared_slot_dump_install_count: usize,
+    #[serde(default)]
+    pub installed_slot_dump_install_count: usize,
+    #[serde(default)]
+    pub unknown_slot_dump_install_count: usize,
+    #[serde(default)]
     pub manifest_chain_issues: Vec<SlotDumpManifestChainIssue>,
     #[serde(default)]
     pub owner_mismatch_page_refs: Vec<StorageRecoveryPageOwnerMismatch>,
@@ -623,6 +629,12 @@ pub struct StorageProductionReadinessReport {
     pub missing_owner_page_ref_count: u64,
     pub reused_object_id_conflict_count: u64,
     pub interrupted_slot_dump_install_count: usize,
+    #[serde(default)]
+    pub prepared_slot_dump_install_count: usize,
+    #[serde(default)]
+    pub installed_slot_dump_install_count: usize,
+    #[serde(default)]
+    pub unknown_slot_dump_install_count: usize,
     pub slot_dump_manifest_count: usize,
     pub cache_memory_bytes: u64,
     pub cache_disk_bytes: u64,
@@ -2268,6 +2280,9 @@ impl TemporalEngine {
             missing_owner_page_ref_count: boundary.object_lifecycle.missing_owner_page_refs,
             reused_object_id_conflict_count: boundary.object_lifecycle.reused_object_id_conflicts,
             interrupted_slot_dump_install_count,
+            prepared_slot_dump_install_count: boundary.prepared_slot_dump_install_count,
+            installed_slot_dump_install_count: boundary.installed_slot_dump_install_count,
+            unknown_slot_dump_install_count: boundary.unknown_slot_dump_install_count,
             slot_dump_manifest_count,
             cache_memory_bytes: cache.memory_bytes,
             cache_disk_bytes: cache.disk_bytes,
@@ -2504,6 +2519,11 @@ impl TemporalEngine {
             .filter(|slot| !latest_dump_slots.contains(slot))
             .collect::<Vec<_>>();
         let interrupted_slot_dump_installs = self.interrupted_slot_dump_installs(shard_id);
+        let (
+            prepared_slot_dump_install_count,
+            installed_slot_dump_install_count,
+            unknown_slot_dump_install_count,
+        ) = slot_dump_install_phase_counts(&interrupted_slot_dump_installs);
         let manifest_chain_issues = slot_dump_manifest_chain_issues(&manifests);
         let recovery = self.storage_recovery_report_without_boundary(shard_id);
         let corrupt_page_segment_ids = recovery
@@ -2532,6 +2552,9 @@ impl TemporalEngine {
             missing_dump_slot_ids,
             stale_index_page_refs: recovery.unreadable_page_refs,
             interrupted_slot_dump_installs,
+            prepared_slot_dump_install_count,
+            installed_slot_dump_install_count,
+            unknown_slot_dump_install_count,
             manifest_chain_issues,
             owner_mismatch_page_refs: recovery.owner_mismatch_page_refs,
             missing_owner_page_refs: recovery.missing_owner_page_refs,
@@ -3869,6 +3892,20 @@ fn remove_obsolete_slot_dump_install_markers(
         }
     }
     Ok(removed)
+}
+
+fn slot_dump_install_phase_counts(markers: &[SlotDumpInstallMarker]) -> (usize, usize, usize) {
+    let mut prepared = 0usize;
+    let mut installed = 0usize;
+    let mut unknown = 0usize;
+    for marker in markers {
+        match marker.phase.as_str() {
+            "prepare" => prepared = prepared.saturating_add(1),
+            "install" => installed = installed.saturating_add(1),
+            _ => unknown = unknown.saturating_add(1),
+        }
+    }
+    (prepared, installed, unknown)
 }
 
 fn slot_dump_install_phase_rank(phase: &str) -> u8 {
@@ -11809,6 +11846,14 @@ mod tests {
         assert_eq!(interrupted[0].phase, "prepare");
         let boundary = engine.storage_recovery_boundary_report(1);
         assert_eq!(boundary.interrupted_slot_dump_installs, interrupted);
+        assert_eq!(boundary.prepared_slot_dump_install_count, 1);
+        assert_eq!(boundary.installed_slot_dump_install_count, 0);
+        assert_eq!(boundary.unknown_slot_dump_install_count, 0);
+        let readiness = engine.storage_production_readiness_report(1);
+        assert_eq!(readiness.interrupted_slot_dump_install_count, 1);
+        assert_eq!(readiness.prepared_slot_dump_install_count, 1);
+        assert_eq!(readiness.installed_slot_dump_install_count, 0);
+        assert_eq!(readiness.unknown_slot_dump_install_count, 0);
     }
 
     #[test]
