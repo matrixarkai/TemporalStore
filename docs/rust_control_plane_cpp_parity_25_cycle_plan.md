@@ -8,7 +8,7 @@ push.
 
 1. Bridge metaserver scheduler lifecycle tokens to nodeserver admin APIs. Done.
 2. Execute scheduler load/unload tasks against remote nodeserver HTTP endpoints. Done.
-3. Add metaserver task result reporting from nodeserver lifecycle responses.
+3. Add metaserver task result reporting from nodeserver lifecycle responses. Done.
 4. Add scheduler-driven finish-load validation using task id and generation.
 5. Persist expected node lifecycle tokens in metaserver scheduler snapshots.
 6. Add nodeserver async load/reload/unload jobs with progress and cancellation.
@@ -61,3 +61,19 @@ Cycle 2 adds the first applied metaserver-to-nodeserver scheduler executor:
 
 The next cycle should add richer task outcome persistence/reporting and then extend the same
 executor shape to reload/freeze and membership-update workflows.
+
+## Cycle 3 Implemented
+
+Cycle 3 makes scheduler execution observable from metaserver:
+
+- Applied `execute_next` fetches `/ServerService/GetLifecycle` after remote node execution.
+- The execution response includes the full node lifecycle report when available.
+- The response also extracts the scheduler-stamped shard transition by matching shard id,
+  operation, scheduler task id, and scheduler generation.
+- Metaserver keeps a bounded in-memory execution ledger for recent applied scheduler outcomes.
+- `GET /meta/scheduler/executions` exposes task id, node address, final status, scheduler result,
+  retry/backoff metadata, node calls, lifecycle token, and matched lifecycle state.
+- Regression coverage validates the lifecycle fetch, matched transition, and execution ledger.
+
+The next cycle should add scheduler-driven finish-load validation using task id/generation so
+metaserver can reject stale completion callbacks during move workflows.

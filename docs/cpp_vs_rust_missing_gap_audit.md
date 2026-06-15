@@ -58,25 +58,22 @@ brpc and Thrift are intentionally not part of the Rust target. The Rust open-sou
 
 ## What Was Closed In The Latest Pass
 
-This pass closed the second client/proxy/metaserver/nodeserver C++ parity cycle:
+This pass closed the third client/proxy/metaserver/nodeserver C++ parity cycle:
 
-1. Metaserver now exposes `POST /meta/scheduler/execute_next` for the first applied remote
-   scheduler executor.
-2. Dry-run execution reports the planned nodeserver calls without mutating the deterministic
-   scheduler queue, keeping repeated planning safe.
-3. Applied `LoadTarget` execution installs the lifecycle token through
-   `/ServerService/RequireLifecycleToken`, then calls `/ServerService/Load`.
-4. Applied `UnloadSource` execution installs the lifecycle token, then calls
-   `/ServerService/Unload`.
-5. Applied execution advances the scheduler with `Ok` on nodeserver success and `RetryLater` on
-   remote request/status failure.
-6. Regression coverage validates dry-run queue preservation and token-before-load ordering against
-   a fake nodeserver.
+1. Applied metaserver scheduler execution now fetches `/ServerService/GetLifecycle` after the
+   remote nodeserver lifecycle call.
+2. The `execute_next` response includes the full node lifecycle report when available.
+3. The response extracts the scheduler-stamped shard transition by matching shard id, operation,
+   scheduler task id, and scheduler generation.
+4. Metaserver keeps a bounded in-memory execution ledger for recent applied scheduler outcomes.
+5. `GET /meta/scheduler/executions` exposes task id, node address, final status, scheduler result,
+   retry/backoff metadata, node calls, lifecycle token, and matched lifecycle state.
+6. Regression coverage validates lifecycle fetch, transition matching, and ledger inspection.
 
-This turns the scheduler-to-node lifecycle contract into a real local HTTP executor for load/unload
-rebalance tasks. Remaining work is richer task outcome persistence/reporting, reload/freeze routing,
-membership-update execution, and full move workflow orchestration across metaserver, proxy, client,
-data-node, and Raft failover paths.
+This gives the Rust metaserver a C++-style control-plane audit trail for remote load/unload
+execution outcomes. Remaining work is scheduler-driven finish-load validation using task
+id/generation, reload/freeze routing, membership-update execution, and full move workflow
+orchestration across metaserver, proxy, client, data-node, and Raft failover paths.
 
 ## What Was Closed In The Previous Pass
 
