@@ -66,6 +66,19 @@ impl ProductionReadinessReport {
             .iter()
             .find(|summary| summary.service == service)
     }
+
+    pub fn failed_capabilities_for_service(
+        &self,
+        service: &str,
+    ) -> Vec<&ReadinessCapabilityBlocker> {
+        let Some(summary) = self.service_summary(service) else {
+            return Vec::new();
+        };
+        self.failed_capabilities
+            .iter()
+            .filter(|blocker| summary.areas.iter().any(|area| area == &blocker.area))
+            .collect()
+    }
 }
 
 pub fn production_readiness_report() -> ProductionReadinessReport {
@@ -563,6 +576,11 @@ mod tests {
                 !summary.next_action.is_empty() && summary.next_action != "ready",
                 "{service} should expose a concrete next action"
             );
+            assert_eq!(
+                report.failed_capabilities_for_service(service).len(),
+                summary.blocker_count,
+                "{service} typed blockers should match summary count"
+            );
         }
 
         assert_eq!(
@@ -644,6 +662,16 @@ mod tests {
                 "data_node_local_lifecycle".to_string()
             ]
         );
+        let data_node_blockers = report.failed_capabilities_for_service("data_node");
+        assert!(data_node_blockers
+            .iter()
+            .any(|blocker| blocker.area == "dataserver"));
+        assert!(data_node_blockers
+            .iter()
+            .any(|blocker| blocker.area == "data_node_distributed_raft"));
+        assert!(report
+            .failed_capabilities_for_service("unknown_service")
+            .is_empty());
     }
 
     #[test]

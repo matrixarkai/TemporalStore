@@ -39,6 +39,14 @@ fn production_readiness_service_summary_is_public_api() {
         .blocker_classes
         .contains(&"data_node_distributed_raft".to_string()));
     assert!(data_node.next_action.contains("Raft"));
+    let typed_blockers = report.failed_capabilities_for_service("data_node");
+    assert_eq!(typed_blockers.len(), data_node.blocker_count);
+    assert!(typed_blockers
+        .iter()
+        .any(|blocker| blocker.area == "dataserver"));
+    assert!(typed_blockers
+        .iter()
+        .any(|blocker| blocker.area == "data_node_distributed_raft"));
 }
 
 #[test]
