@@ -335,11 +335,7 @@ impl MetaTaskScheduler {
             };
         }
 
-        let result = if execution.status.ok {
-            SchedulerTaskResult::Ok
-        } else {
-            SchedulerTaskResult::RetryLater
-        };
+        let result = classify_scheduler_execution_result(&execution.status);
         let mut calls = execution.calls;
         let (node_lifecycle, lifecycle_state) = fetch_node_lifecycle(
             &request.node_addr,
@@ -651,6 +647,27 @@ fn execute_scheduler_task_on_node(
         lifecycle_token: token,
         calls,
     }
+}
+
+fn classify_scheduler_execution_result(status: &Status) -> SchedulerTaskResult {
+    if status.ok {
+        return SchedulerTaskResult::Ok;
+    }
+    if is_permanent_scheduler_execution_status(status.code.as_str()) {
+        SchedulerTaskResult::Aborted
+    } else {
+        SchedulerTaskResult::RetryLater
+    }
+}
+
+fn is_permanent_scheduler_execution_status(code: &str) -> bool {
+    matches!(
+        code,
+        "unsupported_scheduler_task"
+            | "unsupported_rebalance_step"
+            | "missing_load_request"
+            | "load_request_mismatch"
+    )
 }
 
 fn post_status_or_error<T: serde::Serialize>(
@@ -2902,6 +2919,109 @@ mod tests {
     }
 
     #[test]
+    fn metaserver_scheduler_retries_busy_unload_without_dropping_task() {
+        let backend = MetaBackend::Single(SingleNodeMeta::default());
+        let scheduler = MetaTaskScheduler::default();
+        let (node_addr, records) = spawn_busy_unload_nodeserver();
+        let task_kind = SchedulerTaskKind::RebalanceStep(RebalanceStep::UnloadSource {
+            shard_id: 44,
+            replica_id: 8,
+            node_id: 9,
+        });
+
+        let (code, body) = handle(
+            &backend,
+            &scheduler,
+            HttpRequest {
+                method: "POST".to_string(),
+                path: "/meta/scheduler/submit".to_string(),
+                body: serde_json::to_vec(&serde_json::json!({
+                    "priority": 1,
+                    "now_ms": 900,
+                    "kind": task_kind,
+                }))
+                .unwrap(),
+            },
+        );
+        assert_eq!(code, 200);
+        let submitted: MetaSchedulerTaskResponse = serde_json::from_slice(&body).unwrap();
+        assert!(submitted.status.ok);
+        let submitted_task = submitted.task.unwrap();
+
+        let (code, body) = handle(
+            &backend,
+            &scheduler,
+            HttpRequest {
+                method: "POST".to_string(),
+                path: "/meta/scheduler/execute_next".to_string(),
+                body: serde_json::to_vec(&serde_json::json!({
+                    "now_ms": 900,
+                    "node_addr": node_addr,
+                    "options": {
+                        "base_postpone_ms": 50,
+                        "max_postpone_ms": 50,
+                        "max_retry_times": 3,
+                        "max_inflight": 1
+                    },
+                    "http": {
+                        "connect_timeout_ms": 1000,
+                        "io_timeout_ms": 1000,
+                        "max_retries": 10
+                    }
+                }))
+                .unwrap(),
+            },
+        );
+        assert_eq!(code, 200);
+        let executed: MetaSchedulerExecuteResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(executed.status.code, "shard_busy");
+        assert_eq!(executed.queue_len, 1);
+        let report = executed.scheduler_report.unwrap();
+        assert_eq!(report.task_id, submitted_task.id);
+        assert_eq!(report.result, SchedulerTaskResult::RetryLater);
+        assert_eq!(report.retry_times, 1);
+        assert_eq!(report.next_run_time_ms, Some(950));
+        assert!(!report.aborted);
+        assert_eq!(scheduler.snapshot().queue_len, 1);
+
+        let (code, body) = handle(
+            &backend,
+            &scheduler,
+            HttpRequest {
+                method: "GET".to_string(),
+                path: "/meta/scheduler/executions".to_string(),
+                body: Vec::new(),
+            },
+        );
+        assert_eq!(code, 200);
+        let executions: MetaSchedulerExecutionsResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(executions.executions.len(), 1);
+        assert_eq!(
+            executions.executions[0].scheduler_result,
+            SchedulerTaskResult::RetryLater
+        );
+        assert_eq!(executed.calls.len(), 3);
+        assert_eq!(executed.calls[1].path, "/ServerService/Unload");
+        assert_eq!(executed.calls[1].status.code, "shard_busy");
+        assert_eq!(
+            executed
+                .lifecycle_state
+                .as_ref()
+                .unwrap()
+                .last_status
+                .as_ref()
+                .unwrap()
+                .code,
+            "shard_busy"
+        );
+
+        let records = records.lock().unwrap();
+        assert_eq!(records[0].0, "/ServerService/RequireLifecycleToken");
+        assert_eq!(records[1].0, "/ServerService/Unload");
+        assert_eq!(records[2].0, "/ServerService/GetLifecycle");
+    }
+
+    #[test]
     fn metaserver_scheduler_persists_snapshot_file_after_mutations() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("scheduler.json");
@@ -3094,6 +3214,71 @@ mod tests {
                                 load_version: 5,
                                 updated_at_ms: 901,
                                 last_status: Some(Status::ok()),
+                                scheduler_task_id: Some(0),
+                                scheduler_generation: Some(900),
+                            }],
+                        },
+                    ),
+                    _ => json_response(404, &Status::error("not_found", "unknown path")),
+                }
+            })
+            .unwrap();
+        });
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        (addr, records)
+    }
+
+    fn spawn_busy_unload_nodeserver() -> (String, Arc<Mutex<Vec<(String, serde_json::Value)>>>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        drop(listener);
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let server_records = Arc::clone(&records);
+        let server_addr = addr.clone();
+        std::thread::spawn(move || {
+            serve(&server_addr, move |request| {
+                let body = if request.body.is_empty() {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::from_slice(&request.body).unwrap()
+                };
+                server_records
+                    .lock()
+                    .unwrap()
+                    .push((request.path.clone(), body));
+                match request.path.as_str() {
+                    "/ServerService/RequireLifecycleToken" => json_response(200, &Status::ok()),
+                    "/ServerService/Unload" => json_response(
+                        200,
+                        &UnloadShardResponse {
+                            status: Status::error(
+                                "shard_busy",
+                                "cannot unload while shard work is queued or running",
+                            ),
+                        },
+                    ),
+                    "/ServerService/GetLifecycle" => json_response(
+                        200,
+                        &DataNodeLifecycleReport {
+                            loaded_shard_count: 1,
+                            serving_count: 0,
+                            readonly_count: 0,
+                            queued_count: 1,
+                            running_count: 0,
+                            unloading_count: 0,
+                            failed_count: 1,
+                            max_load_version: 0,
+                            shards: Vec::new(),
+                            transitions: vec![DataNodeShardLifecycleState {
+                                shard_id: 44,
+                                state: "failed".to_string(),
+                                operation: "unload".to_string(),
+                                load_version: 0,
+                                updated_at_ms: 901,
+                                last_status: Some(Status::error(
+                                    "shard_busy",
+                                    "cannot unload while shard work is queued or running",
+                                )),
                                 scheduler_task_id: Some(0),
                                 scheduler_generation: Some(900),
                             }],

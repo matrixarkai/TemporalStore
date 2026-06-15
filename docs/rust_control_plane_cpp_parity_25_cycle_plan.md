@@ -22,7 +22,7 @@ push.
 14. Add metaserver stuck-transition report for loading/reloading/unloading shards.
 15. Add metaserver repair task creation for missing primaries and under-replicated shards.
 16. Add cross-service move workflow: load target, update membership, unload source. Unload
-    busy-safety sub-slice done in cycle 13.
+    busy-safety sub-slice done in cycle 13; scheduler retry classification done in cycle 14.
 17. Add Raft-backed metaserver replay for scheduler lifecycle tokens.
 18. Add multi-proxy stale-cache convergence harness.
 19. Add multi-client background MetaSyncer scale harness.
@@ -111,6 +111,26 @@ Cycle 13 tightens the nodeserver unload side of controlled move safety:
 
 The next cycle should wire the same busy-safety signal into the metaserver scheduler executor so
 move/unload tasks retry instead of racing active shard work.
+
+## Cycle 14 Implemented
+
+Cycle 14 wires nodeserver unload busy-safety into metaserver scheduler execution:
+
+- Metaserver scheduler execution now classifies node responses through an explicit retry/abort
+  helper instead of treating every non-ok response the same.
+- Operational node-admission statuses, including `shard_busy`, queue pressure, timeout,
+  unavailable, loading/unloading, and leader-not-ready statuses, map to `RetryLater`.
+- Local scheduler/request mismatches still map to `Aborted`, preserving fail-fast behavior for
+  bad control-plane input.
+- A busy unload from `/ServerService/Unload` now leaves the scheduler task queued with retry
+  backoff and records the retry in the execution ledger.
+- Regression coverage validates `shard_busy` unload execution, lifecycle fetch, execution record,
+  retry count, next run time, and preserved queue length.
+- Local scale validation passed with 4 initial raft nodes, scale-out to 5 nodes, 3 failovers,
+  shared-store comparison enabled, and max replica lag 0.
+
+The next cycle should use this retry signal in a cross-service move harness that performs load,
+membership update, busy unload retry, and eventual unload convergence.
 
 ## Cycle 1 Implemented
 
