@@ -86,7 +86,29 @@ sum by (service_role, phase) (temporalstore_proxy_retry_attempts_total)
 sum by (service_role, phase) (temporalstore_proxy_retry_failures_total)
 ```
 
-7. Raft/fault-tolerance gate evidence from the textfile collector
+7. Ingestion queue/backpressure visibility from replay gates
+
+```promql
+sum by (source) (temporalstore_ingestion_committed_records_total)
+```
+
+```promql
+sum by (source) (temporalstore_ingestion_retries_total)
+```
+
+```promql
+sum by (source) (temporalstore_ingestion_dead_letters_total)
+```
+
+```promql
+max by (source) (temporalstore_ingestion_backpressure_records)
+```
+
+```promql
+min by (source) (temporalstore_ingestion_validation_up)
+```
+
+8. Raft/fault-tolerance gate evidence from the textfile collector
 
 ```promql
 temporalstore_raft_gate_case_pass
