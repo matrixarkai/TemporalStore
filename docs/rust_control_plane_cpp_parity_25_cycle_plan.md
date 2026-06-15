@@ -30,7 +30,8 @@ push.
     failure pass done in cycle 18.
 19. Add multi-client background MetaSyncer scale harness. Disappeared-node retry across
     load/reload/unload and retry snapshot restore done in cycle 19.
-20. Add nodeserver restart recovery of lifecycle token/transition state.
+20. Add nodeserver restart recovery of lifecycle token/transition state. Runtime lifecycle
+    snapshot/restore API and tests done in cycle 20.
 21. Add metaserver scheduler safety checks for frozen/dropped tables and servers.
 22. Add proxy/client behavior under table freeze/unfreeze during writes.
 23. Add failover test while load/reload/unload task is in flight.
@@ -215,6 +216,22 @@ Cycle 19 expands the disappeared-nodeserver failure pass:
 
 The next cycle should move from metaserver scheduler failure coverage into data-node lifecycle
 token/transition persistence across restart.
+
+## Cycle 20 Implemented
+
+Cycle 20 adds Rust-native data-node lifecycle snapshot/restore:
+
+- `DataNodeLifecycleSnapshot` captures lifecycle transitions and installed scheduler lifecycle
+  tokens with a format version.
+- `DataNodeRuntime::lifecycle_snapshot` exports sorted transitions and tokens for durable storage
+  by the server layer.
+- `DataNodeRuntime::restore_lifecycle_snapshot` restores transitions and tokens, rejects unknown
+  snapshot versions, and preserves scheduler token enforcement after restore.
+- Regression coverage validates five restart-readiness checks: snapshot export, transition
+  restore, token restore, restored-token enforcement, and bad-format rejection.
+
+The next cycle should wire this snapshot API to nodeserver file-backed startup/shutdown routes so
+the runtime recovery contract is exercised through the process surface, then add a restart harness.
 
 ## Cycle 1 Implemented
 

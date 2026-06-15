@@ -142,6 +142,15 @@ pub struct DataNodeLifecycleReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DataNodeLifecycleSnapshot {
+    pub format_version: u32,
+    #[serde(default)]
+    pub transitions: Vec<DataNodeShardLifecycleState>,
+    #[serde(default)]
+    pub tokens: Vec<SchedulerLifecycleToken>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DataNodeShardLifecycleState {
     pub shard_id: ShardId,
     pub state: String,
@@ -722,6 +731,48 @@ impl DataNodeRuntime {
             .collect::<Vec<_>>();
         tokens.sort_by_key(|token| (token.shard_id, token.operation.clone()));
         tokens
+    }
+
+    pub fn lifecycle_snapshot(&self) -> DataNodeLifecycleSnapshot {
+        let mut transitions = self.lifecycle_states();
+        transitions.sort_by_key(|state| (state.shard_id, state.operation.clone()));
+        DataNodeLifecycleSnapshot {
+            format_version: 1,
+            transitions,
+            tokens: self.lifecycle_tokens(),
+        }
+    }
+
+    pub fn restore_lifecycle_snapshot(&self, snapshot: DataNodeLifecycleSnapshot) -> Status {
+        if snapshot.format_version != 1 {
+            return Status::error(
+                "bad_lifecycle_snapshot",
+                "unsupported data node lifecycle snapshot version",
+            );
+        }
+        {
+            let mut lifecycle = self
+                .inner
+                .lifecycle
+                .lock()
+                .expect("runtime lifecycle lock poisoned");
+            lifecycle.clear();
+            for state in snapshot.transitions {
+                lifecycle.insert(state.shard_id, state);
+            }
+        }
+        {
+            let mut tokens = self
+                .inner
+                .lifecycle_tokens
+                .lock()
+                .expect("runtime lifecycle token lock poisoned");
+            tokens.clear();
+            for token in snapshot.tokens {
+                tokens.insert((token.shard_id, token.operation.clone()), token);
+            }
+        }
+        Status::ok()
     }
 
     pub fn submit_load(
@@ -2942,6 +2993,119 @@ mod tests {
         assert_eq!(lifecycle.transitions[0].state, "serving");
         assert_eq!(lifecycle.transitions[0].scheduler_task_id, Some(12));
         assert_eq!(lifecycle.transitions[0].scheduler_generation, Some(900));
+    }
+
+    #[test]
+    fn runtime_lifecycle_snapshot_restores_transitions_and_tokens() {
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            TemporalEngine::default(),
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        );
+        runtime.require_lifecycle_token(SchedulerLifecycleToken {
+            task_id: 21,
+            shard_id: 7,
+            operation: "load".to_string(),
+            load_version: 42,
+            generation: 700,
+        });
+        runtime.require_lifecycle_token(SchedulerLifecycleToken {
+            task_id: 22,
+            shard_id: 7,
+            operation: "reload".to_string(),
+            load_version: 43,
+            generation: 701,
+        });
+        let load = runtime.load_shard_with(crate::control::LoadShardRequest {
+            shard_id: 7,
+            table_name: "tbl".to_string(),
+            shard_uri: "local://tbl/7".to_string(),
+            start_routing_slot: 10,
+            end_routing_slot: 19,
+            readonly: false,
+            load_version: 42,
+            local_node_id: Some(3),
+        });
+        assert!(load.status.ok, "{load:?}");
+        let reload = runtime.reload_shard_with(crate::control::LoadShardRequest {
+            shard_id: 7,
+            table_name: "tbl".to_string(),
+            shard_uri: "local://tbl/7".to_string(),
+            start_routing_slot: 10,
+            end_routing_slot: 19,
+            readonly: true,
+            load_version: 43,
+            local_node_id: Some(3),
+        });
+        assert!(reload.status.ok, "{reload:?}");
+
+        let snapshot = runtime.lifecycle_snapshot();
+        assert_eq!(snapshot.format_version, 1);
+        assert_eq!(snapshot.tokens.len(), 2);
+        assert_eq!(snapshot.transitions.len(), 1);
+        assert_eq!(snapshot.transitions[0].operation, "reload");
+        assert_eq!(snapshot.transitions[0].state, "readonly");
+        assert_eq!(snapshot.transitions[0].scheduler_task_id, Some(22));
+
+        let restored = DataNodeRuntime::new_without_workers_with_options(
+            TemporalEngine::default(),
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        );
+        assert!(restored.restore_lifecycle_snapshot(snapshot.clone()).ok);
+        assert_eq!(restored.lifecycle_snapshot(), snapshot);
+        assert_eq!(restored.lifecycle_tokens(), snapshot.tokens);
+        let lifecycle = restored.lifecycle_report();
+        assert_eq!(lifecycle.loaded_shard_count, 0);
+        assert_eq!(lifecycle.failed_count, 0);
+        assert_eq!(lifecycle.max_load_version, 43);
+        assert_eq!(lifecycle.transitions[0].operation, "reload");
+        assert_eq!(lifecycle.transitions[0].state, "readonly");
+
+        let stale_reload = restored.reload_shard_with(crate::control::LoadShardRequest {
+            shard_id: 7,
+            table_name: "stale".to_string(),
+            shard_uri: "local://tbl/stale".to_string(),
+            start_routing_slot: 10,
+            end_routing_slot: 19,
+            readonly: true,
+            load_version: 42,
+            local_node_id: Some(3),
+        });
+        assert_eq!(stale_reload.status.code, "lifecycle_token_mismatch");
+
+        let good_reload = restored.reload_shard_with(crate::control::LoadShardRequest {
+            shard_id: 7,
+            table_name: "tbl-restored".to_string(),
+            shard_uri: "local://tbl/restored".to_string(),
+            start_routing_slot: 10,
+            end_routing_slot: 19,
+            readonly: true,
+            load_version: 43,
+            local_node_id: Some(3),
+        });
+        assert!(good_reload.status.ok, "{good_reload:?}");
+        let lifecycle = restored.lifecycle_report();
+        assert_eq!(lifecycle.readonly_count, 1);
+        assert_eq!(lifecycle.failed_count, 0);
+        assert_eq!(lifecycle.transitions[0].scheduler_task_id, Some(22));
+    }
+
+    #[test]
+    fn runtime_lifecycle_snapshot_rejects_unknown_format() {
+        let runtime = DataNodeRuntime::new_without_workers_for_test(TemporalEngine::default(), 4);
+        let status = runtime.restore_lifecycle_snapshot(DataNodeLifecycleSnapshot {
+            format_version: 99,
+            transitions: Vec::new(),
+            tokens: Vec::new(),
+        });
+        assert_eq!(status.code, "bad_lifecycle_snapshot");
     }
 
     #[test]
