@@ -344,6 +344,26 @@ fn main() {
                 Ok(req) => json_response(200, &runtime.unload_shard_with(req)),
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
             },
+            ("POST", "/async_load") => match parse_json::<LoadShardRequest>(&request.body) {
+                Ok(req) => {
+                    json_response(200, &runtime.submit_load(req, RequestController::default()))
+                }
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            },
+            ("POST", "/async_reload") => match parse_json::<LoadShardRequest>(&request.body) {
+                Ok(req) => json_response(
+                    200,
+                    &runtime.submit_reload(req, RequestController::default()),
+                ),
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            },
+            ("POST", "/async_unload") => match parse_json::<UnloadShardRequest>(&request.body) {
+                Ok(req) => json_response(
+                    200,
+                    &runtime.submit_unload(req, RequestController::default()),
+                ),
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            },
             ("POST", "/execute") => match parse_json::<ExecuteRequest>(&request.body) {
                 Ok(req) => {
                     if let Some(raft_state) = &raft_state {
@@ -531,6 +551,32 @@ fn handle_cpp_server_service_route(
         ("POST", "/ServerService/Unload") => {
             match parse_json::<UnloadShardRequest>(&request.body) {
                 Ok(req) => json_response(200, &runtime.unload_shard_with(req)),
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        ("POST", "/ServerService/AsyncLoad") => {
+            match parse_json::<LoadShardRequest>(&request.body) {
+                Ok(req) => {
+                    json_response(200, &runtime.submit_load(req, RequestController::default()))
+                }
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        ("POST", "/ServerService/AsyncReload") => {
+            match parse_json::<LoadShardRequest>(&request.body) {
+                Ok(req) => json_response(
+                    200,
+                    &runtime.submit_reload(req, RequestController::default()),
+                ),
+                Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+            }
+        }
+        ("POST", "/ServerService/AsyncUnload") => {
+            match parse_json::<UnloadShardRequest>(&request.body) {
+                Ok(req) => json_response(
+                    200,
+                    &runtime.submit_unload(req, RequestController::default()),
+                ),
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
             }
         }
@@ -1993,7 +2039,8 @@ mod tests {
     use temporalstore_rust::raft::{serialize_data_raft_log, DataRaftLogCodecEntry};
     use temporalstore_rust::types::{Command, CommandResponse};
     use temporalstore_rust::{
-        BatchExecuteResponse, LoadShardResponse, ProductionReadinessReport, UnloadShardResponse,
+        BatchExecuteResponse, DataNodeTaskKind, DataNodeTaskStatus, LoadShardResponse,
+        ProductionReadinessReport, UnloadShardResponse,
     };
 
     use super::*;
@@ -3075,6 +3122,57 @@ mod tests {
             &data_raft_appliers
         )
         .is_none());
+    }
+
+    #[test]
+    fn server_cpp_async_lifecycle_alias_submits_load_job() {
+        let dir = tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("index"),
+        );
+        let data_raft_appliers: Arc<Mutex<BTreeMap<u64, DataRaftCommittedLogApplier>>> =
+            Arc::default();
+        let runtime = DataNodeRuntime::new(
+            engine.clone(),
+            DataNodeRuntimeOptions {
+                worker_threads: 1,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        );
+        let async_load = HttpRequest {
+            method: "POST".to_string(),
+            path: "/ServerService/AsyncLoad".to_string(),
+            body: serde_json::to_vec(&LoadShardRequest {
+                shard_id: 45,
+                load_version: 1,
+                local_node_id: Some(1),
+                shard_uri: "local://cpp-alias/shard-45".to_string(),
+                start_routing_slot: 0,
+                end_routing_slot: u32::MAX,
+                readonly: true,
+                table_name: "cpp_alias_async".to_string(),
+            })
+            .unwrap(),
+        };
+        let (code, body) = handle_cpp_server_service_route(
+            &async_load,
+            &engine,
+            &runtime,
+            None,
+            "",
+            "server-a",
+            &data_raft_appliers,
+        )
+        .unwrap();
+        assert_eq!(code, 200);
+        let async_status: DataNodeTaskStatus = serde_json::from_slice(&body).unwrap();
+        assert!(async_status.status.ok, "{async_status:?}");
+        assert_eq!(async_status.kind, DataNodeTaskKind::Load);
+        assert!(async_status.output.is_none());
     }
 
     #[test]

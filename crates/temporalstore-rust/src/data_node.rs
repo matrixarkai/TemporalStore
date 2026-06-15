@@ -50,6 +50,9 @@ impl Default for RequestController {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum DataNodeTaskKind {
+    Load,
+    Reload,
+    Unload,
     Execute,
     CheckedExecute,
     Dump,
@@ -59,6 +62,9 @@ pub enum DataNodeTaskKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum DataNodeTaskOutput {
+    Load(LoadShardResponse),
+    Reload(LoadShardResponse),
+    Unload(UnloadShardResponse),
     Execute(ExecuteResponse),
     CheckedExecute(CheckedExecuteResponse),
     Dump(DumpShardResponse),
@@ -424,6 +430,9 @@ struct ShardTaskQueues {
 
 #[derive(Debug)]
 enum TaskRequest {
+    Load(LoadShardRequest),
+    Reload(LoadShardRequest),
+    Unload(UnloadShardRequest),
     Execute(ExecuteRequest),
     CheckedExecute(CheckedExecuteRequest),
     Dump(DumpShardRequest),
@@ -440,6 +449,9 @@ enum TaskPriority {
 impl TaskRequest {
     fn shard_id(&self) -> ShardId {
         match self {
+            TaskRequest::Load(request) => request.shard_id,
+            TaskRequest::Reload(request) => request.shard_id,
+            TaskRequest::Unload(request) => request.shard_id,
             TaskRequest::Execute(request) => request.shard_id,
             TaskRequest::CheckedExecute(request) => request.shard_id,
             TaskRequest::Dump(request) => request.shard_id,
@@ -450,7 +462,11 @@ impl TaskRequest {
 
     fn priority(&self) -> TaskPriority {
         match self {
-            TaskRequest::Execute(_) | TaskRequest::CheckedExecute(_) => TaskPriority::Foreground,
+            TaskRequest::Load(_)
+            | TaskRequest::Reload(_)
+            | TaskRequest::Unload(_)
+            | TaskRequest::Execute(_)
+            | TaskRequest::CheckedExecute(_) => TaskPriority::Foreground,
             TaskRequest::Dump(_) | TaskRequest::Compact(_) | TaskRequest::Gc(_) => {
                 TaskPriority::Background
             }
@@ -672,101 +688,15 @@ impl DataNodeRuntime {
     }
 
     pub fn load_shard_with(&self, request: LoadShardRequest) -> LoadShardResponse {
-        if let Err(status) =
-            self.validate_lifecycle_token(request.shard_id, "load", request.load_version)
-        {
-            self.record_lifecycle_state(
-                request.shard_id,
-                "failed",
-                "load",
-                request.load_version,
-                Some(status.clone()),
-            );
-            return LoadShardResponse { status };
-        }
-        self.record_lifecycle_state(
-            request.shard_id,
-            "loading",
-            "load",
-            request.load_version,
-            None,
-        );
-        let response = self.inner.engine.load_shard_with(request.clone());
-        self.record_lifecycle_state(
-            request.shard_id,
-            final_loaded_lifecycle_state(request.readonly, &response.status),
-            "load",
-            request.load_version,
-            Some(response.status.clone()),
-        );
-        response
+        load_shard_with_inner(&self.inner, request)
     }
 
     pub fn reload_shard_with(&self, request: LoadShardRequest) -> LoadShardResponse {
-        if let Err(status) =
-            self.validate_lifecycle_token(request.shard_id, "reload", request.load_version)
-        {
-            self.record_lifecycle_state(
-                request.shard_id,
-                "failed",
-                "reload",
-                request.load_version,
-                Some(status.clone()),
-            );
-            return LoadShardResponse { status };
-        }
-        self.record_lifecycle_state(
-            request.shard_id,
-            "reloading",
-            "reload",
-            request.load_version,
-            None,
-        );
-        let response = self.inner.engine.reload_shard_with(request.clone());
-        self.record_lifecycle_state(
-            request.shard_id,
-            final_loaded_lifecycle_state(request.readonly, &response.status),
-            "reload",
-            request.load_version,
-            Some(response.status.clone()),
-        );
-        response
+        reload_shard_with_inner(&self.inner, request)
     }
 
     pub fn unload_shard_with(&self, request: UnloadShardRequest) -> UnloadShardResponse {
-        let load_version = self
-            .inner
-            .engine
-            .get_info(request.shard_id)
-            .info
-            .map(|info| info.load_version)
-            .unwrap_or_default();
-        if let Err(status) = self.validate_lifecycle_token(request.shard_id, "unload", load_version)
-        {
-            self.record_lifecycle_state(
-                request.shard_id,
-                "failed",
-                "unload",
-                load_version,
-                Some(status.clone()),
-            );
-            return UnloadShardResponse { status };
-        }
-        self.record_lifecycle_state(request.shard_id, "unloading", "unload", load_version, None);
-        let response = self.inner.engine.unload_shard_with(request.clone());
-        let state = if response.status.ok {
-            "unloaded"
-        } else {
-            "failed"
-        };
-        self.record_lifecycle_state(
-            request.shard_id,
-            state,
-            "unload",
-            load_version,
-            Some(response.status.clone()),
-        );
-        response
+        unload_shard_with_inner(&self.inner, request)
     }
 
     pub fn require_lifecycle_token(&self, token: SchedulerLifecycleToken) {
@@ -788,6 +718,42 @@ impl DataNodeRuntime {
             .collect::<Vec<_>>();
         tokens.sort_by_key(|token| (token.shard_id, token.operation.clone()));
         tokens
+    }
+
+    pub fn submit_load(
+        &self,
+        request: LoadShardRequest,
+        controller: RequestController,
+    ) -> DataNodeTaskStatus {
+        self.submit(
+            TaskRequest::Load(request),
+            DataNodeTaskKind::Load,
+            controller,
+        )
+    }
+
+    pub fn submit_reload(
+        &self,
+        request: LoadShardRequest,
+        controller: RequestController,
+    ) -> DataNodeTaskStatus {
+        self.submit(
+            TaskRequest::Reload(request),
+            DataNodeTaskKind::Reload,
+            controller,
+        )
+    }
+
+    pub fn submit_unload(
+        &self,
+        request: UnloadShardRequest,
+        controller: RequestController,
+    ) -> DataNodeTaskStatus {
+        self.submit(
+            TaskRequest::Unload(request),
+            DataNodeTaskKind::Unload,
+            controller,
+        )
     }
 
     pub fn submit_execute(
@@ -1250,77 +1216,6 @@ impl DataNodeRuntime {
             .collect()
     }
 
-    fn record_lifecycle_state(
-        &self,
-        shard_id: ShardId,
-        state: &str,
-        operation: &str,
-        load_version: u64,
-        last_status: Option<Status>,
-    ) {
-        let token = self
-            .inner
-            .lifecycle_tokens
-            .lock()
-            .expect("runtime lifecycle token lock poisoned")
-            .get(&(shard_id, operation.to_string()))
-            .cloned();
-        self.inner
-            .lifecycle
-            .lock()
-            .expect("runtime lifecycle lock poisoned")
-            .insert(
-                shard_id,
-                DataNodeShardLifecycleState {
-                    shard_id,
-                    state: state.to_string(),
-                    operation: operation.to_string(),
-                    load_version,
-                    updated_at_ms: now_ms(),
-                    last_status,
-                    scheduler_task_id: token.as_ref().map(|token| token.task_id),
-                    scheduler_generation: token.as_ref().map(|token| token.generation),
-                },
-            );
-    }
-
-    fn validate_lifecycle_token(
-        &self,
-        shard_id: ShardId,
-        operation: &str,
-        load_version: u64,
-    ) -> Result<(), Status> {
-        let token = self
-            .inner
-            .lifecycle_tokens
-            .lock()
-            .expect("runtime lifecycle token lock poisoned")
-            .get(&(shard_id, operation.to_string()))
-            .cloned();
-        let Some(token) = token else {
-            return Ok(());
-        };
-        if token.operation != operation {
-            return Err(Status::error(
-                "lifecycle_token_mismatch",
-                format!(
-                    "expected lifecycle operation {}, got {operation}",
-                    token.operation
-                ),
-            ));
-        }
-        if token.load_version != 0 && token.load_version != load_version {
-            return Err(Status::error(
-                "lifecycle_token_mismatch",
-                format!(
-                    "expected lifecycle load_version {}, got {load_version}",
-                    token.load_version
-                ),
-            ));
-        }
-        Ok(())
-    }
-
     pub fn topology_validation_report(
         &self,
         metaserver: &DataNodeMetaHeartbeatReport,
@@ -1642,6 +1537,197 @@ impl DataNodeRuntime {
     }
 }
 
+fn load_shard_with_inner(
+    inner: &DataNodeRuntimeInner,
+    request: LoadShardRequest,
+) -> LoadShardResponse {
+    if let Err(status) =
+        validate_lifecycle_token_inner(inner, request.shard_id, "load", request.load_version)
+    {
+        record_lifecycle_state_inner(
+            inner,
+            request.shard_id,
+            "failed",
+            "load",
+            request.load_version,
+            Some(status.clone()),
+        );
+        return LoadShardResponse { status };
+    }
+    record_lifecycle_state_inner(
+        inner,
+        request.shard_id,
+        "loading",
+        "load",
+        request.load_version,
+        None,
+    );
+    let response = inner.engine.load_shard_with(request.clone());
+    record_lifecycle_state_inner(
+        inner,
+        request.shard_id,
+        final_loaded_lifecycle_state(request.readonly, &response.status),
+        "load",
+        request.load_version,
+        Some(response.status.clone()),
+    );
+    response
+}
+
+fn reload_shard_with_inner(
+    inner: &DataNodeRuntimeInner,
+    request: LoadShardRequest,
+) -> LoadShardResponse {
+    if let Err(status) =
+        validate_lifecycle_token_inner(inner, request.shard_id, "reload", request.load_version)
+    {
+        record_lifecycle_state_inner(
+            inner,
+            request.shard_id,
+            "failed",
+            "reload",
+            request.load_version,
+            Some(status.clone()),
+        );
+        return LoadShardResponse { status };
+    }
+    record_lifecycle_state_inner(
+        inner,
+        request.shard_id,
+        "reloading",
+        "reload",
+        request.load_version,
+        None,
+    );
+    let response = inner.engine.reload_shard_with(request.clone());
+    record_lifecycle_state_inner(
+        inner,
+        request.shard_id,
+        final_loaded_lifecycle_state(request.readonly, &response.status),
+        "reload",
+        request.load_version,
+        Some(response.status.clone()),
+    );
+    response
+}
+
+fn unload_shard_with_inner(
+    inner: &DataNodeRuntimeInner,
+    request: UnloadShardRequest,
+) -> UnloadShardResponse {
+    let load_version = inner
+        .engine
+        .get_info(request.shard_id)
+        .info
+        .map(|info| info.load_version)
+        .unwrap_or_default();
+    if let Err(status) =
+        validate_lifecycle_token_inner(inner, request.shard_id, "unload", load_version)
+    {
+        record_lifecycle_state_inner(
+            inner,
+            request.shard_id,
+            "failed",
+            "unload",
+            load_version,
+            Some(status.clone()),
+        );
+        return UnloadShardResponse { status };
+    }
+    record_lifecycle_state_inner(
+        inner,
+        request.shard_id,
+        "unloading",
+        "unload",
+        load_version,
+        None,
+    );
+    let response = inner.engine.unload_shard_with(request.clone());
+    let state = if response.status.ok {
+        "unloaded"
+    } else {
+        "failed"
+    };
+    record_lifecycle_state_inner(
+        inner,
+        request.shard_id,
+        state,
+        "unload",
+        load_version,
+        Some(response.status.clone()),
+    );
+    response
+}
+
+fn record_lifecycle_state_inner(
+    inner: &DataNodeRuntimeInner,
+    shard_id: ShardId,
+    state: &str,
+    operation: &str,
+    load_version: u64,
+    last_status: Option<Status>,
+) {
+    let token = inner
+        .lifecycle_tokens
+        .lock()
+        .expect("runtime lifecycle token lock poisoned")
+        .get(&(shard_id, operation.to_string()))
+        .cloned();
+    inner
+        .lifecycle
+        .lock()
+        .expect("runtime lifecycle lock poisoned")
+        .insert(
+            shard_id,
+            DataNodeShardLifecycleState {
+                shard_id,
+                state: state.to_string(),
+                operation: operation.to_string(),
+                load_version,
+                updated_at_ms: now_ms(),
+                last_status,
+                scheduler_task_id: token.as_ref().map(|token| token.task_id),
+                scheduler_generation: token.as_ref().map(|token| token.generation),
+            },
+        );
+}
+
+fn validate_lifecycle_token_inner(
+    inner: &DataNodeRuntimeInner,
+    shard_id: ShardId,
+    operation: &str,
+    load_version: u64,
+) -> Result<(), Status> {
+    let token = inner
+        .lifecycle_tokens
+        .lock()
+        .expect("runtime lifecycle token lock poisoned")
+        .get(&(shard_id, operation.to_string()))
+        .cloned();
+    let Some(token) = token else {
+        return Ok(());
+    };
+    if token.operation != operation {
+        return Err(Status::error(
+            "lifecycle_token_mismatch",
+            format!(
+                "expected lifecycle operation {}, got {operation}",
+                token.operation
+            ),
+        ));
+    }
+    if token.load_version != 0 && token.load_version != load_version {
+        return Err(Status::error(
+            "lifecycle_token_mismatch",
+            format!(
+                "expected lifecycle load_version {}, got {load_version}",
+                token.load_version
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn final_loaded_lifecycle_state(readonly: bool, status: &Status) -> &'static str {
     if !status.ok {
         "failed"
@@ -1728,6 +1814,33 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
         job_id: task.job_id,
     };
     match &task.request {
+        TaskRequest::Load(request) => {
+            if cancellation.is_requested() {
+                return task_canceled_output(
+                    task,
+                    "data node load canceled before lifecycle start",
+                );
+            }
+            DataNodeTaskOutput::Load(load_shard_with_inner(inner, request.clone()))
+        }
+        TaskRequest::Reload(request) => {
+            if cancellation.is_requested() {
+                return task_canceled_output(
+                    task,
+                    "data node reload canceled before lifecycle start",
+                );
+            }
+            DataNodeTaskOutput::Reload(reload_shard_with_inner(inner, request.clone()))
+        }
+        TaskRequest::Unload(request) => {
+            if cancellation.is_requested() {
+                return task_canceled_output(
+                    task,
+                    "data node unload canceled before lifecycle start",
+                );
+            }
+            DataNodeTaskOutput::Unload(unload_shard_with_inner(inner, request.clone()))
+        }
         TaskRequest::Execute(request) => {
             let response = inner.engine.execute(request.clone());
             if response.status.ok && is_write_command(&request.command) {
@@ -2063,6 +2176,9 @@ impl TaskCancellation<'_> {
 fn task_timeout_output(kind: DataNodeTaskKind) -> DataNodeTaskOutput {
     let status = Status::error("deadline_exceeded", "data node task deadline exceeded");
     match kind {
+        DataNodeTaskKind::Load => DataNodeTaskOutput::Load(LoadShardResponse { status }),
+        DataNodeTaskKind::Reload => DataNodeTaskOutput::Reload(LoadShardResponse { status }),
+        DataNodeTaskKind::Unload => DataNodeTaskOutput::Unload(UnloadShardResponse { status }),
         DataNodeTaskKind::Execute => DataNodeTaskOutput::Execute(ExecuteResponse {
             status,
             response: CommandResponse::Empty,
@@ -2115,6 +2231,9 @@ fn task_canceled_output(task: &QueuedTask, message: &str) -> DataNodeTaskOutput 
     let status = Status::error("job_canceled", message);
     let shard_id = task.request.shard_id();
     match task.kind {
+        DataNodeTaskKind::Load => DataNodeTaskOutput::Load(LoadShardResponse { status }),
+        DataNodeTaskKind::Reload => DataNodeTaskOutput::Reload(LoadShardResponse { status }),
+        DataNodeTaskKind::Unload => DataNodeTaskOutput::Unload(UnloadShardResponse { status }),
         DataNodeTaskKind::Execute => DataNodeTaskOutput::Execute(ExecuteResponse {
             status,
             response: CommandResponse::Empty,
@@ -2181,6 +2300,9 @@ fn take_canceled(inner: &DataNodeRuntimeInner, job_id: u64) -> bool {
 
 fn task_output_status(output: &DataNodeTaskOutput) -> Status {
     match output {
+        DataNodeTaskOutput::Load(response) => response.status.clone(),
+        DataNodeTaskOutput::Reload(response) => response.status.clone(),
+        DataNodeTaskOutput::Unload(response) => response.status.clone(),
         DataNodeTaskOutput::Execute(response) => response.status.clone(),
         DataNodeTaskOutput::CheckedExecute(response) => response.status.clone(),
         DataNodeTaskOutput::Dump(response) => response.status.clone(),
@@ -2520,6 +2642,77 @@ mod tests {
         assert_eq!(lifecycle.transitions[0].state, "serving");
         assert_eq!(lifecycle.transitions[0].scheduler_task_id, Some(12));
         assert_eq!(lifecycle.transitions[0].scheduler_generation, Some(900));
+    }
+
+    #[test]
+    fn runtime_async_lifecycle_jobs_report_progress_and_outputs() {
+        let runtime = DataNodeRuntime::new(
+            TemporalEngine::default(),
+            DataNodeRuntimeOptions {
+                worker_threads: 1,
+                max_queue_depth: 8,
+                max_background_queue_depth: 4,
+            },
+        );
+
+        let submitted = runtime.submit_load(
+            crate::control::LoadShardRequest {
+                shard_id: 7,
+                table_name: "tbl".to_string(),
+                shard_uri: "local://tbl/7".to_string(),
+                start_routing_slot: 10,
+                end_routing_slot: 19,
+                readonly: false,
+                load_version: 42,
+                local_node_id: Some(3),
+            },
+            RequestController { timeout_ms: 1000 },
+        );
+        assert!(submitted.status.ok, "{submitted:?}");
+        assert_eq!(submitted.kind, DataNodeTaskKind::Load);
+        assert!(submitted.finished_at_ms.is_none());
+
+        let finished = wait_for_job(&runtime, submitted.job_id);
+        assert!(finished.status.ok, "{finished:?}");
+        let Some(DataNodeTaskOutput::Load(output)) = finished.output else {
+            panic!("expected load output");
+        };
+        assert!(output.status.ok, "{output:?}");
+        let lifecycle = runtime.lifecycle_report();
+        assert_eq!(lifecycle.serving_count, 1);
+        assert_eq!(lifecycle.transitions[0].operation, "load");
+        assert_eq!(lifecycle.transitions[0].state, "serving");
+
+        let reloaded = runtime.submit_reload(
+            crate::control::LoadShardRequest {
+                shard_id: 7,
+                table_name: "tbl-new".to_string(),
+                shard_uri: "local://tbl/7-new".to_string(),
+                start_routing_slot: 10,
+                end_routing_slot: 19,
+                readonly: true,
+                load_version: 43,
+                local_node_id: Some(3),
+            },
+            RequestController { timeout_ms: 1000 },
+        );
+        let reloaded = wait_for_job(&runtime, reloaded.job_id);
+        let Some(DataNodeTaskOutput::Reload(output)) = reloaded.output else {
+            panic!("expected reload output");
+        };
+        assert!(output.status.ok, "{output:?}");
+        assert_eq!(runtime.lifecycle_report().readonly_count, 1);
+
+        let unloaded = runtime.submit_unload(
+            crate::control::UnloadShardRequest { shard_id: 7 },
+            RequestController { timeout_ms: 1000 },
+        );
+        let unloaded = wait_for_job(&runtime, unloaded.job_id);
+        let Some(DataNodeTaskOutput::Unload(output)) = unloaded.output else {
+            panic!("expected unload output");
+        };
+        assert!(output.status.ok, "{output:?}");
+        assert_eq!(runtime.lifecycle_report().loaded_shard_count, 0);
     }
 
     #[test]
@@ -3238,6 +3431,33 @@ mod tests {
         assert_eq!(canceled.status.code, "job_canceled");
         assert_eq!(runtime.stats().canceled_total, 1);
         assert_eq!(runtime.stats().queue_depth, 0);
+    }
+
+    #[test]
+    fn runtime_cancels_queued_lifecycle_job_before_execution() {
+        let runtime = DataNodeRuntime::new_without_workers_for_test(TemporalEngine::default(), 8);
+
+        let submitted = runtime.submit_load(
+            crate::control::LoadShardRequest {
+                shard_id: 7,
+                table_name: "tbl".to_string(),
+                shard_uri: "local://tbl/7".to_string(),
+                start_routing_slot: 10,
+                end_routing_slot: 19,
+                readonly: false,
+                load_version: 42,
+                local_node_id: Some(3),
+            },
+            RequestController { timeout_ms: 1000 },
+        );
+        assert!(submitted.status.ok, "{submitted:?}");
+
+        let canceled = runtime.cancel_job(submitted.job_id);
+        assert_eq!(canceled.status.code, "job_canceled");
+        assert_eq!(canceled.kind, DataNodeTaskKind::Load);
+        assert_eq!(runtime.stats().canceled_total, 1);
+        assert_eq!(runtime.stats().queue_depth, 0);
+        assert_eq!(runtime.lifecycle_report().loaded_shard_count, 0);
     }
 
     #[test]

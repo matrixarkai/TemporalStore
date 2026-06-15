@@ -58,6 +58,26 @@ brpc and Thrift are intentionally not part of the Rust target. The Rust open-sou
 
 ## What Was Closed In The Latest Pass
 
+This pass closed the sixth client/proxy/metaserver/nodeserver C++ parity cycle:
+
+1. Data-node runtime task kinds now include async `Load`, `Reload`, and `Unload` lifecycle jobs.
+2. Async lifecycle jobs use the existing shard-affine foreground worker queue, preserving ordering
+   with writes and checked writes for the same shard.
+3. Job status output now carries typed load/reload/unload responses, including cancellation and
+   deadline-exceeded status.
+4. Direct HTTP routes `/async_load`, `/async_reload`, and `/async_unload` submit lifecycle jobs.
+5. C++-style aliases `/ServerService/AsyncLoad`, `/ServerService/AsyncReload`, and
+   `/ServerService/AsyncUnload` expose the same job contract.
+6. Regression coverage validates async lifecycle completion, lifecycle report updates, queued
+   lifecycle cancellation, and the C++ async load alias.
+
+This closes the foreground-only nodeserver lifecycle gap and gives the scheduler a job id it can
+poll or cancel. Remaining work is rejecting foreground writes during controlled lifecycle states,
+proxy/client convergence under topology events, membership-update execution, and full
+move/failover orchestration across metaserver, proxy, client, data-node, and Raft paths.
+
+## What Was Closed In The Previous Pass
+
 This pass closed the fifth client/proxy/metaserver/nodeserver C++ parity cycle:
 
 1. Metaserver scheduler snapshot files now persist a durable envelope containing pending scheduler

@@ -11,7 +11,7 @@ push.
 3. Add metaserver task result reporting from nodeserver lifecycle responses. Done.
 4. Add scheduler-driven finish-load validation using task id and generation. Done.
 5. Persist expected node lifecycle tokens in metaserver scheduler snapshots. Done.
-6. Add nodeserver async load/reload/unload jobs with progress and cancellation.
+6. Add nodeserver async load/reload/unload jobs with progress and cancellation. Done.
 7. Reject foreground writes during controlled reloading/unloading states.
 8. Add proxy heartbeat application of metaserver serving policy transitions.
 9. Add proxy route-cache invalidation from metaserver topology events.
@@ -112,3 +112,22 @@ Cycle 5 makes scheduler finish-load validation durable across metaserver restart
 The next cycle should add nodeserver async load/reload/unload jobs with progress and cancellation
 so the scheduler can coordinate long-running lifecycle transitions instead of treating every node
 operation as a foreground HTTP call.
+
+## Cycle 6 Implemented
+
+Cycle 6 makes nodeserver lifecycle transitions first-class async jobs:
+
+- Data-node runtime task kinds now include `Load`, `Reload`, and `Unload`.
+- Async lifecycle jobs use the existing shard-affine foreground queue, preserving ordering with
+  writes for the same shard.
+- Job status output now returns typed load/reload/unload responses, including deadline and
+  cancellation status.
+- Direct routes `/async_load`, `/async_reload`, and `/async_unload` submit lifecycle jobs.
+- C++-style aliases `/ServerService/AsyncLoad`, `/ServerService/AsyncReload`, and
+  `/ServerService/AsyncUnload` expose the same job contract.
+- Regression coverage validates async lifecycle completion, lifecycle report updates, queued
+  lifecycle cancellation before execution, and the C++ async load alias.
+
+The next cycle should reject foreground writes while a shard is in controlled loading, reloading,
+or unloading state so lifecycle jobs become a true write-safety barrier instead of only queued
+work.
