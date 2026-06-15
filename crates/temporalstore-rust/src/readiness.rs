@@ -38,6 +38,8 @@ pub struct ServiceReadinessSummary {
     pub ready: bool,
     pub areas: Vec<String>,
     pub blocker_count: usize,
+    #[serde(default)]
+    pub blocker_classes: Vec<String>,
     pub failed_capabilities: Vec<String>,
 }
 
@@ -418,6 +420,13 @@ fn service_readiness_summaries(areas: &[ReadinessArea]) -> Vec<ServiceReadinessS
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
+        let blocker_classes = selected
+            .iter()
+            .filter(|area| !area.missing.is_empty())
+            .map(|area| service_blocker_class(&area.area).to_string())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
         ServiceReadinessSummary {
             service: service.to_string(),
             ready: !selected.is_empty()
@@ -426,10 +435,23 @@ fn service_readiness_summaries(areas: &[ReadinessArea]) -> Vec<ServiceReadinessS
                     .all(|area| area.ready && area.missing.is_empty()),
             areas: area_names.into_iter().map(str::to_string).collect(),
             blocker_count: failed_capabilities.len(),
+            blocker_classes,
             failed_capabilities,
         }
     })
     .collect()
+}
+
+fn service_blocker_class(area: &str) -> &'static str {
+    match area {
+        "client" => "client_sync_preflight",
+        "proxy" => "proxy_topology_admission",
+        "ingestion" => "ingestion_durability",
+        "dataserver" => "data_node_local_lifecycle",
+        "data_node_distributed_raft" => "data_node_distributed_raft",
+        "metaserver" => "metaserver_control_plane",
+        _ => "other",
+    }
 }
 
 #[cfg(test)]
@@ -503,7 +525,40 @@ mod tests {
                 "{service} should expose exact failed capabilities"
             );
             assert_eq!(summary.blocker_count, summary.failed_capabilities.len());
+            assert!(
+                !summary.blocker_classes.is_empty(),
+                "{service} should classify blockers for triage"
+            );
         }
+
+        assert_eq!(
+            report
+                .service_summary("client")
+                .expect("client summary")
+                .blocker_classes,
+            vec!["client_sync_preflight".to_string()]
+        );
+        assert_eq!(
+            report
+                .service_summary("proxy")
+                .expect("proxy summary")
+                .blocker_classes,
+            vec!["proxy_topology_admission".to_string()]
+        );
+        assert_eq!(
+            report
+                .service_summary("ingestion")
+                .expect("ingestion summary")
+                .blocker_classes,
+            vec!["ingestion_durability".to_string()]
+        );
+        assert_eq!(
+            report
+                .service_summary("metaserver")
+                .expect("metaserver summary")
+                .blocker_classes,
+            vec!["metaserver_control_plane".to_string()]
+        );
 
         let data_node = report
             .service_summary("data_node")
@@ -523,6 +578,13 @@ mod tests {
             .failed_capabilities
             .iter()
             .any(|capability| capability.starts_with("data_node_distributed_raft:")));
+        assert_eq!(
+            data_node.blocker_classes,
+            vec![
+                "data_node_distributed_raft".to_string(),
+                "data_node_local_lifecycle".to_string()
+            ]
+        );
     }
 
     #[test]
