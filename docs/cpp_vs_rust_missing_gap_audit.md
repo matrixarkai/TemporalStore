@@ -58,6 +58,27 @@ brpc and Thrift are intentionally not part of the Rust target. The Rust open-sou
 
 ## What Was Closed In The Latest Pass
 
+This pass closed the fifth client/proxy/metaserver/nodeserver C++ parity cycle:
+
+1. Metaserver scheduler snapshot files now persist a durable envelope containing pending scheduler
+   tasks plus the recent scheduler execution ledger.
+2. Persisted execution records include lifecycle tokens and matched nodeserver lifecycle state, so
+   scheduler-tagged finish-load callbacks can still be validated after metaserver restart.
+3. Scheduler execution recording persists immediately after ledger mutation, while task queue
+   submit/run/restore paths retain their existing atomic snapshot persistence.
+4. Legacy task-only scheduler snapshots still load, preserving rolling-upgrade and local developer
+   compatibility.
+5. Regression coverage validates durable execution-token restore, stale generation rejection after
+   restore, and legacy snapshot loading.
+
+This makes the Rust metaserver closer to C++ control-plane lifecycle behavior by avoiding
+restart-loss of expected node lifecycle tokens. Remaining work is async node lifecycle jobs,
+reload/freeze routing, membership-update execution, proxy/client convergence under topology
+events, and full move/failover orchestration across metaserver, proxy, client, data-node, and
+Raft paths.
+
+## What Was Closed In The Previous Pass
+
 This pass closed the fourth client/proxy/metaserver/nodeserver C++ parity cycle:
 
 1. `LoadFinishRequest` now carries optional `scheduler_task_id` and `scheduler_generation`

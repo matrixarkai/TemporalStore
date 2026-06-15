@@ -10,7 +10,7 @@ push.
 2. Execute scheduler load/unload tasks against remote nodeserver HTTP endpoints. Done.
 3. Add metaserver task result reporting from nodeserver lifecycle responses. Done.
 4. Add scheduler-driven finish-load validation using task id and generation. Done.
-5. Persist expected node lifecycle tokens in metaserver scheduler snapshots.
+5. Persist expected node lifecycle tokens in metaserver scheduler snapshots. Done.
 6. Add nodeserver async load/reload/unload jobs with progress and cancellation.
 7. Reject foreground writes during controlled reloading/unloading states.
 8. Add proxy heartbeat application of metaserver serving policy transitions.
@@ -94,3 +94,21 @@ Cycle 4 closes the stale finish-load callback gap:
 
 The next cycle should persist expected node lifecycle tokens in scheduler snapshots so these
 validation records can survive metaserver restart.
+
+## Cycle 5 Implemented
+
+Cycle 5 makes scheduler finish-load validation durable across metaserver restarts:
+
+- Scheduler snapshot files now store a Rust-native durable envelope containing both pending tasks
+  and the bounded scheduler execution ledger.
+- The persisted execution ledger includes the lifecycle token and matched nodeserver lifecycle
+  state needed to validate scheduler-tagged finish-load callbacks after restart.
+- The metaserver still loads legacy task-only scheduler snapshots for rolling upgrade and local
+  developer compatibility.
+- Applied scheduler executions persist immediately after ledger update, while scheduler queue
+  mutations continue to persist through the existing submit/run/restore paths.
+- Regression coverage validates restored execution-token validation and legacy snapshot loading.
+
+The next cycle should add nodeserver async load/reload/unload jobs with progress and cancellation
+so the scheduler can coordinate long-running lifecycle transitions instead of treating every node
+operation as a foreground HTTP call.

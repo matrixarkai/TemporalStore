@@ -87,6 +87,13 @@ struct MetaSchedulerRestoreRequest {
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+struct MetaSchedulerDurableSnapshot {
+    scheduler: TaskSchedulerSnapshot,
+    #[serde(default)]
+    executions: Vec<MetaSchedulerExecutionRecord>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 struct MetaSchedulerExecuteRequest {
     now_ms: u64,
     node_addr: String,
@@ -210,15 +217,15 @@ impl MetaTaskScheduler {
     }
 
     fn with_snapshot_path(path: PathBuf) -> io::Result<Self> {
-        let scheduler = if path.exists() {
+        let (scheduler, executions) = if path.exists() {
             let bytes = fs::read(&path)?;
-            DeterministicTaskScheduler::decode_snapshot(&bytes).map_err(io::Error::other)?
+            decode_meta_scheduler_file(&bytes)?
         } else {
-            DeterministicTaskScheduler::default()
+            (DeterministicTaskScheduler::default(), Vec::new())
         };
         Ok(Self {
             inner: Arc::new(Mutex::new(scheduler)),
-            executions: Arc::default(),
+            executions: Arc::new(Mutex::new(executions)),
             snapshot_path: Some(path),
         })
     }
@@ -478,24 +485,48 @@ impl MetaTaskScheduler {
     }
 
     fn record_execution(&self, record: MetaSchedulerExecutionRecord) {
-        let mut executions = self
+        {
+            let mut executions = self
+                .executions
+                .lock()
+                .expect("meta scheduler executions lock poisoned");
+            executions.push(record);
+            const MAX_EXECUTION_RECORDS: usize = 128;
+            if executions.len() > MAX_EXECUTION_RECORDS {
+                let overflow = executions.len() - MAX_EXECUTION_RECORDS;
+                executions.drain(0..overflow);
+            }
+        }
+        let _ = self.persist_current();
+    }
+
+    fn persist_current(&self) -> Status {
+        let Some(path) = &self.snapshot_path else {
+            return Status::ok();
+        };
+        let scheduler = self.inner.lock().expect("meta scheduler lock poisoned");
+        let executions = self
             .executions
             .lock()
             .expect("meta scheduler executions lock poisoned");
-        executions.push(record);
-        const MAX_EXECUTION_RECORDS: usize = 128;
-        if executions.len() > MAX_EXECUTION_RECORDS {
-            let overflow = executions.len() - MAX_EXECUTION_RECORDS;
-            executions.drain(0..overflow);
+        match save_scheduler_snapshot(path, &scheduler.export_snapshot(), &executions) {
+            Ok(()) => Status::ok(),
+            Err(err) => Status::error("scheduler_persist_failed", err.to_string()),
         }
     }
 
     fn persist_locked(&self, scheduler: &DeterministicTaskScheduler) -> Status {
         match &self.snapshot_path {
-            Some(path) => match save_scheduler_snapshot(path, &scheduler.export_snapshot()) {
-                Ok(()) => Status::ok(),
-                Err(err) => Status::error("scheduler_persist_failed", err.to_string()),
-            },
+            Some(path) => {
+                let executions = self
+                    .executions
+                    .lock()
+                    .expect("meta scheduler executions lock poisoned");
+                match save_scheduler_snapshot(path, &scheduler.export_snapshot(), &executions) {
+                    Ok(()) => Status::ok(),
+                    Err(err) => Status::error("scheduler_persist_failed", err.to_string()),
+                }
+            }
             None => Status::ok(),
         }
     }
@@ -719,7 +750,30 @@ fn default_io_timeout_ms() -> u64 {
     500
 }
 
-fn save_scheduler_snapshot(path: &PathBuf, snapshot: &TaskSchedulerSnapshot) -> io::Result<()> {
+fn decode_meta_scheduler_file(
+    bytes: &[u8],
+) -> io::Result<(
+    DeterministicTaskScheduler,
+    Vec<MetaSchedulerExecutionRecord>,
+)> {
+    if let Ok(snapshot) = serde_json::from_slice::<MetaSchedulerDurableSnapshot>(bytes) {
+        return Ok((
+            DeterministicTaskScheduler::restore_snapshot(snapshot.scheduler)
+                .map_err(io::Error::other)?,
+            snapshot.executions,
+        ));
+    }
+    Ok((
+        DeterministicTaskScheduler::decode_snapshot(bytes).map_err(io::Error::other)?,
+        Vec::new(),
+    ))
+}
+
+fn save_scheduler_snapshot(
+    path: &PathBuf,
+    snapshot: &TaskSchedulerSnapshot,
+    executions: &[MetaSchedulerExecutionRecord],
+) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -735,7 +789,14 @@ fn save_scheduler_snapshot(path: &PathBuf, snapshot: &TaskSchedulerSnapshot) -> 
             .truncate(true)
             .write(true)
             .open(&tmp_path)?;
-        serde_json::to_writer_pretty(&mut file, snapshot).map_err(io::Error::other)?;
+        serde_json::to_writer_pretty(
+            &mut file,
+            &MetaSchedulerDurableSnapshot {
+                scheduler: snapshot.clone(),
+                executions: executions.to_vec(),
+            },
+        )
+        .map_err(io::Error::other)?;
         file.write_all(b"\n")?;
         file.sync_data()?;
     }
@@ -2656,6 +2717,95 @@ mod tests {
         assert!(run.status.ok);
         assert_eq!(run.report.unwrap().task_id, submitted.task.unwrap().id);
         assert_eq!(run.queue_len, 0);
+    }
+
+    #[test]
+    fn metaserver_scheduler_restores_execution_tokens_from_snapshot_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("scheduler-executions.json");
+        let scheduler = MetaTaskScheduler::with_snapshot_path(path.clone()).unwrap();
+        scheduler.record_execution(MetaSchedulerExecutionRecord {
+            task_id: 12,
+            node_addr: "node-a".to_string(),
+            status: Status::ok(),
+            scheduler_result: SchedulerTaskResult::Ok,
+            retry_times: 0,
+            next_run_time_ms: None,
+            calls: Vec::new(),
+            lifecycle_token: Some(SchedulerLifecycleToken {
+                task_id: 12,
+                shard_id: 44,
+                operation: "load".to_string(),
+                load_version: 5,
+                generation: 900,
+            }),
+            lifecycle_state: Some(DataNodeShardLifecycleState {
+                shard_id: 44,
+                state: "serving".to_string(),
+                operation: "load".to_string(),
+                load_version: 5,
+                updated_at_ms: 901,
+                last_status: Some(Status::ok()),
+                scheduler_task_id: Some(12),
+                scheduler_generation: Some(900),
+            }),
+            queue_len: 0,
+        });
+        assert!(path.exists());
+
+        let restored = MetaTaskScheduler::with_snapshot_path(path).unwrap();
+        let executions = restored.executions();
+        assert!(executions.status.ok);
+        assert_eq!(executions.executions.len(), 1);
+        assert_eq!(executions.executions[0].task_id, 12);
+        assert!(restored
+            .validate_finish_load(&LoadFinishRequest {
+                server_addr: "node-a".to_string(),
+                shard_id: 44,
+                load_version: 5,
+                status: Status::ok(),
+                scheduler_task_id: Some(12),
+                scheduler_generation: Some(900),
+            })
+            .is_ok());
+
+        let stale = restored
+            .validate_finish_load(&LoadFinishRequest {
+                server_addr: "node-a".to_string(),
+                shard_id: 44,
+                load_version: 5,
+                status: Status::ok(),
+                scheduler_task_id: Some(12),
+                scheduler_generation: Some(899),
+            })
+            .unwrap_err();
+        assert_eq!(stale.code, "scheduler_finish_load_not_found");
+    }
+
+    #[test]
+    fn metaserver_scheduler_loads_legacy_task_only_snapshot_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy-scheduler.json");
+        let mut scheduler = DeterministicTaskScheduler::default();
+        let task = scheduler.submit(
+            4,
+            200,
+            SchedulerTaskKind::RebalanceStep(RebalanceStep::FreezeSource {
+                shard_id: 12,
+                replica_id: 21,
+                node_id: 5,
+            }),
+        );
+        fs::write(
+            &path,
+            serde_json::to_vec_pretty(&scheduler.export_snapshot()).unwrap(),
+        )
+        .unwrap();
+
+        let restored = MetaTaskScheduler::with_snapshot_path(path).unwrap();
+        assert_eq!(restored.executions().executions.len(), 0);
+        assert_eq!(restored.queue_len(), 1);
+        assert_eq!(restored.peek_next(200).unwrap().id, task.id);
     }
 
     fn spawn_recording_nodeserver() -> (String, Arc<Mutex<Vec<(String, serde_json::Value)>>>) {
