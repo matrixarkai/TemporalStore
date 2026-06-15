@@ -20,6 +20,10 @@ The sidecar writes both converted TemporalStore metrics and exporter health metr
   `tools/run_queue_ingestion_replay_ubuntu22.sh` and cover replay input,
   dedupe, retries, dead letters, checkpoints, watermark, max partition lag,
   backpressure records, committed QPS, and validation health.
+- `temporalstore_cache_fallback_*` metrics are written by
+  `tools/run_cache_fallback_metrics_ubuntu22.sh` and prove blockcache get/hit,
+  persistent-read fallback instrumentation, unit-test assertions, and exporter
+  coverage for the cache fallback path.
 - `temporalstore_raft_gate_*` metrics are written by
   `tools/run_raft_stress_suite_ubuntu22.sh` after raft/failover gates finish,
   including failed gates.
@@ -28,8 +32,8 @@ The sidecar writes both converted TemporalStore metrics and exporter health metr
   `bcache2_metaserver_*{service_role="metaserver",source="metaserver"}`.
 - `temporalstore-alerts.yml` installs local production-readiness alerts for
   service availability, exporter scrape errors, client validation, proxy smoke,
-  client benchmark errors, retry exhaustion, ingestion lag/backpressure, and
-  raft gate readiness.
+  client benchmark errors, retry exhaustion, ingestion lag/backpressure, cache
+  fallback evidence, and raft gate readiness.
 
 ## Defaults
 

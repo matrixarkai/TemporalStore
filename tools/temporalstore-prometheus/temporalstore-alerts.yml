@@ -140,3 +140,23 @@ groups:
         annotations:
           summary: "TemporalStore ingestion backpressure detected"
           description: "Queue ingestion replay or worker metrics reported uncommitted backlog or partition lag."
+
+      - alert: TemporalStoreCacheFallbackEvidenceMissing
+        expr: temporalstore_cache_fallback_static_checks_pass == 0
+        for: 1m
+        labels:
+          severity: warning
+          component: cache
+        annotations:
+          summary: "TemporalStore cache fallback evidence is missing"
+          description: "The cache fallback metrics gate did not prove blockcache and persistent-read fallback instrumentation."
+
+      - alert: TemporalStoreCacheFallbackRuntimeAbort
+        expr: temporalstore_cache_fallback_runtime_test_aborted > 0
+        for: 1m
+        labels:
+          severity: warning
+          component: cache
+        annotations:
+          summary: "TemporalStore cache fallback runtime test aborted"
+          description: "The optional focused partition runtime test aborted locally; refresh or repair the test binary before release gating."

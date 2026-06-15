@@ -108,7 +108,29 @@ max by (source) (temporalstore_ingestion_backpressure_records)
 min by (source) (temporalstore_ingestion_validation_up)
 ```
 
-8. Raft/fault-tolerance gate evidence from the textfile collector
+8. Cache/storage fallback evidence
+
+```promql
+temporalstore_cache_fallback_static_checks_pass
+```
+
+```promql
+temporalstore_cache_fallback_blockcache_get_metric_present
+```
+
+```promql
+temporalstore_cache_fallback_blockcache_hit_metric_present
+```
+
+```promql
+temporalstore_cache_fallback_persistent_read_metric_present
+```
+
+```promql
+temporalstore_cache_fallback_unit_assertions_present
+```
+
+9. Raft/fault-tolerance gate evidence from the textfile collector
 
 ```promql
 temporalstore_raft_gate_case_pass
