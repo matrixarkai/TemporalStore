@@ -1603,6 +1603,15 @@ impl TemporalEngine {
                 ),
             ));
         }
+        let expected_slot_summaries =
+            slot_dump_manifest_comparable_summaries(&restored, &manifest_slots);
+        let actual_slot_summaries = comparable_slot_dump_summaries(manifest.slot_summaries.clone());
+        if actual_slot_summaries != expected_slot_summaries {
+            return Err(Status::error(
+                "slot_dump_slot_summary_mismatch",
+                "slot dump slot summaries do not match restored index page ownership",
+            ));
+        }
         if manifest.version >= 3 {
             let expected_object_lifecycle = storage_object_lifecycle_report_for_slots(
                 manifest.shard_id,
@@ -5842,6 +5851,34 @@ fn merge_last_dump_sequence(
             summary.last_dump_sequence = manifest.index_log_sequence;
         }
     }
+    summaries
+}
+
+fn slot_dump_manifest_comparable_summaries(
+    shard: &ShardState,
+    selected_slots: &BTreeSet<u32>,
+) -> Vec<SlotStorageSummary> {
+    comparable_slot_dump_summaries(
+        slot_storage_summaries(shard, 0, u32::MAX)
+            .into_iter()
+            .filter(|summary| {
+                selected_slots.is_empty() || selected_slots.contains(&summary.routing_slot)
+            })
+            .collect(),
+    )
+}
+
+fn comparable_slot_dump_summaries(
+    mut summaries: Vec<SlotStorageSummary>,
+) -> Vec<SlotStorageSummary> {
+    for summary in &mut summaries {
+        summary.dirty_object_count = 0;
+        summary.dirty_generation = 0;
+        summary.last_dump_sequence = 0;
+        summary.page_segment_ids.sort_unstable();
+        summary.page_segment_ids.dedup();
+    }
+    summaries.sort_by_key(|summary| summary.routing_slot);
     summaries
 }
 
@@ -12039,6 +12076,48 @@ mod tests {
                 .unwrap_err()
                 .code,
             "slot_dump_object_lifecycle_mismatch"
+        );
+    }
+
+    #[test]
+    fn slot_dump_manifest_rejects_slot_summary_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "slot-summary".to_string(),
+                value: b"v1".to_vec(),
+            },
+        });
+        let manifest = engine
+            .create_slot_dump_manifest(1, Vec::new())
+            .expect("manifest should persist");
+        engine
+            .validate_slot_dump_manifest(&manifest)
+            .expect("fresh manifest should validate");
+
+        let mut stale_summary = manifest.clone();
+        let summary = stale_summary
+            .slot_summaries
+            .first_mut()
+            .expect("slot summary should exist");
+        summary.page_ref_count = summary.page_ref_count.saturating_add(1);
+        stale_summary.dump_generation_id = slot_dump_generation_id(&stale_summary);
+        stale_summary.checksum = slot_dump_manifest_checksum(&stale_summary).unwrap();
+
+        assert_eq!(
+            engine
+                .validate_slot_dump_manifest(&stale_summary)
+                .unwrap_err()
+                .code,
+            "slot_dump_slot_summary_mismatch"
         );
     }
 
