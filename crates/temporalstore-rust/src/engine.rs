@@ -390,9 +390,25 @@ pub struct StorageLifecyclePlan {
     pub slot_summaries: Vec<SlotStorageSummary>,
     pub live_page_segment_ids: Vec<u64>,
     pub stale_page_segment_ids: Vec<u64>,
+    #[serde(default)]
+    pub reclaim_candidates: Vec<StorageReclaimCandidate>,
     pub delayed_destroy_page_segment_ids: Vec<u64>,
     pub reclaimable_physical_bytes: u64,
     pub reasons: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageReclaimCandidate {
+    pub page_segment_id: u64,
+    pub physical_bytes: u64,
+    pub live_physical_bytes: u64,
+    pub stale_physical_bytes: u64,
+    pub page_count: u64,
+    pub live_page_refs: u64,
+    pub stale_page_estimate: u64,
+    pub live_ref_density_basis_points: u64,
+    pub reclaim_score: u64,
+    pub reason: String,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1582,10 +1598,35 @@ impl TemporalEngine {
             .into_iter()
             .filter(|id| !live_page_segment_set.contains(id))
             .collect::<Vec<_>>();
+        let recovery = self.storage_recovery_report_without_boundary(request.shard_id);
+        let stale_page_segment_set = stale_page_segment_ids
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let mut reclaim_candidates =
+            storage_reclaim_candidates_from_recovery(&recovery, &stale_page_segment_set);
         let delayed_destroy_reports = self
             .page_store
             .delayed_destroy_segment_reports()
             .unwrap_or_default();
+        reclaim_candidates.extend(delayed_destroy_reports.iter().map(|report| {
+            StorageReclaimCandidate {
+                page_segment_id: report.page_segment_id,
+                physical_bytes: report.physical_bytes,
+                live_physical_bytes: 0,
+                stale_physical_bytes: report.physical_bytes,
+                reclaim_score: report.physical_bytes.saturating_mul(2),
+                reason: "delayed_destroy".to_string(),
+                ..StorageReclaimCandidate::default()
+            }
+        }));
+        reclaim_candidates.sort_by(|left, right| {
+            right
+                .reclaim_score
+                .cmp(&left.reclaim_score)
+                .then_with(|| right.stale_physical_bytes.cmp(&left.stale_physical_bytes))
+                .then_with(|| left.page_segment_id.cmp(&right.page_segment_id))
+        });
         let mut reasons = Vec::new();
         if !selected_dump_slots.is_empty() {
             reasons.push("dirty_slot_dump".to_string());
@@ -1594,6 +1635,9 @@ impl TemporalEngine {
         }
         if !stale_page_segment_ids.is_empty() {
             reasons.push("stale_page_segment_gc".to_string());
+        }
+        if !reclaim_candidates.is_empty() {
+            reasons.push("ranked_reclaim_candidates".to_string());
         }
         if request.purge_delayed_destroy && !delayed_destroy_reports.is_empty() {
             reasons.push("delayed_destroy_purge".to_string());
@@ -1625,6 +1669,7 @@ impl TemporalEngine {
             slot_summaries,
             live_page_segment_ids,
             stale_page_segment_ids,
+            reclaim_candidates,
             delayed_destroy_page_segment_ids: delayed_destroy_reports
                 .iter()
                 .map(|report| report.page_segment_id)
@@ -5081,6 +5126,62 @@ fn storage_segment_integrity_report(
         reclaim_required,
         integrity_ok,
     }
+}
+
+fn storage_reclaim_candidates_from_recovery(
+    recovery: &StorageRecoveryReport,
+    fully_stale_segment_ids: &BTreeSet<u64>,
+) -> Vec<StorageReclaimCandidate> {
+    let mut candidates = recovery
+        .page_segment_live_reports
+        .iter()
+        .filter_map(|report| {
+            let fully_stale = fully_stale_segment_ids.contains(&report.page_segment_id);
+            let stale_page_estimate = if fully_stale {
+                report.page_count
+            } else {
+                report.stale_page_estimate
+            };
+            let stale_physical_bytes = if fully_stale {
+                report.physical_bytes
+            } else {
+                report
+                    .physical_bytes
+                    .saturating_sub(report.live_physical_bytes)
+            };
+            if stale_page_estimate == 0 && stale_physical_bytes == 0 {
+                return None;
+            }
+            let reclaim_score = stale_physical_bytes
+                .saturating_mul(10_000_u64.saturating_sub(report.live_ref_density_basis_points))
+                .saturating_div(10_000)
+                .saturating_add(stale_page_estimate);
+            Some(StorageReclaimCandidate {
+                page_segment_id: report.page_segment_id,
+                physical_bytes: report.physical_bytes,
+                live_physical_bytes: report.live_physical_bytes,
+                stale_physical_bytes,
+                page_count: report.page_count,
+                live_page_refs: report.live_page_refs,
+                stale_page_estimate,
+                live_ref_density_basis_points: report.live_ref_density_basis_points,
+                reclaim_score,
+                reason: if fully_stale {
+                    "orphan_segment".to_string()
+                } else {
+                    "low_live_density".to_string()
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        right
+            .reclaim_score
+            .cmp(&left.reclaim_score)
+            .then_with(|| right.stale_physical_bytes.cmp(&left.stale_physical_bytes))
+            .then_with(|| left.page_segment_id.cmp(&right.page_segment_id))
+    });
+    candidates
 }
 
 #[derive(Debug, Clone)]
@@ -10896,6 +10997,14 @@ mod tests {
         assert_eq!(plan.selected_dump_slots, plan.dirty_slots);
         assert!(plan.reasons.contains(&"dirty_slot_dump".to_string()));
         assert!(plan.stale_page_segment_ids.contains(&0));
+        assert!(plan
+            .reasons
+            .contains(&"ranked_reclaim_candidates".to_string()));
+        assert!(!plan.reclaim_candidates.is_empty());
+        assert_eq!(plan.reclaim_candidates[0].page_segment_id, 0);
+        assert_eq!(plan.reclaim_candidates[0].reason, "orphan_segment");
+        assert!(plan.reclaim_candidates[0].stale_physical_bytes > 0);
+        assert!(plan.reclaim_candidates[0].reclaim_score > 0);
 
         let report = engine.apply_storage_lifecycle(StorageLifecycleRequest {
             shard_id: 1,

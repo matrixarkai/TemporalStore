@@ -49,9 +49,9 @@ pub use engine::{
     StorageCacheInspectionReport, StorageCacheInvalidateSlotRequest, StorageCacheSlotSummary,
     StorageLifecyclePlan, StorageLifecycleReport, StorageLifecycleRequest,
     StorageProductionReadinessPolicy, StorageProductionReadinessReport,
-    StorageProductionReadinessRequest, StorageRecoveryBoundaryReport, StorageRecoveryPageError,
-    StorageRecoveryReport, StorageRecoverySegmentLiveReport, StorageSegmentIntegrityReport,
-    TemporalEngine,
+    StorageProductionReadinessRequest, StorageReclaimCandidate, StorageRecoveryBoundaryReport,
+    StorageRecoveryPageError, StorageRecoveryReport, StorageRecoverySegmentLiveReport,
+    StorageSegmentIntegrityReport, TemporalEngine,
 };
 pub use index_log::{IndexLogRecord, IndexLogStats, LocalIndexLogStore};
 pub use ingestion::{

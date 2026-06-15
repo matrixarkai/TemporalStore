@@ -254,6 +254,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "shared-store checkpoint/oplog replay model and GC tests".to_string(),
                 "storage recovery integrity report summarizes indexed/discovered/live/orphan/corrupt segments, stale refs, unreadable bytes, and ownership mismatches"
                     .to_string(),
+                "storage lifecycle plan ranks reclaim candidates by stale bytes, live-ref density, orphan status, and delayed-destroy pressure"
+                    .to_string(),
             ],
             missing: vec![
                 "binary/protobuf oplog and index-log compatibility".to_string(),

@@ -98,3 +98,8 @@ page/zone integrity summary with indexed, discovered, live, orphan, corrupt,
 unreadable, stale-ref, and owner-mismatch counts. Storage production readiness
 also carries this report and emits `storage_segment_integrity_failed` when the
 aggregate health check is not clean.
+
+Storage lifecycle plans now include ranked `reclaim_candidates` for the local
+cleaner path. Candidates score stale/orphan/delayed-destroy page segments by
+stale bytes, live-ref density, and reclaim pressure so the Rust scheduler can
+explain which zones it would compact or GC first.
