@@ -8,6 +8,8 @@ BUILD_TYPE="${BUILD_TYPE:-Release}"
 BUILD_FLAVOR="$(printf '%s' "${BUILD_TYPE}" | tr '[:upper:]' '[:lower:]')"
 OUT_DIR="${OUT_DIR:-${ROOT}/output-ubuntu22/${BUILD_FLAVOR}}"
 RESULT_DIR="${RESULT_DIR:-/tmp/temporalstore-metaserver-raft-snapshot-restore-$(date +%Y%m%d_%H%M%S)}"
+TEXTFILE_DIR="${TEXTFILE_DIR:-${RESULT_DIR}/metrics}"
+METRICS_FILE="${METRICS_FILE:-${TEXTFILE_DIR}/temporalstore-metaserver-snapshot.prom}"
 CLUSTER_NAME="${CLUSTER_NAME:-meta_raft_snapshot_restore}"
 MS_PORT="${MS_PORT:-36700}"
 MS_PORT_STEP="${MS_PORT_STEP:-30}"
@@ -205,7 +207,7 @@ cleanup() {
 trap cleanup EXIT
 
 rm -rf "${RESULT_DIR}"
-mkdir -p "${RESULT_DIR}"
+mkdir -p "${RESULT_DIR}" "${TEXTFILE_DIR}"
 pkill -f "bcache2-metaserver.*metaserver_cluster_name=${CLUSTER_NAME}" >/dev/null 2>&1 || true
 
 for i in 1 2 3; do
@@ -376,5 +378,72 @@ snapshot_count_after_restart="$(snapshot_file_count)"
 echo "snapshot_file_count_after_restart=${snapshot_count_after_restart}" | tee -a "${RESULT_DIR}/summary.txt"
 echo "namespace_anchor=${namespace_anchor}" | tee -a "${RESULT_DIR}/summary.txt"
 echo "namespace_after_restore=${namespace_after}" | tee -a "${RESULT_DIR}/summary.txt"
+python3 - \
+  "${RESULT_DIR}/cluster_status_before_restart.json" \
+  "${RESULT_DIR}/cluster_status_after_restore.json" \
+  "${METRICS_FILE}" \
+  "${snapshot_count_before_restart}" \
+  "${snapshot_count_after_restart}" \
+  "${restart_elapsed_ms}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+before_path = Path(sys.argv[1])
+after_path = Path(sys.argv[2])
+metrics_path = Path(sys.argv[3])
+snapshot_before = float(sys.argv[4])
+snapshot_after = float(sys.argv[5])
+restart_ms = float(sys.argv[6])
+
+before = json.loads(before_path.read_text(encoding="utf-8"))
+after = json.loads(after_path.read_text(encoding="utf-8"))
+
+before_nodes = float(len(before.get("raft_nodes", [])))
+after_nodes = float(len(after.get("raft_nodes", [])))
+before_applied = float(before.get("raft_applied_index", 0) or 0)
+after_applied = float(after.get("raft_applied_index", 0) or 0)
+before_leader = float(before.get("raft_leader_info", {}).get("peer_id", 0) or 0)
+after_leader = float(after.get("raft_leader_info", {}).get("peer_id", 0) or 0)
+passed = (
+    before_nodes == 3
+    and after_nodes == 3
+    and snapshot_before > 0
+    and after_applied > 0
+    and after_leader > 0
+)
+
+metrics_path.parent.mkdir(parents=True, exist_ok=True)
+with metrics_path.open("w", encoding="utf-8") as out:
+    out.write("# HELP temporalstore_metaserver_snapshot_restore_pass Whether metaserver raft snapshot restore gate passed.\n")
+    out.write("# TYPE temporalstore_metaserver_snapshot_restore_pass gauge\n")
+    out.write(f"temporalstore_metaserver_snapshot_restore_pass {1 if passed else 0}\n")
+    out.write("# HELP temporalstore_metaserver_snapshot_files Snapshot file count observed by phase.\n")
+    out.write("# TYPE temporalstore_metaserver_snapshot_files gauge\n")
+    out.write(f"temporalstore_metaserver_snapshot_files{{phase=\"before_restart\"}} {snapshot_before}\n")
+    out.write(f"temporalstore_metaserver_snapshot_files{{phase=\"after_restart\"}} {snapshot_after}\n")
+    out.write("# HELP temporalstore_metaserver_snapshot_restore_restart_ms Full metaserver cluster restart convergence time.\n")
+    out.write("# TYPE temporalstore_metaserver_snapshot_restore_restart_ms gauge\n")
+    out.write(f"temporalstore_metaserver_snapshot_restore_restart_ms {restart_ms}\n")
+    out.write("# HELP temporalstore_metaserver_snapshot_restore_raft_nodes Raft node count by phase.\n")
+    out.write("# TYPE temporalstore_metaserver_snapshot_restore_raft_nodes gauge\n")
+    out.write(f"temporalstore_metaserver_snapshot_restore_raft_nodes{{phase=\"before_restart\"}} {before_nodes}\n")
+    out.write(f"temporalstore_metaserver_snapshot_restore_raft_nodes{{phase=\"after_restore\"}} {after_nodes}\n")
+    out.write("# HELP temporalstore_metaserver_snapshot_restore_applied_index Raft applied index by phase.\n")
+    out.write("# TYPE temporalstore_metaserver_snapshot_restore_applied_index gauge\n")
+    out.write(f"temporalstore_metaserver_snapshot_restore_applied_index{{phase=\"before_restart\"}} {before_applied}\n")
+    out.write(f"temporalstore_metaserver_snapshot_restore_applied_index{{phase=\"after_restore\"}} {after_applied}\n")
+    out.write("# HELP temporalstore_metaserver_snapshot_restore_leader_peer Current raft leader peer id by phase.\n")
+    out.write("# TYPE temporalstore_metaserver_snapshot_restore_leader_peer gauge\n")
+    out.write(f"temporalstore_metaserver_snapshot_restore_leader_peer{{phase=\"before_restart\"}} {before_leader}\n")
+    out.write(f"temporalstore_metaserver_snapshot_restore_leader_peer{{phase=\"after_restore\"}} {after_leader}\n")
+
+print(f"metrics_file={metrics_path}")
+print(f"metaserver_snapshot_restore_pass={1 if passed else 0}")
+if not passed:
+    raise SystemExit("metaserver snapshot restore metrics check failed")
+PY
+cat "${METRICS_FILE}" >> "${RESULT_DIR}/summary.txt"
+grep -q '^temporalstore_metaserver_snapshot_restore_pass 1' "${METRICS_FILE}"
 echo "PASS metaserver raft snapshot restore" | tee -a "${RESULT_DIR}/summary.txt"
 echo "${RESULT_DIR}"

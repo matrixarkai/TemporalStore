@@ -200,3 +200,23 @@ groups:
         annotations:
           summary: "TemporalStore victim tenant p99 latency is high"
           description: "The multi-tenant noisy-neighbor gate reported victim p99 above the configured SLA."
+
+      - alert: TemporalStoreMetaserverSnapshotRestoreFailed
+        expr: temporalstore_metaserver_snapshot_restore_pass == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: metaserver
+        annotations:
+          summary: "TemporalStore metaserver snapshot restore gate failed"
+          description: "The metaserver raft snapshot restore gate did not prove snapshot, restart, metadata recovery, and post-restore write health."
+
+      - alert: TemporalStoreMetaserverSnapshotMissing
+        expr: temporalstore_metaserver_snapshot_files{phase="before_restart"} <= 0
+        for: 1m
+        labels:
+          severity: warning
+          component: metaserver
+        annotations:
+          summary: "TemporalStore metaserver snapshot files missing"
+          description: "The metaserver snapshot restore gate did not observe local snapshot files before restart."
