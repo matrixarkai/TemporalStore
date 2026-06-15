@@ -433,7 +433,11 @@ pub struct SlotDumpInstallRollForwardReport {
     pub manifest_id: String,
     pub interrupted_phase: String,
     pub can_roll_forward: bool,
+    #[serde(default)]
+    pub can_retry_install: bool,
     pub completed_commit: bool,
+    #[serde(default)]
+    pub completed_install: bool,
     pub reason: String,
 }
 
@@ -1429,7 +1433,31 @@ impl TemporalEngine {
             .into_iter()
             .map(|marker| {
                 let mut report = self.slot_dump_install_roll_forward_report(&marker);
-                if report.can_roll_forward {
+                if report.can_retry_install {
+                    match slot_dump_manifest_at(
+                        &self.index_dir,
+                        marker.shard_id,
+                        &marker.manifest_id,
+                    )
+                    .ok()
+                    .flatten()
+                    .map(|manifest| self.install_slot_dump_manifest(&manifest))
+                    {
+                        Some(Ok(())) => {
+                            report.completed_install = true;
+                            report.completed_commit = true;
+                            report.reason = "install_retried".to_string();
+                        }
+                        Some(Err(status)) => {
+                            report.can_retry_install = false;
+                            report.reason = format!("install_retry_failed:{}", status.code);
+                        }
+                        None => {
+                            report.can_retry_install = false;
+                            report.reason = "missing_manifest".to_string();
+                        }
+                    }
+                } else if report.can_roll_forward {
                     match self.persist_slot_dump_install_marker_by_fields(
                         marker.shard_id,
                         &marker.manifest_id,
@@ -1497,14 +1525,16 @@ impl TemporalEngine {
         &self,
         marker: &SlotDumpInstallMarker,
     ) -> SlotDumpInstallRollForwardReport {
-        if marker.phase != "install" {
+        if marker.phase != "install" && marker.phase != "prepare" {
             return SlotDumpInstallRollForwardReport {
                 shard_id: marker.shard_id,
                 manifest_id: marker.manifest_id.clone(),
                 interrupted_phase: marker.phase.clone(),
                 can_roll_forward: false,
                 completed_commit: false,
-                reason: "not_installed_phase".to_string(),
+                completed_install: false,
+                can_retry_install: false,
+                reason: "unknown_interrupted_phase".to_string(),
             };
         }
         let Some(manifest) =
@@ -1518,11 +1548,14 @@ impl TemporalEngine {
                 interrupted_phase: marker.phase.clone(),
                 can_roll_forward: false,
                 completed_commit: false,
+                completed_install: false,
+                can_retry_install: false,
                 reason: "missing_manifest".to_string(),
             };
         };
         let reason = match self.validate_slot_dump_manifest(&manifest) {
-            Ok(()) => "commit_ready".to_string(),
+            Ok(()) if marker.phase == "install" => "commit_ready".to_string(),
+            Ok(()) => "install_retry_ready".to_string(),
             Err(status) => format!("manifest_invalid:{}", status.code),
         };
         SlotDumpInstallRollForwardReport {
@@ -1530,7 +1563,9 @@ impl TemporalEngine {
             manifest_id: marker.manifest_id.clone(),
             interrupted_phase: marker.phase.clone(),
             can_roll_forward: reason == "commit_ready",
+            can_retry_install: reason == "install_retry_ready",
             completed_commit: false,
+            completed_install: false,
             reason,
         }
     }
@@ -11780,6 +11815,52 @@ mod tests {
 
         let applied = engine.roll_forward_slot_dump_installs(1);
         assert_eq!(applied.len(), 1);
+        assert!(applied[0].completed_commit);
+        assert!(engine.interrupted_slot_dump_installs(1).is_empty());
+    }
+
+    #[test]
+    fn slot_dump_install_roll_forward_retries_safe_prepare_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "retry-prepare".to_string(),
+                value: b"value".to_vec(),
+            },
+        });
+        let manifest = engine
+            .create_slot_dump_manifest(1, Vec::new())
+            .expect("manifest should persist");
+        write_slot_dump_install_marker(
+            &engine.index_dir,
+            &SlotDumpInstallMarker {
+                shard_id: manifest.shard_id,
+                manifest_id: manifest.manifest_id.clone(),
+                phase: "prepare".to_string(),
+                oplog_sequence: manifest.oplog_sequence,
+                index_log_sequence: manifest.index_log_sequence,
+                created_unix_ms: now_ms(),
+            },
+        )
+        .unwrap();
+
+        let dry_run = engine.slot_dump_install_roll_forward_reports(1);
+        assert_eq!(dry_run.len(), 1);
+        assert!(dry_run[0].can_retry_install);
+        assert!(!dry_run[0].can_roll_forward);
+        assert_eq!(dry_run[0].reason, "install_retry_ready");
+
+        let applied = engine.roll_forward_slot_dump_installs(1);
+        assert_eq!(applied.len(), 1);
+        assert!(applied[0].completed_install);
         assert!(applied[0].completed_commit);
         assert!(engine.interrupted_slot_dump_installs(1).is_empty());
     }
