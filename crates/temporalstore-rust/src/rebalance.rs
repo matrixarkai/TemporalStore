@@ -159,6 +159,15 @@ pub struct SchedulerTask {
     pub kind: SchedulerTaskKind,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SchedulerLifecycleToken {
+    pub task_id: u64,
+    pub shard_id: ShardId,
+    pub operation: String,
+    pub load_version: u64,
+    pub generation: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskSchedulerOptions {
     pub base_postpone_ms: u64,
@@ -386,6 +395,31 @@ impl DeterministicTaskScheduler {
             queue_len: self.queue.len(),
             aborted,
         }))
+    }
+}
+
+impl SchedulerTask {
+    pub fn lifecycle_token(&self) -> Option<SchedulerLifecycleToken> {
+        let SchedulerTaskKind::RebalanceStep(step) = &self.kind else {
+            return None;
+        };
+        let (shard_id, operation, load_version) = match step {
+            RebalanceStep::LoadTarget {
+                shard_id,
+                load_version,
+                ..
+            } => (*shard_id, "load", *load_version),
+            RebalanceStep::UnloadSource { shard_id, .. } => (*shard_id, "unload", 0),
+            RebalanceStep::FreezeSource { shard_id, .. } => (*shard_id, "freeze", 0),
+            RebalanceStep::UpdateMembership { shard_id, .. } => (*shard_id, "membership", 0),
+        };
+        Some(SchedulerLifecycleToken {
+            task_id: self.id,
+            shard_id,
+            operation: operation.to_string(),
+            load_version,
+            generation: self.create_time_ms,
+        })
     }
 }
 
@@ -1086,6 +1120,42 @@ mod tests {
         };
         assert_eq!(next.id, task.id);
         assert_eq!(next.kind, SchedulerTaskKind::UpdateMembership(plan));
+    }
+
+    #[test]
+    fn scheduler_rebalance_steps_issue_lifecycle_tokens() {
+        let mut scheduler = DeterministicTaskScheduler::default();
+        let load = scheduler.submit(
+            0,
+            42,
+            SchedulerTaskKind::RebalanceStep(RebalanceStep::LoadTarget {
+                shard_id: 7,
+                replica_id: 3,
+                node_id: 2,
+                load_version: 99,
+            }),
+        );
+        let token = load.lifecycle_token().unwrap();
+        assert_eq!(token.task_id, load.id);
+        assert_eq!(token.shard_id, 7);
+        assert_eq!(token.operation, "load");
+        assert_eq!(token.load_version, 99);
+        assert_eq!(token.generation, 42);
+
+        let unload = scheduler.submit(
+            0,
+            43,
+            SchedulerTaskKind::RebalanceStep(RebalanceStep::UnloadSource {
+                shard_id: 7,
+                replica_id: 1,
+                node_id: 1,
+            }),
+        );
+        let token = unload.lifecycle_token().unwrap();
+        assert_eq!(token.task_id, unload.id);
+        assert_eq!(token.operation, "unload");
+        assert_eq!(token.load_version, 0);
+        assert_eq!(token.generation, 43);
     }
 
     #[test]

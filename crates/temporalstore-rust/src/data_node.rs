@@ -17,6 +17,7 @@ use crate::engine::{
 use crate::meta::{
     ServerHeartbeatResponse, ServerRuntimeLoad, ServerShardServingState, TableTopologyResponse,
 };
+use crate::rebalance::SchedulerLifecycleToken;
 use crate::types::{Command, CommandResponse, ExecuteRequest, ExecuteResponse, ShardId, Status};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -139,6 +140,10 @@ pub struct DataNodeShardLifecycleState {
     pub updated_at_ms: u64,
     #[serde(default)]
     pub last_status: Option<Status>,
+    #[serde(default)]
+    pub scheduler_task_id: Option<u64>,
+    #[serde(default)]
+    pub scheduler_generation: Option<u64>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -372,6 +377,7 @@ struct DataNodeRuntimeInner {
     stats: Mutex<MutableRuntimeStats>,
     meta_heartbeat: Mutex<DataNodeMetaHeartbeatReport>,
     lifecycle: Mutex<HashMap<ShardId, DataNodeShardLifecycleState>>,
+    lifecycle_tokens: Mutex<HashMap<(ShardId, String), SchedulerLifecycleToken>>,
     next_job_id: AtomicU64,
 }
 
@@ -612,6 +618,7 @@ impl DataNodeRuntime {
             stats: Mutex::default(),
             meta_heartbeat: Mutex::default(),
             lifecycle: Mutex::default(),
+            lifecycle_tokens: Mutex::default(),
             next_job_id: AtomicU64::new(1),
         });
         for _ in 0..inner.options.worker_threads {
@@ -658,12 +665,25 @@ impl DataNodeRuntime {
                 stats: Mutex::default(),
                 meta_heartbeat: Mutex::default(),
                 lifecycle: Mutex::default(),
+                lifecycle_tokens: Mutex::default(),
                 next_job_id: AtomicU64::new(1),
             }),
         }
     }
 
     pub fn load_shard_with(&self, request: LoadShardRequest) -> LoadShardResponse {
+        if let Err(status) =
+            self.validate_lifecycle_token(request.shard_id, "load", request.load_version)
+        {
+            self.record_lifecycle_state(
+                request.shard_id,
+                "failed",
+                "load",
+                request.load_version,
+                Some(status.clone()),
+            );
+            return LoadShardResponse { status };
+        }
         self.record_lifecycle_state(
             request.shard_id,
             "loading",
@@ -683,6 +703,18 @@ impl DataNodeRuntime {
     }
 
     pub fn reload_shard_with(&self, request: LoadShardRequest) -> LoadShardResponse {
+        if let Err(status) =
+            self.validate_lifecycle_token(request.shard_id, "reload", request.load_version)
+        {
+            self.record_lifecycle_state(
+                request.shard_id,
+                "failed",
+                "reload",
+                request.load_version,
+                Some(status.clone()),
+            );
+            return LoadShardResponse { status };
+        }
         self.record_lifecycle_state(
             request.shard_id,
             "reloading",
@@ -709,6 +741,17 @@ impl DataNodeRuntime {
             .info
             .map(|info| info.load_version)
             .unwrap_or_default();
+        if let Err(status) = self.validate_lifecycle_token(request.shard_id, "unload", load_version)
+        {
+            self.record_lifecycle_state(
+                request.shard_id,
+                "failed",
+                "unload",
+                load_version,
+                Some(status.clone()),
+            );
+            return UnloadShardResponse { status };
+        }
         self.record_lifecycle_state(request.shard_id, "unloading", "unload", load_version, None);
         let response = self.inner.engine.unload_shard_with(request.clone());
         let state = if response.status.ok {
@@ -724,6 +767,27 @@ impl DataNodeRuntime {
             Some(response.status.clone()),
         );
         response
+    }
+
+    pub fn require_lifecycle_token(&self, token: SchedulerLifecycleToken) {
+        self.inner
+            .lifecycle_tokens
+            .lock()
+            .expect("runtime lifecycle token lock poisoned")
+            .insert((token.shard_id, token.operation.clone()), token);
+    }
+
+    pub fn lifecycle_tokens(&self) -> Vec<SchedulerLifecycleToken> {
+        let mut tokens = self
+            .inner
+            .lifecycle_tokens
+            .lock()
+            .expect("runtime lifecycle token lock poisoned")
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        tokens.sort_by_key(|token| (token.shard_id, token.operation.clone()));
+        tokens
     }
 
     pub fn submit_execute(
@@ -1185,6 +1249,13 @@ impl DataNodeRuntime {
         load_version: u64,
         last_status: Option<Status>,
     ) {
+        let token = self
+            .inner
+            .lifecycle_tokens
+            .lock()
+            .expect("runtime lifecycle token lock poisoned")
+            .get(&(shard_id, operation.to_string()))
+            .cloned();
         self.inner
             .lifecycle
             .lock()
@@ -1198,8 +1269,47 @@ impl DataNodeRuntime {
                     load_version,
                     updated_at_ms: now_ms(),
                     last_status,
+                    scheduler_task_id: token.as_ref().map(|token| token.task_id),
+                    scheduler_generation: token.as_ref().map(|token| token.generation),
                 },
             );
+    }
+
+    fn validate_lifecycle_token(
+        &self,
+        shard_id: ShardId,
+        operation: &str,
+        load_version: u64,
+    ) -> Result<(), Status> {
+        let token = self
+            .inner
+            .lifecycle_tokens
+            .lock()
+            .expect("runtime lifecycle token lock poisoned")
+            .get(&(shard_id, operation.to_string()))
+            .cloned();
+        let Some(token) = token else {
+            return Ok(());
+        };
+        if token.operation != operation {
+            return Err(Status::error(
+                "lifecycle_token_mismatch",
+                format!(
+                    "expected lifecycle operation {}, got {operation}",
+                    token.operation
+                ),
+            ));
+        }
+        if token.load_version != 0 && token.load_version != load_version {
+            return Err(Status::error(
+                "lifecycle_token_mismatch",
+                format!(
+                    "expected lifecycle load_version {}, got {load_version}",
+                    token.load_version
+                ),
+            ));
+        }
+        Ok(())
     }
 
     pub fn topology_validation_report(
@@ -2349,6 +2459,58 @@ mod tests {
         assert_eq!(unloaded.loaded_shard_count, 0);
         assert_eq!(unloaded.transitions[0].state, "unloaded");
         assert_eq!(unloaded.transitions[0].operation, "unload");
+    }
+
+    #[test]
+    fn runtime_enforces_authorized_lifecycle_token_when_installed() {
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            TemporalEngine::default(),
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        );
+        runtime.require_lifecycle_token(SchedulerLifecycleToken {
+            task_id: 12,
+            shard_id: 7,
+            operation: "load".to_string(),
+            load_version: 43,
+            generation: 900,
+        });
+
+        let stale = runtime.load_shard_with(crate::control::LoadShardRequest {
+            shard_id: 7,
+            table_name: "tbl".to_string(),
+            shard_uri: "local://tbl/stale".to_string(),
+            start_routing_slot: 10,
+            end_routing_slot: 19,
+            readonly: false,
+            load_version: 42,
+            local_node_id: Some(3),
+        });
+        assert_eq!(stale.status.code, "lifecycle_token_mismatch");
+        let failed = runtime.lifecycle_report();
+        assert_eq!(failed.failed_count, 1);
+        assert_eq!(failed.transitions[0].scheduler_task_id, Some(12));
+        assert_eq!(failed.transitions[0].scheduler_generation, Some(900));
+
+        let load = runtime.load_shard_with(crate::control::LoadShardRequest {
+            shard_id: 7,
+            table_name: "tbl".to_string(),
+            shard_uri: "local://tbl/7".to_string(),
+            start_routing_slot: 10,
+            end_routing_slot: 19,
+            readonly: false,
+            load_version: 43,
+            local_node_id: Some(3),
+        });
+        assert!(load.status.ok, "{load:?}");
+        let lifecycle = runtime.lifecycle_report();
+        assert_eq!(lifecycle.failed_count, 0);
+        assert_eq!(lifecycle.transitions[0].state, "serving");
+        assert_eq!(lifecycle.transitions[0].scheduler_task_id, Some(12));
+        assert_eq!(lifecycle.transitions[0].scheduler_generation, Some(900));
     }
 
     #[test]

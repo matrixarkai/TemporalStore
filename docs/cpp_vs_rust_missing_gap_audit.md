@@ -58,6 +58,24 @@ brpc and Thrift are intentionally not part of the Rust target. The Rust open-sou
 
 ## What Was Closed In The Latest Pass
 
+This pass closed the next metaserver-to-nodeserver lifecycle coordination gap:
+
+1. Deterministic metaserver scheduler tasks can now derive Rust-native lifecycle tokens from
+   rebalance steps, using the scheduler task id and create time as the task generation.
+2. Data-node runtime can install expected lifecycle tokens per shard and operation, then reject
+   mismatched controlled load/reload/unload operations before mutating engine state.
+3. Lifecycle transition records now include scheduler task id and scheduler generation when a
+   controlled operation is present, making stale or unauthorized lifecycle attempts visible in
+   node preflight/lifecycle reports.
+4. Regression coverage validates token issuance from scheduler rebalance steps and data-node
+   rejection/acceptance of controlled load operations by load version.
+
+This improves C++-style scheduler-driven load/unload safety while preserving backward-compatible
+manual admin calls when no token is installed. Remaining work is executing these tokens end to end
+from the metaserver HTTP scheduler into remote data-node load/reload/unload calls.
+
+## What Was Closed In The Previous Pass
+
 This pass closed the next node-server lifecycle-state gap:
 
 1. Data-node runtime now owns load/reload/unload admin operations instead of letting server routes
