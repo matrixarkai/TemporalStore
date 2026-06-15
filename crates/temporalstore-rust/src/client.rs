@@ -2582,6 +2582,10 @@ impl TemporalStoreTable {
             .lock()
             .expect("client stats lock poisoned")
             .execute_requests += 1;
+        let write = is_write(&command);
+        if write {
+            self.refresh_table_topology_before_write_if_due()?;
+        }
         let shard_id = self.shard_id_for_command(&command);
         let table_options = self.table_options();
         if command_is_dropped(&command, table_options.drop_percent) {
@@ -2590,7 +2594,6 @@ impl TemporalStoreTable {
                 response: CommandResponse::Empty,
             });
         }
-        let write = is_write(&command);
         let force_primary = write || table_options.pin_primary;
         let retry_budget_attempts = retry_attempts_for(&table_options, write);
         let mut attempt = 0;
@@ -2641,6 +2644,10 @@ impl TemporalStoreTable {
             .lock()
             .expect("client stats lock poisoned")
             .batch_execute_requests += 1;
+        let write = commands.iter().any(is_write);
+        if write {
+            self.refresh_table_topology_before_write_if_due()?;
+        }
         let table_options = self.table_options();
         if let Some(command) = commands
             .iter()
@@ -2697,6 +2704,27 @@ impl TemporalStoreTable {
             attempt += 1;
         };
         Ok(response)
+    }
+
+    fn refresh_table_topology_before_write_if_due(&self) -> Result<(), ClientError> {
+        if self.client.inner.options.meta_addr.is_none() {
+            return Ok(());
+        }
+        let key = table_combine_name(&self.namespace, &self.table_name);
+        let due = self
+            .client
+            .inner
+            .meta_sync_tables
+            .lock()
+            .expect("client meta sync table lock poisoned")
+            .get(&key)
+            .map(|state| state.next_sync_after_unix_ms <= now_unix_ms())
+            .unwrap_or(false);
+        if due {
+            self.client
+                .sync_table_topology(self.namespace.clone(), self.table_name.clone())?;
+        }
+        Ok(())
     }
 
     fn batch_execute_grouped_by_shard(
@@ -4334,6 +4362,105 @@ mod tests {
         assert_eq!(batch.status.code, "traffic_dropped");
         assert!(batch.responses.is_empty());
         assert_eq!(client.stats().route_refreshes, 0);
+    }
+
+    #[test]
+    fn table_write_refreshes_due_topology_before_network() {
+        let data_addr = free_local_addr();
+        let observed_shard = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        std::thread::spawn({
+            let data_addr = data_addr.clone();
+            let observed_shard = std::sync::Arc::clone(&observed_shard);
+            move || {
+                serve(&data_addr, move |request| {
+                    match (request.method.as_str(), request.path.as_str()) {
+                        ("POST", "/execute") => {
+                            let req = parse_json::<ExecuteRequest>(&request.body).unwrap();
+                            observed_shard
+                                .store(req.shard_id, std::sync::atomic::Ordering::Relaxed);
+                            json_response(
+                                200,
+                                &ExecuteResponse {
+                                    status: Status::ok(),
+                                    response: CommandResponse::Empty,
+                                },
+                            )
+                        }
+                        _ => json_response(404, &Status::error("not_found", "not found")),
+                    }
+                })
+                .unwrap();
+            }
+        });
+        wait_for_http(&data_addr);
+
+        let meta_addr = free_local_addr();
+        let first_shard = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(10));
+        std::thread::spawn({
+            let meta_addr = meta_addr.clone();
+            let data_addr = data_addr.clone();
+            let first_shard = std::sync::Arc::clone(&first_shard);
+            move || {
+                serve(&meta_addr, move |request| {
+                    match (request.method.as_str(), request.path.as_str()) {
+                        ("POST", "/tables/topology") => {
+                            let first_shard_id =
+                                first_shard.load(std::sync::atomic::Ordering::Relaxed);
+                            json_response(
+                                200,
+                                &TableTopologyResponse {
+                                    status: Status::ok(),
+                                    table: Some(crate::meta::TableMetaInfo {
+                                        table_id: 1,
+                                        namespace: "ns".to_string(),
+                                        table_name: "tbl".to_string(),
+                                        state: crate::meta::MetaEntityState::Normal,
+                                        topology_version: first_shard_id,
+                                        first_shard_id,
+                                        shard_count: 1,
+                                        replica_count: 1,
+                                        use_cpp_partition_ids: false,
+                                        partition_version: 0,
+                                        serving_options: crate::meta::TableServingOptions::default(
+                                        ),
+                                    }),
+                                    partitions: vec![crate::meta::TablePartition {
+                                        shard_id: first_shard_id,
+                                        start_slot: 0,
+                                        end_slot: u64::MAX,
+                                        primary: Some(data_addr.clone()),
+                                        replicas: vec![data_addr.clone()],
+                                        primary_endpoint: None,
+                                        replica_endpoints: Vec::new(),
+                                    }],
+                                    unchanged: false,
+                                },
+                            )
+                        }
+                        _ => json_response(404, &Status::error("not_found", "not found")),
+                    }
+                })
+                .unwrap();
+            }
+        });
+        wait_for_http(&meta_addr);
+
+        let client = TemporalStoreClient::with_options(ClientOptions {
+            meta_addr: Some(meta_addr),
+            meta_sync_interval_ms: 1,
+            ..ClientOptions::default()
+        });
+        let table = client.open_table_from_meta("ns", "tbl").unwrap();
+        assert_eq!(table.options().first_shard_id, 10);
+        first_shard.store(20, std::sync::atomic::Ordering::Relaxed);
+        std::thread::sleep(Duration::from_millis(5));
+
+        table.set("stale-write", b"value".to_vec()).unwrap();
+        assert_eq!(
+            observed_shard.load(std::sync::atomic::Ordering::Relaxed),
+            20
+        );
+        assert_eq!(table.options().first_shard_id, 20);
     }
 
     #[test]

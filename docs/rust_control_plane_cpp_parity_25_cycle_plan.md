@@ -17,7 +17,7 @@ push.
 9. Add proxy route-cache invalidation from metaserver topology events. Done in cycle 10.
 10. Add proxy backend quarantine recovery probes.
 11. Add client background MetaSyncer jitter/backoff worker handle. Done in cycle 11.
-12. Add client stale-table policy enforcement before network writes.
+12. Add client stale-table policy enforcement before network writes. Done in cycle 12.
 13. Add client route refresh from proxy/meta topology-version headers.
 14. Add metaserver stuck-transition report for loading/reloading/unloading shards.
 15. Add metaserver repair task creation for missing primaries and under-replicated shards.
@@ -79,6 +79,20 @@ Cycle 11 makes the client MetaSyncer closer to the C++ background worker shape:
 
 The next cycle should focus on multi-proxy/multi-client table-change convergence and then stale
 table policy enforcement before network writes.
+
+## Cycle 12 Implemented
+
+Cycle 12 adds stale-table write policy enforcement:
+
+- table writes check whether the table's MetaSync state is due before selecting a shard
+- due write paths synchronously refresh table topology through metaserver
+- batched table writes run the same guard before grouping/routing
+- read paths remain cache-tolerant
+- regression coverage changes a table from shard 10 to shard 20 and verifies the next write routes
+  to shard 20 before network execution
+
+The next cycle should focus on multi-proxy/multi-client table-change convergence and table
+freeze/unfreeze write behavior.
 
 ## Cycle 1 Implemented
 

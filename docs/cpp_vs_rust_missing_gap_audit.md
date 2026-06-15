@@ -60,6 +60,24 @@ brpc and Thrift are intentionally not part of the Rust target. The Rust open-sou
 
 ## What Was Closed In The Latest Pass
 
+This pass closed the twelfth client/proxy/metaserver/nodeserver C++ parity cycle:
+
+1. Table writes now check whether their cached table topology is due for MetaSync before selecting
+   a shard or sending a network request.
+2. Due write paths synchronously refresh table topology through metaserver before routing.
+3. The guard applies to single-command table writes and batched table writes.
+4. Read paths remain tolerant and continue to rely on cached/read-retry behavior.
+5. Drop-percent rejection still happens before network routing after the fresh table policy is
+   loaded.
+6. Regression coverage changes a table from shard 10 to shard 20, waits until the table sync state
+   is due, and verifies the next write routes to shard 20 before network execution.
+
+This closes the stale-table write policy gap for single-client table handles. Remaining work is
+multi-proxy and multi-client convergence under table changes, table freeze/unfreeze write behavior,
+membership-update execution, and full move/failover orchestration.
+
+## What Was Closed In The Previous Pass
+
 This pass closed the eleventh client/proxy/metaserver/nodeserver C++ parity cycle:
 
 1. Client background metaserver sync now has a managed worker handle with `stop`,
