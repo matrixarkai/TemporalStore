@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -3196,11 +3196,11 @@ impl TemporalEngine {
             )?;
         }
         for series in shard.features.values_mut() {
-            compact_page_addresses(
+            compact_feature_page_addresses(
                 &self.page_store,
                 &self.cache,
                 shard_id,
-                series.values_mut(),
+                series,
                 &mut rewritten_page_refs,
             )?;
         }
@@ -5582,12 +5582,16 @@ fn collect_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
         }));
     }
     for (key, series) in &shard.features {
-        entries.extend(series.values().map(|address| LivePageEntry {
-            object_key: key.clone(),
-            kind: "feature",
-            component: None,
-            address: address.clone(),
-        }));
+        entries.extend(
+            unique_feature_page_addresses(series)
+                .into_iter()
+                .map(|address| LivePageEntry {
+                    object_key: key.clone(),
+                    kind: "feature",
+                    component: None,
+                    address,
+                }),
+        );
     }
     for (key, series) in &shard.sequences {
         entries.extend(series.iter().map(|(timestamp_ms, address)| LivePageEntry {
@@ -5784,7 +5788,7 @@ fn collect_live_page_addresses(shard: &ShardState) -> Vec<PageAddress> {
         addresses.extend(members.values().cloned());
     }
     for series in shard.features.values() {
-        addresses.extend(series.values().cloned());
+        addresses.extend(unique_feature_page_addresses(series));
     }
     for series in shard.sequences.values() {
         addresses.extend(series.values().cloned());
@@ -5795,6 +5799,22 @@ fn collect_live_page_addresses(shard: &ShardState) -> Vec<PageAddress> {
     for series in shard.ips_meta.values() {
         addresses.extend(series.values().map(|meta| meta.address.clone()));
     }
+    addresses
+}
+
+fn unique_feature_page_addresses(series: &BTreeMap<u64, PageAddress>) -> Vec<PageAddress> {
+    let mut addresses = series
+        .values()
+        .cloned()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    addresses.sort_by(|left, right| {
+        left.page_segment_id
+            .cmp(&right.page_segment_id)
+            .then(left.offset.cmp(&right.offset))
+            .then(left.length.cmp(&right.length))
+    });
     addresses
 }
 
@@ -5867,6 +5887,47 @@ fn compact_page_addresses<'a>(
             bytes,
         );
         *rewritten_page_refs += 1;
+    }
+    Ok(())
+}
+
+fn compact_feature_page_addresses(
+    page_store: &LocalPageStore,
+    cache: &MultiLayerCache,
+    shard_id: ShardId,
+    series: &mut BTreeMap<u64, PageAddress>,
+    rewritten_page_refs: &mut usize,
+) -> Result<(), Status> {
+    let unique_addresses = unique_feature_page_addresses(series);
+    let mut rewritten = HashMap::<PageAddress, PageAddress>::new();
+    for old_address in unique_addresses {
+        let bytes =
+            read_page_bytes(cache, page_store, shard_id, &old_address).ok_or_else(|| {
+                Status::error(
+                    "page_compaction_failed",
+                    "missing feature page bytes during compaction",
+                )
+            })?;
+        let new_address = page_store
+            .append_with_page_metadata(&bytes, old_address.object_id, old_address.routing_slot)
+            .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
+        let _ = cache.put(
+            CacheKey::page_with_slot(
+                shard_id,
+                new_address.page_segment_id,
+                new_address.offset,
+                new_address.length,
+                new_address.routing_slot,
+            ),
+            bytes,
+        );
+        rewritten.insert(old_address, new_address);
+        *rewritten_page_refs += 1;
+    }
+    for address in series.values_mut() {
+        if let Some(new_address) = rewritten.get(address) {
+            *address = new_address.clone();
+        }
     }
     Ok(())
 }
@@ -8376,6 +8437,77 @@ mod tests {
             },
         });
         assert_eq!(agg.response, CommandResponse::Aggregate { value: 2 });
+    }
+
+    #[test]
+    fn feature_compaction_rewrites_shared_packed_page_once() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureAppend {
+                key: "compact-packed-feature".to_string(),
+                points: vec![
+                    FeaturePoint {
+                        timestamp_ms: 10,
+                        value: b"ten".to_vec(),
+                    },
+                    FeaturePoint {
+                        timestamp_ms: 20,
+                        value: b"twenty".to_vec(),
+                    },
+                ],
+            },
+        });
+        assert!(response.status.ok);
+
+        let before = engine.storage_recovery_report(1);
+        assert_eq!(before.total_page_refs, 1);
+        let report = engine.compact_shard_pages(1).unwrap();
+        assert_eq!(report.rewritten_page_refs, 1);
+        assert_eq!(report.after.live_page_refs, 1);
+
+        let (first_address, second_address) = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let series = shards
+                .get(&1)
+                .and_then(|shard| shard.features.get("compact-packed-feature"))
+                .expect("feature series should exist");
+            (
+                series.get(&10).expect("first point").clone(),
+                series.get(&20).expect("second point").clone(),
+            )
+        };
+        assert_eq!(first_address, second_address);
+
+        let query = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureQuery {
+                key: "compact-packed-feature".to_string(),
+                start_ms: 0,
+                end_ms: 30,
+                count: None,
+            },
+        });
+        assert_eq!(
+            query.response,
+            CommandResponse::FeaturePoints {
+                points: vec![
+                    FeaturePoint {
+                        timestamp_ms: 10,
+                        value: b"ten".to_vec(),
+                    },
+                    FeaturePoint {
+                        timestamp_ms: 20,
+                        value: b"twenty".to_vec(),
+                    },
+                ]
+            }
+        );
+        let after = engine.storage_recovery_report(1);
+        assert_eq!(after.total_page_refs, 1);
+        assert_eq!(after.object_lifecycle.live_page_refs, 1);
+        assert_eq!(after.object_lifecycle.reused_object_id_conflicts, 0);
     }
 
     #[test]
