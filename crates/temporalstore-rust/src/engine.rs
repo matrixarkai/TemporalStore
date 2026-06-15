@@ -234,6 +234,8 @@ pub struct StorageFeaturePageLayoutReport {
     pub missing_indexed_timestamps: Vec<StorageFeaturePageTimestampMismatch>,
     #[serde(default)]
     pub orphan_packed_timestamps: Vec<StorageFeaturePageTimestampMismatch>,
+    #[serde(default)]
+    pub duplicate_packed_timestamps: Vec<StorageFeaturePageTimestampMismatch>,
 }
 
 impl StorageFeaturePageLayoutReport {
@@ -241,10 +243,13 @@ impl StorageFeaturePageLayoutReport {
         !self.corrupt_packed_feature_pages.is_empty()
             || !self.missing_indexed_timestamps.is_empty()
             || !self.orphan_packed_timestamps.is_empty()
+            || !self.duplicate_packed_timestamps.is_empty()
     }
 
     fn mismatch_count(&self) -> usize {
-        self.missing_indexed_timestamps.len() + self.orphan_packed_timestamps.len()
+        self.missing_indexed_timestamps.len()
+            + self.orphan_packed_timestamps.len()
+            + self.duplicate_packed_timestamps.len()
     }
 }
 
@@ -5906,6 +5911,22 @@ fn storage_feature_page_layout_report(
                             Some(points) => {
                                 report.packed_feature_pages =
                                     report.packed_feature_pages.saturating_add(1);
+                                let mut packed_timestamp_counts = BTreeMap::<u64, usize>::new();
+                                for point in &points {
+                                    let count = packed_timestamp_counts
+                                        .entry(point.timestamp_ms)
+                                        .or_default();
+                                    if *count == 1 {
+                                        report.duplicate_packed_timestamps.push(
+                                            feature_page_timestamp_mismatch(
+                                                key,
+                                                point.timestamp_ms,
+                                                &address,
+                                            ),
+                                        );
+                                    }
+                                    *count = (*count).saturating_add(1);
+                                }
                                 let packed_timestamps = points
                                     .into_iter()
                                     .map(|point| point.timestamp_ms)
@@ -8742,6 +8763,69 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![20]
         );
+        let readiness = engine.storage_production_readiness_report(1);
+        assert!(readiness
+            .blockers
+            .contains(&"feature_page_layout_mismatch".to_string()));
+        assert_eq!(readiness.feature_page_layout_mismatch_count, 1);
+    }
+
+    #[test]
+    fn feature_recovery_reports_duplicate_timestamps_inside_packed_page() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let duplicate_page = encode_feature_page(&[
+            FeaturePoint {
+                timestamp_ms: 10,
+                value: b"ten".to_vec(),
+            },
+            FeaturePoint {
+                timestamp_ms: 10,
+                value: b"ten-duplicate".to_vec(),
+            },
+            FeaturePoint {
+                timestamp_ms: 20,
+                value: b"twenty".to_vec(),
+            },
+        ]);
+        let address = engine
+            .page_store()
+            .append_with_page_metadata(
+                &duplicate_page,
+                Some(stable_page_object_id(1, "feature", "layout-feature", None)),
+                Some(page_routing_slot("layout-feature", 0, u32::MAX)),
+            )
+            .expect("duplicate packed page append");
+
+        {
+            let mut shards = engine.shards.write().expect("engine lock poisoned");
+            let shard = shards.get_mut(&1).expect("loaded shard");
+            let series = shard
+                .features
+                .entry("layout-feature".to_string())
+                .or_default();
+            series.insert(10, address.clone());
+            series.insert(20, address);
+        }
+
+        let report = engine.storage_recovery_report(1);
+        assert_eq!(
+            report
+                .feature_page_layout
+                .duplicate_packed_timestamps
+                .iter()
+                .map(|mismatch| mismatch.timestamp_ms)
+                .collect::<Vec<_>>(),
+            vec![10]
+        );
+        assert!(report
+            .feature_page_layout
+            .missing_indexed_timestamps
+            .is_empty());
+        assert!(report
+            .feature_page_layout
+            .orphan_packed_timestamps
+            .is_empty());
         let readiness = engine.storage_production_readiness_report(1);
         assert!(readiness
             .blockers
