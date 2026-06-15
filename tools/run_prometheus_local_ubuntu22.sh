@@ -25,10 +25,14 @@ PROXY_BACKEND_IO_TIMEOUT_MS="${PROXY_BACKEND_IO_TIMEOUT_MS:-30000}"
 PROXY_BACKEND_CONNECT_TIMEOUT_MS="${PROXY_BACKEND_CONNECT_TIMEOUT_MS:-5000}"
 PROXY_SMOKE_TIMEOUT_MS="${PROXY_SMOKE_TIMEOUT_MS:-30000}"
 PROM_DIR="${ROOT}/tools/temporalstore-prometheus"
-TEXTFILE_DIR="${PROM_DIR}/vars-exporter/metrics"
+START_PROMETHEUS="${START_PROMETHEUS:-1}"
+if [[ "${START_PROMETHEUS}" == "1" ]]; then
+  TEXTFILE_DIR="${TEXTFILE_DIR:-${PROM_DIR}/vars-exporter/metrics}"
+else
+  TEXTFILE_DIR="${TEXTFILE_DIR:-${RESULT_DIR}/metrics}"
+fi
 PROM_FILE="${TEXTFILE_DIR}/temporalstore-vars.prom"
 CLIENT_FILE="${TEXTFILE_DIR}/temporalstore-client.prom"
-START_PROMETHEUS="${START_PROMETHEUS:-1}"
 
 mkdir -p "${RESULT_DIR}" "${TEXTFILE_DIR}"
 
@@ -148,6 +152,72 @@ write_proxy_metric() {
   fi
 }
 
+require_metric() {
+  local pattern="$1"
+  local file="$2"
+  local label="$3"
+  if [[ ! -f "${file}" ]]; then
+    echo "missing metrics file while checking ${label}: ${file}" >&2
+    return 1
+  fi
+  if ! grep -q "${pattern}" "${file}"; then
+    echo "missing metric ${label} in ${file}" >&2
+    return 1
+  fi
+}
+
+scrape_and_validate_metrics() {
+  local iteration="$1"
+  local attempt
+  local code=1
+  for attempt in $(seq 1 "${PROMETHEUS_SCRAPE_ATTEMPTS:-5}"); do
+    set +e
+    python3 "${PROM_DIR}/vars-exporter/vars_to_prom.py" \
+      --targets "${host_targets}" \
+      --interval 1 \
+      --output-dir "${TEXTFILE_DIR}" \
+      --output-file "temporalstore-vars.prom" \
+      --timeout 3 \
+      --once > "${RESULT_DIR}/vars_exporter_${iteration}_${attempt}.out" \
+      2> "${RESULT_DIR}/vars_exporter_${iteration}_${attempt}.err"
+    code=$?
+    set -e
+
+    if [[ "${code}" == "0" ]] && \
+       require_metric 'temporalstore_service_role_up{service_role="nodeserver"' \
+         "${PROM_FILE}" "nodeserver role up" && \
+       require_metric 'temporalstore_service_role_up{service_role="metaserver"' \
+         "${PROM_FILE}" "metaserver role up" && \
+       require_metric 'temporalstore_vars_exporter_target_samples_scraped{service_role="nodeserver"' \
+         "${PROM_FILE}" "nodeserver sample count" && \
+       require_metric 'temporalstore_client_validation_up' \
+         "${CLIENT_FILE}" "client validation" && \
+       require_metric 'temporalstore_proxy_artifact_present' \
+         "${CLIENT_FILE}" "proxy artifact metric"; then
+      if [[ "${HAS_PROXY}" == "1" ]]; then
+        require_metric 'temporalstore_service_role_up{service_role="proxy"' \
+          "${PROM_FILE}" "proxy role up" || code=$?
+      fi
+      [[ "${code}" == "0" ]] && return 0
+    fi
+
+    echo "metrics scrape attempt ${attempt} failed for iteration ${iteration}; retrying" \
+      >> "${RESULT_DIR}/summary.txt"
+    sleep 1
+  done
+
+  echo "metrics scrape failed after ${PROMETHEUS_SCRAPE_ATTEMPTS:-5} attempts" >&2
+  for attempt in $(seq 1 "${PROMETHEUS_SCRAPE_ATTEMPTS:-5}"); do
+    echo "== vars exporter attempt ${attempt} stdout ==" >&2
+    cat "${RESULT_DIR}/vars_exporter_${iteration}_${attempt}.out" >&2 2>/dev/null || true
+    echo "== vars exporter attempt ${attempt} stderr ==" >&2
+    cat "${RESULT_DIR}/vars_exporter_${iteration}_${attempt}.err" >&2 2>/dev/null || true
+  done
+  [[ -f "${PROM_FILE}" ]] && tail -120 "${PROM_FILE}" >&2 || true
+  [[ -f "${CLIENT_FILE}" ]] && tail -120 "${CLIENT_FILE}" >&2 || true
+  return 1
+}
+
 rm -f "${PROM_FILE}" "${CLIENT_FILE}"
 {
   echo "# HELP temporalstore_client_validation_up Client validation status from local smoke deployment."
@@ -225,23 +295,7 @@ for iteration in $(seq 1 "${ITERATIONS}"); do
     done
   fi
 
-  python3 "${PROM_DIR}/vars-exporter/vars_to_prom.py" \
-    --targets "${host_targets}" \
-    --interval 1 \
-    --output-dir "${TEXTFILE_DIR}" \
-    --output-file "temporalstore-vars.prom" \
-    --timeout 3 \
-    --once > "${RESULT_DIR}/vars_exporter_${iteration}.out" \
-    2> "${RESULT_DIR}/vars_exporter_${iteration}.err"
-
-  grep -q 'temporalstore_service_role_up{service_role="nodeserver"' "${PROM_FILE}"
-  grep -q 'temporalstore_service_role_up{service_role="metaserver"' "${PROM_FILE}"
-  if [[ "${HAS_PROXY}" == "1" ]]; then
-    grep -q 'temporalstore_service_role_up{service_role="proxy"' "${PROM_FILE}"
-  fi
-  grep -q 'temporalstore_vars_exporter_target_samples_scraped{service_role="nodeserver"' "${PROM_FILE}"
-  grep -q 'temporalstore_client_validation_up' "${CLIENT_FILE}"
-  grep -q 'temporalstore_proxy_artifact_present' "${CLIENT_FILE}"
+  scrape_and_validate_metrics "${iteration}"
 done
 
 if [[ "${START_PROMETHEUS}" == "1" ]]; then
