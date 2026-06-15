@@ -258,6 +258,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "slot-dump install preflight reports stale sequence, missing/corrupt segments, unreadable refs, and safe install status before marker writes"
                     .to_string(),
+                "shard index persistence and slot-dump install use temp-file fsync plus rename instead of direct overwrite"
+                    .to_string(),
             ],
             missing: vec![
                 "binary/protobuf oplog and index-log compatibility".to_string(),

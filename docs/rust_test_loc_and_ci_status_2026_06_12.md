@@ -108,3 +108,8 @@ Slot dump/load now has `SlotDumpInstallPreflightReport` for install-time safety
 checks before marker writes. The report exposes stale manifest sequence, missing
 or corrupt page segments, unreadable page refs/bytes, and whether the manifest is
 safe to install.
+
+Shard index persistence now uses an atomic temp-file write, fsync, and rename
+path for normal index saves and slot-dump installs. Recovery reports expose
+`index_write_atomic` so storage crash-safety audits can verify the safer writer is
+active.

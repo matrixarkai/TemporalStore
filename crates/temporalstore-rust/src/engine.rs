@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::fs;
-use std::path::PathBuf;
+use std::fs::{self, File};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -163,6 +164,8 @@ pub struct RustStorageObservation {
 pub struct StorageRecoveryReport {
     pub shard_id: ShardId,
     pub index_bytes: u64,
+    #[serde(default)]
+    pub index_write_atomic: bool,
     pub oplog_records: usize,
     pub index_log_records: usize,
     pub active_page_segment_ids: Vec<u64>,
@@ -2848,6 +2851,7 @@ impl TemporalEngine {
         StorageRecoveryReport {
             shard_id,
             index_bytes,
+            index_write_atomic: true,
             oplog_records,
             index_log_records,
             active_page_segment_ids,
@@ -3183,7 +3187,7 @@ impl TemporalEngine {
 
     fn persist_index_bytes(&self, shard_id: ShardId, bytes: &[u8]) -> Result<(), std::io::Error> {
         fs::create_dir_all(&self.index_dir)?;
-        fs::write(self.index_path(shard_id), bytes)
+        atomic_write_bytes(&self.index_path(shard_id), bytes)
     }
 
     fn validate_load_version(&self, shard_id: ShardId, load_version: u64) -> Result<(), Status> {
@@ -3329,9 +3333,38 @@ fn escape_metric_label(value: &str) -> String {
         .replace('"', "\\\"")
 }
 
-fn unique_temp_path(kind: &str) -> PathBuf {
+fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("index");
+    let temp_path = parent.join(format!(
+        ".{file_name}.tmp-{}-{}",
+        std::process::id(),
+        next_temp_counter()
+    ));
+    let write_result = (|| {
+        let mut file = File::create(&temp_path)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temp_path, path)
+    })();
+    if write_result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    write_result
+}
+
+fn next_temp_counter() -> u64 {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+fn unique_temp_path(kind: &str) -> PathBuf {
+    let counter = next_temp_counter();
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
@@ -6731,6 +6764,7 @@ mod tests {
         let report = recovered.storage_recovery_report(1);
 
         assert!(report.index_bytes > 0);
+        assert!(report.index_write_atomic);
         assert_eq!(report.oplog_records, 2);
         assert_eq!(report.index_log_records, 2);
         assert_eq!(report.active_page_segment_ids, vec![0, 1]);
@@ -10641,6 +10675,13 @@ mod tests {
         restore_engine
             .install_slot_dump_manifest(&manifest)
             .expect("manifest should install");
+        assert!(
+            fs::read_dir(dir.path().join("restore-indexes"))
+                .unwrap()
+                .filter_map(Result::ok)
+                .all(|entry| !entry.file_name().to_string_lossy().contains(".tmp-")),
+            "slot dump install should not leave atomic index temp files"
+        );
         assert!(restore_engine.interrupted_slot_dump_installs(1).is_empty());
         let markers = list_slot_dump_install_markers_at(&restore_engine.index_dir, 1).unwrap();
         assert!(markers.iter().any(|marker| marker.phase == "prepare"));
