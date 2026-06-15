@@ -180,3 +180,23 @@ groups:
         annotations:
           summary: "TemporalStore follower-read p99 latency is high"
           description: "Bounded-stale follower-read visibility p99 exceeded 100 ms in the local production-readiness gate."
+
+      - alert: TemporalStoreMultitenantNoisyNeighborFailed
+        expr: temporalstore_multitenant_noisy_neighbor_pass == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: tenant-isolation
+        annotations:
+          summary: "TemporalStore multi-tenant isolation gate failed"
+          description: "The victim tenant had errors, low QPS, or high p99 latency while the noisy tenant was active."
+
+      - alert: TemporalStoreMultitenantVictimLatencyHigh
+        expr: temporalstore_multitenant_benchmark_p99_us{tenant_role="victim"} > scalar(temporalstore_multitenant_victim_p99_sla_us)
+        for: 1m
+        labels:
+          severity: warning
+          component: tenant-isolation
+        annotations:
+          summary: "TemporalStore victim tenant p99 latency is high"
+          description: "The multi-tenant noisy-neighbor gate reported victim p99 above the configured SLA."
