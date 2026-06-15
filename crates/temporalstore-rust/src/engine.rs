@@ -438,6 +438,8 @@ pub struct SlotDumpInstallRollForwardReport {
     pub completed_commit: bool,
     #[serde(default)]
     pub completed_install: bool,
+    #[serde(default)]
+    pub obsolete_marker_files_removed: usize,
     pub reason: String,
 }
 
@@ -1446,6 +1448,13 @@ impl TemporalEngine {
                         Some(Ok(())) => {
                             report.completed_install = true;
                             report.completed_commit = true;
+                            report.obsolete_marker_files_removed =
+                                remove_obsolete_slot_dump_install_markers(
+                                    &self.index_dir,
+                                    marker.shard_id,
+                                    &marker.manifest_id,
+                                )
+                                .unwrap_or_default();
                             report.reason = "install_retried".to_string();
                         }
                         Some(Err(status)) => {
@@ -1467,6 +1476,13 @@ impl TemporalEngine {
                     ) {
                         Ok(()) => {
                             report.completed_commit = true;
+                            report.obsolete_marker_files_removed =
+                                remove_obsolete_slot_dump_install_markers(
+                                    &self.index_dir,
+                                    marker.shard_id,
+                                    &marker.manifest_id,
+                                )
+                                .unwrap_or_default();
                             report.reason = "commit_marker_written".to_string();
                         }
                         Err(err) => {
@@ -1534,6 +1550,7 @@ impl TemporalEngine {
                 completed_commit: false,
                 completed_install: false,
                 can_retry_install: false,
+                obsolete_marker_files_removed: 0,
                 reason: "unknown_interrupted_phase".to_string(),
             };
         }
@@ -1550,6 +1567,7 @@ impl TemporalEngine {
                 completed_commit: false,
                 completed_install: false,
                 can_retry_install: false,
+                obsolete_marker_files_removed: 0,
                 reason: "missing_manifest".to_string(),
             };
         };
@@ -1566,6 +1584,7 @@ impl TemporalEngine {
             can_retry_install: reason == "install_retry_ready",
             completed_commit: false,
             completed_install: false,
+            obsolete_marker_files_removed: 0,
             reason,
         }
     }
@@ -3833,6 +3852,23 @@ fn interrupted_slot_dump_installs_at(
         .into_values()
         .filter(|marker| marker.phase != "commit")
         .collect())
+}
+
+fn remove_obsolete_slot_dump_install_markers(
+    index_dir: &std::path::Path,
+    shard_id: ShardId,
+    manifest_id: &str,
+) -> Result<usize, std::io::Error> {
+    let mut removed = 0usize;
+    for (marker, path) in slot_dump_install_marker_files_at(index_dir, shard_id)? {
+        if marker.manifest_id == manifest_id
+            && (marker.phase == "prepare" || marker.phase == "install")
+            && fs::remove_file(path).is_ok()
+        {
+            removed = removed.saturating_add(1);
+        }
+    }
+    Ok(removed)
 }
 
 fn slot_dump_install_phase_rank(phase: &str) -> u8 {
@@ -11816,7 +11852,13 @@ mod tests {
         let applied = engine.roll_forward_slot_dump_installs(1);
         assert_eq!(applied.len(), 1);
         assert!(applied[0].completed_commit);
+        assert!(applied[0].obsolete_marker_files_removed > 0);
         assert!(engine.interrupted_slot_dump_installs(1).is_empty());
+        let marker_files =
+            slot_dump_install_marker_files_at(&engine.index_dir, 1).expect("marker files");
+        assert!(marker_files
+            .iter()
+            .all(|(marker, _)| marker.phase == "commit"));
     }
 
     #[test]
@@ -11862,7 +11904,13 @@ mod tests {
         assert_eq!(applied.len(), 1);
         assert!(applied[0].completed_install);
         assert!(applied[0].completed_commit);
+        assert!(applied[0].obsolete_marker_files_removed > 0);
         assert!(engine.interrupted_slot_dump_installs(1).is_empty());
+        let marker_files =
+            slot_dump_install_marker_files_at(&engine.index_dir, 1).expect("marker files");
+        assert!(marker_files
+            .iter()
+            .all(|(marker, _)| marker.phase == "commit"));
     }
 
     #[test]
