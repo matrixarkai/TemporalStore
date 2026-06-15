@@ -24,7 +24,8 @@ push.
 16. Add cross-service move workflow: load target, update membership, unload source. Unload
     busy-safety sub-slice done in cycle 13; scheduler retry classification done in cycle 14.
 17. Add Raft-backed metaserver replay for scheduler lifecycle tokens. Controlled reload
-    scheduler step done in cycle 15; load/reload/unload workflow harness done in cycle 16.
+    scheduler step done in cycle 15; load/reload/unload workflow harness done in cycle 16;
+    raft-backed workflow route coverage done in cycle 17.
 18. Add multi-proxy stale-cache convergence harness.
 19. Add multi-client background MetaSyncer scale harness.
 20. Add nodeserver restart recovery of lifecycle token/transition state.
@@ -167,6 +168,21 @@ Cycle 16 adds a scheduler-driven lifecycle workflow harness:
 
 The next cycle should replay the same scheduler workflow through the raft-backed metaserver path
 and then add a failure pass where a node disappears during a lifecycle step.
+
+## Cycle 17 Implemented
+
+Cycle 17 replays the scheduler lifecycle workflow through the raft-backed metaserver route layer:
+
+- A `MetaBackend::Raft` test now drives `LoadTarget`, `ReloadTarget`, and `UnloadSource` through
+  the same `/meta/scheduler/submit` and `/meta/scheduler/execute_next` handler paths.
+- The workflow validates lifecycle token installation, nodeserver load/reload/unload calls,
+  lifecycle fetches, execution-ledger ordering, and drained scheduler queue while the metaserver
+  backend is a `ProductionMetaRaftRuntime`.
+- This gives raft-backed route coverage for the controlled lifecycle workflow before adding
+  destructive node-failure cases.
+
+The next cycle should add a failure pass where the nodeserver disappears during load/reload/unload
+and the scheduler records retryable execution state instead of losing the task.
 
 ## Cycle 1 Implemented
 

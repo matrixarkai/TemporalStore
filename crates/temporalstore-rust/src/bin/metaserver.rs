@@ -3324,6 +3324,155 @@ mod tests {
     }
 
     #[test]
+    fn raft_backed_metaserver_scheduler_drives_lifecycle_workflow() {
+        let runtime = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+            engine: ProductionRaftEngineKind::OpenRaft,
+            local_node_id: 1,
+            nodes: vec![
+                ProductionRaftNode {
+                    node_id: 1,
+                    addr: "127.0.0.1:18301".to_string(),
+                },
+                ProductionRaftNode {
+                    node_id: 2,
+                    addr: "127.0.0.1:18302".to_string(),
+                },
+                ProductionRaftNode {
+                    node_id: 3,
+                    addr: "127.0.0.1:18303".to_string(),
+                },
+            ],
+            config: RaftConfig::default(),
+            heartbeat_interval_ms: 100,
+            election_tick_ms: 50,
+            failure_detector_interval_ms: 1_000,
+            stale_server_after_ms: 30_000,
+        })
+        .unwrap();
+        let backend = MetaBackend::Raft(runtime);
+        let scheduler = MetaTaskScheduler::default();
+        let (node_addr, records) = spawn_stateful_lifecycle_nodeserver();
+
+        let load_task = submit_scheduler_task(
+            &backend,
+            &scheduler,
+            400,
+            RebalanceStep::LoadTarget {
+                shard_id: 45,
+                replica_id: 8,
+                node_id: 9,
+                load_version: 7,
+            },
+        );
+        let load = execute_scheduler_task(
+            &backend,
+            &scheduler,
+            400,
+            &node_addr,
+            Some(LoadShardRequest {
+                shard_id: 45,
+                load_version: 7,
+                local_node_id: None,
+                shard_uri: "memory://raft-workflow/load".to_string(),
+                start_routing_slot: 0,
+                end_routing_slot: 1023,
+                readonly: false,
+                table_name: "raft_workflow_table".to_string(),
+            }),
+        );
+        assert!(load.status.ok, "{load:?}");
+        assert_eq!(
+            load.scheduler_report.unwrap().result,
+            SchedulerTaskResult::Ok
+        );
+        assert_eq!(load.lifecycle_state.as_ref().unwrap().operation, "load");
+        assert_eq!(load.lifecycle_state.as_ref().unwrap().state, "serving");
+        assert_eq!(
+            load.lifecycle_state.as_ref().unwrap().scheduler_task_id,
+            Some(load_task.id)
+        );
+
+        let reload_task = submit_scheduler_task(
+            &backend,
+            &scheduler,
+            500,
+            RebalanceStep::ReloadTarget {
+                shard_id: 45,
+                replica_id: 8,
+                node_id: 9,
+                load_version: 8,
+            },
+        );
+        let reload = execute_scheduler_task(
+            &backend,
+            &scheduler,
+            500,
+            &node_addr,
+            Some(LoadShardRequest {
+                shard_id: 45,
+                load_version: 8,
+                local_node_id: None,
+                shard_uri: "memory://raft-workflow/reload".to_string(),
+                start_routing_slot: 0,
+                end_routing_slot: 1023,
+                readonly: true,
+                table_name: "raft_workflow_table".to_string(),
+            }),
+        );
+        assert!(reload.status.ok, "{reload:?}");
+        assert_eq!(
+            reload.scheduler_report.unwrap().result,
+            SchedulerTaskResult::Ok
+        );
+        assert_eq!(reload.lifecycle_state.as_ref().unwrap().operation, "reload");
+        assert_eq!(reload.lifecycle_state.as_ref().unwrap().state, "readonly");
+        assert_eq!(
+            reload.lifecycle_state.as_ref().unwrap().scheduler_task_id,
+            Some(reload_task.id)
+        );
+
+        let unload_task = submit_scheduler_task(
+            &backend,
+            &scheduler,
+            600,
+            RebalanceStep::UnloadSource {
+                shard_id: 45,
+                replica_id: 8,
+                node_id: 9,
+            },
+        );
+        let unload = execute_scheduler_task(&backend, &scheduler, 600, &node_addr, None);
+        assert!(unload.status.ok, "{unload:?}");
+        assert_eq!(
+            unload.scheduler_report.unwrap().result,
+            SchedulerTaskResult::Ok
+        );
+        assert_eq!(unload.lifecycle_state.as_ref().unwrap().operation, "unload");
+        assert_eq!(unload.lifecycle_state.as_ref().unwrap().state, "unloaded");
+        assert_eq!(
+            unload.lifecycle_state.as_ref().unwrap().scheduler_task_id,
+            Some(unload_task.id)
+        );
+
+        let executions = scheduler.executions();
+        assert_eq!(executions.executions.len(), 3);
+        let operations = executions
+            .executions
+            .iter()
+            .map(|record| record.lifecycle_state.as_ref().unwrap().operation.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(operations, vec!["load", "reload", "unload"]);
+        assert_eq!(scheduler.snapshot().queue_len, 0);
+
+        let records = records.lock().unwrap();
+        assert_eq!(records.len(), 9);
+        assert_eq!(records[0].0, "/ServerService/RequireLifecycleToken");
+        assert_eq!(records[1].0, "/ServerService/Load");
+        assert_eq!(records[4].0, "/ServerService/Reload");
+        assert_eq!(records[7].0, "/ServerService/Unload");
+    }
+
+    #[test]
     fn metaserver_scheduler_persists_snapshot_file_after_mutations() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("scheduler.json");
