@@ -103,3 +103,8 @@ Storage lifecycle plans now include ranked `reclaim_candidates` for the local
 cleaner path. Candidates score stale/orphan/delayed-destroy page segments by
 stale bytes, live-ref density, and reclaim pressure so the Rust scheduler can
 explain which zones it would compact or GC first.
+
+Slot dump/load now has `SlotDumpInstallPreflightReport` for install-time safety
+checks before marker writes. The report exposes stale manifest sequence, missing
+or corrupt page segments, unreadable page refs/bytes, and whether the manifest is
+safe to install.

@@ -45,13 +45,13 @@ pub use e2e::{
     TemporalStoreClientOptions, WorkflowError, WorkflowProxy,
 };
 pub use engine::{
-    RustStorageObservation, ShardCompactionUtilityReport, SlotDumpManifest, SlotStorageSummary,
-    StorageCacheInspectionReport, StorageCacheInvalidateSlotRequest, StorageCacheSlotSummary,
-    StorageLifecyclePlan, StorageLifecycleReport, StorageLifecycleRequest,
-    StorageProductionReadinessPolicy, StorageProductionReadinessReport,
-    StorageProductionReadinessRequest, StorageReclaimCandidate, StorageRecoveryBoundaryReport,
-    StorageRecoveryPageError, StorageRecoveryReport, StorageRecoverySegmentLiveReport,
-    StorageSegmentIntegrityReport, TemporalEngine,
+    RustStorageObservation, ShardCompactionUtilityReport, SlotDumpInstallPreflightReport,
+    SlotDumpManifest, SlotStorageSummary, StorageCacheInspectionReport,
+    StorageCacheInvalidateSlotRequest, StorageCacheSlotSummary, StorageLifecyclePlan,
+    StorageLifecycleReport, StorageLifecycleRequest, StorageProductionReadinessPolicy,
+    StorageProductionReadinessReport, StorageProductionReadinessRequest, StorageReclaimCandidate,
+    StorageRecoveryBoundaryReport, StorageRecoveryPageError, StorageRecoveryReport,
+    StorageRecoverySegmentLiveReport, StorageSegmentIntegrityReport, TemporalEngine,
 };
 pub use index_log::{IndexLogRecord, IndexLogStats, LocalIndexLogStore};
 pub use ingestion::{

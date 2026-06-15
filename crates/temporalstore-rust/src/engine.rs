@@ -322,6 +322,23 @@ pub struct SlotDumpInstallMarker {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlotDumpInstallPreflightReport {
+    pub shard_id: ShardId,
+    pub manifest_id: String,
+    pub install_safe: bool,
+    pub blockers: Vec<String>,
+    pub current_oplog_sequence: u64,
+    pub current_index_log_sequence: u64,
+    pub manifest_oplog_sequence: u64,
+    pub manifest_index_log_sequence: u64,
+    pub missing_page_segment_ids: Vec<u64>,
+    pub corrupt_page_segment_ids: Vec<u64>,
+    pub unreadable_page_ref_count: usize,
+    pub unreadable_page_bytes: u64,
+    pub stale_manifest: bool,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlotDumpManifestChainIssue {
     pub manifest_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1517,8 +1534,121 @@ impl TemporalEngine {
         Ok(())
     }
 
+    pub fn slot_dump_install_preflight_report(
+        &self,
+        manifest: &SlotDumpManifest,
+    ) -> SlotDumpInstallPreflightReport {
+        let current_oplog_sequence = self.oplog_store.stats(manifest.shard_id).last_sequence;
+        let current_index_log_sequence =
+            self.index_log_store.stats(manifest.shard_id).last_sequence;
+        let existing_segments = self
+            .page_store
+            .segment_ids()
+            .unwrap_or_default()
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let missing_page_segment_ids = manifest
+            .page_segment_ids
+            .iter()
+            .copied()
+            .filter(|id| !existing_segments.contains(id))
+            .collect::<Vec<_>>();
+        let corrupt_page_segment_ids = self
+            .page_store
+            .segment_reports()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|report| {
+                report.has_corruption && manifest.page_segment_ids.contains(&report.page_segment_id)
+            })
+            .map(|report| report.page_segment_id)
+            .collect::<Vec<_>>();
+        let stale_manifest = current_index_log_sequence > manifest.index_log_sequence;
+        let mut blockers = Vec::new();
+        if stale_manifest {
+            blockers.push("stale_manifest_sequence".to_string());
+        }
+        if !missing_page_segment_ids.is_empty() {
+            blockers.push("missing_page_segments".to_string());
+        }
+        if !corrupt_page_segment_ids.is_empty() {
+            blockers.push("corrupt_page_segments".to_string());
+        }
+
+        let mut unreadable_page_ref_count = 0usize;
+        let mut unreadable_page_bytes = 0u64;
+        if !manifest.index_bytes.is_empty() && missing_page_segment_ids.is_empty() {
+            if let Ok(restored) = serde_json::from_slice::<ShardState>(&manifest.index_bytes) {
+                let manifest_slots = manifest.slot_ids.iter().copied().collect::<BTreeSet<_>>();
+                for entry in collect_live_page_entries(&restored) {
+                    let routing_slot = entry.address.routing_slot.unwrap_or_else(|| {
+                        self.routing_slot_for_key(manifest.shard_id, &entry.object_key)
+                    });
+                    if manifest_slots.is_empty() || manifest_slots.contains(&routing_slot) {
+                        if self.page_store.read(&entry.address).is_err() {
+                            unreadable_page_ref_count = unreadable_page_ref_count.saturating_add(1);
+                            unreadable_page_bytes =
+                                unreadable_page_bytes.saturating_add(entry.address.length);
+                        }
+                    }
+                }
+            } else {
+                blockers.push("invalid_manifest_index".to_string());
+            }
+        }
+        if unreadable_page_ref_count > 0 {
+            blockers.push("unreadable_page_refs".to_string());
+        }
+        blockers.sort();
+        blockers.dedup();
+
+        SlotDumpInstallPreflightReport {
+            shard_id: manifest.shard_id,
+            manifest_id: manifest.manifest_id.clone(),
+            install_safe: blockers.is_empty(),
+            blockers,
+            current_oplog_sequence,
+            current_index_log_sequence,
+            manifest_oplog_sequence: manifest.oplog_sequence,
+            manifest_index_log_sequence: manifest.index_log_sequence,
+            missing_page_segment_ids,
+            corrupt_page_segment_ids,
+            unreadable_page_ref_count,
+            unreadable_page_bytes,
+            stale_manifest,
+        }
+    }
+
     pub fn install_slot_dump_manifest(&self, manifest: &SlotDumpManifest) -> Result<(), Status> {
         self.validate_slot_dump_manifest(manifest)?;
+        let preflight = self.slot_dump_install_preflight_report(manifest);
+        if !preflight.install_safe {
+            if preflight.stale_manifest {
+                return Err(Status::error(
+                    "slot_dump_stale_manifest",
+                    format!(
+                        "manifest index sequence {} is older than current {}",
+                        manifest.index_log_sequence, preflight.current_index_log_sequence
+                    ),
+                ));
+            }
+            if preflight.unreadable_page_ref_count > 0 {
+                return Err(Status::error(
+                    "slot_dump_unreadable_page_refs",
+                    format!(
+                        "slot dump has {} unreadable page refs covering {} bytes",
+                        preflight.unreadable_page_ref_count, preflight.unreadable_page_bytes
+                    ),
+                ));
+            }
+            return Err(Status::error(
+                "slot_dump_install_preflight_failed",
+                format!(
+                    "slot dump install preflight blockers: {:?}",
+                    preflight.blockers
+                ),
+            ));
+        }
         self.validate_slot_dump_generation_for_install(manifest)?;
         let current_index_sequence = self.index_log_store.stats(manifest.shard_id).last_sequence;
         if current_index_sequence > manifest.index_log_sequence {
@@ -10426,6 +10556,12 @@ mod tests {
             .expect("manifest should persist");
         missing.page_segment_ids.push(999_999);
         missing.checksum = slot_dump_manifest_checksum(&missing).unwrap();
+        let missing_preflight = engine.slot_dump_install_preflight_report(&missing);
+        assert!(!missing_preflight.install_safe);
+        assert_eq!(missing_preflight.missing_page_segment_ids, vec![999_999]);
+        assert!(missing_preflight
+            .blockers
+            .contains(&"missing_page_segments".to_string()));
         assert!(!engine.validate_slot_dump_manifest(&missing).unwrap_err().ok);
 
         let mut incomplete = engine
@@ -10448,6 +10584,16 @@ mod tests {
         let mut segment = engine.page_store().read_segment(segment_id).unwrap();
         *segment.last_mut().unwrap() ^= 0xff;
         let _ = engine.page_store().install_segment(segment_id, &segment);
+        let corrupt_preflight = engine.slot_dump_install_preflight_report(&corrupt);
+        assert!(!corrupt_preflight.install_safe);
+        assert!(corrupt_preflight
+            .corrupt_page_segment_ids
+            .contains(&segment_id));
+        assert!(corrupt_preflight.unreadable_page_ref_count > 0);
+        assert!(corrupt_preflight.unreadable_page_bytes > 0);
+        assert!(corrupt_preflight
+            .blockers
+            .contains(&"unreadable_page_refs".to_string()));
         assert_eq!(
             engine
                 .validate_slot_dump_manifest(&corrupt)
@@ -10485,6 +10631,13 @@ mod tests {
             dir.path().join("restore-indexes"),
         );
         restore_engine.load_shard(1);
+        let safe_preflight = restore_engine.slot_dump_install_preflight_report(&manifest);
+        assert!(safe_preflight.install_safe, "{safe_preflight:?}");
+        assert!(safe_preflight.blockers.is_empty());
+        assert_eq!(
+            safe_preflight.manifest_index_log_sequence,
+            manifest.index_log_sequence
+        );
         restore_engine
             .install_slot_dump_manifest(&manifest)
             .expect("manifest should install");
@@ -10524,6 +10677,12 @@ mod tests {
                 value: b"v2".to_vec(),
             },
         });
+        let stale_preflight = engine.slot_dump_install_preflight_report(&manifest);
+        assert!(!stale_preflight.install_safe);
+        assert!(stale_preflight.stale_manifest);
+        assert!(stale_preflight
+            .blockers
+            .contains(&"stale_manifest_sequence".to_string()));
         assert_eq!(
             engine
                 .install_slot_dump_manifest(&manifest)
