@@ -27,6 +27,15 @@ fn production_readiness_service_summary_is_public_api() {
         report.known_services(),
         vec!["client", "proxy", "ingestion", "data_node", "metaserver"]
     );
+    let gates = report.service_gate_reports();
+    assert_eq!(gates.len(), 5);
+    assert_eq!(
+        gates
+            .iter()
+            .map(|gate| gate.service.as_str())
+            .collect::<Vec<_>>(),
+        vec!["client", "proxy", "ingestion", "data_node", "metaserver"]
+    );
     let data_node: ServiceReadinessSummary = report
         .service_summary("data_node")
         .expect("data node service summary should be exported")

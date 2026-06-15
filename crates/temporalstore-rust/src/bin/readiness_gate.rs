@@ -11,6 +11,31 @@ fn main() {
         return;
     }
 
+    if options.service_reports {
+        let gates = report.service_gate_reports();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&gates).expect("service gate reports must serialize")
+        );
+        if gates.iter().any(|gate| !gate.ready) {
+            eprintln!(
+                "production readiness gate failed: {} service(s) still blocked",
+                gates.iter().filter(|gate| !gate.ready).count()
+            );
+            for gate in gates.iter().filter(|gate| !gate.ready) {
+                eprintln!(
+                    "- service {}: {} blocker(s), classes=[{}], next_action={}",
+                    gate.service,
+                    gate.blocker_count,
+                    gate.blocker_classes.join(","),
+                    gate.next_action
+                );
+            }
+            std::process::exit(2);
+        }
+        return;
+    }
+
     if let Some(service) = options.service_report.as_deref() {
         let Some(gate) = report.service_gate_report(service) else {
             print_unknown_service_error(&report, service);
@@ -76,6 +101,7 @@ fn main() {
 struct GateOptions {
     service_filter: Option<String>,
     service_report: Option<String>,
+    service_reports: bool,
     list_services: bool,
 }
 
@@ -85,6 +111,10 @@ fn parse_gate_options(args: impl IntoIterator<Item = String>) -> GateOptions {
     while let Some(arg) = args.next() {
         if arg == "--list-services" {
             options.list_services = true;
+            continue;
+        }
+        if arg == "--service-reports" {
+            options.service_reports = true;
             continue;
         }
         if arg == "--service" {
@@ -148,6 +178,7 @@ mod tests {
             GateOptions {
                 service_filter: Some("proxy".to_string()),
                 service_report: None,
+                service_reports: false,
                 list_services: false,
             }
         );
@@ -156,6 +187,7 @@ mod tests {
             GateOptions {
                 service_filter: Some("metaserver".to_string()),
                 service_report: None,
+                service_reports: false,
                 list_services: false,
             }
         );
@@ -164,6 +196,16 @@ mod tests {
             GateOptions {
                 service_filter: None,
                 service_report: Some("data_node".to_string()),
+                service_reports: false,
+                list_services: false,
+            }
+        );
+        assert_eq!(
+            parse_gate_options(["--service-reports".to_string()]),
+            GateOptions {
+                service_filter: None,
+                service_report: None,
+                service_reports: true,
                 list_services: false,
             }
         );
@@ -172,6 +214,7 @@ mod tests {
             GateOptions {
                 service_filter: None,
                 service_report: None,
+                service_reports: false,
                 list_services: true,
             }
         );

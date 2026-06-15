@@ -125,6 +125,13 @@ impl ProductionReadinessReport {
                 .collect(),
         })
     }
+
+    pub fn service_gate_reports(&self) -> Vec<ServiceReadinessGateReport> {
+        self.known_services()
+            .into_iter()
+            .filter_map(|service| self.service_gate_report(service))
+            .collect()
+    }
 }
 
 pub fn production_readiness_report() -> ProductionReadinessReport {
@@ -654,6 +661,16 @@ mod tests {
             report.known_services(),
             vec!["client", "proxy", "ingestion", "data_node", "metaserver"]
         );
+        let service_gates = report.service_gate_reports();
+        assert_eq!(service_gates.len(), 5);
+        assert_eq!(
+            service_gates
+                .iter()
+                .map(|gate| gate.service.as_str())
+                .collect::<Vec<_>>(),
+            vec!["client", "proxy", "ingestion", "data_node", "metaserver"]
+        );
+        assert!(service_gates.iter().all(|gate| !gate.ready));
         assert!(!report.service_ready("unknown_service"));
         assert!(report.service_gate_report("unknown_service").is_none());
 
