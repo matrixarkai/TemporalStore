@@ -12,16 +12,16 @@ connector contracts.
    Done.
 3. Add proxy/table ingestion route that resolves table topology and splits records by shard.
 4. Add Kafka source config structs, consumer group metadata, and offset commit planning reports.
-5. Add Kafka idempotency ledger by topic/partition/offset with bounded retention.
-6. Add Flink checkpoint barrier metadata and checkpoint-aligned commit reports.
-7. Add ingestion dead-letter report format for malformed records and engine failures.
+5. Add Kafka idempotency ledger by topic/partition/offset with bounded retention. Done.
+6. Add Flink checkpoint barrier metadata and checkpoint-aligned commit reports. Done.
+7. Add ingestion dead-letter report format for malformed records and engine failures. Done.
 8. Add ingestion backpressure/admission integration with shard/table/tenant QPS limits.
 9. Add feature/sequence-specific ingestion builders matching C++ feature schemas.
 10. Add JSONL file ingestion harness for local replay and connector simulation.
 11. Add Kafka-like local partition harness that replays offsets through `/ingest/batch`.
 12. Add Flink-like checkpoint harness with restart/replay and exactly-once assertions.
-13. Add ingestion metrics for accepted, failed, duplicate, lag, and checkpoint age.
-14. Add ingestion recovery after node restart using persisted offset/checkpoint ledger.
+13. Add ingestion metrics for accepted, failed, duplicate, lag, and checkpoint age. Done.
+14. Add ingestion recovery after node restart using persisted offset/checkpoint ledger. Done.
 15. Add proxy route-cache refresh on ingestion shard mismatch.
 16. Add ingestion scale harness mixed with Raft failover and shared-store comparison.
 17. Add schema/version validation for API/Kafka/Flink payloads.
@@ -60,3 +60,23 @@ Cycle 2 exposes ingestion through the nodeserver HTTP surface:
 
 The next cycle should add proxy/table ingestion routing so callers can ingest by table/routing key
 without precomputing the destination shard id.
+
+## Cycle 3 Implemented
+
+Cycle 3 adds durable local ingestion state for API/Kafka/Flink parity testing:
+
+- Kafka offsets are persisted by topic and partition under the engine index directory.
+- Replayed Kafka offsets at or below the committed offset are rejected before command execution and
+  recorded as dead letters.
+- Flink checkpoint updates support precommit, commit, and abort state transitions.
+- Ingestion reports now include Kafka ledger entries, Flink checkpoint states, dead letters, max
+  Kafka lag, and state persistence status.
+- `GET /ingest/state`, `IngestionService/GetState`, and `ServerService/GetIngestionState` expose
+  the persisted ingestion state.
+- Prometheus metrics report accepted, failed, duplicate, dead-letter, Kafka committed, max lag,
+  ledger count, and Flink checkpoint state counters.
+- Regression coverage validates ledger persistence across engine restart, duplicate rejection
+  before execution, dead-letter retention, lag reporting, and Flink checkpoint commit.
+
+The next cycle should add proxy/table ingestion routing so callers can ingest by table/routing key
+without precomputing the destination shard id, then mix ingestion into the Raft failover harness.

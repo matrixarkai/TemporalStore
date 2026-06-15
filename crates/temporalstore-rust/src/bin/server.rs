@@ -11,7 +11,7 @@ use temporalstore_rust::http::{
     get_json_with_options, json_response, parse_json, post_json, serve, HttpRequest,
     HttpRequestOptions,
 };
-use temporalstore_rust::ingestion::IngestionBatchRequest;
+use temporalstore_rust::ingestion::{FlinkCheckpointStatus, IngestionBatchRequest};
 use temporalstore_rust::meta::{
     AckResponse, GetShardResponse, GetTableTopologyRequest, LoadFinishRequest, PartitionLoad,
     RegisterServerRequest, RegisterShardRequest, RegisterShardResponse, ServerHeartbeatRequest,
@@ -214,6 +214,7 @@ fn main() {
             ("GET", "/health") => json_response(200, &Status::ok()),
             ("GET", "/metrics") => {
                 let mut metrics = engine.prometheus_metrics();
+                append_ingestion_metrics(&mut metrics, &engine);
                 append_runtime_metrics(&mut metrics, &runtime);
                 append_replica_replay_metrics(&mut metrics, &replica_replay_loop.status());
                 (200, metrics.into_bytes())
@@ -476,6 +477,7 @@ fn main() {
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
             },
             ("POST", "/ingest/batch") => ingest_batch_route(&engine, &request.body),
+            ("GET", "/ingest/state") => json_response(200, &engine.ingestion_state_report()),
             ("POST", "/batch_execute_checked") => {
                 match parse_json::<CheckedBatchExecuteRequest>(&request.body) {
                     Ok(req) => json_response(200, &runtime.batch_execute_checked(req)),
@@ -775,6 +777,12 @@ fn handle_cpp_server_service_route(
         }
         ("POST", "/ServerService/IngestBatch") | ("POST", "/IngestionService/IngestBatch") => {
             ingest_batch_route(engine, &request.body)
+        }
+        ("GET", "/IngestionService/GetState")
+        | ("POST", "/IngestionService/GetState")
+        | ("GET", "/ServerService/GetIngestionState")
+        | ("POST", "/ServerService/GetIngestionState") => {
+            json_response(200, &engine.ingestion_state_report())
         }
         ("POST", "/ServerService/ApplyDataRaftLog") => {
             match parse_json::<ApplyDataRaftLogRouteRequest>(&request.body) {
@@ -2098,6 +2106,69 @@ fn append_runtime_metrics(out: &mut String, runtime: &DataNodeRuntime) {
         out.push_str(kind);
         out.push_str("\"} ");
         out.push_str(&value.to_string());
+        out.push('\n');
+    }
+}
+
+fn append_ingestion_metrics(out: &mut String, engine: &TemporalEngine) {
+    let report = engine.ingestion_state_report();
+    out.push_str(
+        "# HELP temporalstore_ingestion_records_total Ingestion record counters by kind.\n",
+    );
+    out.push_str("# TYPE temporalstore_ingestion_records_total counter\n");
+    for (kind, value) in [
+        ("accepted", report.stats.accepted_total),
+        ("failed", report.stats.failed_total),
+        ("duplicate", report.stats.duplicate_total),
+        ("dead_letter", report.stats.dead_letter_total),
+        ("kafka_committed", report.stats.kafka_committed_total),
+    ] {
+        out.push_str("temporalstore_ingestion_records_total{kind=\"");
+        out.push_str(kind);
+        out.push_str("\"} ");
+        out.push_str(&value.to_string());
+        out.push('\n');
+    }
+    out.push_str(
+        "# HELP temporalstore_ingestion_kafka_max_lag Max observed Kafka ingestion lag.\n",
+    );
+    out.push_str("# TYPE temporalstore_ingestion_kafka_max_lag gauge\n");
+    out.push_str("temporalstore_ingestion_kafka_max_lag ");
+    out.push_str(&report.stats.max_kafka_lag.max(0).to_string());
+    out.push('\n');
+    out.push_str(
+        "# HELP temporalstore_ingestion_kafka_ledgers Current Kafka offset ledger entries.\n",
+    );
+    out.push_str("# TYPE temporalstore_ingestion_kafka_ledgers gauge\n");
+    out.push_str("temporalstore_ingestion_kafka_ledgers ");
+    out.push_str(&report.kafka_offsets.len().to_string());
+    out.push('\n');
+    out.push_str("# HELP temporalstore_ingestion_dead_letters Current persisted ingestion dead-letter records.\n");
+    out.push_str("# TYPE temporalstore_ingestion_dead_letters gauge\n");
+    out.push_str("temporalstore_ingestion_dead_letters ");
+    out.push_str(&report.dead_letters.len().to_string());
+    out.push('\n');
+    out.push_str("# HELP temporalstore_ingestion_flink_checkpoints Current Flink checkpoint states by status.\n");
+    out.push_str("# TYPE temporalstore_ingestion_flink_checkpoints gauge\n");
+    for status in [
+        FlinkCheckpointStatus::Precommitted,
+        FlinkCheckpointStatus::Committed,
+        FlinkCheckpointStatus::Aborted,
+    ] {
+        let label = match status {
+            FlinkCheckpointStatus::Precommitted => "precommitted",
+            FlinkCheckpointStatus::Committed => "committed",
+            FlinkCheckpointStatus::Aborted => "aborted",
+        };
+        let count = report
+            .flink_checkpoints
+            .iter()
+            .filter(|checkpoint| checkpoint.status == status)
+            .count();
+        out.push_str("temporalstore_ingestion_flink_checkpoints{status=\"");
+        out.push_str(label);
+        out.push_str("\"} ");
+        out.push_str(&count.to_string());
         out.push('\n');
     }
 }
@@ -3781,6 +3852,8 @@ mod tests {
             Arc::default();
         let request = IngestionBatchRequest {
             stop_on_error: false,
+            kafka_high_watermarks: Vec::new(),
+            flink_checkpoints: Vec::new(),
             records: vec![
                 IngestionRecord {
                     source: IngestionSource::Api {
@@ -3891,6 +3964,8 @@ mod tests {
         engine.load_shard(7);
         let request = IngestionBatchRequest {
             stop_on_error: false,
+            kafka_high_watermarks: Vec::new(),
+            flink_checkpoints: Vec::new(),
             records: vec![
                 IngestionRecord {
                     source: IngestionSource::Kafka {

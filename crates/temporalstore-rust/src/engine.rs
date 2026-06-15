@@ -565,6 +565,10 @@ impl TemporalEngine {
         self.index_log_store.clone()
     }
 
+    pub(crate) fn ingestion_dir(&self) -> PathBuf {
+        self.index_dir.join("ingestion")
+    }
+
     pub fn with_local_dirs(
         memory_capacity_bytes: usize,
         cache_dir: impl Into<PathBuf>,

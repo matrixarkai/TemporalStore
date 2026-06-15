@@ -54,8 +54,10 @@ pub use engine::{
 };
 pub use index_log::{IndexLogRecord, IndexLogStats, LocalIndexLogStore};
 pub use ingestion::{
-    IngestionBatchReport, IngestionBatchRequest, IngestionRecord, IngestionRecordResult,
-    IngestionSource,
+    FlinkCheckpointAction, FlinkCheckpointState, FlinkCheckpointStatus, FlinkCheckpointUpdate,
+    IngestionBatchReport, IngestionBatchRequest, IngestionDeadLetter, IngestionRecord,
+    IngestionRecordResult, IngestionSource, IngestionStateReport, IngestionStats,
+    KafkaHighWatermark, KafkaOffsetLedgerEntry,
 };
 pub use meta::{
     AckResponse, AddNamespaceRequest, AddTableRequest, FreezeStaleServersRequest, GetShardResponse,
