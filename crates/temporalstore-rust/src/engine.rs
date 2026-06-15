@@ -199,6 +199,8 @@ pub struct StorageRecoveryReport {
     pub boundary: StorageRecoveryBoundaryReport,
     #[serde(default)]
     pub segment_integrity: StorageSegmentIntegrityReport,
+    #[serde(default)]
+    pub feature_page_layout: StorageFeaturePageLayoutReport,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -218,6 +220,50 @@ pub struct StorageRecoveryPageOwnerMismatch {
     pub actual_object_id: Option<u64>,
     pub expected_routing_slot: u32,
     pub actual_routing_slot: Option<u32>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageFeaturePageLayoutReport {
+    pub indexed_feature_points: usize,
+    pub unique_feature_page_refs: usize,
+    pub packed_feature_pages: usize,
+    pub legacy_feature_value_pages: usize,
+    #[serde(default)]
+    pub corrupt_packed_feature_pages: Vec<StorageFeaturePageError>,
+    #[serde(default)]
+    pub missing_indexed_timestamps: Vec<StorageFeaturePageTimestampMismatch>,
+    #[serde(default)]
+    pub orphan_packed_timestamps: Vec<StorageFeaturePageTimestampMismatch>,
+}
+
+impl StorageFeaturePageLayoutReport {
+    fn has_errors(&self) -> bool {
+        !self.corrupt_packed_feature_pages.is_empty()
+            || !self.missing_indexed_timestamps.is_empty()
+            || !self.orphan_packed_timestamps.is_empty()
+    }
+
+    fn mismatch_count(&self) -> usize {
+        self.missing_indexed_timestamps.len() + self.orphan_packed_timestamps.len()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageFeaturePageError {
+    pub key: String,
+    pub page_segment_id: u64,
+    pub offset: u64,
+    pub length: u64,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageFeaturePageTimestampMismatch {
+    pub key: String,
+    pub timestamp_ms: u64,
+    pub page_segment_id: u64,
+    pub offset: u64,
+    pub length: u64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -578,6 +624,10 @@ pub struct StorageProductionReadinessReport {
     pub log_compatibility: StorageLogCompatibilityReport,
     #[serde(default)]
     pub page_format_compatibility: StoragePageFormatCompatibilityReport,
+    #[serde(default)]
+    pub feature_page_layout: StorageFeaturePageLayoutReport,
+    pub feature_page_layout_mismatch_count: usize,
+    pub corrupt_feature_page_count: usize,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2036,6 +2086,9 @@ impl TemporalEngine {
         {
             blockers.push("storage_segment_integrity_failed".to_string());
         }
+        if recovery.feature_page_layout.has_errors() {
+            blockers.push("feature_page_layout_mismatch".to_string());
+        }
 
         let mut warnings = Vec::new();
         if !plan.dirty_slots.is_empty() {
@@ -2113,6 +2166,12 @@ impl TemporalEngine {
             segment_integrity,
             log_compatibility,
             page_format_compatibility,
+            feature_page_layout_mismatch_count: recovery.feature_page_layout.mismatch_count(),
+            corrupt_feature_page_count: recovery
+                .feature_page_layout
+                .corrupt_packed_feature_pages
+                .len(),
+            feature_page_layout: recovery.feature_page_layout,
         }
     }
 
@@ -2939,6 +2998,7 @@ impl TemporalEngine {
         let mut owner_mismatch_page_refs = Vec::new();
         let mut missing_owner_page_refs = 0usize;
         let mut object_lifecycle = StorageObjectLifecycleReport::default();
+        let mut feature_page_layout = StorageFeaturePageLayoutReport::default();
         let mut page_segment_live_reports = page_segment_reports
             .iter()
             .map(|report| {
@@ -3007,6 +3067,7 @@ impl TemporalEngine {
             object_lifecycle = storage_object_lifecycle_report(shard_id, shard);
             object_lifecycle.owner_mismatch_page_refs = owner_mismatch_page_refs.len() as u64;
             object_lifecycle.missing_owner_page_refs = missing_owner_page_refs as u64;
+            feature_page_layout = storage_feature_page_layout_report(&self.page_store, shard);
         }
         let page_segment_live_reports = page_segment_live_reports
             .into_values()
@@ -3053,6 +3114,7 @@ impl TemporalEngine {
             all_live_pages_readable: total_page_refs == readable_page_refs,
             boundary: StorageRecoveryBoundaryReport::default(),
             segment_integrity: StorageSegmentIntegrityReport::default(),
+            feature_page_layout,
         }
     }
 
@@ -5818,6 +5880,116 @@ fn unique_feature_page_addresses(series: &BTreeMap<u64, PageAddress>) -> Vec<Pag
     addresses
 }
 
+fn storage_feature_page_layout_report(
+    page_store: &LocalPageStore,
+    shard: &ShardState,
+) -> StorageFeaturePageLayoutReport {
+    let mut report = StorageFeaturePageLayoutReport::default();
+    for (key, series) in &shard.features {
+        report.indexed_feature_points = report.indexed_feature_points.saturating_add(series.len());
+        let mut timestamps_by_address = HashMap::<PageAddress, BTreeSet<u64>>::new();
+        for (timestamp_ms, address) in series {
+            timestamps_by_address
+                .entry(address.clone())
+                .or_default()
+                .insert(*timestamp_ms);
+        }
+        report.unique_feature_page_refs = report
+            .unique_feature_page_refs
+            .saturating_add(timestamps_by_address.len());
+
+        for (address, indexed_timestamps) in timestamps_by_address {
+            match page_store.read(&address) {
+                Ok(bytes) => {
+                    if bytes.starts_with(FEATURE_PAGE_MAGIC) {
+                        match decode_feature_page(&bytes) {
+                            Some(points) => {
+                                report.packed_feature_pages =
+                                    report.packed_feature_pages.saturating_add(1);
+                                let packed_timestamps = points
+                                    .into_iter()
+                                    .map(|point| point.timestamp_ms)
+                                    .collect::<BTreeSet<_>>();
+                                for timestamp_ms in
+                                    indexed_timestamps.difference(&packed_timestamps).copied()
+                                {
+                                    report.missing_indexed_timestamps.push(
+                                        feature_page_timestamp_mismatch(
+                                            key,
+                                            timestamp_ms,
+                                            &address,
+                                        ),
+                                    );
+                                }
+                                for timestamp_ms in
+                                    packed_timestamps.difference(&indexed_timestamps).copied()
+                                {
+                                    report.orphan_packed_timestamps.push(
+                                        feature_page_timestamp_mismatch(
+                                            key,
+                                            timestamp_ms,
+                                            &address,
+                                        ),
+                                    );
+                                }
+                            }
+                            None => report.corrupt_packed_feature_pages.push(feature_page_error(
+                                key,
+                                &address,
+                                "invalid packed feature page",
+                            )),
+                        }
+                    } else {
+                        report.legacy_feature_value_pages =
+                            report.legacy_feature_value_pages.saturating_add(1);
+                        if indexed_timestamps.len() > 1 {
+                            report.corrupt_packed_feature_pages.push(feature_page_error(
+                                key,
+                                &address,
+                                "legacy feature page shared by multiple timestamps",
+                            ));
+                        }
+                    }
+                }
+                Err(err) => report.corrupt_packed_feature_pages.push(feature_page_error(
+                    key,
+                    &address,
+                    err.to_string(),
+                )),
+            }
+        }
+    }
+    report
+}
+
+fn feature_page_error(
+    key: &str,
+    address: &PageAddress,
+    error: impl Into<String>,
+) -> StorageFeaturePageError {
+    StorageFeaturePageError {
+        key: key.to_string(),
+        page_segment_id: address.page_segment_id,
+        offset: address.offset,
+        length: address.length,
+        error: error.into(),
+    }
+}
+
+fn feature_page_timestamp_mismatch(
+    key: &str,
+    timestamp_ms: u64,
+    address: &PageAddress,
+) -> StorageFeaturePageTimestampMismatch {
+    StorageFeaturePageTimestampMismatch {
+        key: key.to_string(),
+        timestamp_ms,
+        page_segment_id: address.page_segment_id,
+        offset: address.offset,
+        length: address.length,
+    }
+}
+
 fn compaction_utility_report(
     page_store: &LocalPageStore,
     shard: &ShardState,
@@ -8437,6 +8609,144 @@ mod tests {
             },
         });
         assert_eq!(agg.response, CommandResponse::Aggregate { value: 2 });
+    }
+
+    #[test]
+    fn feature_recovery_validates_packed_page_layout() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureAppend {
+                key: "layout-feature".to_string(),
+                points: vec![
+                    FeaturePoint {
+                        timestamp_ms: 10,
+                        value: b"ten".to_vec(),
+                    },
+                    FeaturePoint {
+                        timestamp_ms: 20,
+                        value: b"twenty".to_vec(),
+                    },
+                ],
+            },
+        });
+        assert!(response.status.ok);
+
+        let report = engine.storage_recovery_report(1);
+        assert_eq!(report.feature_page_layout.indexed_feature_points, 2);
+        assert_eq!(report.feature_page_layout.unique_feature_page_refs, 1);
+        assert_eq!(report.feature_page_layout.packed_feature_pages, 1);
+        assert_eq!(report.feature_page_layout.legacy_feature_value_pages, 0);
+        assert!(report
+            .feature_page_layout
+            .corrupt_packed_feature_pages
+            .is_empty());
+        assert!(report
+            .feature_page_layout
+            .missing_indexed_timestamps
+            .is_empty());
+        assert!(report
+            .feature_page_layout
+            .orphan_packed_timestamps
+            .is_empty());
+    }
+
+    #[test]
+    fn feature_recovery_reports_index_timestamp_missing_from_packed_page() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureAppend {
+                key: "layout-feature".to_string(),
+                points: vec![
+                    FeaturePoint {
+                        timestamp_ms: 10,
+                        value: b"ten".to_vec(),
+                    },
+                    FeaturePoint {
+                        timestamp_ms: 20,
+                        value: b"twenty".to_vec(),
+                    },
+                ],
+            },
+        });
+        assert!(response.status.ok);
+
+        {
+            let mut shards = engine.shards.write().expect("engine lock poisoned");
+            let series = shards
+                .get_mut(&1)
+                .and_then(|shard| shard.features.get_mut("layout-feature"))
+                .expect("feature series should exist");
+            let address = series.get(&10).expect("packed page").clone();
+            series.insert(30, address);
+        }
+
+        let report = engine.storage_recovery_report(1);
+        assert_eq!(
+            report
+                .feature_page_layout
+                .missing_indexed_timestamps
+                .iter()
+                .map(|mismatch| mismatch.timestamp_ms)
+                .collect::<Vec<_>>(),
+            vec![30]
+        );
+        let readiness = engine.storage_production_readiness_report(1);
+        assert!(readiness
+            .blockers
+            .contains(&"feature_page_layout_mismatch".to_string()));
+        assert_eq!(readiness.feature_page_layout_mismatch_count, 1);
+    }
+
+    #[test]
+    fn feature_recovery_reports_packed_timestamp_orphaned_from_index() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureAppend {
+                key: "layout-feature".to_string(),
+                points: vec![
+                    FeaturePoint {
+                        timestamp_ms: 10,
+                        value: b"ten".to_vec(),
+                    },
+                    FeaturePoint {
+                        timestamp_ms: 20,
+                        value: b"twenty".to_vec(),
+                    },
+                ],
+            },
+        });
+        assert!(response.status.ok);
+
+        {
+            let mut shards = engine.shards.write().expect("engine lock poisoned");
+            let series = shards
+                .get_mut(&1)
+                .and_then(|shard| shard.features.get_mut("layout-feature"))
+                .expect("feature series should exist");
+            series.remove(&20);
+        }
+
+        let report = engine.storage_recovery_report(1);
+        assert_eq!(
+            report
+                .feature_page_layout
+                .orphan_packed_timestamps
+                .iter()
+                .map(|mismatch| mismatch.timestamp_ms)
+                .collect::<Vec<_>>(),
+            vec![20]
+        );
+        let readiness = engine.storage_production_readiness_report(1);
+        assert!(readiness
+            .blockers
+            .contains(&"feature_page_layout_mismatch".to_string()));
+        assert_eq!(readiness.feature_page_layout_mismatch_count, 1);
     }
 
     #[test]

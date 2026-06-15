@@ -48,6 +48,7 @@ pub use engine::{
     RustStorageObservation, ShardCompactionUtilityReport, SlotDumpInstallPreflightReport,
     SlotDumpManifest, SlotStorageSummary, StorageCacheInspectionReport,
     StorageCacheInvalidateSlotRequest, StorageCacheSlotSummary, StorageCacheWarmupReport,
+    StorageFeaturePageError, StorageFeaturePageLayoutReport, StorageFeaturePageTimestampMismatch,
     StorageLifecyclePlan, StorageLifecycleReport, StorageLifecycleRequest,
     StorageLogCompatibilityReport, StoragePageFormatCompatibilityReport,
     StorageProductionReadinessPolicy, StorageProductionReadinessReport,
