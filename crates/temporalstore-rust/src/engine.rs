@@ -1584,6 +1584,27 @@ impl TemporalEngine {
         let restored = serde_json::from_slice::<ShardState>(&manifest.index_bytes)
             .map_err(|err| Status::error("slot_dump_invalid_index", err.to_string()))?;
         let manifest_slots = manifest.slot_ids.iter().copied().collect::<BTreeSet<_>>();
+        if manifest_slots.len() != manifest.slot_ids.len()
+            || manifest.slot_ids != manifest_slots.iter().copied().collect::<Vec<_>>()
+        {
+            return Err(Status::error(
+                "slot_dump_slot_ids_not_canonical",
+                "slot dump manifest slot ids must be sorted and unique",
+            ));
+        }
+        let canonical_page_segment_ids = manifest
+            .page_segment_ids
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        if manifest.page_segment_ids != canonical_page_segment_ids {
+            return Err(Status::error(
+                "slot_dump_page_segment_ids_not_canonical",
+                "slot dump manifest page segment ids must be sorted and unique",
+            ));
+        }
         let live_page_entries = collect_live_page_entries(&restored)
             .into_iter()
             .filter(|entry| {
@@ -12177,6 +12198,69 @@ mod tests {
                 .unwrap_err()
                 .code,
             "slot_dump_byte_accounting_mismatch"
+        );
+    }
+
+    #[test]
+    fn slot_dump_manifest_rejects_non_canonical_slot_and_page_segment_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "canonical".to_string(),
+                value: b"v1".to_vec(),
+            },
+        });
+        let manifest = engine
+            .create_slot_dump_manifest(1, Vec::new())
+            .expect("manifest should persist");
+        engine
+            .validate_slot_dump_manifest(&manifest)
+            .expect("fresh manifest should validate");
+
+        let mut duplicate_slot = manifest.clone();
+        duplicate_slot.slot_ids.push(
+            duplicate_slot
+                .slot_ids
+                .first()
+                .copied()
+                .expect("slot id should exist"),
+        );
+        duplicate_slot.dump_generation_id = slot_dump_generation_id(&duplicate_slot);
+        duplicate_slot.checksum = slot_dump_manifest_checksum(&duplicate_slot).unwrap();
+        assert_eq!(
+            engine
+                .validate_slot_dump_manifest(&duplicate_slot)
+                .unwrap_err()
+                .code,
+            "slot_dump_slot_ids_not_canonical"
+        );
+
+        let mut duplicate_page_segment = manifest.clone();
+        duplicate_page_segment.page_segment_ids.push(
+            duplicate_page_segment
+                .page_segment_ids
+                .first()
+                .copied()
+                .expect("page segment id should exist"),
+        );
+        duplicate_page_segment.dump_generation_id =
+            slot_dump_generation_id(&duplicate_page_segment);
+        duplicate_page_segment.checksum =
+            slot_dump_manifest_checksum(&duplicate_page_segment).unwrap();
+        assert_eq!(
+            engine
+                .validate_slot_dump_manifest(&duplicate_page_segment)
+                .unwrap_err()
+                .code,
+            "slot_dump_page_segment_ids_not_canonical"
         );
     }
 
