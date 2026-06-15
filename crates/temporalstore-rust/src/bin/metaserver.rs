@@ -3473,80 +3473,53 @@ mod tests {
     }
 
     #[test]
-    fn metaserver_scheduler_retries_when_nodeserver_disappears_during_load() {
+    fn metaserver_scheduler_retries_when_nodeserver_disappears_during_lifecycle() {
+        for case in disappeared_node_lifecycle_cases() {
+            let backend = MetaBackend::Single(SingleNodeMeta::default());
+            let scheduler = MetaTaskScheduler::default();
+            let (task, executed) = execute_missing_node_lifecycle_case(
+                &backend,
+                &scheduler,
+                700,
+                case.step,
+                case.load_request,
+            );
+            assert_missing_node_retry(&scheduler, &task, &executed, case.operation, 775);
+        }
+    }
+
+    #[test]
+    fn metaserver_scheduler_persists_disappeared_node_retry_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing-node-retry-scheduler.json");
         let backend = MetaBackend::Single(SingleNodeMeta::default());
-        let scheduler = MetaTaskScheduler::default();
-        let task = submit_scheduler_task(
+        let scheduler = MetaTaskScheduler::with_snapshot_path(path.clone()).unwrap();
+        let case = disappeared_node_lifecycle_cases()
+            .into_iter()
+            .find(|case| case.operation == "reload")
+            .unwrap();
+        let (task, executed) = execute_missing_node_lifecycle_case(
             &backend,
             &scheduler,
-            700,
-            RebalanceStep::LoadTarget {
-                shard_id: 46,
-                replica_id: 8,
-                node_id: 9,
-                load_version: 10,
-            },
+            800,
+            case.step,
+            case.load_request,
         );
-        let missing_node_addr = reserve_unused_loopback_addr();
+        assert_missing_node_retry(&scheduler, &task, &executed, "reload", 875);
+        assert!(path.exists());
 
-        let executed = execute_scheduler_task_with_options(
-            &backend,
-            &scheduler,
-            700,
-            &missing_node_addr,
-            Some(LoadShardRequest {
-                shard_id: 46,
-                load_version: 10,
-                local_node_id: None,
-                shard_uri: "memory://missing-node/load".to_string(),
-                start_routing_slot: 0,
-                end_routing_slot: 1023,
-                readonly: false,
-                table_name: "missing_node_table".to_string(),
-            }),
-            Some(TaskSchedulerOptions {
-                base_postpone_ms: 75,
-                max_postpone_ms: 75,
-                max_retry_times: 3,
-                max_inflight: 1,
-            }),
-            HttpRequestOptionsView {
-                connect_timeout_ms: 10,
-                io_timeout_ms: 10,
-                max_retries: 0,
-            },
-        );
-        assert_eq!(executed.status.code, "node_request_failed");
-        assert_eq!(executed.queue_len, 1);
-        assert_eq!(executed.lifecycle_token.as_ref().unwrap().operation, "load");
-        assert_eq!(executed.calls.len(), 2);
-        assert_eq!(
-            executed.calls[0].path,
-            "/ServerService/RequireLifecycleToken"
-        );
-        assert_eq!(executed.calls[0].status.code, "node_request_failed");
-        assert_eq!(executed.calls[1].path, "/ServerService/GetLifecycle");
-        assert_eq!(
-            executed.calls[1].status.code,
-            "node_lifecycle_fetch_failed"
-        );
-        assert!(executed.node_lifecycle.is_none());
-        assert!(executed.lifecycle_state.is_none());
-        let report = executed.scheduler_report.unwrap();
-        assert_eq!(report.task_id, task.id);
-        assert_eq!(report.result, SchedulerTaskResult::RetryLater);
-        assert_eq!(report.retry_times, 1);
-        assert_eq!(report.next_run_time_ms, Some(775));
-        assert!(!report.aborted);
-        assert_eq!(scheduler.snapshot().queue_len, 1);
-
-        let executions = scheduler.executions();
-        assert_eq!(executions.executions.len(), 1);
-        let record = &executions.executions[0];
+        let restored = MetaTaskScheduler::with_snapshot_path(path).unwrap();
+        let snapshot = restored.snapshot();
+        assert_eq!(snapshot.queue_len, 1);
+        let restored_task = snapshot.snapshot.unwrap().tasks[0].clone();
+        assert_eq!(restored_task.id, task.id);
+        assert_eq!(restored_task.retry_times, 1);
+        assert_eq!(restored_task.next_run_time_ms, 875);
+        assert_eq!(restored.executions().executions.len(), 1);
+        let record = &restored.executions().executions[0];
         assert_eq!(record.task_id, task.id);
         assert_eq!(record.scheduler_result, SchedulerTaskResult::RetryLater);
-        assert_eq!(record.retry_times, 1);
-        assert_eq!(record.next_run_time_ms, Some(775));
+        assert_eq!(record.next_run_time_ms, Some(875));
         assert_eq!(record.status.code, "node_request_failed");
         assert!(record.lifecycle_state.is_none());
     }
@@ -4103,6 +4076,137 @@ mod tests {
         );
         assert_eq!(code, 200);
         serde_json::from_slice(&body).unwrap()
+    }
+
+    #[derive(Debug)]
+    struct MissingNodeLifecycleCase {
+        operation: &'static str,
+        step: RebalanceStep,
+        load_request: Option<LoadShardRequest>,
+    }
+
+    fn disappeared_node_lifecycle_cases() -> Vec<MissingNodeLifecycleCase> {
+        vec![
+            MissingNodeLifecycleCase {
+                operation: "load",
+                step: RebalanceStep::LoadTarget {
+                    shard_id: 46,
+                    replica_id: 8,
+                    node_id: 9,
+                    load_version: 10,
+                },
+                load_request: Some(LoadShardRequest {
+                    shard_id: 46,
+                    load_version: 10,
+                    local_node_id: None,
+                    shard_uri: "memory://missing-node/load".to_string(),
+                    start_routing_slot: 0,
+                    end_routing_slot: 1023,
+                    readonly: false,
+                    table_name: "missing_node_table".to_string(),
+                }),
+            },
+            MissingNodeLifecycleCase {
+                operation: "reload",
+                step: RebalanceStep::ReloadTarget {
+                    shard_id: 47,
+                    replica_id: 8,
+                    node_id: 9,
+                    load_version: 11,
+                },
+                load_request: Some(LoadShardRequest {
+                    shard_id: 47,
+                    load_version: 11,
+                    local_node_id: None,
+                    shard_uri: "memory://missing-node/reload".to_string(),
+                    start_routing_slot: 0,
+                    end_routing_slot: 1023,
+                    readonly: true,
+                    table_name: "missing_node_table".to_string(),
+                }),
+            },
+            MissingNodeLifecycleCase {
+                operation: "unload",
+                step: RebalanceStep::UnloadSource {
+                    shard_id: 48,
+                    replica_id: 8,
+                    node_id: 9,
+                },
+                load_request: None,
+            },
+        ]
+    }
+
+    fn execute_missing_node_lifecycle_case(
+        backend: &MetaBackend,
+        scheduler: &MetaTaskScheduler,
+        now_ms: u64,
+        step: RebalanceStep,
+        load_request: Option<LoadShardRequest>,
+    ) -> (SchedulerTask, MetaSchedulerExecuteResponse) {
+        let task = submit_scheduler_task(backend, scheduler, now_ms, step);
+        let missing_node_addr = reserve_unused_loopback_addr();
+        let executed = execute_scheduler_task_with_options(
+            backend,
+            scheduler,
+            now_ms,
+            &missing_node_addr,
+            load_request,
+            Some(TaskSchedulerOptions {
+                base_postpone_ms: 75,
+                max_postpone_ms: 75,
+                max_retry_times: 3,
+                max_inflight: 1,
+            }),
+            HttpRequestOptionsView {
+                connect_timeout_ms: 10,
+                io_timeout_ms: 10,
+                max_retries: 0,
+            },
+        );
+        (task, executed)
+    }
+
+    fn assert_missing_node_retry(
+        scheduler: &MetaTaskScheduler,
+        task: &SchedulerTask,
+        executed: &MetaSchedulerExecuteResponse,
+        operation: &str,
+        next_run_time_ms: u64,
+    ) {
+        assert_eq!(executed.status.code, "node_request_failed");
+        assert_eq!(executed.queue_len, 1);
+        assert_eq!(
+            executed.lifecycle_token.as_ref().unwrap().operation,
+            operation
+        );
+        assert_eq!(executed.calls.len(), 2);
+        assert_eq!(
+            executed.calls[0].path,
+            "/ServerService/RequireLifecycleToken"
+        );
+        assert_eq!(executed.calls[0].status.code, "node_request_failed");
+        assert_eq!(executed.calls[1].path, "/ServerService/GetLifecycle");
+        assert_eq!(executed.calls[1].status.code, "node_lifecycle_fetch_failed");
+        assert!(executed.node_lifecycle.is_none());
+        assert!(executed.lifecycle_state.is_none());
+        let report = executed.scheduler_report.as_ref().unwrap();
+        assert_eq!(report.task_id, task.id);
+        assert_eq!(report.result, SchedulerTaskResult::RetryLater);
+        assert_eq!(report.retry_times, 1);
+        assert_eq!(report.next_run_time_ms, Some(next_run_time_ms));
+        assert!(!report.aborted);
+        assert_eq!(scheduler.snapshot().queue_len, 1);
+
+        let executions = scheduler.executions();
+        assert_eq!(executions.executions.len(), 1);
+        let record = &executions.executions[0];
+        assert_eq!(record.task_id, task.id);
+        assert_eq!(record.scheduler_result, SchedulerTaskResult::RetryLater);
+        assert_eq!(record.retry_times, 1);
+        assert_eq!(record.next_run_time_ms, Some(next_run_time_ms));
+        assert_eq!(record.status.code, "node_request_failed");
+        assert!(record.lifecycle_state.is_none());
     }
 
     fn reserve_unused_loopback_addr() -> String {
