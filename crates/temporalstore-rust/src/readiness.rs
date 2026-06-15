@@ -40,6 +40,8 @@ pub struct ServiceReadinessSummary {
     pub blocker_count: usize,
     #[serde(default)]
     pub blocker_classes: Vec<String>,
+    #[serde(default)]
+    pub next_action: String,
     pub failed_capabilities: Vec<String>,
 }
 
@@ -435,6 +437,7 @@ fn service_readiness_summaries(areas: &[ReadinessArea]) -> Vec<ServiceReadinessS
                     .all(|area| area.ready && area.missing.is_empty()),
             areas: area_names.into_iter().map(str::to_string).collect(),
             blocker_count: failed_capabilities.len(),
+            next_action: service_next_action(service, &blocker_classes).to_string(),
             blocker_classes,
             failed_capabilities,
         }
@@ -451,6 +454,33 @@ fn service_blocker_class(area: &str) -> &'static str {
         "data_node_distributed_raft" => "data_node_distributed_raft",
         "metaserver" => "metaserver_control_plane",
         _ => "other",
+    }
+}
+
+fn service_next_action(service: &str, blocker_classes: &[String]) -> &'static str {
+    let Some(first_class) = blocker_classes.first().map(String::as_str) else {
+        return "ready";
+    };
+    match (service, first_class) {
+        ("client", "client_sync_preflight") => {
+            "finish client MetaSyncer deadlines, stale-route invalidation, and retry classification"
+        }
+        ("proxy", "proxy_topology_admission") => {
+            "finish proxy topology-version guarded cache invalidation and admission policy enforcement"
+        }
+        ("ingestion", "ingestion_durability") => {
+            "finish network Kafka/Flink runtime failover, lag metrics, and dead-letter export"
+        }
+        ("data_node", "data_node_distributed_raft") => {
+            "finish production data-node Raft FSM/storage and distributed fault validation"
+        }
+        ("data_node", "data_node_local_lifecycle") => {
+            "finish data-node lifecycle restart barriers, distributed admission, and crash recovery"
+        }
+        ("metaserver", "metaserver_control_plane") => {
+            "finish networked metaserver Raft, scheduler loop, and safe topology membership mutations"
+        }
+        _ => "inspect failed capabilities for this service",
     }
 }
 
@@ -529,6 +559,10 @@ mod tests {
                 !summary.blocker_classes.is_empty(),
                 "{service} should classify blockers for triage"
             );
+            assert!(
+                !summary.next_action.is_empty() && summary.next_action != "ready",
+                "{service} should expose a concrete next action"
+            );
         }
 
         assert_eq!(
@@ -538,6 +572,31 @@ mod tests {
                 .blocker_classes,
             vec!["client_sync_preflight".to_string()]
         );
+        assert!(report
+            .service_summary("client")
+            .expect("client summary")
+            .next_action
+            .contains("MetaSyncer"));
+        assert!(report
+            .service_summary("proxy")
+            .expect("proxy summary")
+            .next_action
+            .contains("topology-version"));
+        assert!(report
+            .service_summary("ingestion")
+            .expect("ingestion summary")
+            .next_action
+            .contains("Kafka/Flink"));
+        assert!(report
+            .service_summary("metaserver")
+            .expect("metaserver summary")
+            .next_action
+            .contains("scheduler"));
+        assert!(report
+            .service_summary("data_node")
+            .expect("data node summary")
+            .next_action
+            .contains("Raft"));
         assert_eq!(
             report
                 .service_summary("proxy")

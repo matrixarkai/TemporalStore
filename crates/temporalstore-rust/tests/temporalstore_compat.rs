@@ -38,6 +38,7 @@ fn production_readiness_service_summary_is_public_api() {
     assert!(data_node
         .blocker_classes
         .contains(&"data_node_distributed_raft".to_string()));
+    assert!(data_node.next_action.contains("Raft"));
 }
 
 #[test]
