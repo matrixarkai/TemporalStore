@@ -256,7 +256,21 @@ temporalstore_dependency_cache_build_knob_missing
 temporalstore_dependency_cache_optional_missing
 ```
 
-16. Raft/fault-tolerance gate evidence from the textfile collector
+16. Rebalance harness evidence
+
+```promql
+temporalstore_rebalance_harness_pass
+```
+
+```promql
+temporalstore_rebalance_harness_passed_cases
+```
+
+```promql
+temporalstore_rebalance_case_pass
+```
+
+17. Raft/fault-tolerance gate evidence from the textfile collector
 
 ```promql
 temporalstore_raft_gate_case_pass

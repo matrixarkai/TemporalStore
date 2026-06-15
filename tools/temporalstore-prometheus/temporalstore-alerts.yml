@@ -290,3 +290,23 @@ groups:
         annotations:
           summary: "TemporalStore optional dependency-cache artifacts are missing"
           description: "The dependency-cache gate is passing with system packages or link shims, but some reusable optional artifacts are unavailable."
+
+      - alert: TemporalStoreRebalanceHarnessFailed
+        expr: temporalstore_rebalance_harness_pass == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: metaserver
+        annotations:
+          summary: "TemporalStore rebalance harness failed"
+          description: "The local rebalance harness did not pass all enabled data-raft and shared-store redistribution cases."
+
+      - alert: TemporalStoreRebalanceCaseFailed
+        expr: temporalstore_rebalance_case_pass == 0
+        for: 1m
+        labels:
+          severity: warning
+          component: metaserver
+        annotations:
+          summary: "TemporalStore rebalance case failed"
+          description: "One local rebalance case did not pass; inspect the case label and harness result directory."

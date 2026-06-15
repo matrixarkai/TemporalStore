@@ -6,15 +6,17 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_TYPE="${BUILD_TYPE:-Release}"
 RESULT_DIR="${RESULT_DIR:-/tmp/temporalstore-rebalance-local-$(date +%Y%m%d_%H%M%S)}"
 RUN_DATA_RAFT_REBALANCE="${RUN_DATA_RAFT_REBALANCE:-1}"
-RUN_SHARED_STORE_REBALANCE="${RUN_SHARED_STORE_REBALANCE:-0}"
+RUN_SHARED_STORE_REBALANCE="${RUN_SHARED_STORE_REBALANCE:-1}"
 BASE_MS_PORT="${BASE_MS_PORT:-23100}"
 BASE_SERVER_PORT="${BASE_SERVER_PORT:-12100}"
 OPS="${OPS:-300}"
 THREADS="${THREADS:-2}"
 VALUE_BYTES="${VALUE_BYTES:-128}"
 BENCH_TIMEOUT_S="${BENCH_TIMEOUT_S:-180}"
+TEXTFILE_DIR="${TEXTFILE_DIR:-${RESULT_DIR}/metrics}"
+METRICS_FILE="${METRICS_FILE:-${TEXTFILE_DIR}/temporalstore-rebalance.prom}"
 
-mkdir -p "${RESULT_DIR}"
+mkdir -p "${RESULT_DIR}" "${TEXTFILE_DIR}"
 SUMMARY="${RESULT_DIR}/summary.md"
 CSV="${RESULT_DIR}/cases.csv"
 echo "case,status,seconds,result_dir" > "${CSV}"
@@ -87,6 +89,33 @@ write_case_overview() {
   } >> "${SUMMARY}"
 }
 
+write_metrics() {
+  local pass="$1"
+  local passed_cases="$2"
+  local failed_cases="$3"
+  local data_raft_pass
+  local shared_store_pass
+
+  data_raft_pass="$(awk -F, '$1 == "rebalance_add_node_data_raft" && $2 == "pass" {found=1} END {print found+0}' "${CSV}")"
+  shared_store_pass="$(awk -F, '$1 == "rebalance_add_node_shared_store" && $2 == "pass" {found=1} END {print found+0}' "${CSV}")"
+
+  cat > "${METRICS_FILE}" <<METRICS
+# HELP temporalstore_rebalance_harness_pass Whether the local rebalance harness passed.
+# TYPE temporalstore_rebalance_harness_pass gauge
+temporalstore_rebalance_harness_pass ${pass}
+# HELP temporalstore_rebalance_harness_passed_cases Number of rebalance cases that passed.
+# TYPE temporalstore_rebalance_harness_passed_cases gauge
+temporalstore_rebalance_harness_passed_cases ${passed_cases}
+# HELP temporalstore_rebalance_harness_failed_cases Number of rebalance cases that failed.
+# TYPE temporalstore_rebalance_harness_failed_cases gauge
+temporalstore_rebalance_harness_failed_cases ${failed_cases}
+# HELP temporalstore_rebalance_case_pass Whether an individual rebalance case passed.
+# TYPE temporalstore_rebalance_case_pass gauge
+temporalstore_rebalance_case_pass{case="rebalance_add_node_data_raft"} ${data_raft_pass}
+temporalstore_rebalance_case_pass{case="rebalance_add_node_shared_store"} ${shared_store_pass}
+METRICS
+}
+
 log "# TemporalStore Local Rebalance Harness"
 log
 log "- result_dir=${RESULT_DIR}"
@@ -142,7 +171,9 @@ log "- failed_cases=${failed_cases}"
 
 if [[ "${failed}" == "0" ]]; then
   log "PASS TemporalStore local rebalance harness"
+  write_metrics 1 "${passed_cases}" "${failed_cases}"
 else
   log "FAIL TemporalStore local rebalance harness"
+  write_metrics 0 "${passed_cases}" "${failed_cases}"
 fi
 exit "${failed}"
