@@ -49,6 +49,8 @@ pub struct ServiceReadinessSummary {
 pub struct ServiceReadinessGateReport {
     pub service: String,
     pub ready: bool,
+    pub gate_status: String,
+    pub remediation_order: usize,
     pub blocker_count: usize,
     pub blocker_classes: Vec<String>,
     pub next_action: String,
@@ -112,9 +114,17 @@ impl ProductionReadinessReport {
 
     pub fn service_gate_report(&self, service: &str) -> Option<ServiceReadinessGateReport> {
         let summary = self.service_summary(service)?;
+        let ready = self.service_ready(service);
         Some(ServiceReadinessGateReport {
             service: summary.service.clone(),
-            ready: self.service_ready(service),
+            ready,
+            gate_status: if ready { "ready" } else { "blocked" }.to_string(),
+            remediation_order: self
+                .known_services()
+                .iter()
+                .position(|known| *known == service)
+                .map(|index| index + 1)
+                .unwrap_or(0),
             blocker_count: summary.blocker_count,
             blocker_classes: summary.blocker_classes.clone(),
             next_action: summary.next_action.clone(),
@@ -639,6 +649,8 @@ mod tests {
                 .expect("service gate report must exist");
             assert_eq!(gate.service, service);
             assert_eq!(gate.ready, summary.ready);
+            assert_eq!(gate.gate_status, "blocked");
+            assert!(gate.remediation_order > 0);
             assert_eq!(gate.blocker_count, summary.blocker_count);
             assert_eq!(gate.blocker_classes, summary.blocker_classes);
             assert_eq!(gate.next_action, summary.next_action);
@@ -666,11 +678,20 @@ mod tests {
         assert_eq!(
             service_gates
                 .iter()
-                .map(|gate| gate.service.as_str())
+                .map(|gate| (gate.remediation_order, gate.service.as_str()))
                 .collect::<Vec<_>>(),
-            vec!["client", "proxy", "ingestion", "data_node", "metaserver"]
+            vec![
+                (1, "client"),
+                (2, "proxy"),
+                (3, "ingestion"),
+                (4, "data_node"),
+                (5, "metaserver")
+            ]
         );
         assert!(service_gates.iter().all(|gate| !gate.ready));
+        assert!(service_gates
+            .iter()
+            .all(|gate| gate.gate_status == "blocked"));
         assert!(!report.service_ready("unknown_service"));
         assert!(report.service_gate_report("unknown_service").is_none());
 

@@ -32,10 +32,17 @@ fn production_readiness_service_summary_is_public_api() {
     assert_eq!(
         gates
             .iter()
-            .map(|gate| gate.service.as_str())
+            .map(|gate| (gate.remediation_order, gate.service.as_str()))
             .collect::<Vec<_>>(),
-        vec!["client", "proxy", "ingestion", "data_node", "metaserver"]
+        vec![
+            (1, "client"),
+            (2, "proxy"),
+            (3, "ingestion"),
+            (4, "data_node"),
+            (5, "metaserver")
+        ]
     );
+    assert!(gates.iter().all(|gate| gate.gate_status == "blocked"));
     let data_node: ServiceReadinessSummary = report
         .service_summary("data_node")
         .expect("data node service summary should be exported")
@@ -70,6 +77,8 @@ fn production_readiness_service_summary_is_public_api() {
         .expect("data node service gate report should be exported");
     assert_eq!(gate.service, "data_node");
     assert!(!gate.ready);
+    assert_eq!(gate.gate_status, "blocked");
+    assert_eq!(gate.remediation_order, 4);
     assert_eq!(gate.blocker_count, data_node.blocker_count);
     assert_eq!(gate.failed_capabilities.len(), data_node.blocker_count);
 }

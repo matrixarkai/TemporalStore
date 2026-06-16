@@ -24,8 +24,10 @@ fn main() {
             );
             for gate in gates.iter().filter(|gate| !gate.ready) {
                 eprintln!(
-                    "- service {}: {} blocker(s), classes=[{}], next_action={}",
+                    "- service #{} {}: status={}, {} blocker(s), classes=[{}], next_action={}",
+                    gate.remediation_order,
                     gate.service,
+                    gate.gate_status,
                     gate.blocker_count,
                     gate.blocker_classes.join(","),
                     gate.next_action
