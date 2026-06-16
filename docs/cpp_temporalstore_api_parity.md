@@ -78,6 +78,30 @@ Sequence:
 - batch query rows -> `SequenceBatchQuery`
 - Typed client coverage: `sequence_add`, `sequence_query`, `sequence_batch_query`
 
+Context:
+
+- Reference source: latest C++ context model files from `origin/codex/llm-context-temporalstore`:
+  `src/extension/context/interface.proto`, `src/extension/context/implement.cc`, and
+  `src/model/context_model.h`.
+- Node metadata -> `ContextUpsertNode` / `ContextGetNode`, stored under the C++ key shape
+  `ctx:node:{tenant_hash}:{node_hash}` as a single serialized node page.
+- Event timeline -> `ContextWriteEvent` / `ContextQueryEvents`, stored under
+  `ctx:event:{tenant_hash}:{node_hash}` as packed timestamped KV pages. Rust uses the same
+  timeline fanout idea as C++ (`event_time_ms * 1024 + event_id_hash % 1024`) so many events at
+  the same millisecond share a page-range model instead of one page per timestamp/value.
+- Index refs -> `ContextWriteIndexRef` / `ContextQueryIndex`, stored under
+  `ctxidx:{tenant_hash}:{index_name}:{index_value_hash}:{scope_hash}`.
+- Pack audits -> `ContextWritePackAudit` / `ContextQueryPackAudit`, stored under
+  `ctx:audit:{tenant_hash}:{session_hash}`.
+- Dirty summary markers -> `ContextMarkSummaryDirty` / `ContextQuerySummaryDirty`, stored under
+  `ctx:dirty:{tenant_hash}:{node_hash}`.
+- Query filters match the C++ context implementation shape: kind/status allow lists,
+  min confidence/importance, `current_valid_only`, and `as_of_ms` validity checks.
+- Typed client coverage is present for node, event, index, audit, and dirty-marker commands.
+- Storage accounting includes context objects in object-manager counts, slot summaries, live page
+  traversal, recovery ownership validation, segment liveness, common delete/exists, dump/load, GC,
+  and compaction.
+
 IPS:
 
 - `ADD` -> `IpsAdd`

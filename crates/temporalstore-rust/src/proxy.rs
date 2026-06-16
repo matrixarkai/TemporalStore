@@ -1541,8 +1541,8 @@ fn proxy_policy_rejection(options: &ProxyOptions, commands: &[Command]) -> Optio
     if drop_percent > 0
         && commands
             .iter()
-            .filter_map(proxy_command_key)
-            .any(|key| key_is_dropped_by_percent(key, drop_percent))
+            .filter_map(proxy_command_routing_key)
+            .any(|key| key_is_dropped_by_percent(&key, drop_percent))
     {
         return Some(Status::error(
             "proxy_traffic_dropped",
@@ -1632,6 +1632,11 @@ fn proxy_command_is_write(command: &Command) -> bool {
             | Command::RiskSet { .. }
             | Command::RiskSetAndGet { .. }
             | Command::RiskFolSet { .. }
+            | Command::ContextUpsertNode { .. }
+            | Command::ContextWriteEvent { .. }
+            | Command::ContextWriteIndexRef { .. }
+            | Command::ContextWritePackAudit { .. }
+            | Command::ContextMarkSummaryDirty { .. }
     )
 }
 
@@ -1692,8 +1697,77 @@ fn proxy_command_key(command: &Command) -> Option<&str> {
         | Command::RiskFolQuery { key }
         | Command::RiskManager { key }
         | Command::RiskDebug { key, .. } => Some(key),
-        Command::IpsBatchQueryLast { .. } | Command::SequenceBatchQuery { .. } => None,
+        Command::IpsBatchQueryLast { .. }
+        | Command::SequenceBatchQuery { .. }
+        | Command::ContextUpsertNode { .. }
+        | Command::ContextGetNode { .. }
+        | Command::ContextWriteEvent { .. }
+        | Command::ContextQueryEvents { .. }
+        | Command::ContextWriteIndexRef { .. }
+        | Command::ContextQueryIndex { .. }
+        | Command::ContextWritePackAudit { .. }
+        | Command::ContextQueryPackAudit { .. }
+        | Command::ContextMarkSummaryDirty { .. }
+        | Command::ContextQuerySummaryDirty { .. } => None,
     }
+}
+
+fn proxy_command_routing_key(command: &Command) -> Option<String> {
+    proxy_command_key(command)
+        .map(str::to_string)
+        .or_else(|| match command {
+            Command::ContextUpsertNode { tenant_hash, node } => {
+                Some(format!("ctx:node:{tenant_hash}:{}", node.node_hash))
+            }
+            Command::ContextGetNode {
+                tenant_hash,
+                node_hash,
+            } => Some(format!("ctx:node:{tenant_hash}:{node_hash}")),
+            Command::ContextWriteEvent {
+                tenant_hash,
+                node_hash,
+                ..
+            }
+            | Command::ContextQueryEvents {
+                tenant_hash,
+                node_hash,
+                ..
+            } => Some(format!("ctx:event:{tenant_hash}:{node_hash}")),
+            Command::ContextWriteIndexRef {
+                tenant_hash,
+                index_name,
+                index_value_hash,
+                scope_hash,
+                ..
+            }
+            | Command::ContextQueryIndex {
+                tenant_hash,
+                index_name,
+                index_value_hash,
+                scope_hash,
+                ..
+            } => Some(format!(
+                "ctxidx:{tenant_hash}:{index_name}:{index_value_hash}:{scope_hash}"
+            )),
+            Command::ContextWritePackAudit { tenant_hash, audit } => {
+                Some(format!("ctx:audit:{tenant_hash}:{}", audit.session_hash))
+            }
+            Command::ContextQueryPackAudit {
+                tenant_hash,
+                session_hash,
+                ..
+            } => Some(format!("ctx:audit:{tenant_hash}:{session_hash}")),
+            Command::ContextMarkSummaryDirty {
+                tenant_hash,
+                marker,
+            } => Some(format!("ctx:dirty:{tenant_hash}:{}", marker.node_hash)),
+            Command::ContextQuerySummaryDirty {
+                tenant_hash,
+                node_hash,
+                ..
+            } => Some(format!("ctx:dirty:{tenant_hash}:{node_hash}")),
+            _ => None,
+        })
 }
 
 fn default_proxy_addr() -> String {

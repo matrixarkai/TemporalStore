@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -26,6 +27,7 @@ use crate::page_store::{
 };
 use crate::types::{
     parse_cpp_feature_filters, BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse,
+    ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit, ContextSummaryDirtyMarker,
     ExecuteRequest, ExecuteResponse, FeatureFilter, FeatureFilterOp, FeaturePoint,
     FeatureWritePolicy, IpsSnapshotReport, IpsStats, RiskFamily, RiskFolType, SequenceFeatureRow,
     SequenceQuerySpec, ShardId, Status, StringSetCondition,
@@ -68,6 +70,16 @@ struct ShardState {
     risk_changes: HashMap<String, BTreeMap<u64, BTreeSet<Vec<u8>>>>,
     #[serde(default)]
     risk_fol: HashMap<String, RiskFolValue>,
+    #[serde(default)]
+    context_nodes: HashMap<String, PageAddress>,
+    #[serde(default)]
+    context_events: HashMap<String, BTreeMap<u64, PageAddress>>,
+    #[serde(default)]
+    context_indexes: HashMap<String, BTreeMap<u64, PageAddress>>,
+    #[serde(default)]
+    context_audits: HashMap<String, BTreeMap<u64, PageAddress>>,
+    #[serde(default)]
+    context_dirty: HashMap<String, BTreeMap<u64, PageAddress>>,
     #[serde(skip)]
     dirty_objects: BTreeSet<String>,
 }
@@ -102,6 +114,8 @@ struct AdmissionLimit {
 const FEATURE_ADD_HARD_MAX_SIZE: usize = 100_000;
 const FEATURE_PAGE_MAGIC: &[u8] = b"TSFPG1\n";
 const TIMESTAMPED_KV_PAGE_TARGET_BYTES: usize = 64 * 1024;
+const CONTEXT_TIMELINE_FANOUT: u64 = 1024;
+const CONTEXT_DEFAULT_LIMIT: usize = 100;
 const HOT_PAGE_SEGMENT_ID: u64 = u64::MAX;
 static HOT_PAGE_OFFSET: AtomicU64 = AtomicU64::new(1);
 
@@ -4010,6 +4024,49 @@ impl TemporalEngine {
                 &mut rewritten_page_refs,
             )?;
         }
+        compact_page_addresses(
+            &self.page_store,
+            &self.cache,
+            shard_id,
+            shard.context_nodes.values_mut(),
+            &mut rewritten_page_refs,
+        )?;
+        for series in shard.context_events.values_mut() {
+            compact_feature_page_addresses(
+                &self.page_store,
+                &self.cache,
+                shard_id,
+                series,
+                &mut rewritten_page_refs,
+            )?;
+        }
+        for series in shard.context_indexes.values_mut() {
+            compact_feature_page_addresses(
+                &self.page_store,
+                &self.cache,
+                shard_id,
+                series,
+                &mut rewritten_page_refs,
+            )?;
+        }
+        for series in shard.context_audits.values_mut() {
+            compact_feature_page_addresses(
+                &self.page_store,
+                &self.cache,
+                shard_id,
+                series,
+                &mut rewritten_page_refs,
+            )?;
+        }
+        for series in shard.context_dirty.values_mut() {
+            compact_feature_page_addresses(
+                &self.page_store,
+                &self.cache,
+                shard_id,
+                series,
+                &mut rewritten_page_refs,
+            )?;
+        }
         for (key, meta_series) in &mut shard.ips_meta {
             if let Some(address_series) = shard.ips.get(key) {
                 for (timestamp, meta) in meta_series {
@@ -6246,6 +6303,325 @@ fn execute_on_shard(
             }
             CommandResponse::HashEntries { entries }
         }
+        Command::ContextUpsertNode { tenant_hash, node } => {
+            let object_key = context_node_key(tenant_hash, node.node_hash);
+            let object_id = stable_page_object_id(shard_id, "context_node", &object_key, None);
+            let routing_slot = page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
+            if let Some(bytes) = context_bytes(&node) {
+                if let Ok(address) = append_value(
+                    cache,
+                    page_store,
+                    shard_id,
+                    &bytes,
+                    Some(object_id),
+                    Some(routing_slot),
+                    async_storage,
+                ) {
+                    shard.context_nodes.insert(object_key.clone(), address);
+                    mutated = true;
+                }
+            }
+            invalidate_record_all(cache, shard_id, &object_key);
+            CommandResponse::ContextObjectKey { object_key }
+        }
+        Command::ContextGetNode {
+            tenant_hash,
+            node_hash,
+        } => {
+            let object_key = context_node_key(tenant_hash, node_hash);
+            let node = shard.context_nodes.get(&object_key).and_then(|address| {
+                read_page_bytes(cache, page_store, shard_id, address)
+                    .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
+            });
+            CommandResponse::ContextNode { object_key, node }
+        }
+        Command::ContextWriteEvent {
+            tenant_hash,
+            node_hash,
+            event,
+            first_write_only,
+        } => {
+            let object_key = context_event_key(tenant_hash, node_hash);
+            let timeline_key = context_timeline_key(event.event_time_ms, event.event_id_hash);
+            let series = shard.context_events.entry(object_key.clone()).or_default();
+            if !(first_write_only && series.contains_key(&timeline_key)) {
+                if let Some(value) = context_bytes(&event) {
+                    let routing_slot =
+                        page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
+                    if let Ok(addresses) = append_timestamped_kv_pages(
+                        cache,
+                        page_store,
+                        shard_id,
+                        "context_event",
+                        &object_key,
+                        vec![FeaturePoint {
+                            timestamp_ms: timeline_key,
+                            value,
+                        }],
+                        routing_slot,
+                        async_storage,
+                    ) {
+                        for (timestamp_ms, address) in addresses {
+                            series.insert(timestamp_ms, address);
+                            mutated = true;
+                        }
+                    }
+                }
+            }
+            invalidate_record_all(cache, shard_id, &object_key);
+            CommandResponse::ContextObjectKey { object_key }
+        }
+        Command::ContextQueryEvents {
+            tenant_hash,
+            node_hash,
+            start_time_ms,
+            end_time_ms,
+            limit,
+            current_valid_only,
+            as_of_ms,
+            kinds,
+            statuses,
+            min_confidence,
+            min_importance,
+        } => {
+            let object_key = context_event_key(tenant_hash, node_hash);
+            let events = shard
+                .context_events
+                .get(&object_key)
+                .map(|series| {
+                    series
+                        .range(
+                            context_timeline_start(start_time_ms)
+                                ..=context_timeline_end(end_time_ms),
+                        )
+                        .take(context_limit(limit))
+                        .filter_map(|(timeline_key, address)| {
+                            read_context_value::<ContextEvent>(
+                                cache,
+                                page_store,
+                                shard_id,
+                                *timeline_key,
+                                address,
+                            )
+                        })
+                        .filter(|event| {
+                            context_event_matches_filter(
+                                event,
+                                current_valid_only,
+                                as_of_ms,
+                                end_time_ms,
+                                &kinds,
+                                &statuses,
+                                min_confidence,
+                                min_importance,
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            CommandResponse::ContextEvents { object_key, events }
+        }
+        Command::ContextWriteIndexRef {
+            tenant_hash,
+            index_name,
+            index_value_hash,
+            scope_hash,
+            event_time_ms,
+            index_ref,
+        } => {
+            let object_key =
+                context_index_key(tenant_hash, &index_name, index_value_hash, scope_hash);
+            let timeline_key = context_timeline_key(event_time_ms, index_ref.event_id_hash);
+            if let Some(value) = context_bytes(&index_ref) {
+                let routing_slot =
+                    page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
+                if let Ok(addresses) = append_timestamped_kv_pages(
+                    cache,
+                    page_store,
+                    shard_id,
+                    "context_index",
+                    &object_key,
+                    vec![FeaturePoint {
+                        timestamp_ms: timeline_key,
+                        value,
+                    }],
+                    routing_slot,
+                    async_storage,
+                ) {
+                    let series = shard.context_indexes.entry(object_key.clone()).or_default();
+                    for (timestamp_ms, address) in addresses {
+                        series.insert(timestamp_ms, address);
+                        mutated = true;
+                    }
+                }
+            }
+            invalidate_record_all(cache, shard_id, &object_key);
+            CommandResponse::ContextObjectKey { object_key }
+        }
+        Command::ContextQueryIndex {
+            tenant_hash,
+            index_name,
+            index_value_hash,
+            scope_hash,
+            start_time_ms,
+            end_time_ms,
+            limit,
+        } => {
+            let object_key =
+                context_index_key(tenant_hash, &index_name, index_value_hash, scope_hash);
+            let refs = shard
+                .context_indexes
+                .get(&object_key)
+                .map(|series| {
+                    series
+                        .range(
+                            context_timeline_start(start_time_ms)
+                                ..=context_timeline_end(end_time_ms),
+                        )
+                        .take(context_limit(limit))
+                        .filter_map(|(timeline_key, address)| {
+                            read_context_value::<ContextIndexRef>(
+                                cache,
+                                page_store,
+                                shard_id,
+                                *timeline_key,
+                                address,
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            CommandResponse::ContextIndexRefs { object_key, refs }
+        }
+        Command::ContextWritePackAudit { tenant_hash, audit } => {
+            let object_key = context_audit_key(tenant_hash, audit.session_hash);
+            let timeline_key =
+                context_timeline_key(audit.request_time_ms, stable_object_hash(&audit.query_id));
+            if let Some(value) = context_bytes(&audit) {
+                let routing_slot =
+                    page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
+                if let Ok(addresses) = append_timestamped_kv_pages(
+                    cache,
+                    page_store,
+                    shard_id,
+                    "context_audit",
+                    &object_key,
+                    vec![FeaturePoint {
+                        timestamp_ms: timeline_key,
+                        value,
+                    }],
+                    routing_slot,
+                    async_storage,
+                ) {
+                    let series = shard.context_audits.entry(object_key.clone()).or_default();
+                    for (timestamp_ms, address) in addresses {
+                        series.insert(timestamp_ms, address);
+                        mutated = true;
+                    }
+                }
+            }
+            invalidate_record_all(cache, shard_id, &object_key);
+            CommandResponse::ContextObjectKey { object_key }
+        }
+        Command::ContextQueryPackAudit {
+            tenant_hash,
+            session_hash,
+            start_time_ms,
+            end_time_ms,
+            limit,
+        } => {
+            let object_key = context_audit_key(tenant_hash, session_hash);
+            let audits = shard
+                .context_audits
+                .get(&object_key)
+                .map(|series| {
+                    series
+                        .range(
+                            context_timeline_start(start_time_ms)
+                                ..=context_timeline_end(end_time_ms),
+                        )
+                        .take(context_limit(limit))
+                        .filter_map(|(timeline_key, address)| {
+                            read_context_value::<ContextPackAudit>(
+                                cache,
+                                page_store,
+                                shard_id,
+                                *timeline_key,
+                                address,
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            CommandResponse::ContextPackAudits { object_key, audits }
+        }
+        Command::ContextMarkSummaryDirty {
+            tenant_hash,
+            marker,
+        } => {
+            let object_key = context_dirty_key(tenant_hash, marker.node_hash);
+            let timeline_key = context_timeline_key(marker.event_time_ms, marker.node_hash);
+            if let Some(value) = context_bytes(&marker) {
+                let routing_slot =
+                    page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
+                if let Ok(addresses) = append_timestamped_kv_pages(
+                    cache,
+                    page_store,
+                    shard_id,
+                    "context_dirty",
+                    &object_key,
+                    vec![FeaturePoint {
+                        timestamp_ms: timeline_key,
+                        value,
+                    }],
+                    routing_slot,
+                    async_storage,
+                ) {
+                    let series = shard.context_dirty.entry(object_key.clone()).or_default();
+                    for (timestamp_ms, address) in addresses {
+                        series.insert(timestamp_ms, address);
+                        mutated = true;
+                    }
+                }
+            }
+            invalidate_record_all(cache, shard_id, &object_key);
+            CommandResponse::ContextObjectKey { object_key }
+        }
+        Command::ContextQuerySummaryDirty {
+            tenant_hash,
+            node_hash,
+            start_time_ms,
+            end_time_ms,
+            limit,
+        } => {
+            let object_key = context_dirty_key(tenant_hash, node_hash);
+            let markers = shard
+                .context_dirty
+                .get(&object_key)
+                .map(|series| {
+                    series
+                        .range(
+                            context_timeline_start(start_time_ms)
+                                ..=context_timeline_end(end_time_ms),
+                        )
+                        .take(context_limit(limit))
+                        .filter_map(|(timeline_key, address)| {
+                            read_context_value::<ContextSummaryDirtyMarker>(
+                                cache,
+                                page_store,
+                                shard_id,
+                                *timeline_key,
+                                address,
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            CommandResponse::ContextSummaryDirtyMarkers {
+                object_key,
+                markers,
+            }
+        }
     };
     ExecuteOutcome { response, mutated }
 }
@@ -6310,6 +6686,11 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     removed |= shard.risk.remove(key).is_some();
     removed |= shard.risk_changes.remove(key).is_some();
     removed |= shard.risk_fol.remove(key).is_some();
+    removed |= shard.context_nodes.remove(key).is_some();
+    removed |= shard.context_events.remove(key).is_some();
+    removed |= shard.context_indexes.remove(key).is_some();
+    removed |= shard.context_audits.remove(key).is_some();
+    removed |= shard.context_dirty.remove(key).is_some();
     removed
 }
 
@@ -6346,6 +6727,24 @@ fn collect_live_page_segment_ids(shard: &ShardState) -> BTreeSet<u64> {
         ids.extend(series.values().map(|address| address.page_segment_id));
     }
     for series in shard.ips.values() {
+        ids.extend(series.values().map(|address| address.page_segment_id));
+    }
+    ids.extend(
+        shard
+            .context_nodes
+            .values()
+            .map(|address| address.page_segment_id),
+    );
+    for series in shard.context_events.values() {
+        ids.extend(series.values().map(|address| address.page_segment_id));
+    }
+    for series in shard.context_indexes.values() {
+        ids.extend(series.values().map(|address| address.page_segment_id));
+    }
+    for series in shard.context_audits.values() {
+        ids.extend(series.values().map(|address| address.page_segment_id));
+    }
+    for series in shard.context_dirty.values() {
         ids.extend(series.values().map(|address| address.page_segment_id));
     }
     ids
@@ -6521,6 +6920,65 @@ fn collect_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
                 .map(|address| LivePageEntry {
                     object_key: key.clone(),
                     kind: "ips",
+                    component: None,
+                    address,
+                }),
+        );
+    }
+    entries.extend(
+        shard
+            .context_nodes
+            .iter()
+            .map(|(key, address)| LivePageEntry {
+                object_key: key.clone(),
+                kind: "context_node",
+                component: None,
+                address: address.clone(),
+            }),
+    );
+    for (key, series) in &shard.context_events {
+        entries.extend(
+            unique_timestamped_kv_page_addresses(series)
+                .into_iter()
+                .map(|address| LivePageEntry {
+                    object_key: key.clone(),
+                    kind: "context_event",
+                    component: None,
+                    address,
+                }),
+        );
+    }
+    for (key, series) in &shard.context_indexes {
+        entries.extend(
+            unique_timestamped_kv_page_addresses(series)
+                .into_iter()
+                .map(|address| LivePageEntry {
+                    object_key: key.clone(),
+                    kind: "context_index",
+                    component: None,
+                    address,
+                }),
+        );
+    }
+    for (key, series) in &shard.context_audits {
+        entries.extend(
+            unique_timestamped_kv_page_addresses(series)
+                .into_iter()
+                .map(|address| LivePageEntry {
+                    object_key: key.clone(),
+                    kind: "context_audit",
+                    component: None,
+                    address,
+                }),
+        );
+    }
+    for (key, series) in &shard.context_dirty {
+        entries.extend(
+            unique_timestamped_kv_page_addresses(series)
+                .into_iter()
+                .map(|address| LivePageEntry {
+                    object_key: key.clone(),
+                    kind: "context_dirty",
                     component: None,
                     address,
                 }),
@@ -6731,6 +7189,19 @@ fn collect_live_page_addresses(shard: &ShardState) -> Vec<PageAddress> {
         addresses.extend(unique_timestamped_kv_page_addresses(series));
     }
     for series in shard.ips.values() {
+        addresses.extend(unique_timestamped_kv_page_addresses(series));
+    }
+    addresses.extend(shard.context_nodes.values().cloned());
+    for series in shard.context_events.values() {
+        addresses.extend(unique_timestamped_kv_page_addresses(series));
+    }
+    for series in shard.context_indexes.values() {
+        addresses.extend(unique_timestamped_kv_page_addresses(series));
+    }
+    for series in shard.context_audits.values() {
+        addresses.extend(unique_timestamped_kv_page_addresses(series));
+    }
+    for series in shard.context_dirty.values() {
         addresses.extend(unique_timestamped_kv_page_addresses(series));
     }
     addresses
@@ -7044,6 +7515,11 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         || shard.risk.contains_key(key)
         || shard.risk_changes.contains_key(key)
         || shard.risk_fol.contains_key(key)
+        || shard.context_nodes.contains_key(key)
+        || shard.context_events.contains_key(key)
+        || shard.context_indexes.contains_key(key)
+        || shard.context_audits.contains_key(key)
+        || shard.context_dirty.contains_key(key)
 }
 
 fn invalidate_record_all(cache: &MultiLayerCache, shard_id: ShardId, key: &str) {
@@ -7528,13 +8004,39 @@ fn object_manager_stats(
         + shard.features.len()
         + shard.sequences.len()
         + shard.ips.len()
-        + shard.risk.len();
+        + shard.risk.len()
+        + shard.context_nodes.len()
+        + shard.context_events.len()
+        + shard.context_indexes.len()
+        + shard.context_audits.len()
+        + shard.context_dirty.len();
     let page_ref_count = shard.strings.len()
         + shard.hashes.values().map(HashMap::len).sum::<usize>()
         + shard.sets.values().map(BTreeMap::len).sum::<usize>()
         + shard.features.values().map(BTreeMap::len).sum::<usize>()
         + shard.sequences.values().map(BTreeMap::len).sum::<usize>()
-        + shard.ips.values().map(BTreeMap::len).sum::<usize>();
+        + shard.ips.values().map(BTreeMap::len).sum::<usize>()
+        + shard.context_nodes.len()
+        + shard
+            .context_events
+            .values()
+            .map(BTreeMap::len)
+            .sum::<usize>()
+        + shard
+            .context_indexes
+            .values()
+            .map(BTreeMap::len)
+            .sum::<usize>()
+        + shard
+            .context_audits
+            .values()
+            .map(BTreeMap::len)
+            .sum::<usize>()
+        + shard
+            .context_dirty
+            .values()
+            .map(BTreeMap::len)
+            .sum::<usize>();
     let routing_slot_count = routing_slot_count(start_routing_slot, end_routing_slot);
     let dirty_slots = shard
         .dirty_objects
@@ -7584,6 +8086,104 @@ fn stable_page_object_id(shard_id: ShardId, kind: &str, key: &str, component: Op
     stable_object_hash(&identity)
 }
 
+fn context_node_key(tenant_hash: u64, node_hash: u64) -> String {
+    format!("ctx:node:{tenant_hash}:{node_hash}")
+}
+
+fn context_event_key(tenant_hash: u64, node_hash: u64) -> String {
+    format!("ctx:event:{tenant_hash}:{node_hash}")
+}
+
+fn context_index_key(
+    tenant_hash: u64,
+    index_name: &str,
+    index_value_hash: u64,
+    scope_hash: u64,
+) -> String {
+    format!("ctxidx:{tenant_hash}:{index_name}:{index_value_hash}:{scope_hash}")
+}
+
+fn context_audit_key(tenant_hash: u64, session_hash: u64) -> String {
+    format!("ctx:audit:{tenant_hash}:{session_hash}")
+}
+
+fn context_dirty_key(tenant_hash: u64, node_hash: u64) -> String {
+    format!("ctx:dirty:{tenant_hash}:{node_hash}")
+}
+
+fn context_timeline_key(timestamp_ms: u64, disambiguator: u64) -> u64 {
+    timestamp_ms
+        .saturating_mul(CONTEXT_TIMELINE_FANOUT)
+        .saturating_add(disambiguator % CONTEXT_TIMELINE_FANOUT)
+}
+
+fn context_timeline_start(timestamp_ms: u64) -> u64 {
+    timestamp_ms.saturating_mul(CONTEXT_TIMELINE_FANOUT)
+}
+
+fn context_timeline_end(timestamp_ms: u64) -> u64 {
+    timestamp_ms
+        .saturating_mul(CONTEXT_TIMELINE_FANOUT)
+        .saturating_add(CONTEXT_TIMELINE_FANOUT - 1)
+}
+
+fn context_limit(limit: Option<usize>) -> usize {
+    limit
+        .unwrap_or(CONTEXT_DEFAULT_LIMIT)
+        .max(1)
+        .min(FEATURE_ADD_HARD_MAX_SIZE)
+}
+
+fn context_bytes<T: Serialize>(value: &T) -> Option<Vec<u8>> {
+    serde_json::to_vec(value).ok()
+}
+
+fn context_from_bytes<T: DeserializeOwned>(bytes: &[u8]) -> Option<T> {
+    serde_json::from_slice(bytes).ok()
+}
+
+fn read_context_value<T: DeserializeOwned>(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    timeline_key: u64,
+    address: &PageAddress,
+) -> Option<T> {
+    let point = read_feature_point(cache, page_store, shard_id, timeline_key, address)?;
+    context_from_bytes(&point.value)
+}
+
+fn context_event_matches_filter(
+    event: &ContextEvent,
+    current_valid_only: bool,
+    as_of_ms: u64,
+    end_time_ms: u64,
+    kinds: &[u32],
+    statuses: &[u32],
+    min_confidence: f32,
+    min_importance: f32,
+) -> bool {
+    if !kinds.is_empty() && !kinds.contains(&event.kind) {
+        return false;
+    }
+    if !statuses.is_empty() && !statuses.contains(&event.status) {
+        return false;
+    }
+    if event.confidence < min_confidence || event.importance < min_importance {
+        return false;
+    }
+    if current_valid_only {
+        let as_of = if as_of_ms == 0 { end_time_ms } else { as_of_ms };
+        if event.event_time_ms > as_of {
+            return false;
+        }
+        if event.valid_until_ms != 0 && event.valid_until_ms <= as_of {
+            return false;
+        }
+    }
+    true
+}
+
 fn page_routing_slot(key: &str, start_routing_slot: u32, end_routing_slot: u32) -> u32 {
     slot_for_object(
         key,
@@ -7623,6 +8223,33 @@ fn command_object_keys(command: &Command) -> Vec<String> {
         Command::RiskSet { family, key, .. } | Command::RiskSetAndGet { family, key, .. } => {
             vec![risk_family_key(*family, key)]
         }
+        Command::ContextUpsertNode { tenant_hash, node } => {
+            vec![context_node_key(*tenant_hash, node.node_hash)]
+        }
+        Command::ContextWriteEvent {
+            tenant_hash,
+            node_hash,
+            ..
+        } => vec![context_event_key(*tenant_hash, *node_hash)],
+        Command::ContextWriteIndexRef {
+            tenant_hash,
+            index_name,
+            index_value_hash,
+            scope_hash,
+            ..
+        } => vec![context_index_key(
+            *tenant_hash,
+            index_name,
+            *index_value_hash,
+            *scope_hash,
+        )],
+        Command::ContextWritePackAudit { tenant_hash, audit } => {
+            vec![context_audit_key(*tenant_hash, audit.session_hash)]
+        }
+        Command::ContextMarkSummaryDirty {
+            tenant_hash,
+            marker,
+        } => vec![context_dirty_key(*tenant_hash, marker.node_hash)],
         Command::SequenceBatchQuery { .. }
         | Command::CommonTtl { .. }
         | Command::CommonExists { .. }
@@ -7651,7 +8278,12 @@ fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::RiskFamilyQuery { .. }
         | Command::RiskFolQuery { .. }
         | Command::RiskManager { .. }
-        | Command::RiskDebug { .. } => Vec::new(),
+        | Command::RiskDebug { .. }
+        | Command::ContextGetNode { .. }
+        | Command::ContextQueryEvents { .. }
+        | Command::ContextQueryIndex { .. }
+        | Command::ContextQueryPackAudit { .. }
+        | Command::ContextQuerySummaryDirty { .. } => Vec::new(),
     }
 }
 
@@ -7686,6 +8318,11 @@ fn is_write_command(command: &Command) -> bool {
             | Command::RiskSet { .. }
             | Command::RiskSetAndGet { .. }
             | Command::RiskFolSet { .. }
+            | Command::ContextUpsertNode { .. }
+            | Command::ContextWriteEvent { .. }
+            | Command::ContextWriteIndexRef { .. }
+            | Command::ContextWritePackAudit { .. }
+            | Command::ContextMarkSummaryDirty { .. }
     )
 }
 
@@ -7826,6 +8463,109 @@ fn validate_command_preconditions(
                 ));
             }
         }
+        Command::ContextUpsertNode { tenant_hash, node } => {
+            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
+            validate_context_required(node.node_hash != 0, "node_hash is required")?;
+        }
+        Command::ContextGetNode {
+            tenant_hash,
+            node_hash,
+        } => {
+            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
+            validate_context_required(*node_hash != 0, "node_hash is required")?;
+        }
+        Command::ContextWriteEvent {
+            tenant_hash,
+            node_hash,
+            event,
+            ..
+        } => {
+            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
+            validate_context_required(*node_hash != 0, "node_hash is required")?;
+            validate_context_required(event.event_time_ms != 0, "event_time_ms is required")?;
+            validate_context_required(event.event_id_hash != 0, "event_id_hash is required")?;
+        }
+        Command::ContextQueryEvents {
+            tenant_hash,
+            node_hash,
+            start_time_ms,
+            end_time_ms,
+            ..
+        } => {
+            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
+            validate_context_required(*node_hash != 0, "node_hash is required")?;
+            validate_context_range(*start_time_ms, *end_time_ms)?;
+        }
+        Command::ContextWriteIndexRef {
+            tenant_hash,
+            index_name,
+            index_value_hash,
+            event_time_ms,
+            index_ref,
+            ..
+        } => {
+            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
+            validate_context_required(!index_name.is_empty(), "index_name is required")?;
+            validate_context_required(*index_value_hash != 0, "index_value_hash is required")?;
+            validate_context_required(*event_time_ms != 0, "event_time_ms is required")?;
+            validate_context_required(
+                index_ref.primary_node_hash != 0,
+                "primary_node_hash is required",
+            )?;
+            validate_context_required(
+                index_ref.primary_event_time_ms != 0,
+                "primary_event_time_ms is required",
+            )?;
+        }
+        Command::ContextQueryIndex {
+            tenant_hash,
+            index_name,
+            index_value_hash,
+            start_time_ms,
+            end_time_ms,
+            ..
+        } => {
+            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
+            validate_context_required(!index_name.is_empty(), "index_name is required")?;
+            validate_context_required(*index_value_hash != 0, "index_value_hash is required")?;
+            validate_context_range(*start_time_ms, *end_time_ms)?;
+        }
+        Command::ContextWritePackAudit { tenant_hash, audit } => {
+            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
+            validate_context_required(audit.session_hash != 0, "session_hash is required")?;
+            validate_context_required(audit.request_time_ms != 0, "request_time_ms is required")?;
+            validate_context_required(!audit.query_id.is_empty(), "query_id is required")?;
+        }
+        Command::ContextQueryPackAudit {
+            tenant_hash,
+            session_hash,
+            start_time_ms,
+            end_time_ms,
+            ..
+        } => {
+            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
+            validate_context_required(*session_hash != 0, "session_hash is required")?;
+            validate_context_range(*start_time_ms, *end_time_ms)?;
+        }
+        Command::ContextMarkSummaryDirty {
+            tenant_hash,
+            marker,
+        } => {
+            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
+            validate_context_required(marker.node_hash != 0, "node_hash is required")?;
+            validate_context_required(marker.event_time_ms != 0, "event_time_ms is required")?;
+        }
+        Command::ContextQuerySummaryDirty {
+            tenant_hash,
+            node_hash,
+            start_time_ms,
+            end_time_ms,
+            ..
+        } => {
+            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
+            validate_context_required(*node_hash != 0, "node_hash is required")?;
+            validate_context_range(*start_time_ms, *end_time_ms)?;
+        }
         _ => {}
     }
 
@@ -7864,6 +8604,25 @@ fn validate_command_preconditions(
     Ok(())
 }
 
+fn validate_context_required(ok: bool, message: &'static str) -> Result<(), Status> {
+    if ok {
+        Ok(())
+    } else {
+        Err(Status::error("invalid_argument", message))
+    }
+}
+
+fn validate_context_range(start_time_ms: u64, end_time_ms: u64) -> Result<(), Status> {
+    if end_time_ms > start_time_ms {
+        Ok(())
+    } else {
+        Err(Status::error(
+            "invalid_argument",
+            "end_time_ms must be greater than start_time_ms",
+        ))
+    }
+}
+
 fn cached_response(
     cache: &MultiLayerCache,
     key: CacheKey,
@@ -7886,7 +8645,7 @@ fn cached_response(
 mod tests {
     use super::*;
     use crate::page_store::PageStoreZoneState;
-    use crate::types::parse_cpp_feature_filters;
+    use crate::types::{parse_cpp_feature_filters, ContextAuditRef};
 
     fn wait_for_fresh_admission_second() {
         loop {
@@ -7898,6 +8657,256 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn context_models_match_cpp_keys_timeline_pages_and_filters() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+
+        let node = ContextNode {
+            node_hash: 42,
+            parent_hash: 7,
+            kind: 3,
+            canonical_name: "checkout".to_string(),
+            l0: "service".to_string(),
+            status: 1,
+            last_event_time_ms: 1_000,
+            summary_dirty: true,
+            l1_ref: "l1://summary".to_string(),
+            raw_metadata_ref: "raw://node".to_string(),
+        };
+        let upsert = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertNode {
+                tenant_hash: 11,
+                node: node.clone(),
+            },
+        });
+        assert!(upsert.status.ok);
+        assert!(matches!(
+            upsert.response,
+            CommandResponse::ContextObjectKey { ref object_key }
+                if object_key == "ctx:node:11:42"
+        ));
+
+        let get = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextGetNode {
+                tenant_hash: 11,
+                node_hash: 42,
+            },
+        });
+        assert!(matches!(
+            get.response,
+            CommandResponse::ContextNode { node: Some(ref stored), .. } if stored == &node
+        ));
+
+        let event_a = ContextEvent {
+            event_id_hash: 5,
+            event_time_ms: 1_000,
+            kind: 9,
+            event_type: 2,
+            actor_hash: 77,
+            status: 1,
+            valid_until_ms: 0,
+            confidence: 0.9,
+            importance: 0.7,
+            text: "first".to_string(),
+            source_ref: "src://a".to_string(),
+            related_node_hashes: vec![42],
+            compact_attrs: vec![1, 2, 3],
+        };
+        let mut event_b = event_a.clone();
+        event_b.event_id_hash = 6;
+        event_b.text = "second".to_string();
+
+        for event in [event_a.clone(), event_b.clone()] {
+            let write = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextWriteEvent {
+                    tenant_hash: 11,
+                    node_hash: 42,
+                    event,
+                    first_write_only: true,
+                },
+            });
+            assert!(write.status.ok);
+            assert!(matches!(
+                write.response,
+                CommandResponse::ContextObjectKey { ref object_key }
+                    if object_key == "ctx:event:11:42"
+            ));
+        }
+        let duplicate = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextWriteEvent {
+                tenant_hash: 11,
+                node_hash: 42,
+                event: ContextEvent {
+                    text: "ignored".to_string(),
+                    ..event_a.clone()
+                },
+                first_write_only: true,
+            },
+        });
+        assert!(duplicate.status.ok);
+
+        let queried = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextQueryEvents {
+                tenant_hash: 11,
+                node_hash: 42,
+                start_time_ms: 999,
+                end_time_ms: 1_000,
+                limit: Some(10),
+                current_valid_only: true,
+                as_of_ms: 0,
+                kinds: vec![9],
+                statuses: vec![1],
+                min_confidence: 0.8,
+                min_importance: 0.6,
+            },
+        });
+        assert!(matches!(
+            queried.response,
+            CommandResponse::ContextEvents { ref object_key, ref events }
+                if object_key == "ctx:event:11:42"
+                    && events.iter().map(|event| event.text.as_str()).collect::<Vec<_>>()
+                        == vec!["first", "second"]
+        ));
+
+        let index_ref = ContextIndexRef {
+            primary_node_hash: 42,
+            primary_event_time_ms: 1_000,
+            event_id_hash: 5,
+        };
+        let index_write = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextWriteIndexRef {
+                tenant_hash: 11,
+                index_name: "actor".to_string(),
+                index_value_hash: 77,
+                scope_hash: 3,
+                event_time_ms: 1_000,
+                index_ref: index_ref.clone(),
+            },
+        });
+        assert!(matches!(
+            index_write.response,
+            CommandResponse::ContextObjectKey { ref object_key }
+                if object_key == "ctxidx:11:actor:77:3"
+        ));
+        let index_query = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextQueryIndex {
+                tenant_hash: 11,
+                index_name: "actor".to_string(),
+                index_value_hash: 77,
+                scope_hash: 3,
+                start_time_ms: 999,
+                end_time_ms: 1_000,
+                limit: None,
+            },
+        });
+        assert!(matches!(
+            index_query.response,
+            CommandResponse::ContextIndexRefs { refs, .. } if refs == vec![index_ref]
+        ));
+
+        let audit = ContextPackAudit {
+            query_id: "q1".to_string(),
+            session_hash: 99,
+            request_time_ms: 2_000,
+            query_hash: 123,
+            max_prompt_tokens: 4096,
+            selected_tokens: 128,
+            selected_refs: vec![ContextAuditRef {
+                node_hash: 42,
+                event_time_ms: 1_000,
+                reason: "ranked".to_string(),
+            }],
+            blocked_refs: Vec::new(),
+        };
+        let audit_write = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextWritePackAudit {
+                tenant_hash: 11,
+                audit: audit.clone(),
+            },
+        });
+        assert!(matches!(
+            audit_write.response,
+            CommandResponse::ContextObjectKey { ref object_key }
+                if object_key == "ctx:audit:11:99"
+        ));
+        let audit_query = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextQueryPackAudit {
+                tenant_hash: 11,
+                session_hash: 99,
+                start_time_ms: 1_999,
+                end_time_ms: 2_000,
+                limit: None,
+            },
+        });
+        assert!(matches!(
+            audit_query.response,
+            CommandResponse::ContextPackAudits { audits, .. } if audits == vec![audit]
+        ));
+
+        let marker = ContextSummaryDirtyMarker {
+            node_hash: 42,
+            event_time_ms: 3_000,
+            reason: 4,
+            propagate_depth: 2,
+        };
+        let dirty_write = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextMarkSummaryDirty {
+                tenant_hash: 11,
+                marker: marker.clone(),
+            },
+        });
+        assert!(matches!(
+            dirty_write.response,
+            CommandResponse::ContextObjectKey { ref object_key }
+                if object_key == "ctx:dirty:11:42"
+        ));
+        let dirty_query = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextQuerySummaryDirty {
+                tenant_hash: 11,
+                node_hash: 42,
+                start_time_ms: 2_999,
+                end_time_ms: 3_000,
+                limit: None,
+            },
+        });
+        assert!(matches!(
+            dirty_query.response,
+            CommandResponse::ContextSummaryDirtyMarkers { markers, .. } if markers == vec![marker]
+        ));
+
+        assert!(
+            engine
+                .slot_storage_summaries(1)
+                .iter()
+                .map(|summary| summary.page_ref_count)
+                .sum::<u64>()
+                >= 5
+        );
+        let recovery = engine.storage_recovery_report(1);
+        assert!(
+            recovery.total_page_refs >= 5,
+            "context pages should be visible to recovery accounting"
+        );
     }
 
     #[test]

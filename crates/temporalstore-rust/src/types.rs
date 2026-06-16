@@ -237,6 +237,100 @@ pub enum RiskFolType {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ContextNode {
+    pub node_hash: u64,
+    #[serde(default)]
+    pub parent_hash: u64,
+    #[serde(default)]
+    pub kind: u32,
+    #[serde(default)]
+    pub canonical_name: String,
+    #[serde(default)]
+    pub l0: String,
+    #[serde(default)]
+    pub status: u32,
+    #[serde(default)]
+    pub last_event_time_ms: u64,
+    #[serde(default)]
+    pub summary_dirty: bool,
+    #[serde(default)]
+    pub l1_ref: String,
+    #[serde(default)]
+    pub raw_metadata_ref: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ContextEvent {
+    pub event_id_hash: u64,
+    pub event_time_ms: u64,
+    #[serde(default)]
+    pub kind: u32,
+    #[serde(default)]
+    pub event_type: u32,
+    #[serde(default)]
+    pub actor_hash: u64,
+    #[serde(default)]
+    pub status: u32,
+    #[serde(default)]
+    pub valid_until_ms: u64,
+    #[serde(default)]
+    pub confidence: f32,
+    #[serde(default)]
+    pub importance: f32,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub source_ref: String,
+    #[serde(default)]
+    pub related_node_hashes: Vec<u64>,
+    #[serde(default)]
+    pub compact_attrs: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextIndexRef {
+    pub primary_node_hash: u64,
+    pub primary_event_time_ms: u64,
+    #[serde(default)]
+    pub event_id_hash: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextAuditRef {
+    pub node_hash: u64,
+    pub event_time_ms: u64,
+    #[serde(default)]
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextPackAudit {
+    pub query_id: String,
+    pub session_hash: u64,
+    pub request_time_ms: u64,
+    #[serde(default)]
+    pub query_hash: u64,
+    #[serde(default)]
+    pub max_prompt_tokens: u32,
+    #[serde(default)]
+    pub selected_tokens: u32,
+    #[serde(default)]
+    pub selected_refs: Vec<ContextAuditRef>,
+    #[serde(default)]
+    pub blocked_refs: Vec<ContextAuditRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextSummaryDirtyMarker {
+    pub node_hash: u64,
+    pub event_time_ms: u64,
+    #[serde(default)]
+    pub reason: u32,
+    #[serde(default)]
+    pub propagate_depth: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Command {
     CommonDelete {
@@ -544,6 +638,85 @@ pub enum Command {
         start_ms: u64,
         end_ms: u64,
     },
+    ContextUpsertNode {
+        tenant_hash: u64,
+        node: ContextNode,
+    },
+    ContextGetNode {
+        tenant_hash: u64,
+        node_hash: u64,
+    },
+    ContextWriteEvent {
+        tenant_hash: u64,
+        node_hash: u64,
+        event: ContextEvent,
+        #[serde(default)]
+        first_write_only: bool,
+    },
+    ContextQueryEvents {
+        tenant_hash: u64,
+        node_hash: u64,
+        start_time_ms: u64,
+        end_time_ms: u64,
+        #[serde(default)]
+        limit: Option<usize>,
+        #[serde(default)]
+        current_valid_only: bool,
+        #[serde(default)]
+        as_of_ms: u64,
+        #[serde(default)]
+        kinds: Vec<u32>,
+        #[serde(default)]
+        statuses: Vec<u32>,
+        #[serde(default)]
+        min_confidence: f32,
+        #[serde(default)]
+        min_importance: f32,
+    },
+    ContextWriteIndexRef {
+        tenant_hash: u64,
+        index_name: String,
+        index_value_hash: u64,
+        #[serde(default)]
+        scope_hash: u64,
+        event_time_ms: u64,
+        index_ref: ContextIndexRef,
+    },
+    ContextQueryIndex {
+        tenant_hash: u64,
+        index_name: String,
+        index_value_hash: u64,
+        #[serde(default)]
+        scope_hash: u64,
+        start_time_ms: u64,
+        end_time_ms: u64,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
+    ContextWritePackAudit {
+        tenant_hash: u64,
+        audit: ContextPackAudit,
+    },
+    ContextQueryPackAudit {
+        tenant_hash: u64,
+        session_hash: u64,
+        start_time_ms: u64,
+        end_time_ms: u64,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
+    ContextMarkSummaryDirty {
+        tenant_hash: u64,
+        marker: ContextSummaryDirtyMarker,
+    },
+    ContextQuerySummaryDirty {
+        tenant_hash: u64,
+        node_hash: u64,
+        start_time_ms: u64,
+        end_time_ms: u64,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
 }
 
 fn encode_varint_field(out: &mut Vec<u8>, field_number: u64, value: u64) {
@@ -611,6 +784,29 @@ pub enum CommandResponse {
     },
     IpsSnapshotReport {
         report: IpsSnapshotReport,
+    },
+    ContextNode {
+        object_key: String,
+        node: Option<ContextNode>,
+    },
+    ContextObjectKey {
+        object_key: String,
+    },
+    ContextEvents {
+        object_key: String,
+        events: Vec<ContextEvent>,
+    },
+    ContextIndexRefs {
+        object_key: String,
+        refs: Vec<ContextIndexRef>,
+    },
+    ContextPackAudits {
+        object_key: String,
+        audits: Vec<ContextPackAudit>,
+    },
+    ContextSummaryDirtyMarkers {
+        object_key: String,
+        markers: Vec<ContextSummaryDirtyMarker>,
     },
 }
 

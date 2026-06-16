@@ -134,6 +134,7 @@ pub use shared_store::{
     SharedStoreStorageMode, SharedStoreStorageWriter, SharedStoreWriteReport,
 };
 pub use types::{
-    BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,
-    ExecuteResponse, FeaturePoint, IpsSnapshotReport, IpsStats, ShardId, Status,
+    BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ContextAuditRef,
+    ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit, ContextSummaryDirtyMarker,
+    ExecuteRequest, ExecuteResponse, FeaturePoint, IpsSnapshotReport, IpsStats, ShardId, Status,
 };

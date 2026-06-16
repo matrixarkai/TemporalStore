@@ -18,6 +18,7 @@ use crate::meta::{
 };
 use crate::types::{
     parse_cpp_feature_filters, BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse,
+    ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit, ContextSummaryDirtyMarker,
     ExecuteRequest, ExecuteResponse, FeatureFilter, FeaturePoint, FeatureWritePolicy,
     IpsSnapshotReport, IpsStats, RiskFamily, RiskFolType, SequenceFeatureRow, SequenceQuerySpec,
     ShardId, Status,
@@ -2374,6 +2375,253 @@ impl TemporalStoreTable {
         }
     }
 
+    pub fn context_upsert_node(
+        &self,
+        tenant_hash: u64,
+        node: ContextNode,
+    ) -> Result<String, ClientError> {
+        match self
+            .execute(Command::ContextUpsertNode { tenant_hash, node })?
+            .response
+        {
+            CommandResponse::ContextObjectKey { object_key } => Ok(object_key),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "context_upsert_node",
+                response,
+            }),
+        }
+    }
+
+    pub fn context_get_node(
+        &self,
+        tenant_hash: u64,
+        node_hash: u64,
+    ) -> Result<Option<ContextNode>, ClientError> {
+        match self
+            .execute(Command::ContextGetNode {
+                tenant_hash,
+                node_hash,
+            })?
+            .response
+        {
+            CommandResponse::ContextNode { node, .. } => Ok(node),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "context_get_node",
+                response,
+            }),
+        }
+    }
+
+    pub fn context_write_event(
+        &self,
+        tenant_hash: u64,
+        node_hash: u64,
+        event: ContextEvent,
+        first_write_only: bool,
+    ) -> Result<String, ClientError> {
+        match self
+            .execute(Command::ContextWriteEvent {
+                tenant_hash,
+                node_hash,
+                event,
+                first_write_only,
+            })?
+            .response
+        {
+            CommandResponse::ContextObjectKey { object_key } => Ok(object_key),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "context_write_event",
+                response,
+            }),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn context_query_events(
+        &self,
+        tenant_hash: u64,
+        node_hash: u64,
+        start_time_ms: u64,
+        end_time_ms: u64,
+        limit: Option<usize>,
+        current_valid_only: bool,
+        as_of_ms: u64,
+        kinds: Vec<u32>,
+        statuses: Vec<u32>,
+        min_confidence: f32,
+        min_importance: f32,
+    ) -> Result<Vec<ContextEvent>, ClientError> {
+        match self
+            .execute(Command::ContextQueryEvents {
+                tenant_hash,
+                node_hash,
+                start_time_ms,
+                end_time_ms,
+                limit,
+                current_valid_only,
+                as_of_ms,
+                kinds,
+                statuses,
+                min_confidence,
+                min_importance,
+            })?
+            .response
+        {
+            CommandResponse::ContextEvents { events, .. } => Ok(events),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "context_query_events",
+                response,
+            }),
+        }
+    }
+
+    pub fn context_write_index_ref(
+        &self,
+        tenant_hash: u64,
+        index_name: impl Into<String>,
+        index_value_hash: u64,
+        scope_hash: u64,
+        event_time_ms: u64,
+        index_ref: ContextIndexRef,
+    ) -> Result<String, ClientError> {
+        match self
+            .execute(Command::ContextWriteIndexRef {
+                tenant_hash,
+                index_name: index_name.into(),
+                index_value_hash,
+                scope_hash,
+                event_time_ms,
+                index_ref,
+            })?
+            .response
+        {
+            CommandResponse::ContextObjectKey { object_key } => Ok(object_key),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "context_write_index_ref",
+                response,
+            }),
+        }
+    }
+
+    pub fn context_query_index(
+        &self,
+        tenant_hash: u64,
+        index_name: impl Into<String>,
+        index_value_hash: u64,
+        scope_hash: u64,
+        start_time_ms: u64,
+        end_time_ms: u64,
+        limit: Option<usize>,
+    ) -> Result<Vec<ContextIndexRef>, ClientError> {
+        match self
+            .execute(Command::ContextQueryIndex {
+                tenant_hash,
+                index_name: index_name.into(),
+                index_value_hash,
+                scope_hash,
+                start_time_ms,
+                end_time_ms,
+                limit,
+            })?
+            .response
+        {
+            CommandResponse::ContextIndexRefs { refs, .. } => Ok(refs),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "context_query_index",
+                response,
+            }),
+        }
+    }
+
+    pub fn context_write_pack_audit(
+        &self,
+        tenant_hash: u64,
+        audit: ContextPackAudit,
+    ) -> Result<String, ClientError> {
+        match self
+            .execute(Command::ContextWritePackAudit { tenant_hash, audit })?
+            .response
+        {
+            CommandResponse::ContextObjectKey { object_key } => Ok(object_key),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "context_write_pack_audit",
+                response,
+            }),
+        }
+    }
+
+    pub fn context_query_pack_audit(
+        &self,
+        tenant_hash: u64,
+        session_hash: u64,
+        start_time_ms: u64,
+        end_time_ms: u64,
+        limit: Option<usize>,
+    ) -> Result<Vec<ContextPackAudit>, ClientError> {
+        match self
+            .execute(Command::ContextQueryPackAudit {
+                tenant_hash,
+                session_hash,
+                start_time_ms,
+                end_time_ms,
+                limit,
+            })?
+            .response
+        {
+            CommandResponse::ContextPackAudits { audits, .. } => Ok(audits),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "context_query_pack_audit",
+                response,
+            }),
+        }
+    }
+
+    pub fn context_mark_summary_dirty(
+        &self,
+        tenant_hash: u64,
+        marker: ContextSummaryDirtyMarker,
+    ) -> Result<String, ClientError> {
+        match self
+            .execute(Command::ContextMarkSummaryDirty {
+                tenant_hash,
+                marker,
+            })?
+            .response
+        {
+            CommandResponse::ContextObjectKey { object_key } => Ok(object_key),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "context_mark_summary_dirty",
+                response,
+            }),
+        }
+    }
+
+    pub fn context_query_summary_dirty(
+        &self,
+        tenant_hash: u64,
+        node_hash: u64,
+        start_time_ms: u64,
+        end_time_ms: u64,
+        limit: Option<usize>,
+    ) -> Result<Vec<ContextSummaryDirtyMarker>, ClientError> {
+        match self
+            .execute(Command::ContextQuerySummaryDirty {
+                tenant_hash,
+                node_hash,
+                start_time_ms,
+                end_time_ms,
+                limit,
+            })?
+            .response
+        {
+            CommandResponse::ContextSummaryDirtyMarkers { markers, .. } => Ok(markers),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "context_query_summary_dirty",
+                response,
+            }),
+        }
+    }
+
     pub fn risk_increment(
         &self,
         key: impl Into<String>,
@@ -2841,7 +3089,8 @@ impl TemporalStoreTable {
     }
 
     fn shard_id_for_command(&self, command: &Command) -> ShardId {
-        command_key(command)
+        command_routing_key(command)
+            .as_deref()
             .map(|key| self.shard_id_for_key(key))
             .unwrap_or(self.shard_id)
     }
@@ -3023,6 +3272,11 @@ fn is_write(command: &Command) -> bool {
             | Command::RiskSet { .. }
             | Command::RiskSetAndGet { .. }
             | Command::RiskFolSet { .. }
+            | Command::ContextUpsertNode { .. }
+            | Command::ContextWriteEvent { .. }
+            | Command::ContextWriteIndexRef { .. }
+            | Command::ContextWritePackAudit { .. }
+            | Command::ContextMarkSummaryDirty { .. }
     )
 }
 
@@ -3112,7 +3366,8 @@ pub fn key_is_dropped_by_percent(key: &str, drop_percent: u8) -> bool {
 }
 
 fn command_is_dropped(command: &Command, drop_percent: u8) -> bool {
-    command_key(command)
+    command_routing_key(command)
+        .as_deref()
         .map(|key| key_is_dropped_by_percent(key, drop_percent))
         .unwrap_or(false)
 }
@@ -3276,8 +3531,109 @@ fn command_key(command: &Command) -> Option<&str> {
         | Command::RiskFolQuery { key }
         | Command::RiskManager { key }
         | Command::RiskDebug { key, .. } => Some(key),
-        Command::IpsBatchQueryLast { .. } | Command::SequenceBatchQuery { .. } => None,
+        Command::IpsBatchQueryLast { .. }
+        | Command::SequenceBatchQuery { .. }
+        | Command::ContextUpsertNode { .. }
+        | Command::ContextGetNode { .. }
+        | Command::ContextWriteEvent { .. }
+        | Command::ContextQueryEvents { .. }
+        | Command::ContextWriteIndexRef { .. }
+        | Command::ContextQueryIndex { .. }
+        | Command::ContextWritePackAudit { .. }
+        | Command::ContextQueryPackAudit { .. }
+        | Command::ContextMarkSummaryDirty { .. }
+        | Command::ContextQuerySummaryDirty { .. } => None,
     }
+}
+
+fn command_routing_key(command: &Command) -> Option<String> {
+    command_key(command)
+        .map(str::to_string)
+        .or_else(|| context_command_key(command))
+}
+
+fn context_command_key(command: &Command) -> Option<String> {
+    match command {
+        Command::ContextUpsertNode { tenant_hash, node } => {
+            Some(context_node_key(*tenant_hash, node.node_hash))
+        }
+        Command::ContextGetNode {
+            tenant_hash,
+            node_hash,
+        } => Some(context_node_key(*tenant_hash, *node_hash)),
+        Command::ContextWriteEvent {
+            tenant_hash,
+            node_hash,
+            ..
+        }
+        | Command::ContextQueryEvents {
+            tenant_hash,
+            node_hash,
+            ..
+        } => Some(context_event_key(*tenant_hash, *node_hash)),
+        Command::ContextWriteIndexRef {
+            tenant_hash,
+            index_name,
+            index_value_hash,
+            scope_hash,
+            ..
+        }
+        | Command::ContextQueryIndex {
+            tenant_hash,
+            index_name,
+            index_value_hash,
+            scope_hash,
+            ..
+        } => Some(context_index_key(
+            *tenant_hash,
+            index_name,
+            *index_value_hash,
+            *scope_hash,
+        )),
+        Command::ContextWritePackAudit { tenant_hash, audit } => {
+            Some(context_audit_key(*tenant_hash, audit.session_hash))
+        }
+        Command::ContextQueryPackAudit {
+            tenant_hash,
+            session_hash,
+            ..
+        } => Some(context_audit_key(*tenant_hash, *session_hash)),
+        Command::ContextMarkSummaryDirty {
+            tenant_hash,
+            marker,
+        } => Some(context_dirty_key(*tenant_hash, marker.node_hash)),
+        Command::ContextQuerySummaryDirty {
+            tenant_hash,
+            node_hash,
+            ..
+        } => Some(context_dirty_key(*tenant_hash, *node_hash)),
+        _ => None,
+    }
+}
+
+fn context_node_key(tenant_hash: u64, node_hash: u64) -> String {
+    format!("ctx:node:{tenant_hash}:{node_hash}")
+}
+
+fn context_event_key(tenant_hash: u64, node_hash: u64) -> String {
+    format!("ctx:event:{tenant_hash}:{node_hash}")
+}
+
+fn context_index_key(
+    tenant_hash: u64,
+    index_name: &str,
+    index_value_hash: u64,
+    scope_hash: u64,
+) -> String {
+    format!("ctxidx:{tenant_hash}:{index_name}:{index_value_hash}:{scope_hash}")
+}
+
+fn context_audit_key(tenant_hash: u64, session_hash: u64) -> String {
+    format!("ctx:audit:{tenant_hash}:{session_hash}")
+}
+
+fn context_dirty_key(tenant_hash: u64, node_hash: u64) -> String {
+    format!("ctx:dirty:{tenant_hash}:{node_hash}")
 }
 
 #[cfg(test)]
