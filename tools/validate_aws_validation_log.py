@@ -126,6 +126,15 @@ def validate_storage_production(job, summary):
         require(case["raft_leader_after_transfer"] == 2, f"{job}: raft leader did not transfer in {case['case_name']}")
 
 
+def validate_context_workflow(job, summary):
+    require(summary["extraction_ok"], f"{job}: context extraction failed")
+    require(summary["retrieve_block_count"] >= 2, f"{job}: not enough retrieved context blocks")
+    require(summary["selected_block_count"] > 0, f"{job}: no injected context blocks selected")
+    require(summary["audit_selected_ref_count"] == summary["selected_block_count"], f"{job}: audit selected refs mismatch")
+    require(summary["injected_prompt_contains_context"], f"{job}: injected prompt missing context wrapper")
+    require(summary["provider_name"], f"{job}: provider name missing")
+
+
 def validate_raft_secondary(job, summary):
     require(summary["writes"], f"{job}: no writes recorded")
     for write in summary["writes"]:
@@ -182,7 +191,9 @@ def main():
     args = parser.parse_args()
 
     summary = load_summary(args.log)
-    if args.job.endswith("storage-production-validation"):
+    if args.job.endswith("context-workflow-validation"):
+        validate_context_workflow(args.job, summary)
+    elif args.job.endswith("storage-production-validation"):
         validate_storage_production(args.job, summary)
     elif args.job.endswith("raft-secondary-validation"):
         validate_raft_secondary(args.job, summary)

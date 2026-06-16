@@ -1,5 +1,6 @@
 pub mod cache;
 pub mod client;
+pub mod context_workflow;
 pub mod control;
 pub mod data_node;
 pub mod e2e;
@@ -25,6 +26,13 @@ pub use client::{
     crc64_jones, key_is_dropped_by_percent, shard_id_for_key, slot_id_for_key, stable_key_hash,
     ClientError, ClientOptions, ClientPreflightReport, ClientStats, RequestOptions, TableOptions,
     TemporalStoreClient, TemporalStorePipeline, TemporalStoreTable,
+};
+pub use context_workflow::{
+    context_workflow_state_report, default_context_model_providers, extract_context,
+    inject_context, retrieve_context, ContextBlock, ContextExtractReport, ContextExtractRequest,
+    ContextInjectReport, ContextInjectRequest, ContextModelProviderConfig, ContextProviderKind,
+    ContextRetrieveReport, ContextRetrieveRequest, ContextSourceKind, ContextTier,
+    ContextWorkflowStateReport,
 };
 pub use control::{
     CheckedBatchExecuteRequest, CheckedBatchExecuteResponse, CheckedExecuteRequest,

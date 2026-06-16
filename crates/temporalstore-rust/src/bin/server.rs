@@ -5,6 +5,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use temporalstore_rust::context_workflow::{
+    context_workflow_state_report, default_context_model_providers, extract_context,
+    inject_context, retrieve_context, ContextExtractRequest, ContextInjectRequest,
+    ContextModelProviderConfig, ContextRetrieveRequest,
+};
 use temporalstore_rust::data_node::{DataNodeLifecycleSnapshot, DataNodeTopologyValidationReport};
 use temporalstore_rust::engine::TemporalEngine;
 use temporalstore_rust::http::{
@@ -478,6 +483,36 @@ fn main() {
             },
             ("POST", "/ingest/batch") => ingest_batch_route(&engine, &request.body),
             ("GET", "/ingest/state") => json_response(200, &engine.ingestion_state_report()),
+            ("POST", "/context/extract") => {
+                match parse_json::<ContextExtractRequest>(&request.body) {
+                    Ok(req) => json_response(200, &extract_context(&engine, req)),
+                    Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+                }
+            }
+            ("POST", "/context/retrieve") => {
+                match parse_json::<ContextRetrieveRequest>(&request.body) {
+                    Ok(req) => json_response(200, &retrieve_context(&engine, req)),
+                    Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+                }
+            }
+            ("POST", "/context/inject") => {
+                match parse_json::<ContextInjectRequest>(&request.body) {
+                    Ok(req) => json_response(200, &inject_context(&engine, req)),
+                    Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+                }
+            }
+            ("GET", "/context/workflow/state") => {
+                json_response(200, &context_workflow_state_report())
+            }
+            ("GET", "/context/model/providers") => {
+                json_response(200, &default_context_model_providers())
+            }
+            ("POST", "/context/model/provider") => {
+                match parse_json::<ContextModelProviderConfig>(&request.body) {
+                    Ok(req) => json_response(200, &req),
+                    Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+                }
+            }
             ("POST", "/batch_execute_checked") => {
                 match parse_json::<CheckedBatchExecuteRequest>(&request.body) {
                     Ok(req) => json_response(200, &runtime.batch_execute_checked(req)),

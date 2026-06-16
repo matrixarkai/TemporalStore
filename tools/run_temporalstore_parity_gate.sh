@@ -124,6 +124,12 @@ python3 tools/validate_aws_validation_log.py \
   --job temporalstore-storage-production-validation \
   --log /tmp/temporalstore-storage-production-validation.log
 
+echo "== local: context extraction/injection workflow harness =="
+cargo run -p temporalstore-rust --bin context_workflow_harness > /tmp/temporalstore-context-workflow-validation.log
+python3 tools/validate_aws_validation_log.py \
+  --job temporalstore-context-workflow-validation \
+  --log /tmp/temporalstore-context-workflow-validation.log
+
 echo "== local: OS-process raft secondary replication harness =="
 cargo build -p temporalstore-rust --bins
 cargo run -p temporalstore-rust --bin raft_secondary_replication_harness -- \

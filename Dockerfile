@@ -15,5 +15,6 @@ COPY --from=builder /src/target/release/scale_harness /usr/local/bin/scale_harne
 COPY --from=builder /src/target/release/client_scale_harness /usr/local/bin/client_scale_harness
 COPY --from=builder /src/target/release/raft_secondary_replication_harness /usr/local/bin/raft_secondary_replication_harness
 COPY --from=builder /src/target/release/storage_modes_harness /usr/local/bin/storage_modes_harness
+COPY --from=builder /src/target/release/context_workflow_harness /usr/local/bin/context_workflow_harness
 USER temporalstore
 WORKDIR /var/lib/temporalstore
