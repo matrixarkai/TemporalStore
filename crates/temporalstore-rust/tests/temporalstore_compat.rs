@@ -33,6 +33,7 @@ fn production_readiness_service_summary_is_public_api() {
             "metaserver",
             "storage_cache",
             "feature_modules",
+            "context_workflow",
             "fault_tolerance",
             "deployment_ops",
             "scale_testing",
@@ -40,7 +41,7 @@ fn production_readiness_service_summary_is_public_api() {
         ]
     );
     let gates = report.service_gate_reports();
-    assert_eq!(gates.len(), 11);
+    assert_eq!(gates.len(), 12);
     for (order, service, owner) in [
         (1, "client", "client_sdk"),
         (2, "proxy", "proxy_runtime"),
@@ -49,10 +50,11 @@ fn production_readiness_service_summary_is_public_api() {
         (5, "metaserver", "metaserver_control_plane"),
         (6, "storage_cache", "storage_runtime"),
         (7, "feature_modules", "feature_api"),
-        (8, "fault_tolerance", "reliability"),
-        (9, "deployment_ops", "platform_ops"),
-        (10, "scale_testing", "performance"),
-        (11, "raft_replication", "consensus_runtime"),
+        (8, "context_workflow", "context_ai_workflow"),
+        (9, "fault_tolerance", "reliability"),
+        (10, "deployment_ops", "platform_ops"),
+        (11, "scale_testing", "performance"),
+        (12, "raft_replication", "consensus_runtime"),
     ] {
         assert!(
             gates.iter().any(|gate| gate.remediation_order == order
@@ -75,6 +77,7 @@ fn production_readiness_service_summary_is_public_api() {
             ("metaserver", "critical"),
             ("storage_cache", "critical"),
             ("feature_modules", "warning"),
+            ("context_workflow", "critical"),
             ("fault_tolerance", "warning"),
             ("deployment_ops", "critical"),
             ("scale_testing", "critical"),

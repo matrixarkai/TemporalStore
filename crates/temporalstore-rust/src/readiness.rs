@@ -454,6 +454,30 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
             ],
         },
         ReadinessArea {
+            area: "context_workflow".to_string(),
+            ready: false,
+            covered: vec![
+                "Rust-native Context extraction/retrieval/injection workflow persists ContextNode, ContextEvent, ContextIndexRef, ContextSummaryDirtyMarker, and ContextPackAudit"
+                    .to_string(),
+                "OpenViking-style L0/L1/L2 context tiers are generated deterministically for local mocked sources"
+                    .to_string(),
+                "context model provider config can switch between mock and OpenAI-compatible provider shapes without changing API payloads"
+                    .to_string(),
+                "data-node server exposes /context/extract, /context/retrieve, /context/inject, /context/workflow/state, and provider inspection routes"
+                    .to_string(),
+                "context workflow harness validates mock extraction, retrieval, prompt injection, audit refs, Docker packaging, and parity-gate log validation"
+                    .to_string(),
+            ],
+            missing: vec![
+                "live OpenAI-compatible HTTP model client with deadlines, retries, fallback provider execution, and credential isolation"
+                    .to_string(),
+                "C++/OpenViking golden context corpus replay through engine, client, proxy, Redis/admin, shared-store, and Raft paths"
+                    .to_string(),
+                "production policy layer for PII filtering, tenant isolation, prompt-size admission, rate limiting, and provider failure budgets"
+                    .to_string(),
+            ],
+        },
+        ReadinessArea {
             area: "deployment_ops".to_string(),
             ready: false,
             covered: vec![
@@ -535,6 +559,7 @@ fn service_readiness_summaries(areas: &[ReadinessArea]) -> Vec<ServiceReadinessS
         ("metaserver", vec!["metaserver"]),
         ("storage_cache", vec!["storage_cache"]),
         ("feature_modules", vec!["feature_modules"]),
+        ("context_workflow", vec!["context_workflow"]),
         ("fault_tolerance", vec!["fault_tolerance"]),
         ("deployment_ops", vec!["deployment_ops"]),
         ("scale_testing", vec!["scale_testing"]),
@@ -588,6 +613,7 @@ fn service_blocker_class(area: &str) -> &'static str {
         "metaserver" => "metaserver_control_plane",
         "storage_cache" => "storage_cache_durability",
         "feature_modules" => "feature_module_cpp_parity",
+        "context_workflow" => "context_model_provider_parity",
         "fault_tolerance" => "fault_tolerance_validation",
         "deployment_ops" => "deployment_ops_runtime",
         "scale_testing" => "scale_testing_evidence",
@@ -625,6 +651,9 @@ fn service_next_action(service: &str, blocker_classes: &[String]) -> &'static st
         ("feature_modules", "feature_module_cpp_parity") => {
             "finish exact C++ feature/risk corpus coverage and deployment-specific module edge cases"
         }
+        ("context_workflow", "context_model_provider_parity") => {
+            "finish live OpenAI-compatible provider execution, C++/OpenViking corpus replay, and production policy controls"
+        }
         ("fault_tolerance", "fault_tolerance_validation") => {
             "finish rolling restart and rolling upgrade validation across proxy, client, metaserver, and data-node processes"
         }
@@ -650,6 +679,7 @@ fn service_owner(service: &str) -> &'static str {
         "metaserver" => "metaserver_control_plane",
         "storage_cache" => "storage_runtime",
         "feature_modules" => "feature_api",
+        "context_workflow" => "context_ai_workflow",
         "fault_tolerance" => "reliability",
         "deployment_ops" => "platform_ops",
         "scale_testing" => "performance",
@@ -704,6 +734,7 @@ mod tests {
             "fault_tolerance",
             "storage_cache",
             "feature_modules",
+            "context_workflow",
             "deployment_ops",
             "scale_testing",
         ] {
@@ -734,6 +765,7 @@ mod tests {
                 "metaserver",
                 "storage_cache",
                 "feature_modules",
+                "context_workflow",
                 "fault_tolerance",
                 "deployment_ops",
                 "scale_testing",
@@ -749,6 +781,7 @@ mod tests {
             "metaserver",
             "storage_cache",
             "feature_modules",
+            "context_workflow",
             "fault_tolerance",
             "deployment_ops",
             "scale_testing",
@@ -814,6 +847,7 @@ mod tests {
                 "metaserver",
                 "storage_cache",
                 "feature_modules",
+                "context_workflow",
                 "fault_tolerance",
                 "deployment_ops",
                 "scale_testing",
@@ -830,6 +864,7 @@ mod tests {
                 "metaserver",
                 "storage_cache",
                 "feature_modules",
+                "context_workflow",
                 "fault_tolerance",
                 "deployment_ops",
                 "scale_testing",
@@ -837,7 +872,7 @@ mod tests {
             ]
         );
         let service_gates = report.service_gate_reports();
-        assert_eq!(service_gates.len(), 11);
+        assert_eq!(service_gates.len(), 12);
         assert_eq!(
             service_gates
                 .iter()
@@ -855,10 +890,11 @@ mod tests {
                 (5, "metaserver", "metaserver_control_plane"),
                 (6, "storage_cache", "storage_runtime"),
                 (7, "feature_modules", "feature_api"),
-                (8, "fault_tolerance", "reliability"),
-                (9, "deployment_ops", "platform_ops"),
-                (10, "scale_testing", "performance"),
-                (11, "raft_replication", "consensus_runtime")
+                (8, "context_workflow", "context_ai_workflow"),
+                (9, "fault_tolerance", "reliability"),
+                (10, "deployment_ops", "platform_ops"),
+                (11, "scale_testing", "performance"),
+                (12, "raft_replication", "consensus_runtime")
             ]
         );
         assert!(service_gates.iter().all(|gate| !gate.ready));
@@ -885,6 +921,7 @@ mod tests {
                 ("metaserver", "critical"),
                 ("storage_cache", "critical"),
                 ("feature_modules", "warning"),
+                ("context_workflow", "critical"),
                 ("fault_tolerance", "warning"),
                 ("deployment_ops", "critical"),
                 ("scale_testing", "critical"),
@@ -948,6 +985,11 @@ mod tests {
             .next_action
             .contains("C++ feature/risk corpus"));
         assert!(report
+            .service_summary("context_workflow")
+            .expect("context workflow summary")
+            .next_action
+            .contains("OpenAI-compatible"));
+        assert!(report
             .service_summary("fault_tolerance")
             .expect("fault tolerance summary")
             .next_action
@@ -1001,6 +1043,13 @@ mod tests {
                 .expect("feature modules summary")
                 .blocker_classes,
             vec!["feature_module_cpp_parity".to_string()]
+        );
+        assert_eq!(
+            report
+                .service_summary("context_workflow")
+                .expect("context workflow summary")
+                .blocker_classes,
+            vec!["context_model_provider_parity".to_string()]
         );
         assert_eq!(
             report

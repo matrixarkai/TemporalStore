@@ -89,3 +89,24 @@ The harness verifies:
 - prompt injection includes `<context>`
 - selected refs are recorded in `ContextPackAudit`
 - the provider config is reported in the JSON summary
+
+## Production Readiness
+
+The production readiness gate now tracks this workflow as `context_workflow`.
+
+Covered:
+
+- Context models are persisted through the normal engine command path.
+- L0/L1/L2 tier generation and prompt injection are deterministic for local mocks.
+- Data-node HTTP routes expose extract, retrieve, inject, workflow state, and provider inspection.
+- The local harness and Docker-packaged harness validate extraction, retrieval, injection, and
+  audit refs.
+
+Still blocking C++ parity and production readiness:
+
+- live OpenAI-compatible HTTP model execution with deadlines, retries, fallback provider execution,
+  and credential isolation
+- C++/OpenViking golden context corpus replay through engine, client, proxy, Redis/admin,
+  shared-store, and Raft paths
+- production policy controls for PII filtering, tenant isolation, prompt-size admission, rate
+  limiting, and provider failure budgets
