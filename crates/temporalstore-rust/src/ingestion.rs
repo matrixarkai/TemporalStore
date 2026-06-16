@@ -187,6 +187,8 @@ pub fn ingestion_readiness_report() -> IngestionReadinessReport {
         "dead-letter records preserve source, shard, status, and failed index".to_string(),
         "Kafka lag and ingestion/dead-letter counters are exposed through state reports"
             .to_string(),
+        "Prometheus ingestion metrics expose accepted/failed/duplicate/dead-letter counters, Kafka lag/offsets, and Flink checkpoint state from live engine scrapes"
+            .to_string(),
         "ingestion state is persisted through atomic temp-file rename".to_string(),
     ];
     let missing = vec![
@@ -195,8 +197,6 @@ pub fn ingestion_readiness_report() -> IngestionReadinessReport {
         "network Flink sink/source connector with checkpoint handshake over the production API"
             .to_string(),
         "Raft failover and restart harness that proves offset/checkpoint idempotence end-to-end"
-            .to_string(),
-        "Prometheus ingestion lag/dead-letter metrics from live proxy and data-node processes"
             .to_string(),
     ];
     IngestionReadinessReport {
@@ -838,6 +838,18 @@ mod tests {
         assert_eq!(state.dead_letters.len(), 1);
         assert_eq!(state.stats.duplicate_total, 1);
         assert_eq!(state.stats.dead_letter_total, 1);
+        let metrics = restarted.prometheus_metrics();
+        assert!(metrics.contains("temporalstore_ingestion_records_total{outcome=\"accepted\"} 1"));
+        assert!(
+            metrics.contains("temporalstore_ingestion_records_total{outcome=\"dead_letter\"} 1")
+        );
+        assert!(metrics.contains("temporalstore_ingestion_kafka_lag{scope=\"max\"} 2"));
+        assert!(metrics.contains(
+            "temporalstore_ingestion_kafka_committed_offset{topic=\"topic-a\",partition=\"0\"} 5"
+        ));
+        assert!(metrics.contains(
+            "temporalstore_ingestion_flink_checkpoint_state{job_id=\"job-a\",operator_uid=\"sink\",subtask_index=\"0\",checkpoint_id=\"42\",status=\"committed\"} 1"
+        ));
 
         let missing = restarted.execute(crate::ExecuteRequest {
             shard_id: 7,

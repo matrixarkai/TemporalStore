@@ -276,6 +276,23 @@ This is still not a production Kafka consumer or Flink sink. The next ingestion 
 proxy/table routing, durable offset/checkpoint ledgers, connector lag/dead-letter reporting, and
 restart/failover harnesses.
 
+## What Was Closed In This Pass
+
+The ingestion observability pass promotes the durable local ingestion ledger into live engine
+Prometheus metrics:
+
+1. `TemporalEngine::prometheus_metrics()` now exports ingestion accepted, failed, duplicate,
+   dead-letter, Kafka commit, and Flink checkpoint counters.
+2. The scrape includes max Kafka lag plus per-topic/partition committed offsets.
+3. The scrape includes one-hot Flink checkpoint state labels by job, operator, subtask, checkpoint,
+   and status.
+4. Regression coverage verifies the metrics after restart-backed Kafka duplicate rejection and
+   Flink checkpoint commit.
+
+This still does not create a production Kafka consumer group or Flink connector. The remaining
+ingestion gaps are network connector runtime, production checkpoint handshakes, and a Raft
+failover/restart harness proving idempotence end to end.
+
 This pass closed the third client/proxy/metaserver/nodeserver C++ parity cycle:
 
 1. Applied metaserver scheduler execution now fetches `/ServerService/GetLifecycle` after the

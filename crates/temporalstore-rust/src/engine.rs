@@ -3140,6 +3140,16 @@ impl TemporalEngine {
             "# HELP temporalstore_partition_routing_slots Routing slots owned by shard.\n",
         );
         out.push_str("# TYPE temporalstore_partition_routing_slots gauge\n");
+        out.push_str(
+            "# HELP temporalstore_ingestion_records_total Ingestion record counters by outcome.\n",
+        );
+        out.push_str("# TYPE temporalstore_ingestion_records_total counter\n");
+        out.push_str("# HELP temporalstore_ingestion_kafka_lag Kafka ingestion lag in offsets.\n");
+        out.push_str("# TYPE temporalstore_ingestion_kafka_lag gauge\n");
+        out.push_str("# HELP temporalstore_ingestion_kafka_committed_offset Kafka committed offset by topic and partition.\n");
+        out.push_str("# TYPE temporalstore_ingestion_kafka_committed_offset gauge\n");
+        out.push_str("# HELP temporalstore_ingestion_flink_checkpoint_state Flink checkpoint state as a one-hot gauge.\n");
+        out.push_str("# TYPE temporalstore_ingestion_flink_checkpoint_state gauge\n");
         for stats in self.loaded_shard_stats() {
             push_metric(
                 &mut out,
@@ -3458,6 +3468,56 @@ impl TemporalEngine {
                 "temporalstore_partition_routing_slots",
                 &[("shard_id", stats.shard_id.to_string())],
                 stats.object_manager.routing_slot_count as u64,
+            );
+        }
+        let ingestion = self.ingestion_state_report();
+        for (outcome, value) in [
+            ("accepted", ingestion.stats.accepted_total),
+            ("failed", ingestion.stats.failed_total),
+            ("duplicate", ingestion.stats.duplicate_total),
+            ("dead_letter", ingestion.stats.dead_letter_total),
+            ("kafka_committed", ingestion.stats.kafka_committed_total),
+            ("flink_precommit", ingestion.stats.flink_precommit_total),
+            ("flink_commit", ingestion.stats.flink_commit_total),
+            ("flink_abort", ingestion.stats.flink_abort_total),
+        ] {
+            push_metric(
+                &mut out,
+                "temporalstore_ingestion_records_total",
+                &[("outcome", outcome.to_string())],
+                value,
+            );
+        }
+        push_metric(
+            &mut out,
+            "temporalstore_ingestion_kafka_lag",
+            &[("scope", "max".to_string())],
+            ingestion.stats.max_kafka_lag.max(0) as u64,
+        );
+        for offset in ingestion.kafka_offsets {
+            push_metric(
+                &mut out,
+                "temporalstore_ingestion_kafka_committed_offset",
+                &[
+                    ("topic", offset.topic),
+                    ("partition", offset.partition.to_string()),
+                ],
+                offset.committed_offset.max(0) as u64,
+            );
+        }
+        for checkpoint in ingestion.flink_checkpoints {
+            let status = format!("{:?}", checkpoint.status).to_ascii_lowercase();
+            push_metric(
+                &mut out,
+                "temporalstore_ingestion_flink_checkpoint_state",
+                &[
+                    ("job_id", checkpoint.job_id),
+                    ("operator_uid", checkpoint.operator_uid),
+                    ("subtask_index", checkpoint.subtask_index.to_string()),
+                    ("checkpoint_id", checkpoint.checkpoint_id.to_string()),
+                    ("status", status),
+                ],
+                1,
             );
         }
         out
