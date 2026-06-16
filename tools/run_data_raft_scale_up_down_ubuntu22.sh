@@ -41,6 +41,7 @@ scale_up_background_within_error_budget=1
 scale_up_background_errors=0
 scale_up_background_elapsed_ms=0
 scale_up_failover_elapsed_ms=0
+scale_down_update_applied=0
 
 need_file() {
   if [[ ! -x "$1" ]]; then
@@ -117,6 +118,18 @@ with open(sys.argv[1], "r", encoding="utf-8") as fh:
 status = data.get("status", {})
 if status.get("code", 0) not in (0, 5, 6):
     raise SystemExit(f"request failed: {data}")
+PY
+}
+
+status_code_from_file() {
+  local path="$1"
+  python3 - "${path}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    data = json.load(fh)
+print(int(data.get("status", {}).get("code", 0)))
 PY
 }
 
@@ -573,6 +586,9 @@ temporalstore_data_raft_scale_up_background_elapsed_ms ${scale_up_background_ela
 # HELP temporalstore_data_raft_scale_up_failover_elapsed_ms Time to observe a promoted primary during scale-up primary kill.
 # TYPE temporalstore_data_raft_scale_up_failover_elapsed_ms gauge
 temporalstore_data_raft_scale_up_failover_elapsed_ms ${scale_up_failover_elapsed_ms}
+# HELP temporalstore_data_raft_scale_down_update_applied Whether the scale-down UpdateTable RPC changed membership; zero can be valid after destructive primary-kill convergence.
+# TYPE temporalstore_data_raft_scale_down_update_applied gauge
+temporalstore_data_raft_scale_down_update_applied ${scale_down_update_applied}
 METRICS
 }
 
@@ -911,7 +927,15 @@ post_json_retry_to_file "${MS_PORT}" "ManageService/UpdateTable" \
       \"placement_set\": ${scale_down_placement_set}
     }
   }" "${RESULT_DIR}/update_table_scale_down.json"
-check_status_ok "${RESULT_DIR}/update_table_scale_down.json"
+scale_down_status_code="$(status_code_from_file "${RESULT_DIR}/update_table_scale_down.json")"
+if [[ "${scale_down_status_code}" == "0" || "${scale_down_status_code}" == "6" ]]; then
+  scale_down_update_applied=1
+elif [[ "${KILL_PRIMARY_DURING_SCALE_UP}" == "1" && "${scale_down_status_code}" == "9" ]]; then
+  echo "scale_down_update_applied=0" | tee -a "${RESULT_DIR}/summary.txt"
+  echo "scale_down_update_status=stale_partition_after_primary_kill" | tee -a "${RESULT_DIR}/summary.txt"
+else
+  check_status_ok "${RESULT_DIR}/update_table_scale_down.json"
+fi
 
 wait_for_json_field "QueryService/ListPartition" "${list_partition_body}" \
   "len(data.get('info', [{}])[0].get('set_info', {}).get('membership', {}).get('units', [{}])[0].get('active_id_list', [])) == 2 and sum(1 for p in data.get('info', [{}])[0].get('partition_info', []) if p.get('state', 'P_NORMAL') == 'P_NORMAL') >= 2" \
