@@ -358,13 +358,13 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "local combined recovery proof covers Raft WAL restore plus oplog, index-log, page-file, and packed timestamped KV recovery"
                     .to_string(),
+                "Prometheus alert rules and fault runbook cover stuck replica, split-brain risk, slow follower, and storage pressure triage"
+                    .to_string(),
             ],
             missing: vec![
                 "external chaos suite for process kill, restart, network partition, packet loss, and disk full"
                     .to_string(),
                 "rolling restart and rolling upgrade validation for proxy, client, metaserver, and data-node"
-                    .to_string(),
-                "production alerting/runbooks for stuck replica, split brain risk, slow follower, and disk pressure"
                     .to_string(),
             ],
         },
@@ -911,6 +911,20 @@ mod tests {
         assert!(covered
             .iter()
             .any(|item| item.contains("rolling restart of every voter")));
+
+        let fault_tolerance = report
+            .areas
+            .iter()
+            .find(|area| area.area == "fault_tolerance")
+            .expect("fault tolerance area must exist");
+        assert!(fault_tolerance
+            .covered
+            .iter()
+            .any(|item| item.contains("Prometheus alert rules and fault runbook")));
+        assert!(!fault_tolerance
+            .missing
+            .iter()
+            .any(|item| item.contains("production alerting/runbooks")));
 
         let scale = report
             .missing_by_area("scale_testing")
