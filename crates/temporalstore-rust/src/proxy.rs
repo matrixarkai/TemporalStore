@@ -262,6 +262,54 @@ pub struct ProxyTableBatchExecuteRequest {
     pub commands: Vec<Command>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyKeyCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxySetCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    pub value: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyHashMultiGetCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    pub fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyHashMultiSetCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    pub entries: Vec<(String, Vec<u8>)>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyFeatureAddCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    pub points: Vec<crate::types::FeaturePoint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyRiskHsetCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    pub timestamp_ms: u64,
+    pub amount: i64,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ProxyReplicaReadPolicy {
@@ -454,6 +502,130 @@ impl ProxyService {
                     }
                 }
             }
+            ("POST", "/ProxyService/Get") => {
+                match parse_json::<ProxyKeyCommandRequest>(&request.body) {
+                    Ok(req) => json_response(
+                        200,
+                        &self.table_command(req, |key| Command::StringGet { key }),
+                    ),
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/Set") => {
+                match parse_json::<ProxySetCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::StringSet {
+                            key: req.key,
+                            value: req.value,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/FeatureAdd") => {
+                match parse_json::<ProxyFeatureAddCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::FeatureAppend {
+                            key: req.key,
+                            points: req.points,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/RiskHset") => {
+                match parse_json::<ProxyRiskHsetCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::RiskSet {
+                            family: crate::types::RiskFamily::H,
+                            key: req.key,
+                            timestamp_ms: req.timestamp_ms,
+                            amount: req.amount,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/HMGet") => {
+                match parse_json::<ProxyHashMultiGetCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::HashMultiGet {
+                            key: req.key,
+                            fields: req.fields,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/HMSet") => {
+                match parse_json::<ProxyHashMultiSetCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::HashMultiSet {
+                            key: req.key,
+                            entries: req.entries,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/HGetAll") => {
+                match parse_json::<ProxyKeyCommandRequest>(&request.body) {
+                    Ok(req) => json_response(
+                        200,
+                        &self.table_command(req, |key| Command::HashGetAll { key }),
+                    ),
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/HLen") => {
+                match parse_json::<ProxyKeyCommandRequest>(&request.body) {
+                    Ok(req) => json_response(
+                        200,
+                        &self.table_command(req, |key| Command::HashLen { key }),
+                    ),
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
             _ => json_response(404, &Status::error("not_found", "unknown proxy route")),
         }
     }
@@ -589,6 +761,18 @@ impl ProxyService {
             });
         self.sync_client_stats();
         response
+    }
+
+    fn table_command(
+        &self,
+        request: ProxyKeyCommandRequest,
+        command: impl FnOnce(String) -> Command,
+    ) -> ExecuteResponse {
+        self.table_execute(ProxyTableExecuteRequest {
+            namespace: request.namespace,
+            table_name: request.table_name,
+            command: command(request.key),
+        })
     }
 
     fn table_for_request(
@@ -1322,6 +1506,12 @@ impl ProxyService {
             .expect("proxy stats lock poisoned")
             .bad_requests += 1;
     }
+
+    fn bad_execute_request(&self, err: impl std::fmt::Display) -> (u16, Vec<u8>) {
+        use crate::http::json_response;
+        self.inc_bad_request();
+        json_response(400, &execute_error("bad_request", err.to_string()))
+    }
 }
 
 fn execute_error(code: impl Into<String>, message: impl Into<String>) -> ExecuteResponse {
@@ -2008,7 +2198,30 @@ mod tests {
         );
         engine.load_shard(1);
         start_server(test_addr(18_321), engine.clone());
-        start_meta(test_addr(18_322), test_addr(18_321));
+        let meta = crate::meta::SingleNodeMeta::default();
+        assert!(
+            meta.add_table(AddTableRequest {
+                namespace: "ns".to_string(),
+                table_name: "tbl".to_string(),
+                first_shard_id: 1,
+                shard_count: 1,
+                replica_count: 1,
+                use_cpp_partition_ids: false,
+                partition_version: 0,
+                serving_options: crate::meta::TableServingOptions::default(),
+            })
+            .status
+            .ok
+        );
+        assert!(
+            meta.register(RegisterShardRequest {
+                shard_id: 1,
+                server_addr: test_addr(18_321),
+            })
+            .status
+            .ok
+        );
+        start_meta_service(test_addr(18_322), meta);
         wait_for_http(&test_addr(18_321));
         wait_for_http(&test_addr(18_322));
 
@@ -2075,8 +2288,143 @@ mod tests {
                 },
             ]
         );
+
+        let command_alias = |path: &str, body: Vec<u8>| {
+            let (code, body) = proxy.handle(HttpRequest {
+                method: "POST".to_string(),
+                path: path.to_string(),
+                body,
+            });
+            assert_eq!(code, 200, "{path} should return HTTP 200");
+            parse_json::<ExecuteResponse>(&body).unwrap()
+        };
+        assert!(
+            command_alias(
+                "/ProxyService/Set",
+                serde_json::to_vec(&ProxySetCommandRequest {
+                    namespace: "ns".to_string(),
+                    table_name: "tbl".to_string(),
+                    key: "cpp-proxy-command".to_string(),
+                    value: b"command-value".to_vec(),
+                })
+                .unwrap(),
+            )
+            .status
+            .ok
+        );
+        assert_eq!(
+            command_alias(
+                "/ProxyService/Get",
+                serde_json::to_vec(&ProxyKeyCommandRequest {
+                    namespace: "ns".to_string(),
+                    table_name: "tbl".to_string(),
+                    key: "cpp-proxy-command".to_string(),
+                })
+                .unwrap(),
+            )
+            .response,
+            CommandResponse::Bytes {
+                value: Some(b"command-value".to_vec())
+            }
+        );
+        assert!(
+            command_alias(
+                "/ProxyService/HMSet",
+                serde_json::to_vec(&ProxyHashMultiSetCommandRequest {
+                    namespace: "ns".to_string(),
+                    table_name: "tbl".to_string(),
+                    key: "cpp-proxy-hm".to_string(),
+                    entries: vec![
+                        ("a".to_string(), b"1".to_vec()),
+                        ("b".to_string(), b"2".to_vec()),
+                    ],
+                })
+                .unwrap(),
+            )
+            .status
+            .ok
+        );
+        assert_eq!(
+            command_alias(
+                "/ProxyService/HMGet",
+                serde_json::to_vec(&ProxyHashMultiGetCommandRequest {
+                    namespace: "ns".to_string(),
+                    table_name: "tbl".to_string(),
+                    key: "cpp-proxy-hm".to_string(),
+                    fields: vec!["a".to_string(), "missing".to_string()],
+                })
+                .unwrap(),
+            )
+            .response,
+            CommandResponse::Values {
+                values: vec![Some(b"1".to_vec()), None]
+            }
+        );
+        assert_eq!(
+            command_alias(
+                "/ProxyService/HGetAll",
+                serde_json::to_vec(&ProxyKeyCommandRequest {
+                    namespace: "ns".to_string(),
+                    table_name: "tbl".to_string(),
+                    key: "cpp-proxy-hm".to_string(),
+                })
+                .unwrap(),
+            )
+            .response,
+            CommandResponse::HashEntries {
+                entries: vec![
+                    ("a".to_string(), b"1".to_vec()),
+                    ("b".to_string(), b"2".to_vec()),
+                ]
+            }
+        );
+        assert_eq!(
+            command_alias(
+                "/ProxyService/HLen",
+                serde_json::to_vec(&ProxyKeyCommandRequest {
+                    namespace: "ns".to_string(),
+                    table_name: "tbl".to_string(),
+                    key: "cpp-proxy-hm".to_string(),
+                })
+                .unwrap(),
+            )
+            .response,
+            CommandResponse::Integer { value: 2 }
+        );
+        assert!(
+            command_alias(
+                "/ProxyService/FeatureAdd",
+                serde_json::to_vec(&ProxyFeatureAddCommandRequest {
+                    namespace: "ns".to_string(),
+                    table_name: "tbl".to_string(),
+                    key: "cpp-proxy-feature".to_string(),
+                    points: vec![crate::types::FeaturePoint {
+                        timestamp_ms: 10,
+                        value: b"7".to_vec(),
+                    }],
+                })
+                .unwrap(),
+            )
+            .status
+            .ok
+        );
+        assert!(
+            command_alias(
+                "/ProxyService/RiskHset",
+                serde_json::to_vec(&ProxyRiskHsetCommandRequest {
+                    namespace: "ns".to_string(),
+                    table_name: "tbl".to_string(),
+                    key: "cpp-proxy-risk".to_string(),
+                    timestamp_ms: 10,
+                    amount: 5,
+                })
+                .unwrap(),
+            )
+            .status
+            .ok
+        );
         let info = proxy.info();
-        assert_eq!(info.stats.execute_requests, 1);
+        assert_eq!(info.stats.execute_requests, 9);
         assert_eq!(info.stats.batch_execute_requests, 1);
         assert!(info.stats.route_cache_hits >= 1);
     }

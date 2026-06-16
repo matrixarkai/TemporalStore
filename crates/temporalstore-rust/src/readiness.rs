@@ -212,12 +212,14 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "C++ service-name admin aliases expose proxy info, heartbeat/config, and embedded client preflight"
                     .to_string(),
+                "C++ command-shaped proxy HTTP/JSON aliases cover Get, Set, FeatureAdd, RiskHset, HMGet, HMSet, HGetAll, and HLen through the normal routed client path"
+                    .to_string(),
                 "Rust-native service discovery replacement for consul via proxy auto-register, heartbeat TTL, admin inspection, and Prometheus stale/registered metrics"
                     .to_string(),
             ],
             missing: vec![
                 "tonic proxy service and streaming/callback request shape".to_string(),
-                "brpc/thrift wire-compatible command-specific proxy methods such as Get, Set, FeatureAdd, RiskHset, HMGet, HMSet, HGetAll, and HLen"
+                "brpc/thrift wire-compatible command-specific proxy transport for existing C++ callers"
                     .to_string(),
             ],
         },
