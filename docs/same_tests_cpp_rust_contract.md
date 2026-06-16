@@ -168,3 +168,61 @@ These are not yet true same tests:
 Until C++ consumes the shared corpus in CI, the honest status is: Rust has a same-test contract and
 runner, but cross-codebase same-test enforcement is only complete when the C++ runner executes the
 same corpus and fails on the same expected-response mismatches.
+
+## Local Test Run: 2026-06-16
+
+Rust checkout:
+
+```text
+C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore
+```
+
+C++ checkout:
+
+```text
+C:\Users\Deeproute\Documents\Codex\2026-06-07\what-s-the-topology-for-all\temporalstore-service-fix
+```
+
+Shared corpus command:
+
+```bash
+python3 tools/run_temporalstore_unified_tests.py \
+  --both \
+  --require-cpp \
+  --cpp-repo /mnt/c/Users/Deeproute/Documents/Codex/2026-06-07/what-s-the-topology-for-all/temporalstore-service-fix
+```
+
+Result:
+
+- Rust unified corpus runner passed.
+- Rust direct engine path passed.
+- Rust `TemporalStoreClient` plus local HTTP path passed.
+- C++ unified hook passed against the same `compat/unified_temporalstore_cases.json`.
+- C++ hook confirmed the required local C++ parity surfaces are present.
+
+C++ fast local CI guard command:
+
+```bash
+env \
+  ITERATIONS=1 \
+  RUN_FULL_GATE=0 \
+  DEPENDENCY_CACHE_RUN_BUILD_SMOKE=0 \
+  RESULT_DIR=/tmp/temporalstore-cpp-ci-guard-unified-1781642126 \
+  tools/run_ci_guard_ubuntu22.sh
+```
+
+Result:
+
+- `syntax`: pass
+- `dependency_cache`: pass
+- `prometheus_unit`: pass
+- `raft_summary`: pass
+- `monitoring_health`: pass
+- total passed cases: 5
+- total failed cases: 0
+
+Important caveat: this local run did not execute a full native C++ command-by-command corpus
+executor because `TS_CPP_UNIFIED_NATIVE_CMD` was not configured. The C++ side validated the shared
+corpus and required parity surfaces through its hook, then the C++ fast CI guard passed. Full
+same-test enforcement still requires wiring `TS_CPP_UNIFIED_NATIVE_CMD` to a native C++ executor
+that applies every corpus command and compares every expected response.
