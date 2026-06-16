@@ -53,7 +53,8 @@ Feature:
   still defaults to `feature_max_size = 5000` after successful writes.
 - `QUERY` -> `FeatureQuery`
 - C++ protobuf `FeaturePoint` value filtering -> `FeatureQueryFiltered`
-- `AGGQUERY` -> `FeatureAggQuery`
+- `AGGQUERY` -> `FeatureAggQuery` with `sum`, `avg`, `min`, `max`, `first`, `last`, `count`,
+  and `events`
 - `REPLACE` -> `FeatureReplace`
 - `DEL` -> `FeatureDelete`
 - Typed client coverage: `feature_append`, `feature_append_with_policy`, `feature_query`,
@@ -176,8 +177,8 @@ Risk:
 
 Feature:
 
-- Rust supports point append/query/replace/delete, write-policy append, and simple
-  count/sum/min/max aggregation.
+- Rust supports point append/query/replace/delete, write-policy append, and C++-style
+  count/events/sum/avg/min/max/first/last aggregation over selected timestamp windows.
 - Rust now exposes and tests a `feature_sequence_cpp_proto_v1` golden corpus through
   `cpp_feature_sequence_golden_corpus_report()`. The corpus covers the C++ protobuf value
   shape, duplicate-field filter replacement, filtered feature query, empty aggregate behavior,
@@ -186,8 +187,8 @@ Feature:
   This broader Rust-local corpus combines the feature/sequence golden cases with Redis-compatible
   string/hash/set core commands, IPS filter/stat/snapshot behavior, Risk family/FOL/manager
   behavior, and admin storage-readiness checks after mixed API writes.
-- C++ feature API includes richer `FeaturePoint` structure with nested point arrays, time ranges,
-  and richer aggregate query behavior. Rust currently stores one value per timestamp.
+- C++ feature API includes richer `FeaturePoint` structure with nested point arrays and additional
+  deployment-specific time-range behaviors. Rust currently stores one value per timestamp.
 
 String:
 

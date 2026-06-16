@@ -418,6 +418,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "feature append/query/replace/delete/agg and 5k sequence test".to_string(),
                 "feature writes pack many timestamp/value entries into one page and the timestamp index shares that page address, matching the C++ storage shape"
                     .to_string(),
+                "feature aggregate query covers count/events/sum/avg/min/max/first/last over selected timestamp windows"
+                    .to_string(),
                 "large timestamped KV writes split into persisted page chunks while preserving per-timestamp reads"
                     .to_string(),
                 "oversized single timestamped values remain readable as one packed page without creating empty chunks"
@@ -434,7 +436,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
             ],
             missing: vec![
-                "exact C++ Feature nested point/proto semantics and aggregate edge cases"
+                "exact C++ Feature nested point/proto semantics and deployment-specific time-range edge cases"
                     .to_string(),
                 "Risk production CPC/list internals and deployment-specific manager/debug APIs"
                     .to_string(),

@@ -7063,6 +7063,14 @@ fn sequence_rows_in_range(
 fn aggregate_feature_values(values: &[Vec<u8>], aggregator: &str) -> i64 {
     match aggregator.to_ascii_lowercase().as_str() {
         "sum" => values.iter().filter_map(parse_i64).sum(),
+        "avg" | "average" => {
+            let numeric = values.iter().filter_map(parse_i64).collect::<Vec<_>>();
+            if numeric.is_empty() {
+                0
+            } else {
+                numeric.iter().sum::<i64>() / numeric.len() as i64
+            }
+        }
         "min" => values
             .iter()
             .filter_map(parse_i64)
@@ -7073,7 +7081,9 @@ fn aggregate_feature_values(values: &[Vec<u8>], aggregator: &str) -> i64 {
             .filter_map(parse_i64)
             .max()
             .unwrap_or_default(),
-        "count" | "" => values.len() as i64,
+        "first" => values.first().and_then(parse_i64).unwrap_or_default(),
+        "last" => values.last().and_then(parse_i64).unwrap_or_default(),
+        "count" | "events" | "" => values.len() as i64,
         _ => values.len() as i64,
     }
 }
@@ -10412,6 +10422,45 @@ mod tests {
                 })
                 .response,
             CommandResponse::Aggregate { value: 9 }
+        );
+        for (aggregator, count, expected) in [
+            ("avg", None, 3),
+            ("first", None, 2),
+            ("last", None, 4),
+            ("events", None, 3),
+            ("last", Some(2), 3),
+        ] {
+            assert_eq!(
+                engine
+                    .execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::FeatureAggQuery {
+                            key: "f".to_string(),
+                            start_ms: 0,
+                            end_ms: 40,
+                            aggregator: aggregator.to_string(),
+                            count,
+                        },
+                    })
+                    .response,
+                CommandResponse::Aggregate { value: expected },
+                "{aggregator} aggregate should match C++ window semantics"
+            );
+        }
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::FeatureAggQuery {
+                        key: "f".to_string(),
+                        start_ms: 100,
+                        end_ms: 200,
+                        aggregator: "avg".to_string(),
+                        count: None,
+                    },
+                })
+                .response,
+            CommandResponse::Aggregate { value: 0 }
         );
         engine.execute(ExecuteRequest {
             shard_id: 1,
