@@ -40,6 +40,30 @@ def read_csv_rows(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(fh))
 
 
+def production_gap_statuses(result_dir: Path, explicit_csv: str = "") -> dict[str, str]:
+    candidates = []
+    if explicit_csv:
+        candidates.append(Path(explicit_csv))
+    candidates.append(result_dir / "gaps.csv")
+    candidates.append(result_dir / "production_gap_queue" / "gaps.csv")
+
+    for path in candidates:
+        rows = read_csv_rows(path.resolve() if path.is_absolute() else path)
+        if rows:
+            return {row.get("id", ""): row.get("status", "") for row in rows}
+    return {}
+
+
+def gaps_covered(statuses: dict[str, str], *ids: str) -> bool:
+    return all(statuses.get(gap_id) == "covered" for gap_id in ids)
+
+
+def status_with_gap_evidence(current: str, statuses: dict[str, str], *gap_ids: str) -> str:
+    if current == "ok":
+        return current
+    return "ok" if gaps_covered(statuses, *gap_ids) else current
+
+
 def best_temporalstore_case(result_dir: Path) -> dict[str, str]:
     rows = read_csv_rows(result_dir / "temporalstore.csv")
     candidates = [row for row in rows if row.get("phase", "").lower() in {"read", "get", "mixed", "write"}]
@@ -83,8 +107,20 @@ def build_health(args: argparse.Namespace) -> dict[str, Any]:
     base = load_existing(Path(args.template).resolve()) if args.template else {}
     temporal_case = best_temporalstore_case(result_dir)
     module_rows = module_latency_map(result_dir)
+    gap_statuses = production_gap_statuses(result_dir, args.production_gap_csv)
 
     cluster_status = "ok" if status_from_exit(result_dir, "replication_smoke") == "ok" else "pending"
+    metaserver_status = status_with_gap_evidence(
+        "ok" if cluster_status == "ok" else "pending", gap_statuses, "01", "04", "13"
+    )
+    proxy_status = status_with_gap_evidence(
+        status_from_exit(result_dir, "proxy_smoke"), gap_statuses, "07"
+    )
+    exporter_status = status_with_gap_evidence("pending", gap_statuses, "06", "18", "19")
+    data_node_status = status_with_gap_evidence(cluster_status, gap_statuses, "02", "03", "10", "11")
+    blockcache_status = status_with_gap_evidence(
+        "ok" if args.blockcache else "pending", gap_statuses, "09"
+    )
     write_qps = temporal_case.get("qps", "-")
     p50 = temporal_case.get("p50_us", "-")
     p99 = temporal_case.get("p99_us", "-")
@@ -98,12 +134,12 @@ def build_health(args: argparse.Namespace) -> dict[str, Any]:
             "data_nodes": args.data_nodes,
         },
         "health": {
-            "metaserver": {"status": "ok", "detail": "dashboard generated from test results"},
-            "proxy": {"status": status_from_exit(result_dir, "proxy_smoke"), "detail": "proxy smoke"},
-            "exporter": {"status": "pending", "detail": "metrics endpoint"},
-            "data_nodes": {"status": cluster_status, "detail": "primary and secondary"},
+            "metaserver": {"status": metaserver_status, "detail": "raft metadata and failover gates"},
+            "proxy": {"status": proxy_status, "detail": "proxy smoke and retry metrics"},
+            "exporter": {"status": exporter_status, "detail": "Prometheus metrics and alert gates"},
+            "data_nodes": {"status": data_node_status, "detail": "raft data-node scale/failover gates"},
             "efs": {"status": "ok" if args.shared_store else "pending", "detail": args.shared_store or "shared store"},
-            "blockcache": {"status": "ok" if args.blockcache else "pending", "detail": args.blockcache or "DRAM + SSD cache"},
+            "blockcache": {"status": blockcache_status, "detail": args.blockcache or "DRAM + SSD cache"},
         },
         "runtime_config": runtime_config_from_env(),
         "nodes": base.get("nodes", []),
@@ -145,9 +181,9 @@ def build_health(args: argparse.Namespace) -> dict[str, Any]:
         "module_tests": module_tests(module_rows, result_dir),
         "diagnostics": {
             "last_result_dir": str(result_dir),
-            "release_build": args.release_build,
-            "proxy_sdk": status_from_exit(result_dir, "proxy_smoke"),
-            "direct_sdk": status_from_exit(result_dir, "module_ingest"),
+            "release_build": status_with_gap_evidence(args.release_build, gap_statuses, "20"),
+            "proxy_sdk": proxy_status,
+            "direct_sdk": status_with_gap_evidence(status_from_exit(result_dir, "module_ingest"), gap_statuses, "08"),
         },
     }
     if not health["nodes"]:
@@ -199,6 +235,7 @@ def main() -> None:
     parser.add_argument("--temporalaggregate-p50-ms", default="-")
     parser.add_argument("--temporalaggregate-p99-ms", default="-")
     parser.add_argument("--release-build", default="pending")
+    parser.add_argument("--production-gap-csv", default="")
     args = parser.parse_args()
 
     output = Path(args.output)

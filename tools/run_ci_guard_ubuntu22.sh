@@ -70,6 +70,8 @@ syntax_check() {
   PYTHONDONTWRITEBYTECODE=1 python3 -m py_compile \
     "${ROOT}/tools/summarize_raft_gate_results.py" \
     "${ROOT}/tools/test_summarize_raft_gate_results.py" \
+    "${ROOT}/tools/temporalstore-monitoring-ui/render_health_from_results.py" \
+    "${ROOT}/tools/test_render_health_from_results.py" \
     "${ROOT}/tools/temporalstore-prometheus/vars-exporter/vars_to_prom.py" \
     "${ROOT}/tools/temporalstore-prometheus/vars-exporter/test_vars_to_prom.py"
 }
@@ -85,6 +87,13 @@ raft_summary_tests() {
   (
     cd "${ROOT}/tools"
     PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v test_summarize_raft_gate_results.py
+  )
+}
+
+monitoring_health_tests() {
+  (
+    cd "${ROOT}/tools"
+    PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -v test_render_health_from_results.py
   )
 }
 
@@ -122,6 +131,7 @@ for iteration in $(seq 1 "${ITERATIONS}"); do
   run_case "${iteration}" dependency_cache dependency_cache_gate || overall_failed=1
   run_case "${iteration}" prometheus_unit prometheus_unit_tests || overall_failed=1
   run_case "${iteration}" raft_summary raft_summary_tests || overall_failed=1
+  run_case "${iteration}" monitoring_health monitoring_health_tests || overall_failed=1
   if [[ "${RUN_FULL_GATE}" == "1" ]]; then
     run_case "${iteration}" full_gate full_gate_smoke || overall_failed=1
   fi
