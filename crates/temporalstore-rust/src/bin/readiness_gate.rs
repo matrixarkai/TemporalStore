@@ -23,8 +23,13 @@ fn main() {
                 gates.iter().filter(|gate| !gate.ready).count()
             );
             for gate in gates.iter().filter(|gate| !gate.ready) {
+                let primary_blocker = gate
+                    .primary_blocker
+                    .as_ref()
+                    .map(|blocker| format!("{}: {}", blocker.area, blocker.capability))
+                    .unwrap_or_else(|| "none".to_string());
                 eprintln!(
-                    "- service #{} {}: owner={}, status={}, severity={}, areas=[{}], {} blocker(s), classes=[{}], next_action={}",
+                    "- service #{} {}: owner={}, status={}, severity={}, areas=[{}], {} blocker(s), classes=[{}], primary_blocker={}, next_action={}",
                     gate.remediation_order,
                     gate.service,
                     gate.owner,
@@ -33,6 +38,7 @@ fn main() {
                     gate.areas.join(","),
                     gate.blocker_count,
                     gate.blocker_classes.join(","),
+                    primary_blocker,
                     gate.next_action
                 );
             }

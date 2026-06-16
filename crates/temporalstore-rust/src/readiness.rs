@@ -57,6 +57,8 @@ pub struct ServiceReadinessGateReport {
     pub blocker_count: usize,
     pub blocker_classes: Vec<String>,
     pub next_action: String,
+    #[serde(default)]
+    pub primary_blocker: Option<ReadinessCapabilityBlocker>,
     pub failed_capabilities: Vec<ReadinessCapabilityBlocker>,
 }
 
@@ -118,6 +120,11 @@ impl ProductionReadinessReport {
     pub fn service_gate_report(&self, service: &str) -> Option<ServiceReadinessGateReport> {
         let summary = self.service_summary(service)?;
         let ready = self.service_ready(service);
+        let failed_capabilities = self
+            .failed_capabilities_for_service(service)
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
         Some(ServiceReadinessGateReport {
             service: summary.service.clone(),
             ready,
@@ -134,11 +141,8 @@ impl ProductionReadinessReport {
             blocker_count: summary.blocker_count,
             blocker_classes: summary.blocker_classes.clone(),
             next_action: summary.next_action.clone(),
-            failed_capabilities: self
-                .failed_capabilities_for_service(service)
-                .into_iter()
-                .cloned()
-                .collect(),
+            primary_blocker: failed_capabilities.first().cloned(),
+            failed_capabilities,
         })
     }
 
@@ -684,6 +688,10 @@ mod tests {
             assert_eq!(gate.blocker_count, summary.blocker_count);
             assert_eq!(gate.blocker_classes, summary.blocker_classes);
             assert_eq!(gate.next_action, summary.next_action);
+            assert_eq!(
+                gate.primary_blocker.as_ref(),
+                gate.failed_capabilities.first()
+            );
             assert_eq!(gate.failed_capabilities.len(), summary.blocker_count);
             assert!(
                 !report.service_ready(service),

@@ -106,6 +106,16 @@ fn production_readiness_service_summary_is_public_api() {
         ]
     );
     assert_eq!(gate.blocker_count, data_node.blocker_count);
+    let primary = gate
+        .primary_blocker
+        .as_ref()
+        .expect("blocked data node gate should expose a primary blocker");
+    assert_eq!(primary.area, "data_node_distributed_raft");
+    assert!(primary.capability.contains("OpenRaft") || primary.capability.contains("raft-rs"));
+    assert_eq!(
+        gate.primary_blocker.as_ref(),
+        gate.failed_capabilities.first()
+    );
     assert_eq!(gate.failed_capabilities.len(), data_node.blocker_count);
 }
 
