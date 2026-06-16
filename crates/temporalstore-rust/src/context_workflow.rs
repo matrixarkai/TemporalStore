@@ -1,8 +1,10 @@
 use std::cmp::Reverse;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::engine::TemporalEngine;
+use crate::http::{post_json_with_options_and_headers, HttpRequestOptions};
 use crate::types::{
     Command, CommandResponse, ContextAuditRef, ContextEvent, ContextIndexRef, ContextNode,
     ContextPackAudit, ContextSummaryDirtyMarker, ExecuteRequest, ShardId, Status,
@@ -218,13 +220,44 @@ pub fn extract_context(
     engine: &TemporalEngine,
     request: ContextExtractRequest,
 ) -> ContextExtractReport {
-    let provider = normalize_provider(request.provider);
-    if !provider.mock_mode {
+    let provider = normalize_provider(request.provider.clone());
+    let summaries = match context_summaries_for_extract(&provider, &request) {
+        Ok(summaries) => summaries,
+        Err(status) => {
+            if let Some(fallback) = provider.fallback_provider.as_deref() {
+                let fallback = normalize_provider(fallback.clone());
+                match context_summaries_for_extract(&fallback, &request) {
+                    Ok(mut summaries) => {
+                        summaries.provider = fallback;
+                        summaries.provider.provider_name = format!(
+                            "{}+fallback:{}",
+                            provider.provider_name, summaries.provider.provider_name
+                        );
+                        summaries
+                    }
+                    Err(fallback_status) => {
+                        return empty_extract_report(
+                            fallback_status,
+                            provider,
+                            request.tenant_hash,
+                            request.timestamp_ms,
+                        );
+                    }
+                }
+            } else {
+                return empty_extract_report(
+                    status,
+                    provider,
+                    request.tenant_hash,
+                    request.timestamp_ms,
+                );
+            }
+        }
+    };
+    let provider = summaries.provider;
+    if !summaries.status.ok {
         return ContextExtractReport {
-            status: Status::error(
-                "model_provider_not_available",
-                "live OpenAI-compatible context extraction is configured but not enabled in this build; use mock_mode for local validation",
-            ),
+            status: summaries.status,
             provider,
             node: empty_node(),
             event: empty_event(),
@@ -235,7 +268,7 @@ pub fn extract_context(
             },
             dirty_marker: ContextSummaryDirtyMarker {
                 node_hash: 0,
-                event_time_ms: 0,
+                event_time_ms: request.timestamp_ms,
                 reason: 0,
                 propagate_depth: 0,
             },
@@ -253,12 +286,9 @@ pub fn extract_context(
     ));
     let event_id_hash = stable_hash64(&format!("event:{}:{}", request.source_id, request.body));
     let timestamp_ms = request.timestamp_ms.max(1);
-    let l0 = summarize_l0(&request.title, &request.body);
-    let l1 = summarize_l1(request.source_kind, &request.title, &request.body);
-    let l2_ref = format!(
-        "tsctx://tenant/{}/node/{}/source/{}",
-        request.tenant_hash, node_hash, request.source_id
-    );
+    let l0 = summaries.l0;
+    let l1 = summaries.l1;
+    let l2_ref = summaries.l2_ref;
     let node = ContextNode {
         node_hash,
         parent_hash: 0,
@@ -356,6 +386,199 @@ pub fn extract_context(
         l1,
         l2_ref,
     }
+}
+
+#[derive(Debug, Clone)]
+struct ContextExtractSummaries {
+    status: Status,
+    provider: ContextModelProviderConfig,
+    l0: String,
+    l1: String,
+    l2_ref: String,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAiChatCompletionRequest<'a> {
+    model: &'a str,
+    messages: Vec<OpenAiChatMessage<'a>>,
+    temperature: f32,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAiChatMessage<'a> {
+    role: &'a str,
+    content: String,
+}
+
+fn context_summaries_for_extract(
+    provider: &ContextModelProviderConfig,
+    request: &ContextExtractRequest,
+) -> Result<ContextExtractSummaries, Status> {
+    let provider = normalize_provider(provider.clone());
+    if provider.mock_mode || provider.provider_kind == ContextProviderKind::Mock {
+        return Ok(mock_context_summaries(provider, request));
+    }
+    match provider.provider_kind {
+        ContextProviderKind::OpenAiCompatible => {
+            let content = call_openai_compatible_context_provider(&provider, request)?;
+            let (l0, l1) = parse_provider_summary_content(&content, request);
+            let l2_ref = format!(
+                "tsctx://tenant/{}/model/{}/source/{}",
+                request.tenant_hash, provider.provider_name, request.source_id
+            );
+            Ok(ContextExtractSummaries {
+                status: Status::ok(),
+                provider,
+                l0,
+                l1,
+                l2_ref,
+            })
+        }
+        ContextProviderKind::Mock => Ok(mock_context_summaries(provider, request)),
+    }
+}
+
+fn mock_context_summaries(
+    provider: ContextModelProviderConfig,
+    request: &ContextExtractRequest,
+) -> ContextExtractSummaries {
+    let node_hash = stable_hash64(&format!(
+        "{}:{}:{}",
+        request.tenant_hash, request.source_kind as u8, request.source_id
+    ));
+    ContextExtractSummaries {
+        status: Status::ok(),
+        provider,
+        l0: summarize_l0(&request.title, &request.body),
+        l1: summarize_l1(request.source_kind, &request.title, &request.body),
+        l2_ref: format!(
+            "tsctx://tenant/{}/node/{}/source/{}",
+            request.tenant_hash, node_hash, request.source_id
+        ),
+    }
+}
+
+fn call_openai_compatible_context_provider(
+    provider: &ContextModelProviderConfig,
+    request: &ContextExtractRequest,
+) -> Result<String, Status> {
+    let (addr, path_prefix) = parse_openai_compatible_base_url(&provider.base_url)?;
+    let api_key = if provider.api_key_env.trim().is_empty() {
+        None
+    } else {
+        Some(std::env::var(&provider.api_key_env).map_err(|_| {
+            Status::error(
+                "model_provider_auth_missing",
+                format!(
+                    "context provider {} requires environment variable {}",
+                    provider.provider_name, provider.api_key_env
+                ),
+            )
+        })?)
+    };
+    let prompt = format!(
+        "Extract TemporalStore context for source_kind={:?}, source_id={}, title={}. Return JSON with string fields l0 and l1. Body:\n{}",
+        request.source_kind, request.source_id, request.title, request.body
+    );
+    let completion_request = OpenAiChatCompletionRequest {
+        model: &provider.model,
+        messages: vec![
+            OpenAiChatMessage {
+                role: "system",
+                content: "You are a context extraction engine. Keep l0 short and l1 structured."
+                    .to_string(),
+            },
+            OpenAiChatMessage {
+                role: "user",
+                content: prompt,
+            },
+        ],
+        temperature: 0.0,
+    };
+    let headers = api_key
+        .as_ref()
+        .map(|key| format!("Authorization: Bearer {key}\r\n"))
+        .unwrap_or_default();
+    let path = format!("{}/chat/completions", path_prefix.trim_end_matches('/'));
+    let response: Value = post_json_with_options_and_headers(
+        &addr,
+        &path,
+        &completion_request,
+        &headers,
+        HttpRequestOptions {
+            connect_timeout_ms: provider.timeout_ms.min(5_000).max(1),
+            io_timeout_ms: provider.timeout_ms.max(1),
+            max_retries: provider.max_retries,
+        },
+    )
+    .map_err(|err| {
+        Status::error(
+            "model_provider_request_failed",
+            format!(
+                "context provider {} request failed: {err}",
+                provider.provider_name
+            ),
+        )
+    })?;
+    response["choices"]
+        .as_array()
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice["message"]["content"].as_str())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            Status::error(
+                "model_provider_bad_response",
+                format!(
+                    "context provider {} response missing choices[0].message.content",
+                    provider.provider_name
+                ),
+            )
+        })
+}
+
+fn parse_openai_compatible_base_url(base_url: &str) -> Result<(String, String), Status> {
+    let Some(rest) = base_url.strip_prefix("http://") else {
+        return Err(Status::error(
+            "model_provider_url_unsupported",
+            "context provider currently supports http:// OpenAI-compatible endpoints in the Rust-native local runtime",
+        ));
+    };
+    let (host, path) = rest.split_once('/').unwrap_or((rest, "v1"));
+    if host.trim().is_empty() {
+        return Err(Status::error(
+            "model_provider_url_invalid",
+            "context provider base_url is missing a host",
+        ));
+    }
+    Ok((host.to_string(), format!("/{}", path.trim_matches('/'))))
+}
+
+fn parse_provider_summary_content(
+    content: &str,
+    request: &ContextExtractRequest,
+) -> (String, String) {
+    if let Ok(value) = serde_json::from_str::<Value>(content) {
+        let l0 = value["l0"]
+            .as_str()
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| truncate_words(value, 32))
+            .unwrap_or_else(|| summarize_l0(&request.title, &request.body));
+        let l1 = value["l1"]
+            .as_str()
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| truncate_words(value, 96))
+            .unwrap_or_else(|| summarize_l1(request.source_kind, &request.title, &request.body));
+        return (l0, l1);
+    }
+    (
+        truncate_words(content, 32),
+        format!(
+            "kind={:?}; title={}; provider_summary={}",
+            request.source_kind,
+            request.title,
+            truncate_words(content, 96)
+        ),
+    )
 }
 
 pub fn retrieve_context(
@@ -706,6 +929,36 @@ fn empty_event() -> ContextEvent {
     }
 }
 
+fn empty_extract_report(
+    status: Status,
+    provider: ContextModelProviderConfig,
+    tenant_hash: u64,
+    timestamp_ms: u64,
+) -> ContextExtractReport {
+    ContextExtractReport {
+        status,
+        provider,
+        node: empty_node(),
+        event: empty_event(),
+        index_ref: ContextIndexRef {
+            primary_node_hash: 0,
+            primary_event_time_ms: 0,
+            event_id_hash: 0,
+        },
+        dirty_marker: ContextSummaryDirtyMarker {
+            node_hash: 0,
+            event_time_ms: timestamp_ms,
+            reason: 0,
+            propagate_depth: 0,
+        },
+        node_uri: context_node_uri(tenant_hash, 0),
+        event_uri: context_event_uri(tenant_hash, 0, timestamp_ms),
+        l0: String::new(),
+        l1: String::new(),
+        l2_ref: String::new(),
+    }
+}
+
 fn empty_audit(query_id: String, session_hash: u64, max_prompt_tokens: u32) -> ContextPackAudit {
     ContextPackAudit {
         query_id,
@@ -758,6 +1011,9 @@ fn default_tiers() -> Vec<ContextTier> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
 
     fn test_engine() -> TemporalEngine {
         let dir = tempfile::tempdir().unwrap();
@@ -843,7 +1099,49 @@ mod tests {
     }
 
     #[test]
-    fn context_workflow_rejects_live_provider_in_mock_only_build() {
+    fn context_workflow_extracts_with_openai_compatible_provider() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                let read = stream.read(&mut chunk).unwrap();
+                if read == 0 {
+                    break;
+                }
+                buffer.extend_from_slice(&chunk[..read]);
+                if buffer.windows(4).any(|window| window == b"\r\n\r\n")
+                    && buffer
+                        .windows(b"\"model\":\"context-live-test\"".len())
+                        .any(|window| window == b"\"model\":\"context-live-test\"")
+                {
+                    let request = String::from_utf8_lossy(&buffer);
+                    assert!(request.starts_with("POST /v1/chat/completions HTTP/1.1"));
+                    assert!(request.contains("Authorization: Bearer test-context-key"));
+                    assert!(request.contains("\"model\":\"context-live-test\""));
+                    break;
+                }
+            }
+            let body = serde_json::json!({
+                "choices": [{
+                    "message": {
+                        "content": "{\"l0\":\"live checkout incident\",\"l1\":\"kind=Incident; live facts=payment risk; customer impact\"}"
+                    }
+                }]
+            })
+            .to_string();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+            stream.flush().unwrap();
+        });
+        std::env::set_var("TS_CONTEXT_TEST_KEY", "test-context-key");
         let engine = test_engine();
         let report = extract_context(
             &engine,
@@ -856,13 +1154,54 @@ mod tests {
                 body: "body".to_string(),
                 timestamp_ms: 1,
                 provider: ContextModelProviderConfig {
+                    provider_name: "live-test".to_string(),
                     provider_kind: ContextProviderKind::OpenAiCompatible,
+                    base_url: format!("http://{addr}/v1"),
+                    api_key_env: "TS_CONTEXT_TEST_KEY".to_string(),
+                    model: "context-live-test".to_string(),
                     mock_mode: false,
                     ..ContextModelProviderConfig::default()
                 },
             },
         );
-        assert!(!report.status.ok);
-        assert_eq!(report.status.code, "model_provider_not_available");
+        assert!(report.status.ok, "{}", report.status.message);
+        assert_eq!(report.l0, "live checkout incident");
+        assert!(report.l1.contains("payment risk"));
+        assert_eq!(report.provider.provider_name, "live-test");
+        handle.join().unwrap();
+        std::env::remove_var("TS_CONTEXT_TEST_KEY");
+    }
+
+    #[test]
+    fn context_workflow_falls_back_when_live_provider_fails() {
+        let engine = test_engine();
+        let report = extract_context(
+            &engine,
+            ContextExtractRequest {
+                shard_id: 1,
+                tenant_hash: 1,
+                source_kind: ContextSourceKind::Document,
+                source_id: "doc".to_string(),
+                title: "doc".to_string(),
+                body: "body".to_string(),
+                timestamp_ms: 1,
+                provider: ContextModelProviderConfig {
+                    provider_name: "offline-live-provider".to_string(),
+                    provider_kind: ContextProviderKind::OpenAiCompatible,
+                    base_url: "http://127.0.0.1:9/v1".to_string(),
+                    mock_mode: false,
+                    timeout_ms: 25,
+                    max_retries: 0,
+                    fallback_provider: Some(Box::new(ContextModelProviderConfig::default())),
+                    ..ContextModelProviderConfig::default()
+                },
+            },
+        );
+        assert!(report.status.ok, "{}", report.status.message);
+        assert!(report
+            .provider
+            .provider_name
+            .starts_with("offline-live-provider+fallback:"));
+        assert_eq!(report.l0, "doc: body");
     }
 }

@@ -83,15 +83,19 @@ pub fn post_json_with_options<Req: Serialize, Res: DeserializeOwned>(
     request: &Req,
     options: HttpRequestOptions,
 ) -> Result<Res, HttpError> {
+    post_json_with_options_and_headers(addr, path, request, "", options)
+}
+
+pub fn post_json_with_options_and_headers<Req: Serialize, Res: DeserializeOwned>(
+    addr: &str,
+    path: &str,
+    request: &Req,
+    extra_headers: &str,
+    options: HttpRequestOptions,
+) -> Result<Res, HttpError> {
     let body = serde_json::to_vec(request)?;
-    let raw = request_raw_with_options(
-        addr,
-        "POST",
-        path,
-        &body,
-        "Content-Type: application/json\r\n",
-        options,
-    )?;
+    let headers = format!("Content-Type: application/json\r\n{extra_headers}");
+    let raw = request_raw_with_options(addr, "POST", path, &body, &headers, options)?;
     Ok(serde_json::from_slice(&raw)?)
 }
 

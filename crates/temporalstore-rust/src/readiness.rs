@@ -467,10 +467,10 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "context workflow harness validates mock extraction, retrieval, prompt injection, audit refs, Docker packaging, and parity-gate log validation"
                     .to_string(),
+                "OpenAI-compatible context extraction can call a live HTTP provider with bounded deadlines, retries, Authorization header loaded from an environment variable, JSON response parsing, and fallback provider execution"
+                    .to_string(),
             ],
             missing: vec![
-                "live OpenAI-compatible HTTP model client with deadlines, retries, fallback provider execution, and credential isolation"
-                    .to_string(),
                 "C++/OpenViking golden context corpus replay through engine, client, proxy, Redis/admin, shared-store, and Raft paths"
                     .to_string(),
                 "production policy layer for PII filtering, tenant isolation, prompt-size admission, rate limiting, and provider failure budgets"
@@ -652,7 +652,7 @@ fn service_next_action(service: &str, blocker_classes: &[String]) -> &'static st
             "finish exact C++ feature/risk corpus coverage and deployment-specific module edge cases"
         }
         ("context_workflow", "context_model_provider_parity") => {
-            "finish live OpenAI-compatible provider execution, C++/OpenViking corpus replay, and production policy controls"
+            "finish C++/OpenViking corpus replay and production policy controls"
         }
         ("fault_tolerance", "fault_tolerance_validation") => {
             "finish rolling restart and rolling upgrade validation across proxy, client, metaserver, and data-node processes"
@@ -921,7 +921,7 @@ mod tests {
                 ("metaserver", "critical"),
                 ("storage_cache", "critical"),
                 ("feature_modules", "warning"),
-                ("context_workflow", "critical"),
+                ("context_workflow", "warning"),
                 ("fault_tolerance", "warning"),
                 ("deployment_ops", "critical"),
                 ("scale_testing", "critical"),
@@ -988,7 +988,7 @@ mod tests {
             .service_summary("context_workflow")
             .expect("context workflow summary")
             .next_action
-            .contains("OpenAI-compatible"));
+            .contains("OpenViking corpus"));
         assert!(report
             .service_summary("fault_tolerance")
             .expect("fault tolerance summary")

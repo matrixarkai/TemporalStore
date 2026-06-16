@@ -77,7 +77,7 @@ fn production_readiness_service_summary_is_public_api() {
             ("metaserver", "critical"),
             ("storage_cache", "critical"),
             ("feature_modules", "warning"),
-            ("context_workflow", "critical"),
+            ("context_workflow", "warning"),
             ("fault_tolerance", "warning"),
             ("deployment_ops", "critical"),
             ("scale_testing", "critical"),

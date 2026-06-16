@@ -49,8 +49,10 @@ Model provider config is OpenAI-compatible by shape:
 ```
 
 Open-source and commercial models should use the same config shape with
-`provider_kind=open_ai_compatible`, a `base_url`, and `mock_mode=false`. The current production-safe
-local path rejects live calls and falls back to mock validation until the HTTP model client is added.
+`provider_kind=open_ai_compatible`, an `http://` `base_url`, and `mock_mode=false`. The Rust-native
+local path calls `/chat/completions` with bounded deadlines/retries, loads the bearer token only
+from `api_key_env`, parses `choices[0].message.content`, and can fall back to a configured mock or
+secondary provider if the live endpoint is unavailable.
 
 ## OpenViking Comparison
 
@@ -98,14 +100,14 @@ Covered:
 
 - Context models are persisted through the normal engine command path.
 - L0/L1/L2 tier generation and prompt injection are deterministic for local mocks.
+- OpenAI-compatible HTTP model execution supports bounded deadlines, retries, environment-backed
+  bearer auth, JSON summary parsing, and fallback provider execution.
 - Data-node HTTP routes expose extract, retrieve, inject, workflow state, and provider inspection.
 - The local harness and Docker-packaged harness validate extraction, retrieval, injection, and
   audit refs.
 
 Still blocking C++ parity and production readiness:
 
-- live OpenAI-compatible HTTP model execution with deadlines, retries, fallback provider execution,
-  and credential isolation
 - C++/OpenViking golden context corpus replay through engine, client, proxy, Redis/admin,
   shared-store, and Raft paths
 - production policy controls for PII filtering, tenant isolation, prompt-size admission, rate
