@@ -719,7 +719,11 @@ impl ProxyService {
         if !topology_check_status.ok {
             degraded_reasons.push("topology_check_failed".to_string());
         }
-        if service_discovery.stale {
+        if service_discovery.stale
+            && (service_discovery.registered
+                || service_discovery.last_success_ms.is_some()
+                || service_discovery.last_error_ms.is_some())
+        {
             degraded_reasons.push("service_discovery_stale".to_string());
         }
         let status = if degraded_reasons.is_empty() {

@@ -3900,10 +3900,29 @@ mod tests {
             ],
         };
 
-        for path in [
+        for (alias_index, path) in [
             "/ServerService/IngestBatch",
             "/IngestionService/IngestBatch",
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut request = request.clone();
+            if let IngestionSource::Api { request_id } = &mut request.records[0].source {
+                *request_id = format!("{request_id}-{alias_index}");
+            }
+            if let IngestionSource::Kafka { offset, .. } = &mut request.records[1].source {
+                *offset += alias_index as i64;
+            }
+            if let IngestionSource::Flink {
+                checkpoint_id,
+                record_index,
+                ..
+            } = &mut request.records[2].source
+            {
+                *checkpoint_id += alias_index as u64;
+                *record_index += alias_index as u64;
+            }
             let (code, body) = handle_cpp_server_service_route(
                 &HttpRequest {
                     method: "POST".to_string(),
