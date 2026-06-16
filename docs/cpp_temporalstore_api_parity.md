@@ -177,6 +177,10 @@ Feature:
   `cpp_feature_sequence_golden_corpus_report()`. The corpus covers the C++ protobuf value
   shape, duplicate-field filter replacement, filtered feature query, empty aggregate behavior,
   sequence filtering, and packed timestamped KV page layout.
+- Rust also exposes `cpp_api_golden_corpus_v1` through `cpp_api_golden_corpus_report()`.
+  This broader Rust-local corpus combines the feature/sequence golden cases with Redis-compatible
+  string/hash/set core commands, IPS filter/stat/snapshot behavior, Risk family/FOL/manager
+  behavior, and admin storage-readiness checks after mixed API writes.
 - C++ feature API includes richer `FeaturePoint` structure with nested point arrays, time ranges,
   and richer aggregate query behavior. Rust currently stores one value per timestamp.
 
@@ -241,5 +245,6 @@ Still intentionally missing from the open-source Rust target:
 The Rust repo now covers the main simple module APIs: common, string, hash, set, feature,
 sequence, and the implemented IPS/Risk subset with typed client and RESP coverage. It is not yet
 feature-complete versus the full C++ TemporalStore product, mainly because exact C++ proto
-semantics, routing/topology, C++ slot-owned dump/load recovery, and production replication are
-still large subsystems rather than small API aliases.
+semantics, routing/topology, C++ slot-owned dump/load recovery, OpenRaft/raft-rs integration,
+mTLS/tonic production surfaces, external chaos validation, and production replication are still
+large subsystems rather than small API aliases.

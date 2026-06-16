@@ -422,6 +422,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "feature/sequence C++ protobuf golden corpus exercises filters, aggregates, sequence queries, and packed timestamped KV page layout"
                     .to_string(),
+                "full Rust-local C++ API golden corpus covers feature, sequence, IPS, Risk, Redis-compatible core commands, and admin storage readiness"
+                    .to_string(),
                 "IPS load/snapshot/stat/filter subset and Risk subset with typed client and RESP coverage"
                     .to_string(),
             ],
@@ -430,7 +432,6 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "IPS production snap metadata and server aggregation behavior".to_string(),
                 "Risk production CPC/list internals and full manager/debug APIs".to_string(),
-                "C++ golden corpus compatibility suite".to_string(),
             ],
         },
         ReadinessArea {
