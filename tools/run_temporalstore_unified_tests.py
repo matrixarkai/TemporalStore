@@ -23,6 +23,60 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CORPUS = ROOT / "compat" / "unified_temporalstore_cases.json"
 DEFAULT_CPP_RUNNER_RELATIVE = Path("tools") / "run_temporalstore_unified_tests.sh"
 
+CPP_RUNNER_TEMPLATE = """#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CORPUS=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --corpus)
+      CORPUS="${2:-}"
+      shift 2
+      ;;
+    --corpus=*)
+      CORPUS="${1#--corpus=}"
+      shift
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [[ -z "${CORPUS}" ]]; then
+  CORPUS="${ROOT}/compat/unified_temporalstore_cases.json"
+fi
+if [[ ! -f "${CORPUS}" ]]; then
+  echo "unified TemporalStore corpus not found: ${CORPUS}" >&2
+  exit 2
+fi
+if [[ -z "${TS_CPP_UNIFIED_NATIVE_CMD:-}" ]]; then
+  cat >&2 <<'MSG'
+TS_CPP_UNIFIED_NATIVE_CMD is not set.
+
+Set it to the C++ TemporalStore corpus executor. The command may use a
+{corpus} placeholder. Example:
+
+  TS_CPP_UNIFIED_NATIVE_CMD='bazel run //temporalstore:corpus_runner -- {corpus}' \
+    tools/run_temporalstore_unified_tests.sh --corpus /path/to/compat/unified_temporalstore_cases.json
+MSG
+  exit 2
+fi
+
+if [[ "${TS_CPP_UNIFIED_NATIVE_CMD}" == *"{corpus}"* ]]; then
+  CMD="${TS_CPP_UNIFIED_NATIVE_CMD//\{corpus\}/${CORPUS}}"
+else
+  CMD="${TS_CPP_UNIFIED_NATIVE_CMD} ${CORPUS}"
+fi
+
+cd "${ROOT}"
+echo "+ ${CMD}"
+exec bash -lc "${CMD}"
+"""
+
 
 def validate_corpus(path: Path) -> dict:
     with path.open("r", encoding="utf-8") as handle:
@@ -95,8 +149,19 @@ def discover_cpp_command(cpp_repo: Path | None) -> str | None:
     return None
 
 
+def install_cpp_runner(cpp_repo: Path, overwrite: bool) -> Path:
+    target = cpp_repo / DEFAULT_CPP_RUNNER_RELATIVE
+    if target.exists() and not overwrite:
+        raise SystemExit(
+            f"C++ unified runner already exists: {target}; pass --overwrite-cpp-runner to replace it"
+        )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(CPP_RUNNER_TEMPLATE, encoding="utf-8")
+    target.chmod(0o755)
+    return target
+
+
 def run_cpp(corpus: Path, required: bool, cpp_repo: Path | None) -> None:
-    command = os.environ.get("TS_CPP_UNIFIED_TEST_CMD")
     command = discover_cpp_command(cpp_repo)
     if not command:
         message = (
@@ -138,7 +203,26 @@ def main() -> int:
         help="fail if --cpp is requested but TS_CPP_UNIFIED_TEST_CMD is unset",
     )
     parser.add_argument("--validate-only", action="store_true", help="only validate corpus JSON")
+    parser.add_argument(
+        "--install-cpp-runner",
+        action="store_true",
+        help="write tools/run_temporalstore_unified_tests.sh into --cpp-repo using the shared wrapper contract",
+    )
+    parser.add_argument(
+        "--overwrite-cpp-runner",
+        action="store_true",
+        help="allow --install-cpp-runner to replace an existing C++ wrapper",
+    )
+    parser.add_argument(
+        "--print-cpp-runner-template",
+        action="store_true",
+        help="print the installable C++ wrapper template and exit",
+    )
     args = parser.parse_args()
+
+    if args.print_cpp_runner_template:
+        print(CPP_RUNNER_TEMPLATE, end="")
+        return 0
 
     corpus = args.corpus.resolve()
     data = validate_corpus(corpus)
@@ -149,14 +233,22 @@ def main() -> int:
 
     if args.validate_only:
         return 0
+    install_only = args.install_cpp_runner and not args.rust and not args.cpp and not args.both
     if args.both:
         args.rust = True
         args.cpp = True
-    if not args.rust and not args.cpp:
+    if not args.rust and not args.cpp and not install_only:
         args.rust = True
     cpp_repo = args.cpp_repo.resolve() if args.cpp_repo is not None else None
     if cpp_repo is not None and not cpp_repo.exists():
         raise SystemExit(f"C++ repo does not exist: {cpp_repo}")
+    if args.install_cpp_runner:
+        if cpp_repo is None:
+            raise SystemExit("--install-cpp-runner requires --cpp-repo or TS_CPP_REPO")
+        target = install_cpp_runner(cpp_repo, args.overwrite_cpp_runner)
+        print(f"installed C++ unified runner: {target}")
+        if install_only:
+            return 0
     if args.rust:
         run_rust(corpus)
     if args.cpp:

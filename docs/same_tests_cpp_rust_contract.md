@@ -67,20 +67,38 @@ Both Rust paths reuse the same page/index directories for restart-read steps.
 ## Required C++ Runner
 
 C++ must provide a runner that accepts the corpus path and executes every case and step in order.
-The runner contract is:
+Install the shared wrapper into the C++ checkout from this Rust checkout:
 
 ```bash
-cpp_temporalstore_corpus_runner /absolute/path/to/compat/unified_temporalstore_cases.json
+TS_CPP_REPO=/path/to/cpp/TemporalStore \
+  python3 tools/run_temporalstore_unified_tests.py --install-cpp-runner
+```
+
+That creates:
+
+```text
+/path/to/cpp/TemporalStore/tools/run_temporalstore_unified_tests.sh
+```
+
+The installed C++ wrapper has the same entry point as the Rust wrapper, but delegates to the native
+C++ executor through `TS_CPP_UNIFIED_NATIVE_CMD`.
+
+The native C++ executor contract is:
+
+```bash
+TS_CPP_UNIFIED_NATIVE_CMD='/path/to/cpp_temporalstore_corpus_runner {corpus}' \
+  tools/run_temporalstore_unified_tests.sh --corpus /absolute/path/to/compat/unified_temporalstore_cases.json
 ```
 
 Or, when launched from the Rust repo:
 
 ```bash
-TS_CPP_UNIFIED_TEST_CMD='/path/to/cpp_temporalstore_corpus_runner {corpus}' \
+TS_CPP_REPO=/path/to/cpp/TemporalStore \
+TS_CPP_UNIFIED_TEST_CMD='{cpp_repo}/tools/run_temporalstore_unified_tests.sh --corpus {corpus}' \
   tools/run_temporalstore_unified_tests.sh
 ```
 
-The C++ runner must:
+The native C++ executor must:
 
 - parse `schema_version`, `cases`, `steps`, `command`, `expect`, and `restart_before`
 - execute each command against C++ TemporalStore
@@ -104,6 +122,14 @@ valid:
 
 ```bash
 TS_CPP_REPO=/path/to/cpp/TemporalStore \
+  python3 tools/run_temporalstore_unified_tests.py --both --require-cpp
+```
+
+If the C++ wrapper is installed, set only the native executor command:
+
+```bash
+TS_CPP_REPO=/path/to/cpp/TemporalStore \
+TS_CPP_UNIFIED_NATIVE_CMD='/path/to/cpp_temporalstore_corpus_runner {corpus}' \
   python3 tools/run_temporalstore_unified_tests.py --both --require-cpp
 ```
 
