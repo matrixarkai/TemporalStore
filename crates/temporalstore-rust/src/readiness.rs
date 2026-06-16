@@ -50,6 +50,7 @@ pub struct ServiceReadinessGateReport {
     pub service: String,
     pub ready: bool,
     pub gate_status: String,
+    pub severity: String,
     pub remediation_order: usize,
     pub owner: String,
     pub areas: Vec<String>,
@@ -121,6 +122,7 @@ impl ProductionReadinessReport {
             service: summary.service.clone(),
             ready,
             gate_status: if ready { "ready" } else { "blocked" }.to_string(),
+            severity: service_gate_severity(ready, summary.blocker_count).to_string(),
             remediation_order: self
                 .known_services()
                 .iter()
@@ -575,6 +577,16 @@ fn service_owner(service: &str) -> &'static str {
     }
 }
 
+fn service_gate_severity(ready: bool, blocker_count: usize) -> &'static str {
+    if ready {
+        "ready"
+    } else if blocker_count >= 3 {
+        "critical"
+    } else {
+        "warning"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -665,6 +677,7 @@ mod tests {
             assert_eq!(gate.service, service);
             assert_eq!(gate.ready, summary.ready);
             assert_eq!(gate.gate_status, "blocked");
+            assert_ne!(gate.severity, "ready");
             assert!(gate.remediation_order > 0);
             assert_ne!(gate.owner, "unknown");
             assert_eq!(gate.areas, summary.areas);
@@ -713,6 +726,19 @@ mod tests {
         assert!(service_gates
             .iter()
             .all(|gate| gate.gate_status == "blocked"));
+        assert_eq!(
+            service_gates
+                .iter()
+                .map(|gate| (gate.service.as_str(), gate.severity.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("client", "critical"),
+                ("proxy", "warning"),
+                ("ingestion", "critical"),
+                ("data_node", "critical"),
+                ("metaserver", "critical")
+            ]
+        );
         let data_node_gate = service_gates
             .iter()
             .find(|gate| gate.service == "data_node")
