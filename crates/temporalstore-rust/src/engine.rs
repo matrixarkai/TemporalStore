@@ -488,6 +488,27 @@ pub struct SlotDumpInstallPreflightReport {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlotDumpFaultMatrixReport {
+    pub shard_id: ShardId,
+    pub manifest_id: String,
+    pub production_ready_slice: bool,
+    pub scenario_count: usize,
+    pub passed_count: usize,
+    pub failed_scenarios: Vec<SlotDumpFaultScenarioReport>,
+    pub scenarios: Vec<SlotDumpFaultScenarioReport>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlotDumpFaultScenarioReport {
+    pub scenario: String,
+    pub passed: bool,
+    pub expected_code: String,
+    pub actual_code: String,
+    pub blockers: Vec<String>,
+    pub install_safe: bool,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlotDumpManifestChainIssue {
     pub manifest_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2495,6 +2516,177 @@ impl TemporalEngine {
             unreadable_page_ref_count,
             unreadable_page_bytes,
             stale_manifest,
+        }
+    }
+
+    pub fn slot_dump_fault_matrix_report(&self, shard_id: ShardId) -> SlotDumpFaultMatrixReport {
+        let manifest = match self.create_slot_dump_manifest(shard_id, Vec::new()) {
+            Ok(manifest) => manifest,
+            Err(status) => {
+                let scenario = SlotDumpFaultScenarioReport {
+                    scenario: "create_manifest".to_string(),
+                    passed: false,
+                    expected_code: "ok".to_string(),
+                    actual_code: status.code,
+                    blockers: Vec::new(),
+                    install_safe: false,
+                };
+                return SlotDumpFaultMatrixReport {
+                    shard_id,
+                    manifest_id: String::new(),
+                    production_ready_slice: false,
+                    scenario_count: 1,
+                    passed_count: 0,
+                    failed_scenarios: vec![scenario.clone()],
+                    scenarios: vec![scenario],
+                };
+            }
+        };
+
+        let mut scenarios = Vec::new();
+
+        let mut checksum_mismatch = manifest.clone();
+        checksum_mismatch.logical_bytes = checksum_mismatch.logical_bytes.saturating_add(1);
+        let checksum_code = self
+            .validate_slot_dump_manifest(&checksum_mismatch)
+            .err()
+            .map(|status| status.code)
+            .unwrap_or_else(|| "ok".to_string());
+        scenarios.push(slot_dump_fault_scenario(
+            "checksum_mismatch",
+            "slot_dump_checksum_mismatch",
+            checksum_code,
+            Vec::new(),
+            false,
+        ));
+
+        let mut partial = manifest.clone();
+        partial.index_bytes.clear();
+        partial.checksum =
+            slot_dump_manifest_checksum(&partial).unwrap_or_else(|err| err.code.clone());
+        let partial_code = self
+            .install_slot_dump_manifest(&partial)
+            .err()
+            .map(|status| status.code)
+            .unwrap_or_else(|| "ok".to_string());
+        scenarios.push(slot_dump_fault_scenario(
+            "partial_manifest",
+            "slot_dump_partial_manifest",
+            partial_code,
+            Vec::new(),
+            false,
+        ));
+
+        let mut missing = manifest.clone();
+        let missing_segment_id = missing
+            .page_segment_ids
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or_default()
+            .saturating_add(1_000_000);
+        missing.page_segment_ids.push(missing_segment_id);
+        missing.page_segment_ids.sort_unstable();
+        missing.checksum =
+            slot_dump_manifest_checksum(&missing).unwrap_or_else(|err| err.code.clone());
+        let missing_preflight = self.slot_dump_install_preflight_report(&missing);
+        let missing_code = self
+            .validate_slot_dump_manifest(&missing)
+            .err()
+            .map(|status| status.code)
+            .unwrap_or_else(|| "ok".to_string());
+        scenarios.push(slot_dump_fault_scenario(
+            "missing_page_segment",
+            "slot_dump_missing_page_segments",
+            missing_code,
+            missing_preflight.blockers,
+            missing_preflight.install_safe,
+        ));
+
+        let mut stale_code = "not_run".to_string();
+        let mut stale_blockers = Vec::new();
+        let mut stale_install_safe = false;
+        let stale_write = self.execute(ExecuteRequest {
+            shard_id,
+            command: Command::StringSet {
+                key: "__slot_dump_fault_matrix_stale__".to_string(),
+                value: b"newer".to_vec(),
+            },
+        });
+        if stale_write.status.ok {
+            let stale_preflight = self.slot_dump_install_preflight_report(&manifest);
+            stale_install_safe = stale_preflight.install_safe;
+            stale_blockers = stale_preflight.blockers;
+            stale_code = self
+                .install_slot_dump_manifest(&manifest)
+                .err()
+                .map(|status| status.code)
+                .unwrap_or_else(|| "ok".to_string());
+        }
+        scenarios.push(slot_dump_fault_scenario(
+            "stale_manifest",
+            "slot_dump_stale_manifest",
+            stale_code,
+            stale_blockers,
+            stale_install_safe,
+        ));
+
+        let mut corrupt_code = "not_run".to_string();
+        let mut corrupt_blockers = Vec::new();
+        let mut corrupt_install_safe = false;
+        if let Some(segment_id) = manifest.page_segment_ids.first().copied() {
+            match self.page_store.read_segment(segment_id) {
+                Ok(mut segment) if !segment.is_empty() => {
+                    if let Some(last) = segment.last_mut() {
+                        *last ^= 0xff;
+                    }
+                    match self.page_store.install_segment(segment_id, &segment) {
+                        Ok(()) => {
+                            let corrupt_preflight =
+                                self.slot_dump_install_preflight_report(&manifest);
+                            corrupt_install_safe = corrupt_preflight.install_safe;
+                            corrupt_blockers = corrupt_preflight.blockers;
+                            corrupt_code = if corrupt_blockers
+                                .iter()
+                                .any(|blocker| blocker == "corrupt_page_segments")
+                            {
+                                "corrupt_page_segments".to_string()
+                            } else {
+                                self.validate_slot_dump_manifest(&manifest)
+                                    .err()
+                                    .map(|status| status.code)
+                                    .unwrap_or_else(|| "ok".to_string())
+                            };
+                        }
+                        Err(err) => corrupt_code = format!("install_segment_failed:{err}"),
+                    }
+                }
+                Ok(_) => corrupt_code = "empty_segment".to_string(),
+                Err(err) => corrupt_code = format!("read_segment_failed:{err}"),
+            }
+        }
+        scenarios.push(slot_dump_fault_scenario(
+            "corrupt_page_segment",
+            "corrupt_page_segments",
+            corrupt_code,
+            corrupt_blockers,
+            corrupt_install_safe,
+        ));
+
+        let passed_count = scenarios.iter().filter(|scenario| scenario.passed).count();
+        let failed_scenarios = scenarios
+            .iter()
+            .filter(|scenario| !scenario.passed)
+            .cloned()
+            .collect::<Vec<_>>();
+        SlotDumpFaultMatrixReport {
+            shard_id,
+            manifest_id: manifest.manifest_id,
+            production_ready_slice: failed_scenarios.is_empty(),
+            scenario_count: scenarios.len(),
+            passed_count,
+            failed_scenarios,
+            scenarios,
         }
     }
 
@@ -4815,6 +5007,25 @@ fn slot_dump_manifest_checksum(manifest: &SlotDumpManifest) -> Result<String, St
     serde_json::to_vec(&payload)
         .map(|bytes| sha256_hex_bytes(&bytes))
         .map_err(|err| Status::error("slot_dump_checksum_failed", err.to_string()))
+}
+
+fn slot_dump_fault_scenario(
+    scenario: impl Into<String>,
+    expected_code: impl Into<String>,
+    actual_code: impl Into<String>,
+    blockers: Vec<String>,
+    install_safe: bool,
+) -> SlotDumpFaultScenarioReport {
+    let expected_code = expected_code.into();
+    let actual_code = actual_code.into();
+    SlotDumpFaultScenarioReport {
+        scenario: scenario.into(),
+        passed: actual_code == expected_code,
+        expected_code,
+        actual_code,
+        blockers,
+        install_safe,
+    }
 }
 
 fn slot_dump_generation_id(manifest: &SlotDumpManifest) -> String {

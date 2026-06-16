@@ -126,6 +126,33 @@ def validate_storage_production(job, summary):
         require(case["raft_leader_after_transfer"] == 2, f"{job}: raft leader did not transfer in {case['case_name']}")
 
 
+def validate_storage_fault_matrix(job, summary):
+    require(summary["production_ready_slice"], f"{job}: storage fault matrix failed")
+    report = summary["report"]
+    require(report["production_ready_slice"], f"{job}: nested report failed")
+    require(report["scenario_count"] == 5, f"{job}: expected 5 fault scenarios")
+    require(report["passed_count"] == report["scenario_count"], f"{job}: not all fault scenarios passed")
+    require(not report["failed_scenarios"], f"{job}: failed scenarios present")
+    expected = {
+        "checksum_mismatch": "slot_dump_checksum_mismatch",
+        "partial_manifest": "slot_dump_partial_manifest",
+        "missing_page_segment": "slot_dump_missing_page_segments",
+        "stale_manifest": "slot_dump_stale_manifest",
+        "corrupt_page_segment": "corrupt_page_segments",
+    }
+    observed = {scenario["scenario"]: scenario for scenario in report["scenarios"]}
+    require(set(observed) == set(expected), f"{job}: unexpected scenarios {sorted(observed)}")
+    for name, expected_code in expected.items():
+        scenario = observed[name]
+        require(scenario["passed"], f"{job}: scenario {name} did not pass")
+        require(
+            scenario["actual_code"] == expected_code,
+            f"{job}: scenario {name} code mismatch {scenario}",
+        )
+        if name in {"missing_page_segment", "stale_manifest", "corrupt_page_segment"}:
+            require(not scenario["install_safe"], f"{job}: scenario {name} was install-safe")
+
+
 def validate_context_workflow(job, summary):
     require(summary["extraction_ok"], f"{job}: context extraction failed")
     require(summary["retrieve_block_count"] >= 2, f"{job}: not enough retrieved context blocks")
@@ -193,6 +220,8 @@ def main():
     summary = load_summary(args.log)
     if args.job.endswith("context-workflow-validation"):
         validate_context_workflow(args.job, summary)
+    elif args.job.endswith("storage-fault-matrix-validation"):
+        validate_storage_fault_matrix(args.job, summary)
     elif args.job.endswith("storage-production-validation"):
         validate_storage_production(args.job, summary)
     elif args.job.endswith("raft-secondary-validation"):

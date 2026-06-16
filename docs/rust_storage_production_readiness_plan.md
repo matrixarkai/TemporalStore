@@ -121,6 +121,8 @@ current Rust-native deployment target:
 - `storage_production_harness` turns the corpus into a local scale/fault gate for dump, cache
   pressure, restart recovery, shared-store replay, and Raft movement.
 - The parity gate now runs the storage production harness and validates the JSON summary.
+- The parity gate now also runs `storage_fault_matrix_harness`, which rejects checksum-mismatched,
+  partial, missing-segment, stale, and corrupt-page-segment slot dump manifests before install.
 
 This closes the in-repo Rust migration verifier and local production-harness slice. Storage remains
 not production-ready until an external C++ binary-artifact exporter publishes the golden corpus in

@@ -110,6 +110,30 @@ fn scenario_plan(options: &GateOptions) -> Vec<ChaosScenario> {
                 "4".to_string(),
             ],
         },
+        ChaosScenario {
+            name: "storage_dump_load_fault_matrix",
+            binary: "storage_fault_matrix_harness",
+            args: vec![
+                "--root".to_string(),
+                options
+                    .root
+                    .join("storage-fault-matrix")
+                    .display()
+                    .to_string(),
+            ],
+        },
+        ChaosScenario {
+            name: "storage_production_corpus_shared_store_raft",
+            binary: "storage_production_harness",
+            args: vec![
+                "--root".to_string(),
+                options
+                    .root
+                    .join("storage-production")
+                    .display()
+                    .to_string(),
+            ],
+        },
     ];
 
     if options.profile == ChaosProfile::Full {

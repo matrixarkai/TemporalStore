@@ -210,7 +210,8 @@ cargo run -p temporalstore-rust --bin external_chaos_gate -- --profile quick
 ```
 
 The quick profile composes the OS-process Raft secondary harness, the networked
-distributed Raft harness, and the storage modes harness. It proves process
+distributed Raft harness, the storage modes harness, the storage production harness, and the
+storage dump/load fault matrix harness. It proves process
 kill/restart, partition-style stale-read rejection, lag/heal catch-up, rolling
 restart, membership/snapshot transfer, sync and async shared-store replay, and
 local Raft WAL restore through executable scenarios. The full profile also runs

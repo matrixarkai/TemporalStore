@@ -127,6 +127,12 @@ python3 tools/validate_aws_validation_log.py \
   --job temporalstore-storage-production-validation \
   --log /tmp/temporalstore-storage-production-validation.log
 
+echo "== local: storage dump/load fault matrix harness =="
+cargo run -p temporalstore-rust --bin storage_fault_matrix_harness > /tmp/temporalstore-storage-fault-matrix-validation.log
+python3 tools/validate_aws_validation_log.py \
+  --job temporalstore-storage-fault-matrix-validation \
+  --log /tmp/temporalstore-storage-fault-matrix-validation.log
+
 echo "== local: context extraction/injection workflow harness =="
 cargo run -p temporalstore-rust --bin context_workflow_harness > /tmp/temporalstore-context-workflow-validation.log
 python3 tools/validate_aws_validation_log.py \
