@@ -524,6 +524,12 @@ fn service_readiness_summaries(areas: &[ReadinessArea]) -> Vec<ServiceReadinessS
             vec!["dataserver", "data_node_distributed_raft"],
         ),
         ("metaserver", vec!["metaserver"]),
+        ("storage_cache", vec!["storage_cache"]),
+        ("feature_modules", vec!["feature_modules"]),
+        ("fault_tolerance", vec!["fault_tolerance"]),
+        ("deployment_ops", vec!["deployment_ops"]),
+        ("scale_testing", vec!["scale_testing"]),
+        ("raft_replication", vec!["raft_replication"]),
     ]
     .into_iter()
     .map(|(service, area_names)| {
@@ -571,6 +577,12 @@ fn service_blocker_class(area: &str) -> &'static str {
         "dataserver" => "data_node_local_lifecycle",
         "data_node_distributed_raft" => "data_node_distributed_raft",
         "metaserver" => "metaserver_control_plane",
+        "storage_cache" => "storage_cache_durability",
+        "feature_modules" => "feature_module_cpp_parity",
+        "fault_tolerance" => "fault_tolerance_validation",
+        "deployment_ops" => "deployment_ops_runtime",
+        "scale_testing" => "scale_testing_evidence",
+        "raft_replication" => "raft_replication_engine",
         _ => "other",
     }
 }
@@ -598,6 +610,24 @@ fn service_next_action(service: &str, blocker_classes: &[String]) -> &'static st
         ("metaserver", "metaserver_control_plane") => {
             "finish networked metaserver Raft, scheduler loop, and safe topology membership mutations"
         }
+        ("storage_cache", "storage_cache_durability") => {
+            "finish binary log/page compatibility decisions, atomic dump/load, SSD cache pressure validation, and live object-store integration"
+        }
+        ("feature_modules", "feature_module_cpp_parity") => {
+            "finish exact C++ feature/risk corpus coverage and deployment-specific module edge cases"
+        }
+        ("fault_tolerance", "fault_tolerance_validation") => {
+            "finish rolling restart and rolling upgrade validation across proxy, client, metaserver, and data-node processes"
+        }
+        ("deployment_ops", "deployment_ops_runtime") => {
+            "finish autoscale/rebalance control, dashboards, tracing, auth/TLS, AWS E2E, and performance benchmarks"
+        }
+        ("scale_testing", "scale_testing_evidence") => {
+            "finish multi-node AWS scale tests, distributed Raft load tests, workload replay, and SLO evidence"
+        }
+        ("raft_replication", "raft_replication_engine") => {
+            "finish real OpenRaft or raft-rs FSM/storage integration, networked meta Raft transport, and external chaos coverage"
+        }
         _ => "inspect failed capabilities for this service",
     }
 }
@@ -609,6 +639,12 @@ fn service_owner(service: &str) -> &'static str {
         "ingestion" => "ingestion_connectors",
         "data_node" => "data_node_runtime",
         "metaserver" => "metaserver_control_plane",
+        "storage_cache" => "storage_runtime",
+        "feature_modules" => "feature_api",
+        "fault_tolerance" => "reliability",
+        "deployment_ops" => "platform_ops",
+        "scale_testing" => "performance",
+        "raft_replication" => "consensus_runtime",
         _ => "unknown",
     }
 }
@@ -681,10 +717,34 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             services,
-            vec!["client", "proxy", "ingestion", "data_node", "metaserver"]
+            vec![
+                "client",
+                "proxy",
+                "ingestion",
+                "data_node",
+                "metaserver",
+                "storage_cache",
+                "feature_modules",
+                "fault_tolerance",
+                "deployment_ops",
+                "scale_testing",
+                "raft_replication"
+            ]
         );
 
-        for service in ["client", "proxy", "ingestion", "data_node", "metaserver"] {
+        for service in [
+            "client",
+            "proxy",
+            "ingestion",
+            "data_node",
+            "metaserver",
+            "storage_cache",
+            "feature_modules",
+            "fault_tolerance",
+            "deployment_ops",
+            "scale_testing",
+            "raft_replication",
+        ] {
             let summary = report
                 .service_summary(service)
                 .expect("service summary must exist");
@@ -737,14 +797,38 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             blocked_services,
-            vec!["client", "proxy", "ingestion", "data_node", "metaserver"]
+            vec![
+                "client",
+                "proxy",
+                "ingestion",
+                "data_node",
+                "metaserver",
+                "storage_cache",
+                "feature_modules",
+                "fault_tolerance",
+                "deployment_ops",
+                "scale_testing",
+                "raft_replication"
+            ]
         );
         assert_eq!(
             report.known_services(),
-            vec!["client", "proxy", "ingestion", "data_node", "metaserver"]
+            vec![
+                "client",
+                "proxy",
+                "ingestion",
+                "data_node",
+                "metaserver",
+                "storage_cache",
+                "feature_modules",
+                "fault_tolerance",
+                "deployment_ops",
+                "scale_testing",
+                "raft_replication"
+            ]
         );
         let service_gates = report.service_gate_reports();
-        assert_eq!(service_gates.len(), 5);
+        assert_eq!(service_gates.len(), 11);
         assert_eq!(
             service_gates
                 .iter()
@@ -759,7 +843,13 @@ mod tests {
                 (2, "proxy", "proxy_runtime"),
                 (3, "ingestion", "ingestion_connectors"),
                 (4, "data_node", "data_node_runtime"),
-                (5, "metaserver", "metaserver_control_plane")
+                (5, "metaserver", "metaserver_control_plane"),
+                (6, "storage_cache", "storage_runtime"),
+                (7, "feature_modules", "feature_api"),
+                (8, "fault_tolerance", "reliability"),
+                (9, "deployment_ops", "platform_ops"),
+                (10, "scale_testing", "performance"),
+                (11, "raft_replication", "consensus_runtime")
             ]
         );
         assert!(service_gates.iter().all(|gate| !gate.ready));
@@ -783,7 +873,13 @@ mod tests {
                 ("proxy", "warning"),
                 ("ingestion", "critical"),
                 ("data_node", "critical"),
-                ("metaserver", "critical")
+                ("metaserver", "critical"),
+                ("storage_cache", "critical"),
+                ("feature_modules", "warning"),
+                ("fault_tolerance", "warning"),
+                ("deployment_ops", "critical"),
+                ("scale_testing", "critical"),
+                ("raft_replication", "critical")
             ]
         );
         let data_node_gate = service_gates
@@ -832,6 +928,36 @@ mod tests {
             .expect("data node summary")
             .next_action
             .contains("Raft"));
+        assert!(report
+            .service_summary("storage_cache")
+            .expect("storage cache summary")
+            .next_action
+            .contains("atomic dump/load"));
+        assert!(report
+            .service_summary("feature_modules")
+            .expect("feature modules summary")
+            .next_action
+            .contains("C++ feature/risk corpus"));
+        assert!(report
+            .service_summary("fault_tolerance")
+            .expect("fault tolerance summary")
+            .next_action
+            .contains("rolling restart"));
+        assert!(report
+            .service_summary("deployment_ops")
+            .expect("deployment ops summary")
+            .next_action
+            .contains("auth/TLS"));
+        assert!(report
+            .service_summary("scale_testing")
+            .expect("scale testing summary")
+            .next_action
+            .contains("SLO evidence"));
+        assert!(report
+            .service_summary("raft_replication")
+            .expect("raft replication summary")
+            .next_action
+            .contains("OpenRaft"));
         assert_eq!(
             report
                 .service_summary("proxy")
@@ -852,6 +978,48 @@ mod tests {
                 .expect("metaserver summary")
                 .blocker_classes,
             vec!["metaserver_control_plane".to_string()]
+        );
+        assert_eq!(
+            report
+                .service_summary("storage_cache")
+                .expect("storage cache summary")
+                .blocker_classes,
+            vec!["storage_cache_durability".to_string()]
+        );
+        assert_eq!(
+            report
+                .service_summary("feature_modules")
+                .expect("feature modules summary")
+                .blocker_classes,
+            vec!["feature_module_cpp_parity".to_string()]
+        );
+        assert_eq!(
+            report
+                .service_summary("fault_tolerance")
+                .expect("fault tolerance summary")
+                .blocker_classes,
+            vec!["fault_tolerance_validation".to_string()]
+        );
+        assert_eq!(
+            report
+                .service_summary("deployment_ops")
+                .expect("deployment ops summary")
+                .blocker_classes,
+            vec!["deployment_ops_runtime".to_string()]
+        );
+        assert_eq!(
+            report
+                .service_summary("scale_testing")
+                .expect("scale testing summary")
+                .blocker_classes,
+            vec!["scale_testing_evidence".to_string()]
+        );
+        assert_eq!(
+            report
+                .service_summary("raft_replication")
+                .expect("raft replication summary")
+                .blocker_classes,
+            vec!["raft_replication_engine".to_string()]
         );
 
         let data_node = report
