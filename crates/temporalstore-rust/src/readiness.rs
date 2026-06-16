@@ -52,6 +52,7 @@ pub struct ServiceReadinessGateReport {
     pub gate_status: String,
     pub remediation_order: usize,
     pub owner: String,
+    pub areas: Vec<String>,
     pub blocker_count: usize,
     pub blocker_classes: Vec<String>,
     pub next_action: String,
@@ -127,6 +128,7 @@ impl ProductionReadinessReport {
                 .map(|index| index + 1)
                 .unwrap_or(0),
             owner: service_owner(service).to_string(),
+            areas: summary.areas.clone(),
             blocker_count: summary.blocker_count,
             blocker_classes: summary.blocker_classes.clone(),
             next_action: summary.next_action.clone(),
@@ -665,6 +667,7 @@ mod tests {
             assert_eq!(gate.gate_status, "blocked");
             assert!(gate.remediation_order > 0);
             assert_ne!(gate.owner, "unknown");
+            assert_eq!(gate.areas, summary.areas);
             assert_eq!(gate.blocker_count, summary.blocker_count);
             assert_eq!(gate.blocker_classes, summary.blocker_classes);
             assert_eq!(gate.next_action, summary.next_action);
@@ -710,6 +713,17 @@ mod tests {
         assert!(service_gates
             .iter()
             .all(|gate| gate.gate_status == "blocked"));
+        let data_node_gate = service_gates
+            .iter()
+            .find(|gate| gate.service == "data_node")
+            .expect("data node gate should exist");
+        assert_eq!(
+            data_node_gate.areas,
+            vec![
+                "dataserver".to_string(),
+                "data_node_distributed_raft".to_string()
+            ]
+        );
         assert!(!report.service_ready("unknown_service"));
         assert!(report.service_gate_report("unknown_service").is_none());
 

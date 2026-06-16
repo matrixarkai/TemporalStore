@@ -84,6 +84,13 @@ fn production_readiness_service_summary_is_public_api() {
     assert_eq!(gate.gate_status, "blocked");
     assert_eq!(gate.remediation_order, 4);
     assert_eq!(gate.owner, "data_node_runtime");
+    assert_eq!(
+        gate.areas,
+        vec![
+            "dataserver".to_string(),
+            "data_node_distributed_raft".to_string()
+        ]
+    );
     assert_eq!(gate.blocker_count, data_node.blocker_count);
     assert_eq!(gate.failed_capabilities.len(), data_node.blocker_count);
 }
