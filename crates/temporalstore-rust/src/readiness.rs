@@ -188,6 +188,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "background topology sync and C++ crc64 slot formula".to_string(),
                 "client preflight report exposes route/table cache, backend-failure backlog, stats, and options"
                     .to_string(),
+                "client retry classifier separates budget-free safe topology retries from unsafe write retries that require explicit write retry budget"
+                    .to_string(),
             ],
             missing: vec![
                 "tonic/prost SDK surface for the open-source production API".to_string(),

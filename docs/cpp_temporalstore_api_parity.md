@@ -201,6 +201,8 @@ Covered or substantially covered in Rust now:
 
 - C++ `crc64 >> 34` table routing formula in the Rust client router, plus an opt-in C++
   `PartitionId` bit-layout helper for table partition ids.
+- Client retry classification now separates budget-free safe topology refresh/retry from unsafe
+  write retries; possibly applied writes still require an explicit table write retry budget.
 - Shard-affine data-node worker lanes with bounded foreground/background queues, per-shard FIFO
   execution, cross-shard parallelism, and foreground priority over background work.
 - Append-only local oplog and index-log streams, replica replay cursors, replay gap checks, and GC

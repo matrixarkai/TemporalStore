@@ -299,6 +299,14 @@ pub struct ClientTopologyInvalidationReport {
     pub stale_before_invalidation: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientRetryDecision {
+    pub retryable: bool,
+    pub topology_retry: bool,
+    pub safe_budget_free_write_retry: bool,
+    pub would_retry: bool,
+}
+
 impl ClientStats {
     fn record_backend_error(&mut self, became_continuous: bool) {
         self.backend_errors += 1;
@@ -2639,14 +2647,17 @@ impl TemporalStoreTable {
                     Some(table_options.preferred_location.as_str())
                 },
             )?;
-            let topology_retry = status_is_cpp_topology_retryable(&current.status);
-            let can_retry = status_is_cpp_retryable(&current.status)
-                && (attempt + 1 < retry_budget_attempts
-                    || (topology_retry && !topology_refresh_used));
-            if current.status.ok || !can_retry {
+            let decision = classify_cpp_retry_decision(
+                &current.status,
+                write,
+                attempt,
+                retry_budget_attempts,
+                topology_refresh_used,
+            );
+            if current.status.ok || !decision.would_retry {
                 break current;
             }
-            if topology_retry && !topology_refresh_used {
+            if decision.topology_retry && !topology_refresh_used {
                 topology_refresh_used = true;
                 self.refresh_table_topology_after_status();
             }
@@ -2714,14 +2725,17 @@ impl TemporalStoreTable {
                 self.http_options(),
                 Some(table_options.continuous_failed_time_ms),
             )?;
-            let topology_retry = status_is_cpp_topology_retryable(&current.status);
-            let can_retry = status_is_cpp_retryable(&current.status)
-                && (attempt + 1 < retry_budget_attempts
-                    || (topology_retry && !topology_refresh_used));
-            if current.status.ok || !can_retry {
+            let decision = classify_cpp_retry_decision(
+                &current.status,
+                write,
+                attempt,
+                retry_budget_attempts,
+                topology_refresh_used,
+            );
+            if current.status.ok || !decision.would_retry {
                 break current;
             }
-            if topology_retry && !topology_refresh_used {
+            if decision.topology_retry && !topology_refresh_used {
                 topology_refresh_used = true;
                 self.refresh_table_topology_after_status();
             }
@@ -3105,6 +3119,29 @@ fn sleep_before_retry(options: &TableOptions, attempt: usize) {
     let multiplier = u64::try_from(attempt.saturating_add(1)).unwrap_or(u64::MAX);
     let sleep_ms = options.retry_backoff_ms.saturating_mul(multiplier);
     thread::sleep(Duration::from_millis(sleep_ms));
+}
+
+fn classify_cpp_retry_decision(
+    status: &Status,
+    write: bool,
+    attempt: usize,
+    retry_budget_attempts: usize,
+    topology_refresh_used: bool,
+) -> ClientRetryDecision {
+    let retryable = status_is_cpp_retryable(status);
+    let topology_retry = status_is_cpp_topology_retryable(status);
+    let has_budget = attempt + 1 < retry_budget_attempts;
+    let safe_budget_free_write_retry = write && topology_retry && !topology_refresh_used;
+    let would_retry = retryable
+        && (has_budget
+            || (!write && topology_retry && !topology_refresh_used)
+            || safe_budget_free_write_retry);
+    ClientRetryDecision {
+        retryable,
+        topology_retry,
+        safe_budget_free_write_retry,
+        would_retry,
+    }
 }
 
 fn status_is_cpp_retryable(status: &Status) -> bool {
@@ -4604,6 +4641,52 @@ mod tests {
         let err = table.set("retry-write", b"v".to_vec()).unwrap_err();
         assert!(err.to_string().contains("write loading"));
         assert_eq!(attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn client_retry_classifier_separates_safe_topology_retry_from_unsafe_write_retry() {
+        let unsafe_write_retry = classify_cpp_retry_decision(
+            &Status::error("retry_later", "possibly applied"),
+            true,
+            0,
+            1,
+            false,
+        );
+        assert!(unsafe_write_retry.retryable);
+        assert!(!unsafe_write_retry.topology_retry);
+        assert!(!unsafe_write_retry.safe_budget_free_write_retry);
+        assert!(
+            !unsafe_write_retry.would_retry,
+            "write retry without budget must not duplicate a possibly applied write"
+        );
+
+        let safe_topology_retry = classify_cpp_retry_decision(
+            &Status::error("meta_changed", "not applied on stale route"),
+            true,
+            0,
+            1,
+            false,
+        );
+        assert!(safe_topology_retry.retryable);
+        assert!(safe_topology_retry.topology_retry);
+        assert!(safe_topology_retry.safe_budget_free_write_retry);
+        assert!(
+            safe_topology_retry.would_retry,
+            "C++ stale topology rejection may refresh and retry once even with no write retry budget"
+        );
+
+        let duplicate_topology_retry = classify_cpp_retry_decision(
+            &Status::error("meta_changed", "still stale"),
+            true,
+            1,
+            1,
+            true,
+        );
+        assert!(!duplicate_topology_retry.safe_budget_free_write_retry);
+        assert!(
+            !duplicate_topology_retry.would_retry,
+            "budget-free topology retry is intentionally single-shot"
+        );
     }
 
     #[test]
