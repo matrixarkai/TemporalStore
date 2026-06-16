@@ -53,6 +53,9 @@ require() {
 cd "${ROOT}"
 export CARGO_TARGET_DIR="${TARGET_DIR}"
 
+echo "== local: SDK contract validation =="
+python3 tools/validate_sdk_contract.py
+
 echo "== local: cargo test all targets =="
 cargo test -p temporalstore-rust --all-targets -- --test-threads=1
 

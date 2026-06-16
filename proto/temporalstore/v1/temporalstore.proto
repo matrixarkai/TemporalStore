@@ -1,0 +1,284 @@
+syntax = "proto3";
+
+package temporalstore.v1;
+
+// TemporalStoreService is the Rust-native production SDK contract. Existing
+// HTTP/JSON client and proxy routes must continue to expose the same logical
+// request and response fields until generated tonic/prost bindings are wired.
+service TemporalStoreService {
+  rpc Execute(ExecuteRequest) returns (ExecuteResponse);
+  rpc BatchExecute(BatchExecuteRequest) returns (BatchExecuteResponse);
+  rpc OpenTable(OpenTableRequest) returns (OpenTableResponse);
+  rpc SyncTopology(SyncTopologyRequest) returns (SyncTopologyResponse);
+  rpc GetClientPreflight(ClientPreflightRequest) returns (ClientPreflightResponse);
+}
+
+message Status {
+  bool ok = 1;
+  string code = 2;
+  string message = 3;
+}
+
+message ExecuteRequest {
+  uint64 shard_id = 1;
+  uint64 trace_id = 2;
+  Command command = 3;
+}
+
+message ExecuteResponse {
+  Status status = 1;
+  CommandResponse response = 2;
+  uint64 topology_version = 3;
+}
+
+message BatchExecuteRequest {
+  uint64 shard_id = 1;
+  uint64 trace_id = 2;
+  repeated Command commands = 3;
+}
+
+message BatchExecuteResponse {
+  Status status = 1;
+  repeated CommandResponse responses = 2;
+  uint64 topology_version = 3;
+}
+
+message OpenTableRequest {
+  string namespace_name = 1;
+  string table_name = 2;
+  string local_location = 3;
+}
+
+message OpenTableResponse {
+  Status status = 1;
+  TableTopology topology = 2;
+}
+
+message SyncTopologyRequest {
+  repeated string table_keys = 1;
+  uint64 min_topology_version = 2;
+  uint64 deadline_ms = 3;
+}
+
+message SyncTopologyResponse {
+  Status status = 1;
+  repeated TableTopology topologies = 2;
+  uint64 topology_version = 3;
+}
+
+message ClientPreflightRequest {
+  bool include_routes = 1;
+  bool include_backend_failures = 2;
+}
+
+message ClientPreflightResponse {
+  Status status = 1;
+  uint64 route_cache_entries = 2;
+  uint64 table_cache_entries = 3;
+  uint64 backend_failure_entries = 4;
+  uint64 topology_version = 5;
+  bool degraded = 6;
+  repeated string warnings = 7;
+}
+
+message TableTopology {
+  string namespace_name = 1;
+  string table_name = 2;
+  string state = 3;
+  bool readonly = 4;
+  bool write_disabled = 5;
+  uint32 drop_percent = 6;
+  uint64 topology_version = 7;
+  repeated ShardTopology shards = 8;
+}
+
+message ShardTopology {
+  uint64 shard_id = 1;
+  ServerEndpoint primary = 2;
+  repeated ServerEndpoint replicas = 3;
+  uint64 load_generation = 4;
+  string lifecycle_state = 5;
+}
+
+message ServerEndpoint {
+  string server_id = 1;
+  string host = 2;
+  uint32 port = 3;
+  string location = 4;
+}
+
+message Command {
+  oneof kind {
+    StringSet string_set = 1;
+    StringGet string_get = 2;
+    StringDelete string_delete = 3;
+    HashSet hash_set = 4;
+    HashGet hash_get = 5;
+    HashMultiSet hash_multi_set = 6;
+    HashMultiGet hash_multi_get = 7;
+    SetAdd set_add = 8;
+    SetMembers set_members = 9;
+    FeatureAppend feature_append = 10;
+    FeatureQuery feature_query = 11;
+    SequenceAppend sequence_append = 12;
+    SequenceQuery sequence_query = 13;
+    IpsAdd ips_add = 14;
+    IpsQuery ips_query = 15;
+    RiskIncrement risk_increment = 16;
+    RiskQuery risk_query = 17;
+    ContextNodeUpsert context_node_upsert = 18;
+    ContextNodeGet context_node_get = 19;
+    CommonExpire common_expire = 20;
+    CommonExists common_exists = 21;
+  }
+}
+
+message CommandResponse {
+  Status status = 1;
+  bytes value = 2;
+  repeated bytes values = 3;
+  repeated FeaturePoint feature_points = 4;
+  repeated SequenceFeatureRow sequence_rows = 5;
+  repeated ContextNode context_nodes = 6;
+  uint64 count = 7;
+  bool exists = 8;
+}
+
+message StringSet {
+  string key = 1;
+  bytes value = 2;
+  uint64 ttl_ms = 3;
+}
+
+message StringGet {
+  string key = 1;
+}
+
+message StringDelete {
+  string key = 1;
+}
+
+message HashSet {
+  string key = 1;
+  string field = 2;
+  bytes value = 3;
+}
+
+message HashGet {
+  string key = 1;
+  string field = 2;
+}
+
+message HashEntry {
+  string field = 1;
+  bytes value = 2;
+}
+
+message HashMultiSet {
+  string key = 1;
+  repeated HashEntry entries = 2;
+}
+
+message HashMultiGet {
+  string key = 1;
+  repeated string fields = 2;
+}
+
+message SetAdd {
+  string key = 1;
+  bytes member = 2;
+}
+
+message SetMembers {
+  string key = 1;
+}
+
+message FeaturePoint {
+  uint64 timestamp_ms = 1;
+  bytes value = 2;
+}
+
+message FeatureAppend {
+  string key = 1;
+  repeated FeaturePoint points = 2;
+}
+
+message FeatureQuery {
+  string key = 1;
+  uint64 start_ms = 2;
+  uint64 end_ms = 3;
+  uint32 limit = 4;
+}
+
+message SequenceFeatureRow {
+  uint64 timestamp_ms = 1;
+  uint64 gid = 2;
+  uint32 action_type = 3;
+  uint32 duration = 4;
+  uint64 author_id = 5;
+}
+
+message SequenceAppend {
+  string key = 1;
+  repeated SequenceFeatureRow rows = 2;
+}
+
+message SequenceQuery {
+  string key = 1;
+  uint64 start_ms = 2;
+  uint64 end_ms = 3;
+  uint32 limit = 4;
+}
+
+message IpsAdd {
+  string key = 1;
+  uint64 timestamp_ms = 2;
+  bytes payload = 3;
+}
+
+message IpsQuery {
+  string key = 1;
+  uint64 start_ms = 2;
+  uint64 end_ms = 3;
+  uint32 limit = 4;
+}
+
+message RiskIncrement {
+  string key = 1;
+  string family = 2;
+  int64 delta = 3;
+  uint64 timestamp_ms = 4;
+}
+
+message RiskQuery {
+  string key = 1;
+  string family = 2;
+  uint64 start_ms = 3;
+  uint64 end_ms = 4;
+}
+
+message ContextNode {
+  string node_id = 1;
+  string model = 2;
+  bytes payload = 3;
+  uint64 updated_at_ms = 4;
+}
+
+message ContextNodeUpsert {
+  string key = 1;
+  ContextNode node = 2;
+}
+
+message ContextNodeGet {
+  string key = 1;
+  string node_id = 2;
+}
+
+message CommonExpire {
+  string key = 1;
+  uint64 ttl_ms = 2;
+}
+
+message CommonExists {
+  string key = 1;
+}

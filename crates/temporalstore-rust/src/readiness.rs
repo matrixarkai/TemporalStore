@@ -192,9 +192,12 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "shared C++/Rust corpus runs through the typed table client API and direct engine path for common, feature, sequence, IPS, risk, context, and restart reads"
                     .to_string(),
+                "versioned Rust-native SDK contract committed in proto/temporalstore/v1 with validation in the local parity gate"
+                    .to_string(),
             ],
             missing: vec![
-                "tonic/prost SDK surface for the open-source production API".to_string(),
+                "generated tonic/prost client and server bindings from the committed open-source production API schema"
+                    .to_string(),
                 "full C++ partition-set hierarchy and Neptune-specific routing"
                     .to_string(),
                 "wire-compatible migration layer for existing C++ client callers".to_string(),
@@ -628,7 +631,7 @@ fn service_next_action(service: &str, blocker_classes: &[String]) -> &'static st
     };
     match (service, first_class) {
         ("client", "client_sync_preflight") => {
-            "finish client MetaSyncer deadlines, stale-route invalidation, and retry classification"
+            "generate tonic/prost client/server bindings from proto/temporalstore/v1 and wire them to the existing client/proxy paths"
         }
         ("proxy", "proxy_topology_admission") => {
             "finish proxy topology-version guarded cache invalidation and admission policy enforcement"
@@ -953,7 +956,7 @@ mod tests {
             .service_summary("client")
             .expect("client summary")
             .next_action
-            .contains("MetaSyncer"));
+            .contains("tonic/prost"));
         assert!(report
             .service_summary("proxy")
             .expect("proxy summary")

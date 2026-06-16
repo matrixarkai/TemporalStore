@@ -175,6 +175,8 @@ These are not yet true same tests:
 - C++ local smoke tests that do not consume `compat/unified_temporalstore_cases.json`.
 - Rust storage migration tests using `compat/storage_migration_corpus.json`; those validate
   migration/replay behavior, not the shared command-response contract.
+- Rust SDK contract validation in `tools/validate_sdk_contract.py`; that check protects the
+  versioned open-source API schema, but it does not execute command-response behavior by itself.
 - C++ p99/performance gates; those compare thresholds and workload classes, but do not yet execute
   the exact same operation trace.
 - Raft, proxy, metaserver, data-node lifecycle, ingestion, Redis, and context provider tests outside
@@ -190,6 +192,8 @@ These are not yet true same tests:
 4. Add negative cases: not found, stale route, readonly table, bad lifecycle state, corrupt storage
    artifact, invalid timestamped page payload, and retry-safe write failure.
 5. Require `--both --require-cpp` in the parity gate before claiming C++ parity.
+6. Generate tonic/prost SDK bindings from `proto/temporalstore/v1/temporalstore.proto` and route
+   the generated service through the same corpus-backed execution path.
 
 Until C++ consumes the shared corpus in CI, the honest status is: Rust has a same-test contract and
 runner, but cross-codebase same-test enforcement is only complete when the C++ runner executes the
