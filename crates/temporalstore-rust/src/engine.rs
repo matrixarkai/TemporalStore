@@ -246,6 +246,16 @@ pub struct StorageRecoveryPageOwnerMismatch {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageFeaturePageLayoutReport {
+    #[serde(default)]
+    pub indexed_timestamped_points: usize,
+    #[serde(default)]
+    pub unique_timestamped_page_refs: usize,
+    #[serde(default)]
+    pub packed_timestamped_pages: usize,
+    #[serde(default)]
+    pub legacy_timestamped_value_pages: usize,
+    #[serde(default)]
+    pub families: Vec<StorageTimestampedPageFamilyReport>,
     pub indexed_feature_points: usize,
     pub unique_feature_page_refs: usize,
     pub packed_feature_pages: usize,
@@ -258,6 +268,17 @@ pub struct StorageFeaturePageLayoutReport {
     pub orphan_packed_timestamps: Vec<StorageFeaturePageTimestampMismatch>,
     #[serde(default)]
     pub duplicate_packed_timestamps: Vec<StorageFeaturePageTimestampMismatch>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageTimestampedPageFamilyReport {
+    pub kind: String,
+    pub indexed_points: usize,
+    pub unique_page_refs: usize,
+    pub packed_pages: usize,
+    pub legacy_value_pages: usize,
+    pub corrupt_pages: usize,
+    pub mismatch_count: usize,
 }
 
 impl StorageFeaturePageLayoutReport {
@@ -277,6 +298,8 @@ impl StorageFeaturePageLayoutReport {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageFeaturePageError {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub kind: String,
     pub key: String,
     pub page_segment_id: u64,
     pub offset: u64,
@@ -286,6 +309,8 @@ pub struct StorageFeaturePageError {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageFeaturePageTimestampMismatch {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub kind: String,
     pub key: String,
     pub timestamp_ms: u64,
     pub page_segment_id: u64,
@@ -7229,13 +7254,55 @@ fn unique_feature_page_addresses(series: &BTreeMap<u64, PageAddress>) -> Vec<Pag
     unique_timestamped_kv_page_addresses(series)
 }
 
+fn timestamped_kv_series<'a>(
+    shard: &'a ShardState,
+) -> Vec<(&'static str, &'a str, &'a BTreeMap<u64, PageAddress>)> {
+    let mut series = Vec::new();
+    for (key, timeline) in &shard.features {
+        series.push(("feature", key.as_str(), timeline));
+    }
+    for (key, timeline) in &shard.sequences {
+        series.push(("sequence", key.as_str(), timeline));
+    }
+    for (key, timeline) in &shard.ips {
+        series.push(("ips", key.as_str(), timeline));
+    }
+    for (key, timeline) in &shard.context_events {
+        series.push(("context_event", key.as_str(), timeline));
+    }
+    for (key, timeline) in &shard.context_indexes {
+        series.push(("context_index", key.as_str(), timeline));
+    }
+    for (key, timeline) in &shard.context_audits {
+        series.push(("context_audit", key.as_str(), timeline));
+    }
+    for (key, timeline) in &shard.context_dirty {
+        series.push(("context_dirty", key.as_str(), timeline));
+    }
+    series
+}
+
 fn storage_feature_page_layout_report(
     page_store: &LocalPageStore,
     shard: &ShardState,
 ) -> StorageFeaturePageLayoutReport {
     let mut report = StorageFeaturePageLayoutReport::default();
-    for (key, series) in &shard.features {
-        report.indexed_feature_points = report.indexed_feature_points.saturating_add(series.len());
+    let mut family_reports = BTreeMap::<String, StorageTimestampedPageFamilyReport>::new();
+    for (kind, key, series) in timestamped_kv_series(shard) {
+        report.indexed_timestamped_points = report
+            .indexed_timestamped_points
+            .saturating_add(series.len());
+        if kind == "feature" {
+            report.indexed_feature_points =
+                report.indexed_feature_points.saturating_add(series.len());
+        }
+        let family = family_reports.entry(kind.to_string()).or_insert_with(|| {
+            StorageTimestampedPageFamilyReport {
+                kind: kind.to_string(),
+                ..StorageTimestampedPageFamilyReport::default()
+            }
+        });
+        family.indexed_points = family.indexed_points.saturating_add(series.len());
         let mut timestamps_by_address = HashMap::<PageAddress, BTreeSet<u64>>::new();
         for (timestamp_ms, address) in series {
             timestamps_by_address
@@ -7243,15 +7310,29 @@ fn storage_feature_page_layout_report(
                 .or_default()
                 .insert(*timestamp_ms);
         }
-        report.unique_feature_page_refs = report
-            .unique_feature_page_refs
+        report.unique_timestamped_page_refs = report
+            .unique_timestamped_page_refs
             .saturating_add(timestamps_by_address.len());
+        family.unique_page_refs = family
+            .unique_page_refs
+            .saturating_add(timestamps_by_address.len());
+        if kind == "feature" {
+            report.unique_feature_page_refs = report
+                .unique_feature_page_refs
+                .saturating_add(timestamps_by_address.len());
+        }
 
         for (address, indexed_timestamps) in timestamps_by_address {
             match page_store.read(&address) {
                 Ok(bytes) => match decode_feature_page_strict(&bytes) {
                     PackedFeaturePageDecode::Packed(points) => {
-                        report.packed_feature_pages = report.packed_feature_pages.saturating_add(1);
+                        report.packed_timestamped_pages =
+                            report.packed_timestamped_pages.saturating_add(1);
+                        family.packed_pages = family.packed_pages.saturating_add(1);
+                        if kind == "feature" {
+                            report.packed_feature_pages =
+                                report.packed_feature_pages.saturating_add(1);
+                        }
                         let mut packed_timestamp_counts = BTreeMap::<u64, usize>::new();
                         for point in &points {
                             let count = packed_timestamp_counts
@@ -7260,11 +7341,13 @@ fn storage_feature_page_layout_report(
                             if *count == 1 {
                                 report.duplicate_packed_timestamps.push(
                                     feature_page_timestamp_mismatch(
+                                        kind,
                                         key,
                                         point.timestamp_ms,
                                         &address,
                                     ),
                                 );
+                                family.mismatch_count = family.mismatch_count.saturating_add(1);
                             }
                             *count = (*count).saturating_add(1);
                         }
@@ -7275,52 +7358,74 @@ fn storage_feature_page_layout_report(
                         for timestamp_ms in
                             indexed_timestamps.difference(&packed_timestamps).copied()
                         {
-                            report
-                                .missing_indexed_timestamps
-                                .push(feature_page_timestamp_mismatch(key, timestamp_ms, &address));
+                            report.missing_indexed_timestamps.push(
+                                feature_page_timestamp_mismatch(kind, key, timestamp_ms, &address),
+                            );
+                            family.mismatch_count = family.mismatch_count.saturating_add(1);
                         }
                         for timestamp_ms in
                             packed_timestamps.difference(&indexed_timestamps).copied()
                         {
                             report
                                 .orphan_packed_timestamps
-                                .push(feature_page_timestamp_mismatch(key, timestamp_ms, &address));
+                                .push(feature_page_timestamp_mismatch(
+                                    kind,
+                                    key,
+                                    timestamp_ms,
+                                    &address,
+                                ));
+                            family.mismatch_count = family.mismatch_count.saturating_add(1);
                         }
                     }
                     PackedFeaturePageDecode::Corrupt(error) => {
                         report
                             .corrupt_packed_feature_pages
-                            .push(feature_page_error(key, &address, error));
+                            .push(feature_page_error(kind, key, &address, error));
+                        family.corrupt_pages = family.corrupt_pages.saturating_add(1);
                     }
                     PackedFeaturePageDecode::Legacy => {
-                        report.legacy_feature_value_pages =
-                            report.legacy_feature_value_pages.saturating_add(1);
+                        report.legacy_timestamped_value_pages =
+                            report.legacy_timestamped_value_pages.saturating_add(1);
+                        family.legacy_value_pages = family.legacy_value_pages.saturating_add(1);
+                        if kind == "feature" {
+                            report.legacy_feature_value_pages =
+                                report.legacy_feature_value_pages.saturating_add(1);
+                        }
                         if indexed_timestamps.len() > 1 {
                             report.corrupt_packed_feature_pages.push(feature_page_error(
+                                kind,
                                 key,
                                 &address,
-                                "legacy feature page shared by multiple timestamps",
+                                "legacy timestamped value page shared by multiple timestamps",
                             ));
+                            family.corrupt_pages = family.corrupt_pages.saturating_add(1);
                         }
                     }
                 },
-                Err(err) => report.corrupt_packed_feature_pages.push(feature_page_error(
-                    key,
-                    &address,
-                    err.to_string(),
-                )),
+                Err(err) => {
+                    report.corrupt_packed_feature_pages.push(feature_page_error(
+                        kind,
+                        key,
+                        &address,
+                        err.to_string(),
+                    ));
+                    family.corrupt_pages = family.corrupt_pages.saturating_add(1);
+                }
             }
         }
     }
+    report.families = family_reports.into_values().collect();
     report
 }
 
 fn feature_page_error(
+    kind: &str,
     key: &str,
     address: &PageAddress,
     error: impl Into<String>,
 ) -> StorageFeaturePageError {
     StorageFeaturePageError {
+        kind: kind.to_string(),
         key: key.to_string(),
         page_segment_id: address.page_segment_id,
         offset: address.offset,
@@ -7330,11 +7435,13 @@ fn feature_page_error(
 }
 
 fn feature_page_timestamp_mismatch(
+    kind: &str,
     key: &str,
     timestamp_ms: u64,
     address: &PageAddress,
 ) -> StorageFeaturePageTimestampMismatch {
     StorageFeaturePageTimestampMismatch {
+        kind: kind.to_string(),
         key: key.to_string(),
         timestamp_ms,
         page_segment_id: address.page_segment_id,
@@ -12965,6 +13072,274 @@ mod tests {
             CommandResponse::FeaturePoints {
                 points: packed_points
             }
+        );
+    }
+
+    #[test]
+    fn recovery_validates_all_timestamped_kv_page_families() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            8 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+
+        let feature_points = (0..8)
+            .map(|idx| FeaturePoint {
+                timestamp_ms: 1_000 + idx,
+                value: vec![b'f'; 10 * 1024],
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::FeatureAppend {
+                        key: "all-family-feature".to_string(),
+                        points: feature_points.clone(),
+                    },
+                })
+                .status
+                .ok
+        );
+
+        let sequence_rows = (0..8)
+            .map(|idx| SequenceFeatureRow {
+                timestamp_ms: 2_000 + idx,
+                gid: idx,
+                action_type: 7,
+                duration: 11,
+                author_id: 13,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::SequenceAdd {
+                        key: "all-family-sequence".to_string(),
+                        rows: sequence_rows.clone(),
+                    },
+                })
+                .status
+                .ok
+        );
+
+        let ips_points = (0..8)
+            .map(|idx| FeaturePoint {
+                timestamp_ms: 3_000 + idx,
+                value: vec![b'i'; 10 * 1024],
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::IpsLoad {
+                        key: "all-family-ips".to_string(),
+                        points: ips_points.clone(),
+                    },
+                })
+                .status
+                .ok
+        );
+
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::ContextWriteEvent {
+                        tenant_hash: 44,
+                        node_hash: 55,
+                        event: ContextEvent {
+                            event_id_hash: 66,
+                            event_time_ms: 4_000,
+                            kind: 1,
+                            event_type: 2,
+                            actor_hash: 77,
+                            status: 1,
+                            valid_until_ms: 0,
+                            confidence: 0.99,
+                            importance: 0.75,
+                            text: "context event".to_string(),
+                            source_ref: "local://test".to_string(),
+                            related_node_hashes: vec![55],
+                            compact_attrs: vec![1, 2, 3],
+                        },
+                        first_write_only: false,
+                    },
+                })
+                .status
+                .ok
+        );
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::ContextWriteIndexRef {
+                        tenant_hash: 44,
+                        index_name: "actor".to_string(),
+                        index_value_hash: 77,
+                        scope_hash: 1,
+                        event_time_ms: 4_000,
+                        index_ref: ContextIndexRef {
+                            primary_node_hash: 55,
+                            primary_event_time_ms: 4_000,
+                            event_id_hash: 66,
+                        },
+                    },
+                })
+                .status
+                .ok
+        );
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::ContextWritePackAudit {
+                        tenant_hash: 44,
+                        audit: ContextPackAudit {
+                            query_id: "q-all-family".to_string(),
+                            session_hash: 88,
+                            request_time_ms: 4_100,
+                            query_hash: 99,
+                            max_prompt_tokens: 128,
+                            selected_tokens: 32,
+                            selected_refs: vec![ContextAuditRef {
+                                node_hash: 55,
+                                event_time_ms: 4_000,
+                                reason: "selected".to_string(),
+                            }],
+                            blocked_refs: Vec::new(),
+                        },
+                    },
+                })
+                .status
+                .ok
+        );
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::ContextMarkSummaryDirty {
+                        tenant_hash: 44,
+                        marker: ContextSummaryDirtyMarker {
+                            node_hash: 55,
+                            event_time_ms: 4_200,
+                            reason: 9,
+                            propagate_depth: 2,
+                        },
+                    },
+                })
+                .status
+                .ok
+        );
+
+        let report = engine.storage_recovery_report(1);
+        assert_eq!(report.feature_page_layout.indexed_timestamped_points, 28);
+        assert!(report.feature_page_layout.packed_timestamped_pages >= 10);
+        assert!(
+            report
+                .feature_page_layout
+                .unique_timestamped_page_refs
+                .saturating_sub(report.feature_page_layout.packed_timestamped_pages)
+                <= report.feature_page_layout.legacy_timestamped_value_pages
+        );
+        assert!(report
+            .feature_page_layout
+            .corrupt_packed_feature_pages
+            .is_empty());
+        assert!(report
+            .feature_page_layout
+            .missing_indexed_timestamps
+            .is_empty());
+        assert!(report
+            .feature_page_layout
+            .orphan_packed_timestamps
+            .is_empty());
+        assert!(report
+            .feature_page_layout
+            .duplicate_packed_timestamps
+            .is_empty());
+
+        let families = report
+            .feature_page_layout
+            .families
+            .iter()
+            .map(|family| (family.kind.as_str(), family))
+            .collect::<BTreeMap<_, _>>();
+        for kind in [
+            "feature",
+            "sequence",
+            "ips",
+            "context_event",
+            "context_index",
+            "context_audit",
+            "context_dirty",
+        ] {
+            let family = families.get(kind).expect("timestamped family report");
+            assert!(family.indexed_points > 0, "{kind}");
+            assert!(family.packed_pages > 0, "{kind}");
+            assert_eq!(family.corrupt_pages, 0, "{kind}");
+            assert_eq!(family.mismatch_count, 0, "{kind}");
+        }
+        assert!(
+            families
+                .get("feature")
+                .expect("feature family")
+                .unique_page_refs
+                > 1
+        );
+        assert!(families.get("ips").expect("ips family").unique_page_refs > 1);
+
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::FeatureQuery {
+                        key: "all-family-feature".to_string(),
+                        start_ms: 1_000,
+                        end_ms: 1_010,
+                        count: None,
+                    },
+                })
+                .response,
+            CommandResponse::FeaturePoints {
+                points: feature_points
+            }
+        );
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::SequenceQuery {
+                        key: "all-family-sequence".to_string(),
+                        start_ms: 2_000,
+                        end_ms: 2_010,
+                        count: 16,
+                        filters: Vec::new(),
+                    },
+                })
+                .response,
+            CommandResponse::SequenceRows {
+                rows: sequence_rows
+            }
+        );
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::IpsQueryRange {
+                        key: "all-family-ips".to_string(),
+                        start_ms: 3_000,
+                        end_ms: 3_010,
+                        count: None,
+                    },
+                })
+                .response,
+            CommandResponse::FeaturePoints { points: ips_points }
         );
     }
 
