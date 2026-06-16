@@ -453,10 +453,11 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "local scale harness".to_string(),
                 "C++-style membership update task model filters sibling replicas, applies success thresholds, treats not_found as acceptable reboot state, and gates FSM submit"
                     .to_string(),
+                "rolling upgrade and rollback runbook covers metaserver, data-node, proxy, client, storage, ingestion, preflight, quick chaos gate, and audit artifacts"
+                    .to_string(),
             ],
             missing: vec![
                 "autoscale controller and metaserver-driven shard rebalance loop".to_string(),
-                "rolling upgrade and rollback runbooks".to_string(),
                 "dashboards, alerts, tracing, auth/TLS for all service APIs".to_string(),
                 "AWS multi-node E2E and performance benchmarks".to_string(),
             ],
