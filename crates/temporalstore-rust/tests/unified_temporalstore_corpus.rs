@@ -29,7 +29,11 @@ struct UnifiedStep {
     name: String,
     #[serde(default)]
     restart_before: bool,
+    #[serde(default)]
+    skip_client: bool,
     command: Command,
+    #[serde(default)]
+    expect_status: Option<Status>,
     #[serde(default)]
     expect: Option<CommandResponse>,
 }
@@ -83,11 +87,7 @@ fn run_engine_case(case: &UnifiedCase) {
             command: step.command.clone(),
         });
 
-        assert!(
-            response.status.ok,
-            "case={} step={} failed status={:?}",
-            case.name, step.name, response.status
-        );
+        assert_step_status(case, step, &response.status);
 
         if let Some(expected) = &step.expect {
             assert_eq!(
@@ -145,6 +145,9 @@ fn run_client_case(case: &UnifiedCase) {
     );
 
     for step in &case.steps {
+        if step.skip_client {
+            continue;
+        }
         if step.restart_before {
             *engine.lock().expect("engine lock poisoned") =
                 new_engine(dir.path(), &page_dir, &index_dir, case.shard_id);
@@ -154,11 +157,7 @@ fn run_client_case(case: &UnifiedCase) {
             .execute(step.command.clone())
             .unwrap_or_else(|error| panic!("case={} step={} {error}", case.name, step.name));
 
-        assert!(
-            response.status.ok,
-            "case={} step={} failed status={:?}",
-            case.name, step.name, response.status
-        );
+        assert_step_status(case, step, &response.status);
 
         if let Some(expected) = &step.expect {
             assert_eq!(
@@ -167,6 +166,22 @@ fn run_client_case(case: &UnifiedCase) {
                 case.name, step.name
             );
         }
+    }
+}
+
+fn assert_step_status(case: &UnifiedCase, step: &UnifiedStep, actual: &Status) {
+    if let Some(expected) = &step.expect_status {
+        assert_eq!(
+            actual, expected,
+            "case={} step={} status mismatch",
+            case.name, step.name
+        );
+    } else {
+        assert!(
+            actual.ok,
+            "case={} step={} failed status={:?}",
+            case.name, step.name, actual
+        );
     }
 }
 

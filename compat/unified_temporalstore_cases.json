@@ -480,6 +480,194 @@
           }
         }
       ]
+    },
+    {
+      "name": "common_not_found_and_empty_reads",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "string_get_missing_returns_null_bytes",
+          "command": {
+            "kind": "string_get",
+            "key": "unified:missing:string"
+          },
+          "expect": {
+            "kind": "bytes",
+            "value": null
+          }
+        },
+        {
+          "name": "hash_multi_get_missing_returns_nulls",
+          "command": {
+            "kind": "hash_multi_get",
+            "key": "unified:missing:hash",
+            "fields": ["field_a", "field_b"]
+          },
+          "expect": {
+            "kind": "values",
+            "values": [null, null]
+          }
+        },
+        {
+          "name": "common_exists_missing_returns_zero",
+          "command": {
+            "kind": "common_exists",
+            "key": "unified:missing:string"
+          },
+          "expect": {
+            "kind": "integer",
+            "value": 0
+          }
+        },
+        {
+          "name": "common_expire_missing_matches_cpp_not_found",
+          "skip_client": true,
+          "command": {
+            "kind": "common_expire",
+            "key": "unified:missing:string",
+            "ttl_ms": 1000
+          },
+          "expect_status": {
+            "ok": false,
+            "code": "not_found",
+            "message": "key not found"
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        }
+      ]
+    },
+    {
+      "name": "timestamped_query_bounds",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "bounded_feature_append",
+          "command": {
+            "kind": "feature_append",
+            "key": "unified:bounds:feature",
+            "points": [
+              {
+                "timestamp_ms": 7000,
+                "value": [98, 49]
+              },
+              {
+                "timestamp_ms": 7010,
+                "value": [98, 50]
+              },
+              {
+                "timestamp_ms": 7020,
+                "value": [98, 51]
+              }
+            ]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "bounded_feature_count_one",
+          "command": {
+            "kind": "feature_query",
+            "key": "unified:bounds:feature",
+            "start_ms": 7000,
+            "end_ms": 7020,
+            "count": 1
+          },
+          "expect": {
+            "kind": "feature_points",
+            "points": [
+              {
+                "timestamp_ms": 7000,
+                "value": [98, 49]
+              }
+            ]
+          }
+        },
+        {
+          "name": "bounded_feature_empty_window",
+          "command": {
+            "kind": "feature_query",
+            "key": "unified:bounds:feature",
+            "start_ms": 8000,
+            "end_ms": 8010,
+            "count": null
+          },
+          "expect": {
+            "kind": "feature_points",
+            "points": []
+          }
+        },
+        {
+          "name": "bounded_sequence_add",
+          "command": {
+            "kind": "sequence_add",
+            "key": "unified:bounds:sequence",
+            "rows": [
+              {
+                "timestamp_ms": 7100,
+                "gid": 21,
+                "action_type": 1,
+                "duration": 2,
+                "author_id": 200
+              },
+              {
+                "timestamp_ms": 7110,
+                "gid": 22,
+                "action_type": 2,
+                "duration": 3,
+                "author_id": 201
+              }
+            ]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "bounded_sequence_count_one",
+          "command": {
+            "kind": "sequence_query",
+            "key": "unified:bounds:sequence",
+            "start_ms": 7100,
+            "end_ms": 7110,
+            "count": 1,
+            "filters": []
+          },
+          "expect": {
+            "kind": "sequence_rows",
+            "rows": [
+              {
+                "timestamp_ms": 7100,
+                "gid": 21,
+                "action_type": 1,
+                "duration": 2,
+                "author_id": 200
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "context_missing_node_semantics",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "context_get_missing_node",
+          "command": {
+            "kind": "context_get_node",
+            "tenant_hash": 123,
+            "node_hash": 999
+          },
+          "expect": {
+            "kind": "context_node",
+            "object_key": "ctx:node:123:999",
+            "node": null
+          }
+        }
+      ]
     }
   ]
 }

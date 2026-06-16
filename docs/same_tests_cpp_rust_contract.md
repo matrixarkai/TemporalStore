@@ -23,7 +23,7 @@ Current corpus:
 ```text
 schema_version: 1
 name: temporalstore-unified-cpp-rust-corpus
-cases: 8
+cases: 11
 ```
 
 The shared cases are:
@@ -36,6 +36,11 @@ The shared cases are:
 - `context_node_roundtrip`: Context node upsert/read.
 - `common_restart_persistence`: string/hash restart-read persistence.
 - `mixed_model_restart_persistence`: Feature plus Context restart-read persistence in one case.
+- `common_not_found_and_empty_reads`: missing string/hash/exists reads plus C++ `CommonExpire`
+  not-found status.
+- `timestamped_query_bounds`: Feature and Sequence count limits and empty timestamp windows.
+- `context_missing_node_semantics`: missing Context node returns a stable object key with `null`
+  node.
 
 ## Rust Runner
 
