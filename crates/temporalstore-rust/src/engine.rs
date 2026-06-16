@@ -101,6 +101,7 @@ struct AdmissionLimit {
 
 const FEATURE_ADD_HARD_MAX_SIZE: usize = 100_000;
 const FEATURE_PAGE_MAGIC: &[u8] = b"TSFPG1\n";
+const TIMESTAMPED_KV_PAGE_TARGET_BYTES: usize = 64 * 1024;
 const HOT_PAGE_SEGMENT_ID: u64 = u64::MAX;
 static HOT_PAGE_OFFSET: AtomicU64 = AtomicU64::new(1);
 
@@ -3401,11 +3402,11 @@ impl TemporalEngine {
             )?;
         }
         for series in shard.sequences.values_mut() {
-            compact_page_addresses(
+            compact_feature_page_addresses(
                 &self.page_store,
                 &self.cache,
                 shard_id,
-                series.values_mut(),
+                series,
                 &mut rewritten_page_refs,
             )?;
         }
@@ -4557,21 +4558,18 @@ fn execute_on_shard(
             let series = shard.features.entry(key.clone()).or_default();
             let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             let points = sorted_feature_points(points);
-            if !points.is_empty() {
-                let object_id = stable_page_object_id(shard_id, "feature", &key, None);
-                let packed = encode_feature_page(&points);
-                if let Ok(address) = append_value(
-                    cache,
-                    page_store,
-                    shard_id,
-                    &packed,
-                    Some(object_id),
-                    Some(routing_slot),
-                    async_storage,
-                ) {
-                    for point in points {
-                        series.insert(point.timestamp_ms, address.clone());
-                    }
+            if let Ok(addresses) = append_timestamped_kv_pages(
+                cache,
+                page_store,
+                shard_id,
+                "feature",
+                &key,
+                points,
+                routing_slot,
+                async_storage,
+            ) {
+                for (timestamp_ms, address) in addresses {
+                    series.insert(timestamp_ms, address);
                     mutated = true;
                 }
             }
@@ -4609,21 +4607,20 @@ fn execute_on_shard(
                 }
             }
             if !accepted_points.is_empty() {
-                let object_id = stable_page_object_id(shard_id, "feature", &key, None);
-                let packed = encode_feature_page(&accepted_points);
-                if let Ok(address) = append_value(
+                if let Ok(addresses) = append_timestamped_kv_pages(
                     cache,
                     page_store,
                     shard_id,
-                    &packed,
-                    Some(object_id),
-                    Some(routing_slot),
+                    "feature",
+                    &key,
+                    accepted_points,
+                    routing_slot,
                     async_storage,
                 ) {
-                    for point in accepted_points {
-                        series.insert(point.timestamp_ms, address.clone());
+                    for (timestamp_ms, address) in addresses {
+                        series.insert(timestamp_ms, address);
+                        mutated = true;
                     }
-                    mutated = true;
                 }
             }
             while series.len() > feature_max_size {
@@ -4721,21 +4718,18 @@ fn execute_on_shard(
                 mutated = true;
             }
             let points = sorted_feature_points(points);
-            if !points.is_empty() {
-                let object_id = stable_page_object_id(shard_id, "feature", &key, None);
-                let packed = encode_feature_page(&points);
-                if let Ok(address) = append_value(
-                    cache,
-                    page_store,
-                    shard_id,
-                    &packed,
-                    Some(object_id),
-                    Some(routing_slot),
-                    async_storage,
-                ) {
-                    for point in points {
-                        series.insert(point.timestamp_ms, address.clone());
-                    }
+            if let Ok(addresses) = append_timestamped_kv_pages(
+                cache,
+                page_store,
+                shard_id,
+                "feature",
+                &key,
+                points,
+                routing_slot,
+                async_storage,
+            ) {
+                for (timestamp_ms, address) in addresses {
+                    series.insert(timestamp_ms, address);
                     mutated = true;
                 }
             }
@@ -4802,21 +4796,18 @@ fn execute_on_shard(
                 })
                 .collect::<Vec<_>>();
             let points = sorted_feature_points(points);
-            if !points.is_empty() {
-                let object_id = stable_page_object_id(shard_id, "sequence", &key, None);
-                let packed = encode_feature_page(&points);
-                if let Ok(address) = append_value(
-                    cache,
-                    page_store,
-                    shard_id,
-                    &packed,
-                    Some(object_id),
-                    Some(routing_slot),
-                    async_storage,
-                ) {
-                    for point in points {
-                        series.insert(point.timestamp_ms, address.clone());
-                    }
+            if let Ok(addresses) = append_timestamped_kv_pages(
+                cache,
+                page_store,
+                shard_id,
+                "sequence",
+                &key,
+                points,
+                routing_slot,
+                async_storage,
+            ) {
+                for (timestamp_ms, address) in addresses {
+                    series.insert(timestamp_ms, address);
                     mutated = true;
                 }
             }
@@ -5819,7 +5810,7 @@ fn collect_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
     }
     for (key, series) in &shard.features {
         entries.extend(
-            unique_feature_page_addresses(series)
+            unique_timestamped_kv_page_addresses(series)
                 .into_iter()
                 .map(|address| LivePageEntry {
                     object_key: key.clone(),
@@ -5830,12 +5821,16 @@ fn collect_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
         );
     }
     for (key, series) in &shard.sequences {
-        entries.extend(series.iter().map(|(timestamp_ms, address)| LivePageEntry {
-            object_key: key.clone(),
-            kind: "sequence",
-            component: Some(timestamp_ms.to_string()),
-            address: address.clone(),
-        }));
+        entries.extend(
+            unique_timestamped_kv_page_addresses(series)
+                .into_iter()
+                .map(|address| LivePageEntry {
+                    object_key: key.clone(),
+                    kind: "sequence",
+                    component: None,
+                    address,
+                }),
+        );
     }
     for (key, series) in &shard.ips {
         entries.extend(series.iter().map(|(timestamp_ms, address)| LivePageEntry {
@@ -6052,10 +6047,10 @@ fn collect_live_page_addresses(shard: &ShardState) -> Vec<PageAddress> {
         addresses.extend(members.values().cloned());
     }
     for series in shard.features.values() {
-        addresses.extend(unique_feature_page_addresses(series));
+        addresses.extend(unique_timestamped_kv_page_addresses(series));
     }
     for series in shard.sequences.values() {
-        addresses.extend(series.values().cloned());
+        addresses.extend(unique_timestamped_kv_page_addresses(series));
     }
     for series in shard.ips.values() {
         addresses.extend(series.values().cloned());
@@ -6066,7 +6061,7 @@ fn collect_live_page_addresses(shard: &ShardState) -> Vec<PageAddress> {
     addresses
 }
 
-fn unique_feature_page_addresses(series: &BTreeMap<u64, PageAddress>) -> Vec<PageAddress> {
+fn unique_timestamped_kv_page_addresses(series: &BTreeMap<u64, PageAddress>) -> Vec<PageAddress> {
     let mut addresses = series
         .values()
         .cloned()
@@ -6080,6 +6075,10 @@ fn unique_feature_page_addresses(series: &BTreeMap<u64, PageAddress>) -> Vec<Pag
             .then(left.length.cmp(&right.length))
     });
     addresses
+}
+
+fn unique_feature_page_addresses(series: &BTreeMap<u64, PageAddress>) -> Vec<PageAddress> {
+    unique_timestamped_kv_page_addresses(series)
 }
 
 fn storage_feature_page_layout_report(
@@ -6653,6 +6652,58 @@ fn encode_feature_page(points: &[FeaturePoint]) -> Vec<u8> {
         bytes.append(&mut payload);
     }
     bytes
+}
+
+fn append_timestamped_kv_pages(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    kind: &str,
+    key: &str,
+    points: Vec<FeaturePoint>,
+    routing_slot: u32,
+    async_storage: bool,
+) -> Result<Vec<(u64, PageAddress)>, PageStoreError> {
+    let object_id = stable_page_object_id(shard_id, kind, key, None);
+    let mut refs = Vec::new();
+    for chunk in chunk_timestamped_kv_points(points) {
+        let packed = encode_feature_page(&chunk);
+        let address = append_value(
+            cache,
+            page_store,
+            shard_id,
+            &packed,
+            Some(object_id),
+            Some(routing_slot),
+            async_storage,
+        )?;
+        refs.extend(
+            chunk
+                .into_iter()
+                .map(|point| (point.timestamp_ms, address.clone())),
+        );
+    }
+    Ok(refs)
+}
+
+fn chunk_timestamped_kv_points(points: Vec<FeaturePoint>) -> Vec<Vec<FeaturePoint>> {
+    let mut chunks = Vec::new();
+    let mut current = Vec::new();
+
+    for point in points {
+        current.push(point);
+        let encoded_len = encode_feature_page(&current).len();
+        if encoded_len > TIMESTAMPED_KV_PAGE_TARGET_BYTES && current.len() > 1 {
+            let overflow = current.pop().expect("current chunk is non-empty");
+            chunks.push(current);
+            current = vec![overflow];
+        }
+    }
+
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    chunks
 }
 
 fn decode_feature_page(bytes: &[u8]) -> Option<Vec<FeaturePoint>> {
@@ -8839,6 +8890,70 @@ mod tests {
     }
 
     #[test]
+    fn feature_append_chunks_and_persists_timestamped_kv_pages() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let points = (0..10)
+            .map(|offset| FeaturePoint {
+                timestamp_ms: 1_000 + offset,
+                value: vec![b'a' + offset as u8; 10 * 1024],
+            })
+            .collect::<Vec<_>>();
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureAppend {
+                key: "chunked-feature".to_string(),
+                points: points.clone(),
+            },
+        });
+        assert!(response.status.ok);
+
+        let addresses = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let series = shards
+                .get(&1)
+                .and_then(|shard| shard.features.get("chunked-feature"))
+                .expect("feature series should exist");
+            unique_timestamped_kv_page_addresses(series)
+        };
+        assert!(
+            addresses.len() > 1,
+            "large timestamped KV batch should be split into page chunks"
+        );
+        let mut persisted_timestamps = Vec::new();
+        for address in &addresses {
+            assert_eq!(
+                address.object_id,
+                Some(stable_page_object_id(1, "feature", "chunked-feature", None))
+            );
+            let bytes = engine.page_store().read(address).unwrap();
+            let chunk = decode_feature_page(&bytes).expect("persisted packed page chunk");
+            assert!(!chunk.is_empty());
+            assert!(bytes.len() <= TIMESTAMPED_KV_PAGE_TARGET_BYTES + 12 * 1024);
+            persisted_timestamps.extend(chunk.into_iter().map(|point| point.timestamp_ms));
+        }
+        persisted_timestamps.sort_unstable();
+        assert_eq!(
+            persisted_timestamps,
+            points
+                .iter()
+                .map(|point| point.timestamp_ms)
+                .collect::<Vec<_>>()
+        );
+
+        let query = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureQuery {
+                key: "chunked-feature".to_string(),
+                start_ms: 0,
+                end_ms: 2_000,
+                count: None,
+            },
+        });
+        assert_eq!(query.response, CommandResponse::FeaturePoints { points });
+    }
+
+    #[test]
     fn sequence_add_packs_many_timestamp_values_into_one_page() {
         let engine = TemporalEngine::default();
         engine.load_shard(1);
@@ -8936,6 +9051,11 @@ mod tests {
             filtered.response,
             CommandResponse::SequenceRows { rows: vec![second] }
         );
+
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let validation = engine.validate_shard_page_ownership(1, shards.get(&1).unwrap());
+        assert!(validation.mismatches.is_empty());
+        assert_eq!(validation.missing_owner_page_refs, 0);
     }
 
     #[test]
