@@ -13,8 +13,8 @@ compat/unified_temporalstore_cases.json
 ```
 
 That file is the source of truth for cross-codebase behavior. It contains serialized command JSON,
-expected response JSON, restart markers, shard ids, case names, and step names. The Rust and C++
-runners must not hard-code different expected values.
+expected response JSON, restart markers, shard ids, case names, step names, and a required coverage
+manifest. The Rust and C++ runners must not hard-code different expected values.
 
 ## Current Shared Test Coverage
 
@@ -23,17 +23,21 @@ Current corpus:
 ```text
 schema_version: 1
 name: temporalstore-unified-cpp-rust-corpus
-cases: 11
+cases: 13
+required command kinds: 26
 ```
 
 The shared cases are:
 
 - `common_string_hash_core`: string set/get plus hash multi-set/multi-get.
+- `redis_compatible_set_core`: Redis-compatible set add/members command-response behavior.
 - `feature_packed_timestamped_pages`: packed timestamped Feature points and restart query.
 - `sequence_cpp_feature_rows`: Sequence rows encoded in the C++ feature-row shape.
 - `ips_options_range`: IPS add/query range with action/table/request metadata.
 - `risk_counter_window`: Risk increment/count over a time window.
 - `context_node_roundtrip`: Context node upsert/read.
+- `context_event_index_audit_dirty_models`: Context event, secondary index, prompt-pack audit, and
+  dirty-summary models with restart-read persistence.
 - `common_restart_persistence`: string/hash restart-read persistence.
 - `mixed_model_restart_persistence`: Feature plus Context restart-read persistence in one case.
 - `common_not_found_and_empty_reads`: missing string/hash/exists reads plus C++ `CommonExpire`
@@ -105,7 +109,9 @@ TS_CPP_UNIFIED_TEST_CMD='{cpp_repo}/tools/run_temporalstore_unified_tests.sh --c
 
 The native C++ executor must:
 
-- parse `schema_version`, `cases`, `steps`, `command`, `expect`, and `restart_before`
+- parse `schema_version`, `coverage`, `cases`, `steps`, `command`, `expect`, and `restart_before`
+- fail if any `coverage.required_case_names`, `coverage.required_command_kinds`, or
+  `coverage.required_response_kinds` entry is absent from the corpus
 - execute each command against C++ TemporalStore
 - compare the actual logical response to `expect`
 - restart or reload the local C++ engine when `restart_before=true`
@@ -179,15 +185,15 @@ These are not yet true same tests:
   versioned open-source API schema, but it does not execute command-response behavior by itself.
 - C++ p99/performance gates; those compare thresholds and workload classes, but do not yet execute
   the exact same operation trace.
-- Raft, proxy, metaserver, data-node lifecycle, ingestion, Redis, and context provider tests outside
-  the unified corpus.
+- Raft, proxy, metaserver, data-node lifecycle, ingestion, RESP wire protocol, and context provider
+  tests outside the unified corpus.
 
 ## Gap Fill Plan For Real Same-Test Parity
 
 1. Add the C++ corpus runner if it does not exist in the C++ repo.
 2. Make C++ CI call the runner with `compat/unified_temporalstore_cases.json`.
-3. Expand the corpus into separate cases for Redis command parity, context extract/inject, storage
-   dump/load/restart, proxy/client routing, metaserver topology, data-node lifecycle, ingestion,
+3. Expand the corpus into separate cases for context extract/inject, storage dump/load/restart,
+   proxy/client routing, metaserver topology, data-node lifecycle, ingestion, RESP wire protocol,
    and Raft failover.
 4. Add negative cases: not found, stale route, readonly table, bad lifecycle state, corrupt storage
    artifact, invalid timestamped page payload, and retry-safe write failure.

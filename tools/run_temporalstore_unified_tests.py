@@ -87,9 +87,29 @@ def validate_corpus(path: Path) -> dict:
     cases = corpus.get("cases")
     if not isinstance(cases, list) or not cases:
         raise SystemExit(f"{path}: cases must be a non-empty list")
+    coverage = corpus.get("coverage")
+    if not isinstance(coverage, dict):
+        raise SystemExit(f"{path}: coverage must declare required shared C++/Rust test families")
+    required_case_names = coverage.get("required_case_names")
+    required_command_kinds = coverage.get("required_command_kinds")
+    required_response_kinds = coverage.get("required_response_kinds")
+    for field_name, values in [
+        ("required_case_names", required_case_names),
+        ("required_command_kinds", required_command_kinds),
+        ("required_response_kinds", required_response_kinds),
+    ]:
+        if not isinstance(values, list) or not values or not all(
+            isinstance(value, str) and value for value in values
+        ):
+            raise SystemExit(f"{path}: coverage.{field_name} must be a non-empty string list")
+
+    seen_case_names = set()
+    seen_command_kinds = set()
+    seen_response_kinds = set()
     for case in cases:
         if not case.get("name"):
             raise SystemExit(f"{path}: every case must have a name")
+        seen_case_names.add(case["name"])
         if not isinstance(case.get("shard_id"), int):
             raise SystemExit(f"{path}: case {case.get('name')!r} must have an integer shard_id")
         steps = case.get("steps")
@@ -102,6 +122,22 @@ def validate_corpus(path: Path) -> dict:
                 raise SystemExit(f"{path}: step {case['name']}/{step.get('name')} needs command")
             if "kind" not in step["command"]:
                 raise SystemExit(f"{path}: step {case['name']}/{step['name']} command needs kind")
+            seen_command_kinds.add(step["command"]["kind"])
+            if "expect" in step:
+                if not isinstance(step["expect"], dict) or "kind" not in step["expect"]:
+                    raise SystemExit(
+                        f"{path}: step {case['name']}/{step['name']} expect needs kind"
+                    )
+                seen_response_kinds.add(step["expect"]["kind"])
+    missing_cases = sorted(set(required_case_names) - seen_case_names)
+    missing_commands = sorted(set(required_command_kinds) - seen_command_kinds)
+    missing_responses = sorted(set(required_response_kinds) - seen_response_kinds)
+    if missing_cases:
+        raise SystemExit(f"{path}: missing required cases: {', '.join(missing_cases)}")
+    if missing_commands:
+        raise SystemExit(f"{path}: missing required command kinds: {', '.join(missing_commands)}")
+    if missing_responses:
+        raise SystemExit(f"{path}: missing required response kinds: {', '.join(missing_responses)}")
     return corpus
 
 

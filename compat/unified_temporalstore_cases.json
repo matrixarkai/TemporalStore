@@ -2,6 +2,66 @@
   "schema_version": 1,
   "name": "temporalstore-unified-cpp-rust-corpus",
   "description": "Shared behavioral corpus for validating Rust and C++ TemporalStore implementations with the same ordered operations and expected responses.",
+  "coverage": {
+    "required_case_names": [
+      "common_string_hash_core",
+      "redis_compatible_set_core",
+      "feature_packed_timestamped_pages",
+      "sequence_cpp_feature_rows",
+      "ips_options_range",
+      "risk_counter_window",
+      "context_node_roundtrip",
+      "context_event_index_audit_dirty_models",
+      "common_restart_persistence",
+      "mixed_model_restart_persistence",
+      "common_not_found_and_empty_reads",
+      "timestamped_query_bounds",
+      "context_missing_node_semantics"
+    ],
+    "required_command_kinds": [
+      "string_set",
+      "string_get",
+      "hash_multi_set",
+      "hash_multi_get",
+      "set_add",
+      "set_members",
+      "feature_append",
+      "feature_query",
+      "sequence_add",
+      "sequence_query",
+      "ips_add_with_options",
+      "ips_query_range",
+      "risk_increment",
+      "risk_count",
+      "context_upsert_node",
+      "context_get_node",
+      "context_write_event",
+      "context_query_events",
+      "context_write_index_ref",
+      "context_query_index",
+      "context_write_pack_audit",
+      "context_query_pack_audit",
+      "context_mark_summary_dirty",
+      "context_query_summary_dirty",
+      "common_exists",
+      "common_expire"
+    ],
+    "required_response_kinds": [
+      "empty",
+      "bytes",
+      "values",
+      "members",
+      "integer",
+      "feature_points",
+      "sequence_rows",
+      "context_node",
+      "context_object_key",
+      "context_events",
+      "context_index_refs",
+      "context_pack_audits",
+      "context_summary_dirty_markers"
+    ]
+  },
   "cases": [
     {
       "name": "common_string_hash_core",
@@ -53,6 +113,45 @@
           "expect": {
             "kind": "values",
             "values": [[97], null, [98]]
+          }
+        }
+      ]
+    },
+    {
+      "name": "redis_compatible_set_core",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "set_add_member_a",
+          "command": {
+            "kind": "set_add",
+            "key": "unified:redis:set",
+            "member": [97]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "set_add_member_b",
+          "command": {
+            "kind": "set_add",
+            "key": "unified:redis:set",
+            "member": [98]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "set_members_sorted",
+          "command": {
+            "kind": "set_members",
+            "key": "unified:redis:set"
+          },
+          "expect": {
+            "kind": "members",
+            "members": [[97], [98]]
           }
         }
       ]
@@ -325,6 +424,235 @@
               "l1_ref": "l1",
               "raw_metadata_ref": "raw"
             }
+          }
+        }
+      ]
+    },
+    {
+      "name": "context_event_index_audit_dirty_models",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "context_write_event_model",
+          "command": {
+            "kind": "context_write_event",
+            "tenant_hash": 101,
+            "node_hash": 700,
+            "event": {
+              "event_id_hash": 9001,
+              "event_time_ms": 9000,
+              "kind": 3,
+              "type": 4,
+              "actor_hash": 55,
+              "status": 1,
+              "valid_until_ms": 9500,
+              "confidence": 0.75,
+              "importance": 0.5,
+              "text": "context event from shared corpus",
+              "source_ref": "shared-corpus",
+              "related_node_hashes": [700, 701],
+              "compact_attrs": [1, 2, 3]
+            },
+            "first_write_only": false
+          },
+          "expect": {
+            "kind": "context_object_key",
+            "object_key": "ctx:event:101:700"
+          }
+        },
+        {
+          "name": "context_query_event_model",
+          "command": {
+            "kind": "context_query_events",
+            "tenant_hash": 101,
+            "node_hash": 700,
+            "start_time_ms": 8990,
+            "end_time_ms": 9010,
+            "limit": 10,
+            "current_valid_only": true,
+            "as_of_ms": 9200,
+            "kinds": [3],
+            "statuses": [1],
+            "min_confidence": 0.7,
+            "min_importance": 0.4
+          },
+          "expect": {
+            "kind": "context_events",
+            "object_key": "ctx:event:101:700",
+            "events": [
+              {
+                "event_id_hash": 9001,
+                "event_time_ms": 9000,
+                "kind": 3,
+                "type": 4,
+                "actor_hash": 55,
+                "status": 1,
+                "valid_until_ms": 9500,
+                "confidence": 0.75,
+                "importance": 0.5,
+                "text": "context event from shared corpus",
+                "source_ref": "shared-corpus",
+                "related_node_hashes": [700, 701],
+                "compact_attrs": [1, 2, 3]
+              }
+            ]
+          }
+        },
+        {
+          "name": "context_write_index_ref_model",
+          "command": {
+            "kind": "context_write_index_ref",
+            "tenant_hash": 101,
+            "index_name": "topic",
+            "index_value_hash": 333,
+            "scope_hash": 0,
+            "event_time_ms": 9000,
+            "index_ref": {
+              "primary_node_hash": 700,
+              "primary_event_time_ms": 9000,
+              "event_id_hash": 9001
+            }
+          },
+          "expect": {
+            "kind": "context_object_key",
+            "object_key": "ctxidx:101:topic:333:0"
+          }
+        },
+        {
+          "name": "context_query_index_ref_model",
+          "command": {
+            "kind": "context_query_index",
+            "tenant_hash": 101,
+            "index_name": "topic",
+            "index_value_hash": 333,
+            "scope_hash": 0,
+            "start_time_ms": 8990,
+            "end_time_ms": 9010,
+            "limit": 10
+          },
+          "expect": {
+            "kind": "context_index_refs",
+            "object_key": "ctxidx:101:topic:333:0",
+            "refs": [
+              {
+                "primary_node_hash": 700,
+                "primary_event_time_ms": 9000,
+                "event_id_hash": 9001
+              }
+            ]
+          }
+        },
+        {
+          "name": "context_write_pack_audit_model",
+          "command": {
+            "kind": "context_write_pack_audit",
+            "tenant_hash": 101,
+            "audit": {
+              "query_id": "q-shared",
+              "session_hash": 77,
+              "request_time_ms": 9100,
+              "query_hash": 88,
+              "max_prompt_tokens": 4096,
+              "selected_tokens": 123,
+              "selected_refs": [
+                {
+                  "node_hash": 700,
+                  "event_time_ms": 9000,
+                  "reason": "matched-topic"
+                }
+              ],
+              "blocked_refs": [
+                {
+                  "node_hash": 701,
+                  "event_time_ms": 9005,
+                  "reason": "policy"
+                }
+              ]
+            }
+          },
+          "expect": {
+            "kind": "context_object_key",
+            "object_key": "ctx:audit:101:77"
+          }
+        },
+        {
+          "name": "context_query_pack_audit_model",
+          "command": {
+            "kind": "context_query_pack_audit",
+            "tenant_hash": 101,
+            "session_hash": 77,
+            "start_time_ms": 9090,
+            "end_time_ms": 9110,
+            "limit": 10
+          },
+          "expect": {
+            "kind": "context_pack_audits",
+            "object_key": "ctx:audit:101:77",
+            "audits": [
+              {
+                "query_id": "q-shared",
+                "session_hash": 77,
+                "request_time_ms": 9100,
+                "query_hash": 88,
+                "max_prompt_tokens": 4096,
+                "selected_tokens": 123,
+                "selected_refs": [
+                  {
+                    "node_hash": 700,
+                    "event_time_ms": 9000,
+                    "reason": "matched-topic"
+                  }
+                ],
+                "blocked_refs": [
+                  {
+                    "node_hash": 701,
+                    "event_time_ms": 9005,
+                    "reason": "policy"
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "context_mark_summary_dirty_model",
+          "command": {
+            "kind": "context_mark_summary_dirty",
+            "tenant_hash": 101,
+            "marker": {
+              "node_hash": 700,
+              "event_time_ms": 9200,
+              "reason": 2,
+              "propagate_depth": 3
+            }
+          },
+          "expect": {
+            "kind": "context_object_key",
+            "object_key": "ctx:dirty:101:700"
+          }
+        },
+        {
+          "name": "context_query_summary_dirty_model",
+          "restart_before": true,
+          "command": {
+            "kind": "context_query_summary_dirty",
+            "tenant_hash": 101,
+            "node_hash": 700,
+            "start_time_ms": 9190,
+            "end_time_ms": 9210,
+            "limit": 10
+          },
+          "expect": {
+            "kind": "context_summary_dirty_markers",
+            "object_key": "ctx:dirty:101:700",
+            "markers": [
+              {
+                "node_hash": 700,
+                "event_time_ms": 9200,
+                "reason": 2,
+                "propagate_depth": 3
+              }
+            ]
           }
         }
       ]
