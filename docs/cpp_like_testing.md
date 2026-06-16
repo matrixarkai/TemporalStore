@@ -30,6 +30,9 @@ Representative C++ files inspected:
 
 ## Rust Equivalents
 
+- Shared C++/Rust behavioral corpus:
+  `tools/run_temporalstore_unified_tests.sh`
+
 - C++ basic smoke string/hash reload, TTL, delete:
   `cargo test -p temporalstore-rust --test temporalstore_compat cxx_basic_smoketest`
 
@@ -85,6 +88,10 @@ tools/run_temporalstore_cpp_like_tests.sh
 
 The runner executes the compatibility tests, selected unit tests, distributed
 Raft harness, scale/failover/shared-store harness, and storage-mode harness.
+It also executes the shared C++/Rust corpus contract in
+`compat/unified_temporalstore_cases.json`; set `TS_CPP_UNIFIED_TEST_CMD` to run
+the same corpus against a C++ runner, or set `TS_RUN_CPP_UNIFIED_TESTS=1` to
+make missing C++ execution fail the gate.
 The compatibility target now includes the C++ feature-module behaviors around
 missing keys, ordered windows, `feature_max_size` truncation, insert/replace
 write policies, range replacement, delete, protobuf-compatible sequence row

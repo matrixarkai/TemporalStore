@@ -25,27 +25,42 @@ fn production_readiness_service_summary_is_public_api() {
     let report = production_readiness_report();
     assert_eq!(
         report.known_services(),
-        vec!["client", "proxy", "ingestion", "data_node", "metaserver"]
-    );
-    let gates = report.service_gate_reports();
-    assert_eq!(gates.len(), 5);
-    assert_eq!(
-        gates
-            .iter()
-            .map(|gate| (
-                gate.remediation_order,
-                gate.service.as_str(),
-                gate.owner.as_str()
-            ))
-            .collect::<Vec<_>>(),
         vec![
-            (1, "client", "client_sdk"),
-            (2, "proxy", "proxy_runtime"),
-            (3, "ingestion", "ingestion_connectors"),
-            (4, "data_node", "data_node_runtime"),
-            (5, "metaserver", "metaserver_control_plane")
+            "client",
+            "proxy",
+            "ingestion",
+            "data_node",
+            "metaserver",
+            "storage_cache",
+            "feature_modules",
+            "fault_tolerance",
+            "deployment_ops",
+            "scale_testing",
+            "raft_replication"
         ]
     );
+    let gates = report.service_gate_reports();
+    assert_eq!(gates.len(), 11);
+    for (order, service, owner) in [
+        (1, "client", "client_sdk"),
+        (2, "proxy", "proxy_runtime"),
+        (3, "ingestion", "ingestion_connectors"),
+        (4, "data_node", "data_node_runtime"),
+        (5, "metaserver", "metaserver_control_plane"),
+        (6, "storage_cache", "storage_runtime"),
+        (7, "feature_modules", "feature_api"),
+        (8, "fault_tolerance", "reliability"),
+        (9, "deployment_ops", "platform_ops"),
+        (10, "scale_testing", "performance"),
+        (11, "raft_replication", "consensus_runtime"),
+    ] {
+        assert!(
+            gates.iter().any(|gate| gate.remediation_order == order
+                && gate.service == service
+                && gate.owner == owner),
+            "missing service gate {order}/{service}/{owner}"
+        );
+    }
     assert!(gates.iter().all(|gate| gate.gate_status == "blocked"));
     assert_eq!(
         gates
@@ -57,7 +72,13 @@ fn production_readiness_service_summary_is_public_api() {
             ("proxy", "warning"),
             ("ingestion", "critical"),
             ("data_node", "critical"),
-            ("metaserver", "critical")
+            ("metaserver", "critical"),
+            ("storage_cache", "critical"),
+            ("feature_modules", "warning"),
+            ("fault_tolerance", "warning"),
+            ("deployment_ops", "critical"),
+            ("scale_testing", "critical"),
+            ("raft_replication", "critical")
         ]
     );
     let next = report

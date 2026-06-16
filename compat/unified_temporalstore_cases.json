@@ -1,0 +1,314 @@
+{
+  "schema_version": 1,
+  "name": "temporalstore-unified-cpp-rust-corpus",
+  "description": "Shared behavioral corpus for validating Rust and C++ TemporalStore implementations with the same ordered operations and expected responses.",
+  "cases": [
+    {
+      "name": "common_string_hash_feature_sequence_ips_risk_context",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "string_set",
+          "command": {
+            "kind": "string_set",
+            "key": "unified:string",
+            "value": [118, 49]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "string_get",
+          "command": {
+            "kind": "string_get",
+            "key": "unified:string"
+          },
+          "expect": {
+            "kind": "bytes",
+            "value": [118, 49]
+          }
+        },
+        {
+          "name": "hash_multi_set",
+          "command": {
+            "kind": "hash_multi_set",
+            "key": "unified:hash",
+            "entries": [
+              ["field_a", [97]],
+              ["field_b", [98]]
+            ]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "hash_multi_get",
+          "command": {
+            "kind": "hash_multi_get",
+            "key": "unified:hash",
+            "fields": ["field_a", "field_missing", "field_b"]
+          },
+          "expect": {
+            "kind": "values",
+            "values": [[97], null, [98]]
+          }
+        },
+        {
+          "name": "feature_append_packed_timestamped_points",
+          "command": {
+            "kind": "feature_append",
+            "key": "unified:feature",
+            "points": [
+              {
+                "timestamp_ms": 1000,
+                "value": [102, 49]
+              },
+              {
+                "timestamp_ms": 1010,
+                "value": [102, 50]
+              },
+              {
+                "timestamp_ms": 1020,
+                "value": [102, 51]
+              }
+            ]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "feature_query_window",
+          "command": {
+            "kind": "feature_query",
+            "key": "unified:feature",
+            "start_ms": 1000,
+            "end_ms": 1020,
+            "count": null
+          },
+          "expect": {
+            "kind": "feature_points",
+            "points": [
+              {
+                "timestamp_ms": 1000,
+                "value": [102, 49]
+              },
+              {
+                "timestamp_ms": 1010,
+                "value": [102, 50]
+              },
+              {
+                "timestamp_ms": 1020,
+                "value": [102, 51]
+              }
+            ]
+          }
+        },
+        {
+          "name": "sequence_add_cpp_feature_rows",
+          "command": {
+            "kind": "sequence_add",
+            "key": "unified:sequence",
+            "rows": [
+              {
+                "timestamp_ms": 2000,
+                "gid": 11,
+                "action_type": 1,
+                "duration": 5,
+                "author_id": 100
+              },
+              {
+                "timestamp_ms": 2010,
+                "gid": 12,
+                "action_type": 2,
+                "duration": 7,
+                "author_id": 101
+              }
+            ]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "sequence_query",
+          "command": {
+            "kind": "sequence_query",
+            "key": "unified:sequence",
+            "start_ms": 1990,
+            "end_ms": 2020,
+            "count": 10,
+            "filters": []
+          },
+          "expect": {
+            "kind": "sequence_rows",
+            "rows": [
+              {
+                "timestamp_ms": 2000,
+                "gid": 11,
+                "action_type": 1,
+                "duration": 5,
+                "author_id": 100
+              },
+              {
+                "timestamp_ms": 2010,
+                "gid": 12,
+                "action_type": 2,
+                "duration": 7,
+                "author_id": 101
+              }
+            ]
+          }
+        },
+        {
+          "name": "ips_add_with_options",
+          "command": {
+            "kind": "ips_add_with_options",
+            "key": "unified:ips",
+            "timestamp_ms": 3000,
+            "instance": [105, 112, 115, 49],
+            "action_type": 7,
+            "table_id": 42,
+            "request_id": "req-1"
+          },
+          "expect": {
+            "kind": "integer",
+            "value": 1
+          }
+        },
+        {
+          "name": "ips_query_range",
+          "command": {
+            "kind": "ips_query_range",
+            "key": "unified:ips",
+            "start_ms": 2990,
+            "end_ms": 3010,
+            "count": null
+          },
+          "expect": {
+            "kind": "feature_points",
+            "points": [
+              {
+                "timestamp_ms": 3000,
+                "value": [105, 112, 115, 49]
+              }
+            ]
+          }
+        },
+        {
+          "name": "risk_increment",
+          "command": {
+            "kind": "risk_increment",
+            "key": "unified:risk",
+            "timestamp_ms": 4000,
+            "amount": 3
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "risk_count",
+          "command": {
+            "kind": "risk_count",
+            "key": "unified:risk",
+            "start_ms": 3990,
+            "end_ms": 4010
+          },
+          "expect": {
+            "kind": "integer",
+            "value": 3
+          }
+        },
+        {
+          "name": "context_upsert_node",
+          "command": {
+            "kind": "context_upsert_node",
+            "tenant_hash": 99,
+            "node": {
+              "node_hash": 500,
+              "parent_hash": 0,
+              "kind": 1,
+              "canonical_name": "unified-node",
+              "l0": "root",
+              "status": 1,
+              "last_event_time_ms": 5000,
+              "summary_dirty": true,
+              "l1_ref": "l1",
+              "raw_metadata_ref": "raw"
+            }
+          },
+          "expect": {
+            "kind": "context_object_key",
+            "object_key": "ctx:node:99:500"
+          }
+        },
+        {
+          "name": "context_get_node",
+          "command": {
+            "kind": "context_get_node",
+            "tenant_hash": 99,
+            "node_hash": 500
+          },
+          "expect": {
+            "kind": "context_node",
+            "object_key": "ctx:node:99:500",
+            "node": {
+              "node_hash": 500,
+              "parent_hash": 0,
+              "kind": 1,
+              "canonical_name": "unified-node",
+              "l0": "root",
+              "status": 1,
+              "last_event_time_ms": 5000,
+              "summary_dirty": true,
+              "l1_ref": "l1",
+              "raw_metadata_ref": "raw"
+            }
+          }
+        },
+        {
+          "name": "restart_before_final_reads",
+          "restart_before": true,
+          "command": {
+            "kind": "string_get",
+            "key": "unified:string"
+          },
+          "expect": {
+            "kind": "bytes",
+            "value": [118, 49]
+          }
+        },
+        {
+          "name": "feature_query_after_restart",
+          "command": {
+            "kind": "feature_query",
+            "key": "unified:feature",
+            "start_ms": 1000,
+            "end_ms": 1020,
+            "count": null
+          },
+          "expect": {
+            "kind": "feature_points",
+            "points": [
+              {
+                "timestamp_ms": 1000,
+                "value": [102, 49]
+              },
+              {
+                "timestamp_ms": 1010,
+                "value": [102, 50]
+              },
+              {
+                "timestamp_ms": 1020,
+                "value": [102, 51]
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

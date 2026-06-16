@@ -11,6 +11,9 @@ export CARGO_TARGET_DIR="${TARGET_DIR}"
 echo "== c++ smoketest / consistency / stream compat =="
 cargo test -p temporalstore-rust --test temporalstore_compat -- --test-threads=1
 
+echo "== shared c++/rust corpus contract =="
+tools/run_temporalstore_unified_tests.sh
+
 echo "== c++ DataRaft serialization and fail-closed parity =="
 cargo test -p temporalstore-rust \
   cpp_data_raft_replication_rejects_corrupt_log_payload \
