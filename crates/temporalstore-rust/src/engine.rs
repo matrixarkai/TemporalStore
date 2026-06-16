@@ -4792,23 +4792,32 @@ fn execute_on_shard(
             remove_if_expired(shard, &key);
             let series = shard.sequences.entry(key.clone()).or_default();
             let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
-            for row in rows {
-                if let Ok(bytes) = serde_json::to_vec(&row) {
-                    let timestamp = row.timestamp_ms.to_string();
-                    let object_id =
-                        stable_page_object_id(shard_id, "sequence", &key, Some(&timestamp));
-                    if let Ok(address) = append_value(
-                        cache,
-                        page_store,
-                        shard_id,
-                        &bytes,
-                        Some(object_id),
-                        Some(routing_slot),
-                        async_storage,
-                    ) {
-                        series.insert(row.timestamp_ms, address);
-                        mutated = true;
+            let points = rows
+                .into_iter()
+                .filter_map(|row| {
+                    serde_json::to_vec(&row).ok().map(|value| FeaturePoint {
+                        timestamp_ms: row.timestamp_ms,
+                        value,
+                    })
+                })
+                .collect::<Vec<_>>();
+            let points = sorted_feature_points(points);
+            if !points.is_empty() {
+                let object_id = stable_page_object_id(shard_id, "sequence", &key, None);
+                let packed = encode_feature_page(&points);
+                if let Ok(address) = append_value(
+                    cache,
+                    page_store,
+                    shard_id,
+                    &packed,
+                    Some(object_id),
+                    Some(routing_slot),
+                    async_storage,
+                ) {
+                    for point in points {
+                        series.insert(point.timestamp_ms, address.clone());
                     }
+                    mutated = true;
                 }
             }
             while series.len() > feature_max_size {
@@ -4841,8 +4850,8 @@ fn execute_on_shard(
                     series
                         .range(start_ms..=end_ms)
                         .take(count)
-                        .filter_map(|(_, address)| {
-                            read_sequence_row(cache, page_store, shard_id, address)
+                        .filter_map(|(timestamp_ms, address)| {
+                            read_sequence_row(cache, page_store, shard_id, *timestamp_ms, address)
                         })
                         .filter(|row| {
                             filters
@@ -6386,9 +6395,16 @@ fn read_sequence_row(
     cache: &MultiLayerCache,
     page_store: &LocalPageStore,
     shard_id: ShardId,
+    timestamp_ms: u64,
     address: &PageAddress,
 ) -> Option<SequenceFeatureRow> {
     let bytes = read_page_bytes(cache, page_store, shard_id, address)?;
+    if let Some(points) = decode_feature_page(&bytes) {
+        return points
+            .into_iter()
+            .find(|point| point.timestamp_ms == timestamp_ms)
+            .and_then(|point| serde_json::from_slice(&point.value).ok());
+    }
     serde_json::from_slice(&bytes).ok()
 }
 
@@ -6428,7 +6444,9 @@ fn sequence_rows_in_range(
             series
                 .range(start_ms..=end_ms)
                 .take(count)
-                .filter_map(|(_, address)| read_sequence_row(cache, page_store, shard_id, address))
+                .filter_map(|(timestamp_ms, address)| {
+                    read_sequence_row(cache, page_store, shard_id, *timestamp_ms, address)
+                })
                 .filter(|row| {
                     filters
                         .iter()
@@ -8818,6 +8836,106 @@ mod tests {
             },
         });
         assert_eq!(agg.response, CommandResponse::Aggregate { value: 2 });
+    }
+
+    #[test]
+    fn sequence_add_packs_many_timestamp_values_into_one_page() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let first = SequenceFeatureRow {
+            timestamp_ms: 10,
+            gid: 101,
+            action_type: 2,
+            duration: 30,
+            author_id: 400,
+        };
+        let second = SequenceFeatureRow {
+            timestamp_ms: 20,
+            gid: 102,
+            action_type: 3,
+            duration: 40,
+            author_id: 500,
+        };
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::SequenceAdd {
+                key: "packed-sequence".to_string(),
+                rows: vec![second.clone(), first.clone()],
+            },
+        });
+        assert!(response.status.ok);
+
+        let (first_address, second_address) = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let series = shards
+                .get(&1)
+                .and_then(|shard| shard.sequences.get("packed-sequence"))
+                .expect("sequence series should exist");
+            (
+                series.get(&10).expect("first row").clone(),
+                series.get(&20).expect("second row").clone(),
+            )
+        };
+        assert_eq!(first_address, second_address);
+        assert_eq!(
+            first_address.object_id,
+            Some(stable_page_object_id(
+                1,
+                "sequence",
+                "packed-sequence",
+                None
+            ))
+        );
+
+        let packed_bytes = engine.page_store().read(&first_address).unwrap();
+        let packed_points = decode_feature_page(&packed_bytes).expect("packed sequence page");
+        assert_eq!(packed_points.len(), 2);
+        assert_eq!(packed_points[0].timestamp_ms, 10);
+        assert_eq!(packed_points[1].timestamp_ms, 20);
+        assert_eq!(
+            serde_json::from_slice::<SequenceFeatureRow>(&packed_points[0].value).unwrap(),
+            first
+        );
+        assert_eq!(
+            serde_json::from_slice::<SequenceFeatureRow>(&packed_points[1].value).unwrap(),
+            second
+        );
+
+        let query = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::SequenceQuery {
+                key: "packed-sequence".to_string(),
+                start_ms: 0,
+                end_ms: 30,
+                count: 10,
+                filters: Vec::new(),
+            },
+        });
+        assert_eq!(
+            query.response,
+            CommandResponse::SequenceRows {
+                rows: vec![first.clone(), second.clone()]
+            }
+        );
+
+        let filtered = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::SequenceQuery {
+                key: "packed-sequence".to_string(),
+                start_ms: 0,
+                end_ms: 30,
+                count: 10,
+                filters: vec![FeatureFilter {
+                    field: "gid".to_string(),
+                    op: FeatureFilterOp::Equal,
+                    value: 102,
+                }],
+            },
+        });
+        assert_eq!(
+            filtered.response,
+            CommandResponse::SequenceRows { rows: vec![second] }
+        );
     }
 
     #[test]
