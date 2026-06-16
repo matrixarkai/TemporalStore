@@ -331,11 +331,12 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "C++ ServerService admin aliases expose runtime stats, preflight, dirty-object, and queued-worker state"
                     .to_string(),
+                "crash recovery reports and tests cover oplog, index-log, page stream, and zone-manifest ordering"
+                    .to_string(),
             ],
             missing: vec![
                 "tonic/gRPC data-node service and streaming callbacks".to_string(),
                 "distributed admission policy shared across data-node processes".to_string(),
-                "crash-safe recovery tests for oplog + index-log + page stream".to_string(),
             ],
         },
         ReadinessArea {
@@ -390,6 +391,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "storage production report exposes Rust page-envelope version, checksum/object-id/routing-slot/compression support, zone bytes, and C++ page-header compatibility gaps"
                     .to_string(),
+                "chunked timestamped KV page format is covered by sync and async shared-store replay plus Raft follower-read replication tests"
+                    .to_string(),
             ],
             missing: vec![
                 "binary/protobuf oplog and index-log compatibility".to_string(),
@@ -408,6 +411,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "common/string/hash/set plus Redis compatibility subset".to_string(),
                 "feature append/query/replace/delete/agg and 5k sequence test".to_string(),
                 "feature writes pack many timestamp/value entries into one page and the timestamp index shares that page address, matching the C++ storage shape"
+                    .to_string(),
+                "large timestamped KV writes split into persisted page chunks while preserving per-timestamp reads"
                     .to_string(),
                 "IPS load/snapshot/stat/filter subset and Risk subset with typed client and RESP coverage"
                     .to_string(),
