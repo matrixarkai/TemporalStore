@@ -11,6 +11,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PROTO = ROOT / "proto" / "temporalstore" / "v1" / "temporalstore.proto"
 DOC = ROOT / "docs" / "client_sdk_contract.md"
+BUILD_RS = ROOT / "crates" / "temporalstore-rust" / "build.rs"
+SDK_RS = ROOT / "crates" / "temporalstore-rust" / "src" / "sdk.rs"
 
 REQUIRED_RPCS = [
     "Execute",
@@ -73,9 +75,15 @@ def main() -> int:
         fail(f"missing schema {PROTO}")
     if not DOC.exists():
         fail(f"missing doc {DOC}")
+    if not BUILD_RS.exists():
+        fail(f"missing Rust SDK build script {BUILD_RS}")
+    if not SDK_RS.exists():
+        fail(f"missing exported Rust SDK module {SDK_RS}")
 
     proto = PROTO.read_text(encoding="utf-8")
     doc = DOC.read_text(encoding="utf-8")
+    build_rs = BUILD_RS.read_text(encoding="utf-8")
+    sdk_rs = SDK_RS.read_text(encoding="utf-8")
 
     if 'syntax = "proto3";' not in proto:
         fail("schema must use proto3")
@@ -112,6 +120,23 @@ def main() -> int:
     ]:
         if phrase not in doc:
             fail(f"doc must mention {phrase!r}")
+
+    for phrase in [
+        "tonic_build::configure()",
+        ".build_client(true)",
+        ".build_server(true)",
+        "temporalstore.proto",
+    ]:
+        if phrase not in build_rs:
+            fail(f"build.rs must mention {phrase!r}")
+
+    for phrase in [
+        'tonic::include_proto!("temporalstore.v1")',
+        "TemporalStoreServiceClient",
+        "TemporalStoreService",
+    ]:
+        if phrase not in sdk_rs:
+            fail(f"sdk.rs must mention {phrase!r}")
 
     print("sdk contract validation passed")
     return 0

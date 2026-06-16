@@ -23,9 +23,10 @@ The `TemporalStoreService` contract contains five required RPCs:
 - `SyncTopology`: client MetaSyncer refresh API with topology-version and per-call deadline fields.
 - `GetClientPreflight`: client health and route-cache inspection for readiness and degraded mode.
 
-The committed schema is the source of truth for generated tonic/prost bindings. Until generated
-bindings are added, the schema is validated against the existing Rust paths and docs by
-`tools/validate_sdk_contract.py`.
+The committed schema is the source of truth for generated tonic/prost bindings. The Rust crate
+generates client and server binding types at build time from `crates/temporalstore-rust/build.rs`
+and exports them through `temporalstore_rust::sdk::v1`. The schema and generation path are
+validated against the existing Rust paths and docs by `tools/validate_sdk_contract.py`.
 
 ## HTTP/JSON Mapping
 
@@ -65,9 +66,10 @@ New production command families must update all of these in the same change:
 
 ## Readiness Status
 
-This closes the "versioned Rust-native SDK contract" sub-gap. Production readiness still blocks on:
+This closes the "versioned Rust-native SDK contract" and "generated tonic/prost binding type"
+sub-gaps. Production readiness still blocks on:
 
-- generated tonic/prost client and server bindings from the committed v1 schema
+- runtime tonic service adapters that delegate to the existing client/proxy/server execution paths
 - full C++ partition-set hierarchy and Neptune-specific routing, if required by a deployment
 - wire-compatible migration for existing C++ client callers, if existing callers must migrate
   without adapting to the Rust-native schema

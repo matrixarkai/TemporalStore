@@ -194,9 +194,11 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "versioned Rust-native SDK contract committed in proto/temporalstore/v1 with validation in the local parity gate"
                     .to_string(),
+                "tonic/prost client and server binding types are generated at build time from the committed v1 schema"
+                    .to_string(),
             ],
             missing: vec![
-                "generated tonic/prost client and server bindings from the committed open-source production API schema"
+                "runtime tonic service adapters that delegate generated SDK calls to the existing client/proxy/server execution paths"
                     .to_string(),
                 "full C++ partition-set hierarchy and Neptune-specific routing"
                     .to_string(),
@@ -631,7 +633,7 @@ fn service_next_action(service: &str, blocker_classes: &[String]) -> &'static st
     };
     match (service, first_class) {
         ("client", "client_sync_preflight") => {
-            "generate tonic/prost client/server bindings from proto/temporalstore/v1 and wire them to the existing client/proxy paths"
+            "wire generated tonic service adapters to the existing client/proxy/server execution paths"
         }
         ("proxy", "proxy_topology_admission") => {
             "finish proxy topology-version guarded cache invalidation and admission policy enforcement"
@@ -956,7 +958,7 @@ mod tests {
             .service_summary("client")
             .expect("client summary")
             .next_action
-            .contains("tonic/prost"));
+            .contains("tonic service adapters"));
         assert!(report
             .service_summary("proxy")
             .expect("proxy summary")
