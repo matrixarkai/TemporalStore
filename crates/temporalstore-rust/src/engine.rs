@@ -705,6 +705,16 @@ pub struct StorageLogCompatibilityReport {
     pub shard_id: ShardId,
     pub oplog_format: String,
     pub index_log_format: String,
+    #[serde(default)]
+    pub compatibility_mode: String,
+    #[serde(default)]
+    pub migration_required: bool,
+    #[serde(default)]
+    pub cxx_reader_supported: bool,
+    #[serde(default)]
+    pub cxx_writer_supported: bool,
+    #[serde(default)]
+    pub golden_conversion_required: bool,
     pub rust_native_replay_safe: bool,
     pub cxx_binary_compatible: bool,
     pub oplog_last_sequence: u64,
@@ -721,6 +731,16 @@ pub struct StoragePageFormatCompatibilityReport {
     pub shard_id: ShardId,
     pub page_format: String,
     pub rust_envelope_version: u8,
+    #[serde(default)]
+    pub compatibility_mode: String,
+    #[serde(default)]
+    pub migration_required: bool,
+    #[serde(default)]
+    pub cxx_page_header_reader_supported: bool,
+    #[serde(default)]
+    pub cxx_page_header_writer_supported: bool,
+    #[serde(default)]
+    pub golden_conversion_required: bool,
     pub rust_native_read_safe: bool,
     pub cxx_page_header_compatible: bool,
     pub checksum_protected: bool,
@@ -2892,6 +2912,11 @@ impl TemporalEngine {
             shard_id,
             oplog_format: "rust-jsonl-command-v1".to_string(),
             index_log_format: "rust-jsonl-shard-index-v1".to_string(),
+            compatibility_mode: "rust_native_migration_only".to_string(),
+            migration_required: true,
+            cxx_reader_supported: false,
+            cxx_writer_supported: false,
+            golden_conversion_required: true,
             rust_native_replay_safe: true,
             cxx_binary_compatible: false,
             oplog_last_sequence: oplog_stats.last_sequence,
@@ -2901,10 +2926,11 @@ impl TemporalEngine {
             oplog_bytes: oplog_stats.bytes_written,
             index_log_bytes: index_log_stats.bytes_written,
             compatibility_gaps: vec![
+                "compatibility mode is migration-only; direct mixed Rust/C++ binary log serving is not supported"
+                    .to_string(),
                 "C++ binary/protobuf oplog reader and writer are not implemented".to_string(),
                 "C++ binary/protobuf index-log reader and writer are not implemented".to_string(),
-                "mixed-format migration and golden-log replay suite are not implemented"
-                    .to_string(),
+                "golden log conversion/replay suite is required before C++ migration".to_string(),
             ],
         }
     }
@@ -2919,6 +2945,11 @@ impl TemporalEngine {
             shard_id,
             page_format: "rust-page-envelope-v6".to_string(),
             rust_envelope_version: 6,
+            compatibility_mode: "rust_envelope_migration_only".to_string(),
+            migration_required: true,
+            cxx_page_header_reader_supported: false,
+            cxx_page_header_writer_supported: false,
+            golden_conversion_required: true,
             rust_native_read_safe: true,
             cxx_page_header_compatible: false,
             checksum_protected: true,
@@ -2935,10 +2966,11 @@ impl TemporalEngine {
             logical_bytes_written: stats.logical_bytes_written,
             compressed_records_written: stats.compressed_records_written,
             compatibility_gaps: vec![
+                "compatibility mode is migration-only; direct mixed Rust-envelope/C++ page-header serving is not supported"
+                    .to_string(),
                 "C++ protobuf page header reader and writer are not implemented".to_string(),
                 "C++ slot/page layout and page-id allocation are not byte-compatible".to_string(),
-                "mixed Rust-envelope/C++-header migration and golden-page replay suite are not implemented"
-                    .to_string(),
+                "golden page conversion/replay suite is required before C++ migration".to_string(),
             ],
         }
     }
@@ -15371,11 +15403,35 @@ mod tests {
             report.log_compatibility.index_log_format,
             "rust-jsonl-shard-index-v1"
         );
+        assert_eq!(
+            report.log_compatibility.compatibility_mode,
+            "rust_native_migration_only"
+        );
+        assert!(report.log_compatibility.migration_required);
+        assert!(report.log_compatibility.golden_conversion_required);
+        assert!(!report.log_compatibility.cxx_reader_supported);
+        assert!(!report.log_compatibility.cxx_writer_supported);
         assert!(report.page_format_compatibility.rust_native_read_safe);
         assert!(!report.page_format_compatibility.cxx_page_header_compatible);
         assert_eq!(
             report.page_format_compatibility.page_format,
             "rust-page-envelope-v6"
+        );
+        assert_eq!(
+            report.page_format_compatibility.compatibility_mode,
+            "rust_envelope_migration_only"
+        );
+        assert!(report.page_format_compatibility.migration_required);
+        assert!(report.page_format_compatibility.golden_conversion_required);
+        assert!(
+            !report
+                .page_format_compatibility
+                .cxx_page_header_reader_supported
+        );
+        assert!(
+            !report
+                .page_format_compatibility
+                .cxx_page_header_writer_supported
         );
         assert!(report.page_format_compatibility.checksum_protected);
         assert!(report.page_format_compatibility.object_ids_embedded);
@@ -15409,6 +15465,11 @@ mod tests {
 
         let report = engine.storage_log_compatibility_report(1);
         assert_eq!(report.shard_id, 1);
+        assert_eq!(report.compatibility_mode, "rust_native_migration_only");
+        assert!(report.migration_required);
+        assert!(!report.cxx_reader_supported);
+        assert!(!report.cxx_writer_supported);
+        assert!(report.golden_conversion_required);
         assert_eq!(report.oplog_last_sequence, 2);
         assert_eq!(report.index_log_last_sequence, 2);
         assert_eq!(report.oplog_records, 2);
@@ -15420,11 +15481,15 @@ mod tests {
         assert!(report
             .compatibility_gaps
             .iter()
+            .any(|gap| { gap.contains("migration-only") && gap.contains("binary log") }));
+        assert!(report
+            .compatibility_gaps
+            .iter()
             .any(|gap| gap.contains("C++ binary/protobuf oplog")));
         assert!(report
             .compatibility_gaps
             .iter()
-            .any(|gap| gap.contains("golden-log replay")));
+            .any(|gap| gap.contains("golden log conversion/replay")));
     }
 
     #[test]
@@ -15455,6 +15520,11 @@ mod tests {
         assert_eq!(report.shard_id, 1);
         assert_eq!(report.page_format, "rust-page-envelope-v6");
         assert_eq!(report.rust_envelope_version, 6);
+        assert_eq!(report.compatibility_mode, "rust_envelope_migration_only");
+        assert!(report.migration_required);
+        assert!(!report.cxx_page_header_reader_supported);
+        assert!(!report.cxx_page_header_writer_supported);
+        assert!(report.golden_conversion_required);
         assert!(report.rust_native_read_safe);
         assert!(!report.cxx_page_header_compatible);
         assert!(report.checksum_protected);
@@ -15471,11 +15541,15 @@ mod tests {
         assert!(report
             .compatibility_gaps
             .iter()
+            .any(|gap| gap.contains("migration-only") && gap.contains("page-header")));
+        assert!(report
+            .compatibility_gaps
+            .iter()
             .any(|gap| gap.contains("C++ protobuf page header")));
         assert!(report
             .compatibility_gaps
             .iter()
-            .any(|gap| gap.contains("golden-page replay")));
+            .any(|gap| gap.contains("golden page conversion/replay")));
     }
 
     #[test]

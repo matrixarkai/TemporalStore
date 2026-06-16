@@ -38,16 +38,18 @@ jobs:
         shell: bash
         run: |
           set +e
-          cargo run -p temporalstore-rust --bin readiness_gate \
-            > target/production_readiness_report.json \
-            2> target/production_readiness_gate.log
+          mkdir -p target/readiness
+          cargo run -p temporalstore-rust --bin readiness_gate -- --service-reports \
+            > target/readiness/production_readiness_report.json \
+            2> target/readiness/production_readiness_gate.log
           status=$?
           set -e
-          cat target/production_readiness_gate.log
+          cat target/readiness/production_readiness_gate.log
           python3 - <<'PY'
           import json
-          report = json.load(open("target/production_readiness_report.json"))
+          report = json.load(open("target/readiness/production_readiness_report.json"))
           print(f"production_ready={report['production_ready']}")
+          print(f"cpp_parity_ready={report['cpp_parity_ready']}")
           print(f"blocker_count={report['blocker_count']}")
           for service in report["service_summaries"]:
               print(
@@ -57,18 +59,42 @@ jobs:
                   f"next_action={service['next_action']}"
               )
           PY
-          if [ "$status" -ne 0 ] && [ "$status" -ne 2 ]; then
+          if [ "$status" -ne 0 ] && [ "$status" -ne 1 ] && [ "$status" -ne 2 ]; then
             echo "readiness_gate exited with unexpected status $status" >&2
             exit "$status"
           fi
+
+      - name: Run storage modes harness
+        run: cargo run -p temporalstore-rust --bin storage_modes_harness
+
+      - name: Run compact scale harness
+        run: >
+          cargo run -p temporalstore-rust --bin scale_harness --
+          --nodes 3
+          --string-ops 80
+          --hash-ops 25
+          --sequence-keys 2
+          --sequence-len 40
+          --scale-events 1
+          --failover-every 40
+          --read-sample-every 20
+          --compare-shared-store true
+          --shared-store-ops 80
+          --shared-store-flush-every 10
+
+      - name: Build harness binaries
+        run: cargo build -p temporalstore-rust --bins
+
+      - name: Run Raft secondary replication harness
+        run: cargo run -p temporalstore-rust --bin raft_secondary_replication_harness -- --heartbeat-ms 25
 
       - name: Upload production readiness artifacts
         uses: actions/upload-artifact@v4
         with:
           name: rust-production-readiness
           path: |
-            target/production_readiness_report.json
-            target/production_readiness_gate.log
+            target/readiness/production_readiness_report.json
+            target/readiness/production_readiness_gate.log
 
   service-readiness:
     runs-on: ubuntu-22.04
@@ -81,6 +107,12 @@ jobs:
           - ingestion
           - data_node
           - metaserver
+          - storage_cache
+          - feature_modules
+          - fault_tolerance
+          - deployment_ops
+          - scale_testing
+          - raft_replication
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -116,7 +148,7 @@ jobs:
           for blocker in summary["failed_capabilities"][:20]:
               print(f"- {blocker}")
           PY
-          if [ "$status" -ne 0 ] && [ "$status" -ne 2 ]; then
+          if [ "$status" -ne 0 ] && [ "$status" -ne 1 ] && [ "$status" -ne 2 ]; then
             echo "readiness_gate --service ${{ matrix.service }} exited with unexpected status $status" >&2
             exit "$status"
           fi
