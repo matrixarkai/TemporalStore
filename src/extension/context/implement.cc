@@ -8,8 +8,7 @@
 #include "common/cmd_manager.h"
 #include "common/macros.h"
 #include "extension/context/interface.pb.h"
-#include "model/feature_model.h"
-#include "model/hash_model.h"
+#include "model/context_model.h"
 #include "partition/compute/execute_env.h"
 
 namespace bcache2 {
@@ -106,7 +105,7 @@ Status UpsertNode(ExecuteEnv* env, const UpsertNodeRequest& request, UpsertNodeR
     }
 
     const std::string key = NodeKey(request.tenant_hash(), request.node().node_hash());
-    ObjectHandle<model::HashModel> object;
+    ObjectHandle<model::ContextNodeModel> object;
     Status status = env->GetOrNewObject(key, &object);
     if (!status.ok()) {
         return status;
@@ -132,7 +131,7 @@ Status GetNode(ExecuteEnv* env, const GetNodeRequest& request, GetNodeResponse* 
 
     const std::string key = NodeKey(request.tenant_hash(), request.node_hash());
     response->set_object_key(key);
-    ObjectHandle<model::HashModel> object;
+    ObjectHandle<model::ContextNodeModel> object;
     Status status = env->GetObject(key, &object);
     if (status.IsNotFound()) {
         response->set_exist(false);
@@ -167,7 +166,7 @@ Status WriteEvent(ExecuteEnv* env, const WriteEventRequest& request, WriteEventR
     }
 
     const std::string key = EventKey(request.tenant_hash(), request.node_hash());
-    ObjectHandle<model::FeatureModel> object;
+    ObjectHandle<model::ContextEventModel> object;
     Status status = env->GetOrNewObject(key, &object);
     if (!status.ok()) {
         return status;
@@ -204,7 +203,7 @@ Status QueryEvents(ExecuteEnv* env, const QueryEventsRequest& request,
 
     const std::string key = EventKey(request.tenant_hash(), request.node_hash());
     response->set_object_key(key);
-    ObjectHandle<model::FeatureModel> object;
+    ObjectHandle<model::ContextEventModel> object;
     status = env->GetObject(key, &object);
     if (status.IsNotFound()) {
         return Status::OK();
@@ -240,7 +239,7 @@ Status WriteIndexRef(ExecuteEnv* env, const WriteIndexRefRequest& request,
     const std::string key =
         IndexKey(request.tenant_hash(), request.index_name(), request.index_value_hash(),
                  request.scope_hash());
-    ObjectHandle<model::FeatureModel> object;
+    ObjectHandle<model::ContextIndexModel> object;
     Status status = env->GetOrNewObject(key, &object);
     if (!status.ok()) {
         return status;
@@ -275,7 +274,7 @@ Status QueryIndex(ExecuteEnv* env, const QueryIndexRequest& request, QueryIndexR
         IndexKey(request.tenant_hash(), request.index_name(), request.index_value_hash(),
                  request.scope_hash());
     response->set_object_key(key);
-    ObjectHandle<model::FeatureModel> object;
+    ObjectHandle<model::ContextIndexModel> object;
     status = env->GetObject(key, &object);
     if (status.IsNotFound()) {
         return Status::OK();
@@ -305,7 +304,7 @@ Status WritePackAudit(ExecuteEnv* env, const WritePackAuditRequest& request,
     }
 
     const std::string key = AuditKey(request.tenant_hash(), request.audit().session_hash());
-    ObjectHandle<model::FeatureModel> object;
+    ObjectHandle<model::ContextAuditModel> object;
     Status status = env->GetOrNewObject(key, &object);
     if (!status.ok()) {
         return status;
@@ -339,7 +338,7 @@ Status QueryPackAudit(ExecuteEnv* env, const QueryPackAuditRequest& request,
 
     const std::string key = AuditKey(request.tenant_hash(), request.session_hash());
     response->set_object_key(key);
-    ObjectHandle<model::FeatureModel> object;
+    ObjectHandle<model::ContextAuditModel> object;
     status = env->GetObject(key, &object);
     if (status.IsNotFound()) {
         return Status::OK();
@@ -368,7 +367,7 @@ Status MarkSummaryDirty(ExecuteEnv* env, const MarkSummaryDirtyRequest& request,
     }
 
     const std::string key = DirtyKey(request.tenant_hash(), request.marker().node_hash());
-    ObjectHandle<model::FeatureModel> object;
+    ObjectHandle<model::ContextDirtyModel> object;
     Status status = env->GetOrNewObject(key, &object);
     if (!status.ok()) {
         return status;
@@ -401,7 +400,7 @@ Status QuerySummaryDirty(ExecuteEnv* env, const QuerySummaryDirtyRequest& reques
 
     const std::string key = DirtyKey(request.tenant_hash(), request.node_hash());
     response->set_object_key(key);
-    ObjectHandle<model::FeatureModel> object;
+    ObjectHandle<model::ContextDirtyModel> object;
     status = env->GetObject(key, &object);
     if (status.IsNotFound()) {
         return Status::OK();

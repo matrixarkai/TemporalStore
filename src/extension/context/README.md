@@ -5,14 +5,19 @@ This module is the first TemporalStore-native substrate for MatrixArk LLM contex
 It intentionally keeps the C++ serving schema small:
 
 ```text
-ContextNode      -> HashModel object with a compact node metadata field
-ContextEvent     -> FeatureModel object keyed by event_time_ms plus a small hash suffix
-ContextIndexRef  -> FeatureModel object keyed by event_time_ms plus a small hash suffix
-ContextPackAudit -> FeatureModel object keyed by request_time_ms plus a small hash suffix
-SummaryDirty    -> FeatureModel object keyed by event_time_ms plus a small hash suffix
+ContextNodeModel  -> Hash page object with a compact node metadata field
+ContextEventModel -> Feature page object keyed by event_time_ms plus a small hash suffix
+ContextIndexModel -> Feature page object keyed by event_time_ms plus a small hash suffix
+ContextAuditModel -> Feature page object keyed by request_time_ms plus a small hash suffix
+ContextDirtyModel -> Feature page object keyed by event_time_ms plus a small hash suffix
 ```
 
 MatrixArk should perform LLM extraction, canonicalization, node selection, schema enforcement, and token-budgeted context packing above this module. The C++ module stores and retrieves already-compiled context records.
+
+The context model names are first-class C++ model types, but they intentionally reuse
+the existing HashModel and FeatureModel page primitives. This keeps the MVP compatible
+with TemporalStore's serving path while leaving room to specialize compaction, index
+maintenance, and summary refresh behavior behind context-specific model names later.
 
 ## Object Keys
 
