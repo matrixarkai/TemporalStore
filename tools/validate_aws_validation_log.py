@@ -105,6 +105,55 @@ def validate_storage(job, summary):
     require(len(raft["wal_files"]) > 0, f"{job}: no raft WAL files found")
 
 
+def validate_raft_secondary(job, summary):
+    require(summary["writes"], f"{job}: no writes recorded")
+    for write in summary["writes"]:
+        require(write["status"]["ok"], f"{job}: write failed: {write}")
+    require(summary["reads_after_restart"], f"{job}: no restart reads recorded")
+    expected_values = {
+        "secondary-before-restart": "v1",
+        "secondary-while-down": "v3",
+        "secondary-after-restart": "v4",
+    }
+    for read in summary["reads_after_restart"]:
+        require(read["status"]["ok"], f"{job}: restart read failed: {read}")
+        require(
+            read["value"] == expected_values[read["key"]],
+            f"{job}: restart read mismatch: {read}",
+        )
+    for node in summary["nodes"]:
+        require(node["status"]["has_majority"], f"{job}: node {node['node_id']} has no majority")
+        require(node["apply_health"]["healthy"], f"{job}: node {node['node_id']} apply health unhealthy")
+    require(
+        summary["partition"]["isolated_read_status"]["ok"] is False,
+        f"{job}: isolated partition read unexpectedly succeeded",
+    )
+    require(
+        summary["partition"]["healed_read"]["value"] == "v-partition",
+        f"{job}: healed partition read mismatch",
+    )
+    require(summary["lagging_follower"]["observed_lag"] > 0, f"{job}: follower lag was not observed")
+    for read in summary["lagging_follower"]["catchup_reads"]:
+        require(read["status"]["ok"], f"{job}: lagging follower catch-up read failed: {read}")
+    require(
+        summary["network_vote"]["stale_response"]["vote_granted"] is False,
+        f"{job}: stale vote was granted",
+    )
+    require(
+        summary["network_vote"]["valid_response"]["vote_granted"] is True,
+        f"{job}: valid vote was rejected",
+    )
+    require(summary["rolling_restart"]["restarted_nodes"], f"{job}: rolling restart did not run")
+    for write in summary["rolling_restart"]["writes_after_each_restart"]:
+        require(write["status"]["ok"], f"{job}: rolling restart write failed: {write}")
+    for read in summary["rolling_restart"]["reads_after_each_restart"]:
+        require(read["status"]["ok"], f"{job}: rolling restart read failed: {read}")
+    require(summary["failover"]["status"]["ok"], f"{job}: failover status failed")
+    for read in summary["reads_after_leader_crash"]:
+        require(read["status"]["ok"], f"{job}: post-leader-crash read failed: {read}")
+        require(read["value"] == "v5", f"{job}: post-leader-crash read mismatch: {read}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Validate TemporalStore AWS validation job JSON logs")
     parser.add_argument("--job", required=True)
@@ -112,7 +161,9 @@ def main():
     args = parser.parse_args()
 
     summary = load_summary(args.log)
-    if args.job.endswith("raft-validation"):
+    if args.job.endswith("raft-secondary-validation"):
+        validate_raft_secondary(args.job, summary)
+    elif args.job.endswith("raft-validation"):
         validate_raft(args.job, summary)
     elif args.job.endswith("scale-validation"):
         validate_scale(args.job, summary)

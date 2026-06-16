@@ -397,13 +397,16 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "storage production report exposes Rust page-envelope version, checksum/object-id/routing-slot/compression support, zone bytes, and C++ page-header compatibility gaps"
                     .to_string(),
+                "storage compatibility decision is explicit: Rust log/page formats are migration-only versus C++ binary logs/page headers, with golden conversion/replay required before C++ migration"
+                    .to_string(),
                 "chunked timestamped KV page format is covered by sync and async shared-store replay plus Raft follower-read replication tests"
                     .to_string(),
                 "chunked timestamped KV page recovery strictly rejects malformed or unsupported packed-page payloads"
                     .to_string(),
             ],
             missing: vec![
-                "binary/protobuf oplog and index-log compatibility".to_string(),
+                "golden C++ log/page conversion and replay corpus for the migration-only storage compatibility path"
+                    .to_string(),
                 "atomic dump/load/install pipeline plus C++ zone/page-header compaction parity"
                     .to_string(),
                 "production SSD cache tiering policy, admission tuning, and live pressure validation"
@@ -611,7 +614,7 @@ fn service_next_action(service: &str, blocker_classes: &[String]) -> &'static st
             "finish networked metaserver Raft, scheduler loop, and safe topology membership mutations"
         }
         ("storage_cache", "storage_cache_durability") => {
-            "finish binary log/page compatibility decisions, atomic dump/load, SSD cache pressure validation, and live object-store integration"
+            "finish golden C++ log/page conversion replay, atomic dump/load, SSD cache pressure validation, and live object-store integration"
         }
         ("feature_modules", "feature_module_cpp_parity") => {
             "finish exact C++ feature/risk corpus coverage and deployment-specific module edge cases"
