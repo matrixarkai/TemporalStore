@@ -227,10 +227,10 @@ C:\Users\Deeproute\Documents\Codex\2026-06-07\what-s-the-topology-for-all\tempor
 Shared corpus command:
 
 ```bash
+TS_CPP_REPO=/mnt/c/Users/Deeproute/Documents/Codex/2026-06-07/what-s-the-topology-for-all/temporalstore-service-fix \
 python3 tools/run_temporalstore_unified_tests.py \
   --both \
-  --require-cpp \
-  --cpp-repo /mnt/c/Users/Deeproute/Documents/Codex/2026-06-07/what-s-the-topology-for-all/temporalstore-service-fix
+  --require-cpp
 ```
 
 Result:
@@ -238,7 +238,9 @@ Result:
 - Rust unified corpus runner passed.
 - Rust direct engine path passed.
 - Rust `TemporalStoreClient` plus local HTTP path passed.
-- C++ unified hook passed against the same `compat/unified_temporalstore_cases.json`.
+- C++ unified hook passed against the same 16-case `compat/unified_temporalstore_cases.json`.
+- C++ hook validated the shared `coverage` manifest, duplicate-test rejection rules, and current
+  unified command names.
 - C++ hook confirmed the required local C++ parity surfaces are present.
 
 C++ fast local CI guard command:
