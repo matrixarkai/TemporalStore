@@ -279,12 +279,9 @@ mod tests {
     fn readiness_gate_failure_lines_include_service_next_actions() {
         let report = production_readiness_report();
         let lines = service_failure_lines(&report);
-        assert!(
-            lines
-                .iter()
-                .any(|line| line.contains("service client")
-                    && line.contains("tonic service adapters"))
-        );
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("service client") && line.contains("OpenTable")));
         assert!(lines
             .iter()
             .any(|line| line.contains("service proxy") && line.contains("topology-version")));

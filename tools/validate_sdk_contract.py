@@ -134,6 +134,9 @@ def main() -> int:
         'tonic::include_proto!("temporalstore.v1")',
         "TemporalStoreServiceClient",
         "TemporalStoreService",
+        "TemporalStoreTonicAdapter",
+        "sdk_command_to_types",
+        "types_command_response_to_sdk",
     ]:
         if phrase not in sdk_rs:
             fail(f"sdk.rs must mention {phrase!r}")

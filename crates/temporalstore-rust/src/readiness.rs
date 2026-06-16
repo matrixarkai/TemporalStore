@@ -196,9 +196,11 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "tonic/prost client and server binding types are generated at build time from the committed v1 schema"
                     .to_string(),
+                "generated tonic Execute and BatchExecute service adapters convert protobuf commands and delegate to the existing engine execution path"
+                    .to_string(),
             ],
             missing: vec![
-                "runtime tonic service adapters that delegate generated SDK calls to the existing client/proxy/server execution paths"
+                "runtime tonic OpenTable, SyncTopology, and ClientPreflight adapters wired to the existing client/proxy/metaserver paths"
                     .to_string(),
                 "full C++ partition-set hierarchy and Neptune-specific routing"
                     .to_string(),
@@ -633,7 +635,7 @@ fn service_next_action(service: &str, blocker_classes: &[String]) -> &'static st
     };
     match (service, first_class) {
         ("client", "client_sync_preflight") => {
-            "wire generated tonic service adapters to the existing client/proxy/server execution paths"
+            "wire generated tonic OpenTable, SyncTopology, and ClientPreflight adapters to existing client/proxy/metaserver paths"
         }
         ("proxy", "proxy_topology_admission") => {
             "finish proxy topology-version guarded cache invalidation and admission policy enforcement"
@@ -958,7 +960,7 @@ mod tests {
             .service_summary("client")
             .expect("client summary")
             .next_action
-            .contains("tonic service adapters"));
+            .contains("OpenTable"));
         assert!(report
             .service_summary("proxy")
             .expect("proxy summary")
