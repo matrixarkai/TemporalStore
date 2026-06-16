@@ -6,7 +6,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -28,7 +27,7 @@ use crate::page_store::{
 use crate::types::{
     parse_cpp_feature_filters, BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse,
     ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit, ContextSummaryDirtyMarker,
-    ExecuteRequest, ExecuteResponse, FeatureFilter, FeatureFilterOp, FeaturePoint,
+    ContextWire, ExecuteRequest, ExecuteResponse, FeatureFilter, FeatureFilterOp, FeaturePoint,
     FeatureWritePolicy, IpsSnapshotReport, IpsStats, RiskFamily, RiskFolType, SequenceFeatureRow,
     SequenceQuerySpec, ShardId, Status, StringSetCondition,
 };
@@ -116,6 +115,7 @@ const FEATURE_PAGE_MAGIC: &[u8] = b"TSFPG1\n";
 const TIMESTAMPED_KV_PAGE_TARGET_BYTES: usize = 64 * 1024;
 const CONTEXT_TIMELINE_FANOUT: u64 = 1024;
 const CONTEXT_DEFAULT_LIMIT: usize = 100;
+const CONTEXT_NODE_FIELD: &str = "meta";
 const HOT_PAGE_SEGMENT_ID: u64 = u64::MAX;
 static HOT_PAGE_OFFSET: AtomicU64 = AtomicU64::new(1);
 
@@ -6305,21 +6305,25 @@ fn execute_on_shard(
         }
         Command::ContextUpsertNode { tenant_hash, node } => {
             let object_key = context_node_key(tenant_hash, node.node_hash);
-            let object_id = stable_page_object_id(shard_id, "context_node", &object_key, None);
+            let object_id =
+                stable_page_object_id(shard_id, "hash", &object_key, Some(CONTEXT_NODE_FIELD));
             let routing_slot = page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
-            if let Some(bytes) = context_bytes(&node) {
-                if let Ok(address) = append_value(
-                    cache,
-                    page_store,
-                    shard_id,
-                    &bytes,
-                    Some(object_id),
-                    Some(routing_slot),
-                    async_storage,
-                ) {
-                    shard.context_nodes.insert(object_key.clone(), address);
-                    mutated = true;
-                }
+            let bytes = context_bytes(&node);
+            if let Ok(address) = append_value(
+                cache,
+                page_store,
+                shard_id,
+                &bytes,
+                Some(object_id),
+                Some(routing_slot),
+                async_storage,
+            ) {
+                shard
+                    .hashes
+                    .entry(object_key.clone())
+                    .or_default()
+                    .insert(CONTEXT_NODE_FIELD.to_string(), address);
+                mutated = true;
             }
             invalidate_record_all(cache, shard_id, &object_key);
             CommandResponse::ContextObjectKey { object_key }
@@ -6329,10 +6333,15 @@ fn execute_on_shard(
             node_hash,
         } => {
             let object_key = context_node_key(tenant_hash, node_hash);
-            let node = shard.context_nodes.get(&object_key).and_then(|address| {
-                read_page_bytes(cache, page_store, shard_id, address)
-                    .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
-            });
+            let node = shard
+                .hashes
+                .get(&object_key)
+                .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
+                .or_else(|| shard.context_nodes.get(&object_key))
+                .and_then(|address| {
+                    read_page_bytes(cache, page_store, shard_id, address)
+                        .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
+                });
             CommandResponse::ContextNode { object_key, node }
         }
         Command::ContextWriteEvent {
@@ -6345,26 +6354,25 @@ fn execute_on_shard(
             let timeline_key = context_timeline_key(event.event_time_ms, event.event_id_hash);
             let series = shard.context_events.entry(object_key.clone()).or_default();
             if !(first_write_only && series.contains_key(&timeline_key)) {
-                if let Some(value) = context_bytes(&event) {
-                    let routing_slot =
-                        page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
-                    if let Ok(addresses) = append_timestamped_kv_pages(
-                        cache,
-                        page_store,
-                        shard_id,
-                        "context_event",
-                        &object_key,
-                        vec![FeaturePoint {
-                            timestamp_ms: timeline_key,
-                            value,
-                        }],
-                        routing_slot,
-                        async_storage,
-                    ) {
-                        for (timestamp_ms, address) in addresses {
-                            series.insert(timestamp_ms, address);
-                            mutated = true;
-                        }
+                let value = context_bytes(&event);
+                let routing_slot =
+                    page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
+                if let Ok(addresses) = append_timestamped_kv_pages(
+                    cache,
+                    page_store,
+                    shard_id,
+                    "context_event",
+                    &object_key,
+                    vec![FeaturePoint {
+                        timestamp_ms: timeline_key,
+                        value,
+                    }],
+                    routing_slot,
+                    async_storage,
+                ) {
+                    for (timestamp_ms, address) in addresses {
+                        series.insert(timestamp_ms, address);
+                        mutated = true;
                     }
                 }
             }
@@ -6392,7 +6400,7 @@ fn execute_on_shard(
                     series
                         .range(
                             context_timeline_start(start_time_ms)
-                                ..=context_timeline_end(end_time_ms),
+                                ..context_timeline_end(end_time_ms),
                         )
                         .take(context_limit(limit))
                         .filter_map(|(timeline_key, address)| {
@@ -6432,27 +6440,25 @@ fn execute_on_shard(
             let object_key =
                 context_index_key(tenant_hash, &index_name, index_value_hash, scope_hash);
             let timeline_key = context_timeline_key(event_time_ms, index_ref.event_id_hash);
-            if let Some(value) = context_bytes(&index_ref) {
-                let routing_slot =
-                    page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
-                if let Ok(addresses) = append_timestamped_kv_pages(
-                    cache,
-                    page_store,
-                    shard_id,
-                    "context_index",
-                    &object_key,
-                    vec![FeaturePoint {
-                        timestamp_ms: timeline_key,
-                        value,
-                    }],
-                    routing_slot,
-                    async_storage,
-                ) {
-                    let series = shard.context_indexes.entry(object_key.clone()).or_default();
-                    for (timestamp_ms, address) in addresses {
-                        series.insert(timestamp_ms, address);
-                        mutated = true;
-                    }
+            let value = context_bytes(&index_ref);
+            let routing_slot = page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
+            if let Ok(addresses) = append_timestamped_kv_pages(
+                cache,
+                page_store,
+                shard_id,
+                "context_index",
+                &object_key,
+                vec![FeaturePoint {
+                    timestamp_ms: timeline_key,
+                    value,
+                }],
+                routing_slot,
+                async_storage,
+            ) {
+                let series = shard.context_indexes.entry(object_key.clone()).or_default();
+                for (timestamp_ms, address) in addresses {
+                    series.insert(timestamp_ms, address);
+                    mutated = true;
                 }
             }
             invalidate_record_all(cache, shard_id, &object_key);
@@ -6476,7 +6482,7 @@ fn execute_on_shard(
                     series
                         .range(
                             context_timeline_start(start_time_ms)
-                                ..=context_timeline_end(end_time_ms),
+                                ..context_timeline_end(end_time_ms),
                         )
                         .take(context_limit(limit))
                         .filter_map(|(timeline_key, address)| {
@@ -6497,27 +6503,25 @@ fn execute_on_shard(
             let object_key = context_audit_key(tenant_hash, audit.session_hash);
             let timeline_key =
                 context_timeline_key(audit.request_time_ms, stable_object_hash(&audit.query_id));
-            if let Some(value) = context_bytes(&audit) {
-                let routing_slot =
-                    page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
-                if let Ok(addresses) = append_timestamped_kv_pages(
-                    cache,
-                    page_store,
-                    shard_id,
-                    "context_audit",
-                    &object_key,
-                    vec![FeaturePoint {
-                        timestamp_ms: timeline_key,
-                        value,
-                    }],
-                    routing_slot,
-                    async_storage,
-                ) {
-                    let series = shard.context_audits.entry(object_key.clone()).or_default();
-                    for (timestamp_ms, address) in addresses {
-                        series.insert(timestamp_ms, address);
-                        mutated = true;
-                    }
+            let value = context_bytes(&audit);
+            let routing_slot = page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
+            if let Ok(addresses) = append_timestamped_kv_pages(
+                cache,
+                page_store,
+                shard_id,
+                "context_audit",
+                &object_key,
+                vec![FeaturePoint {
+                    timestamp_ms: timeline_key,
+                    value,
+                }],
+                routing_slot,
+                async_storage,
+            ) {
+                let series = shard.context_audits.entry(object_key.clone()).or_default();
+                for (timestamp_ms, address) in addresses {
+                    series.insert(timestamp_ms, address);
+                    mutated = true;
                 }
             }
             invalidate_record_all(cache, shard_id, &object_key);
@@ -6538,7 +6542,7 @@ fn execute_on_shard(
                     series
                         .range(
                             context_timeline_start(start_time_ms)
-                                ..=context_timeline_end(end_time_ms),
+                                ..context_timeline_end(end_time_ms),
                         )
                         .take(context_limit(limit))
                         .filter_map(|(timeline_key, address)| {
@@ -6561,27 +6565,25 @@ fn execute_on_shard(
         } => {
             let object_key = context_dirty_key(tenant_hash, marker.node_hash);
             let timeline_key = context_timeline_key(marker.event_time_ms, marker.node_hash);
-            if let Some(value) = context_bytes(&marker) {
-                let routing_slot =
-                    page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
-                if let Ok(addresses) = append_timestamped_kv_pages(
-                    cache,
-                    page_store,
-                    shard_id,
-                    "context_dirty",
-                    &object_key,
-                    vec![FeaturePoint {
-                        timestamp_ms: timeline_key,
-                        value,
-                    }],
-                    routing_slot,
-                    async_storage,
-                ) {
-                    let series = shard.context_dirty.entry(object_key.clone()).or_default();
-                    for (timestamp_ms, address) in addresses {
-                        series.insert(timestamp_ms, address);
-                        mutated = true;
-                    }
+            let value = context_bytes(&marker);
+            let routing_slot = page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
+            if let Ok(addresses) = append_timestamped_kv_pages(
+                cache,
+                page_store,
+                shard_id,
+                "context_dirty",
+                &object_key,
+                vec![FeaturePoint {
+                    timestamp_ms: timeline_key,
+                    value,
+                }],
+                routing_slot,
+                async_storage,
+            ) {
+                let series = shard.context_dirty.entry(object_key.clone()).or_default();
+                for (timestamp_ms, address) in addresses {
+                    series.insert(timestamp_ms, address);
+                    mutated = true;
                 }
             }
             invalidate_record_all(cache, shard_id, &object_key);
@@ -6602,7 +6604,7 @@ fn execute_on_shard(
                     series
                         .range(
                             context_timeline_start(start_time_ms)
-                                ..=context_timeline_end(end_time_ms),
+                                ..context_timeline_end(end_time_ms),
                         )
                         .take(context_limit(limit))
                         .filter_map(|(timeline_key, address)| {
@@ -8122,9 +8124,7 @@ fn context_timeline_start(timestamp_ms: u64) -> u64 {
 }
 
 fn context_timeline_end(timestamp_ms: u64) -> u64 {
-    timestamp_ms
-        .saturating_mul(CONTEXT_TIMELINE_FANOUT)
-        .saturating_add(CONTEXT_TIMELINE_FANOUT - 1)
+    timestamp_ms.saturating_mul(CONTEXT_TIMELINE_FANOUT)
 }
 
 fn context_limit(limit: Option<usize>) -> usize {
@@ -8134,15 +8134,15 @@ fn context_limit(limit: Option<usize>) -> usize {
         .min(FEATURE_ADD_HARD_MAX_SIZE)
 }
 
-fn context_bytes<T: Serialize>(value: &T) -> Option<Vec<u8>> {
-    serde_json::to_vec(value).ok()
+fn context_bytes<T: ContextWire>(value: &T) -> Vec<u8> {
+    value.encode_context_value()
 }
 
-fn context_from_bytes<T: DeserializeOwned>(bytes: &[u8]) -> Option<T> {
-    serde_json::from_slice(bytes).ok()
+fn context_from_bytes<T: ContextWire>(bytes: &[u8]) -> Option<T> {
+    T::decode_context_value(bytes)
 }
 
-fn read_context_value<T: DeserializeOwned>(
+fn read_context_value<T: ContextWire>(
     cache: &MultiLayerCache,
     page_store: &LocalPageStore,
     shard_id: ShardId,
@@ -8707,6 +8707,18 @@ mod tests {
             get.response,
             CommandResponse::ContextNode { node: Some(ref stored), .. } if stored == &node
         ));
+        let meta = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashGet {
+                key: "ctx:node:11:42".to_string(),
+                field: CONTEXT_NODE_FIELD.to_string(),
+            },
+        });
+        assert!(matches!(
+            meta.response,
+            CommandResponse::Bytes { value: Some(ref bytes) }
+                if ContextNode::decode_context_value(bytes).as_ref() == Some(&node)
+        ));
 
         let event_a = ContextEvent {
             event_id_hash: 5,
@@ -8764,7 +8776,7 @@ mod tests {
                 tenant_hash: 11,
                 node_hash: 42,
                 start_time_ms: 999,
-                end_time_ms: 1_000,
+                end_time_ms: 1_001,
                 limit: Some(10),
                 current_valid_only: true,
                 as_of_ms: 0,
@@ -8811,7 +8823,7 @@ mod tests {
                 index_value_hash: 77,
                 scope_hash: 3,
                 start_time_ms: 999,
-                end_time_ms: 1_000,
+                end_time_ms: 1_001,
                 limit: None,
             },
         });
@@ -8852,7 +8864,7 @@ mod tests {
                 tenant_hash: 11,
                 session_hash: 99,
                 start_time_ms: 1_999,
-                end_time_ms: 2_000,
+                end_time_ms: 2_001,
                 limit: None,
             },
         });
@@ -8885,7 +8897,7 @@ mod tests {
                 tenant_hash: 11,
                 node_hash: 42,
                 start_time_ms: 2_999,
-                end_time_ms: 3_000,
+                end_time_ms: 3_001,
                 limit: None,
             },
         });

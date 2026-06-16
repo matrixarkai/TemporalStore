@@ -84,7 +84,7 @@ Context:
   `src/extension/context/interface.proto`, `src/extension/context/implement.cc`, and
   `src/model/context_model.h`.
 - Node metadata -> `ContextUpsertNode` / `ContextGetNode`, stored under the C++ key shape
-  `ctx:node:{tenant_hash}:{node_hash}` as a single serialized node page.
+  `ctx:node:{tenant_hash}:{node_hash}` as `ContextNodeModel` hash field `meta`.
 - Event timeline -> `ContextWriteEvent` / `ContextQueryEvents`, stored under
   `ctx:event:{tenant_hash}:{node_hash}` as packed timestamped KV pages. Rust uses the same
   timeline fanout idea as C++ (`event_time_ms * 1024 + event_id_hash % 1024`) so many events at
@@ -95,6 +95,13 @@ Context:
   `ctx:audit:{tenant_hash}:{session_hash}`.
 - Dirty summary markers -> `ContextMarkSummaryDirty` / `ContextQuerySummaryDirty`, stored under
   `ctx:dirty:{tenant_hash}:{node_hash}`.
+- Rust exports C++-named model aliases: `ContextNodeModel`, `ContextEventModel`,
+  `ContextIndexModel`, `ContextAuditModel`, and `ContextDirtyModel`.
+- Payloads are stored in C++ protobuf wire shape for `ContextNode`, `ContextEvent`, `IndexRef`,
+  `AuditRef`, `ContextPackAudit`, and `SummaryDirtyMarker`; the decoder also accepts the previous
+  Rust JSON payloads for local compatibility.
+- Timeline queries use the C++ half-open fanout range: `TimelineStart(start_time_ms)` inclusive to
+  `TimelineEnd(end_time_ms)` exclusive, where both helpers multiply the timestamp by `1024`.
 - Query filters match the C++ context implementation shape: kind/status allow lists,
   min confidence/importance, `current_valid_only`, and `as_of_ms` validity checks.
 - Typed client coverage is present for node, event, index, audit, and dirty-marker commands.
