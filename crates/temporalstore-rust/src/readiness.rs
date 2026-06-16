@@ -360,10 +360,10 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "Prometheus alert rules and fault runbook cover stuck replica, split-brain risk, slow follower, and storage pressure triage"
                     .to_string(),
+                "external_chaos_gate composes OS-process Raft kill/restart, stale-read partition, lag/heal, rolling restart, networked membership/snapshot, and storage replay harnesses"
+                    .to_string(),
             ],
             missing: vec![
-                "external chaos suite for process kill, restart, network partition, packet loss, and disk full"
-                    .to_string(),
                 "rolling restart and rolling upgrade validation for proxy, client, metaserver, and data-node"
                     .to_string(),
             ],
@@ -953,10 +953,25 @@ mod tests {
             .any(|item| item.contains("consumer group runtime")));
 
         let fault_tolerance = report
-            .missing_by_area("fault_tolerance")
+            .areas
+            .iter()
+            .find(|area| area.area == "fault_tolerance")
             .expect("fault tolerance area must exist");
         assert!(fault_tolerance
+            .covered
             .iter()
-            .any(|item| item.contains("disk full")));
+            .any(|item| item.contains("external_chaos_gate")));
+        let fault_missing = report
+            .missing_by_area("fault_tolerance")
+            .expect("fault tolerance missing list must exist");
+        assert!(fault_missing
+            .iter()
+            .any(|item| item.contains("rolling restart")));
+        let distributed_raft = report
+            .missing_by_area("data_node_distributed_raft")
+            .expect("distributed raft area must exist");
+        assert!(distributed_raft
+            .iter()
+            .any(|item| item.contains("packet-loss") || item.contains("disk-pressure")));
     }
 }

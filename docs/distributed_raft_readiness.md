@@ -202,6 +202,22 @@ The executable readiness gate for this repeated check is:
 temporalstore_rust::production_readiness_report()
 ```
 
+The executable local external-chaos gate is:
+
+```bash
+cargo build -p temporalstore-rust --bins
+cargo run -p temporalstore-rust --bin external_chaos_gate -- --profile quick
+```
+
+The quick profile composes the OS-process Raft secondary harness, the networked
+distributed Raft harness, and the storage modes harness. It proves process
+kill/restart, partition-style stale-read rejection, lag/heal catch-up, rolling
+restart, membership/snapshot transfer, sync and async shared-store replay, and
+local Raft WAL restore through executable scenarios. The full profile also runs
+a small local scale pass with failover and shared-store comparison. This closes
+the local external-chaos gate, but it does not replace future host-level packet
+loss and disk-full validation.
+
 It now has separate areas for:
 
 - `data_node_distributed_raft`
