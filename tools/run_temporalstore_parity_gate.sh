@@ -118,6 +118,12 @@ python3 tools/validate_aws_validation_log.py \
   --job temporalstore-storage-validation \
   --log /tmp/temporalstore-storage-validation.log
 
+echo "== local: storage production harness =="
+cargo run -p temporalstore-rust --bin storage_production_harness > /tmp/temporalstore-storage-production-validation.log
+python3 tools/validate_aws_validation_log.py \
+  --job temporalstore-storage-production-validation \
+  --log /tmp/temporalstore-storage-production-validation.log
+
 echo "== local: OS-process raft secondary replication harness =="
 cargo build -p temporalstore-rust --bins
 cargo run -p temporalstore-rust --bin raft_secondary_replication_harness -- \

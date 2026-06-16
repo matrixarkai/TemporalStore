@@ -105,3 +105,24 @@ Cycle 4 adds the combined tiny-cache storage flow requested for production-readi
 
 The next cycle should wire this scenario into the standalone storage-mode harness so the same
 dump/load/restart/cache-churn path runs outside unit-test process state.
+
+## Cycle 5 Implemented
+
+Cycle 5 adds the migration-only C++ storage corpus and local production harness required for the
+current Rust-native deployment target:
+
+- `compat/storage_migration_corpus.json` defines C++-exported logical storage artifacts for common,
+  string, hash, set, Feature, Sequence, IPS, Risk, Redis-compatible, and Context model coverage.
+- Rust consumes that corpus into native page envelopes, then validates slot ownership summaries,
+  dirty generations, dump manifest checksums, follower-cursor retention planning, cache warmup,
+  recovery integrity, and post-restart logical reads.
+- The same corpus replays through sync and async local shared-store oplogs and through Raft
+  replication with a leader transfer before reads.
+- `storage_production_harness` turns the corpus into a local scale/fault gate for dump, cache
+  pressure, restart recovery, shared-store replay, and Raft movement.
+- The parity gate now runs the storage production harness and validates the JSON summary.
+
+This closes the in-repo Rust migration verifier and local production-harness slice. Storage remains
+not production-ready until an external C++ binary-artifact exporter publishes the golden corpus in
+CI, the restart-during-install fault matrix is complete, long-running SSD cache pressure validation
+passes, and ByteStore/S3 live integration is implemented or explicitly removed from readiness.

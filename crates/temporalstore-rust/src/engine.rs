@@ -56,6 +56,7 @@ struct ShardState {
     expires_at_ms: HashMap<String, u64>,
     strings: HashMap<String, PageAddress>,
     hashes: HashMap<String, HashMap<String, PageAddress>>,
+    #[serde(default, with = "set_index_serde")]
     sets: HashMap<String, BTreeMap<Vec<u8>, PageAddress>>,
     features: HashMap<String, BTreeMap<u64, PageAddress>>,
     sequences: HashMap<String, BTreeMap<u64, PageAddress>>,
@@ -81,6 +82,46 @@ struct ShardState {
     context_dirty: HashMap<String, BTreeMap<u64, PageAddress>>,
     #[serde(skip)]
     dirty_objects: BTreeSet<String>,
+}
+
+mod set_index_serde {
+    use super::*;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(
+        value: &HashMap<String, BTreeMap<Vec<u8>, PageAddress>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let encoded = value
+            .iter()
+            .map(|(key, members)| {
+                (
+                    key,
+                    members
+                        .iter()
+                        .map(|(member, address)| (member, address))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        encoded.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<HashMap<String, BTreeMap<Vec<u8>, PageAddress>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let encoded = HashMap::<String, Vec<(Vec<u8>, PageAddress)>>::deserialize(deserializer)?;
+        Ok(encoded
+            .into_iter()
+            .map(|(key, members)| (key, members.into_iter().collect()))
+            .collect())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2287,7 +2328,9 @@ impl TemporalEngine {
         if actual_slot_summaries != expected_slot_summaries {
             return Err(Status::error(
                 "slot_dump_slot_summary_mismatch",
-                "slot dump slot summaries do not match restored index page ownership",
+                format!(
+                    "slot dump slot summaries do not match restored index page ownership: manifest={actual_slot_summaries:?} restored={expected_slot_summaries:?}"
+                ),
             ));
         }
         let expected_logical_bytes = expected_slot_summaries
@@ -4367,7 +4410,7 @@ impl TemporalEngine {
 }
 
 fn serialize_index(shard: &ShardState) -> Vec<u8> {
-    serde_json::to_vec_pretty(shard).unwrap_or_default()
+    serde_json::to_vec_pretty(shard).expect("shard index should serialize")
 }
 
 fn push_metric(out: &mut String, name: &str, labels: &[(&str, String)], value: u64) {
@@ -7228,6 +7271,12 @@ fn comparable_slot_dump_summaries(
         summary.page_segment_ids.sort_unstable();
         summary.page_segment_ids.dedup();
     }
+    summaries.retain(|summary| {
+        summary.object_count > 0
+            || summary.page_ref_count > 0
+            || summary.logical_bytes > 0
+            || summary.physical_bytes > 0
+    });
     summaries.sort_by_key(|summary| summary.routing_slot);
     summaries
 }

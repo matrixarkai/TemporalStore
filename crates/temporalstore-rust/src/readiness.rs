@@ -405,13 +405,17 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "chunked timestamped KV page recovery strictly rejects malformed or unsupported packed-page payloads"
                     .to_string(),
+                "storage migration corpus converts C++ logical object/page/slot/index/oplog exports into Rust-native pages and replays through engine restart, slot dump, cache warmup, shared-store sync/async replay, and Raft leader-transfer reads"
+                    .to_string(),
+                "local storage production harness combines dump, cache pressure, restart recovery, shared-store replay, and Raft movement into one repeatable gate"
+                    .to_string(),
             ],
             missing: vec![
-                "golden C++ log/page conversion and replay corpus for the migration-only storage compatibility path"
+                "external C++ binary-artifact exporter plus CI-published golden corpus for the migration-only storage compatibility path"
                     .to_string(),
-                "atomic dump/load/install pipeline plus C++ zone/page-header compaction parity"
+                "full atomic dump/load/install fault-injection matrix for restart-during-install and missing/corrupt manifest dependencies"
                     .to_string(),
-                "production SSD cache tiering policy, admission tuning, and live pressure validation"
+                "production SSD cache tiering policy, admission tuning, and long-running live pressure validation"
                     .to_string(),
                 "ByteStore/S3 live backend integration tied to follower cursors/Raft snapshots"
                     .to_string(),

@@ -105,6 +105,27 @@ def validate_storage(job, summary):
     require(len(raft["wal_files"]) > 0, f"{job}: no raft WAL files found")
 
 
+def validate_storage_production(job, summary):
+    require(summary["corpus_name"] == "temporalstore-storage-migration-corpus", f"{job}: unexpected corpus")
+    require(summary["cases"], f"{job}: no storage production cases")
+    for case in summary["cases"]:
+        require(case["mutation_count"] > 0, f"{job}: no mutations in case {case['case_name']}")
+        require(case["slot_dump_manifest_id"], f"{job}: no slot dump manifest in case {case['case_name']}")
+        require(case["dumped_slot_count"] > 0, f"{job}: no dumped slots in case {case['case_name']}")
+        require(case["cache_warmup_page_refs"] > 0, f"{job}: no cache warmup refs in case {case['case_name']}")
+        require(case["recovery_ok_before_restart"], f"{job}: pre-restart recovery failed in {case['case_name']}")
+        require(case["recovery_ok_after_restart"], f"{job}: post-restart recovery failed in {case['case_name']}")
+        require(
+            case["shared_store_sync_applied"] == case["mutation_count"],
+            f"{job}: sync shared-store replay mismatch in {case['case_name']}",
+        )
+        require(
+            case["shared_store_async_applied"] == case["mutation_count"],
+            f"{job}: async shared-store replay mismatch in {case['case_name']}",
+        )
+        require(case["raft_leader_after_transfer"] == 2, f"{job}: raft leader did not transfer in {case['case_name']}")
+
+
 def validate_raft_secondary(job, summary):
     require(summary["writes"], f"{job}: no writes recorded")
     for write in summary["writes"]:
@@ -161,7 +182,9 @@ def main():
     args = parser.parse_args()
 
     summary = load_summary(args.log)
-    if args.job.endswith("raft-secondary-validation"):
+    if args.job.endswith("storage-production-validation"):
+        validate_storage_production(args.job, summary)
+    elif args.job.endswith("raft-secondary-validation"):
         validate_raft_secondary(args.job, summary)
     elif args.job.endswith("raft-validation"):
         validate_raft(args.job, summary)
