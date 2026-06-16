@@ -204,6 +204,23 @@ pub struct IpsStats {
     pub table_id_counts: Vec<(u64, u64)>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IpsSnapshotReport {
+    pub key: String,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub requested_count: Option<usize>,
+    pub returned_count: usize,
+    pub total_in_range: u64,
+    pub first_timestamp_ms: Option<u64>,
+    pub last_timestamp_ms: Option<u64>,
+    pub action_type_counts: Vec<(u32, u64)>,
+    pub table_id_counts: Vec<(u64, u64)>,
+    pub unique_page_ref_count: usize,
+    pub packed_timestamped_page_count: usize,
+    pub page_segment_ids: Vec<u64>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RiskFamily {
@@ -423,6 +440,13 @@ pub enum Command {
         #[serde(default)]
         count: Option<usize>,
     },
+    IpsSnapshotReport {
+        key: String,
+        start_ms: u64,
+        end_ms: u64,
+        #[serde(default)]
+        count: Option<usize>,
+    },
     IpsStat {
         key: String,
         start_ms: u64,
@@ -579,6 +603,9 @@ pub enum CommandResponse {
     },
     IpsStats {
         stats: IpsStats,
+    },
+    IpsSnapshotReport {
+        report: IpsSnapshotReport,
     },
 }
 

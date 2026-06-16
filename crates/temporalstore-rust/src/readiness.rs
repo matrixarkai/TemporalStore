@@ -426,11 +426,12 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "IPS load/snapshot/stat/filter subset and Risk subset with typed client and RESP coverage"
                     .to_string(),
+                "IPS production snapshot report exposes range metadata, returned versus total counts, action/table server aggregations, and packed timestamped page evidence"
+                    .to_string(),
             ],
             missing: vec![
                 "exact C++ Feature nested point/proto semantics and aggregate edge cases"
                     .to_string(),
-                "IPS production snap metadata and server aggregation behavior".to_string(),
                 "Risk production CPC/list internals and full manager/debug APIs".to_string(),
             ],
         },

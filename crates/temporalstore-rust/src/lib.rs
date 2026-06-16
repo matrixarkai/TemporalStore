@@ -135,5 +135,5 @@ pub use shared_store::{
 };
 pub use types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,
-    ExecuteResponse, FeaturePoint, IpsStats, ShardId, Status,
+    ExecuteResponse, FeaturePoint, IpsSnapshotReport, IpsStats, ShardId, Status,
 };

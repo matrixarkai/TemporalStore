@@ -98,7 +98,10 @@ IPS:
   `ips_filter`
 - RESP coverage: `IPSADD`, `IPSADDOPT`, `IPSQUERYLAST`, `IPSQUERYRANGE`,
   `IPSQUERYRANGEOPT`, `IPSBATCHQUERYLAST`, `IPSREMOVE`, `IPSDEL`, `IPSCOUNT`,
-  `IPSLOAD`, `IPSSNAPSHOT`, `IPSSTAT`, `IPSFILTER`
+  `IPSLOAD`, `IPSSNAPSHOT`, `IPSSNAPSHOTREPORT`, `IPSSTAT`, `IPSFILTER`
+- Production snapshot metadata -> `IpsSnapshotReport`, including range metadata, returned versus
+  total counts, action/table aggregations, and packed page evidence for the timestamped page blocks
+  backing the snapshot.
 
 Risk:
 
@@ -154,9 +157,9 @@ IPS:
 
 - Rust covers add, dimension/idempotent add, query-last, range query, dimension-filtered range
   query, batch query-last, remove timestamp, delete key, count range, local load, range snapshot,
-  stats, and named filter, with typed client and RESP coverage.
-- C++ IPS additionally has richer server aggregation and production snap metadata beyond the local
-  Rust snapshot/stat surface.
+  snapshot metadata reports, stats, and named filter, with typed client and RESP coverage.
+- C++ IPS still has deployment-specific snap internals, but the Rust surface now covers production
+  snapshot metadata and server-side action/table aggregation for the local open-source model.
 
 Risk:
 

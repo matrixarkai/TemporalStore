@@ -27,8 +27,8 @@ use crate::page_store::{
 use crate::types::{
     parse_cpp_feature_filters, BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse,
     ExecuteRequest, ExecuteResponse, FeatureFilter, FeatureFilterOp, FeaturePoint,
-    FeatureWritePolicy, IpsStats, RiskFamily, RiskFolType, SequenceFeatureRow, SequenceQuerySpec,
-    ShardId, Status, StringSetCondition,
+    FeatureWritePolicy, IpsSnapshotReport, IpsStats, RiskFamily, RiskFolType, SequenceFeatureRow,
+    SequenceQuerySpec, ShardId, Status, StringSetCondition,
 };
 
 #[derive(Debug, Clone)]
@@ -5707,6 +5707,27 @@ fn execute_on_shard(
                 ),
             }
         }
+        Command::IpsSnapshotReport {
+            key,
+            start_ms,
+            end_ms,
+            count,
+        } => {
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+                return ExecuteOutcome {
+                    response: CommandResponse::IpsSnapshotReport {
+                        report: empty_ips_snapshot_report(key, start_ms, end_ms, count),
+                    },
+                    mutated,
+                };
+            }
+            CommandResponse::IpsSnapshotReport {
+                report: ips_snapshot_report_in_range(
+                    cache, page_store, shard_id, shard, key, start_ms, end_ms, count,
+                ),
+            }
+        }
         Command::IpsStat {
             key,
             start_ms,
@@ -7067,6 +7088,88 @@ fn ips_points_in_range_with_options(
         .collect()
 }
 
+fn empty_ips_snapshot_report(
+    key: String,
+    start_ms: u64,
+    end_ms: u64,
+    requested_count: Option<usize>,
+) -> IpsSnapshotReport {
+    IpsSnapshotReport {
+        key,
+        start_ms,
+        end_ms,
+        requested_count,
+        returned_count: 0,
+        total_in_range: 0,
+        first_timestamp_ms: None,
+        last_timestamp_ms: None,
+        action_type_counts: Vec::new(),
+        table_id_counts: Vec::new(),
+        unique_page_ref_count: 0,
+        packed_timestamped_page_count: 0,
+        page_segment_ids: Vec::new(),
+    }
+}
+
+fn ips_snapshot_report_in_range(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    shard: &ShardState,
+    key: String,
+    start_ms: u64,
+    end_ms: u64,
+    requested_count: Option<usize>,
+) -> IpsSnapshotReport {
+    let points = ips_points_in_range(
+        cache,
+        page_store,
+        shard_id,
+        shard,
+        &key,
+        start_ms,
+        end_ms,
+        requested_count,
+    );
+    let stats = ips_stats_in_range(shard, &key, start_ms, end_ms);
+    let mut page_refs = HashSet::<PageAddress>::new();
+    let mut page_segment_ids = BTreeSet::<u64>::new();
+    let mut packed_timestamped_page_count = 0usize;
+    if let Some(series) = shard.ips.get(&key) {
+        for (_, address) in series.range(start_ms..=end_ms) {
+            if page_refs.insert(address.clone()) {
+                page_segment_ids.insert(address.page_segment_id);
+                if read_page_bytes(cache, page_store, shard_id, address)
+                    .map(|bytes| {
+                        matches!(
+                            decode_feature_page_strict(&bytes),
+                            PackedFeaturePageDecode::Packed(_)
+                        )
+                    })
+                    .unwrap_or(false)
+                {
+                    packed_timestamped_page_count += 1;
+                }
+            }
+        }
+    }
+    IpsSnapshotReport {
+        key,
+        start_ms,
+        end_ms,
+        requested_count,
+        returned_count: points.len(),
+        total_in_range: stats.total,
+        first_timestamp_ms: stats.first_timestamp_ms,
+        last_timestamp_ms: stats.last_timestamp_ms,
+        action_type_counts: stats.action_type_counts,
+        table_id_counts: stats.table_id_counts,
+        unique_page_ref_count: page_refs.len(),
+        packed_timestamped_page_count,
+        page_segment_ids: page_segment_ids.into_iter().collect(),
+    }
+}
+
 fn ips_stats_in_range(shard: &ShardState, key: &str, start_ms: u64, end_ms: u64) -> IpsStats {
     let mut total = 0u64;
     let mut first_timestamp_ms = None;
@@ -7382,6 +7485,7 @@ fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::IpsCount { .. }
         | Command::IpsQueryRangeWithOptions { .. }
         | Command::IpsSnapshot { .. }
+        | Command::IpsSnapshotReport { .. }
         | Command::IpsStat { .. }
         | Command::IpsFilter { .. }
         | Command::RiskCount { .. }
@@ -11533,6 +11637,36 @@ mod tests {
                     last_timestamp_ms: Some(40),
                     action_type_counts: vec![(7, 2)],
                     table_id_counts: vec![(42, 1), (43, 1)],
+                }
+            }
+        );
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::IpsSnapshotReport {
+                        key: "ips-load".to_string(),
+                        start_ms: 0,
+                        end_ms: 100,
+                        count: Some(3),
+                    },
+                })
+                .response,
+            CommandResponse::IpsSnapshotReport {
+                report: IpsSnapshotReport {
+                    key: "ips-load".to_string(),
+                    start_ms: 0,
+                    end_ms: 100,
+                    requested_count: Some(3),
+                    returned_count: 3,
+                    total_in_range: 4,
+                    first_timestamp_ms: Some(10),
+                    last_timestamp_ms: Some(40),
+                    action_type_counts: vec![(7, 2)],
+                    table_id_counts: vec![(42, 1), (43, 1)],
+                    unique_page_ref_count: 3,
+                    packed_timestamped_page_count: 3,
+                    page_segment_ids: vec![0],
                 }
             }
         );

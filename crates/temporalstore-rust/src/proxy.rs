@@ -1483,6 +1483,7 @@ fn proxy_command_key(command: &Command) -> Option<&str> {
         | Command::IpsQueryRange { key, .. }
         | Command::IpsQueryRangeWithOptions { key, .. }
         | Command::IpsSnapshot { key, .. }
+        | Command::IpsSnapshotReport { key, .. }
         | Command::IpsStat { key, .. }
         | Command::IpsFilter { key, .. }
         | Command::IpsRemove { key, .. }

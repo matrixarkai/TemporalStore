@@ -18,8 +18,9 @@ use crate::meta::{
 };
 use crate::types::{
     parse_cpp_feature_filters, BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse,
-    ExecuteRequest, ExecuteResponse, FeatureFilter, FeaturePoint, FeatureWritePolicy, IpsStats,
-    RiskFamily, RiskFolType, SequenceFeatureRow, SequenceQuerySpec, ShardId, Status,
+    ExecuteRequest, ExecuteResponse, FeatureFilter, FeaturePoint, FeatureWritePolicy,
+    IpsSnapshotReport, IpsStats, RiskFamily, RiskFolType, SequenceFeatureRow, SequenceQuerySpec,
+    ShardId, Status,
 };
 
 #[derive(Debug, Error)]
@@ -2191,6 +2192,30 @@ impl TemporalStoreTable {
         }
     }
 
+    pub fn ips_snapshot_report(
+        &self,
+        key: impl Into<String>,
+        start_ms: u64,
+        end_ms: u64,
+        count: Option<usize>,
+    ) -> Result<IpsSnapshotReport, ClientError> {
+        match self
+            .execute(Command::IpsSnapshotReport {
+                key: key.into(),
+                start_ms,
+                end_ms,
+                count,
+            })?
+            .response
+        {
+            CommandResponse::IpsSnapshotReport { report } => Ok(report),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "ips_snapshot_report",
+                response,
+            }),
+        }
+    }
+
     pub fn ips_stat(
         &self,
         key: impl Into<String>,
@@ -3173,6 +3198,7 @@ fn command_key(command: &Command) -> Option<&str> {
         | Command::IpsQueryRange { key, .. }
         | Command::IpsQueryRangeWithOptions { key, .. }
         | Command::IpsSnapshot { key, .. }
+        | Command::IpsSnapshotReport { key, .. }
         | Command::IpsStat { key, .. }
         | Command::IpsFilter { key, .. }
         | Command::IpsRemove { key, .. }
@@ -3472,6 +3498,16 @@ mod tests {
                 table_id_counts: vec![(42, 1)],
             }
         );
+        let snapshot_report = table
+            .ips_snapshot_report("ips-load", 0, 40, Some(2))
+            .unwrap();
+        assert_eq!(snapshot_report.key, "ips-load");
+        assert_eq!(snapshot_report.requested_count, Some(2));
+        assert_eq!(snapshot_report.returned_count, 2);
+        assert_eq!(snapshot_report.total_in_range, 3);
+        assert_eq!(snapshot_report.action_type_counts, vec![(7, 1)]);
+        assert_eq!(snapshot_report.table_id_counts, vec![(42, 1)]);
+        assert_eq!(snapshot_report.packed_timestamped_page_count, 2);
 
         table.risk_increment("risk", 10, 5).unwrap();
         table.risk_increment("risk", 20, -2).unwrap();

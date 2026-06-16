@@ -936,6 +936,29 @@ pub fn execute_redis_command_with_state(
                 count,
             }))
         }
+        "IPSSNAPSHOTREPORT" if args.len() == 4 || args.len() == 5 => {
+            let start_ms = match parse_u64(&args[2], "start_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let end_ms = match parse_u64(&args[3], "end_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let count = match args.get(4) {
+                Some(value) => match parse_usize(value, "count") {
+                    Ok(value) => Some(value),
+                    Err(err) => return RespValue::Error(err),
+                },
+                None => None,
+            };
+            ips_snapshot_report_response(execute(Command::IpsSnapshotReport {
+                key: string_arg(&args[1]),
+                start_ms,
+                end_ms,
+                count,
+            }))
+        }
         "IPSSTAT" if args.len() == 4 => {
             let start_ms = match parse_u64(&args[2], "start_ms") {
                 Ok(value) => value,
@@ -1594,7 +1617,42 @@ fn ips_stats_response(result: Result<CommandResponse, String>) -> RespValue {
     }
 }
 
+fn ips_snapshot_report_response(result: Result<CommandResponse, String>) -> RespValue {
+    match result {
+        Ok(CommandResponse::IpsSnapshotReport { report }) => RespValue::Array(vec![
+            RespValue::Bulk(Some(report.key.into_bytes())),
+            RespValue::Integer(report.start_ms as i64),
+            RespValue::Integer(report.end_ms as i64),
+            optional_usize_value(report.requested_count),
+            RespValue::Integer(report.returned_count as i64),
+            RespValue::Integer(report.total_in_range as i64),
+            optional_u64_value(report.first_timestamp_ms),
+            optional_u64_value(report.last_timestamp_ms),
+            count_pairs_u32_value(report.action_type_counts),
+            count_pairs_u64_value(report.table_id_counts),
+            RespValue::Integer(report.unique_page_ref_count as i64),
+            RespValue::Integer(report.packed_timestamped_page_count as i64),
+            RespValue::Array(
+                report
+                    .page_segment_ids
+                    .into_iter()
+                    .map(|segment_id| RespValue::Integer(segment_id as i64))
+                    .collect(),
+            ),
+        ]),
+        Ok(_) => RespValue::Error("ERR invalid ips snapshot report response".to_string()),
+        Err(err) => RespValue::Error(format!("ERR {err}")),
+    }
+}
+
 fn optional_u64_value(value: Option<u64>) -> RespValue {
+    match value {
+        Some(value) => RespValue::Integer(value as i64),
+        None => RespValue::Bulk(None),
+    }
+}
+
+fn optional_usize_value(value: Option<usize>) -> RespValue {
     match value {
         Some(value) => RespValue::Integer(value as i64),
         None => RespValue::Bulk(None),
@@ -2063,6 +2121,30 @@ mod tests {
                     RespValue::Integer(99),
                     RespValue::Integer(2),
                 ])]),
+            ])
+        );
+        assert_eq!(
+            run(vec!["IPSSNAPSHOTREPORT", "ips-opt", "0", "40", "1"]),
+            RespValue::Array(vec![
+                RespValue::Bulk(Some(b"ips-opt".to_vec())),
+                RespValue::Integer(0),
+                RespValue::Integer(40),
+                RespValue::Integer(1),
+                RespValue::Integer(1),
+                RespValue::Integer(2),
+                RespValue::Integer(10),
+                RespValue::Integer(20),
+                RespValue::Array(vec![
+                    RespValue::Array(vec![RespValue::Integer(7), RespValue::Integer(1)]),
+                    RespValue::Array(vec![RespValue::Integer(8), RespValue::Integer(1)]),
+                ]),
+                RespValue::Array(vec![RespValue::Array(vec![
+                    RespValue::Integer(99),
+                    RespValue::Integer(2),
+                ])]),
+                RespValue::Integer(2),
+                RespValue::Integer(2),
+                RespValue::Array(vec![RespValue::Integer(0)]),
             ])
         );
 
