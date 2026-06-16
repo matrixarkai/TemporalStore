@@ -6099,6 +6099,93 @@ fn execute_on_shard(
             }
             CommandResponse::HashEntries { entries }
         }
+        Command::RiskDebug {
+            key,
+            start_ms,
+            end_ms,
+        } => {
+            if remove_if_expired(shard, &key) {
+                mutated = true;
+                return ExecuteOutcome {
+                    response: CommandResponse::HashEntries {
+                        entries: Vec::new(),
+                    },
+                    mutated,
+                };
+            }
+            let mut entries = Vec::new();
+            entries.push(("key".to_string(), key.as_bytes().to_vec()));
+            entries.push(("start_ms".to_string(), start_ms.to_string().into_bytes()));
+            entries.push(("end_ms".to_string(), end_ms.to_string().into_bytes()));
+            for family in [RiskFamily::H, RiskFamily::Cpc, RiskFamily::Fol] {
+                let family_key = risk_family_key(family, &key);
+                let name = risk_family_name(family);
+                let series = shard.risk.get(&family_key);
+                let all_values = series
+                    .map(|series| series.values().copied().collect::<Vec<_>>())
+                    .unwrap_or_default();
+                let window = series
+                    .map(|series| {
+                        series
+                            .range(start_ms..=end_ms)
+                            .map(|(timestamp_ms, value)| (*timestamp_ms, *value))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                entries.push((
+                    format!("{name}_events"),
+                    all_values.len().to_string().into_bytes(),
+                ));
+                entries.push((
+                    format!("{name}_sum"),
+                    all_values.iter().sum::<i64>().to_string().into_bytes(),
+                ));
+                entries.push((
+                    format!("{name}_window_events"),
+                    window.len().to_string().into_bytes(),
+                ));
+                entries.push((
+                    format!("{name}_window_sum"),
+                    window
+                        .iter()
+                        .map(|(_, value)| *value)
+                        .sum::<i64>()
+                        .to_string()
+                        .into_bytes(),
+                ));
+                entries.push((
+                    format!("{name}_window_first_timestamp_ms"),
+                    window
+                        .first()
+                        .map(|(timestamp_ms, _)| timestamp_ms.to_string())
+                        .unwrap_or_default()
+                        .into_bytes(),
+                ));
+                entries.push((
+                    format!("{name}_window_last_timestamp_ms"),
+                    window
+                        .last()
+                        .map(|(timestamp_ms, _)| timestamp_ms.to_string())
+                        .unwrap_or_default()
+                        .into_bytes(),
+                ));
+            }
+            if let Some(fol) = shard.risk_fol.get(&key) {
+                entries.push(("fol_value".to_string(), fol.value.clone()));
+                entries.push((
+                    "fol_occur_time_ms".to_string(),
+                    fol.occur_time_ms.to_string().into_bytes(),
+                ));
+                entries.push((
+                    "fol_type".to_string(),
+                    match fol.fol_type {
+                        RiskFolType::First => b"first".to_vec(),
+                        RiskFolType::Last => b"last".to_vec(),
+                    },
+                ));
+            }
+            CommandResponse::HashEntries { entries }
+        }
     };
     ExecuteOutcome { response, mutated }
 }
@@ -7493,7 +7580,8 @@ fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::RiskDetail { .. }
         | Command::RiskFamilyQuery { .. }
         | Command::RiskFolQuery { .. }
-        | Command::RiskManager { .. } => Vec::new(),
+        | Command::RiskManager { .. }
+        | Command::RiskDebug { .. } => Vec::new(),
     }
 }
 
@@ -12033,6 +12121,43 @@ mod tests {
                     ("cpc_sum".to_string(), b"7".to_vec()),
                     ("fol_events".to_string(), b"1".to_vec()),
                     ("fol_sum".to_string(), b"11".to_vec()),
+                ],
+            }
+        );
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::RiskDebug {
+                        key: "risk-cpp".to_string(),
+                        start_ms: 0,
+                        end_ms: 15,
+                    },
+                })
+                .response,
+            CommandResponse::HashEntries {
+                entries: vec![
+                    ("key".to_string(), b"risk-cpp".to_vec()),
+                    ("start_ms".to_string(), b"0".to_vec()),
+                    ("end_ms".to_string(), b"15".to_vec()),
+                    ("h_events".to_string(), b"2".to_vec()),
+                    ("h_sum".to_string(), b"12".to_vec()),
+                    ("h_window_events".to_string(), b"1".to_vec()),
+                    ("h_window_sum".to_string(), b"5".to_vec()),
+                    ("h_window_first_timestamp_ms".to_string(), b"10".to_vec()),
+                    ("h_window_last_timestamp_ms".to_string(), b"10".to_vec()),
+                    ("cpc_events".to_string(), b"2".to_vec()),
+                    ("cpc_sum".to_string(), b"7".to_vec()),
+                    ("cpc_window_events".to_string(), b"1".to_vec()),
+                    ("cpc_window_sum".to_string(), b"3".to_vec()),
+                    ("cpc_window_first_timestamp_ms".to_string(), b"10".to_vec()),
+                    ("cpc_window_last_timestamp_ms".to_string(), b"10".to_vec()),
+                    ("fol_events".to_string(), b"1".to_vec()),
+                    ("fol_sum".to_string(), b"11".to_vec()),
+                    ("fol_window_events".to_string(), b"1".to_vec()),
+                    ("fol_window_sum".to_string(), b"11".to_vec()),
+                    ("fol_window_first_timestamp_ms".to_string(), b"10".to_vec()),
+                    ("fol_window_last_timestamp_ms".to_string(), b"10".to_vec()),
                 ],
             }
         );

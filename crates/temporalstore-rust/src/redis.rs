@@ -1264,6 +1264,21 @@ pub fn execute_redis_command_with_state(
         "RISKMANAGER" if args.len() == 2 => hash_entries_response(execute(Command::RiskManager {
             key: string_arg(&args[1]),
         })),
+        "RISKDEBUG" if args.len() == 4 => {
+            let start_ms = match parse_u64(&args[2], "start_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let end_ms = match parse_u64(&args[3], "end_ms") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            hash_entries_response(execute(Command::RiskDebug {
+                key: string_arg(&args[1]),
+                start_ms,
+                end_ms,
+            }))
+        }
         _ => RespValue::Error(format!("ERR unsupported command or arity: {command}")),
     }
 }
@@ -2302,6 +2317,25 @@ mod tests {
                 RespValue::Bulk(Some(b"11".to_vec())),
             ])
         );
+        let debug = run(vec!["RISKDEBUG", "risk-cpp", "0", "15"]);
+        let RespValue::Array(debug_entries) = debug else {
+            panic!("RISKDEBUG should return array");
+        };
+        assert!(debug_entries.windows(2).any(|pair| pair
+            == [
+                RespValue::Bulk(Some(b"key".to_vec())),
+                RespValue::Bulk(Some(b"risk-cpp".to_vec()))
+            ]));
+        assert!(debug_entries.windows(2).any(|pair| pair
+            == [
+                RespValue::Bulk(Some(b"h_window_events".to_vec())),
+                RespValue::Bulk(Some(b"1".to_vec()))
+            ]));
+        assert!(debug_entries.windows(2).any(|pair| pair
+            == [
+                RespValue::Bulk(Some(b"cpc_window_sum".to_vec())),
+                RespValue::Bulk(Some(b"3".to_vec()))
+            ]));
         assert_eq!(
             run(vec![
                 "FOLSET",

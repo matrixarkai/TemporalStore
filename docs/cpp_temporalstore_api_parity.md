@@ -110,16 +110,18 @@ Risk:
 - count/sum window -> `RiskCount`
 - aggregate query -> `RiskQuery` with `sum`, `min`, `max`, `first`, `last`, and `events`
 - detail list -> `RiskDetail`
-- C++-named family commands -> `RiskSet`, `RiskFamilyQuery`, `RiskSetAndGet`, and
-  `RiskManager` for the `h`, `cpc`, and `fol` risk families
+- C++-named family commands -> `RiskSet`, `RiskFamilyQuery`, `RiskSetAndGet`,
+  `RiskManager`, and `RiskDebug` for the `h`, `cpc`, and `fol` risk families
 - C++ FOL first/last string semantics -> `RiskFolSet` and `RiskFolQuery`, preserving the selected
   value by event timestamp rather than treating FOL as a numeric sum-only family
 - Typed client coverage: `risk_increment`, `risk_increment_with_options`, `risk_count`,
   `risk_query`, `risk_detail`, `risk_family_set`, `risk_family_query`,
-  `risk_family_set_and_get`, `risk_fol_set`, `risk_fol_query`, and `risk_manager`
+  `risk_family_set_and_get`, `risk_fol_set`, `risk_fol_query`, `risk_manager`, and
+  `risk_debug`
 - RESP coverage: `RISKINCR`, `RISKINCROPT`, `RISKCOUNT`, `RISKQUERY`, `RISKDETAIL`
   plus C++-style `RISKHSET`, `HQUERY`, `HSETANDGET`, `CPCSET`, `CPCQUERY`,
-  `CPCSETANDGET`, `FOLSET`, `FOLQUERY`, `FOLSETANDGET`, and `RISKMANAGER`.
+  `CPCSETANDGET`, `FOLSET`, `FOLQUERY`, `FOLSETANDGET`, `RISKMANAGER`, and
+  `RISKDEBUG`.
   `FOLSET key value occur_time_ms ttl_ms FIRST|LAST` and `FOLQUERY key` now model the C++ string
   first/last behavior; the older numeric FOL test shape remains for compatibility with the local
   simplified family shim.
@@ -168,9 +170,9 @@ Risk:
 - C++ risk has `HSET`, `HQUERY`, `CPCSET`, `CPCQUERY`, `FOLSET`, `FOLQUERY`,
   `HSETANDGET`, `FOLSETANDGET`, `CPCSETANDGET`, and `MANAGER`. Rust now covers
   those command shapes for local integer-window behavior, C++-style FOL first/last string selection,
-  and a manager summary.
+  a manager summary, and a debug report for full/window family counters and FOL metadata.
 - Missing C++ semantics include deeper CPC/list-specific internals and production
-  manager/debug operations beyond the local summary.
+  manager/debug operations beyond the local report.
 
 Feature:
 

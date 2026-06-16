@@ -1500,7 +1500,8 @@ fn proxy_command_key(command: &Command) -> Option<&str> {
         | Command::RiskFamilyQuery { key, .. }
         | Command::RiskFolSet { key, .. }
         | Command::RiskFolQuery { key }
-        | Command::RiskManager { key } => Some(key),
+        | Command::RiskManager { key }
+        | Command::RiskDebug { key, .. } => Some(key),
         Command::IpsBatchQueryLast { .. } | Command::SequenceBatchQuery { .. } => None,
     }
 }

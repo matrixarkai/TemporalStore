@@ -2608,6 +2608,28 @@ impl TemporalStoreTable {
         }
     }
 
+    pub fn risk_debug(
+        &self,
+        key: impl Into<String>,
+        start_ms: u64,
+        end_ms: u64,
+    ) -> Result<Vec<(String, Vec<u8>)>, ClientError> {
+        match self
+            .execute(Command::RiskDebug {
+                key: key.into(),
+                start_ms,
+                end_ms,
+            })?
+            .response
+        {
+            CommandResponse::HashEntries { entries } => Ok(entries),
+            response => Err(ClientError::UnexpectedResponse {
+                operation: "risk_debug",
+                response,
+            }),
+        }
+    }
+
     pub fn execute(&self, command: Command) -> Result<ExecuteResponse, ClientError> {
         self.client
             .inner
@@ -3252,7 +3274,8 @@ fn command_key(command: &Command) -> Option<&str> {
         | Command::RiskFamilyQuery { key, .. }
         | Command::RiskFolSet { key, .. }
         | Command::RiskFolQuery { key }
-        | Command::RiskManager { key } => Some(key),
+        | Command::RiskManager { key }
+        | Command::RiskDebug { key, .. } => Some(key),
         Command::IpsBatchQueryLast { .. } | Command::SequenceBatchQuery { .. } => None,
     }
 }
@@ -3664,6 +3687,11 @@ mod tests {
                 ("fol_sum".to_string(), b"11".to_vec()),
             ]
         );
+        let debug = table.risk_debug("risk-cpp", 0, 15).unwrap();
+        assert!(debug.contains(&("key".to_string(), b"risk-cpp".to_vec())));
+        assert!(debug.contains(&("h_window_events".to_string(), b"1".to_vec())));
+        assert!(debug.contains(&("cpc_window_sum".to_string(), b"3".to_vec())));
+        assert!(debug.contains(&("fol_window_last_timestamp_ms".to_string(), b"10".to_vec())));
 
         let mut pipeline = table.pipeline();
         assert!(pipeline.sync().unwrap().responses.is_empty());

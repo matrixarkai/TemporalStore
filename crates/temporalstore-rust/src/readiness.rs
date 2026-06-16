@@ -430,11 +430,14 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "IPS production snapshot report exposes range metadata, returned versus total counts, action/table server aggregations, and packed timestamped page evidence"
                     .to_string(),
+                "Risk debug report exposes H/CPC/FOL full and window counters plus FOL selection metadata through engine, typed client, and RESP"
+                    .to_string(),
             ],
             missing: vec![
                 "exact C++ Feature nested point/proto semantics and aggregate edge cases"
                     .to_string(),
-                "Risk production CPC/list internals and full manager/debug APIs".to_string(),
+                "Risk production CPC/list internals and deployment-specific manager/debug APIs"
+                    .to_string(),
             ],
         },
         ReadinessArea {

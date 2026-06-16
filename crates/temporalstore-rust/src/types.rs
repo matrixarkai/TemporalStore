@@ -539,6 +539,11 @@ pub enum Command {
     RiskManager {
         key: String,
     },
+    RiskDebug {
+        key: String,
+        start_ms: u64,
+        end_ms: u64,
+    },
 }
 
 fn encode_varint_field(out: &mut Vec<u8>, field_number: u64, value: u64) {
