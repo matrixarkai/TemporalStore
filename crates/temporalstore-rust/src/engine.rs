@@ -124,6 +124,13 @@ struct PackedFeaturePage {
     points: Vec<FeaturePoint>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+enum PackedFeaturePageDecode {
+    Legacy,
+    Packed(Vec<FeaturePoint>),
+    Corrupt(String),
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShardCompactionReport {
     pub shard_id: ShardId,
@@ -6101,62 +6108,50 @@ fn storage_feature_page_layout_report(
 
         for (address, indexed_timestamps) in timestamps_by_address {
             match page_store.read(&address) {
-                Ok(bytes) => {
-                    if bytes.starts_with(FEATURE_PAGE_MAGIC) {
-                        match decode_feature_page(&bytes) {
-                            Some(points) => {
-                                report.packed_feature_pages =
-                                    report.packed_feature_pages.saturating_add(1);
-                                let mut packed_timestamp_counts = BTreeMap::<u64, usize>::new();
-                                for point in &points {
-                                    let count = packed_timestamp_counts
-                                        .entry(point.timestamp_ms)
-                                        .or_default();
-                                    if *count == 1 {
-                                        report.duplicate_packed_timestamps.push(
-                                            feature_page_timestamp_mismatch(
-                                                key,
-                                                point.timestamp_ms,
-                                                &address,
-                                            ),
-                                        );
-                                    }
-                                    *count = (*count).saturating_add(1);
-                                }
-                                let packed_timestamps = points
-                                    .into_iter()
-                                    .map(|point| point.timestamp_ms)
-                                    .collect::<BTreeSet<_>>();
-                                for timestamp_ms in
-                                    indexed_timestamps.difference(&packed_timestamps).copied()
-                                {
-                                    report.missing_indexed_timestamps.push(
-                                        feature_page_timestamp_mismatch(
-                                            key,
-                                            timestamp_ms,
-                                            &address,
-                                        ),
-                                    );
-                                }
-                                for timestamp_ms in
-                                    packed_timestamps.difference(&indexed_timestamps).copied()
-                                {
-                                    report.orphan_packed_timestamps.push(
-                                        feature_page_timestamp_mismatch(
-                                            key,
-                                            timestamp_ms,
-                                            &address,
-                                        ),
-                                    );
-                                }
+                Ok(bytes) => match decode_feature_page_strict(&bytes) {
+                    PackedFeaturePageDecode::Packed(points) => {
+                        report.packed_feature_pages = report.packed_feature_pages.saturating_add(1);
+                        let mut packed_timestamp_counts = BTreeMap::<u64, usize>::new();
+                        for point in &points {
+                            let count = packed_timestamp_counts
+                                .entry(point.timestamp_ms)
+                                .or_default();
+                            if *count == 1 {
+                                report.duplicate_packed_timestamps.push(
+                                    feature_page_timestamp_mismatch(
+                                        key,
+                                        point.timestamp_ms,
+                                        &address,
+                                    ),
+                                );
                             }
-                            None => report.corrupt_packed_feature_pages.push(feature_page_error(
-                                key,
-                                &address,
-                                "invalid packed feature page",
-                            )),
+                            *count = (*count).saturating_add(1);
                         }
-                    } else {
+                        let packed_timestamps = points
+                            .into_iter()
+                            .map(|point| point.timestamp_ms)
+                            .collect::<BTreeSet<_>>();
+                        for timestamp_ms in
+                            indexed_timestamps.difference(&packed_timestamps).copied()
+                        {
+                            report
+                                .missing_indexed_timestamps
+                                .push(feature_page_timestamp_mismatch(key, timestamp_ms, &address));
+                        }
+                        for timestamp_ms in
+                            packed_timestamps.difference(&indexed_timestamps).copied()
+                        {
+                            report
+                                .orphan_packed_timestamps
+                                .push(feature_page_timestamp_mismatch(key, timestamp_ms, &address));
+                        }
+                    }
+                    PackedFeaturePageDecode::Corrupt(error) => {
+                        report
+                            .corrupt_packed_feature_pages
+                            .push(feature_page_error(key, &address, error));
+                    }
+                    PackedFeaturePageDecode::Legacy => {
                         report.legacy_feature_value_pages =
                             report.legacy_feature_value_pages.saturating_add(1);
                         if indexed_timestamps.len() > 1 {
@@ -6167,7 +6162,7 @@ fn storage_feature_page_layout_report(
                             ));
                         }
                     }
-                }
+                },
                 Err(err) => report.corrupt_packed_feature_pages.push(feature_page_error(
                     key,
                     &address,
@@ -6398,13 +6393,14 @@ fn read_sequence_row(
     address: &PageAddress,
 ) -> Option<SequenceFeatureRow> {
     let bytes = read_page_bytes(cache, page_store, shard_id, address)?;
-    if let Some(points) = decode_feature_page(&bytes) {
-        return points
+    match decode_feature_page_strict(&bytes) {
+        PackedFeaturePageDecode::Packed(points) => points
             .into_iter()
             .find(|point| point.timestamp_ms == timestamp_ms)
-            .and_then(|point| serde_json::from_slice(&point.value).ok());
+            .and_then(|point| serde_json::from_slice(&point.value).ok()),
+        PackedFeaturePageDecode::Legacy => serde_json::from_slice(&bytes).ok(),
+        PackedFeaturePageDecode::Corrupt(_) => None,
     }
-    serde_json::from_slice(&bytes).ok()
 }
 
 fn sequence_filter_matches(row: &SequenceFeatureRow, filter: &FeatureFilter) -> bool {
@@ -6706,10 +6702,33 @@ fn chunk_timestamped_kv_points(points: Vec<FeaturePoint>) -> Vec<Vec<FeaturePoin
     chunks
 }
 
+#[cfg(test)]
 fn decode_feature_page(bytes: &[u8]) -> Option<Vec<FeaturePoint>> {
-    let payload = bytes.strip_prefix(FEATURE_PAGE_MAGIC)?;
-    let page = serde_json::from_slice::<PackedFeaturePage>(payload).ok()?;
-    (page.version == 1).then_some(page.points)
+    match decode_feature_page_strict(bytes) {
+        PackedFeaturePageDecode::Packed(points) => Some(points),
+        PackedFeaturePageDecode::Legacy | PackedFeaturePageDecode::Corrupt(_) => None,
+    }
+}
+
+fn decode_feature_page_strict(bytes: &[u8]) -> PackedFeaturePageDecode {
+    let Some(payload) = bytes.strip_prefix(FEATURE_PAGE_MAGIC) else {
+        return PackedFeaturePageDecode::Legacy;
+    };
+    let page = match serde_json::from_slice::<PackedFeaturePage>(payload) {
+        Ok(page) => page,
+        Err(err) => {
+            return PackedFeaturePageDecode::Corrupt(format!(
+                "invalid packed feature page payload: {err}"
+            ));
+        }
+    };
+    if page.version != 1 {
+        return PackedFeaturePageDecode::Corrupt(format!(
+            "unsupported packed feature page version {}",
+            page.version
+        ));
+    }
+    PackedFeaturePageDecode::Packed(page.points)
 }
 
 fn read_feature_point(
@@ -6720,15 +6739,16 @@ fn read_feature_point(
     address: &PageAddress,
 ) -> Option<FeaturePoint> {
     let bytes = read_page_bytes(cache, page_store, shard_id, address)?;
-    if let Some(points) = decode_feature_page(&bytes) {
-        return points
+    match decode_feature_page_strict(&bytes) {
+        PackedFeaturePageDecode::Packed(points) => points
             .into_iter()
-            .find(|point| point.timestamp_ms == timestamp_ms);
+            .find(|point| point.timestamp_ms == timestamp_ms),
+        PackedFeaturePageDecode::Legacy => Some(FeaturePoint {
+            timestamp_ms,
+            value: bytes,
+        }),
+        PackedFeaturePageDecode::Corrupt(_) => None,
     }
-    Some(FeaturePoint {
-        timestamp_ms,
-        value: bytes,
-    })
 }
 
 fn cache_entry_routing_slot(entry: &CacheEntryInfo) -> Option<u32> {
@@ -8954,6 +8974,53 @@ mod tests {
     }
 
     #[test]
+    fn feature_append_keeps_oversized_single_timestamped_value_readable() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let points = vec![FeaturePoint {
+            timestamp_ms: 1_000,
+            value: vec![b'x'; TIMESTAMPED_KV_PAGE_TARGET_BYTES + 8 * 1024],
+        }];
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureAppend {
+                key: "oversized-single-feature".to_string(),
+                points: points.clone(),
+            },
+        });
+        assert!(response.status.ok);
+
+        let addresses = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let series = shards
+                .get(&1)
+                .and_then(|shard| shard.features.get("oversized-single-feature"))
+                .expect("feature series should exist");
+            unique_timestamped_kv_page_addresses(series)
+        };
+        assert_eq!(addresses.len(), 1);
+        let bytes = engine.page_store().read(&addresses[0]).unwrap();
+        assert!(bytes.len() > TIMESTAMPED_KV_PAGE_TARGET_BYTES);
+        assert_eq!(decode_feature_page(&bytes).unwrap(), points);
+
+        let query = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureQuery {
+                key: "oversized-single-feature".to_string(),
+                start_ms: 0,
+                end_ms: 2_000,
+                count: None,
+            },
+        });
+        assert_eq!(query.response, CommandResponse::FeaturePoints { points });
+        assert!(
+            engine
+                .storage_production_readiness_report(1)
+                .production_ready
+        );
+    }
+
+    #[test]
     fn sequence_add_packs_many_timestamp_values_into_one_page() {
         let engine = TemporalEngine::default();
         engine.load_shard(1);
@@ -9257,6 +9324,105 @@ mod tests {
             .blockers
             .contains(&"feature_page_layout_mismatch".to_string()));
         assert_eq!(readiness.feature_page_layout_mismatch_count, 1);
+    }
+
+    #[test]
+    fn feature_recovery_reports_corrupt_packed_timestamped_page() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let mut corrupt_page = FEATURE_PAGE_MAGIC.to_vec();
+        corrupt_page.extend_from_slice(br#"{"version":1,"points":"not-a-point-list"}"#);
+        let address = engine
+            .page_store()
+            .append_with_page_metadata(
+                &corrupt_page,
+                Some(stable_page_object_id(1, "feature", "corrupt-feature", None)),
+                Some(page_routing_slot("corrupt-feature", 0, u32::MAX)),
+            )
+            .expect("corrupt packed page append");
+
+        {
+            let mut shards = engine.shards.write().expect("engine lock poisoned");
+            let shard = shards.get_mut(&1).expect("loaded shard");
+            shard
+                .features
+                .entry("corrupt-feature".to_string())
+                .or_default()
+                .insert(10, address);
+        }
+
+        let query = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureQuery {
+                key: "corrupt-feature".to_string(),
+                start_ms: 0,
+                end_ms: 20,
+                count: None,
+            },
+        });
+        assert_eq!(
+            query.response,
+            CommandResponse::FeaturePoints { points: vec![] }
+        );
+
+        let readiness = engine.storage_production_readiness_report(1);
+        assert!(!readiness.production_ready);
+        assert!(readiness
+            .blockers
+            .contains(&"feature_page_layout_mismatch".to_string()));
+        assert_eq!(readiness.corrupt_feature_page_count, 1);
+        assert!(
+            readiness.feature_page_layout.corrupt_packed_feature_pages[0]
+                .error
+                .contains("invalid packed feature page payload")
+        );
+    }
+
+    #[test]
+    fn feature_recovery_reports_unsupported_packed_timestamped_page_version() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let page = PackedFeaturePage {
+            version: 2,
+            points: vec![FeaturePoint {
+                timestamp_ms: 10,
+                value: b"ten".to_vec(),
+            }],
+        };
+        let mut bytes = FEATURE_PAGE_MAGIC.to_vec();
+        bytes.extend_from_slice(&serde_json::to_vec(&page).unwrap());
+        let address = engine
+            .page_store()
+            .append_with_page_metadata(
+                &bytes,
+                Some(stable_page_object_id(
+                    1,
+                    "feature",
+                    "versioned-feature",
+                    None,
+                )),
+                Some(page_routing_slot("versioned-feature", 0, u32::MAX)),
+            )
+            .expect("unsupported packed page append");
+
+        {
+            let mut shards = engine.shards.write().expect("engine lock poisoned");
+            let shard = shards.get_mut(&1).expect("loaded shard");
+            shard
+                .features
+                .entry("versioned-feature".to_string())
+                .or_default()
+                .insert(10, address);
+        }
+
+        let readiness = engine.storage_production_readiness_report(1);
+        assert!(!readiness.production_ready);
+        assert_eq!(readiness.corrupt_feature_page_count, 1);
+        assert!(
+            readiness.feature_page_layout.corrupt_packed_feature_pages[0]
+                .error
+                .contains("unsupported packed feature page version 2")
+        );
     }
 
     #[test]

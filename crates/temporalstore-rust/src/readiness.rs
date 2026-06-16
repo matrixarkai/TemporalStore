@@ -393,6 +393,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "chunked timestamped KV page format is covered by sync and async shared-store replay plus Raft follower-read replication tests"
                     .to_string(),
+                "chunked timestamped KV page recovery strictly rejects malformed or unsupported packed-page payloads"
+                    .to_string(),
             ],
             missing: vec![
                 "binary/protobuf oplog and index-log compatibility".to_string(),
@@ -413,6 +415,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "feature writes pack many timestamp/value entries into one page and the timestamp index shares that page address, matching the C++ storage shape"
                     .to_string(),
                 "large timestamped KV writes split into persisted page chunks while preserving per-timestamp reads"
+                    .to_string(),
+                "oversized single timestamped values remain readable as one packed page without creating empty chunks"
                     .to_string(),
                 "IPS load/snapshot/stat/filter subset and Risk subset with typed client and RESP coverage"
                     .to_string(),
