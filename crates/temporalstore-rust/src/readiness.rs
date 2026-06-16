@@ -279,6 +279,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "chunked snapshot message assembly and stale snapshot rejection are tested"
                     .to_string(),
+                "chunked timestamped KV commands round-trip through the data-Raft command codec and snapshot install rebuilds packed page layout"
+                    .to_string(),
                 "distributed append failures fall back to post-commit snapshot install for lagging followers"
                     .to_string(),
                 "external snapshot transfer policy, leader upload, metaserver snapshot-ref recording, URI download, install, and Raft catch-up are tested"

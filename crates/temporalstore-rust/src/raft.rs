@@ -7785,6 +7785,29 @@ mod tests {
     }
 
     #[test]
+    fn data_raft_command_codec_round_trips_chunked_timestamped_kv_payload() {
+        let points = large_feature_points();
+        let entry = DataRaftCommandCodecEntry {
+            shard_id: 1,
+            raft_index: 11,
+            request_id: 42,
+            commands: vec![Command::FeatureAppend {
+                key: "codec-chunked-feature".to_string(),
+                points: points.clone(),
+            }],
+        };
+
+        let bytes = serialize_data_raft_command(&entry).unwrap();
+        let decoded = parse_data_raft_command(&bytes).unwrap();
+        assert_eq!(decoded, entry);
+        assert!(matches!(
+            decoded.commands.first(),
+            Some(Command::FeatureAppend { key, points: decoded_points })
+                if key == "codec-chunked-feature" && decoded_points == &points
+        ));
+    }
+
+    #[test]
     fn cpp_data_raft_replication_rejects_invalid_command_payload() {
         assert!(matches!(
             parse_data_raft_command(b"bad"),
@@ -8071,6 +8094,56 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn raft_snapshot_install_preserves_chunked_timestamped_kv_page_format() {
+        let config = RaftConfig {
+            max_memory_replicate_log_bytes: 512 * 1024,
+            ..RaftConfig::default()
+        };
+        let cluster = RaftCluster::new_single_shard_with_config(1, [1, 2, 3], config).unwrap();
+        let points = large_feature_points();
+
+        cluster
+            .propose(Command::FeatureAppend {
+                key: "snapshot-chunked-feature".to_string(),
+                points: points.clone(),
+            })
+            .unwrap();
+
+        let snapshot = cluster.build_install_snapshot_request(3).unwrap().snapshot;
+        cluster.install_snapshot(3, snapshot).unwrap();
+
+        assert_eq!(
+            cluster
+                .read_from_replica(
+                    3,
+                    Command::FeatureQuery {
+                        key: "snapshot-chunked-feature".to_string(),
+                        start_ms: 0,
+                        end_ms: 2_000,
+                        count: None,
+                    },
+                )
+                .unwrap(),
+            CommandResponse::FeaturePoints {
+                points: points.clone()
+            }
+        );
+
+        let inner = cluster.inner.read().expect("raft cluster lock poisoned");
+        let node = inner.nodes.get(&3).expect("snapshot target exists");
+        let layout = node
+            .engine
+            .storage_recovery_report(inner.shard_id)
+            .feature_page_layout;
+        assert!(layout.packed_feature_pages > 1);
+        assert_eq!(layout.indexed_feature_points, points.len());
+        assert!(layout.corrupt_packed_feature_pages.is_empty());
+        assert!(layout.missing_indexed_timestamps.is_empty());
+        assert!(layout.orphan_packed_timestamps.is_empty());
+        assert!(layout.duplicate_packed_timestamps.is_empty());
     }
 
     #[test]
