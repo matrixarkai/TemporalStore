@@ -23,6 +23,14 @@ This validates the JSON schema and runs:
 cargo test -p temporalstore-rust --test unified_temporalstore_corpus -- --test-threads=1
 ```
 
+The Rust integration test executes every corpus step twice:
+
+- directly through `TemporalEngine`
+- through `TemporalStoreClient` and `TemporalStoreTable::execute` over the local
+  HTTP API
+
+Both paths also exercise restart reads against the same page/index directories.
+
 ## C++
 
 The C++ codebase should provide a corpus runner that accepts the JSON path as
