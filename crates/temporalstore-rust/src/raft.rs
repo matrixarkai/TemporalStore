@@ -8065,6 +8065,16 @@ mod tests {
         };
         let cluster = RaftCluster::new_single_shard_with_config(1, [1, 2, 3], config).unwrap();
         let points = large_feature_points();
+        let ips_points = vec![
+            FeaturePoint {
+                timestamp_ms: 101,
+                value: b"ips-101".to_vec(),
+            },
+            FeaturePoint {
+                timestamp_ms: 202,
+                value: b"ips-202".to_vec(),
+            },
+        ];
 
         cluster
             .propose(Command::FeatureAppend {
@@ -8072,11 +8082,17 @@ mod tests {
                 points: points.clone(),
             })
             .unwrap();
+        cluster
+            .propose(Command::IpsLoad {
+                key: "chunked-raft-ips".to_string(),
+                points: ips_points.clone(),
+            })
+            .unwrap();
 
         cluster.catch_up(2).unwrap();
         cluster.catch_up(3).unwrap();
         for node_id in [1, 2, 3] {
-            assert_eq!(cluster.commit_index(node_id).unwrap(), 1);
+            assert_eq!(cluster.commit_index(node_id).unwrap(), 2);
             assert_eq!(
                 cluster
                     .read_from_replica(
@@ -8093,6 +8109,22 @@ mod tests {
                     points: points.clone()
                 }
             );
+            assert_eq!(
+                cluster
+                    .read_from_replica(
+                        node_id,
+                        Command::IpsQueryRange {
+                            key: "chunked-raft-ips".to_string(),
+                            start_ms: 0,
+                            end_ms: 300,
+                            count: None,
+                        },
+                    )
+                    .unwrap(),
+                CommandResponse::FeaturePoints {
+                    points: ips_points.clone()
+                }
+            );
         }
     }
 
@@ -8104,11 +8136,27 @@ mod tests {
         };
         let cluster = RaftCluster::new_single_shard_with_config(1, [1, 2, 3], config).unwrap();
         let points = large_feature_points();
+        let ips_points = vec![
+            FeaturePoint {
+                timestamp_ms: 303,
+                value: b"ips-303".to_vec(),
+            },
+            FeaturePoint {
+                timestamp_ms: 404,
+                value: b"ips-404".to_vec(),
+            },
+        ];
 
         cluster
             .propose(Command::FeatureAppend {
                 key: "snapshot-chunked-feature".to_string(),
                 points: points.clone(),
+            })
+            .unwrap();
+        cluster
+            .propose(Command::IpsLoad {
+                key: "snapshot-chunked-ips".to_string(),
+                points: ips_points.clone(),
             })
             .unwrap();
 
@@ -8129,6 +8177,22 @@ mod tests {
                 .unwrap(),
             CommandResponse::FeaturePoints {
                 points: points.clone()
+            }
+        );
+        assert_eq!(
+            cluster
+                .read_from_replica(
+                    3,
+                    Command::IpsQueryRange {
+                        key: "snapshot-chunked-ips".to_string(),
+                        start_ms: 0,
+                        end_ms: 500,
+                        count: None,
+                    },
+                )
+                .unwrap(),
+            CommandResponse::FeaturePoints {
+                points: ips_points.clone()
             }
         );
 

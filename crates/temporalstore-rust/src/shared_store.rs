@@ -1274,6 +1274,28 @@ mod tests {
             .unwrap();
         assert!(sync_report.published);
         assert!(!sync_report.queued);
+        let sync_ips_points = vec![
+            FeaturePoint {
+                timestamp_ms: 101,
+                value: b"sync-ips-101".to_vec(),
+            },
+            FeaturePoint {
+                timestamp_ms: 202,
+                value: b"sync-ips-202".to_vec(),
+            },
+        ];
+        let sync_ips_report = sync_writer
+            .write(
+                1,
+                Command::IpsLoad {
+                    key: "sync-chunked-ips".to_string(),
+                    points: sync_ips_points.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(sync_ips_report.published);
+        assert!(!sync_ips_report.queued);
 
         let sync_follower = TemporalEngine::with_local_dirs(
             1024 * 1024,
@@ -1288,8 +1310,8 @@ mod tests {
                 .await
                 .unwrap(),
             ReplayReport {
-                applied: 1,
-                last_oplog_index: 1,
+                applied: 2,
+                last_oplog_index: 2,
             }
         );
         assert_eq!(
@@ -1308,6 +1330,22 @@ mod tests {
                 points: points.clone()
             }
         );
+        assert_eq!(
+            sync_follower
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::IpsQueryRange {
+                        key: "sync-chunked-ips".to_string(),
+                        start_ms: 0,
+                        end_ms: 300,
+                        count: None,
+                    },
+                })
+                .response,
+            CommandResponse::FeaturePoints {
+                points: sync_ips_points
+            }
+        );
 
         let async_writer = replicator.storage_writer(SharedStoreStorageMode::Async, 10);
         let async_report = async_writer
@@ -1322,13 +1360,35 @@ mod tests {
             .unwrap();
         assert!(async_report.queued);
         assert!(!async_report.published);
-        assert_eq!(async_writer.queued_len(), 1);
+        let async_ips_points = vec![
+            FeaturePoint {
+                timestamp_ms: 303,
+                value: b"async-ips-303".to_vec(),
+            },
+            FeaturePoint {
+                timestamp_ms: 404,
+                value: b"async-ips-404".to_vec(),
+            },
+        ];
+        let async_ips_report = async_writer
+            .write(
+                1,
+                Command::IpsLoad {
+                    key: "async-chunked-ips".to_string(),
+                    points: async_ips_points.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(async_ips_report.queued);
+        assert!(!async_ips_report.published);
+        assert_eq!(async_writer.queued_len(), 2);
         assert_eq!(
             async_writer.flush_pending(10).await.unwrap(),
             SharedStoreFlushReport {
-                flushed: 1,
+                flushed: 2,
                 remaining: 0,
-                last_oplog_index: 10,
+                last_oplog_index: 11,
             }
         );
 
@@ -1345,8 +1405,8 @@ mod tests {
                 .await
                 .unwrap(),
             ReplayReport {
-                applied: 1,
-                last_oplog_index: 10,
+                applied: 2,
+                last_oplog_index: 11,
             }
         );
         assert_eq!(
@@ -1362,6 +1422,22 @@ mod tests {
                 })
                 .response,
             CommandResponse::FeaturePoints { points }
+        );
+        assert_eq!(
+            async_follower
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::IpsQueryRange {
+                        key: "async-chunked-ips".to_string(),
+                        start_ms: 0,
+                        end_ms: 500,
+                        count: None,
+                    },
+                })
+                .response,
+            CommandResponse::FeaturePoints {
+                points: async_ips_points
+            }
         );
     }
 

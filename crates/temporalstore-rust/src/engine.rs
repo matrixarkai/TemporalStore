@@ -3942,43 +3942,21 @@ impl TemporalEngine {
             )?;
         }
         for series in shard.ips.values_mut() {
-            compact_page_addresses(
+            compact_feature_page_addresses(
                 &self.page_store,
                 &self.cache,
                 shard_id,
-                series.values_mut(),
+                series,
                 &mut rewritten_page_refs,
             )?;
         }
-        for (key, series) in &mut shard.ips_meta {
-            for (timestamp, meta) in series {
-                let bytes = read_page_bytes(&self.cache, &self.page_store, shard_id, &meta.address)
-                    .ok_or_else(|| {
-                        Status::error(
-                            "page_compaction_failed",
-                            format!("missing IPS page for {key}@{timestamp}"),
-                        )
-                    })?;
-                let new_address = self
-                    .page_store
-                    .append_with_page_metadata(
-                        &bytes,
-                        meta.address.object_id,
-                        meta.address.routing_slot,
-                    )
-                    .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
-                meta.address = new_address.clone();
-                let _ = self.cache.put(
-                    CacheKey::page_with_slot(
-                        shard_id,
-                        new_address.page_segment_id,
-                        new_address.offset,
-                        new_address.length,
-                        new_address.routing_slot,
-                    ),
-                    bytes,
-                );
-                rewritten_page_refs += 1;
+        for (key, meta_series) in &mut shard.ips_meta {
+            if let Some(address_series) = shard.ips.get(key) {
+                for (timestamp, meta) in meta_series {
+                    if let Some(address) = address_series.get(timestamp) {
+                        meta.address = address.clone();
+                    }
+                }
             }
         }
 
@@ -5416,18 +5394,24 @@ fn execute_on_shard(
             instance,
         } => {
             remove_if_expired(shard, &key);
-            let timestamp = timestamp_ms.to_string();
-            let object_id = stable_page_object_id(shard_id, "ips", &key, Some(&timestamp));
             let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
-            if let Ok(address) = append_value(
+            if let Ok(addresses) = append_timestamped_kv_pages(
                 cache,
                 page_store,
                 shard_id,
-                &instance,
-                Some(object_id),
-                Some(routing_slot),
+                "ips",
+                &key,
+                vec![FeaturePoint {
+                    timestamp_ms,
+                    value: instance,
+                }],
+                routing_slot,
                 async_storage,
             ) {
+                let address = addresses
+                    .into_iter()
+                    .find_map(|(timestamp, address)| (timestamp == timestamp_ms).then_some(address))
+                    .expect("single IPS timestamped page ref should exist");
                 shard
                     .ips
                     .entry(key.clone())
@@ -5467,18 +5451,24 @@ fn execute_on_shard(
                     };
                 }
             }
-            let timestamp = timestamp_ms.to_string();
-            let object_id = stable_page_object_id(shard_id, "ips", &key, Some(&timestamp));
             let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
-            if let Ok(address) = append_value(
+            if let Ok(addresses) = append_timestamped_kv_pages(
                 cache,
                 page_store,
                 shard_id,
-                &instance,
-                Some(object_id),
-                Some(routing_slot),
+                "ips",
+                &key,
+                vec![FeaturePoint {
+                    timestamp_ms,
+                    value: instance,
+                }],
+                routing_slot,
                 async_storage,
             ) {
+                let address = addresses
+                    .into_iter()
+                    .find_map(|(timestamp, address)| (timestamp == timestamp_ms).then_some(address))
+                    .expect("single IPS timestamped page ref should exist");
                 shard
                     .ips
                     .entry(key.clone())
@@ -5508,27 +5498,27 @@ fn execute_on_shard(
         }
         Command::IpsLoad { key, points } => {
             remove_if_expired(shard, &key);
-            let mut loaded = 0i64;
             let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
-            for point in points {
-                let timestamp = point.timestamp_ms.to_string();
-                let object_id = stable_page_object_id(shard_id, "ips", &key, Some(&timestamp));
-                if let Ok(address) = append_value(
-                    cache,
-                    page_store,
-                    shard_id,
-                    &point.value,
-                    Some(object_id),
-                    Some(routing_slot),
-                    async_storage,
-                ) {
+            let points = sorted_feature_points(points);
+            let mut loaded = 0i64;
+            if let Ok(addresses) = append_timestamped_kv_pages(
+                cache,
+                page_store,
+                shard_id,
+                "ips",
+                &key,
+                points,
+                routing_slot,
+                async_storage,
+            ) {
+                for (timestamp_ms, address) in addresses {
                     shard
                         .ips
                         .entry(key.clone())
                         .or_default()
-                        .insert(point.timestamp_ms, address.clone());
+                        .insert(timestamp_ms, address.clone());
                     shard.ips_meta.entry(key.clone()).or_default().insert(
-                        point.timestamp_ms,
+                        timestamp_ms,
                         IpsPointMeta {
                             address,
                             action_type: None,
@@ -5536,8 +5526,8 @@ fn execute_on_shard(
                             request_id: None,
                         },
                     );
-                    loaded += 1;
                     mutated = true;
+                    loaded += 1;
                 }
             }
             CommandResponse::Integer { value: loaded }
@@ -5559,12 +5549,7 @@ fn execute_on_shard(
                         .rev()
                         .take(count)
                         .filter_map(|(timestamp_ms, address)| {
-                            read_page_bytes(cache, page_store, shard_id, address).map(|value| {
-                                FeaturePoint {
-                                    timestamp_ms: *timestamp_ms,
-                                    value,
-                                }
-                            })
+                            read_feature_point(cache, page_store, shard_id, *timestamp_ms, address)
                         })
                         .collect()
                 })
@@ -5607,11 +5592,12 @@ fn execute_on_shard(
                                 .rev()
                                 .take(count)
                                 .filter_map(|(timestamp_ms, address)| {
-                                    read_page_bytes(cache, page_store, shard_id, address).map(
-                                        |value| FeaturePoint {
-                                            timestamp_ms: *timestamp_ms,
-                                            value,
-                                        },
+                                    read_feature_point(
+                                        cache,
+                                        page_store,
+                                        shard_id,
+                                        *timestamp_ms,
+                                        address,
                                     )
                                 })
                                 .collect()
@@ -6194,9 +6180,6 @@ fn collect_live_page_segment_ids(shard: &ShardState) -> BTreeSet<u64> {
     for series in shard.ips.values() {
         ids.extend(series.values().map(|address| address.page_segment_id));
     }
-    for series in shard.ips_meta.values() {
-        ids.extend(series.values().map(|meta| meta.address.page_segment_id));
-    }
     ids
 }
 
@@ -6364,20 +6347,16 @@ fn collect_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
         );
     }
     for (key, series) in &shard.ips {
-        entries.extend(series.iter().map(|(timestamp_ms, address)| LivePageEntry {
-            object_key: key.clone(),
-            kind: "ips",
-            component: Some(timestamp_ms.to_string()),
-            address: address.clone(),
-        }));
-    }
-    for (key, series) in &shard.ips_meta {
-        entries.extend(series.iter().map(|(timestamp_ms, meta)| LivePageEntry {
-            object_key: key.clone(),
-            kind: "ips",
-            component: Some(timestamp_ms.to_string()),
-            address: meta.address.clone(),
-        }));
+        entries.extend(
+            unique_timestamped_kv_page_addresses(series)
+                .into_iter()
+                .map(|address| LivePageEntry {
+                    object_key: key.clone(),
+                    kind: "ips",
+                    component: None,
+                    address,
+                }),
+        );
     }
     entries
 }
@@ -6584,10 +6563,7 @@ fn collect_live_page_addresses(shard: &ShardState) -> Vec<PageAddress> {
         addresses.extend(unique_timestamped_kv_page_addresses(series));
     }
     for series in shard.ips.values() {
-        addresses.extend(series.values().cloned());
-    }
-    for series in shard.ips_meta.values() {
-        addresses.extend(series.values().map(|meta| meta.address.clone()));
+        addresses.extend(unique_timestamped_kv_page_addresses(series));
     }
     addresses
 }
@@ -7050,12 +7026,7 @@ fn ips_points_in_range(
                 .range(start_ms..=end_ms)
                 .take(count.unwrap_or(usize::MAX))
                 .filter_map(|(timestamp_ms, address)| {
-                    read_page_bytes(cache, page_store, shard_id, address).map(|value| {
-                        FeaturePoint {
-                            timestamp_ms: *timestamp_ms,
-                            value,
-                        }
-                    })
+                    read_feature_point(cache, page_store, shard_id, *timestamp_ms, address)
                 })
                 .collect()
         })
@@ -7091,10 +7062,7 @@ fn ips_points_in_range_with_options(
         })
         .take(count.unwrap_or(usize::MAX))
         .filter_map(|(timestamp_ms, meta)| {
-            read_page_bytes(cache, page_store, shard_id, &meta.address).map(|value| FeaturePoint {
-                timestamp_ms: *timestamp_ms,
-                value,
-            })
+            read_feature_point(cache, page_store, shard_id, *timestamp_ms, &meta.address)
         })
         .collect()
 }
@@ -7786,7 +7754,7 @@ mod tests {
         let ids = collect_live_page_segment_ids(&shard)
             .into_iter()
             .collect::<Vec<_>>();
-        assert_eq!(ids, vec![7, 8, 9, 10, 11, 12, 13]);
+        assert_eq!(ids, vec![7, 8, 9, 10, 11, 12]);
     }
 
     #[test]
@@ -11567,6 +11535,142 @@ mod tests {
                     table_id_counts: vec![(42, 1), (43, 1)],
                 }
             }
+        );
+    }
+
+    #[test]
+    fn ips_pages_store_timestamp_keys_with_values() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::IpsLoad {
+                        key: "packed-ips".to_string(),
+                        points: vec![
+                            FeaturePoint {
+                                timestamp_ms: 10,
+                                value: b"ten".to_vec(),
+                            },
+                            FeaturePoint {
+                                timestamp_ms: 20,
+                                value: b"twenty".to_vec(),
+                            },
+                        ],
+                    },
+                })
+                .status
+                .ok
+        );
+
+        let (first_address, second_address, meta_address) = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("loaded shard");
+            let series = shard.ips.get("packed-ips").expect("IPS series");
+            let meta = shard.ips_meta.get("packed-ips").expect("IPS metadata");
+            (
+                series.get(&10).expect("first IPS point").clone(),
+                series.get(&20).expect("second IPS point").clone(),
+                meta.get(&20).expect("second IPS metadata").address.clone(),
+            )
+        };
+        assert_eq!(first_address, second_address);
+        assert_eq!(second_address, meta_address);
+        assert_eq!(
+            first_address.object_id,
+            Some(stable_page_object_id(1, "ips", "packed-ips", None))
+        );
+
+        let bytes = engine.page_store().read(&first_address).unwrap();
+        let packed_points = decode_feature_page(&bytes).expect("packed IPS page");
+        assert_eq!(
+            packed_points,
+            vec![
+                FeaturePoint {
+                    timestamp_ms: 10,
+                    value: b"ten".to_vec(),
+                },
+                FeaturePoint {
+                    timestamp_ms: 20,
+                    value: b"twenty".to_vec(),
+                },
+            ]
+        );
+
+        let query = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::IpsQueryRange {
+                key: "packed-ips".to_string(),
+                start_ms: 0,
+                end_ms: 30,
+                count: None,
+            },
+        });
+        assert_eq!(
+            query.response,
+            CommandResponse::FeaturePoints {
+                points: packed_points
+            }
+        );
+    }
+
+    #[test]
+    fn ips_compaction_rewrites_shared_timestamped_page_once() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::IpsLoad {
+                        key: "compact-ips".to_string(),
+                        points: vec![
+                            FeaturePoint {
+                                timestamp_ms: 10,
+                                value: b"ten".to_vec(),
+                            },
+                            FeaturePoint {
+                                timestamp_ms: 20,
+                                value: b"twenty".to_vec(),
+                            },
+                        ],
+                    },
+                })
+                .response,
+            CommandResponse::Integer { value: 2 }
+        );
+
+        let report = engine.compact_shard_pages(1).unwrap();
+        assert_eq!(report.rewritten_page_refs, 1);
+
+        let (first_address, second_address, meta_address) = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("loaded shard");
+            let series = shard.ips.get("compact-ips").expect("IPS series");
+            let meta = shard.ips_meta.get("compact-ips").expect("IPS metadata");
+            (
+                series.get(&10).expect("first IPS point").clone(),
+                series.get(&20).expect("second IPS point").clone(),
+                meta.get(&20).expect("second IPS metadata").address.clone(),
+            )
+        };
+        assert_eq!(first_address, second_address);
+        assert_eq!(second_address, meta_address);
+        let bytes = engine.page_store().read(&first_address).unwrap();
+        assert_eq!(
+            decode_feature_page(&bytes).expect("packed IPS page"),
+            vec![
+                FeaturePoint {
+                    timestamp_ms: 10,
+                    value: b"ten".to_vec(),
+                },
+                FeaturePoint {
+                    timestamp_ms: 20,
+                    value: b"twenty".to_vec(),
+                },
+            ]
         );
     }
 
