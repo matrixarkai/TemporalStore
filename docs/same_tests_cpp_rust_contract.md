@@ -133,6 +133,27 @@ TS_CPP_UNIFIED_NATIVE_CMD='/path/to/cpp_temporalstore_corpus_runner {corpus}' \
   python3 tools/run_temporalstore_unified_tests.py --both --require-cpp
 ```
 
+For strict same-test enforcement, require native C++ corpus execution:
+
+```bash
+TS_CPP_REPO=/path/to/cpp/TemporalStore \
+TS_CPP_UNIFIED_NATIVE_CMD='/path/to/cpp_temporalstore_corpus_runner {corpus}' \
+  python3 tools/run_temporalstore_unified_tests.py --both --require-cpp-native
+```
+
+The shell wrapper also supports the strict mode:
+
+```bash
+TS_RUN_CPP_UNIFIED_TESTS=1 \
+TS_REQUIRE_CPP_NATIVE=1 \
+TS_CPP_UNIFIED_NATIVE_CMD='/path/to/cpp_temporalstore_corpus_runner {corpus}' \
+  tools/run_temporalstore_unified_tests.sh
+```
+
+`--require-cpp` means a C++ hook must run. `--require-cpp-native` means a C++ native executor must
+be configured through `TS_CPP_UNIFIED_TEST_CMD` or `TS_CPP_UNIFIED_NATIVE_CMD`, so the C++ side
+actually applies every corpus command and compares every expected response.
+
 For CI, require C++ execution:
 
 ```bash
@@ -226,3 +247,16 @@ executor because `TS_CPP_UNIFIED_NATIVE_CMD` was not configured. The C++ side va
 corpus and required parity surfaces through its hook, then the C++ fast CI guard passed. Full
 same-test enforcement still requires wiring `TS_CPP_UNIFIED_NATIVE_CMD` to a native C++ executor
 that applies every corpus command and compares every expected response.
+
+Strict native enforcement check:
+
+```bash
+python3 tools/run_temporalstore_unified_tests.py \
+  --cpp \
+  --require-cpp-native \
+  --cpp-repo /mnt/c/Users/Deeproute/Documents/Codex/2026-06-07/what-s-the-topology-for-all/temporalstore-service-fix
+```
+
+Expected current result: fail closed until `TS_CPP_UNIFIED_NATIVE_CMD` or `TS_CPP_UNIFIED_TEST_CMD`
+is configured. This is intentional; it prevents a C++ hook-only run from being mistaken for true
+same-test C++ execution.

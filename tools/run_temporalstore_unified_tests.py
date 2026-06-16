@@ -161,7 +161,15 @@ def install_cpp_runner(cpp_repo: Path, overwrite: bool) -> Path:
     return target
 
 
-def run_cpp(corpus: Path, required: bool, cpp_repo: Path | None) -> None:
+def run_cpp(corpus: Path, required: bool, native_required: bool, cpp_repo: Path | None) -> None:
+    direct_command = os.environ.get("TS_CPP_UNIFIED_TEST_CMD")
+    native_command = os.environ.get("TS_CPP_UNIFIED_NATIVE_CMD")
+    if native_required and not direct_command and not native_command:
+        raise SystemExit(
+            "--require-cpp-native needs TS_CPP_UNIFIED_TEST_CMD or "
+            "TS_CPP_UNIFIED_NATIVE_CMD so the C++ side executes the corpus, "
+            "not only the discovery/surface hook"
+        )
     command = discover_cpp_command(cpp_repo)
     if not command:
         message = (
@@ -201,6 +209,11 @@ def main() -> int:
         "--require-cpp",
         action="store_true",
         help="fail if --cpp is requested but TS_CPP_UNIFIED_TEST_CMD is unset",
+    )
+    parser.add_argument(
+        "--require-cpp-native",
+        action="store_true",
+        help="fail unless a native C++ corpus executor is configured with TS_CPP_UNIFIED_TEST_CMD or TS_CPP_UNIFIED_NATIVE_CMD",
     )
     parser.add_argument("--validate-only", action="store_true", help="only validate corpus JSON")
     parser.add_argument(
@@ -252,7 +265,7 @@ def main() -> int:
     if args.rust:
         run_rust(corpus)
     if args.cpp:
-        run_cpp(corpus, args.require_cpp, cpp_repo)
+        run_cpp(corpus, args.require_cpp or args.require_cpp_native, args.require_cpp_native, cpp_repo)
     return 0
 
 
