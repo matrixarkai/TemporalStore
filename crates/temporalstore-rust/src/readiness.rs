@@ -51,6 +51,7 @@ pub struct ServiceReadinessGateReport {
     pub ready: bool,
     pub gate_status: String,
     pub remediation_order: usize,
+    pub owner: String,
     pub blocker_count: usize,
     pub blocker_classes: Vec<String>,
     pub next_action: String,
@@ -125,6 +126,7 @@ impl ProductionReadinessReport {
                 .position(|known| *known == service)
                 .map(|index| index + 1)
                 .unwrap_or(0),
+            owner: service_owner(service).to_string(),
             blocker_count: summary.blocker_count,
             blocker_classes: summary.blocker_classes.clone(),
             next_action: summary.next_action.clone(),
@@ -560,6 +562,17 @@ fn service_next_action(service: &str, blocker_classes: &[String]) -> &'static st
     }
 }
 
+fn service_owner(service: &str) -> &'static str {
+    match service {
+        "client" => "client_sdk",
+        "proxy" => "proxy_runtime",
+        "ingestion" => "ingestion_connectors",
+        "data_node" => "data_node_runtime",
+        "metaserver" => "metaserver_control_plane",
+        _ => "unknown",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -651,6 +664,7 @@ mod tests {
             assert_eq!(gate.ready, summary.ready);
             assert_eq!(gate.gate_status, "blocked");
             assert!(gate.remediation_order > 0);
+            assert_ne!(gate.owner, "unknown");
             assert_eq!(gate.blocker_count, summary.blocker_count);
             assert_eq!(gate.blocker_classes, summary.blocker_classes);
             assert_eq!(gate.next_action, summary.next_action);
@@ -678,14 +692,18 @@ mod tests {
         assert_eq!(
             service_gates
                 .iter()
-                .map(|gate| (gate.remediation_order, gate.service.as_str()))
+                .map(|gate| (
+                    gate.remediation_order,
+                    gate.service.as_str(),
+                    gate.owner.as_str()
+                ))
                 .collect::<Vec<_>>(),
             vec![
-                (1, "client"),
-                (2, "proxy"),
-                (3, "ingestion"),
-                (4, "data_node"),
-                (5, "metaserver")
+                (1, "client", "client_sdk"),
+                (2, "proxy", "proxy_runtime"),
+                (3, "ingestion", "ingestion_connectors"),
+                (4, "data_node", "data_node_runtime"),
+                (5, "metaserver", "metaserver_control_plane")
             ]
         );
         assert!(service_gates.iter().all(|gate| !gate.ready));

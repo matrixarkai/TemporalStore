@@ -32,14 +32,18 @@ fn production_readiness_service_summary_is_public_api() {
     assert_eq!(
         gates
             .iter()
-            .map(|gate| (gate.remediation_order, gate.service.as_str()))
+            .map(|gate| (
+                gate.remediation_order,
+                gate.service.as_str(),
+                gate.owner.as_str()
+            ))
             .collect::<Vec<_>>(),
         vec![
-            (1, "client"),
-            (2, "proxy"),
-            (3, "ingestion"),
-            (4, "data_node"),
-            (5, "metaserver")
+            (1, "client", "client_sdk"),
+            (2, "proxy", "proxy_runtime"),
+            (3, "ingestion", "ingestion_connectors"),
+            (4, "data_node", "data_node_runtime"),
+            (5, "metaserver", "metaserver_control_plane")
         ]
     );
     assert!(gates.iter().all(|gate| gate.gate_status == "blocked"));
@@ -79,6 +83,7 @@ fn production_readiness_service_summary_is_public_api() {
     assert!(!gate.ready);
     assert_eq!(gate.gate_status, "blocked");
     assert_eq!(gate.remediation_order, 4);
+    assert_eq!(gate.owner, "data_node_runtime");
     assert_eq!(gate.blocker_count, data_node.blocker_count);
     assert_eq!(gate.failed_capabilities.len(), data_node.blocker_count);
 }
