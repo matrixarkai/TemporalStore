@@ -1,0 +1,197 @@
+syntax = "proto3";
+
+package bcache2.context;
+
+enum Function {
+    UPSERT_NODE = 0;
+    GET_NODE = 1;
+    WRITE_EVENT = 2;
+    QUERY_EVENTS = 3;
+    WRITE_INDEX_REF = 4;
+    QUERY_INDEX = 5;
+    WRITE_PACK_AUDIT = 6;
+    QUERY_PACK_AUDIT = 7;
+    MARK_SUMMARY_DIRTY = 8;
+    QUERY_SUMMARY_DIRTY = 9;
+}
+
+message ContextNode {
+    uint64 node_hash = 1;
+    uint64 parent_hash = 2;
+    uint32 kind = 3;
+    string canonical_name = 4;
+    string l0 = 5;
+    uint32 status = 6;
+    uint64 last_event_time_ms = 7;
+    bool summary_dirty = 8;
+    string l1_ref = 9;
+    string raw_metadata_ref = 10;
+}
+
+message ContextEvent {
+    uint64 event_id_hash = 1;
+    uint64 event_time_ms = 2;
+    uint32 kind = 3;
+    uint32 type = 4;
+    uint64 actor_hash = 5;
+    uint32 status = 6;
+    uint64 valid_until_ms = 7;
+    float confidence = 8;
+    float importance = 9;
+    string text = 10;
+    string source_ref = 11;
+    repeated uint64 related_node_hashes = 12;
+    bytes compact_attrs = 13;
+}
+
+message IndexRef {
+    uint64 primary_node_hash = 1;
+    uint64 primary_event_time_ms = 2;
+    uint64 event_id_hash = 3;
+}
+
+message AuditRef {
+    uint64 node_hash = 1;
+    uint64 event_time_ms = 2;
+    string reason = 3;
+}
+
+message ContextPackAudit {
+    string query_id = 1;
+    uint64 session_hash = 2;
+    uint64 request_time_ms = 3;
+    uint64 query_hash = 4;
+    uint32 max_prompt_tokens = 5;
+    uint32 selected_tokens = 6;
+    repeated AuditRef selected_refs = 7;
+    repeated AuditRef blocked_refs = 8;
+}
+
+message SummaryDirtyMarker {
+    uint64 node_hash = 1;
+    uint64 event_time_ms = 2;
+    uint32 reason = 3;
+    uint32 propagate_depth = 4;
+}
+
+message UpsertNodeRequest {
+    uint64 tenant_hash = 1;
+    ContextNode node = 2;
+}
+
+message UpsertNodeResponse {
+    string object_key = 1;
+}
+
+message GetNodeRequest {
+    uint64 tenant_hash = 1;
+    uint64 node_hash = 2;
+}
+
+message GetNodeResponse {
+    bool exist = 1;
+    string object_key = 2;
+    ContextNode node = 3;
+}
+
+message WriteEventRequest {
+    uint64 tenant_hash = 1;
+    uint64 node_hash = 2;
+    ContextEvent event = 3;
+    bool first_write_only = 4;
+}
+
+message WriteEventResponse {
+    string object_key = 1;
+}
+
+message QueryEventsRequest {
+    uint64 tenant_hash = 1;
+    uint64 node_hash = 2;
+    uint64 start_time_ms = 3;
+    uint64 end_time_ms = 4;
+    uint32 limit = 5;
+    bool current_valid_only = 6;
+    uint64 as_of_ms = 7;
+    repeated uint32 kinds = 8;
+    repeated uint32 statuses = 9;
+    float min_confidence = 10;
+    float min_importance = 11;
+}
+
+message QueryEventsResponse {
+    string object_key = 1;
+    repeated ContextEvent events = 2;
+}
+
+message WriteIndexRefRequest {
+    uint64 tenant_hash = 1;
+    string index_name = 2;
+    uint64 index_value_hash = 3;
+    uint64 scope_hash = 4;
+    uint64 event_time_ms = 5;
+    IndexRef ref = 6;
+}
+
+message WriteIndexRefResponse {
+    string object_key = 1;
+}
+
+message QueryIndexRequest {
+    uint64 tenant_hash = 1;
+    string index_name = 2;
+    uint64 index_value_hash = 3;
+    uint64 scope_hash = 4;
+    uint64 start_time_ms = 5;
+    uint64 end_time_ms = 6;
+    uint32 limit = 7;
+}
+
+message QueryIndexResponse {
+    string object_key = 1;
+    repeated IndexRef refs = 2;
+}
+
+message WritePackAuditRequest {
+    uint64 tenant_hash = 1;
+    ContextPackAudit audit = 2;
+}
+
+message WritePackAuditResponse {
+    string object_key = 1;
+}
+
+message QueryPackAuditRequest {
+    uint64 tenant_hash = 1;
+    uint64 session_hash = 2;
+    uint64 start_time_ms = 3;
+    uint64 end_time_ms = 4;
+    uint32 limit = 5;
+}
+
+message QueryPackAuditResponse {
+    string object_key = 1;
+    repeated ContextPackAudit audits = 2;
+}
+
+message MarkSummaryDirtyRequest {
+    uint64 tenant_hash = 1;
+    SummaryDirtyMarker marker = 2;
+}
+
+message MarkSummaryDirtyResponse {
+    string object_key = 1;
+}
+
+message QuerySummaryDirtyRequest {
+    uint64 tenant_hash = 1;
+    uint64 node_hash = 2;
+    uint64 start_time_ms = 3;
+    uint64 end_time_ms = 4;
+    uint32 limit = 5;
+}
+
+message QuerySummaryDirtyResponse {
+    string object_key = 1;
+    repeated SummaryDirtyMarker markers = 2;
+}

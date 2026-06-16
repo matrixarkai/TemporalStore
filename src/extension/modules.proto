@@ -12,4 +12,5 @@ enum Module {
     IPS       = 15;
     RISK      = 16;
     TEMPORAL_AGGREGATE = 17;
+    CONTEXT   = 18;
 }
