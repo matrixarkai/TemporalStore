@@ -7652,7 +7652,7 @@ mod tests {
         json_response, parse_json, post_json_with_options, serve, HttpRequestOptions,
     };
     use crate::meta::{TableMetaInfo, TablePartition};
-    use crate::types::{Command, FeatureFilter, FeatureFilterOp, SequenceFeatureRow};
+    use crate::types::{Command, FeatureFilter, FeatureFilterOp, FeaturePoint, SequenceFeatureRow};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -8031,6 +8031,45 @@ mod tests {
                 }
             );
             assert_eq!(cluster.commit_index(node_id).unwrap(), 1);
+        }
+    }
+
+    #[test]
+    fn raft_replicates_chunked_timestamped_kv_page_format_to_followers() {
+        let config = RaftConfig {
+            max_memory_replicate_log_bytes: 512 * 1024,
+            ..RaftConfig::default()
+        };
+        let cluster = RaftCluster::new_single_shard_with_config(1, [1, 2, 3], config).unwrap();
+        let points = large_feature_points();
+
+        cluster
+            .propose(Command::FeatureAppend {
+                key: "chunked-raft-feature".to_string(),
+                points: points.clone(),
+            })
+            .unwrap();
+
+        cluster.catch_up(2).unwrap();
+        cluster.catch_up(3).unwrap();
+        for node_id in [1, 2, 3] {
+            assert_eq!(cluster.commit_index(node_id).unwrap(), 1);
+            assert_eq!(
+                cluster
+                    .read_from_replica(
+                        node_id,
+                        Command::FeatureQuery {
+                            key: "chunked-raft-feature".to_string(),
+                            start_ms: 0,
+                            end_ms: 2_000,
+                            count: None,
+                        },
+                    )
+                    .unwrap(),
+                CommandResponse::FeaturePoints {
+                    points: points.clone()
+                }
+            );
         }
     }
 
@@ -9514,6 +9553,15 @@ mod tests {
                 action_type: (offset % 8) as u32,
                 duration: (offset % 600) as u32,
                 author_id: 42_000_000 + offset as u64,
+            })
+            .collect()
+    }
+
+    fn large_feature_points() -> Vec<FeaturePoint> {
+        (0..10)
+            .map(|offset| FeaturePoint {
+                timestamp_ms: 1_000 + offset,
+                value: vec![b'a' + offset as u8; 10 * 1024],
             })
             .collect()
     }

@@ -912,7 +912,7 @@ mod tests {
     use temporalstore_snapshot::object_store::{FileObjectStore, ObjectStore, ObjectStoreError};
 
     use super::*;
-    use crate::types::CommandResponse;
+    use crate::types::{CommandResponse, FeaturePoint};
 
     #[tokio::test]
     async fn shared_store_restores_index_pages_and_replays_later_oplog() {
@@ -1255,6 +1255,117 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shared_store_replays_chunked_timestamped_kv_pages_in_sync_and_async_modes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
+        let replicator = SharedStoreReplicator::new("cluster-a", store);
+        let points = large_timestamped_points();
+
+        let sync_writer = replicator.storage_writer(SharedStoreStorageMode::Sync, 1);
+        let sync_report = sync_writer
+            .write(
+                1,
+                Command::FeatureAppend {
+                    key: "sync-chunked-feature".to_string(),
+                    points: points.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(sync_report.published);
+        assert!(!sync_report.queued);
+
+        let sync_follower = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("sync-follower-cache"),
+            dir.path().join("sync-follower-pages"),
+            dir.path().join("sync-follower-index"),
+        );
+        sync_follower.load_shard(1);
+        assert_eq!(
+            replicator
+                .replay_oplog_strict_with_cursor(1, &sync_follower)
+                .await
+                .unwrap(),
+            ReplayReport {
+                applied: 1,
+                last_oplog_index: 1,
+            }
+        );
+        assert_eq!(
+            sync_follower
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::FeatureQuery {
+                        key: "sync-chunked-feature".to_string(),
+                        start_ms: 0,
+                        end_ms: 2_000,
+                        count: None,
+                    },
+                })
+                .response,
+            CommandResponse::FeaturePoints {
+                points: points.clone()
+            }
+        );
+
+        let async_writer = replicator.storage_writer(SharedStoreStorageMode::Async, 10);
+        let async_report = async_writer
+            .write(
+                1,
+                Command::FeatureAppend {
+                    key: "async-chunked-feature".to_string(),
+                    points: points.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(async_report.queued);
+        assert!(!async_report.published);
+        assert_eq!(async_writer.queued_len(), 1);
+        assert_eq!(
+            async_writer.flush_pending(10).await.unwrap(),
+            SharedStoreFlushReport {
+                flushed: 1,
+                remaining: 0,
+                last_oplog_index: 10,
+            }
+        );
+
+        let async_follower = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            dir.path().join("async-follower-cache"),
+            dir.path().join("async-follower-pages"),
+            dir.path().join("async-follower-index"),
+        );
+        async_follower.load_shard(1);
+        assert_eq!(
+            replicator
+                .replay_oplog_strict(1, 9, &async_follower)
+                .await
+                .unwrap(),
+            ReplayReport {
+                applied: 1,
+                last_oplog_index: 10,
+            }
+        );
+        assert_eq!(
+            async_follower
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::FeatureQuery {
+                        key: "async-chunked-feature".to_string(),
+                        start_ms: 0,
+                        end_ms: 2_000,
+                        count: None,
+                    },
+                })
+                .response,
+            CommandResponse::FeaturePoints { points }
+        );
+    }
+
+    #[tokio::test]
     async fn shared_store_rejects_corrupt_oplog_checksum() {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
@@ -1549,5 +1660,14 @@ mod tests {
         fn uri(&self, key: &str) -> String {
             self.inner.uri(key)
         }
+    }
+
+    fn large_timestamped_points() -> Vec<FeaturePoint> {
+        (0..10)
+            .map(|offset| FeaturePoint {
+                timestamp_ms: 1_000 + offset,
+                value: vec![b'a' + offset as u8; 10 * 1024],
+            })
+            .collect()
     }
 }
