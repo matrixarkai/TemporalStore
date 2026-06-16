@@ -23,22 +23,19 @@ Current corpus:
 ```text
 schema_version: 1
 name: temporalstore-unified-cpp-rust-corpus
-case: common_string_hash_feature_sequence_ips_risk_context
-steps: 16
+cases: 8
 ```
 
-The shared 16-step case covers:
+The shared cases are:
 
-- string set/get
-- hash multi-set and multi-get
-- packed timestamped Feature points
-- Feature window query after write and after restart
-- Sequence rows encoded in the C++ feature-row shape
-- Sequence query
-- IPS add/query range with options
-- Risk increment/count
-- Context node upsert/read
-- restart-before-final-read persistence validation
+- `common_string_hash_core`: string set/get plus hash multi-set/multi-get.
+- `feature_packed_timestamped_pages`: packed timestamped Feature points and restart query.
+- `sequence_cpp_feature_rows`: Sequence rows encoded in the C++ feature-row shape.
+- `ips_options_range`: IPS add/query range with action/table/request metadata.
+- `risk_counter_window`: Risk increment/count over a time window.
+- `context_node_roundtrip`: Context node upsert/read.
+- `common_restart_persistence`: string/hash restart-read persistence.
+- `mixed_model_restart_persistence`: Feature plus Context restart-read persistence in one case.
 
 ## Rust Runner
 

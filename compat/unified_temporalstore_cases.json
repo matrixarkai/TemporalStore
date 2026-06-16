@@ -4,7 +4,7 @@
   "description": "Shared behavioral corpus for validating Rust and C++ TemporalStore implementations with the same ordered operations and expected responses.",
   "cases": [
     {
-      "name": "common_string_hash_feature_sequence_ips_risk_context",
+      "name": "common_string_hash_core",
       "shard_id": 1,
       "steps": [
         {
@@ -54,7 +54,13 @@
             "kind": "values",
             "values": [[97], null, [98]]
           }
-        },
+        }
+      ]
+    },
+    {
+      "name": "feature_packed_timestamped_pages",
+      "shard_id": 1,
+      "steps": [
         {
           "name": "feature_append_packed_timestamped_points",
           "command": {
@@ -106,6 +112,40 @@
             ]
           }
         },
+        {
+          "name": "feature_query_after_restart",
+          "restart_before": true,
+          "command": {
+            "kind": "feature_query",
+            "key": "unified:feature",
+            "start_ms": 1000,
+            "end_ms": 1020,
+            "count": null
+          },
+          "expect": {
+            "kind": "feature_points",
+            "points": [
+              {
+                "timestamp_ms": 1000,
+                "value": [102, 49]
+              },
+              {
+                "timestamp_ms": 1010,
+                "value": [102, 50]
+              },
+              {
+                "timestamp_ms": 1020,
+                "value": [102, 51]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "sequence_cpp_feature_rows",
+      "shard_id": 1,
+      "steps": [
         {
           "name": "sequence_add_cpp_feature_rows",
           "command": {
@@ -161,7 +201,13 @@
               }
             ]
           }
-        },
+        }
+      ]
+    },
+    {
+      "name": "ips_options_range",
+      "shard_id": 1,
+      "steps": [
         {
           "name": "ips_add_with_options",
           "command": {
@@ -196,7 +242,13 @@
               }
             ]
           }
-        },
+        }
+      ]
+    },
+    {
+      "name": "risk_counter_window",
+      "shard_id": 1,
+      "steps": [
         {
           "name": "risk_increment",
           "command": {
@@ -221,7 +273,13 @@
             "kind": "integer",
             "value": 3
           }
-        },
+        }
+      ]
+    },
+    {
+      "name": "context_node_roundtrip",
+      "shard_id": 1,
+      "steps": [
         {
           "name": "context_upsert_node",
           "command": {
@@ -268,44 +326,157 @@
               "raw_metadata_ref": "raw"
             }
           }
-        },
+        }
+      ]
+    },
+    {
+      "name": "common_restart_persistence",
+      "shard_id": 1,
+      "steps": [
         {
-          "name": "restart_before_final_reads",
-          "restart_before": true,
+          "name": "restart_string_set",
           "command": {
-            "kind": "string_get",
-            "key": "unified:string"
+            "kind": "string_set",
+            "key": "unified:restart:string",
+            "value": [114, 49]
           },
           "expect": {
-            "kind": "bytes",
-            "value": [118, 49]
+            "kind": "empty"
           }
         },
         {
-          "name": "feature_query_after_restart",
+          "name": "restart_hash_multi_set",
+          "command": {
+            "kind": "hash_multi_set",
+            "key": "unified:restart:hash",
+            "entries": [
+              ["field_a", [49]],
+              ["field_b", [50]]
+            ]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "restart_before_common_reads",
+          "restart_before": true,
+          "command": {
+            "kind": "string_get",
+            "key": "unified:restart:string"
+          },
+          "expect": {
+            "kind": "bytes",
+            "value": [114, 49]
+          }
+        },
+        {
+          "name": "restart_hash_multi_get",
+          "command": {
+            "kind": "hash_multi_get",
+            "key": "unified:restart:hash",
+            "fields": ["field_a", "field_missing", "field_b"]
+          },
+          "expect": {
+            "kind": "values",
+            "values": [[49], null, [50]]
+          }
+        }
+      ]
+    },
+    {
+      "name": "mixed_model_restart_persistence",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "mixed_feature_append",
+          "command": {
+            "kind": "feature_append",
+            "key": "unified:mixed:feature",
+            "points": [
+              {
+                "timestamp_ms": 6000,
+                "value": [109, 49]
+              },
+              {
+                "timestamp_ms": 6010,
+                "value": [109, 50]
+              }
+            ]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "mixed_context_upsert_node",
+          "command": {
+            "kind": "context_upsert_node",
+            "tenant_hash": 100,
+            "node": {
+              "node_hash": 600,
+              "parent_hash": 0,
+              "kind": 2,
+              "canonical_name": "mixed-node",
+              "l0": "mixed root",
+              "status": 1,
+              "last_event_time_ms": 6000,
+              "summary_dirty": false,
+              "l1_ref": "mixed-l1",
+              "raw_metadata_ref": "mixed-raw"
+            }
+          },
+          "expect": {
+            "kind": "context_object_key",
+            "object_key": "ctx:node:100:600"
+          }
+        },
+        {
+          "name": "mixed_restart_before_feature_read",
+          "restart_before": true,
           "command": {
             "kind": "feature_query",
-            "key": "unified:feature",
-            "start_ms": 1000,
-            "end_ms": 1020,
+            "key": "unified:mixed:feature",
+            "start_ms": 6000,
+            "end_ms": 6010,
             "count": null
           },
           "expect": {
             "kind": "feature_points",
             "points": [
               {
-                "timestamp_ms": 1000,
-                "value": [102, 49]
+                "timestamp_ms": 6000,
+                "value": [109, 49]
               },
               {
-                "timestamp_ms": 1010,
-                "value": [102, 50]
-              },
-              {
-                "timestamp_ms": 1020,
-                "value": [102, 51]
+                "timestamp_ms": 6010,
+                "value": [109, 50]
               }
             ]
+          }
+        },
+        {
+          "name": "mixed_context_get_node_after_restart",
+          "command": {
+            "kind": "context_get_node",
+            "tenant_hash": 100,
+            "node_hash": 600
+          },
+          "expect": {
+            "kind": "context_node",
+            "object_key": "ctx:node:100:600",
+            "node": {
+              "node_hash": 600,
+              "parent_hash": 0,
+              "kind": 2,
+              "canonical_name": "mixed-node",
+              "l0": "mixed root",
+              "status": 1,
+              "last_event_time_ms": 6000,
+              "summary_dirty": false,
+              "l1_ref": "mixed-l1",
+              "raw_metadata_ref": "mixed-raw"
+            }
           }
         }
       ]
