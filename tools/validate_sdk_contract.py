@@ -135,6 +135,9 @@ def main() -> int:
         "TemporalStoreServiceClient",
         "TemporalStoreService",
         "TemporalStoreTonicAdapter",
+        "open_table_sdk",
+        "sync_topology_sdk",
+        "client_preflight_sdk",
         "sdk_command_to_types",
         "types_command_response_to_sdk",
     ]:

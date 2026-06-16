@@ -6,8 +6,10 @@ use std::sync::Arc;
 
 use tonic::{Request, Response, Status as TonicStatus};
 
+use crate::client::TemporalStoreTable;
 use crate::engine::TemporalEngine;
 use crate::types;
+use crate::{ClientError, TableOptions, TemporalStoreClient};
 
 pub trait TemporalStoreSdkExecutor: Send + Sync + 'static {
     fn execute_sdk(&self, request: types::ExecuteRequest) -> types::ExecuteResponse;
@@ -81,6 +83,109 @@ impl TemporalStoreSdkExecutor for TemporalEngine {
         request: types::BatchExecuteRequest,
     ) -> types::BatchExecuteResponse {
         self.batch_execute(request)
+    }
+}
+
+impl TemporalStoreSdkExecutor for TemporalStoreClient {
+    fn execute_sdk(&self, request: types::ExecuteRequest) -> types::ExecuteResponse {
+        match self.execute_with_options(request, crate::RequestOptions::default()) {
+            Ok(response) => response,
+            Err(err) => client_error_execute_response(err),
+        }
+    }
+
+    fn batch_execute_sdk(
+        &self,
+        request: types::BatchExecuteRequest,
+    ) -> types::BatchExecuteResponse {
+        match self.batch_execute_with_options(request, crate::RequestOptions::default()) {
+            Ok(response) => response,
+            Err(err) => types::BatchExecuteResponse {
+                status: client_error_status(err),
+                responses: Vec::new(),
+            },
+        }
+    }
+
+    fn open_table_sdk(&self, request: v1::OpenTableRequest) -> v1::OpenTableResponse {
+        let namespace = request.namespace_name;
+        let table_name = request.table_name;
+        let table = match self.open_table_from_meta(namespace.clone(), table_name.clone()) {
+            Ok(table) => table,
+            Err(ClientError::Status(message)) if message.contains("meta_addr is required") => self
+                .open_table(
+                    namespace.clone(),
+                    table_name.clone(),
+                    TableOptions::default(),
+                ),
+            Err(err) => {
+                return v1::OpenTableResponse {
+                    status: Some(client_error_status_to_sdk(err)),
+                    topology: None,
+                };
+            }
+        };
+        v1::OpenTableResponse {
+            status: Some(types_status_to_sdk(types::Status::ok())),
+            topology: Some(table_to_sdk_topology(self, &table)),
+        }
+    }
+
+    fn sync_topology_sdk(&self, request: v1::SyncTopologyRequest) -> v1::SyncTopologyResponse {
+        let table_keys = if request.table_keys.is_empty() {
+            self.open_table_keys()
+        } else {
+            request.table_keys
+        };
+        let mut topologies = Vec::new();
+        let mut failures = Vec::new();
+        for key in table_keys {
+            let Some((namespace, table_name)) = split_table_key(&key) else {
+                failures.push(format!("{key}:invalid_table_key"));
+                continue;
+            };
+            match self.sync_table_topology(namespace.clone(), table_name.clone()) {
+                Ok(_) => {
+                    if let Some(table) = self.cached_table(namespace, table_name) {
+                        topologies.push(table_to_sdk_topology(self, &table));
+                    }
+                }
+                Err(err) => {
+                    if let Some(table) = self.cached_table(namespace, table_name) {
+                        topologies.push(table_to_sdk_topology(self, &table));
+                    } else {
+                        failures.push(format!("{key}:{}", client_error_code(&err)));
+                    }
+                }
+            }
+        }
+        let topology_version = self.topology_cache_report().max_topology_version;
+        let status = if failures.is_empty() {
+            types::Status::ok()
+        } else {
+            types::Status::error("partial_sync_topology", failures.join(","))
+        };
+        v1::SyncTopologyResponse {
+            status: Some(types_status_to_sdk(status)),
+            topologies,
+            topology_version,
+        }
+    }
+
+    fn client_preflight_sdk(
+        &self,
+        _request: v1::ClientPreflightRequest,
+    ) -> v1::ClientPreflightResponse {
+        let report = self.preflight_report();
+        v1::ClientPreflightResponse {
+            status: Some(types_status_to_sdk(report.status)),
+            route_cache_entries: report.route_cache_size as u64,
+            table_cache_entries: report.table_cache_size as u64,
+            backend_failure_entries: report.backend_failure_count as u64,
+            topology_version: report.topology_cache.max_topology_version,
+            degraded: !report.degraded_reasons.is_empty(),
+            warnings: report.degraded_reasons,
+        }
     }
 }
 
@@ -454,6 +559,79 @@ fn stable_hash(value: &str) -> u64 {
     crate::client::stable_key_hash(value)
 }
 
+fn table_to_sdk_topology(
+    client: &TemporalStoreClient,
+    table: &TemporalStoreTable,
+) -> v1::TableTopology {
+    let options = table.options();
+    let cache = client.topology_cache_report();
+    let mut shards = Vec::new();
+    for index in 0..options.shard_count {
+        let shard_id = options.first_shard_id.saturating_add(index);
+        let route = cache.routes.iter().find(|route| route.shard_id == shard_id);
+        shards.push(v1::ShardTopology {
+            shard_id,
+            primary: route.and_then(|route| sdk_endpoint_from_addr(&route.primary_addr)),
+            replicas: Vec::new(),
+            load_generation: route
+                .map(|route| route.topology_version)
+                .unwrap_or_default(),
+            lifecycle_state: "serving".to_string(),
+        });
+    }
+    v1::TableTopology {
+        namespace_name: table.namespace().to_string(),
+        table_name: table.table_name().to_string(),
+        state: "serving".to_string(),
+        readonly: false,
+        write_disabled: false,
+        drop_percent: options.drop_percent as u32,
+        topology_version: cache.max_topology_version,
+        shards,
+    }
+}
+
+fn sdk_endpoint_from_addr(addr: &str) -> Option<v1::ServerEndpoint> {
+    let (host, port) = addr.rsplit_once(':')?;
+    Some(v1::ServerEndpoint {
+        server_id: addr.to_string(),
+        host: host.to_string(),
+        port: port.parse::<u32>().unwrap_or_default(),
+        location: String::new(),
+    })
+}
+
+fn split_table_key(key: &str) -> Option<(String, String)> {
+    key.split_once('/')
+        .or_else(|| key.split_once('.'))
+        .map(|(namespace, table_name)| (namespace.to_string(), table_name.to_string()))
+}
+
+fn client_error_execute_response(err: ClientError) -> types::ExecuteResponse {
+    types::ExecuteResponse {
+        status: client_error_status(err),
+        response: types::CommandResponse::Empty,
+    }
+}
+
+fn client_error_status_to_sdk(err: ClientError) -> v1::Status {
+    types_status_to_sdk(client_error_status(err))
+}
+
+fn client_error_status(err: ClientError) -> types::Status {
+    let code = client_error_code(&err);
+    types::Status::error(code, err.to_string())
+}
+
+fn client_error_code(err: &ClientError) -> &'static str {
+    match err {
+        ClientError::Http(_) => "http_error",
+        ClientError::Status(_) => "status_error",
+        ClientError::InvalidRequest(_) => "invalid_request",
+        ClientError::UnexpectedResponse { .. } => "unexpected_response",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use tonic::Request;
@@ -583,5 +761,61 @@ mod tests {
         assert!(response.status.expect("status").ok);
         assert_eq!(response.responses.len(), 2);
         assert_eq!(response.responses[1].value, b"batch");
+    }
+
+    #[tokio::test]
+    async fn tonic_adapter_exposes_client_open_sync_and_preflight_paths() {
+        let client = TemporalStoreClient::with_options(crate::ClientOptions {
+            default_shard_id: 9,
+            ..crate::ClientOptions::proxy("127.0.0.1:1")
+        });
+        client.insert_cached_route_for_test(1, "127.0.0.1:19009");
+        let adapter = TemporalStoreTonicAdapter::new(client);
+
+        let open = adapter
+            .open_table(Request::new(OpenTableRequest {
+                namespace_name: "default".to_string(),
+                table_name: "sdk_table".to_string(),
+                local_location: "local".to_string(),
+            }))
+            .await
+            .expect("open table")
+            .into_inner();
+        assert!(open.status.expect("open status").ok);
+        let topology = open.topology.expect("open topology");
+        assert_eq!(topology.namespace_name, "default");
+        assert_eq!(topology.table_name, "sdk_table");
+        assert_eq!(topology.shards[0].shard_id, 1);
+        assert_eq!(
+            topology.shards[0]
+                .primary
+                .as_ref()
+                .expect("primary endpoint")
+                .port,
+            19009
+        );
+
+        let sync = adapter
+            .sync_topology(Request::new(SyncTopologyRequest {
+                table_keys: vec!["default/sdk_table".to_string()],
+                min_topology_version: 0,
+                deadline_ms: 100,
+            }))
+            .await
+            .expect("sync topology")
+            .into_inner();
+        assert!(sync.status.expect("sync status").ok);
+        assert_eq!(sync.topologies.len(), 1);
+
+        let preflight = adapter
+            .get_client_preflight(Request::new(ClientPreflightRequest {
+                include_routes: true,
+                include_backend_failures: true,
+            }))
+            .await
+            .expect("client preflight")
+            .into_inner();
+        assert_eq!(preflight.route_cache_entries, 1);
+        assert_eq!(preflight.table_cache_entries, 1);
     }
 }

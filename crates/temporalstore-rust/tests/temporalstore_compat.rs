@@ -70,7 +70,7 @@ fn production_readiness_service_summary_is_public_api() {
             .map(|gate| (gate.service.as_str(), gate.severity.as_str()))
             .collect::<Vec<_>>(),
         vec![
-            ("client", "critical"),
+            ("client", "warning"),
             ("proxy", "warning"),
             ("ingestion", "critical"),
             ("data_node", "critical"),

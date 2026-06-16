@@ -44,8 +44,8 @@ gRPC bindings are being wired.
 
 `TemporalStoreTonicAdapter` currently wires generated `Execute` and `BatchExecute` calls through
 protobuf-to-internal command conversion and delegates them to the existing engine execution path.
-`OpenTable`, `SyncTopology`, and `GetClientPreflight` are exposed by the generated trait but remain
-production blockers until they delegate to the existing client/proxy/metaserver runtime paths.
+`OpenTable`, `SyncTopology`, and `GetClientPreflight` delegate to the existing
+`TemporalStoreClient` table, topology refresh, and preflight paths.
 
 ## Command Coverage
 
@@ -72,11 +72,9 @@ New production command families must update all of these in the same change:
 ## Readiness Status
 
 This closes the "versioned Rust-native SDK contract" and "generated tonic/prost binding type"
-sub-gaps. It also closes the first runtime adapter sub-gap for `Execute` and `BatchExecute`.
-Production readiness still blocks on:
+sub-gaps. It also closes the runtime tonic adapter sub-gap for `Execute`, `BatchExecute`,
+`OpenTable`, `SyncTopology`, and `GetClientPreflight`. Production readiness still blocks on:
 
-- runtime tonic `OpenTable`, `SyncTopology`, and `GetClientPreflight` adapters wired to the
-  existing client/proxy/metaserver execution paths
 - full C++ partition-set hierarchy and Neptune-specific routing, if required by a deployment
 - wire-compatible migration for existing C++ client callers, if existing callers must migrate
   without adapting to the Rust-native schema

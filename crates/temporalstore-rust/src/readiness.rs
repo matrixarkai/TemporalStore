@@ -198,10 +198,10 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "generated tonic Execute and BatchExecute service adapters convert protobuf commands and delegate to the existing engine execution path"
                     .to_string(),
+                "generated tonic OpenTable, SyncTopology, and ClientPreflight adapters delegate to the existing TemporalStoreClient table, topology, and preflight paths"
+                    .to_string(),
             ],
             missing: vec![
-                "runtime tonic OpenTable, SyncTopology, and ClientPreflight adapters wired to the existing client/proxy/metaserver paths"
-                    .to_string(),
                 "full C++ partition-set hierarchy and Neptune-specific routing"
                     .to_string(),
                 "wire-compatible migration layer for existing C++ client callers".to_string(),
@@ -637,7 +637,7 @@ fn service_next_action(service: &str, blocker_classes: &[String]) -> &'static st
     };
     match (service, first_class) {
         ("client", "client_sync_preflight") => {
-            "wire generated tonic OpenTable, SyncTopology, and ClientPreflight adapters to existing client/proxy/metaserver paths"
+            "finish full C++ partition-set hierarchy, Neptune-specific routing, and wire-compatible migration for existing C++ client callers"
         }
         ("proxy", "proxy_topology_admission") => {
             "finish proxy topology-version guarded cache invalidation and admission policy enforcement"
@@ -916,14 +916,14 @@ mod tests {
         assert_eq!(next_blocked.service, "client");
         assert_eq!(next_blocked.remediation_order, 1);
         assert_eq!(next_blocked.owner, "client_sdk");
-        assert_eq!(next_blocked.severity, "critical");
+        assert_eq!(next_blocked.severity, "warning");
         assert_eq!(
             service_gates
                 .iter()
                 .map(|gate| (gate.service.as_str(), gate.severity.as_str()))
                 .collect::<Vec<_>>(),
             vec![
-                ("client", "critical"),
+                ("client", "warning"),
                 ("proxy", "warning"),
                 ("ingestion", "critical"),
                 ("data_node", "critical"),
@@ -962,7 +962,7 @@ mod tests {
             .service_summary("client")
             .expect("client summary")
             .next_action
-            .contains("OpenTable"));
+            .contains("partition-set"));
         assert!(report
             .service_summary("proxy")
             .expect("proxy summary")
