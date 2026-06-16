@@ -5,11 +5,14 @@
   "coverage": {
     "required_case_names": [
       "common_string_hash_core",
+      "common_lifecycle_delete_ttl",
+      "hash_single_field_and_delete",
       "redis_compatible_set_core",
       "feature_packed_timestamped_pages",
       "sequence_cpp_feature_rows",
       "ips_options_range",
       "risk_counter_window",
+      "risk_family_query_and_delete",
       "context_node_roundtrip",
       "context_event_index_audit_dirty_models",
       "common_restart_persistence",
@@ -21,6 +24,14 @@
     "required_command_kinds": [
       "string_set",
       "string_get",
+      "common_ttl",
+      "common_delete",
+      "hash_set",
+      "hash_get",
+      "hash_incr_by",
+      "hash_get_all",
+      "hash_len",
+      "hash_delete",
       "hash_multi_set",
       "hash_multi_get",
       "set_add",
@@ -33,6 +44,8 @@
       "ips_query_range",
       "risk_increment",
       "risk_count",
+      "risk_set",
+      "risk_family_query",
       "context_upsert_node",
       "context_get_node",
       "context_write_event",
@@ -50,6 +63,7 @@
       "empty",
       "bytes",
       "values",
+      "hash_entries",
       "members",
       "integer",
       "feature_points",
@@ -113,6 +127,179 @@
           "expect": {
             "kind": "values",
             "values": [[97], null, [98]]
+          }
+        }
+      ]
+    },
+    {
+      "name": "common_lifecycle_delete_ttl",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "lifecycle_string_set",
+          "command": {
+            "kind": "string_set",
+            "key": "unified:lifecycle:string",
+            "value": [108, 49]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "lifecycle_common_ttl_persistent",
+          "command": {
+            "kind": "common_ttl",
+            "key": "unified:lifecycle:string"
+          },
+          "expect": {
+            "kind": "integer",
+            "value": -1
+          }
+        },
+        {
+          "name": "lifecycle_common_expire_immediate",
+          "command": {
+            "kind": "common_expire",
+            "key": "unified:lifecycle:string",
+            "ttl_ms": 0
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "lifecycle_string_get_after_expire",
+          "command": {
+            "kind": "string_get",
+            "key": "unified:lifecycle:string"
+          },
+          "expect": {
+            "kind": "bytes",
+            "value": null
+          }
+        },
+        {
+          "name": "lifecycle_string_set_for_delete",
+          "command": {
+            "kind": "string_set",
+            "key": "unified:lifecycle:delete",
+            "value": [100, 49]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "lifecycle_common_delete",
+          "command": {
+            "kind": "common_delete",
+            "key": "unified:lifecycle:delete"
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "lifecycle_common_exists_after_delete",
+          "command": {
+            "kind": "common_exists",
+            "key": "unified:lifecycle:delete"
+          },
+          "expect": {
+            "kind": "integer",
+            "value": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "hash_single_field_and_delete",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "hash_set_field_a",
+          "command": {
+            "kind": "hash_set",
+            "key": "unified:hash:single",
+            "field": "field_a",
+            "value": [97]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "hash_get_field_a",
+          "command": {
+            "kind": "hash_get",
+            "key": "unified:hash:single",
+            "field": "field_a"
+          },
+          "expect": {
+            "kind": "bytes",
+            "value": [97]
+          }
+        },
+        {
+          "name": "hash_incr_counter",
+          "command": {
+            "kind": "hash_incr_by",
+            "key": "unified:hash:single",
+            "field": "counter",
+            "increment": 5
+          },
+          "expect": {
+            "kind": "integer",
+            "value": 5
+          }
+        },
+        {
+          "name": "hash_len_two_fields",
+          "command": {
+            "kind": "hash_len",
+            "key": "unified:hash:single"
+          },
+          "expect": {
+            "kind": "integer",
+            "value": 2
+          }
+        },
+        {
+          "name": "hash_get_all_sorted",
+          "command": {
+            "kind": "hash_get_all",
+            "key": "unified:hash:single"
+          },
+          "expect": {
+            "kind": "hash_entries",
+            "entries": [
+              ["counter", [53]],
+              ["field_a", [97]]
+            ]
+          }
+        },
+        {
+          "name": "hash_delete_field_a",
+          "command": {
+            "kind": "hash_delete",
+            "key": "unified:hash:single",
+            "field": "field_a"
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "hash_multi_get_after_delete",
+          "command": {
+            "kind": "hash_multi_get",
+            "key": "unified:hash:single",
+            "fields": ["field_a", "counter"]
+          },
+          "expect": {
+            "kind": "values",
+            "values": [null, [53]]
           }
         }
       ]
@@ -367,6 +554,65 @@
           "expect": {
             "kind": "integer",
             "value": 3
+          }
+        }
+      ]
+    },
+    {
+      "name": "risk_family_query_and_delete",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "risk_set_cpc_family",
+          "command": {
+            "kind": "risk_set",
+            "family": "cpc",
+            "key": "unified:risk:family",
+            "timestamp_ms": 4100,
+            "amount": 7
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "risk_family_query_sum",
+          "command": {
+            "kind": "risk_family_query",
+            "family": "cpc",
+            "key": "unified:risk:family",
+            "start_ms": 4090,
+            "end_ms": 4110,
+            "aggregator": "sum"
+          },
+          "expect": {
+            "kind": "integer",
+            "value": 7
+          }
+        },
+        {
+          "name": "risk_family_common_delete",
+          "command": {
+            "kind": "common_delete",
+            "key": "unified:risk:family"
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "risk_family_query_after_delete",
+          "command": {
+            "kind": "risk_family_query",
+            "family": "cpc",
+            "key": "unified:risk:family",
+            "start_ms": 4091,
+            "end_ms": 4111,
+            "aggregator": "sum"
+          },
+          "expect": {
+            "kind": "integer",
+            "value": 0
           }
         }
       ]

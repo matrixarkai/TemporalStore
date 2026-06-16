@@ -23,18 +23,21 @@ Current corpus:
 ```text
 schema_version: 1
 name: temporalstore-unified-cpp-rust-corpus
-cases: 13
-required command kinds: 26
+cases: 16
+required command kinds: 36
 ```
 
 The shared cases are:
 
 - `common_string_hash_core`: string set/get plus hash multi-set/multi-get.
+- `common_lifecycle_delete_ttl`: persistent TTL, immediate expire, delete, and exists semantics.
+- `hash_single_field_and_delete`: hash set/get/increment/read-all/len/delete behavior.
 - `redis_compatible_set_core`: Redis-compatible set add/members command-response behavior.
 - `feature_packed_timestamped_pages`: packed timestamped Feature points and restart query.
 - `sequence_cpp_feature_rows`: Sequence rows encoded in the C++ feature-row shape.
 - `ips_options_range`: IPS add/query range with action/table/request metadata.
 - `risk_counter_window`: Risk increment/count over a time window.
+- `risk_family_query_and_delete`: C++ risk-family set/query plus common delete cleanup.
 - `context_node_roundtrip`: Context node upsert/read.
 - `context_event_index_audit_dirty_models`: Context event, secondary index, prompt-pack audit, and
   dirty-summary models with restart-read persistence.
