@@ -16,8 +16,7 @@ Status LocationPlacementRule::Acquire(const PartitionPtr& partition, PlacementCo
     CHECK(submit_ctx);
     const Location& loc_expect = partition->GetPlacementExpect();
     if (IsEmpty(loc_expect)) {
-        CHECK(false);
-        return Status::Internal("empty placement expect");
+        return Status::InvalidArgument("empty placement expect");
     }
 
     auto servers = loc_mgr_->List(loc_expect, [&loc_expect](const auto& s) -> bool {
@@ -38,4 +37,3 @@ Status LocationPlacementRule::Acquire(const PartitionPtr& partition, PlacementCo
 
 }  // namespace metaserver
 }  // namespace bcache2
-

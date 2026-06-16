@@ -196,4 +196,32 @@ TEST(PlacementTest, SimpleTest) {
     ASSERT_LT(sigma, mean * 0.01) << sigma << " " << mean;
 }
 
+TEST(PlacementTest, EmptyPlacementExpectationReturnsError) {
+    InitMetrics("dev.bcache2.ut", {});
+    BYTE_DEFER({ QuitMetrics(); });
+    auto metabase = std::make_shared<Metabase>();
+    metabase->Init();
+    auto ns_mgr = metabase->GetNamespaceManager();
+    auto pm = std::make_unique<PlacementManager>(metabase.get());
+    pm->SetDefaultRules();
+
+    std::vector<Location> locations{Location{}};
+    Status status = AddMockTable(ns_mgr, "table_empty_placement", 1, locations);
+    ASSERT_TRUE(status.ok()) << status;
+
+    NamespacePtr ns;
+    status = ns_mgr->Get("ns1", &ns);
+    ASSERT_TRUE(status.ok()) << status;
+    TablePtr table;
+    status = ns->Get("table_empty_placement", &table);
+    ASSERT_TRUE(status.ok()) << status;
+    auto partitions = table->GetAllPartitions();
+    ASSERT_EQ(1, partitions.size());
+
+    NodePtr node;
+    status = pm->PlacePartition(partitions[0], &node);
+    ASSERT_TRUE(status.IsInvalidArgument()) << status;
+    ASSERT_EQ(nullptr, node);
+}
+
 }  // namespace bcache2::metaserver::test
