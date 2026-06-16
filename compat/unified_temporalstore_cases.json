@@ -217,17 +217,13 @@
           "command": {
             "kind": "feature_query",
             "key": "unified:feature",
-            "start_ms": 1000,
+            "start_ms": 1010,
             "end_ms": 1020,
             "count": null
           },
           "expect": {
             "kind": "feature_points",
             "points": [
-              {
-                "timestamp_ms": 1000,
-                "value": [102, 49]
-              },
               {
                 "timestamp_ms": 1010,
                 "value": [102, 50]

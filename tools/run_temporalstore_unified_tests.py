@@ -109,19 +109,33 @@ def validate_corpus(path: Path) -> dict:
     for case in cases:
         if not case.get("name"):
             raise SystemExit(f"{path}: every case must have a name")
+        if case["name"] in seen_case_names:
+            raise SystemExit(f"{path}: duplicate case name {case['name']}")
         seen_case_names.add(case["name"])
         if not isinstance(case.get("shard_id"), int):
             raise SystemExit(f"{path}: case {case.get('name')!r} must have an integer shard_id")
         steps = case.get("steps")
         if not isinstance(steps, list) or not steps:
             raise SystemExit(f"{path}: case {case['name']} must have non-empty steps")
+        case_step_names = set()
+        case_command_signatures = set()
         for step in steps:
             if not step.get("name"):
                 raise SystemExit(f"{path}: case {case['name']} has an unnamed step")
+            if step["name"] in case_step_names:
+                raise SystemExit(f"{path}: duplicate step name {case['name']}/{step['name']}")
+            case_step_names.add(step["name"])
             if not isinstance(step.get("command"), dict):
                 raise SystemExit(f"{path}: step {case['name']}/{step.get('name')} needs command")
             if "kind" not in step["command"]:
                 raise SystemExit(f"{path}: step {case['name']}/{step['name']} command needs kind")
+            command_signature = json.dumps(step["command"], sort_keys=True, separators=(",", ":"))
+            if command_signature in case_command_signatures:
+                raise SystemExit(
+                    f"{path}: duplicate command payload in case {case['name']} "
+                    f"at step {step['name']}"
+                )
+            case_command_signatures.add(command_signature)
             seen_command_kinds.add(step["command"]["kind"])
             if "expect" in step:
                 if not isinstance(step["expect"], dict) or "kind" not in step["expect"]:

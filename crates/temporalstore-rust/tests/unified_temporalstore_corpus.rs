@@ -81,6 +81,8 @@ fn load_corpus() -> UnifiedCorpus {
 }
 
 fn assert_required_coverage(corpus: &UnifiedCorpus) {
+    assert_no_duplicate_cases_or_steps(corpus);
+
     let case_names = corpus
         .cases
         .iter()
@@ -116,6 +118,36 @@ fn assert_required_coverage(corpus: &UnifiedCorpus) {
             response_kinds.contains(required.as_str()),
             "shared corpus missing required response kind {required}"
         );
+    }
+}
+
+fn assert_no_duplicate_cases_or_steps(corpus: &UnifiedCorpus) {
+    let mut case_names = BTreeSet::new();
+    for case in &corpus.cases {
+        assert!(
+            case_names.insert(case.name.as_str()),
+            "shared corpus has duplicate case name {}",
+            case.name
+        );
+
+        let mut step_names = BTreeSet::new();
+        let mut command_signatures = BTreeSet::new();
+        for step in &case.steps {
+            assert!(
+                step_names.insert(step.name.as_str()),
+                "shared corpus has duplicate step name {}/{}",
+                case.name,
+                step.name
+            );
+            let signature = serde_json::to_string(&step.command)
+                .expect("shared corpus command should serialize for duplicate checks");
+            assert!(
+                command_signatures.insert(signature),
+                "shared corpus has duplicate command payload in case {} at step {}",
+                case.name,
+                step.name
+            );
+        }
     }
 }
 

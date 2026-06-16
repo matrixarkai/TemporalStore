@@ -112,6 +112,8 @@ The native C++ executor must:
 - parse `schema_version`, `coverage`, `cases`, `steps`, `command`, `expect`, and `restart_before`
 - fail if any `coverage.required_case_names`, `coverage.required_command_kinds`, or
   `coverage.required_response_kinds` entry is absent from the corpus
+- fail on duplicate case names, duplicate step names within a case, or duplicate exact command
+  payloads within a case
 - execute each command against C++ TemporalStore
 - compare the actual logical response to `expect`
 - restart or reload the local C++ engine when `restart_before=true`
