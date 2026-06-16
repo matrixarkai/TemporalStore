@@ -60,6 +60,12 @@ fn production_readiness_service_summary_is_public_api() {
             ("metaserver", "critical")
         ]
     );
+    let next = report
+        .next_blocked_service()
+        .expect("next blocked service should be exported");
+    assert_eq!(next.service, "client");
+    assert_eq!(next.remediation_order, 1);
+    assert_eq!(next.owner, "client_sdk");
     let data_node: ServiceReadinessSummary = report
         .service_summary("data_node")
         .expect("data node service summary should be exported")

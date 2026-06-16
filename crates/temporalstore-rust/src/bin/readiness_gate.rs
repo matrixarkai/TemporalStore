@@ -11,6 +11,26 @@ fn main() {
         return;
     }
 
+    if options.next_service {
+        let Some(gate) = report.next_blocked_service() else {
+            println!("null");
+            return;
+        };
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&gate).expect("next service gate report must serialize")
+        );
+        eprintln!(
+            "production readiness gate failed: next blocked service #{} {} owner={} severity={} next_action={}",
+            gate.remediation_order,
+            gate.service,
+            gate.owner,
+            gate.severity,
+            gate.next_action
+        );
+        std::process::exit(2);
+    }
+
     if options.service_reports {
         let gates = report.service_gate_reports();
         println!(
@@ -113,6 +133,7 @@ struct GateOptions {
     service_filter: Option<String>,
     service_report: Option<String>,
     service_reports: bool,
+    next_service: bool,
     list_services: bool,
 }
 
@@ -122,6 +143,10 @@ fn parse_gate_options(args: impl IntoIterator<Item = String>) -> GateOptions {
     while let Some(arg) = args.next() {
         if arg == "--list-services" {
             options.list_services = true;
+            continue;
+        }
+        if arg == "--next-service" {
+            options.next_service = true;
             continue;
         }
         if arg == "--service-reports" {
@@ -190,6 +215,7 @@ mod tests {
                 service_filter: Some("proxy".to_string()),
                 service_report: None,
                 service_reports: false,
+                next_service: false,
                 list_services: false,
             }
         );
@@ -199,6 +225,7 @@ mod tests {
                 service_filter: Some("metaserver".to_string()),
                 service_report: None,
                 service_reports: false,
+                next_service: false,
                 list_services: false,
             }
         );
@@ -208,6 +235,7 @@ mod tests {
                 service_filter: None,
                 service_report: Some("data_node".to_string()),
                 service_reports: false,
+                next_service: false,
                 list_services: false,
             }
         );
@@ -217,6 +245,17 @@ mod tests {
                 service_filter: None,
                 service_report: None,
                 service_reports: true,
+                next_service: false,
+                list_services: false,
+            }
+        );
+        assert_eq!(
+            parse_gate_options(["--next-service".to_string()]),
+            GateOptions {
+                service_filter: None,
+                service_report: None,
+                service_reports: false,
+                next_service: true,
                 list_services: false,
             }
         );
@@ -226,6 +265,7 @@ mod tests {
                 service_filter: None,
                 service_report: None,
                 service_reports: false,
+                next_service: false,
                 list_services: true,
             }
         );

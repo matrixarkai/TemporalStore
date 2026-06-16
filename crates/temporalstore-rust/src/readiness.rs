@@ -152,6 +152,13 @@ impl ProductionReadinessReport {
             .filter_map(|service| self.service_gate_report(service))
             .collect()
     }
+
+    pub fn next_blocked_service(&self) -> Option<ServiceReadinessGateReport> {
+        self.service_gate_reports()
+            .into_iter()
+            .filter(|gate| !gate.ready)
+            .min_by_key(|gate| gate.remediation_order)
+    }
 }
 
 pub fn production_readiness_report() -> ProductionReadinessReport {
@@ -734,6 +741,13 @@ mod tests {
         assert!(service_gates
             .iter()
             .all(|gate| gate.gate_status == "blocked"));
+        let next_blocked = report
+            .next_blocked_service()
+            .expect("next blocked service should exist");
+        assert_eq!(next_blocked.service, "client");
+        assert_eq!(next_blocked.remediation_order, 1);
+        assert_eq!(next_blocked.owner, "client_sdk");
+        assert_eq!(next_blocked.severity, "critical");
         assert_eq!(
             service_gates
                 .iter()
