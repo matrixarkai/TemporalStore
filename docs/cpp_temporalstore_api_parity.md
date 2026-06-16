@@ -173,6 +173,10 @@ Feature:
 
 - Rust supports point append/query/replace/delete, write-policy append, and simple
   count/sum/min/max aggregation.
+- Rust now exposes and tests a `feature_sequence_cpp_proto_v1` golden corpus through
+  `cpp_feature_sequence_golden_corpus_report()`. The corpus covers the C++ protobuf value
+  shape, duplicate-field filter replacement, filtered feature query, empty aggregate behavior,
+  sequence filtering, and packed timestamped KV page layout.
 - C++ feature API includes richer `FeaturePoint` structure with nested point arrays, time ranges,
   and richer aggregate query behavior. Rust currently stores one value per timestamp.
 

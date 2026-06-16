@@ -45,6 +45,7 @@ pub use e2e::{
     TemporalStoreClientOptions, WorkflowError, WorkflowProxy,
 };
 pub use engine::{
+    cpp_feature_sequence_golden_corpus_report, CppGoldenCaseReport, CppGoldenCorpusReport,
     RustStorageObservation, ShardCompactionUtilityReport, SlotDumpInstallPreflightReport,
     SlotDumpManifest, SlotStorageSummary, StorageCacheInspectionReport,
     StorageCacheInvalidateSlotRequest, StorageCacheSlotSummary, StorageCacheWarmupReport,

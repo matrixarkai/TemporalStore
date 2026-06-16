@@ -418,6 +418,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "oversized single timestamped values remain readable as one packed page without creating empty chunks"
                     .to_string(),
+                "feature/sequence C++ protobuf golden corpus exercises filters, aggregates, sequence queries, and packed timestamped KV page layout"
+                    .to_string(),
                 "IPS load/snapshot/stat/filter subset and Risk subset with typed client and RESP coverage"
                     .to_string(),
             ],

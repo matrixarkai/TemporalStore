@@ -25,10 +25,10 @@ use crate::page_store::{
     PageStoreStats, PageStoreZoneDescriptor, PageStoreZoneSummary,
 };
 use crate::types::{
-    BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,
-    ExecuteResponse, FeatureFilter, FeatureFilterOp, FeaturePoint, FeatureWritePolicy, IpsStats,
-    RiskFamily, RiskFolType, SequenceFeatureRow, SequenceQuerySpec, ShardId, Status,
-    StringSetCondition,
+    parse_cpp_feature_filters, BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse,
+    ExecuteRequest, ExecuteResponse, FeatureFilter, FeatureFilterOp, FeaturePoint,
+    FeatureWritePolicy, IpsStats, RiskFamily, RiskFolType, SequenceFeatureRow, SequenceQuerySpec,
+    ShardId, Status, StringSetCondition,
 };
 
 #[derive(Debug, Clone)]
@@ -724,6 +724,214 @@ pub struct StorageCacheInspectionReport {
 pub struct StorageCacheInvalidateSlotRequest {
     pub shard_id: ShardId,
     pub routing_slot: u32,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CppGoldenCaseReport {
+    pub name: String,
+    pub passed: bool,
+    pub detail: String,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CppGoldenCorpusReport {
+    pub corpus: String,
+    pub total_cases: usize,
+    pub passed_cases: usize,
+    pub failed_cases: usize,
+    pub cases: Vec<CppGoldenCaseReport>,
+}
+
+impl CppGoldenCorpusReport {
+    pub fn passed(&self) -> bool {
+        self.failed_cases == 0 && self.total_cases == self.passed_cases
+    }
+}
+
+pub fn cpp_feature_sequence_golden_corpus_report() -> CppGoldenCorpusReport {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let mut cases = Vec::new();
+
+    let matching = SequenceFeatureRow {
+        timestamp_ms: 1_000,
+        gid: 42,
+        action_type: 7,
+        duration: 33,
+        author_id: 9_001,
+    };
+    let replacement = SequenceFeatureRow {
+        timestamp_ms: 1_001,
+        gid: 43,
+        action_type: 7,
+        duration: 34,
+        author_id: 9_002,
+    };
+    let non_matching = SequenceFeatureRow {
+        timestamp_ms: 1_002,
+        gid: 44,
+        action_type: 8,
+        duration: 35,
+        author_id: 9_003,
+    };
+
+    record_golden_case(
+        &mut cases,
+        "cpp_feature_proto_roundtrip",
+        SequenceFeatureRow::decode_cpp_feature_value(
+            matching.timestamp_ms,
+            &matching.encode_cpp_feature_value(),
+        ) == Some(matching.clone()),
+        "C++ feature protobuf fields gid/action_type/duration/author_id round-trip",
+    );
+
+    let duplicate_filters = parse_cpp_feature_filters(["gid = 42", "duration > 30", "gid != 42"]);
+    record_golden_case(
+        &mut cases,
+        "cpp_feature_filter_last_field_wins",
+        matches!(duplicate_filters, Ok(ref filters) if filters.len() == 2
+            && filters[0].field == "gid"
+            && filters[0].op == FeatureFilterOp::NotEqual
+            && filters[0].value == 42
+            && filters[1].field == "duration"),
+        "C++ duplicate filter fields replace the previous field predicate",
+    );
+
+    let append = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::FeatureAppend {
+            key: "cpp-golden-feature".to_string(),
+            points: vec![
+                FeaturePoint {
+                    timestamp_ms: matching.timestamp_ms,
+                    value: matching.encode_cpp_feature_value(),
+                },
+                FeaturePoint {
+                    timestamp_ms: replacement.timestamp_ms,
+                    value: replacement.encode_cpp_feature_value(),
+                },
+                FeaturePoint {
+                    timestamp_ms: non_matching.timestamp_ms,
+                    value: non_matching.encode_cpp_feature_value(),
+                },
+            ],
+        },
+    });
+    record_golden_case(
+        &mut cases,
+        "cpp_feature_append_status",
+        append.status.ok,
+        "C++ feature points append through the Rust engine",
+    );
+
+    let filtered = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::FeatureQueryFiltered {
+            key: "cpp-golden-feature".to_string(),
+            start_ms: 0,
+            end_ms: 2_000,
+            count: Some(10),
+            filters: parse_cpp_feature_filters(["action_type = 7", "duration <= 34"])
+                .unwrap_or_default(),
+        },
+    });
+    record_golden_case(
+        &mut cases,
+        "cpp_feature_filtered_query",
+        matches!(
+            filtered.response,
+            CommandResponse::FeaturePoints { ref points }
+                if points.iter().map(|point| point.timestamp_ms).collect::<Vec<_>>()
+                    == vec![matching.timestamp_ms, replacement.timestamp_ms]
+        ),
+        "C++ protobuf feature filters select matching timestamp/value rows",
+    );
+
+    let aggregate = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::FeatureAggQuery {
+            key: "cpp-golden-aggregate".to_string(),
+            start_ms: 0,
+            end_ms: 10,
+            aggregator: "sum".to_string(),
+            count: None,
+        },
+    });
+    record_golden_case(
+        &mut cases,
+        "cpp_feature_empty_sum_aggregate",
+        aggregate.response == CommandResponse::Aggregate { value: 0 },
+        "Empty C++ feature aggregate returns neutral zero",
+    );
+
+    let rows = vec![matching.clone(), replacement.clone(), non_matching.clone()];
+    let add_rows = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::SequenceAdd {
+            key: "cpp-golden-sequence".to_string(),
+            rows: rows.clone(),
+        },
+    });
+    record_golden_case(
+        &mut cases,
+        "cpp_sequence_add_status",
+        add_rows.status.ok,
+        "C++ sequence rows append through timestamped KV pages",
+    );
+
+    let sequence_query = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::SequenceQuery {
+            key: "cpp-golden-sequence".to_string(),
+            start_ms: 0,
+            end_ms: 2_000,
+            count: 10,
+            filters: parse_cpp_feature_filters(["gid >= 42", "action_type = 7"])
+                .unwrap_or_default(),
+        },
+    });
+    record_golden_case(
+        &mut cases,
+        "cpp_sequence_filtered_query",
+        sequence_query.response
+            == CommandResponse::SequenceRows {
+                rows: vec![matching, replacement],
+            },
+        "C++ sequence filters reuse the feature predicate semantics",
+    );
+
+    let page_layout = engine.storage_recovery_report(1).feature_page_layout;
+    record_golden_case(
+        &mut cases,
+        "cpp_timestamped_kv_shared_page_layout",
+        page_layout.packed_feature_pages >= 1
+            && page_layout.unique_feature_page_refs < page_layout.indexed_feature_points
+            && !page_layout.has_errors(),
+        "Timestamped feature/sequence values share packed pages without layout errors",
+    );
+
+    let total_cases = cases.len();
+    let passed_cases = cases.iter().filter(|case| case.passed).count();
+    CppGoldenCorpusReport {
+        corpus: "feature_sequence_cpp_proto_v1".to_string(),
+        total_cases,
+        passed_cases,
+        failed_cases: total_cases.saturating_sub(passed_cases),
+        cases,
+    }
+}
+
+fn record_golden_case(
+    cases: &mut Vec<CppGoldenCaseReport>,
+    name: &str,
+    passed: bool,
+    detail: &str,
+) {
+    cases.push(CppGoldenCaseReport {
+        name: name.to_string(),
+        passed,
+        detail: detail.to_string(),
+    });
 }
 
 impl TemporalEngine {
@@ -9668,6 +9876,16 @@ mod tests {
 
         assert!(FeatureFilter::parse_cpp_filter("unknown = 1").is_err());
         assert!(FeatureFilter::parse_cpp_filter("gid = nope").is_err());
+    }
+
+    #[test]
+    fn cpp_feature_sequence_golden_corpus_passes() {
+        let report = cpp_feature_sequence_golden_corpus_report();
+        assert_eq!(report.corpus, "feature_sequence_cpp_proto_v1");
+        assert_eq!(report.total_cases, 8);
+        assert_eq!(report.passed_cases, report.total_cases);
+        assert_eq!(report.failed_cases, 0);
+        assert!(report.passed(), "{report:#?}");
     }
 
     #[test]
