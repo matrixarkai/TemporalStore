@@ -11770,6 +11770,114 @@ mod tests {
     }
 
     #[test]
+    fn local_recovery_proof_covers_raft_wal_oplog_indexlog_and_pages() {
+        let storage_dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            256,
+            storage_dir.path().join("cache"),
+            storage_dir.path().join("pages"),
+            storage_dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: "storage-recovered".to_string(),
+                        value: b"page-value".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+        engine.page_store().roll_segment().unwrap();
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::FeatureAppend {
+                        key: "storage-feature".to_string(),
+                        points: large_feature_points(),
+                    },
+                })
+                .status
+                .ok
+        );
+
+        let recovered = TemporalEngine::with_local_dirs(
+            256,
+            storage_dir.path().join("cache"),
+            storage_dir.path().join("pages"),
+            storage_dir.path().join("indexes"),
+        );
+        recovered.load_shard(1);
+        let recovery = recovered.storage_recovery_report(1);
+        assert_eq!(recovery.oplog_records, 2);
+        assert_eq!(recovery.index_log_records, 2);
+        assert!(recovery.index_bytes > 0);
+        assert!(recovery.index_write_atomic);
+        assert!(recovery.active_page_segment_ids.len() >= 2);
+        assert!(recovery.total_page_refs >= 2);
+        assert_eq!(recovery.readable_page_refs, recovery.total_page_refs);
+        assert!(recovery.all_live_pages_readable);
+        assert!(recovery.segment_integrity.integrity_ok);
+        assert!(recovery.feature_page_layout.packed_feature_pages > 1);
+        assert_eq!(
+            recovered
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "storage-recovered".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"page-value".to_vec())
+            }
+        );
+
+        let wal_dir = tempfile::tempdir().unwrap();
+        let cluster = RaftCluster::new_single_shard_with_wal(
+            wal_dir.path(),
+            7,
+            [1, 2, 3],
+            RaftConfig::default(),
+        )
+        .unwrap();
+        cluster
+            .propose(Command::StringSet {
+                key: "wal-recovered".to_string(),
+                value: b"raft-value".to_vec(),
+            })
+            .unwrap();
+        cluster.transfer_leader(2).unwrap();
+
+        let restored = RaftCluster::restore_single_shard_from_wal(
+            wal_dir.path(),
+            7,
+            [1, 2, 3],
+            RaftConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(restored.leader_id(), 2);
+        assert_eq!(restored.commit_index(1).unwrap(), 1);
+        assert_eq!(
+            restored
+                .read_local(
+                    3,
+                    Command::StringGet {
+                        key: "wal-recovered".to_string(),
+                    },
+                )
+                .unwrap(),
+            CommandResponse::Bytes {
+                value: Some(b"raft-value".to_vec())
+            }
+        );
+    }
+
+    #[test]
     fn wal_backed_raft_cluster_auto_persists_commits_leadership_and_membership() {
         let dir = tempfile::tempdir().unwrap();
         let cluster = RaftCluster::new_single_shard_with_wal(

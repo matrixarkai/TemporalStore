@@ -356,11 +356,11 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "local stale candidate, lagging read-index, and stale snapshot guards".to_string(),
                 "kill switches for proxy reads/writes, replication, async storage, and scale changes"
                     .to_string(),
+                "local combined recovery proof covers Raft WAL restore plus oplog, index-log, page-file, and packed timestamped KV recovery"
+                    .to_string(),
             ],
             missing: vec![
                 "external chaos suite for process kill, restart, network partition, packet loss, and disk full"
-                    .to_string(),
-                "crash-safe recovery proof across Raft WAL, oplog, index-log, and page files"
                     .to_string(),
                 "rolling restart and rolling upgrade validation for proxy, client, metaserver, and data-node"
                     .to_string(),
