@@ -4,6 +4,8 @@
 The JSON corpus is the test contract. Rust executes it through an integration
 test. C++ should expose a runner command that accepts the same corpus path via
 TS_CPP_UNIFIED_TEST_CMD, using "{corpus}" as an optional path placeholder.
+When TS_CPP_REPO or --cpp-repo is provided, the command also gets "{cpp_repo}"
+rendered and otherwise runs from that repository root.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CORPUS = ROOT / "compat" / "unified_temporalstore_cases.json"
+DEFAULT_CPP_RUNNER_RELATIVE = Path("tools") / "run_temporalstore_unified_tests.sh"
 
 
 def validate_corpus(path: Path) -> dict:
@@ -71,26 +74,46 @@ def run_rust(corpus: Path) -> None:
     )
 
 
-def run_cpp(corpus: Path, required: bool) -> None:
+def render_cpp_command(command: str, corpus: Path, cpp_repo: Path | None) -> str:
+    values = {"corpus": str(corpus)}
+    if cpp_repo is not None:
+        values["cpp_repo"] = str(cpp_repo)
+    if "{corpus}" in command or "{cpp_repo}" in command:
+        return command.format(**values)
+    return f"{command} {shlex.quote(str(corpus))}"
+
+
+def discover_cpp_command(cpp_repo: Path | None) -> str | None:
     command = os.environ.get("TS_CPP_UNIFIED_TEST_CMD")
+    if command:
+        return command
+    if cpp_repo is None:
+        return None
+    candidate = cpp_repo / DEFAULT_CPP_RUNNER_RELATIVE
+    if candidate.exists():
+        return f"{shlex.quote(str(candidate))} --corpus {{corpus}}"
+    return None
+
+
+def run_cpp(corpus: Path, required: bool, cpp_repo: Path | None) -> None:
+    command = os.environ.get("TS_CPP_UNIFIED_TEST_CMD")
+    command = discover_cpp_command(cpp_repo)
     if not command:
         message = (
-            "TS_CPP_UNIFIED_TEST_CMD is not set; set it to the C++ corpus runner "
-            "command, optionally using {corpus} as the corpus path placeholder"
+            "no C++ unified corpus runner configured; set TS_CPP_UNIFIED_TEST_CMD "
+            "to the C++ corpus runner command, optionally using {corpus} and "
+            "{cpp_repo} placeholders, or set TS_CPP_REPO/--cpp-repo to a checkout "
+            "containing tools/run_temporalstore_unified_tests.sh"
         )
         if required:
             raise SystemExit(message)
         print(f"warning: {message}", file=sys.stderr)
         return
 
-    if "{corpus}" in command:
-        rendered = command.format(corpus=str(corpus))
-        shell = True
-    else:
-        rendered = f"{command} {shlex.quote(str(corpus))}"
-        shell = True
+    rendered = render_cpp_command(command, corpus, cpp_repo)
+    cwd = cpp_repo if cpp_repo is not None else ROOT
     print(f"+ {rendered}", flush=True)
-    subprocess.run(rendered, cwd=ROOT, shell=shell, check=True)
+    subprocess.run(rendered, cwd=cwd, shell=True, check=True)
 
 
 def main() -> int:
@@ -98,6 +121,17 @@ def main() -> int:
     parser.add_argument("--corpus", type=Path, default=DEFAULT_CORPUS)
     parser.add_argument("--rust", action="store_true", help="run the Rust corpus executor")
     parser.add_argument("--cpp", action="store_true", help="run the C++ corpus executor")
+    parser.add_argument(
+        "--both",
+        action="store_true",
+        help="run both Rust and C++ corpus executors",
+    )
+    parser.add_argument(
+        "--cpp-repo",
+        type=Path,
+        default=Path(os.environ["TS_CPP_REPO"]) if os.environ.get("TS_CPP_REPO") else None,
+        help="C++ TemporalStore checkout root; also used as cwd for the C++ runner",
+    )
     parser.add_argument(
         "--require-cpp",
         action="store_true",
@@ -115,12 +149,18 @@ def main() -> int:
 
     if args.validate_only:
         return 0
+    if args.both:
+        args.rust = True
+        args.cpp = True
     if not args.rust and not args.cpp:
         args.rust = True
+    cpp_repo = args.cpp_repo.resolve() if args.cpp_repo is not None else None
+    if cpp_repo is not None and not cpp_repo.exists():
+        raise SystemExit(f"C++ repo does not exist: {cpp_repo}")
     if args.rust:
         run_rust(corpus)
     if args.cpp:
-        run_cpp(corpus, args.require_cpp)
+        run_cpp(corpus, args.require_cpp, cpp_repo)
     return 0
 
 

@@ -49,6 +49,22 @@ TS_CPP_UNIFIED_TEST_CMD='/path/to/cpp_temporalstore_corpus_runner {corpus}' \
   tools/run_temporalstore_unified_tests.sh
 ```
 
+To run both repositories from this Rust checkout:
+
+```bash
+TS_CPP_REPO=/path/to/cpp/TemporalStore \
+TS_CPP_UNIFIED_TEST_CMD='{cpp_repo}/tools/run_temporalstore_unified_tests.sh --corpus {corpus}' \
+  python3 tools/run_temporalstore_unified_tests.py --both --require-cpp
+```
+
+If the C++ repo contains `tools/run_temporalstore_unified_tests.sh`, the command
+can be shortened:
+
+```bash
+TS_CPP_REPO=/path/to/cpp/TemporalStore \
+  python3 tools/run_temporalstore_unified_tests.py --both --require-cpp
+```
+
 If `TS_RUN_CPP_UNIFIED_TESTS=1` is set and the C++ command is missing, the
 runner fails closed. This keeps Rust-only local development fast while making
 cross-codebase validation strict in parity CI.
