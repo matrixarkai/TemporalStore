@@ -5,9 +5,9 @@
 Date: 2026-06-16
 
 Rust attributed tests counted with `#[test]` and `#[tokio::test]` under
-`crates/temporalstore-rust`: **487**.
+`crates/temporalstore-rust`: **488**.
 
-Already tied directly to shared/C++ parity harnesses: **19 Rust test functions**.
+Already tied directly to shared/C++ parity harnesses: **20 Rust test functions**.
 
 Still Rust-specific: **468 Rust test functions**.
 
@@ -34,15 +34,16 @@ Raft/storage parity evidence status:
 
 ```text
 python3 tools/validate_raft_storage_parity_evidence.py
-raft_storage_parity_areas: 10
+raft_storage_parity_areas: 11
 corpus_required_cpp_paths: 49
-rust_evidence_snippets: 65
+rust_evidence_snippets: 73
 ```
 
-The ten checked areas are storage object/page/slot lifecycle, slot dump/load recovery,
+The eleven checked areas are storage object/page/slot lifecycle, slot dump/load recovery,
 compaction/GC delayed destroy, shared-store sync/async replication and cursor-safe GC, Raft
 command/log/WAL codec, Raft snapshot/membership scale, data-node Raft consensus contract, Raft
-failover secondary replication, exact C++ Raft case names, and local scale/fault readiness gates.
+metaserver distributed fault contract, Raft failover secondary replication, exact C++ Raft case
+names, and local scale/fault readiness gates.
 
 Control-plane parity evidence status:
 

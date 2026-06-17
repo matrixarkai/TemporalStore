@@ -78,6 +78,9 @@ Raft local coverage:
 - Data-node Raft consensus contract fields aligned with C++ first: learner bootstrap,
   learner auto-promotion, fatal/snapshot status fields, campaign/forced campaign control, and
   fail-closed unavailable-backend behavior.
+- Metaserver Raft distributed/fault contract aligned with C++ control gates: membership list/add/remove,
+  log-applied read-index wait, snapshot trigger, leader transfer, failover after leader loss, and
+  explicit fail-closed handling for unsupported metaserver learner/witness membership.
 - Local production Raft runtime wrapper.
 - HTTP Raft transport for proposal/read/admin paths.
 - WAL-backed local recovery.

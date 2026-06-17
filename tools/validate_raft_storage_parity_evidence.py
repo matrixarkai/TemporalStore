@@ -186,6 +186,34 @@ AREAS: tuple[ParityArea, ...] = (
         ),
     ),
     ParityArea(
+        name="metaserver_raft_distributed_fault_contract",
+        corpus_cases=(
+            "cpp_metaserver_raft_harness_parity_surfaces",
+            "raft_metaserver_membership_failover_snapshot",
+            "raft_production_gate",
+        ),
+        rust_evidence=(
+            RustEvidence(
+                "crates/temporalstore-rust/src/raft.rs",
+                (
+                    "ProductionMetaRaftRuntime",
+                    "list_membership",
+                    "wait_for_log_applied",
+                    "trigger_snapshot",
+                    "transfer_leader",
+                ),
+            ),
+            RustEvidence(
+                "crates/temporalstore-rust/src/raft.rs",
+                (
+                    "production_meta_raft_runtime_matches_cpp_multinode_control_and_fault_contract",
+                    "openraft_metaserver_backend_supports_membership_and_bounded_reads",
+                    "metaserver_raft_promotes_follower_after_leader_failure_and_keeps_metadata_available",
+                ),
+            ),
+        ),
+    ),
+    ParityArea(
         name="raft_failover_secondary_replication",
         corpus_cases=(
             "cpp_data_raft_failover_harness_parity_surfaces",

@@ -2415,6 +2415,55 @@ impl ProductionMetaRaftRuntime {
         self.cluster.propose_mutation(mutation)
     }
 
+    pub fn list_membership(&self) -> Vec<RaftNodeId> {
+        self.status()
+            .nodes
+            .into_iter()
+            .filter(|node| node.replica_role.participates_in_quorum())
+            .map(|node| node.node_id)
+            .collect()
+    }
+
+    pub fn add_node(
+        &self,
+        node_id: RaftNodeId,
+        role: RaftReplicaRole,
+    ) -> Result<RaftScaleChangeReport, RaftError> {
+        if !role.participates_in_quorum() || matches!(role, RaftReplicaRole::Witness) {
+            return Err(RaftError::InvalidConfig(format!(
+                "metaserver raft currently supports voter membership only, requested {role:?}"
+            )));
+        }
+        self.cluster.add_node_safely(node_id)
+    }
+
+    pub fn remove_node(&self, node_id: RaftNodeId) -> Result<RaftScaleChangeReport, RaftError> {
+        self.cluster.remove_node_safely(node_id)
+    }
+
+    pub fn apply_membership(
+        &self,
+        new_voters: impl IntoIterator<Item = RaftNodeId>,
+    ) -> Result<RaftMembershipChangeReport, RaftError> {
+        self.cluster.apply_membership_change_safely(new_voters)
+    }
+
+    pub fn trigger_snapshot(&self) -> Result<MetaRaftSnapshot, RaftError> {
+        self.cluster.create_snapshot()
+    }
+
+    pub fn wait_for_log_applied(&self) -> Result<ReadIndexResponse, RaftError> {
+        self.cluster.read_index(self.options.local_node_id)
+    }
+
+    pub fn read_index(&self, node_id: RaftNodeId) -> Result<ReadIndexResponse, RaftError> {
+        self.cluster.read_index(node_id)
+    }
+
+    pub fn transfer_leader(&self, node_id: RaftNodeId) -> Result<(), RaftError> {
+        self.cluster.transfer_leader(node_id)
+    }
+
     pub fn start_timer_loop(&self) -> ProductionRaftTimerHandle {
         let cluster = self.cluster.clone();
         let heartbeat_interval = Duration::from_millis(self.options.heartbeat_interval_ms);
@@ -8719,15 +8768,32 @@ mod tests {
         assert_eq!(backend.status().unwrap().voter_count, 3);
         backend.can_serve_bounded_stale_read(0).unwrap();
         assert!(backend.report().membership_change_supported);
+        assert!(backend.report().campaign_supported);
 
         let membership = backend.openraft_membership();
         let voters = membership.voter_ids().collect::<Vec<_>>();
         assert_eq!(voters, vec![10, 11, 13]);
 
+        backend.trigger_snapshot().unwrap();
+        let snapshot_meta = backend.build_openraft_snapshot_meta();
+        assert!(snapshot_meta.last_log_id.is_some());
+        assert!(backend.report().snapshot_installed);
+        backend.transfer_leader(11).unwrap();
+        assert!(!backend.is_leader());
+        backend.campaign(10, false).unwrap();
+        assert!(backend.is_leader());
+        let status = backend.status().unwrap();
+        assert_eq!(status.leader_replica_id, 10);
+        assert_eq!(status.fatal_event_count, 0);
+        assert!(!status.snapshot_creating);
+        assert!(!status.snapshot_loading);
+
         let restored = OpenRaftConsensusBackend::new_metaserver(options);
         let restored_status = restored.status().unwrap();
         assert_eq!(restored_status.voter_count, 3);
+        assert_eq!(restored_status.leader_replica_id, 10);
         assert_eq!(restored_status.last_index, 2);
+        assert!(restored.report().leader_transfer_supported);
     }
 
     #[test]
@@ -12098,6 +12164,81 @@ mod tests {
         }
         timer.stop();
         panic!("production metaserver raft runtime did not fail over and freeze stale server");
+    }
+
+    #[test]
+    fn production_meta_raft_runtime_matches_cpp_multinode_control_and_fault_contract() {
+        let runtime = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+            engine: ProductionRaftEngineKind::OpenRaft,
+            local_node_id: 10,
+            nodes: vec![
+                ProductionRaftNode {
+                    node_id: 10,
+                    addr: "127.0.0.1:17101".to_string(),
+                },
+                ProductionRaftNode {
+                    node_id: 11,
+                    addr: "127.0.0.1:17102".to_string(),
+                },
+                ProductionRaftNode {
+                    node_id: 12,
+                    addr: "127.0.0.1:17103".to_string(),
+                },
+            ],
+            config: RaftConfig::default(),
+            heartbeat_interval_ms: 5,
+            election_tick_ms: 2,
+            failure_detector_interval_ms: 5,
+            stale_server_after_ms: 1_000,
+        })
+        .unwrap();
+
+        assert_eq!(runtime.list_membership(), vec![10, 11, 12]);
+        assert!(runtime.validate_ready().is_ok());
+        runtime
+            .propose(MetaCommand::ApplyMutation(MetaMutation::AddNamespace(
+                AddNamespaceRequest {
+                    namespace: "meta-raft-control".to_string(),
+                },
+            )))
+            .unwrap();
+        assert_eq!(runtime.wait_for_log_applied().unwrap().read_index, 1);
+
+        let add_report = runtime.add_node(13, RaftReplicaRole::Voter).unwrap();
+        assert_eq!(add_report.live_voters, 4);
+        assert_eq!(runtime.list_membership(), vec![10, 11, 12, 13]);
+        assert!(matches!(
+            runtime.add_node(14, RaftReplicaRole::Learner),
+            Err(RaftError::InvalidConfig(message)) if message.contains("voter membership only")
+        ));
+
+        let membership = runtime.apply_membership([10, 11, 13]).unwrap();
+        assert_eq!(membership.committed_membership.voters, vec![10, 11, 13]);
+        assert_eq!(runtime.list_membership(), vec![10, 11, 13]);
+
+        let snapshot = runtime.trigger_snapshot().unwrap();
+        assert!(snapshot.last_included_index >= 1);
+        runtime.transfer_leader(11).unwrap();
+        assert_eq!(runtime.status().leader_id, 11);
+        assert_eq!(runtime.read_index(10).unwrap().leader_id, 11);
+
+        runtime.cluster().set_alive(11, false).unwrap();
+        runtime
+            .propose(MetaCommand::ApplyMutation(MetaMutation::AddNamespace(
+                AddNamespaceRequest {
+                    namespace: "meta-raft-after-failover".to_string(),
+                },
+            )))
+            .unwrap();
+        let status = runtime.status();
+        assert_ne!(status.leader_id, 11);
+        assert!(status.has_majority);
+        assert!(runtime
+            .cluster()
+            .list_namespaces()
+            .namespaces
+            .iter()
+            .any(|namespace| namespace.namespace == "meta-raft-after-failover"));
     }
 
     #[test]

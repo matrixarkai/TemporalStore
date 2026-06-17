@@ -145,20 +145,19 @@ fn main() {
         wait_for_http(&node.addr);
     }
 
-    let proposal: DistributedRaftCommandResponse = post_json_harness(
-        &nodes[0].addr,
-        "/raft/propose",
-        &DistributedRaftProposeRequest {
-            command: Command::StringSet {
-                key: options.key.clone(),
-                value: options.value.clone(),
-            },
-        },
+    wait_for_distributed_majority(&runtimes, &nodes);
+    let initial_leader = current_leader_node(&runtimes, &nodes);
+    let proposal = propose_key_after_majority(
+        &runtimes,
+        &nodes,
+        initial_leader,
+        &options.key,
+        &options.value,
     );
     assert!(
-        proposal.status.ok,
-        "raft proposal failed: {:?}",
-        proposal.status
+        proposal.ok,
+        "raft proposal failed through leader {}: {:?}",
+        initial_leader.node_id, proposal
     );
     wait_for_distributed_majority(&runtimes, &nodes);
 
@@ -166,7 +165,8 @@ fn main() {
         .iter()
         .map(|node| wait_for_replica_read(node, &options))
         .collect::<Vec<_>>();
-    let follower_write_rejection = reject_direct_follower_write(&nodes[1], &options);
+    let follower_write_rejection =
+        reject_direct_follower_write(current_follower_node(&runtimes, &nodes), &options);
 
     wait_for_distributed_majority(&runtimes, &nodes);
     for runtime in &runtimes {
@@ -336,7 +336,7 @@ fn main() {
             root: options.root.display().to_string(),
             shard_id: options.shard_id,
             nodes: node_summaries,
-            proposal_status: proposal.status,
+            proposal_status: proposal,
             replica_reads,
             follower_write_rejection,
             transfer_leader_to_node: 2,
@@ -517,6 +517,32 @@ fn propose_key_after_majority(
     }
 }
 
+fn current_leader_node<'a>(
+    runtimes: &[ProductionRaftRuntime],
+    nodes: &'a [ProductionRaftNode],
+) -> &'a ProductionRaftNode {
+    let leader_id = runtimes
+        .first()
+        .expect("distributed harness requires at least one runtime")
+        .cluster()
+        .leader_id();
+    nodes
+        .iter()
+        .find(|node| node.node_id == leader_id)
+        .expect("current leader should be present in harness nodes")
+}
+
+fn current_follower_node<'a>(
+    runtimes: &[ProductionRaftRuntime],
+    nodes: &'a [ProductionRaftNode],
+) -> &'a ProductionRaftNode {
+    let leader_id = current_leader_node(runtimes, nodes).node_id;
+    nodes
+        .iter()
+        .find(|node| node.node_id != leader_id)
+        .expect("distributed harness requires at least one follower")
+}
+
 fn reject_direct_follower_write(node: &ProductionRaftNode, options: &HarnessOptions) -> Status {
     let response: DistributedRaftCommandResponse = post_json_harness(
         &node.addr,
@@ -572,14 +598,27 @@ fn wait_for_distributed_majority(
     runtimes: &[ProductionRaftRuntime],
     live_nodes: &[ProductionRaftNode],
 ) {
+    let live_node_ids = live_nodes
+        .iter()
+        .map(|node| node.node_id)
+        .collect::<std::collections::BTreeSet<_>>();
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         for runtime in runtimes {
-            for node in live_nodes {
+            let known_node_ids = runtime
+                .cluster()
+                .status()
+                .nodes
+                .into_iter()
+                .map(|node| node.node_id)
+                .collect::<Vec<_>>();
+            for node_id in known_node_ids {
                 runtime
                     .cluster()
-                    .set_alive(node.node_id, true)
+                    .set_alive(node_id, live_node_ids.contains(&node_id))
                     .expect("harness node should exist in every raft view");
+            }
+            for node in live_nodes {
                 runtime
                     .cluster()
                     .catch_up(node.node_id)
