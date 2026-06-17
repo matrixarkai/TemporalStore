@@ -2402,7 +2402,7 @@
             "kind": "existing_test",
             "suite": "cpp_data_raft_parity",
             "mode": "stress",
-            "description": "Unified C++/Rust Raft production gate case. Rust local gate validates the current local production slice while strict readiness remains blocked on networked OpenRaft rollout and external fault tests.",
+            "description": "Unified C++/Rust Raft production gate case. Rust local gates validate the current storage/Raft production slice and the combined data-node plus metaserver multi-node Raft parity slice while strict readiness remains blocked on networked OpenRaft rollout and external fault tests.",
             "required_paths": [
               "tools/run_raft_production_gate_ubuntu22.sh",
               "tools/run_raft_stress_suite_ubuntu22.sh",
@@ -2410,7 +2410,8 @@
               "tools/test_summarize_raft_gate_results.py"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
-            "rust_runner": "tools/run_storage_raft_production_readiness.sh",
+            "rust_runner": "tools/run_storage_raft_production_readiness.sh && tools/run_raft_distributed_parity.sh",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "timeout_s": 2400
           }
         }

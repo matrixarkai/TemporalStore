@@ -314,6 +314,13 @@ AREAS: tuple[ParityArea, ...] = (
                     "raft_production_gate",
                 ),
             ),
+            RustEvidence(
+                "compat/unified_temporalstore_cases.json",
+                (
+                    "tools/run_storage_raft_production_readiness.sh && tools/run_raft_distributed_parity.sh",
+                    "temporalstore-raft-distributed-parity-validation",
+                ),
+            ),
         ),
     ),
     ParityArea(

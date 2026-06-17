@@ -81,7 +81,7 @@ to them.
 | `raft_metaserver_membership_failover_snapshot` | Exact C++ metaserver Raft membership/failover/snapshot case, paired with Rust metaserver Raft evidence and readiness blockers. |
 | `raft_data_node_scale_failover_snapshot` | Exact C++ data-node Raft scale/failover/snapshot case, paired with Rust distributed and secondary-replication harnesses. |
 | `raft_data_node_mixed_rw_and_membership` | Exact C++ data-node mixed read/write plus membership case, paired with Rust distributed and secondary-replication harnesses. |
-| `raft_production_gate` | Exact C++ Raft production gate case, paired with the Rust storage/Raft production-readiness local gate. |
+| `raft_production_gate` | Exact C++ Raft production gate case, paired with the Rust storage/Raft production-readiness local gate and the combined data-node plus metaserver Raft distributed parity gate. |
 | `cpp_redis_live_storage_smoke_parity_surfaces` | Redis live storage smoke surfaces. |
 | `cpp_local_docker_replication_matrix_parity_surfaces` | Local Docker replication matrix surfaces. |
 | `cpp_client_meta_sync_route_parity_surfaces` | Client meta-sync, route, pipeline, and request surfaces. |
