@@ -11,13 +11,13 @@ compat/unified_temporalstore_cases.json
 Current inventory:
 
 ```text
-total cases: 40
-total steps: 100
+total cases: 45
+total steps: 110
 executable shared behavior cases: 18
 executable shared behavior steps: 78
-C++ existing-test parity surface cases: 22
-C++ existing-test parity surface steps: 22
-C++ required source/test/harness paths: 83
+C++ existing-test parity surface cases: 27
+C++ existing-test parity surface steps: 32
+C++ required source/test/harness paths: 83 unique paths plus 30 exact Raft alias references
 required command kinds: 43
 required response kinds: 16
 ```

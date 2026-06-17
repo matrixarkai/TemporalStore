@@ -157,6 +157,35 @@ AREAS: tuple[ParityArea, ...] = (
         ),
     ),
     ParityArea(
+        name="data_node_raft_consensus_contract",
+        corpus_cases=(
+            "cpp_data_raft_consensus_parity_surfaces",
+            "storage_data_raft_replication_gtest",
+            "raft_data_node_scale_failover_snapshot",
+            "raft_data_node_mixed_rw_and_membership",
+        ),
+        rust_evidence=(
+            RustEvidence(
+                "crates/temporalstore-rust/src/raft.rs",
+                (
+                    "bootstrap_as_learner",
+                    "auto_promote",
+                    "fatal_event_count",
+                    "snapshot_creating",
+                    "fn campaign",
+                ),
+            ),
+            RustEvidence(
+                "crates/temporalstore-rust/src/raft.rs",
+                (
+                    "openraft_data_node_backend_bootstraps_learner_and_auto_promotes_peer",
+                    "openraft_data_node_backend_persists_log_snapshot_read_index_and_leader_transfer",
+                    "backend.campaign",
+                ),
+            ),
+        ),
+    ),
+    ParityArea(
         name="raft_failover_secondary_replication",
         corpus_cases=(
             "cpp_data_raft_failover_harness_parity_surfaces",

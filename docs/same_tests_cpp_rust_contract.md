@@ -303,7 +303,7 @@ Result:
 - Rust unified corpus runner passed.
 - Rust direct engine path passed.
 - Rust `TemporalStoreClient` plus local HTTP path passed.
-- C++ unified hook passed against the same 40-case `compat/unified_temporalstore_cases.json`.
+- C++ unified hook passed against the same 45-case `compat/unified_temporalstore_cases.json`.
 - C++ hook validated the shared `coverage` manifest, duplicate-test rejection rules, and current
   unified command names.
 - C++ hook confirmed the required local C++ parity surfaces are present.
@@ -405,7 +405,7 @@ Validation in each iteration:
   command-response cases.
 - Rust validates the storage/Raft `existing_test` case names and command kind in the same shared
   coverage manifest.
-- C++ hook validates the same 40-case corpus, including required storage/Raft source and harness
+- C++ hook validates the same 45-case corpus, including required storage/Raft source and harness
   paths.
 - C++ native context contract validates the shared context subset.
 

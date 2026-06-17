@@ -75,6 +75,9 @@ Raft local coverage:
 - OpenRaft boundary types for entries, log ids, membership, and snapshot metadata.
 - Durable OpenRaft adapter state with log records, state-machine apply, snapshot build/install
   metadata, read-index checks, membership changes, leader transfer, and restart recovery tests.
+- Data-node Raft consensus contract fields aligned with C++ first: learner bootstrap,
+  learner auto-promotion, fatal/snapshot status fields, campaign/forced campaign control, and
+  fail-closed unavailable-backend behavior.
 - Local production Raft runtime wrapper.
 - HTTP Raft transport for proposal/read/admin paths.
 - WAL-backed local recovery.

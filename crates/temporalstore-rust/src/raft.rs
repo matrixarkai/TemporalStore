@@ -127,6 +127,8 @@ pub struct DataRaftPeer {
     pub replica_id: RaftNodeId,
     pub raft_addr: String,
     pub snapshot_addr: String,
+    #[serde(default)]
+    pub auto_promote: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -139,6 +141,7 @@ pub struct DataRaftConsensusOptions {
     pub wal_dir: Option<PathBuf>,
     pub snapshot_dir: Option<PathBuf>,
     pub wal_sync: bool,
+    pub bootstrap_as_learner: bool,
     pub peers: Vec<DataRaftPeer>,
     pub initial_applied_index: u64,
 }
@@ -154,6 +157,7 @@ impl Default for DataRaftConsensusOptions {
             wal_dir: None,
             snapshot_dir: None,
             wal_sync: true,
+            bootstrap_as_learner: false,
             peers: Vec::new(),
             initial_applied_index: 0,
         }
@@ -174,6 +178,9 @@ pub struct DataRaftStatus {
     pub pending_config_change_index: u64,
     pub voter_count: u64,
     pub learner_count: u64,
+    pub fatal_event_count: u64,
+    pub snapshot_creating: bool,
+    pub snapshot_loading: bool,
 }
 
 pub trait DataRaftConsensusBackend {
@@ -190,6 +197,7 @@ pub trait DataRaftConsensusBackend {
     fn promote_peer(&mut self, replica_id: RaftNodeId) -> Result<(), RaftError>;
     fn remove_peer(&mut self, replica_id: RaftNodeId) -> Result<(), RaftError>;
     fn transfer_leader(&mut self, replica_id: RaftNodeId) -> Result<(), RaftError>;
+    fn campaign(&mut self, timeout_ms: u64, force: bool) -> Result<(), RaftError>;
     fn can_serve_bounded_stale_read(&self, max_stale_index_lag: u64) -> Result<(), RaftError>;
 }
 
@@ -233,6 +241,9 @@ impl DataRaftConsensusBackend for UnavailableDataRaftConsensusBackend {
             pending_config_change_index: 0,
             voter_count: self.options.peers.len() as u64,
             learner_count: 0,
+            fatal_event_count: 0,
+            snapshot_creating: false,
+            snapshot_loading: false,
         })
     }
 
@@ -270,6 +281,10 @@ impl DataRaftConsensusBackend for UnavailableDataRaftConsensusBackend {
 
     fn transfer_leader(&mut self, _replica_id: RaftNodeId) -> Result<(), RaftError> {
         Err(Self::unavailable("transfer_leader"))
+    }
+
+    fn campaign(&mut self, _timeout_ms: u64, _force: bool) -> Result<(), RaftError> {
+        Err(Self::unavailable("campaign"))
     }
 
     fn can_serve_bounded_stale_read(&self, _max_stale_index_lag: u64) -> Result<(), RaftError> {
@@ -2627,6 +2642,8 @@ pub mod openraft_integration {
         pub read_index_supported: bool,
         pub membership_change_supported: bool,
         pub leader_transfer_supported: bool,
+        pub campaign_supported: bool,
+        pub learner_bootstrap_supported: bool,
         pub openraft_entry_boundary: String,
     }
 
@@ -2660,17 +2677,22 @@ pub mod openraft_integration {
                     options.shard_id, options.replica_id
                 ))
             });
-            let voters = options
+            let mut voters = options
                 .peers
                 .iter()
                 .filter(|peer| peer.replica_id != options.replica_id)
                 .map(|peer| peer.replica_id)
-                .chain(std::iter::once(options.replica_id))
                 .collect::<Vec<_>>();
+            let learners = if options.bootstrap_as_learner {
+                vec![options.replica_id]
+            } else {
+                voters.push(options.replica_id);
+                Vec::new()
+            };
             let state = state_path
                 .as_ref()
                 .and_then(|path| Self::load_state(path).ok().flatten())
-                .unwrap_or_else(|| OpenRaftDurableState::new(kind, &options, voters, Vec::new()));
+                .unwrap_or_else(|| OpenRaftDurableState::new(kind, &options, voters, learners));
             Self {
                 options,
                 kind,
@@ -2691,6 +2713,8 @@ pub mod openraft_integration {
                 read_index_supported: true,
                 membership_change_supported: true,
                 leader_transfer_supported: true,
+                campaign_supported: true,
+                learner_bootstrap_supported: true,
                 openraft_entry_boundary: std::any::type_name::<TemporalOpenRaftEntry>().to_string(),
             }
         }
@@ -2874,6 +2898,9 @@ pub mod openraft_integration {
                 pending_config_change_index: 0,
                 voter_count: self.state.voters.len() as u64,
                 learner_count: self.state.learners.len() as u64,
+                fatal_event_count: 0,
+                snapshot_creating: false,
+                snapshot_loading: false,
             })
         }
 
@@ -2966,7 +2993,12 @@ pub mod openraft_integration {
             self.state.learners.push(peer.replica_id);
             self.state.learners.sort_unstable();
             self.state.learners.dedup();
-            self.persist_state()
+            self.persist_state()?;
+            if peer.auto_promote {
+                self.promote_peer(peer.replica_id)
+            } else {
+                Ok(())
+            }
         }
 
         fn promote_peer(&mut self, replica_id: RaftNodeId) -> Result<(), RaftError> {
@@ -2997,6 +3029,25 @@ pub mod openraft_integration {
                 return Err(RaftError::NodeNotFound(replica_id));
             }
             self.state.leader_id = replica_id;
+            self.state.current_term = self.state.current_term.saturating_add(1);
+            self.persist_state()
+        }
+
+        fn campaign(&mut self, _timeout_ms: u64, force: bool) -> Result<(), RaftError> {
+            if !self.running {
+                return Err(RaftError::LeaderUnavailable);
+            }
+            if !self.state.voters.contains(&self.state.local_node_id) {
+                return Err(RaftError::NodeNotFound(self.state.local_node_id));
+            }
+            if !force && self.state.committed_index > self.state.applied_index {
+                return Err(RaftError::ReplicaLagging {
+                    replica_id: self.state.local_node_id,
+                    replica_commit_index: self.state.applied_index,
+                    leader_commit_index: self.state.committed_index,
+                });
+            }
+            self.state.leader_id = self.state.local_node_id;
             self.state.current_term = self.state.current_term.saturating_add(1);
             self.persist_state()
         }
@@ -8423,6 +8474,7 @@ mod tests {
             replica_id: 12,
             raft_addr: "127.0.0.1:17012".to_string(),
             snapshot_addr: "127.0.0.1:18012".to_string(),
+            auto_promote: false,
         };
 
         assert!(matches!(backend.start(), Err(RaftError::Transport(_))));
@@ -8464,6 +8516,10 @@ mod tests {
             Err(RaftError::Transport(_))
         ));
         assert!(matches!(
+            backend.campaign(1, false),
+            Err(RaftError::Transport(_))
+        ));
+        assert!(matches!(
             backend.can_serve_bounded_stale_read(0),
             Err(RaftError::Transport(_))
         ));
@@ -8487,11 +8543,13 @@ mod tests {
                     replica_id: 2,
                     raft_addr: "127.0.0.1:17002".to_string(),
                     snapshot_addr: "127.0.0.1:18002".to_string(),
+                    auto_promote: false,
                 },
                 DataRaftPeer {
                     replica_id: 3,
                     raft_addr: "127.0.0.1:17003".to_string(),
                     snapshot_addr: "127.0.0.1:18003".to_string(),
+                    auto_promote: false,
                 },
             ],
             ..DataRaftConsensusOptions::default()
@@ -8539,12 +8597,80 @@ mod tests {
 
         backend.transfer_leader(2).unwrap();
         assert!(!backend.is_leader());
+        backend.campaign(10, false).unwrap();
+        assert!(backend.is_leader());
         let restored = OpenRaftConsensusBackend::new_data_node(options, engine);
         let status = restored.status().unwrap();
-        assert_eq!(status.leader_replica_id, 2);
+        assert_eq!(status.leader_replica_id, 1);
         assert_eq!(status.applied_index, 1);
         assert_eq!(status.first_index, 2);
+        assert_eq!(status.fatal_event_count, 0);
+        assert!(!status.snapshot_creating);
+        assert!(!status.snapshot_loading);
         assert_eq!(restored.report().durable_log_records, 0);
+        assert!(restored.report().campaign_supported);
+        assert!(restored.report().learner_bootstrap_supported);
+    }
+
+    #[cfg(feature = "openraft-engine")]
+    #[test]
+    fn openraft_data_node_backend_bootstraps_learner_and_auto_promotes_peer() {
+        use super::openraft_integration::OpenRaftConsensusBackend;
+
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::default();
+        let options = DataRaftConsensusOptions {
+            shard_id: 8,
+            replica_id: 4,
+            group_id: 78,
+            wal_dir: Some(dir.path().to_path_buf()),
+            bootstrap_as_learner: true,
+            peers: vec![
+                DataRaftPeer {
+                    replica_id: 1,
+                    raft_addr: "127.0.0.1:17001".to_string(),
+                    snapshot_addr: "127.0.0.1:18001".to_string(),
+                    auto_promote: false,
+                },
+                DataRaftPeer {
+                    replica_id: 2,
+                    raft_addr: "127.0.0.1:17002".to_string(),
+                    snapshot_addr: "127.0.0.1:18002".to_string(),
+                    auto_promote: false,
+                },
+            ],
+            ..DataRaftConsensusOptions::default()
+        };
+        let mut backend = OpenRaftConsensusBackend::new_data_node(options.clone(), engine);
+        backend.start().unwrap();
+
+        let status = backend.status().unwrap();
+        assert!(status.learner);
+        assert!(!status.leader);
+        assert_eq!(status.voter_count, 2);
+        assert_eq!(status.learner_count, 1);
+        assert!(matches!(
+            backend.campaign(10, false),
+            Err(RaftError::NodeNotFound(4))
+        ));
+
+        backend
+            .add_learner(DataRaftPeer {
+                replica_id: 5,
+                raft_addr: "127.0.0.1:17005".to_string(),
+                snapshot_addr: "127.0.0.1:18005".to_string(),
+                auto_promote: true,
+            })
+            .unwrap();
+        let status = backend.status().unwrap();
+        assert_eq!(status.voter_count, 3);
+        assert_eq!(status.learner_count, 1);
+
+        let restored = OpenRaftConsensusBackend::new_data_node(options, TemporalEngine::default());
+        let restored_status = restored.status().unwrap();
+        assert!(restored_status.learner);
+        assert_eq!(restored_status.voter_count, 3);
+        assert_eq!(restored_status.learner_count, 1);
     }
 
     #[cfg(feature = "openraft-engine")]
@@ -8563,11 +8689,13 @@ mod tests {
                     replica_id: 11,
                     raft_addr: "127.0.0.1:17111".to_string(),
                     snapshot_addr: "127.0.0.1:18111".to_string(),
+                    auto_promote: false,
                 },
                 DataRaftPeer {
                     replica_id: 12,
                     raft_addr: "127.0.0.1:17112".to_string(),
                     snapshot_addr: "127.0.0.1:18112".to_string(),
+                    auto_promote: false,
                 },
             ],
             ..DataRaftConsensusOptions::default()
@@ -8580,6 +8708,7 @@ mod tests {
             replica_id: 13,
             raft_addr: "127.0.0.1:17113".to_string(),
             snapshot_addr: "127.0.0.1:18113".to_string(),
+            auto_promote: false,
         };
         backend.add_learner(learner.clone()).unwrap();
         assert_eq!(backend.status().unwrap().learner_count, 1);
