@@ -297,10 +297,12 @@ tools/run_raft_distributed_parity.sh
 ```
 
 It runs `distributed_raft_harness`, `raft_secondary_replication_harness`, and
-`metaserver_raft_harness`, then validates a combined `raft-distributed-parity.json` report with
-data-node replica reads, follower-write rejection, membership scale down/up, external snapshot
-restore, secondary restart/partition/lag/failover, and metaserver membership/read-index/snapshot/
-failover/no-majority checks.
+`metaserver_raft_harness`, then uses `build_raft_distributed_parity_summary.py` to validate a
+combined `raft-distributed-parity.json` report with data-node replica reads, follower-write
+rejection, membership scale down/up, external snapshot restore, secondary restart/partition/lag/
+failover, and metaserver membership/read-index/snapshot/failover/no-majority checks. The full
+`run_storage_raft_production_readiness.sh` gate also builds and validates the same combined summary
+from its already-produced harness artifacts.
 
 The quick profile composes the OS-process Raft secondary harness, the networked
 distributed Raft harness, the storage modes harness, the storage production harness, and the

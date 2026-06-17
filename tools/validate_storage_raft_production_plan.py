@@ -18,6 +18,8 @@ REQUIRED_SCRIPT_SNIPPETS = (
     "distributed_raft_harness",
     "metaserver_raft_harness",
     "raft_secondary_replication_harness",
+    "build_raft_distributed_parity_summary.py",
+    "raft-distributed-parity-validation",
     "external_chaos_gate",
     "validate_raft_storage_parity_evidence.py",
 )
@@ -26,6 +28,7 @@ REQUIRED_RAFT_PARITY_SCRIPT_SNIPPETS = (
     "distributed_raft_harness",
     "raft_secondary_replication_harness",
     "metaserver_raft_harness",
+    "build_raft_distributed_parity_summary.py",
     "raft-distributed-parity-validation",
 )
 

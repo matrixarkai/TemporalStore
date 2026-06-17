@@ -38,9 +38,10 @@ process integration and external distributed fault validation.
 
 5. **Raft snapshot/restart/failover harness**
    - Runs `distributed_raft_harness`.
-   - Runs `metaserver_raft_harness`.
-   - Runs `raft_secondary_replication_harness`.
-   - Validates proposal, follower write rejection, leader transfer, data-node and metaserver
+- Runs `metaserver_raft_harness`.
+- Runs `raft_secondary_replication_harness`.
+- Builds and validates `raft-distributed-parity.json` from those three harness outputs.
+- Validates proposal, follower write rejection, leader transfer, data-node and metaserver
      membership change, metaserver snapshot restore, external snapshot bootstrap/read, secondary
      restart catch-up, partition heal, follower lag/catch-up, stale vote rejection, rolling restart,
      and leader-crash failover reads.

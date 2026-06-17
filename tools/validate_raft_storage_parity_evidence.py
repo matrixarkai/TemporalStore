@@ -286,6 +286,15 @@ AREAS: tuple[ParityArea, ...] = (
                 ),
             ),
             RustEvidence(
+                "tools/build_raft_distributed_parity_summary.py",
+                (
+                    "distributed_all_nodes_have_majority",
+                    "partition_isolated_read_rejected",
+                    "namespace_after_failover_visible",
+                    "unavailable_without_majority",
+                ),
+            ),
+            RustEvidence(
                 "docs/distributed_raft_readiness.md",
                 (
                     "storage_data_raft_replication_gtest",

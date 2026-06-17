@@ -37,60 +37,9 @@ python3 tools/validate_aws_validation_log.py \
   --log "${ARTIFACT_DIR}/metaserver-raft.json"
 
 echo "== 4/4 combined Raft parity summary =="
-python3 - <<PY
-import json
-from pathlib import Path
-
-artifact_dir = Path("${ARTIFACT_DIR}")
-
-def load(name):
-    text = (artifact_dir / name).read_text(encoding="utf-8")
-    return json.loads(text[text.find("{"):text.rfind("}") + 1])
-
-distributed = load("distributed-raft.json")
-secondary = load("raft-secondary.json")
-metaserver = load("metaserver-raft.json")
-
-summary = {
-    "production_ready_slice": True,
-    "artifact_dir": str(artifact_dir),
-    "data_node": {
-        "distributed_node_count": len(distributed["nodes"]),
-        "distributed_all_nodes_have_majority": all(
-            node["status"]["has_majority"] and node["apply_health"]["healthy"]
-            for node in distributed["nodes"]
-        ),
-        "replica_read_values": [read["value"] for read in distributed["replica_reads"]],
-        "follower_write_rejected": not distributed["follower_write_rejection"]["ok"],
-        "scale_down_voters": [item["voters"] for item in distributed["scale_down"]],
-        "scale_up_voters": [item["voters"] for item in distributed["scale_up"]],
-        "external_snapshot_read": distributed["external_snapshot_read"]["value"],
-        "secondary_restart_reads": secondary["reads_after_restart"],
-        "partition_isolated_read_rejected": not secondary["partition"]["isolated_read_status"]["ok"],
-        "lagging_follower_observed_lag": secondary["lagging_follower"]["observed_lag"],
-        "leader_crash_failover_ok": secondary["failover"]["status"]["ok"],
-        "post_leader_crash_values": [read["value"] for read in secondary["reads_after_leader_crash"]],
-    },
-    "metaserver": {
-        "initial_membership": metaserver["initial_membership"],
-        "membership_after_add": metaserver["membership_after_add"],
-        "membership_after_remove": metaserver["membership_after_remove"],
-        "unsupported_role_rejected": metaserver["unsupported_role_rejected"],
-        "wait_for_log_applied_index": metaserver["wait_for_log_applied_index"],
-        "snapshot_index": metaserver["snapshot_index"],
-        "snapshot_restore_read": metaserver["snapshot_restore_read"],
-        "leader_after_transfer": metaserver["leader_after_transfer"],
-        "leader_after_failover": metaserver["leader_after_failover"],
-        "namespace_after_failover_visible": metaserver["namespace_after_failover_visible"],
-        "unavailable_without_majority": metaserver["unavailable_without_majority"],
-    },
-}
-(artifact_dir / "raft-distributed-parity.json").write_text(
-    json.dumps(summary, indent=2, sort_keys=True) + "\\n",
-    encoding="utf-8",
-)
-print(json.dumps(summary, indent=2, sort_keys=True))
-PY
+python3 tools/build_raft_distributed_parity_summary.py \
+  --artifact-dir "${ARTIFACT_DIR}" \
+  --output "${ARTIFACT_DIR}/raft-distributed-parity.json"
 python3 tools/validate_aws_validation_log.py \
   --job temporalstore-raft-distributed-parity-validation \
   --log "${ARTIFACT_DIR}/raft-distributed-parity.json"
