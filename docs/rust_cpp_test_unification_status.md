@@ -20,6 +20,20 @@ shared corpus: no duplicate case names, per-case step names, or per-case command
 C++ existing-test surfaces: no repeated required_paths
 ```
 
+Raft/storage parity evidence status:
+
+```text
+python3 tools/validate_raft_storage_parity_evidence.py
+raft_storage_parity_areas: 8
+corpus_required_cpp_paths: 45
+rust_evidence_snippets: 45
+```
+
+The eight checked areas are storage object/page/slot lifecycle, slot dump/load recovery,
+compaction/GC delayed destroy, shared-store sync/async replication and cursor-safe GC, Raft
+command/log/WAL codec, Raft snapshot/membership scale, Raft failover secondary replication, and
+local scale/fault readiness gates.
+
 Shared C++/Rust corpus:
 
 ```text

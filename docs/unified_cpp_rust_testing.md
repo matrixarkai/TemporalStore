@@ -11,6 +11,10 @@ and restart reads without duplicating expected behavior in separate test code.
 The same corpus also carries static `existing_test` parity gates for C++
 storage/Raft plus client, proxy, metaserver, and data-node control-plane
 surfaces that Rust is expected to track.
+`tools/validate_raft_storage_parity_evidence.py` ties those storage/Raft
+surfaces back to Rust implementation, tests, and harnesses across eight
+explicit parity areas so the C++ surface gates cannot drift away from Rust
+evidence.
 
 ## Rust
 
@@ -92,6 +96,7 @@ That gate unifies the existing local checks instead of replacing them:
 - unit/API compatibility: `temporalstore_compat`
 - API contract: `validate_sdk_contract.py`
 - shared Rust/C++ corpus: `tools/run_temporalstore_unified_tests.sh`
+- Raft/storage evidence: `tools/validate_raft_storage_parity_evidence.py`
 - storage integration: `storage_migration_corpus` and `storage_crash_harness`
 - scale/shared-store: compact `scale_harness` run with tunable `TS_UNIFIED_*`
   knobs

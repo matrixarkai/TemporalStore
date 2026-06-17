@@ -45,6 +45,7 @@ echo "== unified: workflow/test contract guards =="
 python3 tools/validate_readiness_workflow.py
 python3 tools/run_temporalstore_unified_tests.py --validate-only
 python3 tools/validate_no_duplicate_tests.py
+python3 tools/validate_raft_storage_parity_evidence.py
 python3 tools/validate_sdk_contract.py
 
 echo "== unified: unit and API compatibility tests =="
