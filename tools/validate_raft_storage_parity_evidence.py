@@ -176,6 +176,50 @@ AREAS: tuple[ParityArea, ...] = (
         ),
     ),
     ParityArea(
+        name="unified_cpp_raft_case_names",
+        corpus_cases=(
+            "storage_data_raft_replication_gtest",
+            "raft_metaserver_membership_failover_snapshot",
+            "raft_data_node_scale_failover_snapshot",
+            "raft_data_node_mixed_rw_and_membership",
+            "raft_production_gate",
+        ),
+        rust_evidence=(
+            RustEvidence(
+                "crates/temporalstore-rust/src/bin/distributed_raft_harness.rs",
+                (
+                    "transfer_leader",
+                    "apply_membership_on_all",
+                    "external_snapshot_bootstrap",
+                ),
+            ),
+            RustEvidence(
+                "crates/temporalstore-rust/src/bin/raft_secondary_replication_harness.rs",
+                (
+                    "reads_after_leader_crash",
+                    "lagging_follower",
+                    "rolling_restart",
+                ),
+            ),
+            RustEvidence(
+                "tools/run_storage_raft_production_readiness.sh",
+                (
+                    "distributed_raft_harness",
+                    "raft_secondary_replication_harness",
+                    "external_chaos_gate",
+                ),
+            ),
+            RustEvidence(
+                "docs/distributed_raft_readiness.md",
+                (
+                    "storage_data_raft_replication_gtest",
+                    "raft_data_node_scale_failover_snapshot",
+                    "raft_production_gate",
+                ),
+            ),
+        ),
+    ),
+    ParityArea(
         name="local_scale_fault_readiness_gate",
         corpus_cases=(
             "cpp_redis_live_storage_smoke_parity_surfaces",

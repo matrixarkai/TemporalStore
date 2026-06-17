@@ -29,13 +29,13 @@ Current corpus:
 ```text
 schema_version: 1
 name: temporalstore-unified-cpp-rust-corpus
-cases: 40
-steps: 100
+cases: 45
+steps: 110
 executable behavior cases: 18
 executable behavior steps: 78
 required command kinds: 43
 required response kinds: 16
-C++ existing-test parity surfaces: 83 required paths
+C++ existing-test parity surfaces: 83 unique required paths plus 30 exact Raft alias references
 ```
 
 The shared cases are:
@@ -84,6 +84,13 @@ The shared cases are:
   `cpp_metaserver_raft_harness_parity_surfaces`,
   `cpp_redis_live_storage_smoke_parity_surfaces`, and
   `cpp_local_docker_replication_matrix_parity_surfaces`.
+- Current C++ Raft test unification adds the exact C++ Raft corpus case names with paired Rust
+  harness metadata:
+  `storage_data_raft_replication_gtest`,
+  `raft_metaserver_membership_failover_snapshot`,
+  `raft_data_node_scale_failover_snapshot`,
+  `raft_data_node_mixed_rw_and_membership`, and
+  `raft_production_gate`.
 
 ## Rust Runner
 
@@ -452,8 +459,8 @@ Result: all 8 iterations passed against the 34-case shared corpus.
 
 ## Current Unified API/Model Expansion: 2026-06-16
 
-The shared corpus now has 40 cases and 100 steps. Two C++-named Rust-local behavior groups were
-promoted into executable shared cases:
+The shared corpus has 45 cases and 110 steps after exact C++ Raft case-name unification. Two
+C++-named Rust-local behavior groups were promoted into executable shared cases:
 
 ```text
 feature_policy_filter_aggregate_lifecycle
@@ -465,5 +472,6 @@ filtered C++ feature-row payloads, Sequence filtered queries, scan-bound count s
 query groups, and missing sequence groups.
 
 The Rust runner executes all 78 executable shared behavior steps through both direct engine and
-local HTTP client paths. The C++ hook validates the same 40-case corpus, current context contract,
-coverage manifest, duplicate-test rules, and required C++ parity surfaces.
+local HTTP client paths. The C++ hook validates the same 45-case corpus, current context contract,
+coverage manifest, duplicate-test rules, exact C++ Raft case names, and required C++ parity
+surfaces.

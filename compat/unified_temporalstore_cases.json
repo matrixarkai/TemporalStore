@@ -38,6 +38,11 @@
       "cpp_data_raft_multinode_scale_harness_parity_surfaces",
       "cpp_raft_production_stress_gate_parity_surfaces",
       "cpp_metaserver_raft_harness_parity_surfaces",
+      "storage_data_raft_replication_gtest",
+      "raft_metaserver_membership_failover_snapshot",
+      "raft_data_node_scale_failover_snapshot",
+      "raft_data_node_mixed_rw_and_membership",
+      "raft_production_gate",
       "cpp_redis_live_storage_smoke_parity_surfaces",
       "cpp_local_docker_replication_matrix_parity_surfaces",
       "cpp_client_meta_sync_route_parity_surfaces",
@@ -119,7 +124,10 @@
           "command": {
             "kind": "string_set",
             "key": "unified:string",
-            "value": [118, 49]
+            "value": [
+              118,
+              49
+            ]
           },
           "expect": {
             "kind": "empty"
@@ -133,7 +141,10 @@
           },
           "expect": {
             "kind": "bytes",
-            "value": [118, 49]
+            "value": [
+              118,
+              49
+            ]
           }
         },
         {
@@ -142,8 +153,18 @@
             "kind": "hash_multi_set",
             "key": "unified:hash",
             "entries": [
-              ["field_a", [97]],
-              ["field_b", [98]]
+              [
+                "field_a",
+                [
+                  97
+                ]
+              ],
+              [
+                "field_b",
+                [
+                  98
+                ]
+              ]
             ]
           },
           "expect": {
@@ -155,11 +176,23 @@
           "command": {
             "kind": "hash_multi_get",
             "key": "unified:hash",
-            "fields": ["field_a", "field_missing", "field_b"]
+            "fields": [
+              "field_a",
+              "field_missing",
+              "field_b"
+            ]
           },
           "expect": {
             "kind": "values",
-            "values": [[97], null, [98]]
+            "values": [
+              [
+                97
+              ],
+              null,
+              [
+                98
+              ]
+            ]
           }
         }
       ]
@@ -173,7 +206,10 @@
           "command": {
             "kind": "string_set",
             "key": "unified:lifecycle:string",
-            "value": [108, 49]
+            "value": [
+              108,
+              49
+            ]
           },
           "expect": {
             "kind": "empty"
@@ -217,7 +253,10 @@
           "command": {
             "kind": "string_set",
             "key": "unified:lifecycle:delete",
-            "value": [100, 49]
+            "value": [
+              100,
+              49
+            ]
           },
           "expect": {
             "kind": "empty"
@@ -256,7 +295,9 @@
             "kind": "hash_set",
             "key": "unified:hash:single",
             "field": "field_a",
-            "value": [97]
+            "value": [
+              97
+            ]
           },
           "expect": {
             "kind": "empty"
@@ -271,7 +312,9 @@
           },
           "expect": {
             "kind": "bytes",
-            "value": [97]
+            "value": [
+              97
+            ]
           }
         },
         {
@@ -307,8 +350,18 @@
           "expect": {
             "kind": "hash_entries",
             "entries": [
-              ["counter", [53]],
-              ["field_a", [97]]
+              [
+                "counter",
+                [
+                  53
+                ]
+              ],
+              [
+                "field_a",
+                [
+                  97
+                ]
+              ]
             ]
           }
         },
@@ -328,11 +381,19 @@
           "command": {
             "kind": "hash_multi_get",
             "key": "unified:hash:single",
-            "fields": ["field_a", "counter"]
+            "fields": [
+              "field_a",
+              "counter"
+            ]
           },
           "expect": {
             "kind": "values",
-            "values": [null, [53]]
+            "values": [
+              null,
+              [
+                53
+              ]
+            ]
           }
         }
       ]
@@ -346,7 +407,9 @@
           "command": {
             "kind": "set_add",
             "key": "unified:redis:set",
-            "member": [97]
+            "member": [
+              97
+            ]
           },
           "expect": {
             "kind": "empty"
@@ -357,7 +420,9 @@
           "command": {
             "kind": "set_add",
             "key": "unified:redis:set",
-            "member": [98]
+            "member": [
+              98
+            ]
           },
           "expect": {
             "kind": "empty"
@@ -371,7 +436,14 @@
           },
           "expect": {
             "kind": "members",
-            "members": [[97], [98]]
+            "members": [
+              [
+                97
+              ],
+              [
+                98
+              ]
+            ]
           }
         }
       ]
@@ -388,15 +460,24 @@
             "points": [
               {
                 "timestamp_ms": 1000,
-                "value": [102, 49]
+                "value": [
+                  102,
+                  49
+                ]
               },
               {
                 "timestamp_ms": 1010,
-                "value": [102, 50]
+                "value": [
+                  102,
+                  50
+                ]
               },
               {
                 "timestamp_ms": 1020,
-                "value": [102, 51]
+                "value": [
+                  102,
+                  51
+                ]
               }
             ]
           },
@@ -418,15 +499,24 @@
             "points": [
               {
                 "timestamp_ms": 1000,
-                "value": [102, 49]
+                "value": [
+                  102,
+                  49
+                ]
               },
               {
                 "timestamp_ms": 1010,
-                "value": [102, 50]
+                "value": [
+                  102,
+                  50
+                ]
               },
               {
                 "timestamp_ms": 1020,
-                "value": [102, 51]
+                "value": [
+                  102,
+                  51
+                ]
               }
             ]
           }
@@ -446,11 +536,17 @@
             "points": [
               {
                 "timestamp_ms": 1010,
-                "value": [102, 50]
+                "value": [
+                  102,
+                  50
+                ]
               },
               {
                 "timestamp_ms": 1020,
-                "value": [102, 51]
+                "value": [
+                  102,
+                  51
+                ]
               }
             ]
           }
@@ -529,7 +625,12 @@
             "kind": "ips_add_with_options",
             "key": "unified:ips",
             "timestamp_ms": 3000,
-            "instance": [105, 112, 115, 49],
+            "instance": [
+              105,
+              112,
+              115,
+              49
+            ],
             "action_type": 7,
             "table_id": 42,
             "request_id": "req-1"
@@ -553,7 +654,12 @@
             "points": [
               {
                 "timestamp_ms": 3000,
-                "value": [105, 112, 115, 49]
+                "value": [
+                  105,
+                  112,
+                  115,
+                  49
+                ]
               }
             ]
           }
@@ -725,8 +831,15 @@
               "importance": 0.5,
               "text": "context event from shared corpus",
               "source_ref": "shared-corpus",
-              "related_node_hashes": [700, 701],
-              "compact_attrs": [1, 2, 3]
+              "related_node_hashes": [
+                700,
+                701
+              ],
+              "compact_attrs": [
+                1,
+                2,
+                3
+              ]
             },
             "first_write_only": false
           },
@@ -746,8 +859,12 @@
             "limit": 10,
             "current_valid_only": true,
             "as_of_ms": 9200,
-            "kinds": [3],
-            "statuses": [1],
+            "kinds": [
+              3
+            ],
+            "statuses": [
+              1
+            ],
             "min_confidence": 0.7,
             "min_importance": 0.4
           },
@@ -767,8 +884,15 @@
                 "importance": 0.5,
                 "text": "context event from shared corpus",
                 "source_ref": "shared-corpus",
-                "related_node_hashes": [700, 701],
-                "compact_attrs": [1, 2, 3]
+                "related_node_hashes": [
+                  700,
+                  701
+                ],
+                "compact_attrs": [
+                  1,
+                  2,
+                  3
+                ]
               }
             ]
           }
@@ -941,7 +1065,10 @@
           "command": {
             "kind": "string_set",
             "key": "unified:restart:string",
-            "value": [114, 49]
+            "value": [
+              114,
+              49
+            ]
           },
           "expect": {
             "kind": "empty"
@@ -953,8 +1080,18 @@
             "kind": "hash_multi_set",
             "key": "unified:restart:hash",
             "entries": [
-              ["field_a", [49]],
-              ["field_b", [50]]
+              [
+                "field_a",
+                [
+                  49
+                ]
+              ],
+              [
+                "field_b",
+                [
+                  50
+                ]
+              ]
             ]
           },
           "expect": {
@@ -970,7 +1107,10 @@
           },
           "expect": {
             "kind": "bytes",
-            "value": [114, 49]
+            "value": [
+              114,
+              49
+            ]
           }
         },
         {
@@ -978,11 +1118,23 @@
           "command": {
             "kind": "hash_multi_get",
             "key": "unified:restart:hash",
-            "fields": ["field_a", "field_missing", "field_b"]
+            "fields": [
+              "field_a",
+              "field_missing",
+              "field_b"
+            ]
           },
           "expect": {
             "kind": "values",
-            "values": [[49], null, [50]]
+            "values": [
+              [
+                49
+              ],
+              null,
+              [
+                50
+              ]
+            ]
           }
         }
       ]
@@ -999,11 +1151,17 @@
             "points": [
               {
                 "timestamp_ms": 6000,
-                "value": [109, 49]
+                "value": [
+                  109,
+                  49
+                ]
               },
               {
                 "timestamp_ms": 6010,
-                "value": [109, 50]
+                "value": [
+                  109,
+                  50
+                ]
               }
             ]
           },
@@ -1049,11 +1207,17 @@
             "points": [
               {
                 "timestamp_ms": 6000,
-                "value": [109, 49]
+                "value": [
+                  109,
+                  49
+                ]
               },
               {
                 "timestamp_ms": 6010,
-                "value": [109, 50]
+                "value": [
+                  109,
+                  50
+                ]
               }
             ]
           }
@@ -1104,11 +1268,17 @@
           "command": {
             "kind": "hash_multi_get",
             "key": "unified:missing:hash",
-            "fields": ["field_a", "field_b"]
+            "fields": [
+              "field_a",
+              "field_b"
+            ]
           },
           "expect": {
             "kind": "values",
-            "values": [null, null]
+            "values": [
+              null,
+              null
+            ]
           }
         },
         {
@@ -1153,15 +1323,24 @@
             "points": [
               {
                 "timestamp_ms": 7000,
-                "value": [98, 49]
+                "value": [
+                  98,
+                  49
+                ]
               },
               {
                 "timestamp_ms": 7010,
-                "value": [98, 50]
+                "value": [
+                  98,
+                  50
+                ]
               },
               {
                 "timestamp_ms": 7020,
-                "value": [98, 51]
+                "value": [
+                  98,
+                  51
+                ]
               }
             ]
           },
@@ -1183,7 +1362,10 @@
             "points": [
               {
                 "timestamp_ms": 7000,
-                "value": [98, 49]
+                "value": [
+                  98,
+                  49
+                ]
               }
             ]
           }
@@ -1265,11 +1447,15 @@
             "points": [
               {
                 "timestamp_ms": 8000,
-                "value": [50]
+                "value": [
+                  50
+                ]
               },
               {
                 "timestamp_ms": 8010,
-                "value": [51]
+                "value": [
+                  51
+                ]
               }
             ]
           },
@@ -1300,7 +1486,10 @@
             "points": [
               {
                 "timestamp_ms": 8010,
-                "value": [57, 57]
+                "value": [
+                  57,
+                  57
+                ]
               }
             ],
             "policy": "insert_if_absent"
@@ -1318,7 +1507,9 @@
             "points": [
               {
                 "timestamp_ms": 8010,
-                "value": [52]
+                "value": [
+                  52
+                ]
               }
             ],
             "policy": "replace_existing"
@@ -1342,11 +1533,15 @@
             "points": [
               {
                 "timestamp_ms": 8000,
-                "value": [50]
+                "value": [
+                  50
+                ]
               },
               {
                 "timestamp_ms": 8010,
-                "value": [52]
+                "value": [
+                  52
+                ]
               }
             ]
           }
@@ -1361,7 +1556,9 @@
             "points": [
               {
                 "timestamp_ms": 8005,
-                "value": [53]
+                "value": [
+                  53
+                ]
               }
             ]
           },
@@ -1383,11 +1580,15 @@
             "points": [
               {
                 "timestamp_ms": 8005,
-                "value": [53]
+                "value": [
+                  53
+                ]
               },
               {
                 "timestamp_ms": 8010,
-                "value": [52]
+                "value": [
+                  52
+                ]
               }
             ]
           }
@@ -1400,15 +1601,42 @@
             "points": [
               {
                 "timestamp_ms": 8100,
-                "value": [8, 41, 16, 1, 24, 10, 32, 7]
+                "value": [
+                  8,
+                  41,
+                  16,
+                  1,
+                  24,
+                  10,
+                  32,
+                  7
+                ]
               },
               {
                 "timestamp_ms": 8110,
-                "value": [8, 42, 16, 3, 24, 90, 32, 7]
+                "value": [
+                  8,
+                  42,
+                  16,
+                  3,
+                  24,
+                  90,
+                  32,
+                  7
+                ]
               },
               {
                 "timestamp_ms": 8120,
-                "value": [8, 43, 16, 3, 24, 40, 32, 8]
+                "value": [
+                  8,
+                  43,
+                  16,
+                  3,
+                  24,
+                  40,
+                  32,
+                  8
+                ]
               }
             ]
           },
@@ -1463,7 +1691,16 @@
             "points": [
               {
                 "timestamp_ms": 8110,
-                "value": [8, 42, 16, 3, 24, 90, 32, 7]
+                "value": [
+                  8,
+                  42,
+                  16,
+                  3,
+                  24,
+                  90,
+                  32,
+                  7
+                ]
               }
             ]
           }
@@ -1969,6 +2206,212 @@
               "tools/run_metaserver_raft_membership_ubuntu22.sh",
               "tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh"
             ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "storage_data_raft_replication_gtest",
+      "shard_id": 21,
+      "steps": [
+        {
+          "name": "data_raft_replication_unit",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "runtime",
+            "description": "Unified C++/Rust Raft case for the C++ data_raft_replication_test and the Rust distributed Raft validation harness.",
+            "required_paths": [
+              "src/partition/storage/test/data_raft_replication_test.cc",
+              "src/partition/storage/data_raft_replication.cc",
+              "src/partition/storage/data_raft_consensus.cc",
+              "src/partition/storage/storage_manager.cc"
+            ],
+            "runner": "cmake --build build-ubuntu22/release --target data_raft_replication_test -j2",
+            "rust_runner": "cargo run -p temporalstore-rust --bin distributed_raft_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-data-raft-replication",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-validation --log <distributed_raft_harness.json>",
+            "timeout_s": 600
+          }
+        }
+      ]
+    },
+    {
+      "name": "raft_metaserver_membership_failover_snapshot",
+      "shard_id": 30,
+      "steps": [
+        {
+          "name": "metaserver_membership",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "stress",
+            "description": "Unified C++/Rust control-plane Raft membership case; Rust readiness keeps this blocked for real networked metaserver orchestration until production rollout.",
+            "required_paths": [
+              "tools/run_metaserver_raft_membership_ubuntu22.sh",
+              "src/metaserver_v2/raft_server.cc",
+              "src/metaserver_v2/raft_connector.cc",
+              "src/metaserver_v2/service/raft_control_service.cc"
+            ],
+            "runner": "BUILD_TYPE=Release ITERATIONS=1 MEMBERSHIP_OPS=200 bash tools/run_metaserver_raft_membership_ubuntu22.sh",
+            "rust_runner": "cargo test -p temporalstore-rust metaserver_raft --lib -- --test-threads=1",
+            "timeout_s": 900
+          }
+        },
+        {
+          "name": "metaserver_failover",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "stress",
+            "description": "Unified C++/Rust control-plane Raft failover case.",
+            "required_paths": [
+              "tools/run_metaserver_raft_failover_ubuntu22.sh",
+              "src/metaserver_v2/raft_server.cc",
+              "src/metaserver_v2/ha/convict_routine.cc"
+            ],
+            "runner": "BUILD_TYPE=Release ITERATIONS=1 bash tools/run_metaserver_raft_failover_ubuntu22.sh",
+            "rust_runner": "cargo test -p temporalstore-rust metaserver_raft --lib -- --test-threads=1",
+            "timeout_s": 900
+          }
+        },
+        {
+          "name": "metaserver_snapshot_restore",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "stress",
+            "description": "Unified C++/Rust control-plane Raft snapshot/restore case.",
+            "required_paths": [
+              "tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh",
+              "src/metaserver_v2/raft_server.cc"
+            ],
+            "runner": "BUILD_TYPE=Release ITERATIONS=1 bash tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh",
+            "rust_runner": "cargo test -p temporalstore-rust metaserver_raft --lib -- --test-threads=1",
+            "timeout_s": 900
+          }
+        }
+      ]
+    },
+    {
+      "name": "raft_data_node_scale_failover_snapshot",
+      "shard_id": 31,
+      "steps": [
+        {
+          "name": "data_raft_2node_scale",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "stress",
+            "description": "Unified C++/Rust data-node Raft scale case.",
+            "required_paths": [
+              "tools/run_data_raft_2node_scale_ubuntu22.sh",
+              "src/partition/storage/data_raft_replication.cc",
+              "src/partition/storage/data_raft_consensus.cc"
+            ],
+            "runner": "BUILD_TYPE=Release THREADS=2 OPS=500 bash tools/run_data_raft_2node_scale_ubuntu22.sh",
+            "rust_runner": "cargo run -p temporalstore-rust --bin distributed_raft_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-raft-scale",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-validation --log <distributed_raft_harness.json>",
+            "timeout_s": 900
+          }
+        },
+        {
+          "name": "data_raft_failover",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "stress",
+            "description": "Unified C++/Rust data-node Raft failover case.",
+            "required_paths": [
+              "tools/run_data_raft_failover_ubuntu22.sh",
+              "src/partition/storage/data_raft_replication.cc",
+              "src/partition/storage/data_raft_consensus.cc"
+            ],
+            "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 bash tools/run_data_raft_failover_ubuntu22.sh",
+            "rust_runner": "cargo run -p temporalstore-rust --bin raft_secondary_replication_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-raft-failover --heartbeat-ms 25",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-secondary-validation --log <raft_secondary_replication_harness.json>",
+            "timeout_s": 1200
+          }
+        },
+        {
+          "name": "data_raft_snapshot_restore",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "stress",
+            "description": "Unified C++/Rust data-node Raft snapshot restore/bootstrap case.",
+            "required_paths": [
+              "tools/run_data_raft_snapshot_restore_ubuntu22.sh",
+              "src/partition/storage/data_raft_replication.cc",
+              "src/partition/storage/data_raft_consensus.cc"
+            ],
+            "runner": "BUILD_TYPE=Release RAFT_SNAPSHOT_OPS=200 RAFT_SNAPSHOT_THREADS=2 bash tools/run_data_raft_snapshot_restore_ubuntu22.sh",
+            "rust_runner": "cargo run -p temporalstore-rust --bin distributed_raft_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-raft-snapshot",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-validation --log <distributed_raft_harness.json>",
+            "timeout_s": 1200
+          }
+        }
+      ]
+    },
+    {
+      "name": "raft_data_node_mixed_rw_and_membership",
+      "shard_id": 32,
+      "steps": [
+        {
+          "name": "data_raft_mixed_rw",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "stress",
+            "description": "Unified C++/Rust data-node Raft mixed read/write case.",
+            "required_paths": [
+              "tools/run_data_raft_mixed_rw_ubuntu22.sh",
+              "src/partition/storage/data_raft_replication.cc"
+            ],
+            "runner": "BUILD_TYPE=Release MIXED_PROBE_OPS=300 MIXED_PROBE_THREADS=2 bash tools/run_data_raft_mixed_rw_ubuntu22.sh",
+            "rust_runner": "cargo run -p temporalstore-rust --bin distributed_raft_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-raft-mixed-rw",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-validation --log <distributed_raft_harness.json>",
+            "timeout_s": 900
+          }
+        },
+        {
+          "name": "data_raft_scale_up_down",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "stress",
+            "description": "Unified C++/Rust data-node Raft membership scale-up/down case.",
+            "required_paths": [
+              "tools/run_data_raft_scale_up_down_ubuntu22.sh",
+              "src/partition/storage/data_raft_replication.cc"
+            ],
+            "runner": "BUILD_TYPE=Release ITERATIONS=1 OPS=300 bash tools/run_data_raft_scale_up_down_ubuntu22.sh",
+            "rust_runner": "cargo run -p temporalstore-rust --bin raft_secondary_replication_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-raft-membership --heartbeat-ms 25",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-secondary-validation --log <raft_secondary_replication_harness.json>",
+            "timeout_s": 1200
+          }
+        }
+      ]
+    },
+    {
+      "name": "raft_production_gate",
+      "shard_id": 33,
+      "steps": [
+        {
+          "name": "full_raft_production_gate",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "stress",
+            "description": "Unified C++/Rust Raft production gate case. Rust local gate validates the current local production slice while strict readiness remains blocked on networked OpenRaft rollout and external fault tests.",
+            "required_paths": [
+              "tools/run_raft_production_gate_ubuntu22.sh",
+              "tools/run_raft_stress_suite_ubuntu22.sh",
+              "tools/summarize_raft_gate_results.py",
+              "tools/test_summarize_raft_gate_results.py"
+            ],
+            "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
+            "rust_runner": "tools/run_storage_raft_production_readiness.sh",
+            "timeout_s": 2400
           }
         }
       ]

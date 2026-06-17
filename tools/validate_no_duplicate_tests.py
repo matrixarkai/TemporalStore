@@ -24,6 +24,18 @@ ROOT = Path(__file__).resolve().parents[1]
 RUST_CRATE = ROOT / "crates" / "temporalstore-rust"
 CORPUS = ROOT / "compat" / "unified_temporalstore_cases.json"
 
+# These cases intentionally reuse lower-level C++ required_paths so the shared
+# corpus can carry the exact current C++ Raft case names while preserving the
+# older granular surface gates. Treat them as aliases for duplicate-path checks,
+# not as duplicate behavioral tests.
+CPP_RAFT_CASE_ALIASES = {
+    "storage_data_raft_replication_gtest",
+    "raft_metaserver_membership_failover_snapshot",
+    "raft_data_node_scale_failover_snapshot",
+    "raft_data_node_mixed_rw_and_membership",
+    "raft_production_gate",
+}
+
 TEST_ATTR = re.compile(r"^\s*#\[(?:tokio::)?test\]")
 FN_NAME = re.compile(r"\bfn\s+([A-Za-z0-9_]+)\s*\(")
 
@@ -104,11 +116,15 @@ def validate_corpus() -> tuple[int, int, int]:
                 raise SystemExit(f"{location}: command must be an object")
             command_locations[command_signature(command)].append(location)
 
-            if command.get("kind") == "existing_test":
+            if command.get("kind") == "existing_test" and case_name not in CPP_RAFT_CASE_ALIASES:
                 for required_path in command.get("required_paths", []):
                     if not isinstance(required_path, str) or not required_path:
                         raise SystemExit(f"{location}: existing_test required_paths must be strings")
                     existing_test_refs[required_path].append(location)
+            elif command.get("kind") == "existing_test":
+                for required_path in command.get("required_paths", []):
+                    if not isinstance(required_path, str) or not required_path:
+                        raise SystemExit(f"{location}: existing_test required_paths must be strings")
 
         fail_duplicates(
             f"duplicate shared corpus step names in case {case_name}:",
