@@ -4,6 +4,8 @@ The shared compatibility contract lives in:
 
 `compat/unified_temporalstore_cases.json`
 
+Current case inventory: `docs/unified_test_case_inventory.md`.
+
 Both implementations should execute that same ordered corpus. The file stores
 literal `Command` and `CommandResponse` JSON payloads so it can cover common
 KV, hash, packed timestamped feature pages, sequence rows, IPS, risk, context,

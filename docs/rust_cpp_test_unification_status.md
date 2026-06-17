@@ -94,6 +94,8 @@ C++ existing-test parity surface steps: 22
 C++ existing-test required paths: 83
 ```
 
+Detailed inventory: `docs/unified_test_case_inventory.md`.
+
 ## What Is Unified With C++ Now
 
 | Area | Count | Location | Notes |
