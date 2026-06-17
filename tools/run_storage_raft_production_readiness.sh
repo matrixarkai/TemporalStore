@@ -35,6 +35,7 @@ python3 tools/validate_aws_validation_log.py \
 
 echo "== 4/7 real Raft FSM/storage readiness selection =="
 python3 tools/validate_storage_raft_production_plan.py
+timeout "${TIMEOUT}" cargo test -p temporalstore-rust --features openraft-engine openraft_ --lib -- --test-threads=1
 cargo run -p temporalstore-rust --bin readiness_gate -- --service raft_replication \
   > "${ARTIFACT_DIR}/raft-readiness.json" \
   2> "${ARTIFACT_DIR}/raft-readiness.log" || READINESS_STATUS=$?

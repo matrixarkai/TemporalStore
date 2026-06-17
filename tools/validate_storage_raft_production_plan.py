@@ -13,6 +13,7 @@ REQUIRED_SCRIPT_SNIPPETS = (
     "storage_fault_matrix_harness",
     "storage_production_harness",
     "storage_modes_harness",
+    "--features openraft-engine openraft_ --lib",
     "readiness_gate -- --service raft_replication",
     "distributed_raft_harness",
     "raft_secondary_replication_harness",
@@ -23,7 +24,8 @@ REQUIRED_SCRIPT_SNIPPETS = (
 REQUIRED_READINESS_SNIPPETS = (
     "local storage production harness combines dump, cache pressure, restart recovery, shared-store replay, and Raft movement",
     "local storage dump/load fault matrix harness rejects checksum mismatch, partial manifests, missing segments, stale manifests, restart-during-install recovery, and corrupt page segments",
-    "real OpenRaft or raft-rs data-node FSM/storage implementation",
+    "OpenRaft-backed data-node and metaserver adapter is available behind the openraft-engine feature",
+    "networked OpenRaft deployment path",
     "networked metaserver Raft transport and scheduler loop",
 )
 

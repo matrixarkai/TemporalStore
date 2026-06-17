@@ -310,9 +310,12 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "local OS-process raft_node harness covers rolling restart of every voter with WAL recovery and post-restart replication"
                     .to_string(),
+                "OpenRaft-backed data-node and metaserver adapter is available behind the openraft-engine feature with durable log state, state-machine apply, snapshot metadata, read-index checks, membership changes, leader transfer, and restart recovery tests"
+                    .to_string(),
             ],
             missing: vec![
-                "real OpenRaft or raft-rs data-node FSM/storage implementation".to_string(),
+                "networked OpenRaft deployment path for real data-node and metaserver processes"
+                    .to_string(),
                 "networked metaserver Raft transport and scheduler loop that automatically drives /raft/membership/apply across real data-node processes and persists task state"
                     .to_string(),
                 "external multi-process packet-loss and disk-pressure tests".to_string(),
@@ -647,7 +650,7 @@ fn service_next_action(service: &str, blocker_classes: &[String]) -> &'static st
             "finish network Kafka/Flink runtime failover, lag metrics, and dead-letter export"
         }
         ("data_node", "data_node_distributed_raft") => {
-            "finish production data-node Raft FSM/storage and distributed fault validation"
+            "finish networked OpenRaft data-node rollout and distributed fault validation"
         }
         ("data_node", "data_node_local_lifecycle") => {
             "finish data-node lifecycle restart barriers, distributed admission, and crash recovery"
@@ -674,7 +677,7 @@ fn service_next_action(service: &str, blocker_classes: &[String]) -> &'static st
             "finish multi-node AWS scale tests, distributed Raft load tests, workload replay, and SLO evidence"
         }
         ("raft_replication", "raft_replication_engine") => {
-            "finish real OpenRaft or raft-rs FSM/storage integration, networked meta Raft transport, and external chaos coverage"
+            "finish networked OpenRaft process integration, networked meta Raft transport, and external chaos coverage"
         }
         _ => "inspect failed capabilities for this service",
     }

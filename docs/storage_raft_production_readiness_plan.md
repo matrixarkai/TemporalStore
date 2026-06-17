@@ -8,9 +8,10 @@ This page turns the storage/Raft production-readiness order into an executable l
 tools/run_storage_raft_production_readiness.sh
 ```
 
-The gate runs the current Rust local harnesses one by one, validates their JSON output, and then
-prints the remaining readiness blockers. It does not claim full production readiness while the
-readiness gate still reports missing real OpenRaft or raft-rs FSM/storage integration.
+The gate runs the current Rust local harnesses one by one, validates their JSON output, runs the
+feature-gated OpenRaft adapter tests, and then prints the remaining readiness blockers. It does not
+claim full production readiness while the readiness gate still reports missing networked OpenRaft
+process integration and external distributed fault validation.
 
 ## Current Execution Order
 
@@ -30,9 +31,10 @@ readiness gate still reports missing real OpenRaft or raft-rs FSM/storage integr
 
 4. **Real Raft FSM/storage selection and integration**
    - Runs `validate_storage_raft_production_plan.py`.
+   - Runs `cargo test -p temporalstore-rust --features openraft-engine openraft_ --lib`.
    - Runs `readiness_gate --service raft_replication`.
-   - Reports the current blocker: real OpenRaft or raft-rs data-node FSM/storage implementation is
-     still not complete.
+   - Requires the OpenRaft-backed data-node/metaserver adapter path and reports the remaining
+     blocker: networked OpenRaft process rollout is still not complete.
 
 5. **Raft snapshot/restart/failover harness**
    - Runs `distributed_raft_harness`.
@@ -69,6 +71,10 @@ Storage/cache local coverage:
 
 Raft local coverage:
 
+- Feature-gated OpenRaft data-node and metaserver adapter.
+- OpenRaft boundary types for entries, log ids, membership, and snapshot metadata.
+- Durable OpenRaft adapter state with log records, state-machine apply, snapshot build/install
+  metadata, read-index checks, membership changes, leader transfer, and restart recovery tests.
 - Local production Raft runtime wrapper.
 - HTTP Raft transport for proposal/read/admin paths.
 - WAL-backed local recovery.
@@ -85,7 +91,7 @@ Raft local coverage:
 
 The readiness gate intentionally still blocks production readiness on:
 
-- Real OpenRaft or raft-rs data-node FSM/storage integration.
+- Networked OpenRaft deployment path for real data-node and metaserver processes.
 - Networked metaserver Raft transport and scheduler loop that automatically drives real data-node
   membership changes.
 - External multi-process packet-loss and disk-pressure tests.
@@ -117,4 +123,5 @@ Strict readiness mode:
 TS_REQUIRE_STORAGE_RAFT_READY=1 tools/run_storage_raft_production_readiness.sh
 ```
 
-Strict mode is expected to fail until the real OpenRaft or raft-rs FSM/storage blocker is closed.
+Strict mode is expected to fail until the networked OpenRaft process rollout and external
+distributed fault blockers are closed.

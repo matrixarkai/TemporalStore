@@ -100,6 +100,13 @@ pub use proxy::{
     ProxyReplicaReadPolicy, ProxyService, ProxyServingMode, ProxyStats,
     ProxyTableBatchExecuteRequest, ProxyTableExecuteRequest, ProxyTableOptionsView,
 };
+#[cfg(feature = "openraft-engine")]
+pub use raft::openraft_integration::{
+    new_openraft_data_node_backend, new_openraft_metaserver_backend, OpenRaftBackendReport,
+    OpenRaftConsensusBackend, OpenRaftDurableLogRecord, OpenRaftDurableSnapshot,
+    OpenRaftRuntimeKind, TemporalOpenRaftConfig, TemporalOpenRaftEntry, TemporalOpenRaftLogId,
+    TemporalOpenRaftMembership, TemporalOpenRaftSnapshotMeta,
+};
 pub use raft::{
     apply_data_raft_membership_from_topology, distributed_raft_readiness,
     handle_authenticated_raft_http, handle_raft_http, require_production_raft_ready,
