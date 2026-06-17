@@ -282,3 +282,21 @@ python3 tools/run_temporalstore_unified_tests.py \
 Expected current result: fail closed until `TS_CPP_UNIFIED_NATIVE_CMD` or `TS_CPP_UNIFIED_TEST_CMD`
 is configured. This is intentional; it prevents a C++ hook-only run from being mistaken for true
 same-test C++ execution.
+
+## Local Repeat Run: 2026-06-16
+
+After the C++ hook was updated to accept the current shared context command shapes, the shared
+Rust/C++ command was repeated eight times:
+
+```bash
+TS_CPP_REPO=/mnt/c/Users/Deeproute/Documents/Codex/2026-06-07/what-s-the-topology-for-all/temporalstore-service-fix \
+CARGO_TARGET_DIR=/tmp/temporalstore-local-validation-target \
+python3 tools/run_temporalstore_unified_tests.py --both --require-cpp
+```
+
+Result for all 8 iterations:
+
+- Rust direct engine corpus path passed.
+- Rust `TemporalStoreClient` plus local HTTP corpus path passed.
+- C++ unified corpus hook passed against the same 16-case corpus.
+- C++ native context contract passed with `cases=4` and `context_steps=13`.
