@@ -281,7 +281,7 @@ mod tests {
         let lines = service_failure_lines(&report);
         assert!(lines
             .iter()
-            .any(|line| line.contains("service client") && line.contains("partition-set")));
+            .any(|line| line.contains("service client") && line.contains("Neptune")));
         assert!(lines
             .iter()
             .any(|line| line.contains("service proxy") && line.contains("topology-version")));

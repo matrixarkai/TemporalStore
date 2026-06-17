@@ -178,8 +178,35 @@ pub struct ClientPreflightReport {
     pub options: ClientOptions,
     pub topology_cache: ClientTopologyCacheReport,
     #[serde(default)]
+    pub cpp_partition_sets: Vec<ClientCppPartitionSetReport>,
+    #[serde(default)]
     pub meta_sync: ClientMetaSyncReport,
     pub degraded_reasons: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientCppPartitionSetReport {
+    pub namespace: String,
+    pub table_name: String,
+    pub combine_name: String,
+    pub first_shard_id: ShardId,
+    pub shard_count: u64,
+    pub topology_version: u64,
+    pub partition_count: usize,
+    pub missing_route_count: usize,
+    pub members: Vec<ClientCppPartitionMemberReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientCppPartitionMemberReport {
+    pub partition_id: ShardId,
+    pub shard_id: ShardId,
+    pub primary_addr: Option<String>,
+    pub replica_addrs: Vec<String>,
+    pub replica_count: usize,
+    pub topology_version: u64,
+    pub route_ready: bool,
+    pub refresh_reason: String,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -993,9 +1020,78 @@ impl TemporalStoreClient {
             stats,
             options,
             topology_cache,
+            cpp_partition_sets: self.cpp_partition_set_report(),
             meta_sync,
             degraded_reasons,
         }
+    }
+
+    pub fn cpp_partition_set_report(&self) -> Vec<ClientCppPartitionSetReport> {
+        let tables = self
+            .inner
+            .tables
+            .lock()
+            .expect("client table cache lock poisoned")
+            .clone();
+        let routes = self
+            .inner
+            .routes
+            .lock()
+            .expect("client route cache lock poisoned")
+            .clone();
+        let mut reports = tables
+            .into_iter()
+            .filter_map(|(combine_name, options)| {
+                let (namespace, table_name) = combine_name.split_once('/')?;
+                let mut members = (0..options.shard_count)
+                    .map(|offset| {
+                        let shard_id = options.first_shard_id.saturating_add(offset);
+                        let route = routes.get(&shard_id);
+                        ClientCppPartitionMemberReport {
+                            partition_id: shard_id,
+                            shard_id,
+                            primary_addr: route.map(|route| route.primary_addr.clone()),
+                            replica_addrs: route
+                                .map(|route| route.replica_addrs.clone())
+                                .unwrap_or_default(),
+                            replica_count: route
+                                .map(|route| {
+                                    route.replica_addrs.len().max(route.replica_endpoints.len())
+                                })
+                                .unwrap_or_default(),
+                            topology_version: route
+                                .map(|route| route.topology_version)
+                                .unwrap_or_default(),
+                            route_ready: route.is_some(),
+                            refresh_reason: route
+                                .map(|route| route.refresh_reason.clone())
+                                .unwrap_or_default(),
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                members.sort_by_key(|member| member.partition_id);
+                let topology_version = members
+                    .iter()
+                    .map(|member| member.topology_version)
+                    .max()
+                    .unwrap_or_default();
+                let missing_route_count =
+                    members.iter().filter(|member| !member.route_ready).count();
+                Some(ClientCppPartitionSetReport {
+                    namespace: namespace.to_string(),
+                    table_name: table_name.to_string(),
+                    combine_name,
+                    first_shard_id: options.first_shard_id,
+                    shard_count: options.shard_count,
+                    topology_version,
+                    partition_count: members.len(),
+                    missing_route_count,
+                    members,
+                })
+            })
+            .collect::<Vec<_>>();
+        reports.sort_by(|left, right| left.combine_name.cmp(&right.combine_name));
+        reports
     }
 
     pub fn topology_cache_report(&self) -> ClientTopologyCacheReport {
@@ -3671,6 +3767,19 @@ mod tests {
         assert_eq!(report.topology_cache.unknown_topology_version_routes, 1);
         assert_eq!(report.topology_cache.last_refresh_reason, "test_insert");
         assert_eq!(report.topology_cache.routes[0].shard_id, 7);
+        assert_eq!(report.cpp_partition_sets.len(), 1);
+        assert_eq!(report.cpp_partition_sets[0].namespace, "ns");
+        assert_eq!(report.cpp_partition_sets[0].table_name, "tbl");
+        assert_eq!(report.cpp_partition_sets[0].first_shard_id, 7);
+        assert_eq!(report.cpp_partition_sets[0].partition_count, 1);
+        assert_eq!(report.cpp_partition_sets[0].missing_route_count, 0);
+        assert_eq!(report.cpp_partition_sets[0].members[0].partition_id, 7);
+        assert_eq!(
+            report.cpp_partition_sets[0].members[0]
+                .primary_addr
+                .as_deref(),
+            Some("127.0.0.1:17002")
+        );
         let stale = client.topology_cache_report_against(2);
         assert!(stale.cache_stale);
         assert_eq!(stale.authoritative_topology_version, 2);
@@ -3681,6 +3790,39 @@ mod tests {
         assert_eq!(report.status.code, "degraded");
         assert_eq!(report.degraded_reasons, vec!["backend_failure_backlog"]);
         assert_eq!(table.shard_id(), 7);
+    }
+
+    #[test]
+    fn cpp_partition_set_report_marks_missing_routes() {
+        let client = TemporalStoreClient::new("127.0.0.1:17000");
+        let _table = client.open_table(
+            "ns",
+            "wide",
+            TableOptions {
+                first_shard_id: 10,
+                shard_count: 3,
+                ..TableOptions::default()
+            },
+        );
+        client.insert_cached_route_for_test(11, "127.0.0.1:17111");
+
+        let reports = client.cpp_partition_set_report();
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].combine_name, "ns/wide");
+        assert_eq!(reports[0].partition_count, 3);
+        assert_eq!(reports[0].missing_route_count, 2);
+        assert_eq!(
+            reports[0]
+                .members
+                .iter()
+                .map(|member| (member.partition_id, member.route_ready))
+                .collect::<Vec<_>>(),
+            vec![(10, false), (11, true), (12, false)]
+        );
+        assert_eq!(
+            reports[0].members[1].primary_addr.as_deref(),
+            Some("127.0.0.1:17111")
+        );
     }
 
     #[test]

@@ -200,9 +200,11 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "generated tonic OpenTable, SyncTopology, and ClientPreflight adapters delegate to the existing TemporalStoreClient table, topology, and preflight paths"
                     .to_string(),
+                "client preflight exposes a C++-style partition-set compatibility view derived from cached table ranges and shard routes"
+                    .to_string(),
             ],
             missing: vec![
-                "full C++ partition-set hierarchy and Neptune-specific routing"
+                "Neptune-specific routing and deployment-specific partition placement policies"
                     .to_string(),
                 "wire-compatible migration layer for existing C++ client callers".to_string(),
             ],
@@ -637,7 +639,7 @@ fn service_next_action(service: &str, blocker_classes: &[String]) -> &'static st
     };
     match (service, first_class) {
         ("client", "client_sync_preflight") => {
-            "finish full C++ partition-set hierarchy, Neptune-specific routing, and wire-compatible migration for existing C++ client callers"
+            "finish Neptune-specific routing, deployment-specific partition placement policy, and wire-compatible migration for existing C++ client callers"
         }
         ("proxy", "proxy_topology_admission") => {
             "finish proxy topology-version guarded cache invalidation and admission policy enforcement"
@@ -962,7 +964,7 @@ mod tests {
             .service_summary("client")
             .expect("client summary")
             .next_action
-            .contains("partition-set"));
+            .contains("Neptune"));
         assert!(report
             .service_summary("proxy")
             .expect("proxy summary")
