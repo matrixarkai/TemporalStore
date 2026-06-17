@@ -36,7 +36,7 @@ Raft/storage parity evidence status:
 python3 tools/validate_raft_storage_parity_evidence.py
 raft_storage_parity_areas: 11
 corpus_required_cpp_paths: 49
-rust_evidence_snippets: 78
+rust_evidence_snippets: 90
 ```
 
 The eleven checked areas are storage object/page/slot lifecycle, slot dump/load recovery,
@@ -185,7 +185,8 @@ Until that exists, the honest status is:
 - Rust executes all 78 executable shared behavior steps.
 - C++ validates the 45-case corpus shape, current context subset, exact C++ Raft case names,
   C++ storage/Raft required surfaces, C++ client/proxy/metaserver/data-node control-plane required
-  surfaces, and the Rust ingestion/ops evidence gate in unified validation.
+  surfaces, the combined data-node plus metaserver Raft distributed parity gate, and the Rust
+  ingestion/ops evidence gate in unified validation.
 - 467 Rust-specific tests remain local. The product-behavior portion should be progressively
   converted into Rust-owned shared corpus cases; only implementation-internal tests should remain
   Rust-specific.

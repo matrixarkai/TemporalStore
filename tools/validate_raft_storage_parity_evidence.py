@@ -244,6 +244,13 @@ AREAS: tuple[ParityArea, ...] = (
                     "raft-distributed-parity-validation",
                 ),
             ),
+            RustEvidence(
+                "tools/run_temporalstore_unified_validation.sh",
+                (
+                    "data-node/metaserver raft distributed parity",
+                    "run_raft_distributed_parity.sh",
+                ),
+            ),
         ),
     ),
     ParityArea(

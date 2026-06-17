@@ -14,6 +14,7 @@ Runs one local unified TemporalStore validation pass across:
   - unit/compat tests
   - API and shared C++/Rust corpus tests
   - storage integration tests
+  - data-node plus metaserver Raft distributed parity
   - local scale/shared-store validation
   - production-readiness reporting
 
@@ -64,6 +65,11 @@ fi
 echo "== unified: storage integration tests =="
 cargo test -p temporalstore-rust --test storage_migration_corpus -- --test-threads=1
 cargo test -p temporalstore-rust --test storage_crash_harness -- --test-threads=1
+
+echo "== unified: data-node/metaserver raft distributed parity =="
+TS_RAFT_PARITY_ARTIFACT_DIR="${TS_UNIFIED_RAFT_PARITY_ARTIFACT_DIR:-/tmp/temporalstore-unified-raft-parity}" \
+TS_RAFT_PARITY_TIMEOUT="${TS_UNIFIED_RAFT_PARITY_TIMEOUT:-180s}" \
+tools/run_raft_distributed_parity.sh
 
 echo "== unified: compact scale/shared-store harness =="
 timeout "${LOCAL_SCALE_TIMEOUT}" cargo run -p temporalstore-rust --bin scale_harness -- \
