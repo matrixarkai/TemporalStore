@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use std::{fs, path::Path};
 
 use serde::Deserialize;
+use serde_json::Value;
 use temporalstore_rust::http::{json_response, parse_json, serve};
 use temporalstore_rust::{
     ClientOptions, Command, CommandResponse, ExecuteRequest, Status, TableOptions, TemporalEngine,
@@ -40,7 +41,7 @@ struct UnifiedStep {
     restart_before: bool,
     #[serde(default)]
     skip_client: bool,
-    command: Command,
+    command: Value,
     #[serde(default)]
     expect_status: Option<Status>,
     #[serde(default)]
@@ -151,76 +152,11 @@ fn assert_no_duplicate_cases_or_steps(corpus: &UnifiedCorpus) {
     }
 }
 
-fn command_kind(command: &Command) -> &'static str {
-    match command {
-        Command::CommonDelete { .. } => "common_delete",
-        Command::CommonExpire { .. } => "common_expire",
-        Command::CommonTtl { .. } => "common_ttl",
-        Command::CommonExists { .. } => "common_exists",
-        Command::StringSet { .. } => "string_set",
-        Command::StringSetEx { .. } => "string_set_ex",
-        Command::StringSetConditional { .. } => "string_set_conditional",
-        Command::StringGet { .. } => "string_get",
-        Command::StringDelete { .. } => "string_delete",
-        Command::HashSet { .. } => "hash_set",
-        Command::HashGet { .. } => "hash_get",
-        Command::HashMultiGet { .. } => "hash_multi_get",
-        Command::HashMultiSet { .. } => "hash_multi_set",
-        Command::HashIncrBy { .. } => "hash_incr_by",
-        Command::HashGetAll { .. } => "hash_get_all",
-        Command::HashLen { .. } => "hash_len",
-        Command::HashDelete { .. } => "hash_delete",
-        Command::SetAdd { .. } => "set_add",
-        Command::SetMembers { .. } => "set_members",
-        Command::SetRemove { .. } => "set_remove",
-        Command::FeatureAppend { .. } => "feature_append",
-        Command::FeatureAppendWithPolicy { .. } => "feature_append_with_policy",
-        Command::FeatureQuery { .. } => "feature_query",
-        Command::FeatureQueryFiltered { .. } => "feature_query_filtered",
-        Command::FeatureReplace { .. } => "feature_replace",
-        Command::FeatureDelete { .. } => "feature_delete",
-        Command::FeatureAggQuery { .. } => "feature_agg_query",
-        Command::SequenceAdd { .. } => "sequence_add",
-        Command::SequenceQuery { .. } => "sequence_query",
-        Command::SequenceBatchQuery { .. } => "sequence_batch_query",
-        Command::IpsAdd { .. } => "ips_add",
-        Command::IpsAddWithOptions { .. } => "ips_add_with_options",
-        Command::IpsLoad { .. } => "ips_load",
-        Command::IpsQueryLast { .. } => "ips_query_last",
-        Command::IpsQueryRange { .. } => "ips_query_range",
-        Command::IpsBatchQueryLast { .. } => "ips_batch_query_last",
-        Command::IpsRemove { .. } => "ips_remove",
-        Command::IpsDelete { .. } => "ips_delete",
-        Command::IpsCount { .. } => "ips_count",
-        Command::IpsQueryRangeWithOptions { .. } => "ips_query_range_with_options",
-        Command::IpsSnapshot { .. } => "ips_snapshot",
-        Command::IpsSnapshotReport { .. } => "ips_snapshot_report",
-        Command::IpsStat { .. } => "ips_stat",
-        Command::IpsFilter { .. } => "ips_filter",
-        Command::RiskIncrement { .. } => "risk_increment",
-        Command::RiskIncrementWithOptions { .. } => "risk_increment_with_options",
-        Command::RiskChangeAdd { .. } => "risk_change_add",
-        Command::RiskCount { .. } => "risk_count",
-        Command::RiskQuery { .. } => "risk_query",
-        Command::RiskDetail { .. } => "risk_detail",
-        Command::RiskSet { .. } => "risk_set",
-        Command::RiskSetAndGet { .. } => "risk_set_and_get",
-        Command::RiskFamilyQuery { .. } => "risk_family_query",
-        Command::RiskFolSet { .. } => "risk_fol_set",
-        Command::RiskFolQuery { .. } => "risk_fol_query",
-        Command::RiskManager { .. } => "risk_manager",
-        Command::RiskDebug { .. } => "risk_debug",
-        Command::ContextUpsertNode { .. } => "context_upsert_node",
-        Command::ContextGetNode { .. } => "context_get_node",
-        Command::ContextWriteEvent { .. } => "context_write_event",
-        Command::ContextQueryEvents { .. } => "context_query_events",
-        Command::ContextWriteIndexRef { .. } => "context_write_index_ref",
-        Command::ContextQueryIndex { .. } => "context_query_index",
-        Command::ContextWritePackAudit { .. } => "context_write_pack_audit",
-        Command::ContextQueryPackAudit { .. } => "context_query_pack_audit",
-        Command::ContextMarkSummaryDirty { .. } => "context_mark_summary_dirty",
-        Command::ContextQuerySummaryDirty { .. } => "context_query_summary_dirty",
-    }
+fn command_kind(command: &Value) -> &str {
+    command
+        .get("kind")
+        .and_then(Value::as_str)
+        .expect("shared corpus command should contain a string kind")
 }
 
 fn response_kind(response: &CommandResponse) -> &'static str {
@@ -258,10 +194,13 @@ fn run_engine_case(case: &UnifiedCase) {
             drop(engine);
             engine = new_engine(dir.path(), &page_dir, &index_dir, case.shard_id);
         }
+        if command_kind(&step.command) == "existing_test" {
+            continue;
+        }
 
         let response = engine.execute(ExecuteRequest {
             shard_id: case.shard_id,
-            command: step.command.clone(),
+            command: step_command(case, step),
         });
 
         assert_step_status(case, step, &response.status);
@@ -329,9 +268,12 @@ fn run_client_case(case: &UnifiedCase) {
             *engine.lock().expect("engine lock poisoned") =
                 new_engine(dir.path(), &page_dir, &index_dir, case.shard_id);
         }
+        if command_kind(&step.command) == "existing_test" {
+            continue;
+        }
 
         let response = table
-            .execute(step.command.clone())
+            .execute(step_command(case, step))
             .unwrap_or_else(|error| panic!("case={} step={} {error}", case.name, step.name));
 
         assert_step_status(case, step, &response.status);
@@ -344,6 +286,15 @@ fn run_client_case(case: &UnifiedCase) {
             );
         }
     }
+}
+
+fn step_command(case: &UnifiedCase, step: &UnifiedStep) -> Command {
+    serde_json::from_value(step.command.clone()).unwrap_or_else(|error| {
+        panic!(
+            "case={} step={} command should deserialize into a Rust executable command: {error}",
+            case.name, step.name
+        )
+    })
 }
 
 fn assert_step_status(case: &UnifiedCase, step: &UnifiedStep, actual: &Status) {

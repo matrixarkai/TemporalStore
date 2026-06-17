@@ -23,8 +23,8 @@ Current corpus:
 ```text
 schema_version: 1
 name: temporalstore-unified-cpp-rust-corpus
-cases: 16
-required command kinds: 36
+cases: 18
+required command kinds: 37
 ```
 
 The shared cases are:
@@ -48,6 +48,11 @@ The shared cases are:
 - `timestamped_query_bounds`: Feature and Sequence count limits and empty timestamp windows.
 - `context_missing_node_semantics`: missing Context node returns a stable object key with `null`
   node.
+- `cpp_storage_object_page_slot_parity_surfaces`: C++ storage object/page/slot lifecycle,
+  dump/load, compaction, GC, and oplog source/test surfaces are required by the shared contract.
+- `cpp_data_raft_replication_parity_surfaces`: C++ data-Raft consensus, replication, failover,
+  snapshot-restore, and scale-transition source/harness surfaces are required by the shared
+  contract.
 
 ## Rust Runner
 
@@ -190,8 +195,12 @@ These are not yet true same tests:
   versioned open-source API schema, but it does not execute command-response behavior by itself.
 - C++ p99/performance gates; those compare thresholds and workload classes, but do not yet execute
   the exact same operation trace.
-- Raft, proxy, metaserver, data-node lifecycle, ingestion, RESP wire protocol, and context provider
-  tests outside the unified corpus.
+- Proxy, metaserver, data-node lifecycle, ingestion, RESP wire protocol, and context provider tests
+  outside the unified corpus.
+- The new storage and data-Raft unified cases are C++ parity surface gates today. They prove the
+  shared manifest names the concrete C++ source/test/harness surfaces, but they are not yet full
+  Rust/C++ native command replay for dump/load, page corruption, Raft leader failover, or snapshot
+  install.
 
 ## Gap Fill Plan For Real Same-Test Parity
 
@@ -300,3 +309,37 @@ Result for all 8 iterations:
 - Rust `TemporalStoreClient` plus local HTTP corpus path passed.
 - C++ unified corpus hook passed against the same 16-case corpus.
 - C++ native context contract passed with `cases=4` and `context_steps=13`.
+
+## Storage And Raft Repeat Run: 2026-06-16
+
+The shared corpus now includes storage and data-Raft parity surface cases:
+
+```text
+cpp_storage_object_page_slot_parity_surfaces
+cpp_data_raft_replication_parity_surfaces
+```
+
+The storage case requires the C++ object/page/slot lifecycle, storage manager, compaction, GC,
+oplog, and slot-context test files. The data-Raft case requires the C++ data-Raft consensus,
+replication, unit test, failover, snapshot-restore, and scale-transition harness files.
+
+Repeated command:
+
+```bash
+TS_CPP_REPO=/mnt/c/Users/Deeproute/Documents/Codex/2026-06-07/what-s-the-topology-for-all/temporalstore-service-fix \
+CARGO_TARGET_DIR=/tmp/temporalstore-local-validation-target \
+python3 tools/run_temporalstore_unified_tests.py --both --require-cpp
+```
+
+Repeat result: all 9 iterations passed.
+
+Validation in each iteration:
+
+- Rust direct engine corpus path executes all executable shared command-response cases.
+- Rust `TemporalStoreClient` plus local HTTP corpus path executes all executable shared
+  command-response cases.
+- Rust validates the storage/Raft `existing_test` case names and command kind in the same shared
+  coverage manifest.
+- C++ hook validates the same 18-case corpus, including required storage/Raft source and harness
+  paths.
+- C++ native context contract validates the shared context subset.
