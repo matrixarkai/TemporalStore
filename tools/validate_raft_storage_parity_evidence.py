@@ -220,6 +220,15 @@ AREAS: tuple[ParityArea, ...] = (
                     "snapshot_restore_read",
                 ),
             ),
+            RustEvidence(
+                "compat/unified_temporalstore_cases.json",
+                (
+                    "temporalstore-unified-metaserver-raft-membership",
+                    "temporalstore-unified-metaserver-raft-failover",
+                    "temporalstore-unified-metaserver-raft-snapshot",
+                    "temporalstore-metaserver-raft-validation",
+                ),
+            ),
         ),
     ),
     ParityArea(

@@ -2253,7 +2253,8 @@
               "src/metaserver_v2/service/raft_control_service.cc"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 MEMBERSHIP_OPS=200 bash tools/run_metaserver_raft_membership_ubuntu22.sh",
-            "rust_runner": "cargo test -p temporalstore-rust metaserver_raft --lib -- --test-threads=1",
+            "rust_runner": "cargo run -p temporalstore-rust --bin metaserver_raft_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-metaserver-raft-membership",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-metaserver-raft-validation --log <metaserver_raft_harness.json>",
             "timeout_s": 900
           }
         },
@@ -2270,7 +2271,8 @@
               "src/metaserver_v2/ha/convict_routine.cc"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 bash tools/run_metaserver_raft_failover_ubuntu22.sh",
-            "rust_runner": "cargo test -p temporalstore-rust metaserver_raft --lib -- --test-threads=1",
+            "rust_runner": "cargo run -p temporalstore-rust --bin metaserver_raft_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-metaserver-raft-failover",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-metaserver-raft-validation --log <metaserver_raft_harness.json>",
             "timeout_s": 900
           }
         },
@@ -2286,7 +2288,8 @@
               "src/metaserver_v2/raft_server.cc"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 bash tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh",
-            "rust_runner": "cargo test -p temporalstore-rust metaserver_raft --lib -- --test-threads=1",
+            "rust_runner": "cargo run -p temporalstore-rust --bin metaserver_raft_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-metaserver-raft-snapshot",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-metaserver-raft-validation --log <metaserver_raft_harness.json>",
             "timeout_s": 900
           }
         }

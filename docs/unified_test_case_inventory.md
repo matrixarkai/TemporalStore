@@ -78,7 +78,7 @@ to them.
 | `cpp_raft_production_stress_gate_parity_surfaces` | Production/stress Raft gate surfaces. |
 | `cpp_metaserver_raft_harness_parity_surfaces` | Metaserver Raft harness surfaces. |
 | `storage_data_raft_replication_gtest` | Exact C++ data-Raft replication unit case, paired with the Rust distributed Raft harness. |
-| `raft_metaserver_membership_failover_snapshot` | Exact C++ metaserver Raft membership/failover/snapshot case, paired with Rust metaserver Raft evidence and readiness blockers. |
+| `raft_metaserver_membership_failover_snapshot` | Exact C++ metaserver Raft membership/failover/snapshot case, paired with the Rust `metaserver_raft_harness` JSON gate. |
 | `raft_data_node_scale_failover_snapshot` | Exact C++ data-node Raft scale/failover/snapshot case, paired with Rust distributed and secondary-replication harnesses. |
 | `raft_data_node_mixed_rw_and_membership` | Exact C++ data-node mixed read/write plus membership case, paired with Rust distributed and secondary-replication harnesses. |
 | `raft_production_gate` | Exact C++ Raft production gate case, paired with the Rust storage/Raft production-readiness local gate and the combined data-node plus metaserver Raft distributed parity gate. |
