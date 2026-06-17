@@ -24,12 +24,13 @@ Shared C++/Rust corpus:
 
 ```text
 compat/unified_temporalstore_cases.json
-cases: 34
-steps: 80
+cases: 38
+steps: 84
 executable behavior cases: 16
 executable behavior steps: 62
-C++ existing-test parity surface cases: 18
-C++ existing-test parity surface steps: 18
+C++ existing-test parity surface cases: 22
+C++ existing-test parity surface steps: 22
+C++ existing-test required paths: 83
 ```
 
 ## What Is Unified With C++ Now
@@ -41,8 +42,9 @@ C++ existing-test parity surface steps: 18
 | C++ migration corpus test | 1 | `crates/temporalstore-rust/tests/storage_migration_corpus.rs` | Rust consumes converted C++ storage artifacts and validates storage lifecycle paths. |
 
 The shared corpus currently covers common/string/hash/set, Redis-compatible set, Feature,
-Sequence, IPS, Risk, Context, restart reads, missing-key semantics, timestamp bounds, and current
-C++ storage/Raft surface gates.
+Sequence, IPS, Risk, Context, restart reads, missing-key semantics, timestamp bounds, current
+C++ storage/Raft surface gates, and C++ client/proxy/metaserver/data-node control-plane surface
+gates.
 
 ## Rust-Specific Tests Remaining
 
@@ -90,7 +92,7 @@ every executable corpus command and compares every expected response.
 Until that exists, the honest status is:
 
 - Rust executes all 62 executable shared behavior steps.
-- C++ validates the 34-case corpus shape, current context subset, and C++ storage/Raft required
-  surfaces.
+- C++ validates the 38-case corpus shape, current context subset, C++ storage/Raft required
+  surfaces, and C++ client/proxy/metaserver/data-node control-plane required surfaces.
 - 467 Rust-specific tests remain local and should be progressively converted or mirrored into the
   shared corpus/harness contract.

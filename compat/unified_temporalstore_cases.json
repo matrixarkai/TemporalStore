@@ -37,7 +37,11 @@
       "cpp_raft_production_stress_gate_parity_surfaces",
       "cpp_metaserver_raft_harness_parity_surfaces",
       "cpp_redis_live_storage_smoke_parity_surfaces",
-      "cpp_local_docker_replication_matrix_parity_surfaces"
+      "cpp_local_docker_replication_matrix_parity_surfaces",
+      "cpp_client_meta_sync_route_parity_surfaces",
+      "cpp_proxy_serving_admission_parity_surfaces",
+      "cpp_metaserver_scheduler_repair_parity_surfaces",
+      "cpp_data_node_lifecycle_server_parity_surfaces"
     ],
     "required_command_kinds": [
       "string_set",
@@ -1604,6 +1608,112 @@
             "description": "Current C++ local Docker replication matrix must remain present for multi-mode storage replication parity comparison.",
             "required_paths": [
               "tools/run_local_docker_replication_matrix_ubuntu22.sh"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "cpp_client_meta_sync_route_parity_surfaces",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "cpp_client_meta_sync_router_sources_present",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_client_control_plane_parity",
+            "mode": "static",
+            "description": "Current C++ client meta-sync, router, pipeline, and request command surfaces must remain present for Rust client retry/topology parity comparison.",
+            "required_paths": [
+              "src/client/client_impl.cc",
+              "src/client/client_impl.h",
+              "src/client/meta_syncer.cc",
+              "src/client/meta_syncer.h",
+              "src/client/router.cc",
+              "src/client/router.h",
+              "src/client/router_v2.cc",
+              "src/client/router_v2.h",
+              "src/client/pipeline_impl.cc",
+              "src/client/pipeline_impl.h",
+              "src/client/command.h"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "cpp_proxy_serving_admission_parity_surfaces",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "cpp_proxy_serving_admission_sources_present",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_proxy_control_plane_parity",
+            "mode": "static",
+            "description": "Current C++ proxy service, heartbeat, config flags, HA calibration, and smoke surfaces must remain present for Rust proxy route/admission parity comparison.",
+            "required_paths": [
+              "src/proxy/proxy.cc",
+              "src/proxy/proxy.h",
+              "src/proxy/service.cc",
+              "src/proxy/service.h",
+              "src/proxy/heartbeat.cc",
+              "src/proxy/heartbeat.h",
+              "src/proxy/flags.cc",
+              "src/proxy/flags.h",
+              "src/metaserver_v2/ha/proxy_calibrate_routine.cc",
+              "src/metaserver_v2/ha/proxy_calibrate_routine.h",
+              "tools/run_proxy_sdk_smoke_ubuntu22.sh"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "cpp_metaserver_scheduler_repair_parity_surfaces",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "cpp_metaserver_scheduler_repair_sources_present",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_metaserver_control_plane_parity",
+            "mode": "static",
+            "description": "Current C++ metaserver scheduler, repair, placement, heartbeat, and task retry surfaces must remain present for Rust metaserver repair/rebalance parity comparison.",
+            "required_paths": [
+              "src/metaserver_v2/scheduler/scheduler_manager.cc",
+              "src/metaserver_v2/scheduler/scheduler_manager.h",
+              "src/metaserver_v2/scheduler/task_scheduler.cc",
+              "src/metaserver_v2/scheduler/task_scheduler.h",
+              "src/metaserver_v2/scheduler/create_partition_task.cc",
+              "src/metaserver_v2/scheduler/update_membership_task.cc",
+              "src/metaserver_v2/balance/balance_routine.cc",
+              "src/metaserver_v2/ha/convict_routine.cc",
+              "src/metaserver_v2/resource_placement/placement_manager.cc",
+              "src/metaserver_v2/test/task_scheduler_test.cc"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "cpp_data_node_lifecycle_server_parity_surfaces",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "cpp_data_node_lifecycle_server_sources_present",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_node_lifecycle_parity",
+            "mode": "static",
+            "description": "Current C++ partition server heartbeat, server service, and metaserver partition-server client surfaces must remain present for Rust data-node lifecycle/load/unload parity comparison.",
+            "required_paths": [
+              "src/server/server.cc",
+              "src/server/server.h",
+              "src/server/heartbeat.cc",
+              "src/server/heartbeat.h",
+              "src/metaserver_v2/client/partition_server_client.cc",
+              "src/metaserver_v2/client/partition_server_client.h"
             ]
           }
         }

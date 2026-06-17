@@ -8,6 +8,9 @@ Both implementations should execute that same ordered corpus. The file stores
 literal `Command` and `CommandResponse` JSON payloads so it can cover common
 KV, hash, packed timestamped feature pages, sequence rows, IPS, risk, context,
 and restart reads without duplicating expected behavior in separate test code.
+The same corpus also carries static `existing_test` parity gates for C++
+storage/Raft plus client, proxy, metaserver, and data-node control-plane
+surfaces that Rust is expected to track.
 
 ## Rust
 
