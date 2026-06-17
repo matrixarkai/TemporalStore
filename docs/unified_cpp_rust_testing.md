@@ -15,6 +15,9 @@ surfaces that Rust is expected to track.
 surfaces back to Rust implementation, tests, and harnesses across eight
 explicit parity areas so the C++ surface gates cannot drift away from Rust
 evidence.
+`tools/validate_control_plane_parity_evidence.py` applies the same rule to
+client, proxy, metaserver, and data-node lifecycle/control-plane parity
+surfaces.
 
 ## Rust
 
@@ -97,6 +100,7 @@ That gate unifies the existing local checks instead of replacing them:
 - API contract: `validate_sdk_contract.py`
 - shared Rust/C++ corpus: `tools/run_temporalstore_unified_tests.sh`
 - Raft/storage evidence: `tools/validate_raft_storage_parity_evidence.py`
+- control-plane evidence: `tools/validate_control_plane_parity_evidence.py`
 - storage integration: `storage_migration_corpus` and `storage_crash_harness`
 - scale/shared-store: compact `scale_harness` run with tunable `TS_UNIFIED_*`
   knobs

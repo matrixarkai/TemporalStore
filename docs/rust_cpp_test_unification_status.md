@@ -34,6 +34,18 @@ compaction/GC delayed destroy, shared-store sync/async replication and cursor-sa
 command/log/WAL codec, Raft snapshot/membership scale, Raft failover secondary replication, and
 local scale/fault readiness gates.
 
+Control-plane parity evidence status:
+
+```text
+python3 tools/validate_control_plane_parity_evidence.py
+control_plane_parity_areas: 4
+corpus_required_cpp_paths: 38
+rust_evidence_snippets: 32
+```
+
+The four checked areas are client meta-sync/route retry, proxy serving/admission/topology,
+metaserver scheduler repair/snapshot, and data-node lifecycle/server surfaces.
+
 Shared C++/Rust corpus:
 
 ```text
