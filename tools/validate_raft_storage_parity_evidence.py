@@ -277,6 +277,15 @@ AREAS: tuple[ParityArea, ...] = (
                 ),
             ),
             RustEvidence(
+                "tools/run_raft_distributed_parity.sh",
+                (
+                    "distributed_raft_harness",
+                    "raft_secondary_replication_harness",
+                    "metaserver_raft_harness",
+                    "raft-distributed-parity-validation",
+                ),
+            ),
+            RustEvidence(
                 "docs/distributed_raft_readiness.md",
                 (
                     "storage_data_raft_replication_gtest",

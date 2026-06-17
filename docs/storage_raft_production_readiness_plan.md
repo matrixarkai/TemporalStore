@@ -85,6 +85,8 @@ Raft local coverage:
   explicit fail-closed handling for unsupported metaserver learner/witness membership.
 - Dedicated `metaserver_raft_harness` JSON gate for local multi-node membership, snapshot restore,
   failover, and no-majority rejection parity.
+- Dedicated `run_raft_distributed_parity.sh` JSON gate that composes data-node distributed Raft,
+  data-node secondary/fault tolerance, and metaserver Raft parity in one C++-mapped local run.
 - Local production Raft runtime wrapper.
 - HTTP Raft transport for proposal/read/admin paths.
 - WAL-backed local recovery.
@@ -125,6 +127,14 @@ Full local storage/Raft production-readiness gate:
 CARGO_TARGET_DIR=/tmp/temporalstore-storage-raft-production-target \
 TS_STORAGE_RAFT_TIMEOUT=120s \
 tools/run_storage_raft_production_readiness.sh
+```
+
+Raft-only data-node plus metaserver C++ parity gate:
+
+```bash
+CARGO_TARGET_DIR=/tmp/temporalstore-raft-distributed-parity-target \
+TS_RAFT_PARITY_TIMEOUT=180s \
+tools/run_raft_distributed_parity.sh
 ```
 
 Strict readiness mode:

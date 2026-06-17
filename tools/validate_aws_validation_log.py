@@ -244,6 +244,82 @@ def validate_metaserver_raft(job, summary):
     require(summary["unavailable_without_majority"], f"{job}: write without majority was not rejected")
 
 
+def validate_raft_distributed_parity(job, summary):
+    require(summary["production_ready_slice"], f"{job}: production_ready_slice is false")
+    data_node = summary["data_node"]
+    require(
+        data_node["distributed_node_count"] >= 4,
+        f"{job}: expected at least four data-node raft nodes",
+    )
+    require(
+        data_node["distributed_all_nodes_have_majority"],
+        f"{job}: not all data-node raft nodes have healthy majority/apply state",
+    )
+    require(data_node["follower_write_rejected"], f"{job}: follower write was not rejected")
+    require(
+        set(data_node["replica_read_values"]) == {"replicated-value"},
+        f"{job}: data-node replica reads diverged: {data_node['replica_read_values']}",
+    )
+    require(
+        data_node["scale_down_voters"] and all(voters == [1, 2, 3] for voters in data_node["scale_down_voters"]),
+        f"{job}: scale-down voters mismatch: {data_node['scale_down_voters']}",
+    )
+    require(
+        data_node["scale_up_voters"] and all(voters == [1, 2, 3, 4] for voters in data_node["scale_up_voters"]),
+        f"{job}: scale-up voters mismatch: {data_node['scale_up_voters']}",
+    )
+    require(
+        data_node["external_snapshot_read"] == "from-external-snapshot",
+        f"{job}: data-node external snapshot read mismatch",
+    )
+    for read in data_node["secondary_restart_reads"]:
+        require(read["status"]["ok"], f"{job}: secondary restart read failed: {read}")
+    require(
+        data_node["partition_isolated_read_rejected"],
+        f"{job}: isolated partition read was not rejected",
+    )
+    require(
+        data_node["lagging_follower_observed_lag"] > 0,
+        f"{job}: lagging follower was not observed",
+    )
+    require(data_node["leader_crash_failover_ok"], f"{job}: leader crash failover failed")
+    require(
+        set(data_node["post_leader_crash_values"]) == {"v5"},
+        f"{job}: post-leader-crash reads diverged: {data_node['post_leader_crash_values']}",
+    )
+
+    metaserver = summary["metaserver"]
+    require(
+        metaserver["initial_membership"] == [10, 11, 12],
+        f"{job}: metaserver initial membership mismatch",
+    )
+    require(
+        metaserver["membership_after_add"] == [10, 11, 12, 13],
+        f"{job}: metaserver add membership mismatch",
+    )
+    require(
+        metaserver["membership_after_remove"] == [10, 11, 13],
+        f"{job}: metaserver remove membership mismatch",
+    )
+    require(metaserver["unsupported_role_rejected"], f"{job}: metaserver unsupported role accepted")
+    require(metaserver["wait_for_log_applied_index"] >= 1, f"{job}: metaserver read-index did not advance")
+    require(
+        metaserver["snapshot_index"] >= metaserver["wait_for_log_applied_index"],
+        f"{job}: metaserver snapshot index is stale",
+    )
+    require(
+        metaserver["snapshot_restore_read"] == "meta-snapshot-server",
+        f"{job}: metaserver snapshot restore read mismatch",
+    )
+    require(metaserver["leader_after_transfer"] == 11, f"{job}: metaserver leader transfer mismatch")
+    require(
+        metaserver["leader_after_failover"] != metaserver["leader_after_transfer"],
+        f"{job}: metaserver leader did not change after failover",
+    )
+    require(metaserver["namespace_after_failover_visible"], f"{job}: metaserver post-failover state missing")
+    require(metaserver["unavailable_without_majority"], f"{job}: metaserver no-majority write committed")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Validate TemporalStore AWS validation job JSON logs")
     parser.add_argument("--job", required=True)
@@ -259,6 +335,8 @@ def main():
         validate_storage_production(args.job, summary)
     elif args.job.endswith("raft-secondary-validation"):
         validate_raft_secondary(args.job, summary)
+    elif args.job.endswith("raft-distributed-parity-validation"):
+        validate_raft_distributed_parity(args.job, summary)
     elif args.job.endswith("metaserver-raft-validation"):
         validate_metaserver_raft(args.job, summary)
     elif args.job.endswith("raft-validation"):

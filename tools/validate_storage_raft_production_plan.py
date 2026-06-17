@@ -22,6 +22,13 @@ REQUIRED_SCRIPT_SNIPPETS = (
     "validate_raft_storage_parity_evidence.py",
 )
 
+REQUIRED_RAFT_PARITY_SCRIPT_SNIPPETS = (
+    "distributed_raft_harness",
+    "raft_secondary_replication_harness",
+    "metaserver_raft_harness",
+    "raft-distributed-parity-validation",
+)
+
 REQUIRED_READINESS_SNIPPETS = (
     "local storage production harness combines dump, cache pressure, restart recovery, shared-store replay, and Raft movement",
     "local storage dump/load fault matrix harness rejects checksum mismatch, partial manifests, missing segments, stale manifests, restart-during-install recovery, and corrupt page segments",
@@ -59,6 +66,11 @@ def main() -> None:
         ROOT / "tools" / "run_storage_raft_production_readiness.sh",
         REQUIRED_SCRIPT_SNIPPETS,
         "storage_raft_script",
+    )
+    count += require_snippets(
+        ROOT / "tools" / "run_raft_distributed_parity.sh",
+        REQUIRED_RAFT_PARITY_SCRIPT_SNIPPETS,
+        "raft_distributed_parity_script",
     )
     count += require_snippets(
         ROOT / "crates" / "temporalstore-rust" / "src" / "readiness.rs",

@@ -170,7 +170,7 @@ The current C++ unified corpus includes these Raft/replication cases:
 | `raft_data_node_scale_failover_snapshot` | `tools/run_data_raft_2node_scale_ubuntu22.sh`, `tools/run_data_raft_failover_ubuntu22.sh`, `tools/run_data_raft_snapshot_restore_ubuntu22.sh` | `distributed_raft_harness`, `raft_secondary_replication_harness`, and `external_chaos_gate --profile quick` cover scale down/up, leader transfer, snapshot bootstrap, secondary restart catch-up, and leader-crash failover |
 | `raft_data_node_mixed_rw_and_membership` | `tools/run_data_raft_mixed_rw_ubuntu22.sh`, `tools/run_data_raft_scale_up_down_ubuntu22.sh` | `distributed_raft_harness` validates post-transfer writes, scale-down writes/reads, scale-up writes/reads, and replica reads; `raft_secondary_replication_harness` validates partition/heal and lagging-follower catch-up |
 | `raft_metaserver_membership_failover_snapshot` | `tools/run_metaserver_raft_membership_ubuntu22.sh`, `tools/run_metaserver_raft_failover_ubuntu22.sh`, `tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh` | `metaserver_raft_harness` plus `production_meta_raft_runtime_matches_cpp_multinode_control_and_fault_contract` cover membership list/add/remove, read-index wait, snapshot trigger/restore, leader transfer, failover, unsupported-role rejection, and no-majority rejection; strict production readiness still blocks on networked metaserver scheduler orchestration across real data-node Raft groups |
-| `raft_production_gate` | `tools/run_raft_production_gate_ubuntu22.sh` | `tools/run_storage_raft_production_readiness.sh` is the Rust local gate; strict production mode still fails until networked OpenRaft rollout, production mTLS, and external packet-loss/disk-pressure tests are complete |
+| `raft_production_gate` | `tools/run_raft_production_gate_ubuntu22.sh` | `tools/run_storage_raft_production_readiness.sh` is the Rust storage/Raft local gate, and `tools/run_raft_distributed_parity.sh` is the Rust Raft-only parity gate for data-node plus metaserver multi-node behavior; strict production mode still fails until networked OpenRaft rollout, production mTLS, and external packet-loss/disk-pressure tests are complete |
 
 ## June 17, 2026 Local Multi-Node Validation
 
@@ -207,6 +207,10 @@ cargo run -p temporalstore-rust --bin external_chaos_gate -- \
   --root /tmp/temporalstore-external-chaos-raft-now \
   --profile quick \
   > /tmp/temporalstore-external-chaos-raft-now.json
+
+TS_RAFT_PARITY_ARTIFACT_DIR=/tmp/temporalstore-raft-distributed-parity-now \
+TS_RAFT_PARITY_TIMEOUT=240s \
+tools/run_raft_distributed_parity.sh
 ```
 
 Results:
@@ -214,6 +218,8 @@ Results:
 - `distributed_raft_harness`: JSON validation passed.
 - `metaserver_raft_harness`: JSON validation passed.
 - `raft_secondary_replication_harness`: JSON validation passed.
+- `tools/run_raft_distributed_parity.sh`: combined data-node plus metaserver JSON validation
+  passed.
 - `external_chaos_gate --profile quick`: `production_ready_slice=true`, `scenario_count=6`,
   `passed_count=6`.
 
@@ -283,6 +289,18 @@ The executable local external-chaos gate is:
 cargo build -p temporalstore-rust --bins
 cargo run -p temporalstore-rust --bin external_chaos_gate -- --profile quick
 ```
+
+The executable Raft-only C++ parity gate for both data-node and metaserver multi-node behavior is:
+
+```bash
+tools/run_raft_distributed_parity.sh
+```
+
+It runs `distributed_raft_harness`, `raft_secondary_replication_harness`, and
+`metaserver_raft_harness`, then validates a combined `raft-distributed-parity.json` report with
+data-node replica reads, follower-write rejection, membership scale down/up, external snapshot
+restore, secondary restart/partition/lag/failover, and metaserver membership/read-index/snapshot/
+failover/no-majority checks.
 
 The quick profile composes the OS-process Raft secondary harness, the networked
 distributed Raft harness, the storage modes harness, the storage production harness, and the
