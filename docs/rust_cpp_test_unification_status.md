@@ -46,6 +46,19 @@ rust_evidence_snippets: 32
 The four checked areas are client meta-sync/route retry, proxy serving/admission/topology,
 metaserver scheduler repair/snapshot, and data-node lifecycle/server surfaces.
 
+API/model parity evidence status:
+
+```text
+python3 tools/validate_api_model_parity_evidence.py
+api_model_parity_areas: 4
+required_command_kinds: 29
+required_response_kinds: 14
+rust_evidence_snippets: 30
+```
+
+The four checked areas are common/Redis string-hash-set behavior, Feature/Sequence timestamped
+pages, IPS/Risk models, and Context/SDK wire-model behavior.
+
 Shared C++/Rust corpus:
 
 ```text

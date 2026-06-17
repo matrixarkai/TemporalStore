@@ -18,6 +18,9 @@ evidence.
 `tools/validate_control_plane_parity_evidence.py` applies the same rule to
 client, proxy, metaserver, and data-node lifecycle/control-plane parity
 surfaces.
+`tools/validate_api_model_parity_evidence.py` keeps executable API/model corpus
+coverage tied to Rust Redis, Feature, Sequence, IPS, Risk, Context, and SDK
+evidence.
 
 ## Rust
 
@@ -101,6 +104,7 @@ That gate unifies the existing local checks instead of replacing them:
 - shared Rust/C++ corpus: `tools/run_temporalstore_unified_tests.sh`
 - Raft/storage evidence: `tools/validate_raft_storage_parity_evidence.py`
 - control-plane evidence: `tools/validate_control_plane_parity_evidence.py`
+- API/model evidence: `tools/validate_api_model_parity_evidence.py`
 - storage integration: `storage_migration_corpus` and `storage_crash_harness`
 - scale/shared-store: compact `scale_harness` run with tunable `TS_UNIFIED_*`
   knobs
