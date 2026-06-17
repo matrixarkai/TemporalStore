@@ -28,8 +28,17 @@ jobs:
       - name: Format check
         run: cargo fmt --all -- --check
 
+      - name: Validate unified C++/Rust corpus
+        run: python3 tools/run_temporalstore_unified_tests.py --validate-only
+
+      - name: Validate readiness workflow coverage
+        run: python3 tools/validate_readiness_workflow.py
+
       - name: Compile all Rust targets
         run: cargo check -p temporalstore-rust --all-targets
+
+      - name: Run unified Rust corpus
+        run: tools/run_temporalstore_unified_tests.sh
 
       - name: Run Rust unit and integration tests
         run: cargo test -p temporalstore-rust --lib --tests -- --test-threads=1
@@ -109,6 +118,7 @@ jobs:
           - metaserver
           - storage_cache
           - feature_modules
+          - context_workflow
           - fault_tolerance
           - deployment_ops
           - scale_testing
