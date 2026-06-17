@@ -11,6 +11,15 @@ Already tied directly to shared/C++ parity harnesses: **17 Rust test functions**
 
 Still Rust-specific: **467 Rust test functions**.
 
+Duplicate test status:
+
+```text
+python3 tools/validate_no_duplicate_tests.py
+rust_attributed_tests: no duplicate function names
+shared corpus: no duplicate case names, per-case step names, or per-case command payloads
+C++ existing-test surfaces: no repeated required_paths
+```
+
 Shared C++/Rust corpus:
 
 ```text
