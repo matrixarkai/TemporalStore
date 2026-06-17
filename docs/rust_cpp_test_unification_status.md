@@ -59,6 +59,17 @@ rust_evidence_snippets: 30
 The four checked areas are common/Redis string-hash-set behavior, Feature/Sequence timestamped
 pages, IPS/Risk models, and Context/SDK wire-model behavior.
 
+Ingestion/ops parity evidence status:
+
+```text
+python3 tools/validate_ingestion_ops_parity_evidence.py
+ingestion_ops_parity_areas: 4
+rust_evidence_snippets: 48
+```
+
+The four checked areas are Kafka/Flink ingestion durability, ingestion Prometheus/readiness
+signals, production readiness workflow evidence, and scale/fault/chaos validation gates.
+
 Shared C++/Rust corpus:
 
 ```text
@@ -83,7 +94,9 @@ C++ existing-test required paths: 83
 The shared corpus currently covers common/string/hash/set, Redis-compatible set, Feature,
 Sequence, IPS, Risk, Context, restart reads, missing-key semantics, timestamp bounds, current
 C++ storage/Raft surface gates, and C++ client/proxy/metaserver/data-node control-plane surface
-gates.
+gates. Ingestion/ops parity is currently enforced as Rust evidence plus local harness gates; the
+next same-test step is to promote Kafka offset, Flink checkpoint, dead-letter, and lag scenarios
+into executable corpus cases for both repos.
 
 ## Rust-Specific Tests Remaining
 
@@ -119,8 +132,12 @@ Total remaining Rust-specific tests: **467**.
    data-node lifecycle transitions, and service readiness reports.
 
 5. Add shared API/model cases:
-   Redis command parity, context event/index/audit workflows, ingestion offset/checkpoint
-   lifecycle, tonic SDK adapters, and C++ wire-model round trips.
+   Redis command parity, context event/index/audit workflows, tonic SDK adapters, and C++ wire-model
+   round trips.
+
+6. Add shared ingestion/ops cases:
+   Kafka offset idempotency, Flink checkpoint precommit/commit/abort, dead-letter reporting,
+   ingestion lag metrics, readiness blockers, and scale/fault workflow log assertions.
 
 ## Current Limitation
 
@@ -132,6 +149,7 @@ Until that exists, the honest status is:
 
 - Rust executes all 62 executable shared behavior steps.
 - C++ validates the 38-case corpus shape, current context subset, C++ storage/Raft required
-  surfaces, and C++ client/proxy/metaserver/data-node control-plane required surfaces.
+  surfaces, C++ client/proxy/metaserver/data-node control-plane required surfaces, and the Rust
+  ingestion/ops evidence gate in unified validation.
 - 467 Rust-specific tests remain local and should be progressively converted or mirrored into the
   shared corpus/harness contract.

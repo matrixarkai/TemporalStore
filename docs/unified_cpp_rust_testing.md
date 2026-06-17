@@ -21,6 +21,9 @@ surfaces.
 `tools/validate_api_model_parity_evidence.py` keeps executable API/model corpus
 coverage tied to Rust Redis, Feature, Sequence, IPS, Risk, Context, and SDK
 evidence.
+`tools/validate_ingestion_ops_parity_evidence.py` keeps ingestion durability,
+production-readiness, Prometheus, and scale/fault validation evidence tied to
+the Rust code paths and local harnesses.
 
 ## Rust
 
@@ -105,6 +108,7 @@ That gate unifies the existing local checks instead of replacing them:
 - Raft/storage evidence: `tools/validate_raft_storage_parity_evidence.py`
 - control-plane evidence: `tools/validate_control_plane_parity_evidence.py`
 - API/model evidence: `tools/validate_api_model_parity_evidence.py`
+- ingestion/ops evidence: `tools/validate_ingestion_ops_parity_evidence.py`
 - storage integration: `storage_migration_corpus` and `storage_crash_harness`
 - scale/shared-store: compact `scale_harness` run with tunable `TS_UNIFIED_*`
   knobs
