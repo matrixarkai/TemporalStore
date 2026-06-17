@@ -212,6 +212,38 @@ def validate_raft_secondary(job, summary):
         require(read["value"] == "v5", f"{job}: post-leader-crash read mismatch: {read}")
 
 
+def validate_metaserver_raft(job, summary):
+    require(
+        summary["initial_membership"] == [10, 11, 12],
+        f"{job}: initial membership mismatch: {summary['initial_membership']}",
+    )
+    require(
+        summary["membership_after_add"] == [10, 11, 12, 13],
+        f"{job}: add-node membership mismatch: {summary['membership_after_add']}",
+    )
+    require(
+        summary["membership_after_remove"] == [10, 11, 13],
+        f"{job}: remove-node membership mismatch: {summary['membership_after_remove']}",
+    )
+    require(summary["unsupported_role_rejected"], f"{job}: unsupported learner/witness was not rejected")
+    require(summary["wait_for_log_applied_index"] >= 1, f"{job}: read-index wait did not advance")
+    require(summary["snapshot_index"] >= summary["wait_for_log_applied_index"], f"{job}: stale snapshot index")
+    require(
+        summary["snapshot_restore_read"] == "meta-snapshot-server",
+        f"{job}: snapshot restore read mismatch",
+    )
+    require(
+        summary["leader_after_transfer"] == 11,
+        f"{job}: leader transfer target mismatch: {summary['leader_after_transfer']}",
+    )
+    require(
+        summary["leader_after_failover"] != summary["leader_after_transfer"],
+        f"{job}: leader did not change after failover",
+    )
+    require(summary["namespace_after_failover_visible"], f"{job}: post-failover namespace missing")
+    require(summary["unavailable_without_majority"], f"{job}: write without majority was not rejected")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Validate TemporalStore AWS validation job JSON logs")
     parser.add_argument("--job", required=True)
@@ -227,6 +259,8 @@ def main():
         validate_storage_production(args.job, summary)
     elif args.job.endswith("raft-secondary-validation"):
         validate_raft_secondary(args.job, summary)
+    elif args.job.endswith("metaserver-raft-validation"):
+        validate_metaserver_raft(args.job, summary)
     elif args.job.endswith("raft-validation"):
         validate_raft(args.job, summary)
     elif args.job.endswith("scale-validation"):

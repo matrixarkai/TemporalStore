@@ -38,10 +38,12 @@ process integration and external distributed fault validation.
 
 5. **Raft snapshot/restart/failover harness**
    - Runs `distributed_raft_harness`.
+   - Runs `metaserver_raft_harness`.
    - Runs `raft_secondary_replication_harness`.
-   - Validates proposal, follower write rejection, leader transfer, membership change, external
-     snapshot bootstrap/read, secondary restart catch-up, partition heal, follower lag/catch-up,
-     stale vote rejection, rolling restart, and leader-crash failover reads.
+   - Validates proposal, follower write rejection, leader transfer, data-node and metaserver
+     membership change, metaserver snapshot restore, external snapshot bootstrap/read, secondary
+     restart catch-up, partition heal, follower lag/catch-up, stale vote rejection, rolling restart,
+     and leader-crash failover reads.
 
 6. **Combined storage+Raft production harness**
    - Runs `external_chaos_gate --profile quick`.
@@ -81,6 +83,8 @@ Raft local coverage:
 - Metaserver Raft distributed/fault contract aligned with C++ control gates: membership list/add/remove,
   log-applied read-index wait, snapshot trigger, leader transfer, failover after leader loss, and
   explicit fail-closed handling for unsupported metaserver learner/witness membership.
+- Dedicated `metaserver_raft_harness` JSON gate for local multi-node membership, snapshot restore,
+  failover, and no-majority rejection parity.
 - Local production Raft runtime wrapper.
 - HTTP Raft transport for proposal/read/admin paths.
 - WAL-backed local recovery.

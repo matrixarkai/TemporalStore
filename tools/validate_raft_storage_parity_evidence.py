@@ -211,6 +211,15 @@ AREAS: tuple[ParityArea, ...] = (
                     "metaserver_raft_promotes_follower_after_leader_failure_and_keeps_metadata_available",
                 ),
             ),
+            RustEvidence(
+                "crates/temporalstore-rust/src/bin/metaserver_raft_harness.rs",
+                (
+                    "MetaserverRaftHarnessSummary",
+                    "unsupported_role_rejected",
+                    "unavailable_without_majority",
+                    "snapshot_restore_read",
+                ),
+            ),
         ),
     ),
     ParityArea(
@@ -262,6 +271,7 @@ AREAS: tuple[ParityArea, ...] = (
                 "tools/run_storage_raft_production_readiness.sh",
                 (
                     "distributed_raft_harness",
+                    "metaserver_raft_harness",
                     "raft_secondary_replication_harness",
                     "external_chaos_gate",
                 ),

@@ -169,7 +169,7 @@ The current C++ unified corpus includes these Raft/replication cases:
 | `storage_data_raft_replication_gtest` | `cmake --build build-ubuntu22/release --target data_raft_replication_test -j2` | `cargo run -p temporalstore-rust --bin distributed_raft_harness` plus `tools/validate_aws_validation_log.py --job temporalstore-raft-validation` |
 | `raft_data_node_scale_failover_snapshot` | `tools/run_data_raft_2node_scale_ubuntu22.sh`, `tools/run_data_raft_failover_ubuntu22.sh`, `tools/run_data_raft_snapshot_restore_ubuntu22.sh` | `distributed_raft_harness`, `raft_secondary_replication_harness`, and `external_chaos_gate --profile quick` cover scale down/up, leader transfer, snapshot bootstrap, secondary restart catch-up, and leader-crash failover |
 | `raft_data_node_mixed_rw_and_membership` | `tools/run_data_raft_mixed_rw_ubuntu22.sh`, `tools/run_data_raft_scale_up_down_ubuntu22.sh` | `distributed_raft_harness` validates post-transfer writes, scale-down writes/reads, scale-up writes/reads, and replica reads; `raft_secondary_replication_harness` validates partition/heal and lagging-follower catch-up |
-| `raft_metaserver_membership_failover_snapshot` | `tools/run_metaserver_raft_membership_ubuntu22.sh`, `tools/run_metaserver_raft_failover_ubuntu22.sh`, `tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh` | `production_meta_raft_runtime_matches_cpp_multinode_control_and_fault_contract`, `openraft_metaserver_backend_supports_membership_and_bounded_reads`, and existing metaserver Raft failover/snapshot tests cover membership, read-index wait, snapshot trigger, leader transfer, failover, and unsupported-role rejection; strict production readiness still blocks on networked metaserver scheduler orchestration across real data-node Raft groups |
+| `raft_metaserver_membership_failover_snapshot` | `tools/run_metaserver_raft_membership_ubuntu22.sh`, `tools/run_metaserver_raft_failover_ubuntu22.sh`, `tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh` | `metaserver_raft_harness` plus `production_meta_raft_runtime_matches_cpp_multinode_control_and_fault_contract` cover membership list/add/remove, read-index wait, snapshot trigger/restore, leader transfer, failover, unsupported-role rejection, and no-majority rejection; strict production readiness still blocks on networked metaserver scheduler orchestration across real data-node Raft groups |
 | `raft_production_gate` | `tools/run_raft_production_gate_ubuntu22.sh` | `tools/run_storage_raft_production_readiness.sh` is the Rust local gate; strict production mode still fails until networked OpenRaft rollout, production mTLS, and external packet-loss/disk-pressure tests are complete |
 
 ## June 17, 2026 Local Multi-Node Validation
@@ -184,6 +184,14 @@ cargo run -p temporalstore-rust --bin distributed_raft_harness -- \
 python3 tools/validate_aws_validation_log.py \
   --job temporalstore-raft-validation \
   --log /tmp/temporalstore-raft-validation-now/distributed.json
+
+CARGO_TARGET_DIR=/tmp/temporalstore-local-validation-target \
+cargo run -p temporalstore-rust --bin metaserver_raft_harness -- \
+  --root /tmp/temporalstore-metaserver-raft-now \
+  > /tmp/temporalstore-metaserver-raft-now/metaserver.json
+python3 tools/validate_aws_validation_log.py \
+  --job temporalstore-metaserver-raft-validation \
+  --log /tmp/temporalstore-metaserver-raft-now/metaserver.json
 
 CARGO_TARGET_DIR=/tmp/temporalstore-local-validation-target \
 cargo run -p temporalstore-rust --bin raft_secondary_replication_harness -- \
@@ -204,9 +212,10 @@ cargo run -p temporalstore-rust --bin external_chaos_gate -- \
 Results:
 
 - `distributed_raft_harness`: JSON validation passed.
+- `metaserver_raft_harness`: JSON validation passed.
 - `raft_secondary_replication_harness`: JSON validation passed.
-- `external_chaos_gate --profile quick`: `production_ready_slice=true`, `scenario_count=5`,
-  `passed_count=5`.
+- `external_chaos_gate --profile quick`: `production_ready_slice=true`, `scenario_count=6`,
+  `passed_count=6`.
 
 Evidence from the validated outputs:
 
@@ -391,6 +400,7 @@ production_raft_mode_is_blocked_until_real_engine_and_chaos_exist
 production_raft_runtime_validates_security_timer_and_chaos_contracts
 production_raft_runtime_replicates_over_separate_http_nodes
 raft_secondary_replication_harness
+metaserver_raft_harness
 metaserver_raft_health_catchup_safe_scale_and_failover_work
 metaserver_raft_snapshot_trigger_compacts_applied_log_bytes
 metaserver_raft_promotes_follower_after_leader_failure_and_keeps_metadata_available

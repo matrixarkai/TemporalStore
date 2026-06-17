@@ -73,6 +73,13 @@ python3 tools/validate_aws_validation_log.py \
   --job temporalstore-raft-validation \
   --log "${ARTIFACT_DIR}/distributed-raft.json"
 
+timeout "${TIMEOUT}" cargo run -p temporalstore-rust --bin metaserver_raft_harness -- \
+  --root "${ARTIFACT_DIR}/metaserver-raft" \
+  > "${ARTIFACT_DIR}/metaserver-raft.json"
+python3 tools/validate_aws_validation_log.py \
+  --job temporalstore-metaserver-raft-validation \
+  --log "${ARTIFACT_DIR}/metaserver-raft.json"
+
 cargo build -p temporalstore-rust --bins
 timeout "${TIMEOUT}" cargo run -p temporalstore-rust --bin raft_secondary_replication_harness -- \
   --root "${ARTIFACT_DIR}/raft-secondary" \

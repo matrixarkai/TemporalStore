@@ -101,6 +101,14 @@ fn scenario_plan(options: &GateOptions) -> Vec<ChaosScenario> {
             ],
         },
         ChaosScenario {
+            name: "metaserver_raft_membership_failover_snapshot",
+            binary: "metaserver_raft_harness",
+            args: vec![
+                "--root".to_string(),
+                options.root.join("metaserver-raft").display().to_string(),
+            ],
+        },
+        ChaosScenario {
             name: "storage_sync_async_replay_and_raft_wal_restore",
             binary: "storage_modes_harness",
             args: vec![

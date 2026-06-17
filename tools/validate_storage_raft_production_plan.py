@@ -16,6 +16,7 @@ REQUIRED_SCRIPT_SNIPPETS = (
     "--features openraft-engine openraft_ --lib",
     "readiness_gate -- --service raft_replication",
     "distributed_raft_harness",
+    "metaserver_raft_harness",
     "raft_secondary_replication_harness",
     "external_chaos_gate",
     "validate_raft_storage_parity_evidence.py",
