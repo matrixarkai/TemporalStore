@@ -8,6 +8,9 @@ contracts, but it is not production complete yet.
 The Rust code currently has:
 
 - production data-node Raft runtime options with OpenRaft/raft-rs engine selection
+- feature-gated OpenRaft data-node and metaserver adapter with durable log state, state-machine
+  apply, snapshot metadata, read-index checks, membership changes, leader transfer, and restart
+  recovery tests
 - production metaserver Raft runtime options with failover/catch-up timer and stale-server detection
 - WAL-backed production runtime startup and recovery
 - authenticated production RPC runtime construction over the existing Raft HTTP transport
@@ -92,8 +95,9 @@ The readiness API is:
 temporalstore_rust::distributed_raft_readiness()
 ```
 
-It returns `complete = false` and `production_ready = false` until the real consensus/storage and
-external chaos requirements are implemented.
+It returns `complete = false` and `production_ready = false` until networked OpenRaft process
+startup, metaserver-driven data-node membership orchestration, production mTLS transport, and
+external packet-loss/disk-pressure validation are implemented.
 
 Production callers should use the hard guard:
 
@@ -148,12 +152,73 @@ Production deployments should use `ProductionRaftSecurity::mtls`. Local chaos te
 
 ## Required Before Production Ready
 
-- Replace the local consensus model with OpenRaft or raft-rs FSM/storage integration.
+- Wire the feature-gated OpenRaft adapter into real networked data-node and metaserver process
+  startup.
 - Wire data-node Raft snapshots to the full production engine freeze/flush/download/install
   lifecycle.
 - Run external multi-process packet-loss and disk-pressure tests.
 - Add actual mTLS transport implementation, not just config validation and authenticated metadata.
 - Integrate metaserver shard membership changes with networked data-node Raft groups.
+
+## C++ Raft Test Case Cross-Reference
+
+The current C++ unified corpus includes these Raft/replication cases:
+
+| C++ corpus case | C++ runner | Rust validation path |
+| --- | --- | --- |
+| `storage_data_raft_replication_gtest` | `cmake --build build-ubuntu22/release --target data_raft_replication_test -j2` | `cargo run -p temporalstore-rust --bin distributed_raft_harness` plus `tools/validate_aws_validation_log.py --job temporalstore-raft-validation` |
+| `raft_data_node_scale_failover_snapshot` | `tools/run_data_raft_2node_scale_ubuntu22.sh`, `tools/run_data_raft_failover_ubuntu22.sh`, `tools/run_data_raft_snapshot_restore_ubuntu22.sh` | `distributed_raft_harness`, `raft_secondary_replication_harness`, and `external_chaos_gate --profile quick` cover scale down/up, leader transfer, snapshot bootstrap, secondary restart catch-up, and leader-crash failover |
+| `raft_data_node_mixed_rw_and_membership` | `tools/run_data_raft_mixed_rw_ubuntu22.sh`, `tools/run_data_raft_scale_up_down_ubuntu22.sh` | `distributed_raft_harness` validates post-transfer writes, scale-down writes/reads, scale-up writes/reads, and replica reads; `raft_secondary_replication_harness` validates partition/heal and lagging-follower catch-up |
+| `raft_metaserver_membership_failover_snapshot` | `tools/run_metaserver_raft_membership_ubuntu22.sh`, `tools/run_metaserver_raft_failover_ubuntu22.sh`, `tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh` | Rust has metaserver Raft membership/failover/snapshot unit/runtime coverage, but the production readiness gate still blocks on networked metaserver scheduler orchestration across real data-node Raft groups |
+| `raft_production_gate` | `tools/run_raft_production_gate_ubuntu22.sh` | `tools/run_storage_raft_production_readiness.sh` is the Rust local gate; strict production mode still fails until networked OpenRaft rollout, production mTLS, and external packet-loss/disk-pressure tests are complete |
+
+## June 17, 2026 Local Multi-Node Validation
+
+The Rust multi-node Raft checks were rerun against the C++ coverage above:
+
+```bash
+CARGO_TARGET_DIR=/tmp/temporalstore-local-validation-target \
+cargo run -p temporalstore-rust --bin distributed_raft_harness -- \
+  --root /tmp/temporalstore-raft-validation-now/distributed \
+  > /tmp/temporalstore-raft-validation-now/distributed.json
+python3 tools/validate_aws_validation_log.py \
+  --job temporalstore-raft-validation \
+  --log /tmp/temporalstore-raft-validation-now/distributed.json
+
+CARGO_TARGET_DIR=/tmp/temporalstore-local-validation-target \
+cargo run -p temporalstore-rust --bin raft_secondary_replication_harness -- \
+  --root /tmp/temporalstore-raft-secondary-now \
+  --heartbeat-ms 25 \
+  > /tmp/temporalstore-raft-secondary-now/secondary.json
+python3 tools/validate_aws_validation_log.py \
+  --job temporalstore-raft-secondary-validation \
+  --log /tmp/temporalstore-raft-secondary-now/secondary.json
+
+CARGO_TARGET_DIR=/tmp/temporalstore-local-validation-target \
+cargo run -p temporalstore-rust --bin external_chaos_gate -- \
+  --root /tmp/temporalstore-external-chaos-raft-now \
+  --profile quick \
+  > /tmp/temporalstore-external-chaos-raft-now.json
+```
+
+Results:
+
+- `distributed_raft_harness`: JSON validation passed.
+- `raft_secondary_replication_harness`: JSON validation passed.
+- `external_chaos_gate --profile quick`: `production_ready_slice=true`, `scenario_count=5`,
+  `passed_count=5`.
+
+Evidence from the validated outputs:
+
+- Multi-node proposal, post-transfer write, post-scale-down write, and post-scale-up write all
+  returned `ok`.
+- Replica reads returned `replicated-value` on all checked replicas.
+- Secondary restart catch-up returned `v1`, `v3`, and `v4` on nodes 1, 2, and 3.
+- Isolated partition reads were rejected with `leader is not available`; after heal, the follower
+  read returned `v-partition`.
+- Lagging follower observation saw lag `3`; all catch-up reads returned `v-lag-0`, `v-lag-1`, and
+  `v-lag-2`.
+- Leader-crash failover returned `ok`; surviving nodes read `v5`.
 
 ## Repeated Data-Node Raft Check
 
@@ -186,8 +251,9 @@ Covered today:
 
 Still missing:
 
-- real OpenRaft or raft-rs data-node FSM/storage implementation
-- production OpenRaft/raft-rs durable log-store adapter beyond the local segmented WAL model
+- networked OpenRaft adapter process startup for real data-node and metaserver deployments
+- production OpenRaft durable log-store rollout across real processes beyond the feature-gated
+  local adapter tests
 - metaserver scheduler loop that automatically drives `/raft/membership/apply` for each shard and
   persists task state
 - production engine snapshot install with freeze/flush/download/verify/install lifecycle; the local
