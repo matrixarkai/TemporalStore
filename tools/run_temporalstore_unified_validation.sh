@@ -46,6 +46,7 @@ python3 tools/validate_readiness_workflow.py
 python3 tools/run_temporalstore_unified_tests.py --validate-only
 python3 tools/validate_no_duplicate_tests.py
 python3 tools/validate_raft_storage_parity_evidence.py
+python3 tools/validate_storage_raft_production_plan.py
 python3 tools/validate_control_plane_parity_evidence.py
 python3 tools/validate_api_model_parity_evidence.py
 python3 tools/validate_ingestion_ops_parity_evidence.py

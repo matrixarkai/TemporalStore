@@ -115,6 +115,7 @@ That gate unifies the existing local checks instead of replacing them:
 - API contract: `validate_sdk_contract.py`
 - shared Rust/C++ corpus: `tools/run_temporalstore_unified_tests.sh`
 - Raft/storage evidence: `tools/validate_raft_storage_parity_evidence.py`
+- storage/Raft production order: `tools/validate_storage_raft_production_plan.py`
 - control-plane evidence: `tools/validate_control_plane_parity_evidence.py`
 - API/model evidence: `tools/validate_api_model_parity_evidence.py`
 - ingestion/ops evidence: `tools/validate_ingestion_ops_parity_evidence.py`
@@ -123,6 +124,14 @@ That gate unifies the existing local checks instead of replacing them:
   knobs
 - storage modes: `storage_modes_harness`
 - production readiness: `readiness_gate --service-reports`
+
+For the heavier one-by-one storage/Raft local production-readiness pass, run:
+
+```bash
+tools/run_storage_raft_production_readiness.sh
+```
+
+That gate is documented in `docs/storage_raft_production_readiness_plan.md`.
 
 To include the configured C++ checkout hook in the same pass:
 
