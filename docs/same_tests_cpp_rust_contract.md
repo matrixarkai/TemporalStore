@@ -23,7 +23,7 @@ Current corpus:
 ```text
 schema_version: 1
 name: temporalstore-unified-cpp-rust-corpus
-cases: 26
+cases: 34
 required command kinds: 37
 ```
 
@@ -60,6 +60,15 @@ The shared cases are:
   `cpp_data_raft_failover_harness_parity_surfaces`,
   `cpp_data_raft_snapshot_restore_harness_parity_surfaces`, and
   `cpp_data_raft_scale_transition_harness_parity_surfaces`.
+- Current C++ storage/Raft gap-fill parity adds eight more exact gates:
+  `cpp_storage_object_zone_evicter_expirer_parity_surfaces`,
+  `cpp_storage_replicator_guardrail_parity_surfaces`,
+  `cpp_data_raft_mixed_rw_harness_parity_surfaces`,
+  `cpp_data_raft_multinode_scale_harness_parity_surfaces`,
+  `cpp_raft_production_stress_gate_parity_surfaces`,
+  `cpp_metaserver_raft_harness_parity_surfaces`,
+  `cpp_redis_live_storage_smoke_parity_surfaces`, and
+  `cpp_local_docker_replication_matrix_parity_surfaces`.
 
 ## Rust Runner
 
@@ -376,3 +385,34 @@ python3 tools/run_temporalstore_unified_tests.py --both --require-cpp
 ```
 
 Result: all 9 iterations passed against the 26-case shared corpus.
+
+## Current C++ Storage And Raft Gap-Fill Run: 2026-06-16
+
+The shared corpus was compared against the current local C++ checkout and expanded by eight more
+storage/Raft gap-fill gates:
+
+```text
+cpp_storage_object_zone_evicter_expirer_parity_surfaces
+cpp_storage_replicator_guardrail_parity_surfaces
+cpp_data_raft_mixed_rw_harness_parity_surfaces
+cpp_data_raft_multinode_scale_harness_parity_surfaces
+cpp_raft_production_stress_gate_parity_surfaces
+cpp_metaserver_raft_harness_parity_surfaces
+cpp_redis_live_storage_smoke_parity_surfaces
+cpp_local_docker_replication_matrix_parity_surfaces
+```
+
+These gates make current C++ storage/Raft parity fail precisely when eviction/expiry/zone/object
+surfaces, storage replication guardrails, mixed read/write Raft, multi-node scale, production/stress
+Raft tooling, metaserver Raft harnesses, Redis live storage smoke, or Docker replication matrix
+coverage disappears from the C++ codebase.
+
+The expanded Rust+C++ command was repeated 8 times against the current local C++ checkout:
+
+```bash
+TS_CPP_REPO=/mnt/c/Users/Deeproute/Documents/Codex/2026-06-07/what-s-the-topology-for-all/temporalstore-service-fix \
+CARGO_TARGET_DIR=/tmp/temporalstore-local-validation-target \
+python3 tools/run_temporalstore_unified_tests.py --both --require-cpp
+```
+
+Result: all 8 iterations passed against the 34-case shared corpus.

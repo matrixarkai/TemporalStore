@@ -29,7 +29,15 @@
       "cpp_data_raft_unit_test_parity_surfaces",
       "cpp_data_raft_failover_harness_parity_surfaces",
       "cpp_data_raft_snapshot_restore_harness_parity_surfaces",
-      "cpp_data_raft_scale_transition_harness_parity_surfaces"
+      "cpp_data_raft_scale_transition_harness_parity_surfaces",
+      "cpp_storage_object_zone_evicter_expirer_parity_surfaces",
+      "cpp_storage_replicator_guardrail_parity_surfaces",
+      "cpp_data_raft_mixed_rw_harness_parity_surfaces",
+      "cpp_data_raft_multinode_scale_harness_parity_surfaces",
+      "cpp_raft_production_stress_gate_parity_surfaces",
+      "cpp_metaserver_raft_harness_parity_surfaces",
+      "cpp_redis_live_storage_smoke_parity_surfaces",
+      "cpp_local_docker_replication_matrix_parity_surfaces"
     ],
     "required_command_kinds": [
       "string_set",
@@ -1436,6 +1444,166 @@
             "description": "C++ data-Raft scale up/down harness must remain present for membership transition parity comparison.",
             "required_paths": [
               "tools/run_data_raft_scale_up_down_ubuntu22.sh"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "cpp_storage_object_zone_evicter_expirer_parity_surfaces",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "cpp_storage_object_zone_evicter_expirer_sources_present",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_storage_parity",
+            "mode": "static",
+            "description": "Current C++ object, zone, eviction, expiry, and storage flag surfaces must remain present for storage lifecycle parity comparison.",
+            "required_paths": [
+              "src/partition/storage/object.h",
+              "src/partition/storage/zone.h",
+              "src/partition/storage/evicter.cc",
+              "src/partition/storage/evicter.h",
+              "src/partition/storage/expirer.cc",
+              "src/partition/storage/expirer.h",
+              "src/partition/storage/flags.cc"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "cpp_storage_replicator_guardrail_parity_surfaces",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "cpp_storage_replicator_guardrail_sources_present",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_storage_parity",
+            "mode": "static",
+            "description": "Current C++ storage replicator and replication guardrail scripts must remain present for sync/async replication parity comparison.",
+            "required_paths": [
+              "src/partition/storage/replicator.cc",
+              "src/partition/storage/replicator.h",
+              "tools/replication_guardrails_ubuntu22.sh",
+              "tools/run_replication_guardrail_ubuntu22.sh"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "cpp_data_raft_mixed_rw_harness_parity_surfaces",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "cpp_data_raft_mixed_rw_harness_present",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "static",
+            "description": "Current C++ data-Raft mixed read/write harness must remain present for read/write parity comparison.",
+            "required_paths": [
+              "tools/run_data_raft_mixed_rw_ubuntu22.sh"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "cpp_data_raft_multinode_scale_harness_parity_surfaces",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "cpp_data_raft_multinode_scale_harnesses_present",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "static",
+            "description": "Current C++ two-node and five-node data-Raft scale harnesses must remain present for scale parity comparison.",
+            "required_paths": [
+              "tools/run_data_raft_2node_scale_ubuntu22.sh",
+              "tools/run_data_raft_5node_scale_ubuntu22.sh"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "cpp_raft_production_stress_gate_parity_surfaces",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "cpp_raft_production_stress_gate_sources_present",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "static",
+            "description": "Current C++ Raft production, stress, live-metrics, and summary tooling must remain present for production-readiness parity comparison.",
+            "required_paths": [
+              "tools/run_raft_production_gate_ubuntu22.sh",
+              "tools/run_raft_stress_suite_ubuntu22.sh",
+              "tools/run_live_raft_metrics_ubuntu22.sh",
+              "tools/summarize_raft_gate_results.py",
+              "tools/test_summarize_raft_gate_results.py"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "cpp_metaserver_raft_harness_parity_surfaces",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "cpp_metaserver_raft_harnesses_present",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "static",
+            "description": "Current C++ metaserver Raft failover, membership, and snapshot restore harnesses must remain present for control-plane Raft parity comparison.",
+            "required_paths": [
+              "tools/run_metaserver_raft_failover_ubuntu22.sh",
+              "tools/run_metaserver_raft_membership_ubuntu22.sh",
+              "tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "cpp_redis_live_storage_smoke_parity_surfaces",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "cpp_redis_live_storage_smoke_present",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_storage_parity",
+            "mode": "static",
+            "description": "Current C++ Redis live storage smoke harness must remain present for Redis-to-storage parity comparison.",
+            "required_paths": [
+              "tools/run_redis_live_storage_smoke_ubuntu22.sh"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "cpp_local_docker_replication_matrix_parity_surfaces",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "cpp_local_docker_replication_matrix_present",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_storage_parity",
+            "mode": "static",
+            "description": "Current C++ local Docker replication matrix must remain present for multi-mode storage replication parity comparison.",
+            "required_paths": [
+              "tools/run_local_docker_replication_matrix_ubuntu22.sh"
             ]
           }
         }
