@@ -23,7 +23,7 @@ Current corpus:
 ```text
 schema_version: 1
 name: temporalstore-unified-cpp-rust-corpus
-cases: 18
+cases: 26
 required command kinds: 37
 ```
 
@@ -48,11 +48,18 @@ The shared cases are:
 - `timestamped_query_bounds`: Feature and Sequence count limits and empty timestamp windows.
 - `context_missing_node_semantics`: missing Context node returns a stable object key with `null`
   node.
-- `cpp_storage_object_page_slot_parity_surfaces`: C++ storage object/page/slot lifecycle,
-  dump/load, compaction, GC, and oplog source/test surfaces are required by the shared contract.
-- `cpp_data_raft_replication_parity_surfaces`: C++ data-Raft consensus, replication, failover,
-  snapshot-restore, and scale-transition source/harness surfaces are required by the shared
-  contract.
+- C++ storage/Raft parity surfaces are split into narrow `existing_test` cases so missing C++
+  coverage fails by exact gap:
+  `cpp_storage_object_page_slot_parity_surfaces`,
+  `cpp_storage_manager_compaction_gc_parity_surfaces`,
+  `cpp_storage_oplog_index_replay_parity_surfaces`,
+  `cpp_storage_slot_context_test_parity_surfaces`,
+  `cpp_data_raft_consensus_parity_surfaces`,
+  `cpp_data_raft_replication_parity_surfaces`,
+  `cpp_data_raft_unit_test_parity_surfaces`,
+  `cpp_data_raft_failover_harness_parity_surfaces`,
+  `cpp_data_raft_snapshot_restore_harness_parity_surfaces`, and
+  `cpp_data_raft_scale_transition_harness_parity_surfaces`.
 
 ## Rust Runner
 
@@ -312,16 +319,25 @@ Result for all 8 iterations:
 
 ## Storage And Raft Repeat Run: 2026-06-16
 
-The shared corpus now includes storage and data-Raft parity surface cases:
+The shared corpus now includes narrow storage and data-Raft parity surface cases:
 
 ```text
 cpp_storage_object_page_slot_parity_surfaces
+cpp_storage_manager_compaction_gc_parity_surfaces
+cpp_storage_oplog_index_replay_parity_surfaces
+cpp_storage_slot_context_test_parity_surfaces
+cpp_data_raft_consensus_parity_surfaces
 cpp_data_raft_replication_parity_surfaces
+cpp_data_raft_unit_test_parity_surfaces
+cpp_data_raft_failover_harness_parity_surfaces
+cpp_data_raft_snapshot_restore_harness_parity_surfaces
+cpp_data_raft_scale_transition_harness_parity_surfaces
 ```
 
-The storage case requires the C++ object/page/slot lifecycle, storage manager, compaction, GC,
-oplog, and slot-context test files. The data-Raft case requires the C++ data-Raft consensus,
-replication, unit test, failover, snapshot-restore, and scale-transition harness files.
+The storage cases require the C++ object/page/slot lifecycle, storage manager, compaction, GC,
+oplog, and slot-context test files as separate gap-fill gates. The data-Raft cases require the C++
+data-Raft consensus, replication, unit test, failover, snapshot-restore, and scale-transition
+harness files as separate gap-fill gates.
 
 Repeated command:
 
@@ -343,3 +359,20 @@ Validation in each iteration:
 - C++ hook validates the same 18-case corpus, including required storage/Raft source and harness
   paths.
 - C++ native context contract validates the shared context subset.
+
+## Storage And Raft Gap-Fill Run: 2026-06-16
+
+The broad storage/Raft surface checks were split into 10 narrow C++ parity gates, raising the
+shared corpus to 26 cases. This makes missing C++ storage/Raft coverage fail by exact surface:
+object/page/slot ownership, storage manager compaction/GC, oplog replay, slot-context tests,
+data-Raft consensus, replication, unit tests, failover, snapshot restore, and scale transitions.
+
+The expanded Rust+C++ command was repeated 9 times:
+
+```bash
+TS_CPP_REPO=/mnt/c/Users/Deeproute/Documents/Codex/2026-06-07/what-s-the-topology-for-all/temporalstore-service-fix \
+CARGO_TARGET_DIR=/tmp/temporalstore-local-validation-target \
+python3 tools/run_temporalstore_unified_tests.py --both --require-cpp
+```
+
+Result: all 9 iterations passed against the 26-case shared corpus.

@@ -21,7 +21,15 @@
       "timestamped_query_bounds",
       "context_missing_node_semantics",
       "cpp_storage_object_page_slot_parity_surfaces",
-      "cpp_data_raft_replication_parity_surfaces"
+      "cpp_storage_manager_compaction_gc_parity_surfaces",
+      "cpp_storage_oplog_index_replay_parity_surfaces",
+      "cpp_storage_slot_context_test_parity_surfaces",
+      "cpp_data_raft_consensus_parity_surfaces",
+      "cpp_data_raft_replication_parity_surfaces",
+      "cpp_data_raft_unit_test_parity_surfaces",
+      "cpp_data_raft_failover_harness_parity_surfaces",
+      "cpp_data_raft_snapshot_restore_harness_parity_surfaces",
+      "cpp_data_raft_scale_transition_harness_parity_surfaces"
     ],
     "required_command_kinds": [
       "string_set",
@@ -1252,20 +1260,91 @@
             "kind": "existing_test",
             "suite": "cpp_storage_parity",
             "mode": "static",
-            "description": "C++ storage lifecycle parity surfaces for object/page/slot ownership, dump/load, compaction, GC, and oplog durability must remain present while Rust storage parity is validated against this shared corpus.",
+            "description": "C++ storage object/page/slot ownership sources must remain present while Rust storage parity is validated against this shared corpus.",
             "required_paths": [
               "src/partition/storage/object_manager.cc",
               "src/partition/storage/object_manager.h",
               "src/partition/storage/page_store.cc",
               "src/partition/storage/page_store.h",
               "src/partition/storage/slot_store.cc",
-              "src/partition/storage/slot_store.h",
+              "src/partition/storage/slot_store.h"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "cpp_storage_manager_compaction_gc_parity_surfaces",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "cpp_storage_manager_compaction_gc_sources_present",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_storage_parity",
+            "mode": "static",
+            "description": "C++ StorageManager, compaction, and GC sources must remain present for storage lifecycle parity comparison.",
+            "required_paths": [
               "src/partition/storage/storage_manager.cc",
               "src/partition/storage/storage_manager.h",
               "src/partition/storage/page_compactor.cc",
-              "src/partition/storage/page_gc.cc",
+              "src/partition/storage/page_gc.cc"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "cpp_storage_oplog_index_replay_parity_surfaces",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "cpp_storage_oplog_sources_present",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_storage_parity",
+            "mode": "static",
+            "description": "C++ storage oplog replay surface must remain present for durability and recovery parity comparison.",
+            "required_paths": [
               "src/partition/storage/op_logger.cc",
+              "src/partition/storage/op_logger.h"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "cpp_storage_slot_context_test_parity_surfaces",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "cpp_slot_context_test_present",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_storage_parity",
+            "mode": "static",
+            "description": "C++ slot context test coverage must remain present for slot lifecycle parity comparison.",
+            "required_paths": [
               "src/partition/storage/test/slot_context_manager_test.cc"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "cpp_data_raft_consensus_parity_surfaces",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "cpp_data_raft_consensus_sources_present",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "static",
+            "description": "C++ data-Raft consensus sources must remain present for consensus parity comparison.",
+            "required_paths": [
+              "src/partition/storage/data_raft_consensus.cc",
+              "src/partition/storage/data_raft_consensus.h"
             ]
           }
         }
@@ -1281,15 +1360,81 @@
             "kind": "existing_test",
             "suite": "cpp_data_raft_parity",
             "mode": "static",
-            "description": "C++ data Raft parity surfaces for consensus, replication, failover, snapshot restore, and scale transitions must remain present while Rust Raft parity is validated against this shared corpus.",
+            "description": "C++ data-Raft replication sources must remain present for replication parity comparison.",
             "required_paths": [
-              "src/partition/storage/data_raft_consensus.cc",
-              "src/partition/storage/data_raft_consensus.h",
               "src/partition/storage/data_raft_replication.cc",
-              "src/partition/storage/data_raft_replication.h",
-              "src/partition/storage/test/data_raft_replication_test.cc",
-              "tools/run_data_raft_failover_ubuntu22.sh",
-              "tools/run_data_raft_snapshot_restore_ubuntu22.sh",
+              "src/partition/storage/data_raft_replication.h"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "cpp_data_raft_unit_test_parity_surfaces",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "cpp_data_raft_unit_test_present",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "static",
+            "description": "C++ data-Raft unit test must remain present for command/log/safety parity comparison.",
+            "required_paths": [
+              "src/partition/storage/test/data_raft_replication_test.cc"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "cpp_data_raft_failover_harness_parity_surfaces",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "cpp_data_raft_failover_harness_present",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "static",
+            "description": "C++ data-Raft failover harness must remain present for failover parity comparison.",
+            "required_paths": [
+              "tools/run_data_raft_failover_ubuntu22.sh"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "cpp_data_raft_snapshot_restore_harness_parity_surfaces",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "cpp_data_raft_snapshot_restore_harness_present",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "static",
+            "description": "C++ data-Raft snapshot-restore harness must remain present for snapshot parity comparison.",
+            "required_paths": [
+              "tools/run_data_raft_snapshot_restore_ubuntu22.sh"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "cpp_data_raft_scale_transition_harness_parity_surfaces",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "cpp_data_raft_scale_transition_harness_present",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "static",
+            "description": "C++ data-Raft scale up/down harness must remain present for membership transition parity comparison.",
+            "required_paths": [
               "tools/run_data_raft_scale_up_down_ubuntu22.sh"
             ]
           }
