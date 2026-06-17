@@ -418,14 +418,13 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "local storage production harness combines dump, cache pressure, restart recovery, shared-store replay, and Raft movement into one repeatable gate"
                     .to_string(),
-                "local storage dump/load fault matrix harness rejects checksum mismatch, partial manifests, missing segments, stale manifests, and corrupt page segments"
+                "local storage dump/load fault matrix harness rejects checksum mismatch, partial manifests, missing segments, stale manifests, restart-during-install recovery, and corrupt page segments"
                     .to_string(),
             ],
             missing: vec![
                 "external C++ binary-artifact exporter plus CI-published golden corpus for the migration-only storage compatibility path"
                     .to_string(),
-                "restart-during-install dump/load fault injection plus live object-store manifest dependency matrix"
-                    .to_string(),
+                "live object-store manifest dependency matrix".to_string(),
                 "production SSD cache tiering policy, admission tuning, and long-running live pressure validation"
                     .to_string(),
                 "ByteStore/S3 live backend integration tied to follower cursors/Raft snapshots"
@@ -657,7 +656,7 @@ fn service_next_action(service: &str, blocker_classes: &[String]) -> &'static st
             "finish networked metaserver Raft, scheduler loop, and safe topology membership mutations"
         }
         ("storage_cache", "storage_cache_durability") => {
-            "finish golden C++ log/page conversion replay, restart-during-install dump/load faults, SSD cache pressure validation, and live object-store integration"
+            "finish golden C++ log/page conversion replay, SSD cache pressure validation, and live object-store integration"
         }
         ("feature_modules", "feature_module_cpp_parity") => {
             "finish exact C++ feature/risk corpus coverage and deployment-specific module edge cases"
@@ -989,7 +988,7 @@ mod tests {
             .service_summary("storage_cache")
             .expect("storage cache summary")
             .next_action
-            .contains("restart-during-install"));
+            .contains("SSD cache pressure"));
         assert!(report
             .service_summary("feature_modules")
             .expect("feature modules summary")

@@ -22,7 +22,7 @@ REQUIRED_SCRIPT_SNIPPETS = (
 
 REQUIRED_READINESS_SNIPPETS = (
     "local storage production harness combines dump, cache pressure, restart recovery, shared-store replay, and Raft movement",
-    "local storage dump/load fault matrix harness rejects checksum mismatch, partial manifests, missing segments, stale manifests, and corrupt page segments",
+    "local storage dump/load fault matrix harness rejects checksum mismatch, partial manifests, missing segments, stale manifests, restart-during-install recovery, and corrupt page segments",
     "real OpenRaft or raft-rs data-node FSM/storage implementation",
     "networked metaserver Raft transport and scheduler loop",
 )

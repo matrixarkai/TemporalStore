@@ -17,7 +17,7 @@ readiness gate still reports missing real OpenRaft or raft-rs FSM/storage integr
 1. **Storage recovery/fault matrix hardening**
    - Runs `storage_fault_matrix_harness`.
    - Validates checksum mismatch, partial manifest, missing segment, stale manifest, and corrupt
-     page segment rejection.
+     page segment rejection, plus restart-during-install roll-forward.
 
 2. **Slot dump/load atomicity and manifest rejection**
    - Runs `storage_production_harness`.
@@ -59,6 +59,7 @@ Storage/cache local coverage:
 - Slot-scoped dump manifests.
 - Manifest checksum and sequence validation.
 - Missing/corrupt/stale/partial manifest rejection.
+- Restart-during-install marker roll-forward for safe slot dump installs.
 - Recovery reports before and after restart.
 - Cache warmup during lifecycle apply.
 - Shared-store sync and async replay.
@@ -89,8 +90,7 @@ The readiness gate intentionally still blocks production readiness on:
   membership changes.
 - External multi-process packet-loss and disk-pressure tests.
 - External C++ binary-artifact exporter and CI-published golden storage migration corpus.
-- Restart-during-install dump/load fault injection plus live object-store manifest dependency
-  matrix.
+- Live object-store manifest dependency matrix.
 - Production SSD cache tiering policy, admission tuning, and long-running pressure validation.
 - ByteStore/S3 live backend integration tied to follower cursors and Raft snapshots.
 

@@ -2631,6 +2631,55 @@ impl TemporalEngine {
             stale_install_safe,
         ));
 
+        let restart_code;
+        let mut restart_blockers = Vec::new();
+        let mut restart_install_safe = false;
+        match self.create_slot_dump_manifest(shard_id, Vec::new()) {
+            Ok(restart_manifest) => {
+                match self.persist_slot_dump_install_marker_by_fields(
+                    restart_manifest.shard_id,
+                    &restart_manifest.manifest_id,
+                    "prepare",
+                    restart_manifest.oplog_sequence,
+                    restart_manifest.index_log_sequence,
+                ) {
+                    Ok(()) => {
+                        let before = self.slot_dump_install_roll_forward_reports(shard_id);
+                        let applied = self.roll_forward_slot_dump_installs(shard_id);
+                        let interrupted_after = self.interrupted_slot_dump_installs(shard_id);
+                        restart_install_safe =
+                            before.iter().any(|report| report.can_retry_install);
+                        if !restart_install_safe {
+                            restart_blockers.push("roll_forward_not_retryable".to_string());
+                        }
+                        if !applied
+                            .iter()
+                            .any(|report| report.completed_install && report.completed_commit)
+                        {
+                            restart_blockers.push("roll_forward_not_completed".to_string());
+                        }
+                        if !interrupted_after.is_empty() {
+                            restart_blockers.push("interrupted_markers_remaining".to_string());
+                        }
+                        restart_code = if restart_blockers.is_empty() {
+                            "slot_dump_restart_roll_forward".to_string()
+                        } else {
+                            "slot_dump_restart_roll_forward_failed".to_string()
+                        };
+                    }
+                    Err(err) => restart_code = format!("slot_dump_marker_write_failed:{err}"),
+                }
+            }
+            Err(status) => restart_code = status.code,
+        }
+        scenarios.push(slot_dump_fault_scenario(
+            "restart_during_install_roll_forward",
+            "slot_dump_restart_roll_forward",
+            restart_code,
+            restart_blockers,
+            restart_install_safe,
+        ));
+
         let mut corrupt_code = "not_run".to_string();
         let mut corrupt_blockers = Vec::new();
         let mut corrupt_install_safe = false;

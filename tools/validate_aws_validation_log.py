@@ -130,7 +130,7 @@ def validate_storage_fault_matrix(job, summary):
     require(summary["production_ready_slice"], f"{job}: storage fault matrix failed")
     report = summary["report"]
     require(report["production_ready_slice"], f"{job}: nested report failed")
-    require(report["scenario_count"] == 5, f"{job}: expected 5 fault scenarios")
+    require(report["scenario_count"] == 6, f"{job}: expected 6 fault scenarios")
     require(report["passed_count"] == report["scenario_count"], f"{job}: not all fault scenarios passed")
     require(not report["failed_scenarios"], f"{job}: failed scenarios present")
     expected = {
@@ -138,6 +138,7 @@ def validate_storage_fault_matrix(job, summary):
         "partial_manifest": "slot_dump_partial_manifest",
         "missing_page_segment": "slot_dump_missing_page_segments",
         "stale_manifest": "slot_dump_stale_manifest",
+        "restart_during_install_roll_forward": "slot_dump_restart_roll_forward",
         "corrupt_page_segment": "corrupt_page_segments",
     }
     observed = {scenario["scenario"]: scenario for scenario in report["scenarios"]}
