@@ -237,7 +237,12 @@ AREAS: tuple[ParityArea, ...] = (
             ),
             RustEvidence(
                 "tools/run_temporalstore_parity_gate.sh",
-                ("distributed_raft_harness", "raft_secondary_replication_harness"),
+                (
+                    "distributed_raft_harness",
+                    "metaserver_raft_harness",
+                    "raft_secondary_replication_harness",
+                    "raft-distributed-parity-validation",
+                ),
             ),
         ),
     ),

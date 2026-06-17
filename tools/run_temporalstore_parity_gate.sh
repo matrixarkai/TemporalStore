@@ -92,10 +92,23 @@ if [[ "${READINESS_STATUS}" -ne 0 ]]; then
 fi
 
 echo "== local: distributed raft harness =="
-cargo run -p temporalstore-rust --bin distributed_raft_harness > /tmp/temporalstore-raft-validation.log
+RAFT_PARITY_ARTIFACT_DIR="${TS_PARITY_RAFT_ARTIFACT_DIR:-/tmp/temporalstore-parity-raft}"
+rm -rf "${RAFT_PARITY_ARTIFACT_DIR}"
+mkdir -p "${RAFT_PARITY_ARTIFACT_DIR}"
+cargo run -p temporalstore-rust --bin distributed_raft_harness \
+  --root "${RAFT_PARITY_ARTIFACT_DIR}/distributed-raft" \
+  > "${RAFT_PARITY_ARTIFACT_DIR}/distributed-raft.json"
 python3 tools/validate_aws_validation_log.py \
   --job temporalstore-raft-validation \
-  --log /tmp/temporalstore-raft-validation.log
+  --log "${RAFT_PARITY_ARTIFACT_DIR}/distributed-raft.json"
+
+echo "== local: metaserver raft harness =="
+cargo run -p temporalstore-rust --bin metaserver_raft_harness \
+  --root "${RAFT_PARITY_ARTIFACT_DIR}/metaserver-raft" \
+  > "${RAFT_PARITY_ARTIFACT_DIR}/metaserver-raft.json"
+python3 tools/validate_aws_validation_log.py \
+  --job temporalstore-metaserver-raft-validation \
+  --log "${RAFT_PARITY_ARTIFACT_DIR}/metaserver-raft.json"
 
 echo "== local: scale/read-write/shared-store harness =="
 timeout "${LOCAL_SCALE_TIMEOUT}" cargo run -p temporalstore-rust --bin scale_harness -- \
@@ -142,11 +155,20 @@ python3 tools/validate_aws_validation_log.py \
 echo "== local: OS-process raft secondary replication harness =="
 cargo build -p temporalstore-rust --bins
 cargo run -p temporalstore-rust --bin raft_secondary_replication_harness -- \
+  --root "${RAFT_PARITY_ARTIFACT_DIR}/raft-secondary" \
   --heartbeat-ms "${TS_LOCAL_RAFT_HEARTBEAT_MS:-25}" \
-  > /tmp/temporalstore-raft-secondary-validation.log
+  > "${RAFT_PARITY_ARTIFACT_DIR}/raft-secondary.json"
 python3 tools/validate_aws_validation_log.py \
   --job temporalstore-raft-secondary-validation \
-  --log /tmp/temporalstore-raft-secondary-validation.log
+  --log "${RAFT_PARITY_ARTIFACT_DIR}/raft-secondary.json"
+
+echo "== local: combined data-node/metaserver raft parity =="
+python3 tools/build_raft_distributed_parity_summary.py \
+  --artifact-dir "${RAFT_PARITY_ARTIFACT_DIR}" \
+  --output "${RAFT_PARITY_ARTIFACT_DIR}/raft-distributed-parity.json"
+python3 tools/validate_aws_validation_log.py \
+  --job temporalstore-raft-distributed-parity-validation \
+  --log "${RAFT_PARITY_ARTIFACT_DIR}/raft-distributed-parity.json"
 
 echo "== local: terraform fmt and script syntax =="
 terraform -chdir=infra/aws-existing-eks fmt -check
@@ -154,6 +176,7 @@ bash -n tools/deploy_and_test_aws_existing_eks.sh
 bash -n tools/validate_aws_existing_eks.sh
 bash -n tools/scale_test_aws_existing_eks.sh
 python3 -m py_compile tools/validate_aws_validation_log.py
+python3 -m py_compile tools/build_raft_distributed_parity_summary.py
 
 echo "== local: whitespace =="
 git diff --check
