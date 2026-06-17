@@ -19,6 +19,8 @@
       "mixed_model_restart_persistence",
       "common_not_found_and_empty_reads",
       "timestamped_query_bounds",
+      "feature_policy_filter_aggregate_lifecycle",
+      "sequence_batch_filter_groups",
       "context_missing_node_semantics",
       "cpp_storage_object_page_slot_parity_surfaces",
       "cpp_storage_manager_compaction_gc_parity_surfaces",
@@ -59,9 +61,15 @@
       "set_add",
       "set_members",
       "feature_append",
+      "feature_append_with_policy",
       "feature_query",
+      "feature_query_filtered",
+      "feature_replace",
+      "feature_delete",
+      "feature_agg_query",
       "sequence_add",
       "sequence_query",
+      "sequence_batch_query",
       "ips_add_with_options",
       "ips_query_range",
       "risk_increment",
@@ -90,7 +98,9 @@
       "members",
       "integer",
       "feature_points",
+      "aggregate",
       "sequence_rows",
+      "sequence_row_groups",
       "context_node",
       "context_object_key",
       "context_events",
@@ -1238,6 +1248,392 @@
                 "duration": 2,
                 "author_id": 200
               }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "feature_policy_filter_aggregate_lifecycle",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "feature_policy_append_numeric_points",
+          "command": {
+            "kind": "feature_append",
+            "key": "unified:feature:policy",
+            "points": [
+              {
+                "timestamp_ms": 8000,
+                "value": [50]
+              },
+              {
+                "timestamp_ms": 8010,
+                "value": [51]
+              }
+            ]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "feature_aggregate_sum_before_policy",
+          "command": {
+            "kind": "feature_agg_query",
+            "key": "unified:feature:policy",
+            "start_ms": 8000,
+            "end_ms": 8020,
+            "aggregator": "sum",
+            "count": null
+          },
+          "expect": {
+            "kind": "aggregate",
+            "value": 5
+          }
+        },
+        {
+          "name": "feature_insert_if_absent_duplicate_is_ignored",
+          "command": {
+            "kind": "feature_append_with_policy",
+            "key": "unified:feature:policy",
+            "points": [
+              {
+                "timestamp_ms": 8010,
+                "value": [57, 57]
+              }
+            ],
+            "policy": "insert_if_absent"
+          },
+          "expect": {
+            "kind": "integer",
+            "value": 0
+          }
+        },
+        {
+          "name": "feature_replace_existing_duplicate_updates",
+          "command": {
+            "kind": "feature_append_with_policy",
+            "key": "unified:feature:policy",
+            "points": [
+              {
+                "timestamp_ms": 8010,
+                "value": [52]
+              }
+            ],
+            "policy": "replace_existing"
+          },
+          "expect": {
+            "kind": "integer",
+            "value": 1
+          }
+        },
+        {
+          "name": "feature_query_after_policy_update",
+          "command": {
+            "kind": "feature_query",
+            "key": "unified:feature:policy",
+            "start_ms": 8000,
+            "end_ms": 8020,
+            "count": 10
+          },
+          "expect": {
+            "kind": "feature_points",
+            "points": [
+              {
+                "timestamp_ms": 8000,
+                "value": [50]
+              },
+              {
+                "timestamp_ms": 8010,
+                "value": [52]
+              }
+            ]
+          }
+        },
+        {
+          "name": "feature_replace_window",
+          "command": {
+            "kind": "feature_replace",
+            "key": "unified:feature:policy",
+            "start_ms": 8000,
+            "end_ms": 8005,
+            "points": [
+              {
+                "timestamp_ms": 8005,
+                "value": [53]
+              }
+            ]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "feature_query_after_replace_window",
+          "command": {
+            "kind": "feature_query",
+            "key": "unified:feature:policy",
+            "start_ms": 8000,
+            "end_ms": 8020,
+            "count": 20
+          },
+          "expect": {
+            "kind": "feature_points",
+            "points": [
+              {
+                "timestamp_ms": 8005,
+                "value": [53]
+              },
+              {
+                "timestamp_ms": 8010,
+                "value": [52]
+              }
+            ]
+          }
+        },
+        {
+          "name": "feature_append_cpp_sequence_encoded_rows",
+          "command": {
+            "kind": "feature_append",
+            "key": "unified:feature:filtered",
+            "points": [
+              {
+                "timestamp_ms": 8100,
+                "value": [8, 41, 16, 1, 24, 10, 32, 7]
+              },
+              {
+                "timestamp_ms": 8110,
+                "value": [8, 42, 16, 3, 24, 90, 32, 7]
+              },
+              {
+                "timestamp_ms": 8120,
+                "value": [8, 43, 16, 3, 24, 40, 32, 8]
+              }
+            ]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "feature_filtered_count_is_scan_bound_before_filtering",
+          "command": {
+            "kind": "feature_query_filtered",
+            "key": "unified:feature:filtered",
+            "start_ms": 8100,
+            "end_ms": 8120,
+            "count": 1,
+            "filters": [
+              {
+                "field": "action_type",
+                "op": "equal",
+                "value": 3
+              }
+            ]
+          },
+          "expect": {
+            "kind": "feature_points",
+            "points": []
+          }
+        },
+        {
+          "name": "feature_filtered_multi_predicate",
+          "command": {
+            "kind": "feature_query_filtered",
+            "key": "unified:feature:filtered",
+            "start_ms": 8100,
+            "end_ms": 8120,
+            "count": 3,
+            "filters": [
+              {
+                "field": "action_type",
+                "op": "equal",
+                "value": 3
+              },
+              {
+                "field": "duration",
+                "op": "greater_than",
+                "value": 80
+              }
+            ]
+          },
+          "expect": {
+            "kind": "feature_points",
+            "points": [
+              {
+                "timestamp_ms": 8110,
+                "value": [8, 42, 16, 3, 24, 90, 32, 7]
+              }
+            ]
+          }
+        },
+        {
+          "name": "feature_delete_clears_policy_key",
+          "command": {
+            "kind": "feature_delete",
+            "key": "unified:feature:policy"
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "feature_query_after_delete",
+          "command": {
+            "kind": "feature_query",
+            "key": "unified:feature:policy",
+            "start_ms": 8000,
+            "end_ms": 8020,
+            "count": null
+          },
+          "expect": {
+            "kind": "feature_points",
+            "points": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "sequence_batch_filter_groups",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "sequence_batch_add_unsorted_cpp_rows",
+          "command": {
+            "kind": "sequence_add",
+            "key": "unified:sequence:batch",
+            "rows": [
+              {
+                "timestamp_ms": 9010,
+                "gid": 901,
+                "action_type": 3,
+                "duration": 120,
+                "author_id": 7001
+              },
+              {
+                "timestamp_ms": 9000,
+                "gid": 900,
+                "action_type": 1,
+                "duration": 31,
+                "author_id": 7000
+              },
+              {
+                "timestamp_ms": 9020,
+                "gid": 902,
+                "action_type": 3,
+                "duration": 40,
+                "author_id": 7002
+              }
+            ]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "sequence_filter_count_is_scan_bound_before_filtering",
+          "command": {
+            "kind": "sequence_query",
+            "key": "unified:sequence:batch",
+            "start_ms": 9000,
+            "end_ms": 9030,
+            "count": 1,
+            "filters": [
+              {
+                "field": "action_type",
+                "op": "equal",
+                "value": 3
+              }
+            ]
+          },
+          "expect": {
+            "kind": "sequence_rows",
+            "rows": []
+          }
+        },
+        {
+          "name": "sequence_filter_returns_ordered_cpp_rows",
+          "command": {
+            "kind": "sequence_query",
+            "key": "unified:sequence:batch",
+            "start_ms": 9000,
+            "end_ms": 9030,
+            "count": 3,
+            "filters": [
+              {
+                "field": "action_type",
+                "op": "equal",
+                "value": 3
+              }
+            ]
+          },
+          "expect": {
+            "kind": "sequence_rows",
+            "rows": [
+              {
+                "timestamp_ms": 9010,
+                "gid": 901,
+                "action_type": 3,
+                "duration": 120,
+                "author_id": 7001
+              },
+              {
+                "timestamp_ms": 9020,
+                "gid": 902,
+                "action_type": 3,
+                "duration": 40,
+                "author_id": 7002
+              }
+            ]
+          }
+        },
+        {
+          "name": "sequence_batch_query_groups",
+          "command": {
+            "kind": "sequence_batch_query",
+            "queries": [
+              {
+                "key": "unified:sequence:batch",
+                "start_ms": 9000,
+                "end_ms": 9030,
+                "count": 3,
+                "filters": [
+                  {
+                    "field": "duration",
+                    "op": "greater_than",
+                    "value": 50
+                  }
+                ]
+              },
+              {
+                "key": "unified:sequence:missing",
+                "start_ms": 0,
+                "end_ms": 18446744073709551615,
+                "count": 10,
+                "filters": []
+              }
+            ]
+          },
+          "expect": {
+            "kind": "sequence_row_groups",
+            "groups": [
+              [
+                "unified:sequence:batch",
+                [
+                  {
+                    "timestamp_ms": 9010,
+                    "gid": 901,
+                    "action_type": 3,
+                    "duration": 120,
+                    "author_id": 7001
+                  }
+                ]
+              ],
+              [
+                "unified:sequence:missing",
+                []
+              ]
             ]
           }
         }

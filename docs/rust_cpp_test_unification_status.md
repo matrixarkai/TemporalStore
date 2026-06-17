@@ -51,13 +51,14 @@ API/model parity evidence status:
 ```text
 python3 tools/validate_api_model_parity_evidence.py
 api_model_parity_areas: 4
-required_command_kinds: 29
-required_response_kinds: 14
-rust_evidence_snippets: 30
+required_command_kinds: 35
+required_response_kinds: 16
+rust_evidence_snippets: 35
 ```
 
 The four checked areas are common/Redis string-hash-set behavior, Feature/Sequence timestamped
-pages, IPS/Risk models, and Context/SDK wire-model behavior.
+pages including policy/filter/aggregate/batch behavior, IPS/Risk models, and Context/SDK
+wire-model behavior.
 
 Ingestion/ops parity evidence status:
 
@@ -74,10 +75,10 @@ Shared C++/Rust corpus:
 
 ```text
 compat/unified_temporalstore_cases.json
-cases: 38
-steps: 84
-executable behavior cases: 16
-executable behavior steps: 62
+cases: 40
+steps: 100
+executable behavior cases: 18
+executable behavior steps: 78
 C++ existing-test parity surface cases: 22
 C++ existing-test parity surface steps: 22
 C++ existing-test required paths: 83
@@ -92,11 +93,12 @@ C++ existing-test required paths: 83
 | C++ migration corpus test | 1 | `crates/temporalstore-rust/tests/storage_migration_corpus.rs` | Rust consumes converted C++ storage artifacts and validates storage lifecycle paths. |
 
 The shared corpus currently covers common/string/hash/set, Redis-compatible set, Feature,
-Sequence, IPS, Risk, Context, restart reads, missing-key semantics, timestamp bounds, current
-C++ storage/Raft surface gates, and C++ client/proxy/metaserver/data-node control-plane surface
-gates. Ingestion/ops parity is currently enforced as Rust evidence plus local harness gates; the
-next same-test step is to promote Kafka offset, Flink checkpoint, dead-letter, and lag scenarios
-into executable corpus cases for both repos.
+Sequence, advanced Feature policy/filter/aggregate flows, Sequence batch/filter groups, IPS, Risk,
+Context, restart reads, missing-key semantics, timestamp bounds, current C++ storage/Raft surface
+gates, and C++ client/proxy/metaserver/data-node control-plane surface gates. Ingestion/ops parity
+is currently enforced as Rust evidence plus local harness gates; the next same-test step is to
+promote Kafka offset, Flink checkpoint, dead-letter, and lag scenarios into executable corpus cases
+for both repos.
 
 ## Rust-Specific Tests Remaining
 
@@ -114,8 +116,9 @@ Total remaining Rust-specific tests: **467**.
 ## Highest-Value Tests To Share Next
 
 1. Promote `temporalstore_compat.rs` cases into `compat/unified_temporalstore_cases.json`.
-   These are already C++-named and mostly command/response oriented, so they are the cheapest to
-   convert into shared cases.
+   The Feature policy/filter/aggregate cases and Sequence batch/filter cases have now moved into
+   the shared corpus. Remaining candidates are Redis RESP-specific command parsing, stream/page
+   read APIs, shared-store replication, and distributed workflow tests.
 
 2. Add shared storage lifecycle corpus cases for the large storage bucket:
    packed page recovery, slot dump/load, compaction, GC retention, tiny-cache refill, shared-store
@@ -147,8 +150,8 @@ every executable corpus command and compares every expected response.
 
 Until that exists, the honest status is:
 
-- Rust executes all 62 executable shared behavior steps.
-- C++ validates the 38-case corpus shape, current context subset, C++ storage/Raft required
+- Rust executes all 78 executable shared behavior steps.
+- C++ validates the 40-case corpus shape, current context subset, C++ storage/Raft required
   surfaces, C++ client/proxy/metaserver/data-node control-plane required surfaces, and the Rust
   ingestion/ops evidence gate in unified validation.
 - 467 Rust-specific tests remain local and should be progressively converted or mirrored into the
