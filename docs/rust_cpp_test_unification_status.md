@@ -11,6 +11,16 @@ Already tied directly to shared/C++ parity harnesses: **17 Rust test functions**
 
 Still Rust-specific: **467 Rust test functions**.
 
+Unification target:
+
+- All externally observable TemporalStore product behavior should move into Rust-owned shared
+  corpus files first, then be consumed by both Rust and C++ runners.
+- Rust-specific and C++-specific tests should remain only for language/runtime internals that are
+  not a product contract: Rust helper units, serde-only details, borrow/async mechanics, C++
+  object ownership, brpc/thrift glue, CMake/linking, and other implementation-only checks.
+- No new duplicate behavioral tests should be added separately in Rust and C++; add a shared corpus
+  case instead, then adapt each runner.
+
 Duplicate test status:
 
 ```text
@@ -102,6 +112,10 @@ for both repos.
 
 ## Rust-Specific Tests Remaining
 
+These counts are a migration backlog, not the desired end state. Each bucket should be split into
+shared product/parity cases versus true language-internal tests. The shared portion moves into
+`compat/unified_temporalstore_cases.json` or a sibling shared corpus stored in this Rust repo first.
+
 | Bucket | Rust-specific tests | Main files |
 | --- | ---: | --- |
 | Storage/cache/local durability | 157 | `engine.rs`, `page_store.rs`, `cache.rs`, `shared_store.rs`, `oplog.rs`, `index_log.rs` |
@@ -112,6 +126,17 @@ for both repos.
 | Other local tests | 24 | readiness, e2e, partition id, external chaos, HTTP, replica replay |
 
 Total remaining Rust-specific tests: **467**.
+
+Target disposition:
+
+| Current bucket | Share into corpus | Keep implementation-specific |
+| --- | --- | --- |
+| Storage/cache/local durability | Recovery behavior, dump/load manifests, cache refill, shared-store replay, corruption outcomes | Rust page-store helpers, serializer unit checks, local cache data-structure mechanics |
+| Control plane/service behavior | Client/proxy/meta/data-node topology, lifecycle, admission, retry, convergence workflows | Rust runtime worker handles, local mock plumbing, HTTP adapter unit details |
+| Raft/local consensus model | Log codec, snapshot install, membership, failover, read-index, catch-up semantics | Temporary local consensus scaffolding until replaced by production Raft implementation |
+| API/model/ingestion/context/SDK | Redis/API commands, Feature/Sequence/IPS/Risk/Context, ingestion offsets/checkpoints/dead letters | Rust SDK conversion helpers and provider mocks without cross-language behavior |
+| Rust storage crash harness | Crash/restart/corrupt artifact outcomes | Process harness wiring that is only needed to drive Rust-local faults |
+| Other local tests | Readiness output, external chaos scenarios, replica replay, scale/fault logs | Thin binary/CLI argument parsing and local fixture setup |
 
 ## Highest-Value Tests To Share Next
 
@@ -142,6 +167,10 @@ Total remaining Rust-specific tests: **467**.
    Kafka offset idempotency, Flink checkpoint precommit/commit/abort, dead-letter reporting,
    ingestion lag metrics, readiness blockers, and scale/fault workflow log assertions.
 
+7. Add a guard for new tests:
+   any new product behavior test should be rejected or called out unless it is backed by a shared
+   corpus case. Language-specific tests should name the internal Rust or C++ mechanic they protect.
+
 ## Current Limitation
 
 The C++ side still validates the shared corpus mostly through its hook and context contract plus
@@ -154,5 +183,6 @@ Until that exists, the honest status is:
 - C++ validates the 40-case corpus shape, current context subset, C++ storage/Raft required
   surfaces, C++ client/proxy/metaserver/data-node control-plane required surfaces, and the Rust
   ingestion/ops evidence gate in unified validation.
-- 467 Rust-specific tests remain local and should be progressively converted or mirrored into the
-  shared corpus/harness contract.
+- 467 Rust-specific tests remain local. The product-behavior portion should be progressively
+  converted into Rust-owned shared corpus cases; only implementation-internal tests should remain
+  Rust-specific.

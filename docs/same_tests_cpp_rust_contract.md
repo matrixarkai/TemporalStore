@@ -6,6 +6,12 @@ The same-test contract is not "Rust has similar tests" or "C++ has a separate sm
 same idea." It means both codebases execute the same ordered test corpus file and compare against
 the same expected logical responses.
 
+The desired end state is no duplicate Rust-only and C++-only tests for product behavior. The Rust
+repo owns the canonical shared cases first, and both implementations consume them. Tests may remain
+language-specific only when they protect implementation mechanics that are not a cross-language
+TemporalStore contract, such as Rust helper structs/serde internals, C++ object ownership,
+brpc/thrift glue, build/linking behavior, or temporary harness plumbing.
+
 The current shared corpus is:
 
 ```text
@@ -23,8 +29,13 @@ Current corpus:
 ```text
 schema_version: 1
 name: temporalstore-unified-cpp-rust-corpus
-cases: 34
-required command kinds: 37
+cases: 40
+steps: 100
+executable behavior cases: 18
+executable behavior steps: 78
+required command kinds: 43
+required response kinds: 16
+C++ existing-test parity surfaces: 83 required paths
 ```
 
 The shared cases are:
@@ -46,6 +57,10 @@ The shared cases are:
 - `common_not_found_and_empty_reads`: missing string/hash/exists reads plus C++ `CommonExpire`
   not-found status.
 - `timestamped_query_bounds`: Feature and Sequence count limits and empty timestamp windows.
+- `feature_policy_filter_aggregate_lifecycle`: Feature append policy, aggregate query, replace,
+  delete, C++ feature-row filter, and scan-bound count semantics.
+- `sequence_batch_filter_groups`: Sequence unsorted insert, filtered ordered query, scan-bound
+  count semantics, batch query groups, and missing sequence groups.
 - `context_missing_node_semantics`: missing Context node returns a stable object key with `null`
   node.
 - C++ storage/Raft parity surfaces are split into narrow `existing_test` cases so missing C++
@@ -203,28 +218,38 @@ TS_CPP_UNIFIED_TEST_CMD='/path/to/cpp_temporalstore_corpus_runner {corpus}' \
 
 These are not yet true same tests:
 
-- Rust-only unit tests under `crates/temporalstore-rust/src/**`.
+- Rust-only product behavior tests under `crates/temporalstore-rust/src/**` or
+  `crates/temporalstore-rust/tests/**` that do not yet have a shared corpus case.
 - C++ local smoke tests that do not consume `compat/unified_temporalstore_cases.json`.
-- Rust storage migration tests using `compat/storage_migration_corpus.json`; those validate
-  migration/replay behavior, not the shared command-response contract.
+- Rust storage migration tests using `compat/storage_migration_corpus.json`; those should either
+  become a sibling shared storage corpus or be limited to Rust migration adapter internals.
 - Rust SDK contract validation in `tools/validate_sdk_contract.py`; that check protects the
-  versioned open-source API schema, but it does not execute command-response behavior by itself.
-- C++ p99/performance gates; those compare thresholds and workload classes, but do not yet execute
-  the exact same operation trace.
-- Proxy, metaserver, data-node lifecycle, ingestion, RESP wire protocol, and context provider tests
-  outside the unified corpus.
+  versioned open-source API schema, but behavior should still be represented in shared cases.
+- C++ p99/performance gates; those compare thresholds and workload classes, but should eventually
+  consume the exact same operation trace for workload shape.
+- Proxy, metaserver, data-node lifecycle, ingestion, RESP wire protocol, storage recovery, Raft
+  failover, and context provider tests outside the unified corpus.
 - The new storage and data-Raft unified cases are C++ parity surface gates today. They prove the
   shared manifest names the concrete C++ source/test/harness surfaces, but they are not yet full
   Rust/C++ native command replay for dump/load, page corruption, Raft leader failover, or snapshot
   install.
 
+Allowed language-specific tests after unification:
+
+- Rust-only internals: page-store helper units, cache data structures, serde/codec edge units,
+  async worker lifecycle helpers, CLI argument parsing, and Rust-only test fixture plumbing.
+- C++-only internals: object lifetime/ownership units, brpc/thrift service glue, CMake/linking,
+  allocator or memory-layout tests, and C++-only fixture plumbing.
+- Temporary scaffolding tests while a product behavior is being moved into a shared corpus. These
+  should name the target shared case or parity area they are waiting on.
+
 ## Gap Fill Plan For Real Same-Test Parity
 
 1. Add the C++ corpus runner if it does not exist in the C++ repo.
 2. Make C++ CI call the runner with `compat/unified_temporalstore_cases.json`.
-3. Expand the corpus into separate cases for context extract/inject, storage dump/load/restart,
-   proxy/client routing, metaserver topology, data-node lifecycle, ingestion, RESP wire protocol,
-   and Raft failover.
+3. Expand the Rust-owned corpus into separate cases for context extract/inject, storage
+   dump/load/restart, proxy/client routing, metaserver topology, data-node lifecycle, ingestion,
+   RESP wire protocol, and Raft failover.
 4. Add negative cases: not found, stale route, readonly table, bad lifecycle state, corrupt storage
    artifact, invalid timestamped page payload, and retry-safe write failure.
 5. Require `--both --require-cpp` in the parity gate before claiming C++ parity.
@@ -234,6 +259,14 @@ These are not yet true same tests:
 Until C++ consumes the shared corpus in CI, the honest status is: Rust has a same-test contract and
 runner, but cross-codebase same-test enforcement is only complete when the C++ runner executes the
 same corpus and fails on the same expected-response mismatches.
+
+New product behavior tests should follow this path:
+
+1. Add or update a shared case under `compat/` in the Rust repo.
+2. Teach the Rust runner to execute it.
+3. Teach the C++ hook/native runner to validate or execute the same case.
+4. Only add language-specific unit coverage for implementation details that cannot be expressed as
+   a shared product behavior.
 
 ## Local Test Run: 2026-06-16
 
@@ -263,7 +296,7 @@ Result:
 - Rust unified corpus runner passed.
 - Rust direct engine path passed.
 - Rust `TemporalStoreClient` plus local HTTP path passed.
-- C++ unified hook passed against the same 16-case `compat/unified_temporalstore_cases.json`.
+- C++ unified hook passed against the same 40-case `compat/unified_temporalstore_cases.json`.
 - C++ hook validated the shared `coverage` manifest, duplicate-test rejection rules, and current
   unified command names.
 - C++ hook confirmed the required local C++ parity surfaces are present.
@@ -365,7 +398,7 @@ Validation in each iteration:
   command-response cases.
 - Rust validates the storage/Raft `existing_test` case names and command kind in the same shared
   coverage manifest.
-- C++ hook validates the same 18-case corpus, including required storage/Raft source and harness
+- C++ hook validates the same 40-case corpus, including required storage/Raft source and harness
   paths.
 - C++ native context contract validates the shared context subset.
 
@@ -416,3 +449,21 @@ python3 tools/run_temporalstore_unified_tests.py --both --require-cpp
 ```
 
 Result: all 8 iterations passed against the 34-case shared corpus.
+
+## Current Unified API/Model Expansion: 2026-06-16
+
+The shared corpus now has 40 cases and 100 steps. Two C++-named Rust-local behavior groups were
+promoted into executable shared cases:
+
+```text
+feature_policy_filter_aggregate_lifecycle
+sequence_batch_filter_groups
+```
+
+These cases cover advanced Feature append policy, aggregate query, replace/delete lifecycle,
+filtered C++ feature-row payloads, Sequence filtered queries, scan-bound count semantics, batch
+query groups, and missing sequence groups.
+
+The Rust runner executes all 78 executable shared behavior steps through both direct engine and
+local HTTP client paths. The C++ hook validates the same 40-case corpus, current context contract,
+coverage manifest, duplicate-test rules, and required C++ parity surfaces.

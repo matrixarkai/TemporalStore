@@ -26,6 +26,12 @@ evidence.
 production-readiness, Prometheus, and scale/fault validation evidence tied to
 the Rust code paths and local harnesses.
 
+Policy: all externally observable product behavior should be represented in
+Rust-owned shared corpus files first, then consumed by both Rust and C++.
+Language-specific tests should remain only for implementation mechanics that
+are not a cross-codebase TemporalStore contract, such as Rust helper internals,
+C++ ownership/build glue, or temporary fixture plumbing.
+
 ## Rust
 
 Run:
