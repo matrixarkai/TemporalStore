@@ -40,6 +40,9 @@ jobs:
       - name: Run unified Rust corpus
         run: tools/run_temporalstore_unified_tests.sh
 
+      - name: Run unified local validation
+        run: bash tools/run_temporalstore_unified_validation.sh
+
       - name: Run Rust unit and integration tests
         run: cargo test -p temporalstore-rust --lib --tests -- --test-threads=1
 

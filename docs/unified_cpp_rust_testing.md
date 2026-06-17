@@ -74,3 +74,33 @@ cross-codebase validation strict in parity CI.
 `tools/run_temporalstore_cpp_like_tests.sh` now invokes the unified corpus
 before the Raft, stream, metaserver, scale, and storage-mode harnesses. That
 means every C++-like gate run checks the same shared behavioral contract first.
+
+## Unified Local Validation Gate
+
+For one local pass that covers unit tests, API/corpus tests, storage integration,
+scale/shared-store validation, and readiness reporting, run:
+
+```bash
+bash tools/run_temporalstore_unified_validation.sh
+```
+
+That gate unifies the existing local checks instead of replacing them:
+
+- unit/API compatibility: `temporalstore_compat`
+- API contract: `validate_sdk_contract.py`
+- shared Rust/C++ corpus: `tools/run_temporalstore_unified_tests.sh`
+- storage integration: `storage_migration_corpus` and `storage_crash_harness`
+- scale/shared-store: compact `scale_harness` run with tunable `TS_UNIFIED_*`
+  knobs
+- storage modes: `storage_modes_harness`
+- production readiness: `readiness_gate --service-reports`
+
+To include the configured C++ checkout hook in the same pass:
+
+```bash
+TS_CPP_REPO=/path/to/cpp/TemporalStore \
+bash tools/run_temporalstore_unified_validation.sh --with-cpp
+```
+
+The readiness gate is allowed to report known production blockers; unexpected
+readiness process failures still fail the unified validation pass.
