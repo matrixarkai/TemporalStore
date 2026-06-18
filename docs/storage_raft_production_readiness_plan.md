@@ -155,7 +155,10 @@ The readiness gate intentionally still blocks production readiness on:
   local file objects, checkpoint manifests, oplog cursor retention, page segment manifests, and
   follower-cursor retention are covered for the local-file/shared-store target. Live ByteStore/S3
   object-store dependency wiring remains blocked until those backends are implemented and validated.
-- Production SSD cache tiering policy, admission tuning, and long-running pressure validation.
+- Local cache pressure coverage is now explicit in the readiness gate: memory read-through, disk
+  block cache, admission/eviction counters, slot warmup, cache invalidation, and tiny-cache pressure
+  harness evidence are covered. Production SSD cache tiering policy, admission tuning, and
+  long-running live pressure validation remain blocked until exercised in a production-like run.
 - ByteStore/S3 live backend integration tied to follower cursors and Raft snapshots.
 
 ## Local Commands

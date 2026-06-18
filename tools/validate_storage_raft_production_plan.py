@@ -42,6 +42,7 @@ REQUIRED_READINESS_SNIPPETS = (
     "metaserver-owned data-Raft membership workflow reports learner add, catch-up verification, promotion, leader transfer, and voter removal",
     "local/shared-store object manifest dependency matrix covers local file objects, checkpoint manifests, oplog cursor retention, page segment manifests, and follower-cursor retention",
     "storage cache dependency matrix keeps live ByteStore/S3 object-store readiness fail-closed",
+    "storage SSD cache pressure readiness covers local memory read-through, disk block cache, admission/eviction counters, slot warmup, cache invalidation, and tiny-cache pressure harness evidence",
     "networked metaserver Raft transport and scheduler loop",
 )
 

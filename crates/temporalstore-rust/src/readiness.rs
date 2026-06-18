@@ -76,6 +76,67 @@ pub struct StorageCacheDependencyMatrixReport {
     pub missing: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StorageSsdCachePressureReadinessReport {
+    pub memory_read_through_ready: bool,
+    pub disk_block_cache_ready: bool,
+    pub admission_eviction_counters_ready: bool,
+    pub slot_warmup_ready: bool,
+    pub cache_invalidation_ready: bool,
+    pub local_tiny_cache_pressure_harness_ready: bool,
+    pub production_ssd_tiering_ready: bool,
+    pub admission_tuning_ready: bool,
+    pub long_running_pressure_validation_ready: bool,
+    pub local_pressure_ready: bool,
+    pub production_ready: bool,
+    pub missing: Vec<String>,
+}
+
+pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureReadinessReport {
+    let memory_read_through_ready = true;
+    let disk_block_cache_ready = true;
+    let admission_eviction_counters_ready = true;
+    let slot_warmup_ready = true;
+    let cache_invalidation_ready = true;
+    let local_tiny_cache_pressure_harness_ready = true;
+    let production_ssd_tiering_ready = false;
+    let admission_tuning_ready = false;
+    let long_running_pressure_validation_ready = false;
+    let local_pressure_ready = memory_read_through_ready
+        && disk_block_cache_ready
+        && admission_eviction_counters_ready
+        && slot_warmup_ready
+        && cache_invalidation_ready
+        && local_tiny_cache_pressure_harness_ready;
+    let production_ready = local_pressure_ready
+        && production_ssd_tiering_ready
+        && admission_tuning_ready
+        && long_running_pressure_validation_ready;
+    let missing = if production_ready {
+        Vec::new()
+    } else {
+        vec![
+            "production SSD cache tiering policy, admission tuning, and long-running live pressure validation"
+                .to_string(),
+        ]
+    };
+
+    StorageSsdCachePressureReadinessReport {
+        memory_read_through_ready,
+        disk_block_cache_ready,
+        admission_eviction_counters_ready,
+        slot_warmup_ready,
+        cache_invalidation_ready,
+        local_tiny_cache_pressure_harness_ready,
+        production_ssd_tiering_ready,
+        admission_tuning_ready,
+        long_running_pressure_validation_ready,
+        local_pressure_ready,
+        production_ready,
+        missing,
+    }
+}
+
 pub fn storage_cache_dependency_matrix_report() -> StorageCacheDependencyMatrixReport {
     let local_file_store_ready = true;
     let shared_store_checkpoint_manifest_ready = true;
@@ -217,6 +278,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
     let raft = distributed_raft_readiness();
     let ingestion = ingestion_readiness_report();
     let storage_cache_dependency_matrix = storage_cache_dependency_matrix_report();
+    let storage_ssd_cache_pressure = storage_ssd_cache_pressure_readiness_report();
     let areas = vec![
         ReadinessArea {
             area: "raft_replication".to_string(),
@@ -503,17 +565,18 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "storage cache dependency matrix keeps live ByteStore/S3 object-store readiness fail-closed"
                     .to_string(),
+                "storage SSD cache pressure readiness covers local memory read-through, disk block cache, admission/eviction counters, slot warmup, cache invalidation, and tiny-cache pressure harness evidence"
+                    .to_string(),
             ],
             missing: {
                 let mut missing = vec![
                     "external C++ binary-artifact exporter plus CI-published golden corpus for the migration-only storage compatibility path"
                         .to_string(),
-                    "production SSD cache tiering policy, admission tuning, and long-running live pressure validation"
-                        .to_string(),
                     "ByteStore/S3 live backend integration tied to follower cursors/Raft snapshots"
                         .to_string(),
                 ];
                 missing.extend(storage_cache_dependency_matrix.missing.clone());
+                missing.extend(storage_ssd_cache_pressure.missing.clone());
                 missing
             },
         },
@@ -878,6 +941,41 @@ mod tests {
             .missing
             .iter()
             .any(|item| item.contains("ByteStore/S3 object-store manifest dependency matrix")));
+    }
+
+    #[test]
+    fn storage_ssd_cache_pressure_report_keeps_production_tier_blocked() {
+        let report = storage_ssd_cache_pressure_readiness_report();
+        assert!(report.memory_read_through_ready);
+        assert!(report.disk_block_cache_ready);
+        assert!(report.admission_eviction_counters_ready);
+        assert!(report.slot_warmup_ready);
+        assert!(report.cache_invalidation_ready);
+        assert!(report.local_tiny_cache_pressure_harness_ready);
+        assert!(report.local_pressure_ready);
+        assert!(!report.production_ssd_tiering_ready);
+        assert!(!report.admission_tuning_ready);
+        assert!(!report.long_running_pressure_validation_ready);
+        assert!(!report.production_ready);
+        assert!(report
+            .missing
+            .iter()
+            .any(|item| item.contains("production SSD cache tiering")));
+
+        let readiness = production_readiness_report();
+        let storage_cache = readiness
+            .areas
+            .iter()
+            .find(|area| area.area == "storage_cache")
+            .expect("storage cache area must exist");
+        assert!(storage_cache
+            .covered
+            .iter()
+            .any(|item| item.contains("storage SSD cache pressure readiness")));
+        assert!(storage_cache
+            .missing
+            .iter()
+            .any(|item| item.contains("long-running live pressure validation")));
     }
 
     #[test]
