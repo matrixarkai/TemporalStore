@@ -1827,6 +1827,7 @@ pub struct RaftDistributedReadiness {
     pub byteraft_snapshot_floor_log_matching_present: bool,
     pub byteraft_snapshot_tail_catchup_present: bool,
     pub byteraft_compacted_entry_rejection_present: bool,
+    pub byteraft_metaserver_snapshot_floor_election_present: bool,
     pub durable_apply_index_snapshot_integrated: bool,
     pub learner_catchup_promotion_present: bool,
     pub metaserver_driven_membership_present: bool,
@@ -1893,6 +1894,7 @@ pub fn distributed_raft_readiness() -> RaftDistributedReadiness {
         byteraft_snapshot_floor_log_matching_present: true,
         byteraft_snapshot_tail_catchup_present: true,
         byteraft_compacted_entry_rejection_present: true,
+        byteraft_metaserver_snapshot_floor_election_present: true,
         durable_apply_index_snapshot_integrated: false,
         learner_catchup_promotion_present: true,
         metaserver_driven_membership_present: false,
@@ -7061,6 +7063,7 @@ struct MetaRaftNode {
     log: Vec<MetaLogEntry>,
     applied: BTreeSet<u64>,
     installed_snapshot_index: u64,
+    installed_snapshot_term: u64,
     state: MetaState,
     meta: SingleNodeMeta,
 }
@@ -7704,9 +7707,14 @@ impl MetaRaftCluster {
             .ok_or(RaftError::LeaderUnavailable)?;
         let mut node = new_meta_node(node_id, RaftRole::Follower);
         node.current_term = leader.current_term;
-        node.log = leader.log.clone();
-        node.commit_index = leader.commit_index;
-        apply_meta_committed(&mut node);
+        install_meta_leader_snapshot_tail(
+            &mut node,
+            leader.installed_snapshot_index,
+            leader.installed_snapshot_term,
+            leader.log.clone(),
+            leader.commit_index,
+            leader.state.clone(),
+        );
         inner.nodes.insert(node_id, node);
         Ok(())
     }
@@ -7745,6 +7753,8 @@ impl MetaRaftCluster {
             let leader_log = leader.log.clone();
             let leader_commit_index = leader.commit_index;
             let leader_state = leader.state.clone();
+            let leader_snapshot_index = leader.installed_snapshot_index;
+            let leader_snapshot_term = leader.installed_snapshot_term;
             let leader_meta = leader.meta.clone();
             for node_id in &plan.add_voters {
                 if inner.nodes.contains_key(node_id) {
@@ -7752,11 +7762,15 @@ impl MetaRaftCluster {
                 }
                 let mut node = new_meta_node(*node_id, RaftRole::Follower);
                 node.current_term = leader_term;
-                node.log = leader_log.clone();
-                node.commit_index = leader_commit_index;
-                node.state = leader_state.clone();
+                install_meta_leader_snapshot_tail(
+                    &mut node,
+                    leader_snapshot_index,
+                    leader_snapshot_term,
+                    leader_log.clone(),
+                    leader_commit_index,
+                    leader_state.clone(),
+                );
                 node.meta = leader_meta.clone();
-                apply_meta_committed(&mut node);
                 inner.nodes.insert(*node_id, node);
             }
         }
@@ -7920,14 +7934,7 @@ impl MetaRaftCluster {
                 local_commit_index: node.commit_index,
             });
         }
-        node.state = snapshot.state;
-        node.current_term = node.current_term.max(snapshot.last_included_term);
-        node.commit_index = snapshot.last_included_index;
-        node.log
-            .retain(|entry| entry.index > snapshot.last_included_index);
-        node.applied.clear();
-        node.applied.extend(1..=snapshot.last_included_index);
-        node.installed_snapshot_index = snapshot.last_included_index;
+        install_meta_snapshot_state(node, snapshot);
         Ok(())
     }
 
@@ -7964,14 +7971,20 @@ impl MetaRaftCluster {
         let leader_log = leader.log.clone();
         let leader_commit_index = leader.commit_index;
         let leader_state = leader.state.clone();
+        let leader_snapshot_index = leader.installed_snapshot_index;
+        let leader_snapshot_term = leader.installed_snapshot_term;
         let node = inner
             .nodes
             .get_mut(&node_id)
             .ok_or(RaftError::NodeNotFound(node_id))?;
-        node.log = leader_log;
-        node.commit_index = leader_commit_index;
-        node.state = leader_state;
-        apply_meta_committed(node);
+        install_meta_leader_snapshot_tail(
+            node,
+            leader_snapshot_index,
+            leader_snapshot_term,
+            leader_log,
+            leader_commit_index,
+            leader_state,
+        );
         Ok(())
     }
 
@@ -8032,7 +8045,7 @@ impl MetaRaftClusterInner {
             .min_by_key(|node| {
                 (
                     std::cmp::Reverse(node.commit_index),
-                    std::cmp::Reverse(node.log.last().map(|entry| entry.index).unwrap_or_default()),
+                    std::cmp::Reverse(meta_node_last_log_or_snapshot_index(node)),
                     node.id,
                 )
             })
@@ -8051,7 +8064,7 @@ impl MetaRaftClusterInner {
             .min_by_key(|node| {
                 (
                     std::cmp::Reverse(node.commit_index),
-                    std::cmp::Reverse(node.log.last().map(|entry| entry.index).unwrap_or_default()),
+                    std::cmp::Reverse(meta_node_last_log_or_snapshot_index(node)),
                     node.id,
                 )
             })
@@ -8069,6 +8082,8 @@ impl MetaRaftClusterInner {
         let leader_log = leader.log.clone();
         let leader_commit_index = leader.commit_index;
         let leader_state = leader.state.clone();
+        let leader_snapshot_index = leader.installed_snapshot_index;
+        let leader_snapshot_term = leader.installed_snapshot_term;
         let mut caught_up = Vec::new();
         for node in self
             .nodes
@@ -8082,10 +8097,14 @@ impl MetaRaftClusterInner {
                         .map(|entry| entry.index)
                         .unwrap_or_default()
             {
-                node.log = leader_log.clone();
-                node.commit_index = leader_commit_index;
-                node.state = leader_state.clone();
-                apply_meta_committed(node);
+                install_meta_leader_snapshot_tail(
+                    node,
+                    leader_snapshot_index,
+                    leader_snapshot_term,
+                    leader_log.clone(),
+                    leader_commit_index,
+                    leader_state.clone(),
+                );
             }
             if node.commit_index >= leader_commit_index {
                 caught_up.push(node.id);
@@ -8291,23 +8310,15 @@ impl MetaRaftClusterInner {
             .nodes
             .get(&candidate_id)
             .ok_or(RaftError::NodeNotFound(candidate_id))?;
-        let candidate_last_index = candidate
-            .log
-            .last()
-            .map(|entry| entry.index)
-            .unwrap_or_default();
-        let candidate_last_term = candidate
-            .log
-            .last()
-            .map(|entry| entry.term)
-            .unwrap_or_default();
+        let candidate_last_index = meta_node_last_log_or_snapshot_index(candidate);
+        let candidate_last_term = meta_node_last_log_or_snapshot_term(candidate);
         let votes = self
             .nodes
             .values()
             .filter(|node| node.alive)
             .filter(|node| {
-                let local_last_index = node.log.last().map(|entry| entry.index).unwrap_or_default();
-                let local_last_term = node.log.last().map(|entry| entry.term).unwrap_or_default();
+                let local_last_index = meta_node_last_log_or_snapshot_index(node);
+                let local_last_term = meta_node_last_log_or_snapshot_term(node);
                 (candidate_last_term, candidate_last_index) >= (local_last_term, local_last_index)
             })
             .count();
@@ -8360,11 +8371,25 @@ fn meta_node_status(node: &MetaRaftNode, leader_commit_index: u64) -> RaftNodeSt
         replica_role: RaftReplicaRole::Voter,
         current_term: node.current_term,
         commit_index: node.commit_index,
-        last_log_index: node.log.last().map(|entry| entry.index).unwrap_or_default(),
+        last_log_index: meta_node_last_log_or_snapshot_index(node),
         applied_index: node.applied.iter().next_back().copied().unwrap_or_default(),
         alive: node.alive,
         lag: leader_commit_index.saturating_sub(node.commit_index),
     }
+}
+
+fn meta_node_last_log_or_snapshot_index(node: &MetaRaftNode) -> u64 {
+    node.log
+        .last()
+        .map(|entry| entry.index)
+        .unwrap_or(node.installed_snapshot_index)
+}
+
+fn meta_node_last_log_or_snapshot_term(node: &MetaRaftNode) -> u64 {
+    node.log
+        .last()
+        .map(|entry| entry.term)
+        .unwrap_or(node.installed_snapshot_term)
 }
 
 fn new_meta_node(id: RaftNodeId, role: RaftRole) -> MetaRaftNode {
@@ -8377,6 +8402,7 @@ fn new_meta_node(id: RaftNodeId, role: RaftRole) -> MetaRaftNode {
         log: Vec::new(),
         applied: BTreeSet::new(),
         installed_snapshot_index: 0,
+        installed_snapshot_term: 0,
         state: MetaState::default(),
         meta: SingleNodeMeta::default(),
     }
@@ -8470,6 +8496,27 @@ fn install_meta_snapshot_state(node: &mut MetaRaftNode, snapshot: MetaRaftSnapsh
     node.applied.clear();
     node.applied.extend(1..=snapshot.last_included_index);
     node.installed_snapshot_index = snapshot.last_included_index;
+    node.installed_snapshot_term = snapshot.last_included_term;
+}
+
+fn install_meta_leader_snapshot_tail(
+    node: &mut MetaRaftNode,
+    leader_snapshot_index: u64,
+    leader_snapshot_term: u64,
+    leader_log: Vec<MetaLogEntry>,
+    leader_commit_index: u64,
+    leader_state: MetaState,
+) {
+    if meta_node_last_log_or_snapshot_index(node) < leader_snapshot_index {
+        node.installed_snapshot_index = leader_snapshot_index;
+        node.installed_snapshot_term = leader_snapshot_term;
+        node.applied.clear();
+        node.applied.extend(1..=leader_snapshot_index);
+    }
+    node.log = leader_log;
+    node.commit_index = leader_commit_index;
+    node.state = leader_state;
+    apply_meta_committed(node);
 }
 
 #[cfg(test)]
@@ -10395,6 +10442,7 @@ mod tests {
         assert!(readiness.byteraft_snapshot_floor_log_matching_present);
         assert!(readiness.byteraft_snapshot_tail_catchup_present);
         assert!(readiness.byteraft_compacted_entry_rejection_present);
+        assert!(readiness.byteraft_metaserver_snapshot_floor_election_present);
         assert!(readiness.learner_catchup_promotion_present);
         assert!(!readiness.durable_apply_index_snapshot_integrated);
         assert!(!readiness.metaserver_driven_membership_present);
@@ -12992,12 +13040,59 @@ mod tests {
         assert_eq!(report.reason, "applied_log_bytes_threshold");
         assert_eq!(report.applied_index, 1);
         assert!(report.applied_log_bytes >= 1);
-        assert_eq!(meta.local_status(10).unwrap().last_log_index, 0);
+        assert_eq!(meta.local_status(10).unwrap().last_log_index, 1);
 
         let second = meta.maybe_trigger_snapshot().unwrap();
         assert!(!second.triggered);
         assert_eq!(second.reason, "no_new_applied_logs");
         assert_eq!(second.last_snapshot_index, 1);
+    }
+
+    #[test]
+    fn metaserver_snapshot_floor_survives_failover_and_add_node() {
+        let meta = MetaRaftCluster::new_with_config(
+            [10, 11, 12],
+            RaftConfig {
+                max_applied_log_bytes: 1,
+                ..RaftConfig::default()
+            },
+        )
+        .unwrap();
+        meta.propose(MetaCommand::PutShardLocation(ShardLocation {
+            shard_id: 88,
+            server_addr: "meta-snapshot-floor".to_string(),
+            latest_snapshot: None,
+        }))
+        .unwrap();
+        let snapshot_report = meta.maybe_trigger_snapshot().unwrap();
+        assert!(snapshot_report.triggered);
+        assert_eq!(snapshot_report.applied_index, 1);
+        assert_eq!(meta.local_status(10).unwrap().last_log_index, 1);
+        assert_eq!(meta.local_status(11).unwrap().last_log_index, 1);
+
+        meta.set_alive(10, false).unwrap();
+        let failover = meta.failover_primary().unwrap();
+        assert_ne!(failover.new_leader_id, 10);
+        assert_eq!(failover.commit_index, 1);
+        assert_eq!(
+            meta.get_shard_location(failover.new_leader_id, 88).unwrap(),
+            Some(ShardLocation {
+                shard_id: 88,
+                server_addr: "meta-snapshot-floor".to_string(),
+                latest_snapshot: None,
+            })
+        );
+
+        meta.add_node(13).unwrap();
+        assert_eq!(meta.local_status(13).unwrap().last_log_index, 1);
+        assert_eq!(
+            meta.get_shard_location(13, 88).unwrap(),
+            Some(ShardLocation {
+                shard_id: 88,
+                server_addr: "meta-snapshot-floor".to_string(),
+                latest_snapshot: None,
+            })
+        );
     }
 
     #[test]

@@ -106,6 +106,8 @@ Raft local coverage:
   compaction.
 - Data-node AppendEntries apply rejects compacted entries at or below the installed snapshot floor,
   preventing stale log replay over snapshotted state.
+- Metaserver Raft status, election freshness, failover, catch-up, and add-node paths now account
+  for installed snapshot floors instead of treating compacted voters as log-empty.
 - Local production Raft runtime wrapper.
 - HTTP Raft transport for proposal/read/admin paths.
 - WAL-backed local recovery.

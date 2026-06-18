@@ -91,6 +91,8 @@ The Rust code currently has:
   entries
 - compacted-entry rejection on data-node AppendEntries apply, so entries at or below an installed
   snapshot floor are ignored instead of replayed over snapshotted state
+- metaserver snapshot-floor election and catch-up, so compacted metaserver voters remain electable
+  and new voters inherit the installed snapshot boundary before replaying retained meta-log entries
 - leader election rejects stale candidates unless their log is up-to-date with a voting majority
 - deterministic ByteRaft-style snapshot trigger reports for data-node and metaserver Raft when
   applied log bytes since the latest snapshot floor exceed `max_applied_log_bytes`
@@ -100,7 +102,7 @@ The Rust code currently has:
   bootstrap, replication lag/catch-up, failover, operator status/local-status/metrics, and
   RPC retry/backpressure/auth/deadline behavior, bounded WAL retention, applied-log-byte snapshot
   triggers, durable apply/snapshot fencing, snapshot-floor log matching, snapshot-tail catch-up, and
-  compacted-entry rejection, and operator control routes
+  compacted-entry rejection, metaserver snapshot-floor election, and operator control routes
 - strict shared-store oplog gap rejection
 - partition/heal chaos coverage in the local model
 - tests for the above behavior

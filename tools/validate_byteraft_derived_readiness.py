@@ -341,6 +341,25 @@ AREAS: tuple[ReadinessArea, ...] = (
         ),
     ),
     ReadinessArea(
+        name="metaserver_snapshot_floor_election",
+        evidence=(
+            Evidence(
+                "crates/temporalstore-rust/src/raft.rs",
+                (
+                    "meta_node_last_log_or_snapshot_index",
+                    "meta_node_last_log_or_snapshot_term",
+                    "install_meta_leader_snapshot_tail",
+                    "metaserver_snapshot_floor_survives_failover_and_add_node",
+                    "byteraft_metaserver_snapshot_floor_election_present",
+                ),
+            ),
+            Evidence(
+                "docs/distributed_raft_readiness.md",
+                ("metaserver snapshot-floor election", "compacted metaserver voters remain electable"),
+            ),
+        ),
+    ),
+    ReadinessArea(
         name="operator_control_surfaces",
         evidence=(
             Evidence(
