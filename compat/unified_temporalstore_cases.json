@@ -56,14 +56,26 @@
       "storage_follower_safe_gc",
       "storage_cache_refill",
       "storage_shared_store_sync_replay",
-      "storage_shared_store_async_replay"
+      "storage_shared_store_async_replay",
+      "raft_data_node_leader_election_failover",
+      "raft_data_node_snapshot_restart_follower_lag",
+      "raft_data_node_membership_secondary_reads",
+      "raft_metaserver_leader_snapshot_restart",
+      "raft_metaserver_membership_add_promote_remove",
+      "raft_openraft_process_rollout_evidence"
     ],
     "required_raft_case_names": [
       "storage_data_raft_replication_gtest",
       "raft_metaserver_membership_failover_snapshot",
       "raft_data_node_scale_failover_snapshot",
       "raft_data_node_mixed_rw_and_membership",
-      "raft_production_gate"
+      "raft_production_gate",
+      "raft_data_node_leader_election_failover",
+      "raft_data_node_snapshot_restart_follower_lag",
+      "raft_data_node_membership_secondary_reads",
+      "raft_metaserver_leader_snapshot_restart",
+      "raft_metaserver_membership_add_promote_remove",
+      "raft_openraft_process_rollout_evidence"
     ],
     "required_command_kinds": [
       "string_set",
@@ -2619,7 +2631,7 @@
               {
                 "key": "unified:sequence:missing",
                 "start_ms": 0,
-                "end_ms": 18446744073709551615,
+                "end_ms": 9999,
                 "count": 10,
                 "filters": []
               }
@@ -3291,6 +3303,154 @@
             "runner": "BUILD_TYPE=Release ITERATIONS=1 OPS=300 bash tools/run_data_raft_scale_up_down_ubuntu22.sh",
             "rust_runner": "cargo run -p temporalstore-rust --bin raft_secondary_replication_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-raft-membership --heartbeat-ms 25",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-secondary-validation --log <raft_secondary_replication_harness.json>",
+            "timeout_s": 1200
+          }
+        }
+      ]
+    },
+    {
+      "name": "raft_data_node_leader_election_failover",
+      "shard_id": 34,
+      "steps": [
+        {
+          "name": "data_node_leader_election_and_failover",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "stress",
+            "description": "Shared data-node Raft leader election and failover case. Rust uses the OS-process secondary replication harness so the evidence is process-based, not an in-process LocalModel fixture.",
+            "required_paths": [
+              "tools/run_data_raft_failover_ubuntu22.sh",
+              "src/partition/storage/data_raft_consensus.cc",
+              "src/partition/storage/data_raft_replication.cc"
+            ],
+            "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 bash tools/run_data_raft_failover_ubuntu22.sh",
+            "rust_runner": "cargo run -p temporalstore-rust --bin raft_secondary_replication_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-data-raft-leader-failover --heartbeat-ms 25",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-secondary-validation --log <raft_secondary_replication_harness.json>",
+            "timeout_s": 1200
+          }
+        }
+      ]
+    },
+    {
+      "name": "raft_data_node_snapshot_restart_follower_lag",
+      "shard_id": 35,
+      "steps": [
+        {
+          "name": "data_node_snapshot_restart_and_lagging_follower_catchup",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "stress",
+            "description": "Shared data-node Raft snapshot install, restart recovery, follower lag, and catch-up case. Rust uses distributed plus secondary process harness evidence.",
+            "required_paths": [
+              "tools/run_data_raft_snapshot_restore_ubuntu22.sh",
+              "tools/build_secondary_visibility_lag_benchmark.sh",
+              "src/partition/storage/data_raft_consensus.cc",
+              "src/partition/storage/data_raft_replication.cc"
+            ],
+            "runner": "BUILD_TYPE=Release RAFT_SNAPSHOT_OPS=200 RAFT_SNAPSHOT_THREADS=2 bash tools/run_data_raft_snapshot_restore_ubuntu22.sh && bash tools/build_secondary_visibility_lag_benchmark.sh",
+            "rust_runner": "cargo run -p temporalstore-rust --bin distributed_raft_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-data-raft-snapshot-restart-lag && cargo run -p temporalstore-rust --bin raft_secondary_replication_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-data-raft-follower-lag --heartbeat-ms 25",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-validation --log <distributed_raft_harness.json> && python3 tools/validate_aws_validation_log.py --job temporalstore-raft-secondary-validation --log <raft_secondary_replication_harness.json>",
+            "timeout_s": 1800
+          }
+        }
+      ]
+    },
+    {
+      "name": "raft_data_node_membership_secondary_reads",
+      "shard_id": 36,
+      "steps": [
+        {
+          "name": "data_node_membership_add_promote_remove_and_secondary_reads",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "stress",
+            "description": "Shared data-node Raft membership add/promote/remove and secondary-read visibility case.",
+            "required_paths": [
+              "tools/run_data_raft_scale_up_down_ubuntu22.sh",
+              "tools/run_data_raft_mixed_rw_ubuntu22.sh",
+              "src/partition/storage/data_raft_replication.cc"
+            ],
+            "runner": "BUILD_TYPE=Release ITERATIONS=1 OPS=300 bash tools/run_data_raft_scale_up_down_ubuntu22.sh && BUILD_TYPE=Release MIXED_PROBE_OPS=300 MIXED_PROBE_THREADS=2 bash tools/run_data_raft_mixed_rw_ubuntu22.sh",
+            "rust_runner": "cargo run -p temporalstore-rust --bin raft_secondary_replication_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-data-raft-membership-secondary --heartbeat-ms 25",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-secondary-validation --log <raft_secondary_replication_harness.json>",
+            "timeout_s": 1800
+          }
+        }
+      ]
+    },
+    {
+      "name": "raft_metaserver_leader_snapshot_restart",
+      "shard_id": 37,
+      "steps": [
+        {
+          "name": "metaserver_leader_failover_snapshot_and_restart_recovery",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "stress",
+            "description": "Shared metaserver Raft leader election/failover, snapshot install, and restart recovery case.",
+            "required_paths": [
+              "tools/run_metaserver_raft_failover_ubuntu22.sh",
+              "tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh",
+              "src/metaserver_v2/raft_server.cc",
+              "src/metaserver_v2/raft_connector.cc"
+            ],
+            "runner": "BUILD_TYPE=Release ITERATIONS=1 bash tools/run_metaserver_raft_failover_ubuntu22.sh && BUILD_TYPE=Release ITERATIONS=1 bash tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh",
+            "rust_runner": "cargo run -p temporalstore-rust --bin metaserver_raft_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-metaserver-leader-snapshot-restart",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-metaserver-raft-validation --log <metaserver_raft_harness.json>",
+            "timeout_s": 1800
+          }
+        }
+      ]
+    },
+    {
+      "name": "raft_metaserver_membership_add_promote_remove",
+      "shard_id": 38,
+      "steps": [
+        {
+          "name": "metaserver_membership_add_promote_remove",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "stress",
+            "description": "Shared metaserver Raft learner add, catch-up verification, promote, leader transfer, and voter remove case.",
+            "required_paths": [
+              "tools/run_metaserver_raft_membership_ubuntu22.sh",
+              "src/metaserver_v2/raft_server.cc",
+              "src/metaserver_v2/scheduler/update_membership_task.cc",
+              "src/metaserver_v2/service/raft_control_service.cc"
+            ],
+            "runner": "BUILD_TYPE=Release ITERATIONS=1 MEMBERSHIP_OPS=200 bash tools/run_metaserver_raft_membership_ubuntu22.sh",
+            "rust_runner": "cargo run -p temporalstore-rust --bin metaserver_raft_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-metaserver-membership-add-promote-remove",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-metaserver-raft-validation --log <metaserver_raft_harness.json>",
+            "timeout_s": 1200
+          }
+        }
+      ]
+    },
+    {
+      "name": "raft_openraft_process_rollout_evidence",
+      "shard_id": 39,
+      "steps": [
+        {
+          "name": "openraft_process_rollout_and_local_mode_rejection_evidence",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "runtime",
+            "description": "Shared production-readiness evidence case: LocalModel remains test-only, and production readiness depends on OpenRaft data-node and metaserver multi-process rollout plus log-store validation evidence.",
+            "required_paths": [
+              "tools/run_raft_production_gate_ubuntu22.sh",
+              "tools/run_raft_stress_suite_ubuntu22.sh",
+              "src/partition/storage/data_raft_consensus.cc",
+              "src/metaserver_v2/raft_server.cc"
+            ],
+            "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
+            "rust_runner": "cargo test -p temporalstore-rust raft_openraft_rollout_readiness_reports_real_process_rollout_evidence production_raft_readiness_requires_openraft_process_and_meta_owned_membership_evidence local_raft_model_is_rejected_for_deployment --lib -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "timeout_s": 1200
           }
         }

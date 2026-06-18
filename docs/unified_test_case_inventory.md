@@ -11,13 +11,13 @@ compat/unified_temporalstore_cases.json
 Current inventory:
 
 ```text
-total cases: 53
-total steps: 140
+total cases: 59
+total steps: 146
 executable shared behavior cases: 26
 executable shared behavior steps: 106
-C++ existing-test parity surface cases: 27
-C++ existing-test parity surface steps: 34
-C++ required source/test/harness paths: 86 unique paths plus 54 Raft path references
+C++ existing-test parity surface cases: 33
+C++ existing-test parity surface steps: 40
+C++ required source/test/harness paths: 87 unique paths plus 74 Raft path references
 required command kinds: 59
 required response kinds: 19
 ```
@@ -101,6 +101,12 @@ to them.
 | `raft_metaserver_membership_failover_snapshot` | Exact C++ metaserver Raft membership/failover/snapshot case, now including post-failover replacement plus scale-down, paired with the Rust `metaserver_raft_harness` JSON gate. |
 | `raft_data_node_scale_failover_snapshot` | Exact C++ data-node Raft scale/failover/snapshot case, now including post-snapshot rescale down/up, paired with Rust distributed and secondary-replication harnesses plus the combined data-node/metaserver Raft parity gate. |
 | `raft_data_node_mixed_rw_and_membership` | Exact C++ data-node mixed read/write plus membership case, paired with Rust distributed and secondary-replication harnesses plus the combined data-node/metaserver Raft parity gate. |
+| `raft_data_node_leader_election_failover` | Data-node leader election and failover as an explicit shared harness case, paired with the Rust process secondary-replication harness. |
+| `raft_data_node_snapshot_restart_follower_lag` | Data-node snapshot install, restart recovery, follower lag, and catch-up as an explicit shared harness case. |
+| `raft_data_node_membership_secondary_reads` | Data-node membership add/promote/remove and secondary-read visibility as an explicit shared harness case. |
+| `raft_metaserver_leader_snapshot_restart` | Metaserver leader/failover, snapshot install, and restart recovery as an explicit shared harness case. |
+| `raft_metaserver_membership_add_promote_remove` | Metaserver learner add, catch-up, promote, leader transfer, and voter remove as an explicit shared harness case. |
+| `raft_openraft_process_rollout_evidence` | Production-readiness evidence case requiring LocalModel rejection and OpenRaft process-rollout/log-store evidence. |
 | `raft_production_gate` | Exact C++ Raft production gate case, paired with the Rust storage/Raft production-readiness local gate and the combined data-node plus metaserver Raft distributed parity gate. |
 | `cpp_redis_live_storage_smoke_parity_surfaces` | Redis live storage smoke surfaces. |
 | `cpp_local_docker_replication_matrix_parity_surfaces` | Local Docker replication matrix surfaces. |
@@ -115,8 +121,8 @@ Yes. Current Rust-local attributed test count is:
 
 ```text
 Rust attributed tests: 540
-shared corpus cases: 53
-shared corpus steps: 140
+shared corpus cases: 59
+shared corpus steps: 146
 C++ existing-test surfaces: 83
 ```
 

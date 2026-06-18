@@ -29,13 +29,13 @@ Current corpus:
 ```text
 schema_version: 1
 name: temporalstore-unified-cpp-rust-corpus
-cases: 53
-steps: 140
+cases: 59
+steps: 146
 executable behavior cases: 26
 executable behavior steps: 106
 required command kinds: 59
 required response kinds: 19
-C++ existing-test parity surfaces: 86 unique required paths plus 54 Raft path references
+C++ existing-test parity surfaces: 87 unique required paths plus 74 Raft path references
 ```
 
 The shared cases are:
@@ -103,7 +103,13 @@ The shared cases are:
   `storage_data_raft_replication_gtest`,
   `raft_metaserver_membership_failover_snapshot`,
   `raft_data_node_scale_failover_snapshot`,
-  `raft_data_node_mixed_rw_and_membership`, and
+  `raft_data_node_mixed_rw_and_membership`,
+  `raft_data_node_leader_election_failover`,
+  `raft_data_node_snapshot_restart_follower_lag`,
+  `raft_data_node_membership_secondary_reads`,
+  `raft_metaserver_leader_snapshot_restart`,
+  `raft_metaserver_membership_add_promote_remove`,
+  `raft_openraft_process_rollout_evidence`, and
   `raft_production_gate`.
 
 ## Rust Runner
@@ -474,7 +480,7 @@ Result: all 8 iterations passed against the 34-case shared corpus.
 
 ## Current Unified API/Model Expansion: 2026-06-16
 
-The shared corpus has 53 cases and 140 steps after exact C++ Raft case-name unification. Ten
+The shared corpus has 59 cases and 146 steps after exact C++ Raft case-name unification. Ten
 C++-named Rust-local behavior groups were promoted into executable shared cases:
 
 ```text
@@ -499,6 +505,6 @@ plus async local shared-store replay.
 
 The Rust runner executes 100 product behavior steps through both direct engine and local HTTP
 client paths, plus 6 storage parity steps through direct engine/admin storage paths. The C++ hook
-validates the same 53-case corpus, current context contract,
+validates the same 59-case corpus, current context contract,
 coverage manifest, duplicate-test rules, exact C++ Raft case names, and required C++ parity
 surfaces.

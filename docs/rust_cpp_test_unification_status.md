@@ -127,13 +127,13 @@ Shared C++/Rust corpus:
 
 ```text
 compat/unified_temporalstore_cases.json
-cases: 53
-steps: 140
+cases: 59
+steps: 146
 executable behavior cases: 26
 executable behavior steps: 106
-C++ existing-test parity surface cases: 27
-C++ existing-test parity surface steps: 34
-C++ existing-test required paths: 86 unique paths plus 54 Raft path references
+C++ existing-test parity surface cases: 33
+C++ existing-test parity surface steps: 40
+C++ existing-test required paths: 87 unique paths plus 74 Raft path references
 ```
 
 Detailed inventory: `docs/unified_test_case_inventory.md`.
@@ -151,6 +151,9 @@ Sequence, advanced Feature policy/filter/aggregate flows, Sequence batch/filter 
 snapshot/filter/stat/batch metadata flows, Risk manager/debug/FOL flows,
 storage dump/load, fault matrix, follower-safe GC, cache refill, sync shared-store replay, async
 shared-store replay,
+explicit data-node Raft leader/failover, snapshot/restart/follower-lag, membership/secondary-read
+cases, explicit metaserver Raft leader/snapshot/restart and membership add/promote/remove cases,
+OpenRaft process-rollout evidence,
 Context, restart reads, missing-key semantics, timestamp bounds, current C++ storage/Raft surface
 gates, and C++ client/proxy/metaserver/data-node control-plane surface gates. Ingestion/ops parity
 is currently enforced as Rust evidence plus local harness gates; the next same-test step is to
@@ -173,7 +176,7 @@ shared product/parity cases versus true language-internal tests. The shared port
 | Other local tests | 24 | readiness, e2e, partition id, external chaos, HTTP, replica replay |
 
 The duplicate-test validator currently reports `rust_attributed_tests=540`,
-`shared_corpus_cases=53`, `shared_corpus_steps=140`, and `cpp_existing_test_surfaces=83`.
+`shared_corpus_cases=59`, `shared_corpus_steps=146`, and `cpp_existing_test_surfaces=83`.
 The Rust-attributed count is a migration backlog, not the desired final state.
 
 Target disposition:
@@ -229,7 +232,7 @@ every executable corpus command and compares every expected response.
 Until that exists, the honest status is:
 
 - Rust executes all 106 executable shared behavior steps.
-- C++ validates the 53-case corpus shape, current context subset, exact C++ Raft case names,
+- C++ validates the 59-case corpus shape, current context subset, exact C++ Raft case names,
   C++ storage/Raft required surfaces, the shared `raft_production_gate` metadata points at both
   `run_storage_raft_production_readiness.sh` and `run_raft_distributed_parity.sh`, C++
   client/proxy/metaserver/data-node control-plane required surfaces, the combined data-node plus
