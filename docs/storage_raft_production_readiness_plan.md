@@ -147,10 +147,11 @@ The readiness gate intentionally still blocks production readiness on:
   storage-mutation and snapshot-install atomic commit integration remains blocked until wired
   through the data-node process path, matching the ByteRaft/ByteKV replica-engine recovery
   contract.
-- Networked metaserver Raft transport and scheduler loop that automatically drives real data-node
-  membership changes.
-- Metaserver-owned learner add, catch-up verification, promotion, leader movement, and voter
-  removal for real data-node Raft groups.
+- Raft metaserver membership readiness is now explicit in the readiness gate: topology membership
+  plans, data-Raft apply reports, learner catch-up/promotion, leader transfer, and voter removal
+  are covered. Networked scheduler transport, persisted scheduler task state, and real data-node
+  Raft group execution remain blocked until the metaserver drives `/raft/membership/apply`
+  against production data-node groups.
 - Raft transport security readiness is now explicit in the readiness gate: auth-token validation,
   mTLS cert/key/CA config validation, authenticated HTTP transport, and plaintext-only local chaos
   guardrails are covered. Real service-process mTLS enforcement remains blocked until every

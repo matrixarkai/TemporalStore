@@ -505,6 +505,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "metaserver-owned data-Raft membership workflow reports learner add, catch-up verification, promotion, leader transfer, and voter removal"
                     .to_string(),
+                "Raft metaserver membership readiness covers topology membership plans, data-Raft apply reports, learner catch-up/promotion, leader transfer, and voter removal while keeping networked scheduler transport and persisted real-group execution fail-closed"
+                    .to_string(),
                 "ByteRaft-style leader write authority, ReadIndex guards, learner catch-up/promotion checks, and fail-closed stale leader-transfer checks are modeled locally"
                     .to_string(),
                 "Raft transport security readiness covers auth-token validation, mTLS cert/key/CA config validation, authenticated HTTP transport, and plaintext-only local chaos guardrails while keeping service-process mTLS enforcement fail-closed"
@@ -1494,6 +1496,10 @@ mod tests {
         assert!(covered.iter().any(|item| {
             item.contains("Raft atomic apply readiness")
                 && item.contains("atomic commit integration fail-closed")
+        }));
+        assert!(covered.iter().any(|item| {
+            item.contains("Raft metaserver membership readiness")
+                && item.contains("real-group execution fail-closed")
         }));
         assert!(covered.iter().any(|item| {
             item.contains("Raft transport security readiness")

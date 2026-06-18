@@ -1926,6 +1926,66 @@ pub struct RaftAtomicApplyReadiness {
     pub missing: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftMetaserverMembershipReadiness {
+    pub topology_membership_plan_present: bool,
+    pub data_raft_membership_apply_present: bool,
+    pub meta_owned_workflow_report_present: bool,
+    pub learner_catchup_promotion_present: bool,
+    pub leader_transfer_voter_remove_present: bool,
+    pub networked_scheduler_transport_present: bool,
+    pub persisted_scheduler_task_state_present: bool,
+    pub real_data_node_group_execution_present: bool,
+    pub local_workflow_ready: bool,
+    pub production_ready: bool,
+    pub missing: Vec<String>,
+}
+
+pub fn raft_metaserver_membership_readiness() -> RaftMetaserverMembershipReadiness {
+    let topology_membership_plan_present = true;
+    let data_raft_membership_apply_present = true;
+    let meta_owned_workflow_report_present = true;
+    let learner_catchup_promotion_present = true;
+    let leader_transfer_voter_remove_present = true;
+    let networked_scheduler_transport_present = false;
+    let persisted_scheduler_task_state_present = false;
+    let real_data_node_group_execution_present = false;
+    let local_workflow_ready = topology_membership_plan_present
+        && data_raft_membership_apply_present
+        && meta_owned_workflow_report_present
+        && learner_catchup_promotion_present
+        && leader_transfer_voter_remove_present;
+    let production_ready = local_workflow_ready
+        && networked_scheduler_transport_present
+        && persisted_scheduler_task_state_present
+        && real_data_node_group_execution_present;
+    let missing = if production_ready {
+        Vec::new()
+    } else {
+        vec![
+            "networked metaserver Raft transport and scheduler loop that automatically drives /raft/membership/apply across real data-node processes and persists task state"
+                .to_string(),
+            "make metaserver own learner add, catch-up verification, promotion, leader movement, and voter removal against real data-node Raft groups"
+                .to_string(),
+            "integrate metaserver shard membership changes with networked Raft groups".to_string(),
+        ]
+    };
+
+    RaftMetaserverMembershipReadiness {
+        topology_membership_plan_present,
+        data_raft_membership_apply_present,
+        meta_owned_workflow_report_present,
+        learner_catchup_promotion_present,
+        leader_transfer_voter_remove_present,
+        networked_scheduler_transport_present,
+        persisted_scheduler_task_state_present,
+        real_data_node_group_execution_present,
+        local_workflow_ready,
+        production_ready,
+        missing,
+    }
+}
+
 pub fn raft_atomic_apply_readiness() -> RaftAtomicApplyReadiness {
     let storage_apply_fence_present = true;
     let wal_fence_recovery_validation_present = true;
@@ -2063,14 +2123,12 @@ impl std::fmt::Display for RaftProductionReadinessError {
 impl std::error::Error for RaftProductionReadinessError {}
 
 pub fn distributed_raft_readiness() -> RaftDistributedReadiness {
+    let metaserver_membership = raft_metaserver_membership_readiness();
     let atomic_apply = raft_atomic_apply_readiness();
     let transport_security = raft_transport_security_readiness();
     let external_chaos = raft_external_chaos_readiness();
-    let mut missing = vec![
-        "make metaserver own learner add, catch-up verification, promotion, leader movement, and voter removal against real data-node Raft groups"
-            .to_string(),
-        "integrate metaserver shard membership changes with networked Raft groups".to_string(),
-    ];
+    let mut missing = Vec::new();
+    missing.extend(metaserver_membership.missing.clone());
     missing.extend(atomic_apply.missing.clone());
     missing.extend(transport_security.missing.clone());
     missing.extend(external_chaos.missing.clone());
@@ -2100,7 +2158,7 @@ pub fn distributed_raft_readiness() -> RaftDistributedReadiness {
         durable_apply_index_snapshot_integrated: atomic_apply.production_ready,
         learner_catchup_promotion_present: true,
         metaserver_membership_workflow_present: true,
-        metaserver_driven_membership_present: false,
+        metaserver_driven_membership_present: metaserver_membership.production_ready,
         production_mtls_transport_present: transport_security.production_ready,
         external_chaos_validation_present: external_chaos.production_ready,
         missing,
@@ -11018,6 +11076,37 @@ mod tests {
             .missing
             .iter()
             .any(|item| item.contains("storage mutations")));
+    }
+
+    #[test]
+    fn raft_metaserver_membership_readiness_keeps_real_scheduler_blocked() {
+        let readiness = raft_metaserver_membership_readiness();
+        assert!(readiness.topology_membership_plan_present);
+        assert!(readiness.data_raft_membership_apply_present);
+        assert!(readiness.meta_owned_workflow_report_present);
+        assert!(readiness.learner_catchup_promotion_present);
+        assert!(readiness.leader_transfer_voter_remove_present);
+        assert!(readiness.local_workflow_ready);
+        assert!(!readiness.networked_scheduler_transport_present);
+        assert!(!readiness.persisted_scheduler_task_state_present);
+        assert!(!readiness.real_data_node_group_execution_present);
+        assert!(!readiness.production_ready);
+        assert!(readiness
+            .missing
+            .iter()
+            .any(|item| item.contains("membership/apply")));
+        assert!(readiness
+            .missing
+            .iter()
+            .any(|item| item.contains("learner add")));
+
+        let distributed = distributed_raft_readiness();
+        assert!(distributed.metaserver_membership_workflow_present);
+        assert!(!distributed.metaserver_driven_membership_present);
+        assert!(distributed
+            .missing
+            .iter()
+            .any(|item| item.contains("networked Raft groups")));
     }
 
     #[test]
