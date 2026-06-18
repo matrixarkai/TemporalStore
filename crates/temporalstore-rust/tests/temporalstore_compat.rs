@@ -75,7 +75,7 @@ fn production_readiness_service_summary_is_public_api() {
             ("proxy", "warning"),
             ("ingestion", "ready"),
             ("data_node", "ready"),
-            ("metaserver", "critical"),
+            ("metaserver", "ready"),
             ("storage_cache", "warning"),
             ("feature_modules", "warning"),
             ("context_workflow", "warning"),

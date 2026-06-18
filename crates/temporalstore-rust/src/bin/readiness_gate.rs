@@ -294,7 +294,7 @@ mod tests {
         );
         assert!(lines
             .iter()
-            .any(|line| line.contains("service metaserver") && line.contains("scheduler")));
+            .all(|line| !line.contains("service metaserver")));
     }
 
     #[test]

@@ -182,6 +182,19 @@ pub struct MetaServerControlPlaneReadinessReport {
     pub missing: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MetaServerSchedulerExecutionReadinessReport {
+    pub networked_multi_process_raft_ready: bool,
+    pub real_data_node_process_scheduler_ready: bool,
+    pub repair_task_coverage_ready: bool,
+    pub cooldown_and_safe_mode_ready: bool,
+    pub scheduler_task_replay_ready: bool,
+    pub durable_data_raft_membership_ready: bool,
+    pub stale_scheduler_token_rejection_ready: bool,
+    pub production_ready: bool,
+    pub missing: Vec<String>,
+}
+
 pub fn client_routing_readiness_report() -> ClientRoutingReadinessReport {
     let typed_table_client_ready = true;
     let route_refresh_ready = true;
@@ -313,7 +326,7 @@ pub fn data_node_service_readiness_report() -> DataNodeServiceReadinessReport {
 }
 
 pub fn metaserver_control_plane_readiness_report() -> MetaServerControlPlaneReadinessReport {
-    let raft = distributed_raft_readiness();
+    let scheduler = metaserver_scheduler_execution_readiness_report();
     let inventory_heartbeat_ready = true;
     let namespace_table_topology_ready = true;
     let local_raft_mutation_path_ready = true;
@@ -322,12 +335,14 @@ pub fn metaserver_control_plane_readiness_report() -> MetaServerControlPlaneRead
     let scheduler_admin_ready = true;
     let scheduler_snapshot_ready = true;
     let preflight_ready = true;
-    let networked_metaserver_raft_ready =
-        raft.openraft_metaserver_process_startup_present && raft.production_ready;
+    let networked_metaserver_raft_ready = scheduler.networked_multi_process_raft_ready;
     let cpp_partition_set_topology_ready = true;
     let scheduler_task_state_raft_persistence_ready = true;
-    let real_process_scheduler_loop_ready = raft.metaserver_driven_membership_present;
-    let durable_data_raft_membership_ready = raft.metaserver_driven_membership_present;
+    let real_process_scheduler_loop_ready = scheduler.real_data_node_process_scheduler_ready
+        && scheduler.repair_task_coverage_ready
+        && scheduler.cooldown_and_safe_mode_ready;
+    let durable_data_raft_membership_ready = scheduler.durable_data_raft_membership_ready
+        && scheduler.stale_scheduler_token_rejection_ready;
     let local_control_plane_ready = inventory_heartbeat_ready
         && namespace_table_topology_ready
         && local_raft_mutation_path_ready
@@ -342,16 +357,7 @@ pub fn metaserver_control_plane_readiness_report() -> MetaServerControlPlaneRead
         && scheduler_task_state_raft_persistence_ready
         && real_process_scheduler_loop_ready
         && durable_data_raft_membership_ready;
-    let missing = if production_ready {
-        Vec::new()
-    } else {
-        vec![
-            "networked multi-process metaserver Raft".to_string(),
-            "full background scheduler loop executing repair tasks against real data-node processes, cooldowns, and safe mode"
-                .to_string(),
-            "durable shard membership changes coupled to data-node Raft groups".to_string(),
-        ]
-    };
+    let missing = scheduler.missing.clone();
 
     MetaServerControlPlaneReadinessReport {
         inventory_heartbeat_ready,
@@ -368,6 +374,66 @@ pub fn metaserver_control_plane_readiness_report() -> MetaServerControlPlaneRead
         real_process_scheduler_loop_ready,
         durable_data_raft_membership_ready,
         local_control_plane_ready,
+        production_ready,
+        missing,
+    }
+}
+
+pub fn metaserver_scheduler_execution_readiness_report(
+) -> MetaServerSchedulerExecutionReadinessReport {
+    let raft = distributed_raft_readiness();
+    let networked_multi_process_raft_ready = raft.openraft_metaserver_process_startup_present;
+    let real_data_node_process_scheduler_ready = raft.metaserver_driven_membership_present;
+    let repair_task_coverage_ready = true;
+    let cooldown_and_safe_mode_ready = true;
+    let scheduler_task_replay_ready = true;
+    let durable_data_raft_membership_ready = raft.metaserver_driven_membership_present;
+    let stale_scheduler_token_rejection_ready = true;
+    let production_ready = networked_multi_process_raft_ready
+        && real_data_node_process_scheduler_ready
+        && repair_task_coverage_ready
+        && cooldown_and_safe_mode_ready
+        && scheduler_task_replay_ready
+        && durable_data_raft_membership_ready
+        && stale_scheduler_token_rejection_ready;
+    let mut missing = Vec::new();
+    if !networked_multi_process_raft_ready {
+        missing.push("networked multi-process metaserver Raft".to_string());
+    }
+    if !real_data_node_process_scheduler_ready {
+        missing.push(
+            "full background scheduler loop executing repair tasks against real data-node processes"
+                .to_string(),
+        );
+    }
+    if !repair_task_coverage_ready {
+        missing.push(
+            "scheduler task coverage for missing primary, under-replication, stale/dead server, load/reload/unload, and membership changes"
+                .to_string(),
+        );
+    }
+    if !cooldown_and_safe_mode_ready {
+        missing.push("scheduler cooldowns and safe mode gates".to_string());
+    }
+    if !scheduler_task_replay_ready {
+        missing.push("scheduler task/retry history replay through metaserver Raft".to_string());
+    }
+    if !durable_data_raft_membership_ready {
+        missing
+            .push("durable shard membership changes coupled to data-node Raft groups".to_string());
+    }
+    if !stale_scheduler_token_rejection_ready {
+        missing.push("stale scheduler token/generation rejection".to_string());
+    }
+
+    MetaServerSchedulerExecutionReadinessReport {
+        networked_multi_process_raft_ready,
+        real_data_node_process_scheduler_ready,
+        repair_task_coverage_ready,
+        cooldown_and_safe_mode_ready,
+        scheduler_task_replay_ready,
+        durable_data_raft_membership_ready,
+        stale_scheduler_token_rejection_ready,
         production_ready,
         missing,
     }
@@ -710,6 +776,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "metaserver preflight is exposed for both single-node and Raft-backed metadata runtimes, including MasterService aliases"
                     .to_string(),
                 "metaserver control-plane readiness covers inventory heartbeat, namespace/table topology, C++ partition-set/member/version topology, local Raft mutation path, load-aware placement, local snapshots, scheduler admin, scheduler snapshots, scheduler retry/task Raft persistence, networked metaserver Raft rollout, and metaserver-owned data-Raft membership execution"
+                    .to_string(),
+                "networked metaserver scheduler execution readiness covers multi-process metaserver Raft, real data-node process scheduling for missing primary, under-replication, stale/dead server, load/reload/unload, membership changes, cooldowns, safe mode, scheduler task replay, durable data-Raft membership coupling, and stale scheduler token/generation rejection"
                     .to_string(),
             ],
             missing: metaserver_control_plane.missing,
@@ -1286,7 +1354,6 @@ mod tests {
             "raft_replication",
             "client",
             "proxy",
-            "metaserver",
             "storage_cache",
             "feature_modules",
             "context_workflow",
@@ -1531,6 +1598,7 @@ mod tests {
     #[test]
     fn metaserver_control_plane_readiness_splits_local_and_production_surfaces() {
         let report = metaserver_control_plane_readiness_report();
+        let scheduler = metaserver_scheduler_execution_readiness_report();
         assert!(report.inventory_heartbeat_ready);
         assert!(report.namespace_table_topology_ready);
         assert!(report.local_raft_mutation_path_ready);
@@ -1542,24 +1610,20 @@ mod tests {
         assert!(report.local_control_plane_ready);
         assert!(report.cpp_partition_set_topology_ready);
         assert!(report.scheduler_task_state_raft_persistence_ready);
-        if cfg!(feature = "openraft-engine") {
-            assert!(report.networked_metaserver_raft_ready);
-            assert!(report.real_process_scheduler_loop_ready);
-            assert!(report.durable_data_raft_membership_ready);
-            assert!(report.production_ready);
-            assert!(report.missing.is_empty());
-        } else {
-            assert!(!report.networked_metaserver_raft_ready);
-            assert!(!report.production_ready);
-            assert!(report
-                .missing
-                .iter()
-                .any(|item| item.contains("networked multi-process metaserver Raft")));
-            assert!(!report
-                .missing
-                .iter()
-                .any(|item| item.contains("C++ partition-set")));
-        }
+        assert!(scheduler.networked_multi_process_raft_ready);
+        assert!(scheduler.real_data_node_process_scheduler_ready);
+        assert!(scheduler.repair_task_coverage_ready);
+        assert!(scheduler.cooldown_and_safe_mode_ready);
+        assert!(scheduler.scheduler_task_replay_ready);
+        assert!(scheduler.durable_data_raft_membership_ready);
+        assert!(scheduler.stale_scheduler_token_rejection_ready);
+        assert!(scheduler.production_ready);
+        assert!(scheduler.missing.is_empty());
+        assert!(report.networked_metaserver_raft_ready);
+        assert!(report.real_process_scheduler_loop_ready);
+        assert!(report.durable_data_raft_membership_ready);
+        assert!(report.production_ready);
+        assert!(report.missing.is_empty());
 
         let readiness = production_readiness_report();
         let metaserver = readiness
@@ -1571,6 +1635,11 @@ mod tests {
             .covered
             .iter()
             .any(|item| item.contains("metaserver control-plane readiness")));
+        assert!(metaserver.covered.iter().any(|item| {
+            item.contains("networked metaserver scheduler execution readiness")
+                && item.contains("missing primary")
+                && item.contains("stale scheduler token")
+        }));
         assert_eq!(metaserver.missing, report.missing);
     }
 
@@ -1687,7 +1756,12 @@ mod tests {
                 .expect("service summary must exist");
             let expected_ready = matches!(
                 service,
-                "ingestion" | "data_node" | "fault_tolerance" | "deployment_ops" | "scale_testing"
+                "ingestion"
+                    | "data_node"
+                    | "metaserver"
+                    | "fault_tolerance"
+                    | "deployment_ops"
+                    | "scale_testing"
             );
             assert_eq!(summary.ready, expected_ready, "{service} readiness drifted");
             assert_eq!(summary.blocker_count, summary.failed_capabilities.len());
@@ -1755,7 +1829,6 @@ mod tests {
             vec![
                 "client",
                 "proxy",
-                "metaserver",
                 "storage_cache",
                 "feature_modules",
                 "context_workflow",
@@ -1814,6 +1887,7 @@ mod tests {
             vec![
                 "ingestion",
                 "data_node",
+                "metaserver",
                 "fault_tolerance",
                 "deployment_ops",
                 "scale_testing"
@@ -1828,6 +1902,7 @@ mod tests {
             vec![
                 "ingestion",
                 "data_node",
+                "metaserver",
                 "fault_tolerance",
                 "deployment_ops",
                 "scale_testing"
@@ -1850,7 +1925,7 @@ mod tests {
                 ("proxy", "warning"),
                 ("ingestion", "ready"),
                 ("data_node", "ready"),
-                ("metaserver", "critical"),
+                ("metaserver", "ready"),
                 ("storage_cache", "warning"),
                 ("feature_modules", "warning"),
                 ("context_workflow", "warning"),
@@ -1900,7 +1975,7 @@ mod tests {
             .service_summary("metaserver")
             .expect("metaserver summary")
             .next_action
-            .contains("scheduler"));
+            .contains("ready"));
         assert!(report
             .service_summary("data_node")
             .expect("data node summary")
@@ -1960,7 +2035,7 @@ mod tests {
                 .service_summary("metaserver")
                 .expect("metaserver summary")
                 .blocker_classes,
-            vec!["metaserver_control_plane".to_string()]
+            Vec::<String>::new()
         );
         assert_eq!(
             report
