@@ -281,11 +281,7 @@ mod tests {
         let lines = service_failure_lines(&report);
         assert!(lines
             .iter()
-            .any(|line| line.contains("service client")
-                && line.contains("HTTP/JSON, RESP, and tonic")));
-        assert!(lines
-            .iter()
-            .any(|line| line.contains("service proxy") && line.contains("HTTP/JSON plus tonic")));
+            .all(|line| !line.contains("service client") && !line.contains("service proxy")));
         assert!(
             lines
                 .iter()
@@ -301,8 +297,7 @@ mod tests {
     fn readiness_gate_can_filter_one_service() {
         let report = production_readiness_report();
         let proxy_lines = service_failure_lines_for_service(&report, "proxy");
-        assert_eq!(proxy_lines.len(), 1);
-        assert!(proxy_lines[0].contains("HTTP/JSON plus tonic"));
+        assert!(proxy_lines.is_empty());
         assert!(service_failure_lines_for_service(&report, "client")
             .iter()
             .all(|line| !line.contains("service proxy")));

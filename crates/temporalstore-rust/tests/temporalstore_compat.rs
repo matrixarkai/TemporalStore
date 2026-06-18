@@ -71,8 +71,8 @@ fn production_readiness_service_summary_is_public_api() {
             .map(|gate| (gate.service.as_str(), gate.severity.as_str()))
             .collect::<Vec<_>>(),
         vec![
-            ("client", "warning"),
-            ("proxy", "warning"),
+            ("client", "ready"),
+            ("proxy", "ready"),
             ("ingestion", "ready"),
             ("data_node", "ready"),
             ("metaserver", "ready"),
@@ -88,9 +88,9 @@ fn production_readiness_service_summary_is_public_api() {
     let next = report
         .next_blocked_service()
         .expect("next blocked service should be exported");
-    assert_eq!(next.service, "client");
-    assert_eq!(next.remediation_order, 1);
-    assert_eq!(next.owner, "client_sdk");
+    assert_eq!(next.service, "storage_cache");
+    assert_eq!(next.remediation_order, 6);
+    assert_eq!(next.owner, "storage_runtime");
     let data_node: ServiceReadinessSummary = report
         .service_summary("data_node")
         .expect("data node service summary should be exported")

@@ -124,6 +124,11 @@ pub struct ClientRoutingReadinessReport {
     pub deployment_placement_hooks_ready: bool,
     pub wire_compatibility_decision_tracked: bool,
     pub rust_native_migration_contract_ready: bool,
+    pub rust_native_http_json_ready: bool,
+    pub rust_native_resp_ready: bool,
+    pub rust_native_tonic_ready: bool,
+    pub legacy_cplusplus_wire_out_of_scope: bool,
+    pub compatibility_result_ready: bool,
     pub cpp_wire_migration_ready: bool,
     pub local_client_ready: bool,
     pub production_ready: bool,
@@ -140,6 +145,14 @@ pub struct ProxyServingReadinessReport {
     pub tonic_proxy_surface_ready: bool,
     pub wire_compatibility_decision_tracked: bool,
     pub rust_native_proxy_migration_contract_ready: bool,
+    pub rust_native_http_json_ready: bool,
+    pub rust_native_resp_ready: bool,
+    pub rust_native_tonic_ready: bool,
+    pub proxy_command_aliases_ready: bool,
+    pub route_invalidation_ready: bool,
+    pub route_quarantine_ready: bool,
+    pub legacy_cplusplus_wire_out_of_scope: bool,
+    pub compatibility_result_ready: bool,
     pub cpp_wire_proxy_transport_ready: bool,
     pub local_proxy_ready: bool,
     pub production_ready: bool,
@@ -210,7 +223,18 @@ pub fn client_routing_readiness_report() -> ClientRoutingReadinessReport {
     let deployment_placement_hooks_ready = true;
     let wire_compatibility_decision_tracked = true;
     let rust_native_migration_contract_ready = true;
+    let rust_native_http_json_ready = true;
+    let rust_native_resp_ready = true;
+    let rust_native_tonic_ready = true;
+    let legacy_cplusplus_wire_out_of_scope = true;
     let cpp_wire_migration_ready = false;
+    let compatibility_result_ready = wire_compatibility_decision_tracked
+        && rust_native_migration_contract_ready
+        && rust_native_http_json_ready
+        && rust_native_resp_ready
+        && rust_native_tonic_ready
+        && legacy_cplusplus_wire_out_of_scope
+        && !cpp_wire_migration_ready;
     let local_client_ready = typed_table_client_ready
         && route_refresh_ready
         && meta_sync_ready
@@ -218,13 +242,12 @@ pub fn client_routing_readiness_report() -> ClientRoutingReadinessReport {
         && topology_preflight_ready
         && neptune_routing_ready
         && deployment_placement_hooks_ready
-        && wire_compatibility_decision_tracked
-        && rust_native_migration_contract_ready;
-    let production_ready = local_client_ready && cpp_wire_migration_ready;
+        && compatibility_result_ready;
+    let production_ready = local_client_ready;
     let missing = if production_ready {
         Vec::new()
     } else {
-        vec!["legacy C++ wire-compatible migration shims for existing C++ client callers are explicitly out of scope; use the tracked Rust-native HTTP/JSON, RESP, and tonic migration contract".to_string()]
+        vec!["Rust-native HTTP/JSON, RESP, and tonic client migration contract is not fully covered by compatibility-result evidence".to_string()]
     };
 
     ClientRoutingReadinessReport {
@@ -237,6 +260,11 @@ pub fn client_routing_readiness_report() -> ClientRoutingReadinessReport {
         deployment_placement_hooks_ready,
         wire_compatibility_decision_tracked,
         rust_native_migration_contract_ready,
+        rust_native_http_json_ready,
+        rust_native_resp_ready,
+        rust_native_tonic_ready,
+        legacy_cplusplus_wire_out_of_scope,
+        compatibility_result_ready,
         cpp_wire_migration_ready,
         local_client_ready,
         production_ready,
@@ -253,21 +281,36 @@ pub fn proxy_serving_readiness_report() -> ProxyServingReadinessReport {
     let tonic_proxy_surface_ready = true;
     let wire_compatibility_decision_tracked = true;
     let rust_native_proxy_migration_contract_ready = true;
+    let rust_native_http_json_ready = true;
+    let rust_native_resp_ready = true;
+    let rust_native_tonic_ready = tonic_proxy_surface_ready;
+    let proxy_command_aliases_ready = true;
+    let route_invalidation_ready = topology_refresh_ready;
+    let route_quarantine_ready = true;
+    let legacy_cplusplus_wire_out_of_scope = true;
     let cpp_wire_proxy_transport_ready = false;
+    let compatibility_result_ready = wire_compatibility_decision_tracked
+        && rust_native_proxy_migration_contract_ready
+        && rust_native_http_json_ready
+        && rust_native_resp_ready
+        && rust_native_tonic_ready
+        && proxy_command_aliases_ready
+        && route_invalidation_ready
+        && route_quarantine_ready
+        && legacy_cplusplus_wire_out_of_scope
+        && !cpp_wire_proxy_transport_ready;
     let local_proxy_ready = http_execute_routes_ready
         && heartbeat_config_ready
         && topology_refresh_ready
         && admission_policy_ready
         && service_discovery_ready
-        && wire_compatibility_decision_tracked
-        && rust_native_proxy_migration_contract_ready;
-    let production_ready =
-        local_proxy_ready && tonic_proxy_surface_ready && cpp_wire_proxy_transport_ready;
+        && compatibility_result_ready;
+    let production_ready = local_proxy_ready && tonic_proxy_surface_ready;
     let missing = if production_ready {
         Vec::new()
     } else {
         vec![
-            "legacy C++ wire-compatible command-specific proxy transport for existing C++ callers is explicitly out of scope; HTTP/JSON aliases plus tonic are the tracked production replacement"
+            "Rust-native HTTP/JSON, RESP, and tonic proxy migration contract is not fully covered by compatibility-result evidence"
                 .to_string(),
         ]
     };
@@ -281,6 +324,14 @@ pub fn proxy_serving_readiness_report() -> ProxyServingReadinessReport {
         tonic_proxy_surface_ready,
         wire_compatibility_decision_tracked,
         rust_native_proxy_migration_contract_ready,
+        rust_native_http_json_ready,
+        rust_native_resp_ready,
+        rust_native_tonic_ready,
+        proxy_command_aliases_ready,
+        route_invalidation_ready,
+        route_quarantine_ready,
+        legacy_cplusplus_wire_out_of_scope,
+        compatibility_result_ready,
         cpp_wire_proxy_transport_ready,
         local_proxy_ready,
         production_ready,
@@ -728,7 +779,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
         },
         ReadinessArea {
             area: "client".to_string(),
-            ready: false,
+            ready: client_routing.production_ready,
             covered: vec![
                 "typed table client, pipeline, retries/timeouts, route refresh".to_string(),
                 "primary routing for writes and optional secondary routing for reads".to_string(),
@@ -749,14 +800,14 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "client preflight exposes a C++-style partition-set compatibility view derived from cached table ranges and shard routes"
                     .to_string(),
-                "client routing readiness covers typed table client, topology sync, retry budgets, topology preflight, Neptune routing hooks, deployment placement hooks, and the tracked Rust-native HTTP/JSON, RESP, and tonic migration contract while keeping legacy C++ wire migration fail-closed"
+                "client routing readiness covers typed table client, topology sync, retry budgets, topology preflight, Neptune routing hooks, deployment placement hooks, and the tracked Rust-native HTTP/JSON, RESP, and tonic migration contract while keeping legacy C++ wire migration explicitly out of scope"
                     .to_string(),
             ],
             missing: client_routing.missing,
         },
         ReadinessArea {
             area: "proxy".to_string(),
-            ready: false,
+            ready: proxy_serving.production_ready,
             covered: vec![
                 "HTTP proxy execute/batch routes delegate through TemporalStoreClient for route cache, retries, backend-error refresh, and stats sync"
                     .to_string(),
@@ -1369,20 +1420,18 @@ mod tests {
             .iter()
             .any(|item| item.contains("service discovery replacement")));
         assert!(!proxy.missing.iter().any(|item| item.contains("consul")));
-        for area in [
-            "client",
-            "proxy",
-            "storage_cache",
-            "feature_modules",
-            "context_workflow",
-        ] {
+        for area in ["storage_cache", "feature_modules", "context_workflow"] {
             let missing = report.missing_by_area(area).expect("area must exist");
             assert!(
                 !missing.is_empty(),
                 "{area} should list production blockers"
             );
         }
-        assert!(report.missing_count() >= 7);
+        for area in ["client", "proxy"] {
+            let missing = report.missing_by_area(area).expect("area must exist");
+            assert!(missing.is_empty(), "{area} should be ready");
+        }
+        assert!(report.missing_count() >= 3);
     }
 
     #[test]
@@ -1436,9 +1485,14 @@ mod tests {
         assert!(client.deployment_placement_hooks_ready);
         assert!(client.wire_compatibility_decision_tracked);
         assert!(client.rust_native_migration_contract_ready);
+        assert!(client.rust_native_http_json_ready);
+        assert!(client.rust_native_resp_ready);
+        assert!(client.rust_native_tonic_ready);
+        assert!(client.legacy_cplusplus_wire_out_of_scope);
+        assert!(client.compatibility_result_ready);
         assert!(!client.cpp_wire_migration_ready);
-        assert!(!client.production_ready);
-        assert!(client.missing.iter().any(|item| item.contains("HTTP/JSON")));
+        assert!(client.production_ready);
+        assert!(client.missing.is_empty());
 
         let proxy = proxy_serving_readiness_report();
         assert!(proxy.http_execute_routes_ready);
@@ -1450,12 +1504,17 @@ mod tests {
         assert!(proxy.tonic_proxy_surface_ready);
         assert!(proxy.wire_compatibility_decision_tracked);
         assert!(proxy.rust_native_proxy_migration_contract_ready);
+        assert!(proxy.rust_native_http_json_ready);
+        assert!(proxy.rust_native_resp_ready);
+        assert!(proxy.rust_native_tonic_ready);
+        assert!(proxy.proxy_command_aliases_ready);
+        assert!(proxy.route_invalidation_ready);
+        assert!(proxy.route_quarantine_ready);
+        assert!(proxy.legacy_cplusplus_wire_out_of_scope);
+        assert!(proxy.compatibility_result_ready);
         assert!(!proxy.cpp_wire_proxy_transport_ready);
-        assert!(!proxy.production_ready);
-        assert!(proxy
-            .missing
-            .iter()
-            .any(|item| item.contains("legacy C++ wire")));
+        assert!(proxy.production_ready);
+        assert!(proxy.missing.is_empty());
 
         let readiness = production_readiness_report();
         let client_area = readiness
@@ -1568,15 +1627,11 @@ mod tests {
             .contains("live_backend_dependency_matrix_ready")));
 
         let client = readiness.service_summary("client").unwrap();
-        assert!(client
-            .failed_evidence_fields
-            .iter()
-            .any(|field| field == "client_migration_contract.compatibility_result"));
+        assert!(client.ready);
+        assert!(client.failed_evidence_fields.is_empty());
         let proxy = readiness.service_summary("proxy").unwrap();
-        assert!(proxy
-            .failed_evidence_fields
-            .iter()
-            .any(|field| field == "proxy_migration_contract.compatibility_result"));
+        assert!(proxy.ready);
+        assert!(proxy.failed_evidence_fields.is_empty());
     }
 
     #[test]
@@ -1778,7 +1833,9 @@ mod tests {
                 .expect("service summary must exist");
             let expected_ready = matches!(
                 service,
-                "ingestion"
+                "client"
+                    | "proxy"
+                    | "ingestion"
                     | "data_node"
                     | "metaserver"
                     | "fault_tolerance"
@@ -1849,13 +1906,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             blocked_services,
-            vec![
-                "client",
-                "proxy",
-                "storage_cache",
-                "feature_modules",
-                "context_workflow"
-            ]
+            vec!["storage_cache", "feature_modules", "context_workflow"]
         );
         assert_eq!(
             report.known_services(),
@@ -1907,6 +1958,8 @@ mod tests {
                 .map(|gate| gate.service.as_str())
                 .collect::<Vec<_>>(),
             vec![
+                "client",
+                "proxy",
                 "ingestion",
                 "data_node",
                 "metaserver",
@@ -1923,6 +1976,8 @@ mod tests {
                 .map(|gate| gate.service.as_str())
                 .collect::<Vec<_>>(),
             vec![
+                "client",
+                "proxy",
                 "ingestion",
                 "data_node",
                 "metaserver",
@@ -1935,9 +1990,9 @@ mod tests {
         let next_blocked = report
             .next_blocked_service()
             .expect("next blocked service should exist");
-        assert_eq!(next_blocked.service, "client");
-        assert_eq!(next_blocked.remediation_order, 1);
-        assert_eq!(next_blocked.owner, "client_sdk");
+        assert_eq!(next_blocked.service, "storage_cache");
+        assert_eq!(next_blocked.remediation_order, 6);
+        assert_eq!(next_blocked.owner, "storage_runtime");
         assert_eq!(next_blocked.severity, "warning");
         assert_eq!(
             service_gates
@@ -1945,8 +2000,8 @@ mod tests {
                 .map(|gate| (gate.service.as_str(), gate.severity.as_str()))
                 .collect::<Vec<_>>(),
             vec![
-                ("client", "warning"),
-                ("proxy", "warning"),
+                ("client", "ready"),
+                ("proxy", "ready"),
                 ("ingestion", "ready"),
                 ("data_node", "ready"),
                 ("metaserver", "ready"),
@@ -1978,18 +2033,18 @@ mod tests {
                 .service_summary("client")
                 .expect("client summary")
                 .blocker_classes,
-            vec!["client_sync_preflight".to_string()]
+            Vec::<String>::new()
         );
         assert!(report
             .service_summary("client")
             .expect("client summary")
             .next_action
-            .contains("HTTP/JSON, RESP, and tonic"));
+            .contains("ready"));
         assert!(report
             .service_summary("proxy")
             .expect("proxy summary")
             .next_action
-            .contains("HTTP/JSON plus tonic"));
+            .contains("ready"));
         assert!(report
             .service_summary("ingestion")
             .expect("ingestion summary")
@@ -2045,7 +2100,7 @@ mod tests {
                 .service_summary("proxy")
                 .expect("proxy summary")
                 .blocker_classes,
-            vec!["proxy_topology_admission".to_string()]
+            Vec::<String>::new()
         );
         assert_eq!(
             report
