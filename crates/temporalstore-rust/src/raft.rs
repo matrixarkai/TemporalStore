@@ -11546,8 +11546,11 @@ mod tests {
     #[test]
     fn distributed_raft_readiness_reports_remaining_production_blockers() {
         let readiness = distributed_raft_readiness();
-        assert!(!readiness.complete);
-        assert!(!readiness.production_ready);
+        assert_eq!(readiness.complete, cfg!(feature = "openraft-engine"));
+        assert_eq!(
+            readiness.production_ready,
+            cfg!(feature = "openraft-engine")
+        );
         assert_eq!(readiness.mode, RaftDeploymentMode::ProductionDistributed);
         assert!(readiness.local_model_tested);
         assert!(readiness.transport_contracts_present);
@@ -11741,24 +11744,33 @@ mod tests {
         assert!(err
             .message
             .contains("production distributed Raft is required"));
-        assert!(err.missing.iter().any(|item| item.contains("OpenRaft")));
+        assert!(!err.message.contains("LocalModel"));
     }
 
     #[test]
-    fn production_raft_mode_is_blocked_until_real_engine_and_chaos_exist() {
-        let err =
-            validate_raft_deployment_mode(RaftDeploymentMode::ProductionDistributed).unwrap_err();
-        assert_eq!(err.mode, RaftDeploymentMode::ProductionDistributed);
-        assert!(!err
-            .missing
-            .iter()
-            .any(|item| item.contains("applied Raft index")));
-        assert!(!err.missing.iter().any(|item| item.contains("learner add")));
-        assert!(err
-            .missing
-            .iter()
-            .any(|item| item.contains("OpenRaft production engine adapter")));
-        assert_eq!(require_production_raft_ready().unwrap_err(), err);
+    fn production_raft_mode_uses_openraft_ready_path_when_adapter_is_enabled() {
+        if cfg!(feature = "openraft-engine") {
+            let readiness =
+                validate_raft_deployment_mode(RaftDeploymentMode::ProductionDistributed)
+                    .expect("default readiness build should enable OpenRaft production adapter");
+            assert!(readiness.production_ready);
+            assert!(readiness.missing.is_empty());
+            require_production_raft_ready().expect("production Raft gate should pass");
+        } else {
+            let err = validate_raft_deployment_mode(RaftDeploymentMode::ProductionDistributed)
+                .unwrap_err();
+            assert_eq!(err.mode, RaftDeploymentMode::ProductionDistributed);
+            assert!(!err
+                .missing
+                .iter()
+                .any(|item| item.contains("applied Raft index")));
+            assert!(!err.missing.iter().any(|item| item.contains("learner add")));
+            assert!(err
+                .missing
+                .iter()
+                .any(|item| item.contains("OpenRaft production engine adapter")));
+            assert_eq!(require_production_raft_ready().unwrap_err(), err);
+        }
     }
 
     #[test]

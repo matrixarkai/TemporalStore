@@ -82,7 +82,7 @@ fn production_readiness_service_summary_is_public_api() {
             ("fault_tolerance", "ready"),
             ("deployment_ops", "ready"),
             ("scale_testing", "ready"),
-            ("raft_replication", "warning")
+            ("raft_replication", "ready")
         ]
     );
     let next = report

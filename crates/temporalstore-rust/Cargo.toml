@@ -24,6 +24,7 @@ protoc-bin-vendored = "3"
 tonic-build = "0.12"
 
 [features]
+default = ["openraft-engine"]
 openraft-engine = ["dep:openraft"]
 
 [dev-dependencies]

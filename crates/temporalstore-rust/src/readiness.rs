@@ -1351,7 +1351,6 @@ mod tests {
             .any(|item| item.contains("service discovery replacement")));
         assert!(!proxy.missing.iter().any(|item| item.contains("consul")));
         for area in [
-            "raft_replication",
             "client",
             "proxy",
             "storage_cache",
@@ -1541,9 +1540,8 @@ mod tests {
         }
 
         let raft = readiness.service_gate_report("raft_replication").unwrap();
-        assert!(raft.failed_capabilities.iter().any(|blocker| blocker
-            .evidence_field
-            .contains("openraft_engine_adapter_present")));
+        assert!(raft.ready);
+        assert!(raft.failed_capabilities.is_empty());
 
         let storage = readiness.service_gate_report("storage_cache").unwrap();
         assert!(storage.failed_capabilities.iter().any(|blocker| blocker
@@ -1762,6 +1760,7 @@ mod tests {
                     | "fault_tolerance"
                     | "deployment_ops"
                     | "scale_testing"
+                    | "raft_replication"
             );
             assert_eq!(summary.ready, expected_ready, "{service} readiness drifted");
             assert_eq!(summary.blocker_count, summary.failed_capabilities.len());
@@ -1831,8 +1830,7 @@ mod tests {
                 "proxy",
                 "storage_cache",
                 "feature_modules",
-                "context_workflow",
-                "raft_replication"
+                "context_workflow"
             ]
         );
         assert_eq!(
@@ -1890,7 +1888,8 @@ mod tests {
                 "metaserver",
                 "fault_tolerance",
                 "deployment_ops",
-                "scale_testing"
+                "scale_testing",
+                "raft_replication"
             ]
         );
         assert_eq!(
@@ -1905,7 +1904,8 @@ mod tests {
                 "metaserver",
                 "fault_tolerance",
                 "deployment_ops",
-                "scale_testing"
+                "scale_testing",
+                "raft_replication"
             ]
         );
         let next_blocked = report
@@ -1932,7 +1932,7 @@ mod tests {
                 ("fault_tolerance", "ready"),
                 ("deployment_ops", "ready"),
                 ("scale_testing", "ready"),
-                ("raft_replication", "warning")
+                ("raft_replication", "ready")
             ]
         );
         let data_node_gate = service_gates
@@ -2015,7 +2015,7 @@ mod tests {
             .service_summary("raft_replication")
             .expect("raft replication summary")
             .next_action
-            .contains("OpenRaft"));
+            .contains("ready"));
         assert_eq!(
             report
                 .service_summary("proxy")
@@ -2084,7 +2084,7 @@ mod tests {
                 .service_summary("raft_replication")
                 .expect("raft replication summary")
                 .blocker_classes,
-            vec!["raft_replication_engine".to_string()]
+            Vec::<String>::new()
         );
 
         let data_node = report
