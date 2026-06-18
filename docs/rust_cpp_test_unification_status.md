@@ -253,12 +253,13 @@ every executable corpus command and compares every expected response.
 Until that exists, the honest status is:
 
 - Rust executes all 106 executable shared behavior steps.
-- C++ validates the 59-case corpus shape, current context subset, exact C++ Raft case names,
+- C++ validates the 72-case corpus shape, current context subset, exact C++ Raft case names,
   C++ storage/Raft required surfaces, the shared `raft_production_gate` metadata points at both
-  `run_storage_raft_production_readiness.sh` and `run_raft_distributed_parity.sh`, C++
-  client/proxy/metaserver/data-node control-plane required surfaces, the combined data-node plus
-  metaserver Raft distributed parity gate, and the Rust ingestion/ops evidence gate in unified
-  validation.
+  `run_storage_raft_production_readiness.sh` and `run_raft_distributed_parity.sh`, and C++
+  client/proxy/metaserver/data-node control-plane required surfaces.
+- The control-plane and ingestion cases in the shared corpus are still `existing_test` static
+  surface/evidence gates on the C++ side, not native C++ workflow execution. Rust has the executable
+  evidence and readiness validators for those gates today.
 - 540 Rust-attributed tests remain local or partially local. The product-behavior portion should be progressively
   converted into Rust-owned shared corpus cases; only implementation-internal tests should remain
   Rust-specific.

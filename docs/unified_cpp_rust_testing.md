@@ -119,6 +119,7 @@ That gate unifies the existing local checks instead of replacing them:
 - control-plane evidence: `tools/validate_control_plane_parity_evidence.py`
 - API/model evidence: `tools/validate_api_model_parity_evidence.py`
 - ingestion/ops evidence: `tools/validate_ingestion_ops_parity_evidence.py`
+- Rust product-test guard: `tools/validate_rust_product_test_guard.py`
 - storage integration: `storage_migration_corpus` and `storage_crash_harness`
 - scale/shared-store: compact `scale_harness` run with tunable `TS_UNIFIED_*`
   knobs
@@ -142,3 +143,7 @@ bash tools/run_temporalstore_unified_validation.sh --with-cpp
 
 The readiness gate is allowed to report known production blockers; unexpected
 readiness process failures still fail the unified validation pass.
+
+The Rust product-test guard does not make the existing Rust-local product-test backlog disappear.
+It records the current 540 Rust-attributed tests as the grandfathered baseline and rejects new
+externally observable Rust product tests unless they reference a shared corpus case.

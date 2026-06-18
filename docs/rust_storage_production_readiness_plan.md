@@ -129,6 +129,6 @@ current Rust-native deployment target:
   partial, missing-segment, stale, and corrupt-page-segment slot dump manifests before install.
 
 This closes the in-repo Rust migration verifier, external artifact-export contract, CI-published
-golden corpus path, and local production-harness slice for Rust-native storage formats. Storage
-remains not production-ready only for separately tracked live ByteStore/S3 integration and broader
-deployment-scale evidence.
+golden corpus path, and local production-harness slice for Rust-native storage formats. It does not
+claim global storage production readiness; live ByteStore/S3 integration and broader
+deployment-scale evidence remain separately tracked blockers.

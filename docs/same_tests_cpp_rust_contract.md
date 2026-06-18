@@ -511,10 +511,10 @@ python3 tools/run_temporalstore_unified_tests.py --both --require-cpp
 
 Result: all 8 iterations passed against the 34-case shared corpus.
 
-## Current Unified API/Model Expansion: 2026-06-16
+## Historical Unified API/Model Expansion: 2026-06-16
 
-The shared corpus has 59 cases and 146 steps after exact C++ Raft case-name unification. Ten
-C++-named Rust-local behavior groups were promoted into executable shared cases:
+At this stage, the shared corpus had 59 cases and 146 steps after exact C++ Raft case-name
+unification. Ten C++-named Rust-local behavior groups were promoted into executable shared cases:
 
 ```text
 feature_policy_filter_aggregate_lifecycle
@@ -536,8 +536,7 @@ manager/debug/FOL behavior. The storage cases cover slot dump/load restart recov
 fault rejection, follower-cursor lifecycle protection, cache refill from page-store refs, and sync
 plus async local shared-store replay.
 
-The Rust runner executes 100 product behavior steps through both direct engine and local HTTP
-client paths, plus 6 storage parity steps through direct engine/admin storage paths. The C++ hook
-validates the same 59-case corpus, current context contract,
-coverage manifest, duplicate-test rules, exact C++ Raft case names, and required C++ parity
-surfaces.
+At this stage, the Rust runner executed 100 product behavior steps through both direct engine and
+local HTTP client paths, plus 6 storage parity steps through direct engine/admin storage paths. The
+C++ hook validated the same 59-case corpus, current context contract, coverage manifest,
+duplicate-test rules, exact C++ Raft case names, and required C++ parity surfaces.

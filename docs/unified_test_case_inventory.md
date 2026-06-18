@@ -114,19 +114,19 @@ to them.
 | `cpp_proxy_serving_admission_parity_surfaces` | Proxy serving, heartbeat, config, HA calibration, and smoke surfaces. |
 | `cpp_metaserver_scheduler_repair_parity_surfaces` | Metaserver scheduler, repair, placement, heartbeat, and retry surfaces. |
 | `cpp_data_node_lifecycle_server_parity_surfaces` | Data-node lifecycle, heartbeat, server, and metaserver client surfaces. |
-| `control_topology_version_change` | Shared client/proxy/meta topology-version change workflow. |
-| `control_stale_route_invalidation` | Shared stale route invalidation and one-refresh retry workflow. |
-| `control_proxy_admission_policy` | Shared proxy admission, drop-percent, and degraded preflight workflow. |
-| `control_readonly_write_disabled_tables` | Shared readonly/write-disabled/not-serving table policy workflow. |
-| `control_route_quarantine_recovery` | Shared backend quarantine, recovery probing, and degraded preflight workflow. |
-| `control_data_node_load_reload_unload_lifecycle` | Shared data-node load/reload/readonly/unload lifecycle workflow. |
-| `control_metaserver_scheduler_lifecycle_workflow` | Shared metaserver scheduler-issued load/reload/unload token workflow. |
-| `ingestion_kafka_offset_ledger` | Shared Kafka offset ledger, duplicate rejection, and valid-record continuation workflow. |
-| `ingestion_kafka_rebalance_backpressure` | Shared Kafka consumer-group rebalance and backpressure workflow. |
-| `ingestion_flink_checkpoint_lifecycle` | Shared Flink checkpoint precommit/commit/abort workflow. |
-| `ingestion_dead_letter_export` | Shared dead-letter capture/export and non-blocking ingestion workflow. |
-| `ingestion_lag_metrics` | Shared Kafka lag, committed offset, and ingestion metric workflow. |
-| `ingestion_restart_idempotence` | Shared restart/failover idempotence workflow for offsets and checkpoints. |
+| `control_topology_version_change` | Static surface/evidence gate for the shared client/proxy/meta topology-version change workflow. |
+| `control_stale_route_invalidation` | Static surface/evidence gate for stale route invalidation and one-refresh retry behavior. |
+| `control_proxy_admission_policy` | Static surface/evidence gate for proxy admission, drop-percent, and degraded preflight behavior. |
+| `control_readonly_write_disabled_tables` | Static surface/evidence gate for readonly/write-disabled/not-serving table policy behavior. |
+| `control_route_quarantine_recovery` | Static surface/evidence gate for backend quarantine, recovery probing, and degraded preflight behavior. |
+| `control_data_node_load_reload_unload_lifecycle` | Static surface/evidence gate for data-node load/reload/readonly/unload lifecycle behavior. |
+| `control_metaserver_scheduler_lifecycle_workflow` | Static surface/evidence gate for metaserver scheduler-issued load/reload/unload token behavior. |
+| `ingestion_kafka_offset_ledger` | Static surface/evidence gate for Kafka offset ledger, duplicate rejection, and valid-record continuation behavior. |
+| `ingestion_kafka_rebalance_backpressure` | Static surface/evidence gate for Kafka consumer-group rebalance and backpressure behavior. |
+| `ingestion_flink_checkpoint_lifecycle` | Static surface/evidence gate for Flink checkpoint precommit/commit/abort behavior. |
+| `ingestion_dead_letter_export` | Static surface/evidence gate for dead-letter capture/export and non-blocking ingestion behavior. |
+| `ingestion_lag_metrics` | Static surface/evidence gate for Kafka lag, committed offset, and ingestion metric behavior. |
+| `ingestion_restart_idempotence` | Static surface/evidence gate for restart/failover idempotence behavior for offsets and checkpoints. |
 
 ## Are There Still Rust-Specific Tests?
 
