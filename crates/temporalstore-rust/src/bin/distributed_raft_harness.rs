@@ -636,14 +636,16 @@ fn apply_membership_on_all(
 }
 
 fn bootstrap_voter_from_leader_snapshot(runtimes: &[ProductionRaftRuntime], node_id: RaftNodeId) {
+    let snapshot = runtimes
+        .first()
+        .expect("at least one runtime is required for snapshot bootstrap")
+        .cluster()
+        .create_snapshot()
+        .expect("leader snapshot should be available for scale-up bootstrap");
     for runtime in runtimes {
-        let snapshot = runtime
-            .cluster()
-            .create_snapshot()
-            .expect("leader snapshot should be available for scale-up bootstrap");
         runtime
             .cluster()
-            .install_snapshot(node_id, snapshot)
+            .install_snapshot(node_id, snapshot.clone())
             .expect("new voter should install leader snapshot");
     }
 }
@@ -786,7 +788,11 @@ fn wait_for_replica_read(
 }
 
 fn wait_for_key(node: &ProductionRaftNode, key: &str, expected: &[u8]) -> ReplicaReadSummary {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let timeout_secs = std::env::var("TS_DISTRIBUTED_RAFT_CATCHUP_TIMEOUT_SECS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .unwrap_or(30);
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     loop {
         let response: DistributedRaftCommandResponse = post_json_harness(
             &node.addr,

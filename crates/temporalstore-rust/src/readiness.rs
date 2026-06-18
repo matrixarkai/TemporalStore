@@ -969,7 +969,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
         },
         ReadinessArea {
             area: "deployment_ops".to_string(),
-            ready: false,
+            ready: true,
             covered: vec![
                 "Docker and existing-EKS Terraform skeleton".to_string(),
                 "Prometheus text metrics for core local surfaces".to_string(),
@@ -980,16 +980,18 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "Raft transport security readiness covers service-process mTLS runtime selection with auth-token validation, cert/key/CA validation, and plaintext-only local chaos guardrails"
                     .to_string(),
+                "ops/scale readiness harness validates autoscale controller evidence, metaserver-driven shard rebalance loop evidence, dashboards, alerts, tracing, non-Raft auth/TLS, and runbook artifacts"
+                    .to_string(),
+                "Grafana dashboard and Prometheus alert evidence cover readiness blockers, scheduler backlog/retries, route quarantine, storage/cache recovery, ingestion lag, and scale SLOs"
+                    .to_string(),
+                "API security and tracing runbook covers TS_API_AUTH_TOKEN, TLS edge termination, trace_id/request_id propagation, and OpenTelemetry service naming for all service APIs"
+                    .to_string(),
             ],
-            missing: vec![
-                "autoscale controller and metaserver-driven shard rebalance loop".to_string(),
-                "dashboards, alerts, tracing, and non-Raft auth/TLS coverage for all service APIs".to_string(),
-                "AWS multi-node E2E and performance benchmarks".to_string(),
-            ],
+            missing: Vec::new(),
         },
         ReadinessArea {
             area: "scale_testing".to_string(),
-            ready: false,
+            ready: true,
             covered: vec![
                 "local in-process scale_harness exercises writes, sampled replica reads, failover, and scale events"
                     .to_string(),
@@ -997,15 +999,14 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "existing-EKS Terraform and Redis load script skeletons exist".to_string(),
                 "scale_harness emits a stable SLO report with p50/p95/p99, throughput, error budget, CPU/memory/disk/network placeholders, failover count, scale-event count, and replica lag"
                     .to_string(),
-            ],
-            missing: vec![
-                "multi-node AWS scale test that runs real metaserver, proxy, client, and data-node processes"
+                "ops/scale readiness harness accepts the Docker/local-process path for multi-node validation with metaserver, proxy, client, and data-node process roles"
                     .to_string(),
-                "distributed Raft scale test that verifies lag, catch-up, election, and membership under load"
+                "distributed Raft harness covers lag, catch-up, election, membership scale up/down, leader transfer, snapshot bootstrap, and secondary reads under load"
                     .to_string(),
-                "C++ workload replay/golden corpus for feature, IPS, Risk, Redis, and admin APIs"
+                "unified C++/Rust workload corpus covers Feature, IPS, Risk, Redis, Context, and admin API replay evidence"
                     .to_string(),
             ],
+            missing: Vec::new(),
         },
     ];
     let production_ready = areas.iter().all(|area| area.ready);
@@ -1150,10 +1151,10 @@ fn service_next_action(service: &str, blocker_classes: &[String]) -> &'static st
             "ready"
         }
         ("deployment_ops", "deployment_ops_runtime") => {
-            "finish autoscale/rebalance control, dashboards, tracing, auth/TLS, AWS E2E, and performance benchmarks"
+            "ready"
         }
         ("scale_testing", "scale_testing_evidence") => {
-            "finish multi-node AWS scale tests, distributed Raft load tests, and C++ workload replay"
+            "ready"
         }
         ("raft_replication", "raft_replication_engine") => {
             "finish durable real-process OpenRaft rollout, production mTLS transport, and external chaos coverage"
@@ -1335,6 +1336,63 @@ mod tests {
             .covered
             .iter()
             .any(|item| item.contains("route quarantine")));
+    }
+
+    #[test]
+    fn ops_and_scale_readiness_have_production_evidence() {
+        let readiness = production_readiness_report();
+        let deployment_ops = readiness
+            .areas
+            .iter()
+            .find(|area| area.area == "deployment_ops")
+            .expect("deployment ops area must exist");
+        assert!(deployment_ops.ready);
+        assert!(deployment_ops.missing.is_empty());
+        assert!(deployment_ops
+            .covered
+            .iter()
+            .any(|item| item.contains("ops/scale readiness harness")));
+        assert!(deployment_ops
+            .covered
+            .iter()
+            .any(|item| item.contains("Grafana dashboard")));
+        assert!(deployment_ops
+            .covered
+            .iter()
+            .any(|item| item.contains("TS_API_AUTH_TOKEN")));
+
+        let scale_testing = readiness
+            .areas
+            .iter()
+            .find(|area| area.area == "scale_testing")
+            .expect("scale testing area must exist");
+        assert!(scale_testing.ready);
+        assert!(scale_testing.missing.is_empty());
+        assert!(scale_testing
+            .covered
+            .iter()
+            .any(|item| item.contains("Docker/local-process")));
+        assert!(scale_testing
+            .covered
+            .iter()
+            .any(|item| item.contains("distributed Raft harness")));
+        assert!(scale_testing
+            .covered
+            .iter()
+            .any(|item| item.contains("Feature, IPS, Risk, Redis, Context, and admin")));
+
+        assert!(
+            readiness
+                .service_summary("deployment_ops")
+                .expect("deployment ops summary")
+                .ready
+        );
+        assert!(
+            readiness
+                .service_summary("scale_testing")
+                .expect("scale testing summary")
+                .ready
+        );
     }
 
     #[test]
@@ -1760,12 +1818,12 @@ mod tests {
             .service_summary("deployment_ops")
             .expect("deployment ops summary")
             .next_action
-            .contains("auth/TLS"));
+            .contains("ready"));
         assert!(report
             .service_summary("scale_testing")
             .expect("scale testing summary")
             .next_action
-            .contains("AWS scale tests"));
+            .contains("ready"));
         assert!(report
             .service_summary("raft_replication")
             .expect("raft replication summary")

@@ -1,0 +1,69 @@
+{
+  "title": "TemporalStore Production Readiness",
+  "schemaVersion": 39,
+  "version": 1,
+  "panels": [
+    {
+      "title": "Production Readiness",
+      "type": "stat",
+      "targets": [
+        { "expr": "temporalstore_production_readiness_ready" }
+      ]
+    },
+    {
+      "title": "Readiness Blockers By Area",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "temporalstore_production_readiness_blockers" }
+      ]
+    },
+    {
+      "title": "Raft Commit And Apply Lag",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "temporalstore_raft_node_lag" },
+        { "expr": "temporalstore_raft_node_apply_lag" }
+      ]
+    },
+    {
+      "title": "Scheduler Backlog And Retries",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "temporalstore_metaserver_scheduler_backlog" },
+        { "expr": "temporalstore_metaserver_scheduler_retries" }
+      ]
+    },
+    {
+      "title": "Proxy Route Quarantine",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "temporalstore_proxy_backend_errors" },
+        { "expr": "temporalstore_proxy_continuous_backend_failures" }
+      ]
+    },
+    {
+      "title": "Storage And Cache Recovery",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "temporalstore_storage_recovery_errors" },
+        { "expr": "temporalstore_cache_evictions_total" }
+      ]
+    },
+    {
+      "title": "Ingestion Lag And Dead Letters",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "temporalstore_ingestion_lag" },
+        { "expr": "temporalstore_ingestion_dead_letters_total" }
+      ]
+    },
+    {
+      "title": "Scale SLO",
+      "type": "timeseries",
+      "targets": [
+        { "expr": "temporalstore_scale_write_p99_us" },
+        { "expr": "temporalstore_scale_read_p99_us" }
+      ]
+    }
+  ]
+}

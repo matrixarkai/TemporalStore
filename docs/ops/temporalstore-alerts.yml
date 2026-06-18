@@ -76,3 +76,41 @@ groups:
         annotations:
           summary: TemporalStore data-node readiness blocked
           description: "Data-node readiness is blocked. Inspect temporalstore_production_readiness_service_blockers and per-shard storage readiness reports."
+
+  - name: temporalstore-ops-scale
+    rules:
+      - alert: TemporalStoreSchedulerBacklogHigh
+        expr: temporalstore_metaserver_scheduler_backlog > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: TemporalStore metaserver scheduler backlog is high
+          description: "Scheduler backlog is {{ $value }}. Check autoscale/rebalance tasks, cooldowns, safe mode, and data-node lifecycle tokens."
+
+      - alert: TemporalStoreProxyRouteQuarantineHigh
+        expr: temporalstore_proxy_continuous_backend_failures > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: TemporalStore proxy has quarantined or repeatedly failing backends
+          description: "Proxy continuous backend failures are non-zero. Inspect topology-version invalidation, route refresh, and backend recovery probing."
+
+      - alert: TemporalStoreScaleSloRegression
+        expr: temporalstore_scale_write_p99_us > 50000 or temporalstore_scale_read_p99_us > 50000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: TemporalStore scale SLO regression
+          description: "Scale harness p99 exceeded the local readiness threshold. Re-run tools/run_ops_scale_readiness.sh --run-local-scale and inspect the SLO report."
+
+      - alert: TemporalStoreIngestionDeadLetters
+        expr: temporalstore_ingestion_dead_letters_total > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: TemporalStore ingestion dead letters detected
+          description: "Dead-letter count is {{ $value }}. Inspect Kafka/Flink checkpoint state, replay idempotence, and dead-letter export."

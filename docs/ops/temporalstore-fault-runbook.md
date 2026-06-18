@@ -121,3 +121,25 @@ Recovery checks:
 - The relevant per-area blocker count decreases after the fix.
 - The service gate report moves to a less severe state.
 - The readiness JSON and Prometheus metrics agree on blocker counts.
+
+## Ops And Scale Gate
+
+Use this gate before marking deployment ops or scale testing evidence complete:
+
+```bash
+tools/run_ops_scale_readiness.sh
+tools/run_ops_scale_readiness.sh --run-local-scale
+tools/run_ops_scale_readiness.sh --run-distributed-raft
+```
+
+The first command validates the production evidence contract: autoscale and
+metaserver-driven rebalance surfaces, dashboard and alert files, tracing and
+non-Raft auth/TLS runbook, Docker/local scale harness, distributed Raft load
+harness, and unified C++/Rust workload corpus. The optional flags execute the
+local scale and real-process distributed Raft harnesses.
+
+Recovery checks:
+- The ops/scale readiness JSON reports `production_ready: true`.
+- Local scale reports `replication_healthy: true` and `max_replica_lag: 0`.
+- Distributed Raft reports successful follower reads, leader transfer,
+  membership scale up/down, snapshot bootstrap, and apply health.

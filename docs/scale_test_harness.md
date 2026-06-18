@@ -162,6 +162,33 @@ cargo run --release -p temporalstore-rust --bin scale_harness -- \
   --shared-store-root /mnt/temporalstore-shared/rust-scale/shared-store-$(date +%s)
 ```
 
+## Ops And Scale Readiness Gate
+
+`tools/run_ops_scale_readiness.sh` is the top-level Docker/local production
+evidence gate for ops and scale. It validates:
+
+- autoscale controller and metaserver-driven shard rebalance loop evidence
+- dashboards, alerts, tracing, non-Raft auth/TLS, and runbook evidence for all
+  service APIs
+- Docker/local scale run entry points for real metaserver, proxy, client, and
+  data-node process roles
+- distributed Raft load coverage for lag, catch-up, election, membership, and
+  secondary reads
+- unified C++/Rust workload replay corpus coverage for Feature, IPS, Risk,
+  Redis, Context, and admin APIs
+
+Fast evidence check:
+
+```bash
+tools/run_ops_scale_readiness.sh
+```
+
+Run local scale and distributed Raft harnesses:
+
+```bash
+tools/run_ops_scale_readiness.sh --run-local-scale --run-distributed-raft
+```
+
 ## Client Scale Harness
 
 `client_scale_harness` focuses on the Rust client library and the proxy/client serving path. It
