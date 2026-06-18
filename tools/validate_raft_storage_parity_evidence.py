@@ -381,6 +381,30 @@ AREAS: tuple[ParityArea, ...] = (
             ),
         ),
     ),
+    ParityArea(
+        name="byteraft_derived_readiness_contract",
+        corpus_cases=(
+            "cpp_data_raft_consensus_parity_surfaces",
+            "cpp_data_raft_replication_parity_surfaces",
+            "cpp_metaserver_raft_harness_parity_surfaces",
+            "raft_production_gate",
+        ),
+        rust_evidence=(
+            RustEvidence(
+                "tools/validate_byteraft_derived_readiness.py",
+                (
+                    "config_and_election_guards",
+                    "durable_wal_hard_state_and_membership",
+                    "joint_membership_and_safe_scale",
+                    "linearizable_and_bounded_reads",
+                    "learner_promotion_campaign_and_leader_transfer",
+                    "snapshot_install_bootstrap_and_catchup",
+                    "replication_health_lag_and_failover",
+                    "operator_control_surfaces",
+                ),
+            ),
+        ),
+    ),
 )
 
 

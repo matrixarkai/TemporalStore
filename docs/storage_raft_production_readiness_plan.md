@@ -89,6 +89,10 @@ Raft local coverage:
   lagging-voter tail catch-up, failover, and no-majority rejection parity.
 - Dedicated `run_raft_distributed_parity.sh` JSON gate that composes data-node distributed Raft,
   data-node secondary/fault tolerance, and metaserver Raft parity in one C++-mapped local run.
+- Dedicated `validate_byteraft_derived_readiness.py` static gate for ByteRaft-derived readiness:
+  election/pre-vote guards, durable hard state and membership, safe joint-consensus scale changes,
+  leader lease/read-index behavior, bounded stale reads, learner promotion, leader transfer,
+  snapshot bootstrap, lag/catch-up, failover, and operator routes.
 - Local production Raft runtime wrapper.
 - HTTP Raft transport for proposal/read/admin paths.
 - WAL-backed local recovery.

@@ -61,16 +61,16 @@ Raft/storage parity evidence status:
 
 ```text
 python3 tools/validate_raft_storage_parity_evidence.py
-raft_storage_parity_areas: 11
+raft_storage_parity_areas: 12
 corpus_required_cpp_paths: 50
-rust_evidence_snippets: 118
+rust_evidence_snippets: 126
 ```
 
-The eleven checked areas are storage object/page/slot lifecycle, slot dump/load recovery,
+The twelve checked areas are storage object/page/slot lifecycle, slot dump/load recovery,
 compaction/GC delayed destroy, shared-store sync/async replication and cursor-safe GC, Raft
 command/log/WAL codec, Raft snapshot/membership scale, data-node Raft consensus contract, Raft
 metaserver distributed fault contract, Raft failover secondary replication, exact C++ Raft case
-names, and local scale/fault readiness gates.
+names, local scale/fault readiness gates, and ByteRaft-derived readiness contracts.
 
 Control-plane parity evidence status:
 

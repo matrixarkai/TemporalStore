@@ -85,6 +85,9 @@ The Rust code currently has:
 - deterministic ByteRaft-style snapshot trigger reports for data-node and metaserver Raft when
   applied log bytes since the latest snapshot floor exceed `max_applied_log_bytes`
 - RequestVote receive path updates higher terms and clears prior votes before grant/reject decisions
+- ByteRaft-derived readiness guard covering config/election guards, durable WAL hard state, joint
+  membership, linearizable and bounded reads, learner promotion, leader transfer, snapshot
+  bootstrap, replication lag/catch-up, failover, and operator control routes
 - strict shared-store oplog gap rejection
 - partition/heal chaos coverage in the local model
 - tests for the above behavior
