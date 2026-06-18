@@ -46,13 +46,24 @@ When `TS_CPP_REPO` is set, the unified, parity, and storage/Raft gates pass it t
 `validate_raft_storage_parity_evidence.py --cpp-repo`, so the Raft parity evidence is checked
 against the current C++ checkout instead of Rust evidence alone.
 
+For a focused C++ Raft-case-driven Rust run, use:
+
+```bash
+python3 tools/run_cpp_raft_cases_on_rust.py \
+  --cpp-repo /path/to/cpp/TemporalStore \
+  --artifact-dir /tmp/temporalstore-cpp-raft-cases-on-rust
+```
+
+The report maps each C++ Raft case and runner to the Rust runner/validator before the Rust
+distributed Raft parity gate runs.
+
 Raft/storage parity evidence status:
 
 ```text
 python3 tools/validate_raft_storage_parity_evidence.py
 raft_storage_parity_areas: 11
 corpus_required_cpp_paths: 50
-rust_evidence_snippets: 115
+rust_evidence_snippets: 118
 ```
 
 The eleven checked areas are storage object/page/slot lifecycle, slot dump/load recovery,

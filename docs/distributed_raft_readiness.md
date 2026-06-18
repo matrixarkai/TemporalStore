@@ -174,6 +174,17 @@ The current C++ unified corpus includes these Raft/replication cases:
 | `raft_metaserver_membership_failover_snapshot` | `tools/run_metaserver_raft_membership_ubuntu22.sh`, `tools/run_metaserver_raft_failover_ubuntu22.sh`, `tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh` | `metaserver_raft_harness` plus `production_meta_raft_runtime_matches_cpp_multinode_control_and_fault_contract` cover membership list/add/remove, read-index wait, snapshot trigger/restore, lagging voter tail catch-up after stale snapshot install, leader transfer, failover, unsupported-role rejection, and no-majority rejection; strict production readiness still blocks on networked metaserver scheduler orchestration across real data-node Raft groups |
 | `raft_production_gate` | `tools/run_raft_production_gate_ubuntu22.sh` | `tools/run_storage_raft_production_readiness.sh` is the Rust storage/Raft local gate, and `tools/run_raft_distributed_parity.sh` is the Rust Raft-only parity gate for data-node plus metaserver multi-node behavior; strict production mode still fails until networked OpenRaft rollout, production mTLS, and external packet-loss/disk-pressure tests are complete |
 
+Focused C++ Raft-case-driven Rust validation:
+
+```bash
+python3 tools/run_cpp_raft_cases_on_rust.py \
+  --cpp-repo /path/to/cpp/TemporalStore \
+  --artifact-dir /tmp/temporalstore-cpp-raft-cases-on-rust
+```
+
+This command uses the unified C++ Raft case names above to verify C++ required paths, write a
+case-to-Rust-runner mapping report, and execute the Rust data-node plus metaserver Raft parity gate.
+
 ## June 17, 2026 Local Multi-Node Validation
 
 The Rust multi-node Raft checks were rerun against the C++ coverage above:

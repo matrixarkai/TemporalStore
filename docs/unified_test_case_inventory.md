@@ -12,11 +12,11 @@ Current inventory:
 
 ```text
 total cases: 45
-total steps: 110
+total steps: 112
 executable shared behavior cases: 18
 executable shared behavior steps: 78
 C++ existing-test parity surface cases: 27
-C++ existing-test parity surface steps: 32
+C++ existing-test parity surface steps: 34
 C++ required source/test/harness paths: 83 unique paths plus 30 exact Raft alias references
 required command kinds: 43
 required response kinds: 16
@@ -25,6 +25,18 @@ required response kinds: 16
 The target is no duplicated Rust-only and C++-only tests for product behavior. Product behavior
 should be represented as shared corpus cases. Rust-specific and C++-specific tests should remain
 only for implementation internals that are not cross-language TemporalStore contracts.
+
+Focused C++ Raft-to-Rust validation uses the same corpus entries:
+
+```bash
+python3 tools/run_cpp_raft_cases_on_rust.py \
+  --cpp-repo /path/to/cpp/TemporalStore \
+  --artifact-dir /tmp/temporalstore-cpp-raft-cases-on-rust
+```
+
+That command reads `coverage.required_raft_case_names`, checks the referenced C++ Raft test or
+harness paths when `--cpp-repo` is provided, emits `cpp-raft-cases-on-rust.json`, and runs the Rust
+combined data-node plus metaserver Raft parity gate.
 
 ## Executable Shared Behavior Cases
 

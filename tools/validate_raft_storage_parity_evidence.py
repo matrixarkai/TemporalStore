@@ -354,6 +354,14 @@ AREAS: tuple[ParityArea, ...] = (
                     "temporalstore-raft-distributed-parity-validation",
                 ),
             ),
+            RustEvidence(
+                "tools/run_cpp_raft_cases_on_rust.py",
+                (
+                    '"required_raft_case_names"',
+                    "cpp_required_paths_checked",
+                    "run_raft_distributed_parity.sh",
+                ),
+            ),
         ),
     ),
     ParityArea(
