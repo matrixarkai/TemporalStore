@@ -29,13 +29,13 @@ Current corpus:
 ```text
 schema_version: 1
 name: temporalstore-unified-cpp-rust-corpus
-cases: 59
-steps: 146
+cases: 66
+steps: 153
 executable behavior cases: 26
 executable behavior steps: 106
 required command kinds: 59
 required response kinds: 19
-C++ existing-test parity surfaces: 87 unique required paths plus 74 Raft path references
+C++ existing-test parity surfaces: 105 unique required paths plus 60 Raft path references
 ```
 
 The shared cases are:
@@ -111,6 +111,15 @@ The shared cases are:
   `raft_metaserver_membership_add_promote_remove`,
   `raft_openraft_process_rollout_evidence`, and
   `raft_production_gate`.
+- Current C++ control-plane test unification adds shared Client/Proxy/DataNode/Meta workflow case
+  names with Rust evidence metadata:
+  `control_topology_version_change`,
+  `control_stale_route_invalidation`,
+  `control_proxy_admission_policy`,
+  `control_readonly_write_disabled_tables`,
+  `control_route_quarantine_recovery`,
+  `control_data_node_load_reload_unload_lifecycle`, and
+  `control_metaserver_scheduler_lifecycle_workflow`.
 
 ## Rust Runner
 

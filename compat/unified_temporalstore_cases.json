@@ -62,7 +62,14 @@
       "raft_data_node_membership_secondary_reads",
       "raft_metaserver_leader_snapshot_restart",
       "raft_metaserver_membership_add_promote_remove",
-      "raft_openraft_process_rollout_evidence"
+      "raft_openraft_process_rollout_evidence",
+      "control_topology_version_change",
+      "control_stale_route_invalidation",
+      "control_proxy_admission_policy",
+      "control_readonly_write_disabled_tables",
+      "control_route_quarantine_recovery",
+      "control_data_node_load_reload_unload_lifecycle",
+      "control_metaserver_scheduler_lifecycle_workflow"
     ],
     "required_raft_case_names": [
       "storage_data_raft_replication_gtest",
@@ -3619,6 +3626,161 @@
               "src/metaserver_v2/client/partition_server_client.cc",
               "src/metaserver_v2/client/partition_server_client.h"
             ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "control_topology_version_change",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "client_proxy_meta_topology_version_change_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_client_control_plane_parity",
+            "mode": "static",
+            "description": "Shared C++/Rust control-plane case for topology-version changes. Rust validates table topology sync, proxy/meta topology refresh, and readiness evidence; C++ surfaces keep the caller migration and deployment routing hooks visible.",
+            "required_paths": [
+              "src/client/temporalstore_client.cc",
+              "src/client/temporalstore_client.h",
+              "src/client/neptune_syncer.cc",
+              "src/client/neptune_syncer.h"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust client_background_meta_sync_updates_existing_table_handle -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py"
+          }
+        }
+      ]
+    },
+    {
+      "name": "control_stale_route_invalidation",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "stale_route_invalidation_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_client_control_plane_parity",
+            "mode": "static",
+            "description": "Shared C++/Rust stale-route invalidation case covering client stale cached routes, proxy topology-version guarded invalidation, and one-refresh retry behavior.",
+            "required_paths": [
+              "src/client/router_factory.h",
+              "src/client/server_pool.h",
+              "src/client/test/client_test.cc"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust direct_client_refreshes_cached_route_after_failure -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py"
+          }
+        }
+      ]
+    },
+    {
+      "name": "control_proxy_admission_policy",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "proxy_admission_drop_and_degraded_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_proxy_control_plane_parity",
+            "mode": "static",
+            "description": "Shared C++/Rust proxy admission case for drop-percent, degraded/overload reporting, and request preflight policy counters.",
+            "required_paths": [
+              "src/proxy/main.cc",
+              "src/proxy/test/proxy_test.cc",
+              "src/metaserver_v2/test/proxy_calibration_test.cc"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust proxy_policy_blocks_writes_not_serving_and_drop_percent -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py"
+          }
+        }
+      ]
+    },
+    {
+      "name": "control_readonly_write_disabled_tables",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "readonly_write_disabled_table_policy_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_proxy_control_plane_parity",
+            "mode": "static",
+            "description": "Shared C++/Rust table policy case for frozen/not-serving/readonly/write-disabled states rejecting writes before backend execution while allowing safe reads where applicable.",
+            "required_paths": [
+              "src/metaserver_v2/meta/table.cc",
+              "src/metaserver_v2/meta/table.h",
+              "src/metaserver_v2/test/table_test.cc"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust startup_load_request_uses_readonly_secondary_env -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py"
+          }
+        }
+      ]
+    },
+    {
+      "name": "control_route_quarantine_recovery",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "backend_quarantine_and_recovery_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_proxy_control_plane_parity",
+            "mode": "static",
+            "description": "Shared C++/Rust route quarantine/recovery case for repeated backend failures, quarantined route avoidance, recovery probing, and degraded preflight evidence.",
+            "required_paths": [
+              "src/metaserver_v2/ha/failure_detector.cc",
+              "src/metaserver_v2/ha/failure_detector.h",
+              "src/metaserver_v2/test/proxy_ha_test.cc"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust proxy_skips_cached_backend_after_continuous_failure_threshold -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py"
+          }
+        }
+      ]
+    },
+    {
+      "name": "control_data_node_load_reload_unload_lifecycle",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "data_node_load_reload_unload_lifecycle_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_node_lifecycle_parity",
+            "mode": "static",
+            "description": "Shared C++/Rust data-node lifecycle case for load, reload, readonly serving, unload, stale load-version rejection, lifecycle write barriers, and restart persistence evidence.",
+            "required_paths": [
+              "src/partition/test/partition_load_test.cc",
+              "src/partition/test/partition_test.cc",
+              "src/partition/test/partition_replicator_test.cc"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust runtime_load_reload_unload_records_lifecycle_transitions -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py"
+          }
+        }
+      ]
+    },
+    {
+      "name": "control_metaserver_scheduler_lifecycle_workflow",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "metaserver_scheduler_load_reload_unload_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_metaserver_control_plane_parity",
+            "mode": "static",
+            "description": "Shared C++/Rust metaserver scheduler case for scheduler-issued load/reload/unload tokens, stale generation rejection, task retry persistence, and data-node lifecycle callback verification.",
+            "required_paths": [
+              "src/metaserver_v2/fsm.cc",
+              "src/metaserver_v2/meta/partition.cc",
+              "src/metaserver_v2/test/snapshot_test.cc"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust metaserver_scheduler_drives_load_reload_unload_lifecycle_workflow -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py"
           }
         }
       ]

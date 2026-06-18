@@ -11,13 +11,13 @@ compat/unified_temporalstore_cases.json
 Current inventory:
 
 ```text
-total cases: 59
-total steps: 146
+total cases: 66
+total steps: 153
 executable shared behavior cases: 26
 executable shared behavior steps: 106
-C++ existing-test parity surface cases: 33
-C++ existing-test parity surface steps: 40
-C++ required source/test/harness paths: 87 unique paths plus 74 Raft path references
+C++ existing-test parity surface cases: 40
+C++ existing-test parity surface steps: 47
+C++ required source/test/harness paths: 105 unique paths plus 60 Raft path references
 required command kinds: 59
 required response kinds: 19
 ```
@@ -114,6 +114,13 @@ to them.
 | `cpp_proxy_serving_admission_parity_surfaces` | Proxy serving, heartbeat, config, HA calibration, and smoke surfaces. |
 | `cpp_metaserver_scheduler_repair_parity_surfaces` | Metaserver scheduler, repair, placement, heartbeat, and retry surfaces. |
 | `cpp_data_node_lifecycle_server_parity_surfaces` | Data-node lifecycle, heartbeat, server, and metaserver client surfaces. |
+| `control_topology_version_change` | Shared client/proxy/meta topology-version change workflow. |
+| `control_stale_route_invalidation` | Shared stale route invalidation and one-refresh retry workflow. |
+| `control_proxy_admission_policy` | Shared proxy admission, drop-percent, and degraded preflight workflow. |
+| `control_readonly_write_disabled_tables` | Shared readonly/write-disabled/not-serving table policy workflow. |
+| `control_route_quarantine_recovery` | Shared backend quarantine, recovery probing, and degraded preflight workflow. |
+| `control_data_node_load_reload_unload_lifecycle` | Shared data-node load/reload/readonly/unload lifecycle workflow. |
+| `control_metaserver_scheduler_lifecycle_workflow` | Shared metaserver scheduler-issued load/reload/unload token workflow. |
 
 ## Are There Still Rust-Specific Tests?
 
@@ -121,9 +128,9 @@ Yes. Current Rust-local attributed test count is:
 
 ```text
 Rust attributed tests: 540
-shared corpus cases: 59
-shared corpus steps: 146
-C++ existing-test surfaces: 83
+shared corpus cases: 66
+shared corpus steps: 153
+C++ existing-test surfaces: 105
 ```
 
 The Rust-attributed tests are a migration backlog, not the desired final state. They should be
@@ -158,9 +165,12 @@ Those should follow the same rule:
    tests.
 2. Add sibling shared corpora for storage, Raft, control-plane, ingestion, and scale/fault
    scenarios when a single command/response JSON file becomes too large.
-3. Teach the C++ native runner to execute every executable shared behavior case, not only validate
+3. Move the new control-plane shared cases from static surface validation to native C++ execution:
+   topology-version changes, stale route invalidation, proxy admission, readonly/write-disabled
+   policy, route quarantine/recovery, data-node lifecycle, and metaserver scheduler lifecycle.
+4. Teach the C++ native runner to execute every executable shared behavior case, not only validate
    the corpus shape and context subset.
-4. Add a guard so new product behavior tests must reference a shared corpus case. Rust-specific or
+5. Add a guard so new product behavior tests must reference a shared corpus case. Rust-specific or
    C++-specific tests should state the implementation-only mechanic they protect.
 
 ## Validation Commands

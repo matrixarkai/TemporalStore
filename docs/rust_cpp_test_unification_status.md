@@ -76,13 +76,15 @@ Control-plane parity evidence status:
 
 ```text
 python3 tools/validate_control_plane_parity_evidence.py
-control_plane_parity_areas: 4
-corpus_required_cpp_paths: 38
-rust_evidence_snippets: 49
+control_plane_parity_areas: 11
+corpus_required_cpp_paths: 60
+rust_evidence_snippets: 86
 ```
 
-The four checked areas are client meta-sync/route retry, proxy serving/admission/topology,
-metaserver scheduler repair/snapshot, and data-node lifecycle/server surfaces.
+The eleven checked areas are client meta-sync/route retry, proxy serving/admission/topology,
+metaserver scheduler repair/snapshot, data-node lifecycle/server surfaces, topology-version change,
+stale route invalidation, proxy admission policy, readonly/write-disabled table policy, route
+quarantine/recovery, data-node load/reload/unload lifecycle, and metaserver scheduler lifecycle.
 Client and proxy readiness now also expose typed local-vs-production splits:
 `ClientRoutingReadinessReport` covers typed client routing, route refresh, background meta sync,
 retry classification, topology preflight, Neptune routing hooks, and deployment placement hooks
@@ -127,13 +129,13 @@ Shared C++/Rust corpus:
 
 ```text
 compat/unified_temporalstore_cases.json
-cases: 59
-steps: 146
+cases: 66
+steps: 153
 executable behavior cases: 26
 executable behavior steps: 106
-C++ existing-test parity surface cases: 33
-C++ existing-test parity surface steps: 40
-C++ existing-test required paths: 87 unique paths plus 74 Raft path references
+C++ existing-test parity surface cases: 40
+C++ existing-test parity surface steps: 47
+C++ existing-test required paths: 105 unique paths plus 60 Raft path references
 ```
 
 Detailed inventory: `docs/unified_test_case_inventory.md`.
@@ -154,6 +156,9 @@ shared-store replay,
 explicit data-node Raft leader/failover, snapshot/restart/follower-lag, membership/secondary-read
 cases, explicit metaserver Raft leader/snapshot/restart and membership add/promote/remove cases,
 OpenRaft process-rollout evidence,
+shared control-plane cases for topology-version changes, stale route invalidation, proxy admission,
+readonly/write-disabled policy, route quarantine/recovery, data-node load/reload/unload lifecycle,
+and metaserver scheduler lifecycle,
 Context, restart reads, missing-key semantics, timestamp bounds, current C++ storage/Raft surface
 gates, and C++ client/proxy/metaserver/data-node control-plane surface gates. Ingestion/ops parity
 is currently enforced as Rust evidence plus local harness gates; the next same-test step is to
@@ -176,7 +181,7 @@ shared product/parity cases versus true language-internal tests. The shared port
 | Other local tests | 24 | readiness, e2e, partition id, external chaos, HTTP, replica replay |
 
 The duplicate-test validator currently reports `rust_attributed_tests=540`,
-`shared_corpus_cases=59`, `shared_corpus_steps=146`, and `cpp_existing_test_surfaces=83`.
+`shared_corpus_cases=66`, `shared_corpus_steps=153`, and `cpp_existing_test_surfaces=105`.
 The Rust-attributed count is a migration backlog, not the desired final state.
 
 Target disposition:
@@ -207,9 +212,11 @@ Target disposition:
    `existing_test` harness surfaces, then move to executable corpus replay when a native C++
    runner exists.
 
-4. Add shared control-plane cases:
-   client retry budgets, proxy route invalidation/quarantine, metaserver scheduler task replay,
-   data-node lifecycle transitions, and service readiness reports.
+4. Continue shared control-plane promotion:
+   topology-version changes, stale route invalidation, proxy admission, readonly/write-disabled
+   policy, route quarantine/recovery, data-node lifecycle transitions, and metaserver scheduler
+   lifecycle now have shared corpus cases. The next step is native C++ execution of those workflows
+   instead of static source/harness validation.
 
 5. Add shared API/model cases:
    Redis command parity, context event/index/audit workflows, tonic SDK adapters, and C++ wire-model
