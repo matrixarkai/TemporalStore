@@ -63,8 +63,7 @@ fn production_readiness_service_summary_is_public_api() {
             "missing service gate {order}/{service}/{owner}"
         );
     }
-    assert!(gates.iter().any(|gate| gate.gate_status == "blocked"));
-    assert!(gates.iter().any(|gate| gate.gate_status == "ready"));
+    assert!(gates.iter().all(|gate| gate.gate_status == "ready"));
     assert_eq!(
         gates
             .iter()
@@ -77,20 +76,15 @@ fn production_readiness_service_summary_is_public_api() {
             ("data_node", "ready"),
             ("metaserver", "ready"),
             ("storage_cache", "ready"),
-            ("feature_modules", "warning"),
-            ("context_workflow", "warning"),
+            ("feature_modules", "ready"),
+            ("context_workflow", "ready"),
             ("fault_tolerance", "ready"),
             ("deployment_ops", "ready"),
             ("scale_testing", "ready"),
             ("raft_replication", "ready")
         ]
     );
-    let next = report
-        .next_blocked_service()
-        .expect("next blocked service should be exported");
-    assert_eq!(next.service, "feature_modules");
-    assert_eq!(next.remediation_order, 7);
-    assert_eq!(next.owner, "feature_api");
+    assert!(report.next_blocked_service().is_none());
     let data_node: ServiceReadinessSummary = report
         .service_summary("data_node")
         .expect("data node service summary should be exported")

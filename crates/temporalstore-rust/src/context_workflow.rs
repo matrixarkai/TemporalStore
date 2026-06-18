@@ -176,8 +176,58 @@ pub struct ContextInjectReport {
 pub struct ContextWorkflowStateReport {
     pub status: Status,
     pub providers: Vec<ContextModelProviderConfig>,
+    pub policy: ContextWorkflowPolicy,
     pub openviking_comparison: String,
     pub supported_routes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextWorkflowPolicy {
+    #[serde(default = "default_allowed_context_provider_kinds")]
+    pub allowed_provider_kinds: Vec<ContextProviderKind>,
+    #[serde(default)]
+    pub allowed_models: Vec<String>,
+    #[serde(default = "default_max_extract_body_bytes")]
+    pub max_extract_body_bytes: usize,
+    #[serde(default = "default_max_prompt_tokens")]
+    pub max_prompt_tokens: u32,
+    #[serde(default = "default_true")]
+    pub pii_filtering_enabled: bool,
+    #[serde(default = "default_true")]
+    pub tenant_isolation_required: bool,
+    #[serde(default = "default_context_rate_limit_per_minute")]
+    pub rate_limit_per_minute: u32,
+    #[serde(default = "default_context_provider_failure_budget")]
+    pub provider_failure_budget: u32,
+}
+
+impl Default for ContextWorkflowPolicy {
+    fn default() -> Self {
+        Self {
+            allowed_provider_kinds: default_allowed_context_provider_kinds(),
+            allowed_models: Vec::new(),
+            max_extract_body_bytes: default_max_extract_body_bytes(),
+            max_prompt_tokens: default_max_prompt_tokens(),
+            pii_filtering_enabled: true,
+            tenant_isolation_required: true,
+            rate_limit_per_minute: default_context_rate_limit_per_minute(),
+            provider_failure_budget: default_context_provider_failure_budget(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextWorkflowPolicyReport {
+    pub status: Status,
+    pub provider_allowed: bool,
+    pub model_allowed: bool,
+    pub body_size_allowed: bool,
+    pub prompt_size_allowed: bool,
+    pub pii_filtering_applied: bool,
+    pub tenant_isolation_applied: bool,
+    pub rate_limit_allowed: bool,
+    pub provider_failure_budget_allowed: bool,
+    pub sanitized_text: String,
 }
 
 pub fn default_context_model_providers() -> Vec<ContextModelProviderConfig> {
@@ -202,6 +252,7 @@ pub fn context_workflow_state_report() -> ContextWorkflowStateReport {
     ContextWorkflowStateReport {
         status: Status::ok(),
         providers: default_context_model_providers(),
+        policy: ContextWorkflowPolicy::default(),
         openviking_comparison:
             "TemporalStore keeps OpenViking-style L0/L1/L2 hierarchical context, but stores it in ContextNode/Event/Index/Audit models instead of a separate viking:// filesystem."
                 .to_string(),
@@ -214,6 +265,36 @@ pub fn context_workflow_state_report() -> ContextWorkflowStateReport {
             "/context/model/provider".to_string(),
         ],
     }
+}
+
+pub fn validate_context_extract_policy(
+    policy: &ContextWorkflowPolicy,
+    request: &ContextExtractRequest,
+) -> ContextWorkflowPolicyReport {
+    context_policy_report_for_text(
+        policy,
+        &request.provider,
+        request.tenant_hash,
+        request.body.as_str(),
+        estimate_tokens(&request.body),
+        request.body.len(),
+    )
+}
+
+pub fn validate_context_inject_policy(
+    policy: &ContextWorkflowPolicy,
+    request: &ContextInjectRequest,
+) -> ContextWorkflowPolicyReport {
+    context_policy_report_for_text(
+        policy,
+        &request.provider,
+        request.retrieve.tenant_hash,
+        request.prompt.as_str(),
+        request
+            .max_prompt_tokens
+            .max(estimate_tokens(&request.prompt)),
+        request.prompt.len(),
+    )
 }
 
 pub fn extract_context(
@@ -1000,12 +1081,106 @@ fn default_max_prompt_tokens() -> u32 {
     2048
 }
 
+fn default_max_extract_body_bytes() -> usize {
+    64 * 1024
+}
+
+fn default_context_rate_limit_per_minute() -> u32 {
+    600
+}
+
+fn default_context_provider_failure_budget() -> u32 {
+    10
+}
+
+fn default_allowed_context_provider_kinds() -> Vec<ContextProviderKind> {
+    vec![
+        ContextProviderKind::Mock,
+        ContextProviderKind::OpenAiCompatible,
+    ]
+}
+
 fn default_true() -> bool {
     true
 }
 
 fn default_tiers() -> Vec<ContextTier> {
     vec![ContextTier::L0, ContextTier::L1, ContextTier::L2]
+}
+
+fn context_policy_report_for_text(
+    policy: &ContextWorkflowPolicy,
+    provider: &ContextModelProviderConfig,
+    tenant_hash: u64,
+    text: &str,
+    requested_prompt_tokens: u32,
+    body_bytes: usize,
+) -> ContextWorkflowPolicyReport {
+    let provider_allowed = policy.allowed_provider_kinds.is_empty()
+        || policy
+            .allowed_provider_kinds
+            .iter()
+            .any(|allowed| allowed == &provider.provider_kind);
+    let model_allowed = policy.allowed_models.is_empty()
+        || policy
+            .allowed_models
+            .iter()
+            .any(|allowed| allowed == &provider.model);
+    let body_size_allowed = body_bytes <= policy.max_extract_body_bytes;
+    let prompt_size_allowed = requested_prompt_tokens <= policy.max_prompt_tokens;
+    let tenant_isolation_applied = !policy.tenant_isolation_required || tenant_hash != 0;
+    let rate_limit_allowed = policy.rate_limit_per_minute > 0;
+    let provider_failure_budget_allowed = policy.provider_failure_budget > 0;
+    let sanitized_text = if policy.pii_filtering_enabled {
+        redact_context_pii(text)
+    } else {
+        text.to_string()
+    };
+    let pii_filtering_applied = !policy.pii_filtering_enabled || sanitized_text != text;
+    let accepted = provider_allowed
+        && model_allowed
+        && body_size_allowed
+        && prompt_size_allowed
+        && tenant_isolation_applied
+        && rate_limit_allowed
+        && provider_failure_budget_allowed;
+
+    ContextWorkflowPolicyReport {
+        status: if accepted {
+            Status::ok()
+        } else {
+            Status::error(
+                "context_policy_rejected",
+                "context workflow policy rejected request",
+            )
+        },
+        provider_allowed,
+        model_allowed,
+        body_size_allowed,
+        prompt_size_allowed,
+        pii_filtering_applied,
+        tenant_isolation_applied,
+        rate_limit_allowed,
+        provider_failure_budget_allowed,
+        sanitized_text,
+    }
+}
+
+fn redact_context_pii(value: &str) -> String {
+    value
+        .split_whitespace()
+        .map(|token| {
+            let digit_count = token.chars().filter(|ch| ch.is_ascii_digit()).count();
+            if token.contains('@') && token.contains('.') {
+                "[redacted-email]".to_string()
+            } else if digit_count >= 8 {
+                "[redacted-id]".to_string()
+            } else {
+                token.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(test)]
@@ -1096,6 +1271,91 @@ mod tests {
         assert!(inject.status.ok);
         assert!(inject.injected_prompt.contains("<context>"));
         assert!(!inject.audit.selected_refs.is_empty());
+    }
+
+    #[test]
+    fn context_workflow_policy_controls_provider_model_and_pii() {
+        let policy = ContextWorkflowPolicy {
+            allowed_provider_kinds: vec![ContextProviderKind::OpenAiCompatible],
+            allowed_models: vec!["context-prod".to_string()],
+            max_extract_body_bytes: 256,
+            max_prompt_tokens: 64,
+            pii_filtering_enabled: true,
+            tenant_isolation_required: true,
+            rate_limit_per_minute: 100,
+            provider_failure_budget: 3,
+        };
+        let request = ContextExtractRequest {
+            shard_id: 1,
+            tenant_hash: 9,
+            source_kind: ContextSourceKind::Ticket,
+            source_id: "T-1".to_string(),
+            title: "Billing".to_string(),
+            body: "Customer jane@example.com has account 1234567890".to_string(),
+            timestamp_ms: 1,
+            provider: ContextModelProviderConfig {
+                provider_name: "openai-compatible".to_string(),
+                provider_kind: ContextProviderKind::OpenAiCompatible,
+                model: "context-prod".to_string(),
+                mock_mode: false,
+                ..ContextModelProviderConfig::default()
+            },
+        };
+
+        let report = validate_context_extract_policy(&policy, &request);
+        assert!(report.status.ok);
+        assert!(report.provider_allowed);
+        assert!(report.model_allowed);
+        assert!(report.pii_filtering_applied);
+        assert!(report.sanitized_text.contains("[redacted-email]"));
+        assert!(report.sanitized_text.contains("[redacted-id]"));
+    }
+
+    #[test]
+    fn context_workflow_policy_rejects_disallowed_runtime_controls() {
+        let policy = ContextWorkflowPolicy {
+            allowed_provider_kinds: vec![ContextProviderKind::Mock],
+            allowed_models: vec!["context-prod".to_string()],
+            max_extract_body_bytes: 8,
+            max_prompt_tokens: 4,
+            pii_filtering_enabled: true,
+            tenant_isolation_required: true,
+            rate_limit_per_minute: 0,
+            provider_failure_budget: 0,
+        };
+        let request = ContextInjectRequest {
+            retrieve: ContextRetrieveRequest {
+                shard_id: 1,
+                tenant_hash: 0,
+                node_hashes: vec![1],
+                query: "risk".to_string(),
+                start_time_ms: 0,
+                end_time_ms: 10,
+                max_events: 8,
+                min_confidence: 0.0,
+                min_importance: 0.0,
+                tiers: default_tiers(),
+            },
+            prompt: "one two three four five".to_string(),
+            session_hash: 7,
+            query_id: "q-policy".to_string(),
+            max_prompt_tokens: 32,
+            provider: ContextModelProviderConfig {
+                provider_kind: ContextProviderKind::OpenAiCompatible,
+                model: "wrong-model".to_string(),
+                mock_mode: false,
+                ..ContextModelProviderConfig::default()
+            },
+        };
+
+        let report = validate_context_inject_policy(&policy, &request);
+        assert!(!report.status.ok);
+        assert!(!report.provider_allowed);
+        assert!(!report.model_allowed);
+        assert!(!report.prompt_size_allowed);
+        assert!(!report.tenant_isolation_applied);
+        assert!(!report.rate_limit_allowed);
+        assert!(!report.provider_failure_budget_allowed);
     }
 
     #[test]
