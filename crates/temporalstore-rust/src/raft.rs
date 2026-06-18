@@ -1810,6 +1810,7 @@ pub struct RaftDistributedReadiness {
     pub external_snapshot_refs_present: bool,
     pub timer_election_tested: bool,
     pub byteraft_leader_write_authority_present: bool,
+    pub byteraft_operator_observability_present: bool,
     pub durable_apply_index_snapshot_integrated: bool,
     pub learner_catchup_promotion_present: bool,
     pub metaserver_driven_membership_present: bool,
@@ -1869,6 +1870,7 @@ pub fn distributed_raft_readiness() -> RaftDistributedReadiness {
         external_snapshot_refs_present: true,
         timer_election_tested: true,
         byteraft_leader_write_authority_present: true,
+        byteraft_operator_observability_present: true,
         durable_apply_index_snapshot_integrated: false,
         learner_catchup_promotion_present: true,
         metaserver_driven_membership_present: false,
@@ -10230,6 +10232,7 @@ mod tests {
             cfg!(feature = "openraft-engine")
         );
         assert!(readiness.byteraft_leader_write_authority_present);
+        assert!(readiness.byteraft_operator_observability_present);
         assert!(readiness.learner_catchup_promotion_present);
         assert!(!readiness.durable_apply_index_snapshot_integrated);
         assert!(!readiness.metaserver_driven_membership_present);

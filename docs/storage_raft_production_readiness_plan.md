@@ -92,7 +92,8 @@ Raft local coverage:
 - Dedicated `validate_byteraft_derived_readiness.py` static gate for ByteRaft-derived readiness:
   election/pre-vote guards, durable hard state and membership, safe joint-consensus scale changes,
   leader lease/read-index behavior, bounded stale reads, learner promotion, leader transfer,
-  snapshot bootstrap, lag/catch-up, failover, and operator routes.
+  snapshot bootstrap, lag/catch-up, failover, operator status/local-status/metrics, and operator
+  routes.
 - Local production Raft runtime wrapper.
 - HTTP Raft transport for proposal/read/admin paths.
 - WAL-backed local recovery.

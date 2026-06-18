@@ -166,6 +166,40 @@ AREAS: tuple[ReadinessArea, ...] = (
         ),
     ),
     ReadinessArea(
+        name="operator_status_metrics_and_local_status",
+        evidence=(
+            Evidence(
+                "crates/temporalstore-rust/src/raft.rs",
+                (
+                    "RaftClusterStatus",
+                    "RaftNodeStatus",
+                    "local_status",
+                    "prometheus_metrics",
+                    "raft_status_prometheus",
+                    "temporalstore_raft_cluster_commit_index",
+                    "temporalstore_raft_cluster_has_majority",
+                    "temporalstore_raft_node_commit_index",
+                    "temporalstore_raft_node_applied_index",
+                    "temporalstore_raft_node_lag",
+                    "temporalstore_raft_node_apply_lag",
+                    "raft_status_read_index_and_transfer_leader_match_engine_control_shape",
+                    "raft_apply_health_reports_commit_to_apply_lag",
+                    "metaserver_raft_status_read_index_and_transfer_leader_work",
+                    "metaserver_raft_apply_health_reports_commit_to_apply_lag",
+                    "byteraft_operator_observability_present",
+                ),
+            ),
+            Evidence(
+                "crates/temporalstore-rust/src/bin/raft_node.rs",
+                ("/raft/status", "/raft/apply_health", "local_apply_health"),
+            ),
+            Evidence(
+                "crates/temporalstore-rust/src/bin/server.rs",
+                ("/raft/status", "/raft/apply_health", "local_apply_health"),
+            ),
+        ),
+    ),
+    ReadinessArea(
         name="operator_control_surfaces",
         evidence=(
             Evidence(

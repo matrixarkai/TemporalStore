@@ -87,7 +87,8 @@ The Rust code currently has:
 - RequestVote receive path updates higher terms and clears prior votes before grant/reject decisions
 - ByteRaft-derived readiness guard covering config/election guards, durable WAL hard state, joint
   membership, linearizable and bounded reads, learner promotion, leader transfer, snapshot
-  bootstrap, replication lag/catch-up, failover, and operator control routes
+  bootstrap, replication lag/catch-up, failover, operator status/local-status/metrics, and
+  operator control routes
 - strict shared-store oplog gap rejection
 - partition/heal chaos coverage in the local model
 - tests for the above behavior
@@ -120,6 +121,10 @@ temporalstore_rust::validate_raft_deployment_mode(
 
 Production mode is intentionally blocked by `RaftProductionReadinessError`. `LocalModel` remains
 allowed for unit tests, compatibility tests, and local correctness work.
+
+The Rust production target is Rust-native behavior parity: keep OpenRaft/raft-rs as the production
+path and borrow ByteRaft semantics, safety contracts, metrics, admin surfaces, and tests. Direct
+C++ ByteRaft FFI is not part of the readiness target.
 
 ## Production Runtime Surface
 

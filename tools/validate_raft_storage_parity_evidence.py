@@ -400,6 +400,7 @@ AREAS: tuple[ParityArea, ...] = (
                     "learner_promotion_campaign_and_leader_transfer",
                     "snapshot_install_bootstrap_and_catchup",
                     "replication_health_lag_and_failover",
+                    "operator_status_metrics_and_local_status",
                     "operator_control_surfaces",
                 ),
             ),
