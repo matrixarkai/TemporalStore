@@ -148,8 +148,8 @@ def validate() -> dict[str, int]:
     return {
         "rust_attributed_tests": len(tests),
         "grandfathered_tests": len(baseline),
-        "new_marked_shared_corpus_tests": marked_shared,
-        "new_marked_rust_internal_tests": marked_internal,
+        "shared_corpus_marked_tests": marked_shared,
+        "rust_internal_marked_tests": marked_internal,
     }
 
 

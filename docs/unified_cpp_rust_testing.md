@@ -145,5 +145,6 @@ The readiness gate is allowed to report known production blockers; unexpected
 readiness process failures still fail the unified validation pass.
 
 The Rust product-test guard does not make the existing Rust-local product-test backlog disappear.
-It records the current 540 Rust-attributed tests as the grandfathered baseline and rejects new
-externally observable Rust product tests unless they reference a shared corpus case.
+It records the current 540 Rust-attributed tests as the grandfathered baseline, reports how many
+existing tests now carry `shared-corpus:` migration markers, and rejects new externally observable
+Rust product tests unless they reference a shared corpus case.

@@ -134,6 +134,7 @@ Yes. Current Rust-local attributed test count is:
 
 ```text
 Rust attributed tests: 540
+shared-corpus marked Rust tests: 11
 shared corpus cases: 72
 shared corpus steps: 159
 C++ existing-test surfaces: 117
@@ -145,6 +146,7 @@ The detailed reduction split and new-test guard live in
 ```text
 product behavior to move into shared corpus: 533
 Rust-only internals that can remain local: 7
+existing Rust tests already marked with shared-corpus references: 11
 ```
 
 The Rust-attributed tests are a migration backlog, not the desired final state. They should be
@@ -175,8 +177,9 @@ Those should follow the same rule:
 ## Next Unification Work
 
 1. Promote remaining `temporalstore_compat.rs` product behavior into shared corpus cases:
-   Redis RESP parsing, stream/page read APIs, shared-store replication, and distributed workflow
-   tests.
+   readiness service-summary API and stream/page read APIs. Redis/feature/sequence/Raft/shared-store
+   compatibility tests now have explicit shared-corpus references and can be removed or shrunk once
+   the shared runner fully replaces their extra assertions.
 2. Add sibling shared corpora for storage, Raft, control-plane, ingestion, and scale/fault
    scenarios when a single command/response JSON file becomes too large.
 3. Move the new control-plane shared cases from static surface validation to native C++ execution:

@@ -15,6 +15,17 @@ Those tests are now split into two explicit groups:
 | Product behavior to move into shared corpus | 533 | Must progressively move to `compat/unified_temporalstore_cases.json` or a sibling shared corpus consumed by both Rust and C++. |
 | Rust-only internals that can remain local | 7 | May stay Rust-local because they protect parser/helper/test-runner mechanics rather than TemporalStore product behavior. |
 
+The first migration slice now marks **11** existing `temporalstore_compat.rs` product tests with
+explicit `shared-corpus:` references. These tests still count in the 540 Rust-attributed baseline
+until they are removed or collapsed into the shared runner, but their product contract is no longer
+ambiguous. The remaining unmarked compatibility tests are:
+
+- `production_readiness_service_summary_is_public_api`
+- `cxx_stream_random_size_reopen_and_scan_matches_stream_test`
+- `cxx_stream_cross_block_large_values_survive_reopen`
+
+Those need dedicated readiness/stream corpus cases before they can be marked or removed.
+
 ## Product Behavior Backlog
 
 | Bucket | Count | Main files | Shared-corpus target |
@@ -69,4 +80,13 @@ It is also run by:
 
 ```bash
 python3 tools/validate_no_duplicate_tests.py
+```
+
+Current guard output includes both the grandfathered baseline and migration marker count:
+
+```text
+rust_attributed_tests=540
+grandfathered_tests=540
+shared_corpus_marked_tests=11
+rust_internal_marked_tests=0
 ```

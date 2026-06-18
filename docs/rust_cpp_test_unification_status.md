@@ -151,7 +151,7 @@ Detailed inventory: `docs/unified_test_case_inventory.md`.
 | Area | Count | Location | Notes |
 | --- | ---: | --- | --- |
 | Shared corpus runner tests | 2 | `crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs` | Runs the same shared corpus through direct engine and HTTP client paths. |
-| C++-like API/integration tests | 14 | `crates/temporalstore-rust/tests/temporalstore_compat.rs` | Rust-local tests named against C++ behavior. These should be moved into the shared corpus when command/response shape is stable. |
+| C++-like API/integration tests | 14 | `crates/temporalstore-rust/tests/temporalstore_compat.rs` | Rust-local tests named against C++ behavior. 11 now carry explicit `shared-corpus:` references; the three remaining unmarked tests need readiness/stream corpus cases. |
 | C++ migration corpus test | 1 | `crates/temporalstore-rust/tests/storage_migration_corpus.rs` | Rust consumes converted C++ storage artifacts and validates storage lifecycle paths. |
 
 The shared corpus currently covers common/string/hash/set, Redis-compatible set, Feature,
@@ -189,7 +189,8 @@ remain local.
 | Rust-only internals that can remain local | 7 | `tests/unified_temporalstore_corpus.rs`, `partition_id.rs`, `http.rs`, `types.rs` |
 
 The duplicate-test validator currently reports `rust_attributed_tests=540`,
-`shared_corpus_cases=72`, `shared_corpus_steps=159`, and `cpp_existing_test_surfaces=117`.
+`rust_test_guard_shared_corpus_marked_tests=11`, `shared_corpus_cases=72`,
+`shared_corpus_steps=159`, and `cpp_existing_test_surfaces=117`.
 It now also checks `tools/rust_product_test_baseline.json` so new Rust tests must declare either
 `shared-corpus: <case>` or `rust-internal: <reason>`.
 
@@ -207,9 +208,9 @@ Target disposition:
 ## Highest-Value Tests To Share Next
 
 1. Promote `temporalstore_compat.rs` cases into `compat/unified_temporalstore_cases.json`.
-   The Feature policy/filter/aggregate cases and Sequence batch/filter cases have now moved into
-   the shared corpus. Remaining candidates are Redis RESP-specific command parsing, stream/page
-   read APIs, shared-store replication, and distributed workflow tests.
+   The Feature policy/filter/aggregate, Sequence batch/filter, Redis feature, Raft consistency,
+   and shared-store replication compatibility tests now have explicit shared-corpus references.
+   Remaining unmarked candidates are readiness service-summary API and stream/page read APIs.
 
 2. Add shared storage lifecycle corpus cases for the large storage bucket:
    packed page recovery, slot dump/load, compaction, GC retention, tiny-cache refill, shared-store

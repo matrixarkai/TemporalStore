@@ -126,6 +126,7 @@ fn production_readiness_service_summary_is_public_api() {
     assert_eq!(gate.failed_capabilities.len(), data_node.blocker_count);
 }
 
+// shared-corpus: common_lifecycle_delete_ttl, common_restart_persistence
 #[test]
 fn cxx_basic_smoketest_string_reload_ttl_expire_and_delete() {
     let dir = tempfile::tempdir().unwrap();
@@ -236,6 +237,7 @@ fn cxx_basic_smoketest_string_reload_ttl_expire_and_delete() {
     );
 }
 
+// shared-corpus: common_string_hash_core, hash_single_field_and_delete, common_restart_persistence
 #[test]
 fn cxx_basic_smoketest_hash_reload_delete_getall_and_len() {
     let dir = tempfile::tempdir().unwrap();
@@ -338,6 +340,7 @@ fn cxx_basic_smoketest_hash_reload_delete_getall_and_len() {
     );
 }
 
+// shared-corpus: common_string_hash_core, hash_single_field_and_delete
 #[test]
 fn onebox_proxy_hash_multi_command_parity_over_redis_resp() {
     let engine = TemporalEngine::default();
@@ -392,6 +395,7 @@ fn onebox_proxy_hash_multi_command_parity_over_redis_resp() {
     assert_eq!(run(vec!["HLEN", "test_hmget_key1"]), RespValue::Integer(2));
 }
 
+// shared-corpus: raft_data_node_mixed_rw_and_membership
 #[test]
 fn consistency_bench_style_hash_writes_are_linearizable_through_raft() {
     let workflow = EndToEndWorkflow::new(1, [1, 2, 3]);
@@ -459,6 +463,7 @@ fn consistency_bench_style_hash_writes_are_linearizable_through_raft() {
     );
 }
 
+// shared-corpus: feature_packed_timestamped_pages, feature_policy_filter_aggregate_lifecycle
 #[test]
 fn feature_module_smoke_matches_temporal_feature_flow() {
     let engine = TemporalEngine::default();
@@ -494,6 +499,7 @@ fn feature_module_smoke_matches_temporal_feature_flow() {
     );
 }
 
+// shared-corpus: feature_policy_filter_aggregate_lifecycle
 #[test]
 fn cxx_feature_module_simple_missing_truncate_policy_replace_and_delete() {
     let engine = TemporalEngine::default();
@@ -659,6 +665,7 @@ fn cxx_feature_module_simple_missing_truncate_policy_replace_and_delete() {
     );
 }
 
+// shared-corpus: feature_policy_filter_aggregate_lifecycle, sequence_cpp_feature_rows
 #[test]
 fn cxx_feature_filter_count_is_scan_bound_before_filtering() {
     let engine = TemporalEngine::default();
@@ -736,6 +743,7 @@ fn cxx_feature_filter_count_is_scan_bound_before_filtering() {
     );
 }
 
+// shared-corpus: sequence_batch_filter_groups
 #[test]
 fn cxx_sequence_feature_sdk_filters_batch_and_count_scan_bound() {
     let engine = TemporalEngine::default();
@@ -844,6 +852,7 @@ fn cxx_sequence_feature_sdk_filters_batch_and_count_scan_bound() {
     );
 }
 
+// shared-corpus: sequence_batch_filter_groups
 #[test]
 fn cxx_long_sequence_feature_5k_ordered_windows_and_random_filters() {
     let engine = TemporalEngine::default();
@@ -923,6 +932,7 @@ fn cxx_long_sequence_feature_5k_ordered_windows_and_random_filters() {
     }
 }
 
+// shared-corpus: feature_policy_filter_aggregate_lifecycle, cpp_redis_live_storage_smoke_parity_surfaces
 #[test]
 fn cxx_redis_feature_commands_cover_module_flow() {
     let engine = TemporalEngine::default();
@@ -1165,6 +1175,7 @@ fn cxx_stream_cross_block_large_values_survive_reopen() {
     assert_eq!(second_chunk.data, large[256 * 1024..].to_vec());
 }
 
+// shared-corpus: storage_shared_store_sync_replay, storage_shared_store_async_replay
 #[tokio::test]
 async fn cxx_shared_store_replication_bootstrap_and_oplog_replay_matches_primary_pull_model() {
     let dir = tempfile::tempdir().unwrap();
