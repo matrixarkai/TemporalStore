@@ -28,13 +28,13 @@ use temporalstore_rust::raft::{
 };
 use temporalstore_rust::types::{BatchExecuteRequest, ExecuteRequest, ExecuteResponse, Status};
 use temporalstore_rust::{
-    handle_authenticated_raft_http, production_readiness_report, CheckedBatchExecuteRequest,
-    CheckedExecuteRequest, Command, CommandResponse, CompactionRequest, DataNodeRuntime,
-    DataNodeRuntimeOptions, DistributedRaftCommandResponse, DistributedRaftProposeRequest,
-    DistributedRaftReadRequest, DumpShardRequest, GcRequest, HttpReplicaStreamSource,
-    LoadShardRequest, MembershipUpdateRequest, PageStoreOptions, ProductionRaftEngineKind,
-    ProductionRaftNode, ProductionRaftRuntime, ProductionRaftRuntimeOptions,
-    ProductionRaftSecurity, RaftConfig, RaftControlLeadershipRequest, RaftFailoverReport,
+    handle_authenticated_raft_http, production_raft_security_from_env, production_readiness_report,
+    CheckedBatchExecuteRequest, CheckedExecuteRequest, Command, CommandResponse, CompactionRequest,
+    DataNodeRuntime, DataNodeRuntimeOptions, DistributedRaftCommandResponse,
+    DistributedRaftProposeRequest, DistributedRaftReadRequest, DumpShardRequest, GcRequest,
+    HttpReplicaStreamSource, LoadShardRequest, MembershipUpdateRequest, PageStoreOptions,
+    ProductionRaftEngineKind, ProductionRaftNode, ProductionRaftRuntime,
+    ProductionRaftRuntimeOptions, RaftConfig, RaftControlLeadershipRequest, RaftFailoverReport,
     RaftMembershipChangeReport, RaftNodeId, RaftRpcRuntimeOptions, RaftTransport,
     ReplicaReplayLoop, ReplicaReplayOptions, ReplicaReplayRequest, ReplicaReplayResponse,
     RequestController, ScanStreamRequest, SchedulerLifecycleToken, SetConfigRequest,
@@ -1224,8 +1224,10 @@ fn start_server_raft_from_env(
     let nodes = parse_raft_nodes(advertised_addr, local_node_id);
     let wal_dir = std::env::var("TS_RAFT_WAL_DIR")
         .unwrap_or_else(|_| format!("target/temporalstore-server-raft/node-{local_node_id}"));
-    let auth_token =
-        std::env::var("TS_RAFT_AUTH_TOKEN").unwrap_or_else(|_| "local-raft-token".to_string());
+    let security = production_raft_security_from_env(
+        "local-raft-token",
+        env_bool("TS_RAFT_ALLOW_PLAINTEXT", true),
+    );
     let runtime = ProductionRaftRuntime::start(ProductionRaftRuntimeOptions {
         engine: ProductionRaftEngineKind::OpenRaft,
         shard_id: raft_shard_id,
@@ -1238,14 +1240,14 @@ fn start_server_raft_from_env(
             deadline_ms: env_u64("TS_RAFT_RPC_DEADLINE_MS", 1_000),
             ..RaftRpcRuntimeOptions::default()
         },
-        security: ProductionRaftSecurity::plaintext_for_local_chaos(auth_token),
+        security: security.security,
         heartbeat_interval_ms: env_u64("TS_RAFT_HEARTBEAT_INTERVAL_MS", 100),
         election_tick_ms: env_u64("TS_RAFT_ELECTION_TICK_MS", 50),
         max_catchup_entries_per_heartbeat: env_u64(
             "TS_RAFT_MAX_CATCHUP_ENTRIES_PER_HEARTBEAT",
             256,
         ),
-        allow_plaintext_for_local_chaos: env_bool("TS_RAFT_ALLOW_PLAINTEXT", true),
+        allow_plaintext_for_local_chaos: security.allow_plaintext_for_local_chaos,
     })
     .expect("failed to start server raft runtime");
     let _timer = runtime.start_timer_loop();
@@ -4677,7 +4679,9 @@ mod tests {
                 deadline_ms: 100,
                 ..RaftRpcRuntimeOptions::default()
             },
-            security: ProductionRaftSecurity::plaintext_for_local_chaos("test-token"),
+            security: temporalstore_rust::ProductionRaftSecurity::plaintext_for_local_chaos(
+                "test-token",
+            ),
             heartbeat_interval_ms: 20,
             election_tick_ms: 10,
             max_catchup_entries_per_heartbeat: 32,

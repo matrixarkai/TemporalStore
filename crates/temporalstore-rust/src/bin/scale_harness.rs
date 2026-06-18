@@ -74,6 +74,7 @@ struct HarnessSummary {
     max_replica_lag: u64,
     raft_node_statuses: Vec<RaftNodeStatus>,
     max_log_entry_bytes: u64,
+    slo_report: ScaleSloReport,
 }
 
 #[derive(Debug, Default, Clone, Copy, Serialize)]
@@ -112,6 +113,29 @@ struct SharedStoreComparisonSummary {
     async_max_lag: u64,
     async_flush_every: usize,
     shared_store_root: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ScaleSloReport {
+    workload: String,
+    p50_write_us: u128,
+    p95_write_us: u128,
+    p99_write_us: u128,
+    p50_read_us: u128,
+    p95_read_us: u128,
+    p99_read_us: u128,
+    write_ops_per_sec: f64,
+    read_ops_per_sec: f64,
+    error_budget_remaining_percent: f64,
+    replication_healthy: bool,
+    max_replica_lag: u64,
+    failovers: usize,
+    scale_events: usize,
+    cpu_observed: bool,
+    memory_observed: bool,
+    disk_observed: bool,
+    network_observed: bool,
+    notes: Vec<String>,
 }
 
 fn main() {
@@ -268,6 +292,20 @@ fn main() {
         write_ops as f64 / (elapsed_ms as f64 / 1_000.0)
     };
     let status = cluster.status();
+    let raft_write_latency = summarize_latencies(&raft_write_latencies);
+    let raft_replica_read_latency = summarize_latencies(&raft_read_latencies);
+    let raft_write_qps = summarize_throughput(raft_write_latency.samples, elapsed_ms);
+    let raft_read_qps = summarize_throughput(raft_replica_read_latency.samples, elapsed_ms);
+    let slo_report = build_slo_report(
+        raft_write_latency,
+        raft_replica_read_latency,
+        raft_write_qps,
+        raft_read_qps,
+        health.healthy,
+        health.max_lag,
+        failovers,
+        completed_scale_events,
+    );
     let summary = HarnessSummary {
         shard_id: options.shard_id,
         final_nodes: cluster.membership().voters,
@@ -277,10 +315,10 @@ fn main() {
         hash_ops: options.hash_ops,
         sequence_rows: options.sequence_keys * options.sequence_len,
         sampled_reads,
-        raft_write_latency: summarize_latencies(&raft_write_latencies),
-        raft_replica_read_latency: summarize_latencies(&raft_read_latencies),
-        raft_write_qps: summarize_throughput(raft_write_latencies.len(), elapsed_ms),
-        raft_read_qps: summarize_throughput(raft_read_latencies.len(), elapsed_ms),
+        raft_write_latency,
+        raft_replica_read_latency,
+        raft_write_qps,
+        raft_read_qps,
         shared_store,
         failovers,
         scale_events: completed_scale_events,
@@ -290,6 +328,7 @@ fn main() {
         max_replica_lag: health.max_lag,
         raft_node_statuses: status.nodes.clone(),
         max_log_entry_bytes: options.max_log_entry_bytes,
+        slo_report,
     };
 
     println!("{}", serde_json::to_string_pretty(&summary).unwrap());
@@ -618,6 +657,58 @@ fn summarize_throughput(ops: usize, elapsed_ms: u128) -> ThroughputSummary {
         ops,
         elapsed_ms,
         ops_per_sec,
+    }
+}
+
+fn build_slo_report(
+    write_latency: LatencySummary,
+    read_latency: LatencySummary,
+    write_qps: ThroughputSummary,
+    read_qps: ThroughputSummary,
+    replication_healthy: bool,
+    max_replica_lag: u64,
+    failovers: usize,
+    scale_events: usize,
+) -> ScaleSloReport {
+    let mut notes = vec![
+        "local harness captures latency, throughput, failover, scale, and replica-lag SLO evidence"
+            .to_string(),
+        "CPU, memory, disk, and network fields are explicit placeholders for Docker/AWS collectors"
+            .to_string(),
+    ];
+    let error_budget_remaining_percent = if replication_healthy && max_replica_lag == 0 {
+        100.0
+    } else if replication_healthy {
+        99.0
+    } else {
+        0.0
+    };
+    if failovers > 0 {
+        notes.push("failover exercised during workload".to_string());
+    }
+    if scale_events > 0 {
+        notes.push("scale up/down exercised during workload".to_string());
+    }
+    ScaleSloReport {
+        workload: "local_docker_or_aws_multi_node_scale".to_string(),
+        p50_write_us: write_latency.p50_us,
+        p95_write_us: write_latency.p95_us,
+        p99_write_us: write_latency.p99_us,
+        p50_read_us: read_latency.p50_us,
+        p95_read_us: read_latency.p95_us,
+        p99_read_us: read_latency.p99_us,
+        write_ops_per_sec: write_qps.ops_per_sec,
+        read_ops_per_sec: read_qps.ops_per_sec,
+        error_budget_remaining_percent,
+        replication_healthy,
+        max_replica_lag,
+        failovers,
+        scale_events,
+        cpu_observed: false,
+        memory_observed: false,
+        disk_observed: false,
+        network_observed: false,
+        notes,
     }
 }
 

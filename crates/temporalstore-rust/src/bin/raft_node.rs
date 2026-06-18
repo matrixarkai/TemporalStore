@@ -10,10 +10,10 @@ use temporalstore_rust::raft::{
     ReadIndexResponse,
 };
 use temporalstore_rust::{
-    handle_authenticated_raft_http, CommandResponse, DistributedRaftCommandResponse,
-    DistributedRaftProposeRequest, DistributedRaftReadRequest, ProductionRaftEngineKind,
-    ProductionRaftNode, ProductionRaftRuntime, ProductionRaftRuntimeOptions,
-    ProductionRaftSecurity, RaftConfig, RaftControlLeadershipRequest, RaftFailoverReport,
+    handle_authenticated_raft_http, production_raft_security_from_env, CommandResponse,
+    DistributedRaftCommandResponse, DistributedRaftProposeRequest, DistributedRaftReadRequest,
+    ProductionRaftEngineKind, ProductionRaftNode, ProductionRaftRuntime,
+    ProductionRaftRuntimeOptions, RaftConfig, RaftControlLeadershipRequest, RaftFailoverReport,
     RaftMembershipChangeReport, RaftNodeId, RaftRpcRuntimeOptions, RaftTransport, Status,
 };
 use temporalstore_snapshot::{FileObjectStore, S3SnapshotStore};
@@ -619,8 +619,10 @@ fn runtime_options_from_env() -> ProductionRaftRuntimeOptions {
     let nodes = parse_nodes();
     let wal_dir = std::env::var("TS_RAFT_WAL_DIR")
         .unwrap_or_else(|_| format!("target/temporalstore-raft/node-{local_node_id}"));
-    let auth_token =
-        std::env::var("TS_RAFT_AUTH_TOKEN").unwrap_or_else(|_| "local-raft-token".to_string());
+    let security = production_raft_security_from_env(
+        "local-raft-token",
+        env_bool("TS_RAFT_ALLOW_PLAINTEXT", true),
+    );
     ProductionRaftRuntimeOptions {
         engine: ProductionRaftEngineKind::OpenRaft,
         shard_id,
@@ -633,14 +635,14 @@ fn runtime_options_from_env() -> ProductionRaftRuntimeOptions {
             deadline_ms: env_u64("TS_RAFT_RPC_DEADLINE_MS", 1_000),
             ..RaftRpcRuntimeOptions::default()
         },
-        security: ProductionRaftSecurity::plaintext_for_local_chaos(auth_token),
+        security: security.security,
         heartbeat_interval_ms: env_u64("TS_RAFT_HEARTBEAT_INTERVAL_MS", 100),
         election_tick_ms: env_u64("TS_RAFT_ELECTION_TICK_MS", 50),
         max_catchup_entries_per_heartbeat: env_u64(
             "TS_RAFT_MAX_CATCHUP_ENTRIES_PER_HEARTBEAT",
             256,
         ),
-        allow_plaintext_for_local_chaos: env_bool("TS_RAFT_ALLOW_PLAINTEXT", true),
+        allow_plaintext_for_local_chaos: security.allow_plaintext_for_local_chaos,
     }
 }
 
@@ -725,7 +727,9 @@ mod tests {
             wal_dir: dir.display().to_string(),
             config: RaftConfig::default(),
             rpc: RaftRpcRuntimeOptions::default(),
-            security: ProductionRaftSecurity::plaintext_for_local_chaos("test-token"),
+            security: temporalstore_rust::ProductionRaftSecurity::plaintext_for_local_chaos(
+                "test-token",
+            ),
             heartbeat_interval_ms: 100,
             election_tick_ms: 50,
             max_catchup_entries_per_heartbeat: 256,

@@ -85,6 +85,9 @@ The JSON output includes:
 - `shared_store.async_storage_enqueue_latency`: response-path cost to queue async shared-store work
 - `shared_store.async_storage_flush_latency`: background flush cost to publish queued async oplog entries
 - `shared_store.sync_max_lag` and `shared_store.async_max_lag`: max oplog lag observed while replaying
+- `slo_report`: stable local/Docker/AWS SLO surface with write/read p50/p95/p99, throughput,
+  error-budget status, replica lag, failovers, scale events, and explicit CPU/memory/disk/network
+  collector placeholders
 
 For `storage_async=true` parity with the C++ path, do not read
 `async_storage_enqueue_latency` as durable-storage latency. C++ `Partition::OnExecuteCmdDone`

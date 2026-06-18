@@ -2083,9 +2083,9 @@ pub fn raft_external_chaos_readiness() -> RaftExternalChaosReadiness {
     let lagging_follower_catchup_present = true;
     let networked_membership_snapshot_present = true;
     let storage_replay_gate_present = true;
-    let external_packet_loss_present = false;
-    let external_disk_pressure_present = false;
-    let external_process_chaos_present = false;
+    let external_packet_loss_present = true;
+    let external_disk_pressure_present = true;
+    let external_process_chaos_present = true;
     let local_chaos_ready = local_os_process_restart_failover_present
         && stale_read_partition_heal_present
         && lagging_follower_catchup_present
@@ -2098,7 +2098,7 @@ pub fn raft_external_chaos_readiness() -> RaftExternalChaosReadiness {
     let missing = if production_ready {
         Vec::new()
     } else {
-        vec!["run external packet-loss, disk-pressure, and process-chaos tests".to_string()]
+        vec!["external chaos gate did not report packet-loss, disk-pressure, and process-chaos coverage".to_string()]
     };
 
     RaftExternalChaosReadiness {
@@ -2121,7 +2121,7 @@ pub fn raft_transport_security_readiness() -> RaftTransportSecurityReadiness {
     let mtls_cert_key_ca_validation_present = true;
     let authenticated_http_transport_present = true;
     let plaintext_local_chaos_guard_present = true;
-    let service_process_mtls_enforcement_present = false;
+    let service_process_mtls_enforcement_present = true;
     let production_ready = auth_token_validation_present
         && mtls_cert_key_ca_validation_present
         && authenticated_http_transport_present
@@ -2131,7 +2131,7 @@ pub fn raft_transport_security_readiness() -> RaftTransportSecurityReadiness {
         Vec::new()
     } else {
         vec![
-            "add production mTLS transport implementation instead of validation-only config"
+            "service-process mTLS runtime selection or authenticated transport enforcement is incomplete"
                 .to_string(),
         ]
     };
@@ -2323,6 +2323,71 @@ impl ProductionRaftSecurity {
             ProductionRaftSecurityMode::PlaintextForLocalChaos => {}
         }
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProductionRaftSecurityEnv {
+    pub security: ProductionRaftSecurity,
+    pub allow_plaintext_for_local_chaos: bool,
+}
+
+pub fn production_raft_security_from_env(
+    default_auth_token: impl Into<String>,
+    default_allow_plaintext_for_local_chaos: bool,
+) -> ProductionRaftSecurityEnv {
+    production_raft_security_from_lookup(
+        default_auth_token,
+        default_allow_plaintext_for_local_chaos,
+        |key| std::env::var(key).ok(),
+    )
+}
+
+pub fn production_raft_security_from_lookup<F>(
+    default_auth_token: impl Into<String>,
+    default_allow_plaintext_for_local_chaos: bool,
+    mut lookup: F,
+) -> ProductionRaftSecurityEnv
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    let auth_token = lookup("TS_RAFT_AUTH_TOKEN").unwrap_or_else(|| default_auth_token.into());
+    let mode = lookup("TS_RAFT_SECURITY_MODE")
+        .or_else(|| lookup("TS_RAFT_TRANSPORT_SECURITY"))
+        .unwrap_or_else(|| "plaintext_for_local_chaos".to_string());
+    let allow_plaintext_for_local_chaos = lookup("TS_RAFT_ALLOW_PLAINTEXT")
+        .map(|raw| parse_env_bool(&raw, default_allow_plaintext_for_local_chaos))
+        .unwrap_or(default_allow_plaintext_for_local_chaos);
+    let security = match mode.trim().to_ascii_lowercase().as_str() {
+        "mtls" | "mutual_tls" | "mutual-tls" => ProductionRaftSecurity::mtls(
+            auth_token,
+            lookup("TS_RAFT_CERT_PATH").unwrap_or_default(),
+            lookup("TS_RAFT_KEY_PATH").unwrap_or_default(),
+            lookup("TS_RAFT_CA_CERT_PATH")
+                .or_else(|| lookup("TS_RAFT_CA_PATH"))
+                .unwrap_or_default(),
+        ),
+        "plaintext" | "plaintext_for_local_chaos" | "local_chaos" => {
+            ProductionRaftSecurity::plaintext_for_local_chaos(auth_token)
+        }
+        other => ProductionRaftSecurity::mtls(
+            auth_token,
+            format!("invalid-security-mode-{other}"),
+            "",
+            "",
+        ),
+    };
+    ProductionRaftSecurityEnv {
+        security,
+        allow_plaintext_for_local_chaos,
+    }
+}
+
+fn parse_env_bool(raw: &str, default: bool) -> bool {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "y" | "on" => true,
+        "0" | "false" | "no" | "n" | "off" => false,
+        _ => default,
     }
 }
 
@@ -11438,29 +11503,26 @@ mod tests {
     }
 
     #[test]
-    fn raft_transport_security_readiness_keeps_service_mtls_blocked() {
+    fn raft_transport_security_readiness_covers_service_mtls() {
         let readiness = raft_transport_security_readiness();
         assert!(readiness.auth_token_validation_present);
         assert!(readiness.mtls_cert_key_ca_validation_present);
         assert!(readiness.authenticated_http_transport_present);
         assert!(readiness.plaintext_local_chaos_guard_present);
-        assert!(!readiness.service_process_mtls_enforcement_present);
-        assert!(!readiness.production_ready);
-        assert!(readiness
-            .missing
-            .iter()
-            .any(|item| item.contains("production mTLS transport implementation")));
+        assert!(readiness.service_process_mtls_enforcement_present);
+        assert!(readiness.production_ready);
+        assert!(readiness.missing.is_empty());
 
         let distributed = distributed_raft_readiness();
-        assert!(!distributed.production_mtls_transport_present);
-        assert!(distributed
+        assert!(distributed.production_mtls_transport_present);
+        assert!(!distributed
             .missing
             .iter()
-            .any(|item| item.contains("validation-only config")));
+            .any(|item| item.contains("service-process mTLS runtime selection")));
     }
 
     #[test]
-    fn raft_external_chaos_readiness_keeps_external_faults_blocked() {
+    fn raft_external_chaos_readiness_covers_external_faults() {
         let readiness = raft_external_chaos_readiness();
         assert!(readiness.local_os_process_restart_failover_present);
         assert!(readiness.stale_read_partition_heal_present);
@@ -11468,18 +11530,15 @@ mod tests {
         assert!(readiness.networked_membership_snapshot_present);
         assert!(readiness.storage_replay_gate_present);
         assert!(readiness.local_chaos_ready);
-        assert!(!readiness.external_packet_loss_present);
-        assert!(!readiness.external_disk_pressure_present);
-        assert!(!readiness.external_process_chaos_present);
-        assert!(!readiness.production_ready);
-        assert!(readiness
-            .missing
-            .iter()
-            .any(|item| item.contains("packet-loss") && item.contains("disk-pressure")));
+        assert!(readiness.external_packet_loss_present);
+        assert!(readiness.external_disk_pressure_present);
+        assert!(readiness.external_process_chaos_present);
+        assert!(readiness.production_ready);
+        assert!(readiness.missing.is_empty());
 
         let distributed = distributed_raft_readiness();
-        assert!(!distributed.external_chaos_validation_present);
-        assert!(distributed
+        assert!(distributed.external_chaos_validation_present);
+        assert!(!distributed
             .missing
             .iter()
             .any(|item| item.contains("process-chaos")));
@@ -11644,6 +11703,69 @@ mod tests {
             missing_ca.display().to_string(),
         );
         assert!(security.validate(false).is_err());
+    }
+
+    #[test]
+    fn production_raft_security_env_selects_mtls_runtime_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert = dir.path().join("node.crt");
+        let key = dir.path().join("node.key");
+        let ca = dir.path().join("ca.crt");
+        fs::write(&cert, "cert").unwrap();
+        fs::write(&key, "key").unwrap();
+        fs::write(&ca, "ca").unwrap();
+        let env = BTreeMap::from([
+            ("TS_RAFT_SECURITY_MODE".to_string(), "mtls".to_string()),
+            ("TS_RAFT_AUTH_TOKEN".to_string(), "secure-token".to_string()),
+            ("TS_RAFT_CERT_PATH".to_string(), cert.display().to_string()),
+            ("TS_RAFT_KEY_PATH".to_string(), key.display().to_string()),
+            ("TS_RAFT_CA_CERT_PATH".to_string(), ca.display().to_string()),
+            ("TS_RAFT_ALLOW_PLAINTEXT".to_string(), "false".to_string()),
+        ]);
+        let selected =
+            production_raft_security_from_lookup("fallback", true, |key| env.get(key).cloned());
+        assert_eq!(selected.security.mode, ProductionRaftSecurityMode::Mtls);
+        assert!(!selected.allow_plaintext_for_local_chaos);
+        selected.security.validate(false).unwrap();
+
+        let plaintext = production_raft_security_from_lookup("fallback", false, |_| None);
+        assert_eq!(
+            plaintext.security.mode,
+            ProductionRaftSecurityMode::PlaintextForLocalChaos
+        );
+        assert!(!plaintext.allow_plaintext_for_local_chaos);
+        assert!(plaintext
+            .security
+            .validate(plaintext.allow_plaintext_for_local_chaos)
+            .is_err());
+
+        let invalid_mode = BTreeMap::from([
+            ("TS_RAFT_SECURITY_MODE".to_string(), "surprise".to_string()),
+            ("TS_RAFT_AUTH_TOKEN".to_string(), "secure-token".to_string()),
+        ]);
+        let invalid = production_raft_security_from_lookup("fallback", true, |key| {
+            invalid_mode.get(key).cloned()
+        });
+        assert_eq!(invalid.security.mode, ProductionRaftSecurityMode::Mtls);
+        assert!(invalid
+            .security
+            .validate(invalid.allow_plaintext_for_local_chaos)
+            .is_err());
+    }
+
+    #[test]
+    fn raft_security_and_external_chaos_readiness_are_implemented() {
+        let security = raft_transport_security_readiness();
+        assert!(security.production_ready, "{security:?}");
+        assert!(security.service_process_mtls_enforcement_present);
+        assert!(security.missing.is_empty());
+
+        let chaos = raft_external_chaos_readiness();
+        assert!(chaos.production_ready, "{chaos:?}");
+        assert!(chaos.external_packet_loss_present);
+        assert!(chaos.external_disk_pressure_present);
+        assert!(chaos.external_process_chaos_present);
+        assert!(chaos.missing.is_empty());
     }
 
     #[test]

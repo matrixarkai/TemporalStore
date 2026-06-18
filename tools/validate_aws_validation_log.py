@@ -59,6 +59,18 @@ def validate_scale(job, summary):
         summary["raft_read_qps"]["ops"] > 0 and summary["raft_read_qps"]["ops_per_sec"] > 0,
         f"{job}: raft read qps is not positive: {summary.get('raft_read_qps')}",
     )
+    slo = summary.get("slo_report")
+    require(slo is not None, f"{job}: slo_report missing")
+    require(slo["replication_healthy"], f"{job}: SLO replication health is false")
+    require(slo["max_replica_lag"] == 0, f"{job}: SLO replica lag is {slo['max_replica_lag']}")
+    require(slo["p99_write_us"] >= slo["p50_write_us"], f"{job}: SLO write percentiles are invalid")
+    require(slo["p99_read_us"] >= slo["p50_read_us"], f"{job}: SLO read percentiles are invalid")
+    require(slo["write_ops_per_sec"] > 0, f"{job}: SLO write throughput is not positive")
+    require(slo["read_ops_per_sec"] > 0, f"{job}: SLO read throughput is not positive")
+    require(
+        "cpu_observed" in slo and "memory_observed" in slo and "disk_observed" in slo and "network_observed" in slo,
+        f"{job}: SLO resource collector placeholders missing",
+    )
     require(summary["shared_store"] is not None, f"{job}: shared-store comparison missing")
     shared = summary["shared_store"]
     require(shared["sync_max_lag"] == 0, f"{job}: sync shared-store lag is non-zero")

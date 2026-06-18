@@ -43,8 +43,8 @@ REQUIRED_READINESS_SNIPPETS = (
     "RaftSnapshotInstallReport exposes freeze, flush, manifest verify, checksum verify, install, tail replay, and rollback status",
     "metaserver-owned data-Raft membership workflow reports learner add, catch-up verification, promotion, leader transfer, and voter removal",
     "Raft metaserver membership readiness covers topology membership plans, data-Raft apply reports, learner catch-up/promotion, leader transfer, voter removal, networked scheduler /raft/membership/apply transport, and persisted scheduler task state while keeping real data-node group execution fail-closed",
-    "Raft transport security readiness covers auth-token validation, mTLS cert/key/CA config validation, authenticated HTTP transport, and plaintext-only local chaos guardrails while keeping service-process mTLS enforcement fail-closed",
-    "Raft external chaos readiness covers local OS-process restart/failover, stale-read partition heal, lagging follower catch-up, networked membership/snapshot, and storage replay gates while keeping external packet-loss/disk-pressure/process-chaos fail-closed",
+    "Raft transport security readiness covers auth-token validation, mTLS cert/key/CA config validation, service-process mTLS runtime selection, authenticated HTTP transport, and plaintext-only local chaos guardrails",
+    "Raft external chaos readiness covers local OS-process restart/failover, stale-read partition heal, lagging follower catch-up, networked membership/snapshot, storage replay, external packet-loss, disk-pressure, and process-chaos gates",
     "storage migration corpus readiness covers Rust-local converted corpus replay through engine, shared-store, Raft read paths, and the unified C++/Rust runner while keeping external C++ artifact publication fail-closed",
     "local/shared-store object manifest dependency matrix covers local file objects, checkpoint manifests, oplog cursor retention, page segment manifests, follower-cursor retention, and Raft snapshot manifest retention",
     "storage cache dependency matrix keeps live ByteStore/S3 object-store readiness fail-closed",
@@ -60,6 +60,21 @@ REQUIRED_DOC_SNIPPETS = (
     "Raft snapshot/restart/failover harness",
     "Combined storage+Raft production harness",
     "Update unified C++/Rust corpus and readiness docs",
+)
+
+REQUIRED_EXTERNAL_CHAOS_SNIPPETS = (
+    "external_packet_loss_partition_heal",
+    "external_disk_pressure_storage_faults",
+    "external_process_chaos_restart_failover",
+)
+
+REQUIRED_SCALE_SLO_SNIPPETS = (
+    "slo_report",
+    "ScaleSloReport",
+    "p50_write_us",
+    "p95_write_us",
+    "p99_write_us",
+    "error_budget_remaining_percent",
 )
 
 
@@ -96,6 +111,16 @@ def main() -> None:
         ROOT / "docs" / "storage_raft_production_readiness_plan.md",
         REQUIRED_DOC_SNIPPETS,
         "storage_raft_doc",
+    )
+    count += require_snippets(
+        ROOT / "crates" / "temporalstore-rust" / "src" / "bin" / "external_chaos_gate.rs",
+        REQUIRED_EXTERNAL_CHAOS_SNIPPETS,
+        "external_chaos_gate",
+    )
+    count += require_snippets(
+        ROOT / "crates" / "temporalstore-rust" / "src" / "bin" / "scale_harness.rs",
+        REQUIRED_SCALE_SLO_SNIPPETS,
+        "scale_harness_slo",
     )
     print("storage_raft_production_plan=true")
     print(f"validated_snippets={count}")

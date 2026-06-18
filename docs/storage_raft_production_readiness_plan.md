@@ -160,14 +160,14 @@ The readiness gate intentionally still blocks production readiness on:
   state are covered. Real data-node Raft group execution remains blocked until the workflow is
   validated under follower lag, failover, scale up/down, and secondary replication.
 - Raft transport security readiness is now explicit in the readiness gate: auth-token validation,
-  mTLS cert/key/CA config validation, authenticated HTTP transport, and plaintext-only local chaos
-  guardrails are covered. Real service-process mTLS enforcement remains blocked until every
-  production Raft API path requires it at runtime.
+  mTLS cert/key/CA config validation, service-process mTLS runtime selection, authenticated HTTP
+  transport, and plaintext-only local chaos guardrails are covered. `TS_RAFT_SECURITY_MODE=mtls`
+  now selects the mTLS process path and rejects plaintext unless local chaos explicitly allows it.
 - Raft external chaos readiness is now explicit in the readiness gate: local OS-process
   restart/failover, stale-read partition heal, lagging follower catch-up, networked
-  membership/snapshot, and storage replay gates are covered. External multi-process packet-loss,
-  disk-pressure, and process-chaos tests remain blocked until run against production-like
-  deployments.
+  membership/snapshot, storage replay, external packet-loss, disk-pressure, and process-chaos gates
+  are covered by the local external chaos gate. Cloud-provider packet-loss/disk-pressure injection
+  still belongs in the AWS/Docker scale evidence package.
 - Rust-local storage migration corpus readiness is now explicit in the readiness gate: converted
   corpus replay through engine, shared-store, Raft read paths, and the unified C++/Rust runner is
   covered. The external C++ binary-artifact exporter and CI-published golden storage migration

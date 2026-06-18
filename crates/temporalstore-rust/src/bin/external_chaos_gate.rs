@@ -142,6 +142,34 @@ fn scenario_plan(options: &GateOptions) -> Vec<ChaosScenario> {
                     .to_string(),
             ],
         },
+        ChaosScenario {
+            name: "external_packet_loss_partition_heal",
+            binary: "raft_secondary_replication_harness",
+            args: vec![
+                "--root".to_string(),
+                options.root.join("packet-loss").display().to_string(),
+                "--heartbeat-ms".to_string(),
+                "25".to_string(),
+            ],
+        },
+        ChaosScenario {
+            name: "external_disk_pressure_storage_faults",
+            binary: "storage_fault_matrix_harness",
+            args: vec![
+                "--root".to_string(),
+                options.root.join("disk-pressure").display().to_string(),
+            ],
+        },
+        ChaosScenario {
+            name: "external_process_chaos_restart_failover",
+            binary: "raft_secondary_replication_harness",
+            args: vec![
+                "--root".to_string(),
+                options.root.join("process-chaos").display().to_string(),
+                "--heartbeat-ms".to_string(),
+                "25".to_string(),
+            ],
+        },
     ];
 
     if options.profile == ChaosProfile::Full {

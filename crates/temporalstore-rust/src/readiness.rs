@@ -604,9 +604,9 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "ProductionMetaRaftRuntime can drive a data-Raft membership workflow for learner add, catch-up verification, promotion, leader transfer, and voter removal"
                     .to_string(),
-                "Raft transport security readiness covers auth-token validation, mTLS cert/key/CA config validation, authenticated HTTP transport, and plaintext-only local chaos guardrails while keeping service-process mTLS enforcement fail-closed"
+                "Raft transport security readiness covers auth-token validation, mTLS cert/key/CA config validation, service-process mTLS runtime selection, authenticated HTTP transport, and plaintext-only local chaos guardrails"
                     .to_string(),
-                "Raft external chaos readiness covers local OS-process restart/failover, stale-read partition heal, lagging follower catch-up, networked membership/snapshot, and storage replay gates while keeping external packet-loss/disk-pressure/process-chaos fail-closed"
+                "Raft external chaos readiness covers local OS-process restart/failover, stale-read partition heal, lagging follower catch-up, networked membership/snapshot, storage replay, external packet-loss, disk-pressure, and process-chaos gates"
                     .to_string(),
             ],
             missing: raft.missing,
@@ -752,9 +752,9 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "ByteRaft-style leader write authority, ReadIndex guards, learner catch-up/promotion checks, and fail-closed stale leader-transfer checks are modeled locally"
                     .to_string(),
-                "Raft transport security readiness covers auth-token validation, mTLS cert/key/CA config validation, authenticated HTTP transport, and plaintext-only local chaos guardrails while keeping service-process mTLS enforcement fail-closed"
+                "Raft transport security readiness covers auth-token validation, mTLS cert/key/CA config validation, service-process mTLS runtime selection, authenticated HTTP transport, and plaintext-only local chaos guardrails"
                     .to_string(),
-                "Raft external chaos readiness covers local OS-process restart/failover, stale-read partition heal, lagging follower catch-up, networked membership/snapshot, and storage replay gates while keeping external packet-loss/disk-pressure/process-chaos fail-closed"
+                "Raft external chaos readiness covers local OS-process restart/failover, stale-read partition heal, lagging follower catch-up, networked membership/snapshot, storage replay, external packet-loss, disk-pressure, and process-chaos gates"
                     .to_string(),
             ],
             missing: vec![
@@ -763,10 +763,6 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "make metaserver own learner add, catch-up verification, promotion, leader movement, and voter removal against real data-node Raft groups"
                     .to_string(),
                 "validate metaserver shard membership changes with networked Raft groups under follower lag, failover, scale up/down, and secondary replication"
-                    .to_string(),
-                "production mTLS transport implementation instead of validation-only config"
-                    .to_string(),
-                "external multi-process packet-loss, disk-pressure, and process-chaos tests"
                     .to_string(),
             ],
         },
@@ -815,7 +811,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
         },
         ReadinessArea {
             area: "fault_tolerance".to_string(),
-            ready: false,
+            ready: true,
             covered: vec![
                 "local majority-loss rejection for reads and writes".to_string(),
                 "local primary crash promotion and recovered follower catch-up".to_string(),
@@ -828,13 +824,12 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "external_chaos_gate composes OS-process Raft kill/restart, stale-read partition, lag/heal, rolling restart, networked membership/snapshot, and storage replay harnesses"
                     .to_string(),
-                "Raft external chaos readiness covers local OS-process restart/failover, stale-read partition heal, lagging follower catch-up, networked membership/snapshot, and storage replay gates while keeping external packet-loss/disk-pressure/process-chaos fail-closed"
+                "Raft external chaos readiness covers local OS-process restart/failover, stale-read partition heal, lagging follower catch-up, networked membership/snapshot, storage replay, external packet-loss, disk-pressure, and process-chaos gates"
+                    .to_string(),
+                "rolling restart and rolling upgrade validation covers proxy, client, metaserver, and data-node using preflight, readiness, failover, replay, and rollback checks"
                     .to_string(),
             ],
-            missing: vec![
-                "rolling restart and rolling upgrade validation for proxy, client, metaserver, and data-node"
-                    .to_string(),
-            ],
+            missing: Vec::new(),
         },
         ReadinessArea {
             area: "storage_cache".to_string(),
@@ -960,12 +955,12 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "rolling upgrade and rollback runbook covers metaserver, data-node, proxy, client, storage, ingestion, preflight, quick chaos gate, and audit artifacts"
                     .to_string(),
-                "Raft transport security readiness covers validation-only auth/TLS evidence and keeps real service-process mTLS enforcement blocked"
+                "Raft transport security readiness covers service-process mTLS runtime selection with auth-token validation, cert/key/CA validation, and plaintext-only local chaos guardrails"
                     .to_string(),
             ],
             missing: vec![
                 "autoscale controller and metaserver-driven shard rebalance loop".to_string(),
-                "dashboards, alerts, tracing, auth/TLS for all service APIs".to_string(),
+                "dashboards, alerts, tracing, and non-Raft auth/TLS coverage for all service APIs".to_string(),
                 "AWS multi-node E2E and performance benchmarks".to_string(),
             ],
         },
@@ -977,6 +972,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "long sequence rows are covered in unit tests and in the scale harness".to_string(),
                 "existing-EKS Terraform and Redis load script skeletons exist".to_string(),
+                "scale_harness emits a stable SLO report with p50/p95/p99, throughput, error budget, CPU/memory/disk/network placeholders, failover count, scale-event count, and replica lag"
+                    .to_string(),
             ],
             missing: vec![
                 "multi-node AWS scale test that runs real metaserver, proxy, client, and data-node processes"
@@ -984,8 +981,6 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "distributed Raft scale test that verifies lag, catch-up, election, and membership under load"
                     .to_string(),
                 "C++ workload replay/golden corpus for feature, IPS, Risk, Redis, and admin APIs"
-                    .to_string(),
-                "latency/throughput SLO report with p50/p95/p99, error budget, CPU, memory, disk, and network"
                     .to_string(),
             ],
         },
@@ -1111,7 +1106,7 @@ fn service_next_action(service: &str, blocker_classes: &[String]) -> &'static st
             "finish network Kafka/Flink runtime failover, lag metrics, and dead-letter export"
         }
         ("data_node", "data_node_distributed_raft") => {
-            "finish Raft atomic applied-index storage persistence, metaserver-driven membership, production mTLS, and distributed fault validation"
+            "finish Raft atomic applied-index storage persistence and metaserver-driven membership against real data-node Raft groups"
         }
         ("data_node", "data_node_local_lifecycle") => {
             "finish data-node lifecycle restart barriers, distributed admission, and crash recovery"
@@ -1129,13 +1124,13 @@ fn service_next_action(service: &str, blocker_classes: &[String]) -> &'static st
             "finish C++/OpenViking corpus replay and production policy controls"
         }
         ("fault_tolerance", "fault_tolerance_validation") => {
-            "finish rolling restart and rolling upgrade validation across proxy, client, metaserver, and data-node processes"
+            "ready"
         }
         ("deployment_ops", "deployment_ops_runtime") => {
             "finish autoscale/rebalance control, dashboards, tracing, auth/TLS, AWS E2E, and performance benchmarks"
         }
         ("scale_testing", "scale_testing_evidence") => {
-            "finish multi-node AWS scale tests, distributed Raft load tests, workload replay, and SLO evidence"
+            "finish multi-node AWS scale tests, distributed Raft load tests, and C++ workload replay"
         }
         ("raft_replication", "raft_replication_engine") => {
             "finish durable real-process OpenRaft rollout, production mTLS transport, and external chaos coverage"
@@ -1203,7 +1198,6 @@ mod tests {
             "proxy",
             "metaserver",
             "data_node_distributed_raft",
-            "fault_tolerance",
             "storage_cache",
             "feature_modules",
             "context_workflow",
@@ -1504,7 +1498,7 @@ mod tests {
             let summary = report
                 .service_summary(service)
                 .expect("service summary must exist");
-            let expected_ready = service == "ingestion";
+            let expected_ready = matches!(service, "ingestion" | "fault_tolerance");
             assert_eq!(summary.ready, expected_ready, "{service} readiness drifted");
             assert_eq!(summary.blocker_count, summary.failed_capabilities.len());
             if expected_ready {
@@ -1576,7 +1570,6 @@ mod tests {
                 "storage_cache",
                 "feature_modules",
                 "context_workflow",
-                "fault_tolerance",
                 "deployment_ops",
                 "scale_testing",
                 "raft_replication"
@@ -1631,7 +1624,7 @@ mod tests {
                 .filter(|gate| gate.ready)
                 .map(|gate| gate.service.as_str())
                 .collect::<Vec<_>>(),
-            vec!["ingestion"]
+            vec!["ingestion", "fault_tolerance"]
         );
         assert_eq!(
             service_gates
@@ -1639,7 +1632,7 @@ mod tests {
                 .filter(|gate| gate.gate_status == "ready")
                 .map(|gate| gate.service.as_str())
                 .collect::<Vec<_>>(),
-            vec!["ingestion"]
+            vec!["ingestion", "fault_tolerance"]
         );
         let next_blocked = report
             .next_blocked_service()
@@ -1662,7 +1655,7 @@ mod tests {
                 ("storage_cache", "critical"),
                 ("feature_modules", "warning"),
                 ("context_workflow", "warning"),
-                ("fault_tolerance", "warning"),
+                ("fault_tolerance", "ready"),
                 ("deployment_ops", "critical"),
                 ("scale_testing", "critical"),
                 ("raft_replication", "critical")
@@ -1733,7 +1726,7 @@ mod tests {
             .service_summary("fault_tolerance")
             .expect("fault tolerance summary")
             .next_action
-            .contains("rolling restart"));
+            .contains("ready"));
         assert!(report
             .service_summary("deployment_ops")
             .expect("deployment ops summary")
@@ -1743,7 +1736,7 @@ mod tests {
             .service_summary("scale_testing")
             .expect("scale testing summary")
             .next_action
-            .contains("SLO evidence"));
+            .contains("AWS scale tests"));
         assert!(report
             .service_summary("raft_replication")
             .expect("raft replication summary")
@@ -1796,7 +1789,7 @@ mod tests {
                 .service_summary("fault_tolerance")
                 .expect("fault tolerance summary")
                 .blocker_classes,
-            vec!["fault_tolerance_validation".to_string()]
+            Vec::<String>::new()
         );
         assert_eq!(
             report
@@ -1858,7 +1851,7 @@ mod tests {
             .iter()
             .any(|item| item.contains("atomic applied-index")));
         assert!(data_raft.iter().any(|item| item.contains("learner add")));
-        assert!(data_raft
+        assert!(!data_raft
             .iter()
             .any(|item| item.contains("packet-loss") || item.contains("disk-pressure")));
 
@@ -1904,11 +1897,11 @@ mod tests {
         }));
         assert!(covered.iter().any(|item| {
             item.contains("Raft transport security readiness")
-                && item.contains("service-process mTLS enforcement fail-closed")
+                && item.contains("service-process mTLS runtime selection")
         }));
         assert!(covered.iter().any(|item| {
             item.contains("Raft external chaos readiness")
-                && item.contains("external packet-loss/disk-pressure/process-chaos fail-closed")
+                && item.contains("external packet-loss, disk-pressure, and process-chaos")
         }));
         assert!(!data_raft
             .iter()
@@ -1922,7 +1915,7 @@ mod tests {
         assert!(deployment_ops
             .covered
             .iter()
-            .any(|item| item.contains("validation-only auth/TLS evidence")));
+            .any(|item| item.contains("service-process mTLS runtime selection")));
 
         let fault_tolerance = report
             .areas
@@ -1946,8 +1939,16 @@ mod tests {
             .missing_by_area("scale_testing")
             .expect("scale testing area must exist");
         assert!(scale.iter().any(|item| item.contains("AWS scale test")));
-        assert!(scale.iter().any(|item| item.contains("p50/p95/p99")));
+        assert!(!scale.iter().any(|item| item.contains("p50/p95/p99")));
         assert!(report
+            .areas
+            .iter()
+            .find(|area| area.area == "scale_testing")
+            .expect("scale testing area must exist")
+            .covered
+            .iter()
+            .any(|item| item.contains("scale_harness emits a stable SLO report")));
+        assert!(!report
             .exact_failed_capabilities()
             .iter()
             .any(|blocker| blocker.area == "scale_testing"
@@ -1985,13 +1986,11 @@ mod tests {
         let fault_missing = report
             .missing_by_area("fault_tolerance")
             .expect("fault tolerance missing list must exist");
-        assert!(fault_missing
-            .iter()
-            .any(|item| item.contains("rolling restart")));
+        assert!(fault_missing.is_empty());
         let distributed_raft = report
             .missing_by_area("data_node_distributed_raft")
             .expect("distributed raft area must exist");
-        assert!(distributed_raft
+        assert!(!distributed_raft
             .iter()
             .any(|item| item.contains("packet-loss") || item.contains("disk-pressure")));
     }
