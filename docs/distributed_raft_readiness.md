@@ -85,6 +85,8 @@ The Rust code currently has:
   so restart can recover state even after pre-snapshot log entries are trimmed
 - durable apply/snapshot fence persisted in every new WAL-backed node record, validating restored
   commit index, applied index, installed snapshot floor, and first retained log index before replay
+- storage-aware apply fence persisted in every new WAL-backed node record, validating shard id,
+  Raft term, committed/applied index, snapshot id, storage epoch, and checksum before replay
 - snapshot-floor log matching for post-compaction AppendEntries continuity, so leaders continue log
   indexes after an installed snapshot and followers can match `prev_log_index`/term against either
   retained log entries or the installed snapshot boundary
@@ -146,10 +148,10 @@ path and borrow ByteRaft semantics, safety contracts, metrics, admin surfaces, a
 ByteRaft-derived evidence is not a substitute for the production OpenRaft process rollout. Direct
 C++ ByteRaft FFI is not part of the readiness target.
 
-The local WAL now has the applied-index/storage/snapshot atomicity contract represented as a
-durable apply/snapshot fence. It is not the final production rollout by itself; it is the Rust-native
-ByteRaft-derived invariant that the later OpenRaft storage path and partition snapshot installer must
-preserve.
+The local WAL now has the applied-index/storage/snapshot atomicity contract represented as durable
+apply/snapshot and storage-aware apply fences. This is not the final production rollout by itself;
+it is the Rust-native ByteRaft-derived invariant that the later OpenRaft storage path and partition
+snapshot installer must preserve.
 
 ## Production Runtime Surface
 

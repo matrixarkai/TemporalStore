@@ -178,6 +178,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "local WAL recovery and local separate-node replication test".to_string(),
                 "raft_node, raft-enabled server, and metaserver process startup select ProductionRaftEngineKind::OpenRaft by default"
                     .to_string(),
+                "RaftStorageApplyFence is persisted in WAL records and rejects missing, corrupt, stale, or ahead-of-storage recovery state"
+                    .to_string(),
             ],
             missing: raft.missing,
         },
@@ -315,6 +317,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "OpenRaft-backed data-node and metaserver adapter is available behind the openraft-engine feature with durable log state, state-machine apply, snapshot metadata, read-index checks, membership changes, leader transfer, and restart recovery tests"
                     .to_string(),
                 "raft_node, raft-enabled server, and metaserver process startup wire the production runtime options to ProductionRaftEngineKind::OpenRaft"
+                    .to_string(),
+                "RaftStorageApplyFence persists shard, term, committed/applied index, snapshot id, storage epoch, and checksum with WAL recovery validation"
                     .to_string(),
                 "ByteRaft-style leader write authority, ReadIndex guards, learner catch-up/promotion checks, and fail-closed stale leader-transfer checks are modeled locally"
                     .to_string(),

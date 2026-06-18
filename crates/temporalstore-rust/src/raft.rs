@@ -105,6 +105,17 @@ pub struct RaftApplySnapshotFence {
     pub first_retained_log_index: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct RaftStorageApplyFence {
+    pub shard_id: ShardId,
+    pub raft_term: u64,
+    pub committed_index: u64,
+    pub applied_index: u64,
+    pub snapshot_id: Option<String>,
+    pub storage_epoch: u64,
+    pub checksum: String,
+}
+
 pub const DATA_RAFT_LOG_MAGIC: u32 = 0x5453_5246; // "TSRF"
 pub const DATA_RAFT_COMMAND_MAGIC: u32 = 0x5453_5243; // "TSRC"
 pub const DATA_RAFT_CODEC_VERSION: u32 = 1;
@@ -697,6 +708,8 @@ pub struct RaftWalRecord {
     pub installed_snapshot: Option<RaftSnapshot>,
     #[serde(default)]
     pub apply_snapshot_fence: RaftApplySnapshotFence,
+    #[serde(default)]
+    pub storage_apply_fence: RaftStorageApplyFence,
     pub entries: Vec<RaftLogEntry>,
 }
 
@@ -1826,6 +1839,7 @@ pub struct RaftDistributedReadiness {
     pub byteraft_rpc_transport_contract_present: bool,
     pub byteraft_log_retention_snapshot_trigger_present: bool,
     pub byteraft_apply_snapshot_fence_present: bool,
+    pub raft_storage_apply_fence_present: bool,
     pub byteraft_snapshot_floor_log_matching_present: bool,
     pub byteraft_snapshot_tail_catchup_present: bool,
     pub byteraft_compacted_entry_rejection_present: bool,
@@ -1897,6 +1911,7 @@ pub fn distributed_raft_readiness() -> RaftDistributedReadiness {
         byteraft_rpc_transport_contract_present: true,
         byteraft_log_retention_snapshot_trigger_present: true,
         byteraft_apply_snapshot_fence_present: true,
+        raft_storage_apply_fence_present: true,
         byteraft_snapshot_floor_log_matching_present: true,
         byteraft_snapshot_tail_catchup_present: true,
         byteraft_compacted_entry_rejection_present: true,
@@ -3921,6 +3936,7 @@ impl RaftCluster {
                 .map_err(|err| RaftError::Wal(err.to_string()))?;
             let mut node = if let Some(record) = record {
                 validate_raft_apply_snapshot_fence(&record)?;
+                validate_raft_storage_apply_fence(&record)?;
                 let mut node = new_node(
                     node_id,
                     if record.membership.leader_id == node_id {
@@ -4779,6 +4795,7 @@ impl RaftCluster {
                         latest_external_snapshot_ref: inner.latest_external_snapshot_ref.clone(),
                         installed_snapshot: node.installed_snapshot.clone(),
                         apply_snapshot_fence: raft_apply_snapshot_fence(node),
+                        storage_apply_fence: raft_storage_apply_fence(inner.shard_id, node),
                         entries: node.log.clone(),
                     },
                 )
@@ -6333,6 +6350,7 @@ impl RaftClusterInner {
                         latest_external_snapshot_ref: self.latest_external_snapshot_ref.clone(),
                         installed_snapshot: node.installed_snapshot.clone(),
                         apply_snapshot_fence: raft_apply_snapshot_fence(node),
+                        storage_apply_fence: raft_storage_apply_fence(self.shard_id, node),
                         entries: node.log.clone(),
                     },
                 )
@@ -6870,6 +6888,62 @@ fn raft_apply_snapshot_fence(node: &RaftNode) -> RaftApplySnapshotFence {
     }
 }
 
+fn raft_storage_snapshot_id(node: &RaftNode) -> Option<String> {
+    node.installed_snapshot.as_ref().map(|snapshot| {
+        format!(
+            "local-snapshot-{}-{}-{}",
+            snapshot.shard_id, snapshot.last_included_term, snapshot.last_included_index
+        )
+    })
+}
+
+fn raft_storage_apply_fence(shard_id: ShardId, node: &RaftNode) -> RaftStorageApplyFence {
+    let snapshot_id = raft_storage_snapshot_id(node);
+    let storage_epoch = node.applied_index.max(
+        node.installed_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.last_included_index)
+            .unwrap_or_default(),
+    );
+    let checksum = raft_storage_apply_fence_checksum(
+        shard_id,
+        node.current_term,
+        node.commit_index,
+        node.applied_index,
+        snapshot_id.as_deref(),
+        storage_epoch,
+    );
+    RaftStorageApplyFence {
+        shard_id,
+        raft_term: node.current_term,
+        committed_index: node.commit_index,
+        applied_index: node.applied_index,
+        snapshot_id,
+        storage_epoch,
+        checksum,
+    }
+}
+
+fn raft_storage_apply_fence_checksum(
+    shard_id: ShardId,
+    raft_term: u64,
+    committed_index: u64,
+    applied_index: u64,
+    snapshot_id: Option<&str>,
+    storage_epoch: u64,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(shard_id.to_le_bytes());
+    hasher.update(raft_term.to_le_bytes());
+    hasher.update(committed_index.to_le_bytes());
+    hasher.update(applied_index.to_le_bytes());
+    hasher.update(storage_epoch.to_le_bytes());
+    if let Some(snapshot_id) = snapshot_id {
+        hasher.update(snapshot_id.as_bytes());
+    }
+    hex::encode(hasher.finalize())
+}
+
 fn validate_raft_apply_snapshot_fence(record: &RaftWalRecord) -> Result<(), RaftError> {
     let fence = &record.apply_snapshot_fence;
     if fence == &RaftApplySnapshotFence::default()
@@ -6926,6 +7000,83 @@ fn validate_raft_apply_snapshot_fence(record: &RaftWalRecord) -> Result<(), Raft
             "fence first retained log index {} is set but no log entries are retained",
             fence.first_retained_log_index
         )));
+    }
+    Ok(())
+}
+
+fn validate_raft_storage_apply_fence(record: &RaftWalRecord) -> Result<(), RaftError> {
+    let fence = &record.storage_apply_fence;
+    if fence == &RaftStorageApplyFence::default()
+        && (record.hard_state.commit_index > 0
+            || record.installed_snapshot.is_some()
+            || !record.entries.is_empty())
+    {
+        return Err(RaftError::ApplySnapshotFence(
+            "missing raft storage apply fence".to_string(),
+        ));
+    }
+    if fence == &RaftStorageApplyFence::default() {
+        return Ok(());
+    }
+    if fence.shard_id != record.membership.shard_id {
+        return Err(RaftError::ApplySnapshotFence(format!(
+            "storage fence shard {} does not match membership shard {}",
+            fence.shard_id, record.membership.shard_id
+        )));
+    }
+    if fence.raft_term != record.hard_state.current_term {
+        return Err(RaftError::ApplySnapshotFence(format!(
+            "storage fence term {} does not match hard-state term {}",
+            fence.raft_term, record.hard_state.current_term
+        )));
+    }
+    if fence.committed_index != record.hard_state.commit_index {
+        return Err(RaftError::ApplySnapshotFence(format!(
+            "storage fence committed index {} does not match hard-state commit index {}",
+            fence.committed_index, record.hard_state.commit_index
+        )));
+    }
+    if fence.applied_index > fence.committed_index {
+        return Err(RaftError::ApplySnapshotFence(format!(
+            "storage fence applied index {} is ahead of committed index {}",
+            fence.applied_index, fence.committed_index
+        )));
+    }
+    let snapshot_id = record.installed_snapshot.as_ref().map(|snapshot| {
+        format!(
+            "local-snapshot-{}-{}-{}",
+            snapshot.shard_id, snapshot.last_included_term, snapshot.last_included_index
+        )
+    });
+    if fence.snapshot_id != snapshot_id {
+        return Err(RaftError::ApplySnapshotFence(format!(
+            "storage fence snapshot id {:?} does not match installed snapshot id {:?}",
+            fence.snapshot_id, snapshot_id
+        )));
+    }
+    let snapshot_index = record
+        .installed_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.last_included_index)
+        .unwrap_or_default();
+    if fence.storage_epoch < fence.applied_index || fence.storage_epoch < snapshot_index {
+        return Err(RaftError::ApplySnapshotFence(format!(
+            "storage fence epoch {} is behind applied index {} or snapshot index {}",
+            fence.storage_epoch, fence.applied_index, snapshot_index
+        )));
+    }
+    let expected = raft_storage_apply_fence_checksum(
+        fence.shard_id,
+        fence.raft_term,
+        fence.committed_index,
+        fence.applied_index,
+        fence.snapshot_id.as_deref(),
+        fence.storage_epoch,
+    );
+    if fence.checksum != expected {
+        return Err(RaftError::ApplySnapshotFence(
+            "storage fence checksum mismatch".to_string(),
+        ));
     }
     Ok(())
 }
@@ -10463,6 +10614,7 @@ mod tests {
         assert!(readiness.byteraft_rpc_transport_contract_present);
         assert!(readiness.byteraft_log_retention_snapshot_trigger_present);
         assert!(readiness.byteraft_apply_snapshot_fence_present);
+        assert!(readiness.raft_storage_apply_fence_present);
         assert!(readiness.byteraft_snapshot_floor_log_matching_present);
         assert!(readiness.byteraft_snapshot_tail_catchup_present);
         assert!(readiness.byteraft_compacted_entry_rejection_present);
@@ -13680,5 +13832,158 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(error, RaftError::ApplySnapshotFence(_)));
+    }
+
+    #[test]
+    fn wal_backed_storage_apply_fence_survives_snapshot_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let cluster = RaftCluster::new_single_shard_with_wal(
+            dir.path(),
+            82,
+            [1, 2, 3],
+            RaftConfig::default(),
+        )
+        .unwrap();
+        for value in ["a", "b", "c"] {
+            cluster
+                .propose(Command::StringSet {
+                    key: "storage-fenced-snapshot".to_string(),
+                    value: value.as_bytes().to_vec(),
+                })
+                .unwrap();
+        }
+        let snapshot = cluster.create_snapshot().unwrap();
+        cluster.install_snapshot(2, snapshot).unwrap();
+
+        let wal = LocalRaftWal::new(dir.path());
+        let record = wal.load_node(82, 2).unwrap().unwrap();
+        assert_eq!(record.storage_apply_fence.shard_id, 82);
+        assert_eq!(record.storage_apply_fence.committed_index, 3);
+        assert_eq!(record.storage_apply_fence.applied_index, 3);
+        assert_eq!(record.storage_apply_fence.storage_epoch, 3);
+        assert_eq!(
+            record.storage_apply_fence.snapshot_id.as_deref(),
+            Some("local-snapshot-82-1-3")
+        );
+        validate_raft_storage_apply_fence(&record).unwrap();
+
+        let restored = RaftCluster::restore_single_shard_from_wal(
+            dir.path(),
+            82,
+            [1, 2, 3],
+            RaftConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(restored.commit_index(2).unwrap(), 3);
+    }
+
+    #[test]
+    fn wal_recovery_rejects_missing_storage_apply_fence() {
+        let dir = tempfile::tempdir().unwrap();
+        let cluster = RaftCluster::new_single_shard_with_wal(
+            dir.path(),
+            83,
+            [1, 2, 3],
+            RaftConfig::default(),
+        )
+        .unwrap();
+        cluster
+            .propose(Command::StringSet {
+                key: "missing-storage-fence".to_string(),
+                value: b"value".to_vec(),
+            })
+            .unwrap();
+
+        let wal = LocalRaftWal::new(dir.path());
+        let mut record = wal.load_node(83, 1).unwrap().unwrap();
+        record.storage_apply_fence = RaftStorageApplyFence::default();
+        wal.persist_node_segmented(83, 1, &record, 1024, 1).unwrap();
+
+        let error = RaftCluster::restore_single_shard_from_wal(
+            dir.path(),
+            83,
+            [1, 2, 3],
+            RaftConfig::default(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, RaftError::ApplySnapshotFence(message) if message.contains("missing raft storage apply fence"))
+        );
+    }
+
+    #[test]
+    fn wal_recovery_rejects_corrupt_storage_apply_fence() {
+        let dir = tempfile::tempdir().unwrap();
+        let cluster = RaftCluster::new_single_shard_with_wal(
+            dir.path(),
+            84,
+            [1, 2, 3],
+            RaftConfig::default(),
+        )
+        .unwrap();
+        cluster
+            .propose(Command::StringSet {
+                key: "corrupt-storage-fence".to_string(),
+                value: b"value".to_vec(),
+            })
+            .unwrap();
+
+        let wal = LocalRaftWal::new(dir.path());
+        let mut record = wal.load_node(84, 1).unwrap().unwrap();
+        record.storage_apply_fence.checksum = "bad-checksum".to_string();
+        wal.persist_node_segmented(84, 1, &record, 1024, 1).unwrap();
+
+        let error = RaftCluster::restore_single_shard_from_wal(
+            dir.path(),
+            84,
+            [1, 2, 3],
+            RaftConfig::default(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, RaftError::ApplySnapshotFence(message) if message.contains("checksum mismatch"))
+        );
+    }
+
+    #[test]
+    fn wal_recovery_rejects_ahead_of_storage_apply_fence() {
+        let dir = tempfile::tempdir().unwrap();
+        let cluster = RaftCluster::new_single_shard_with_wal(
+            dir.path(),
+            85,
+            [1, 2, 3],
+            RaftConfig::default(),
+        )
+        .unwrap();
+        cluster
+            .propose(Command::StringSet {
+                key: "ahead-storage-fence".to_string(),
+                value: b"value".to_vec(),
+            })
+            .unwrap();
+
+        let wal = LocalRaftWal::new(dir.path());
+        let mut record = wal.load_node(85, 1).unwrap().unwrap();
+        record.storage_apply_fence.applied_index = record.storage_apply_fence.committed_index + 1;
+        record.storage_apply_fence.checksum = raft_storage_apply_fence_checksum(
+            record.storage_apply_fence.shard_id,
+            record.storage_apply_fence.raft_term,
+            record.storage_apply_fence.committed_index,
+            record.storage_apply_fence.applied_index,
+            record.storage_apply_fence.snapshot_id.as_deref(),
+            record.storage_apply_fence.storage_epoch,
+        );
+        wal.persist_node_segmented(85, 1, &record, 1024, 1).unwrap();
+
+        let error = RaftCluster::restore_single_shard_from_wal(
+            dir.path(),
+            85,
+            [1, 2, 3],
+            RaftConfig::default(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, RaftError::ApplySnapshotFence(message) if message.contains("ahead of committed index"))
+        );
     }
 }

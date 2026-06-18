@@ -37,6 +37,7 @@ REQUIRED_READINESS_SNIPPETS = (
     "local storage dump/load fault matrix harness rejects checksum mismatch, partial manifests, missing segments, stale manifests, restart-during-install recovery, and corrupt page segments",
     "OpenRaft-backed data-node and metaserver adapter is available behind the openraft-engine feature",
     "ProductionRaftEngineKind::OpenRaft",
+    "RaftStorageApplyFence persists shard, term, committed/applied index, snapshot id, storage epoch, and checksum",
     "networked metaserver Raft transport and scheduler loop",
 )
 

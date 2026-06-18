@@ -101,6 +101,9 @@ Raft local coverage:
 - WAL-backed node records now carry a durable apply/snapshot fence for commit index, applied index,
   installed snapshot floor, and first retained log index, giving the OpenRaft path a concrete
   ByteRaft-style applied-index/storage/snapshot atomicity contract to preserve.
+- WAL-backed node records now also carry `RaftStorageApplyFence` for shard id, Raft term,
+  committed/applied index, snapshot id, storage epoch, and checksum, so recovery rejects missing,
+  corrupt, stale, or ahead-of-storage fence state before replay.
 - Data-node Raft log matching is snapshot-floor aware: post-compaction entries continue after the
   installed snapshot index and AppendEntries can match previous terms against either retained log
   entries or the installed snapshot floor.
