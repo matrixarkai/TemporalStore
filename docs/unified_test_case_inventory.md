@@ -139,6 +139,14 @@ shared corpus steps: 159
 C++ existing-test surfaces: 117
 ```
 
+The detailed reduction split and new-test guard live in
+`docs/rust_product_test_reduction_guard.md`. The current split is:
+
+```text
+product behavior to move into shared corpus: 533
+Rust-only internals that can remain local: 7
+```
+
 The Rust-attributed tests are a migration backlog, not the desired final state. They should be
 split into:
 
@@ -179,8 +187,10 @@ Those should follow the same rule:
    restart idempotence.
 5. Teach the C++ native runner to execute every executable shared behavior case, not only validate
    the corpus shape and context subset.
-6. Add a guard so new product behavior tests must reference a shared corpus case. Rust-specific or
-   C++-specific tests should state the implementation-only mechanic they protect.
+6. Keep the new Rust product-test guard enabled:
+   `python3 tools/validate_no_duplicate_tests.py` now runs
+   `tools/validate_rust_product_test_guard.py`, which requires new Rust tests to declare either
+   `shared-corpus: <case>` or `rust-internal: <reason>`.
 
 ## Validation Commands
 

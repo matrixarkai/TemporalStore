@@ -20,6 +20,8 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+import validate_rust_product_test_guard
+
 
 ROOT = Path(__file__).resolve().parents[1]
 RUST_CRATE = ROOT / "crates" / "temporalstore-rust"
@@ -174,9 +176,13 @@ def validate_required_raft_cases(corpus: dict, cases: list[dict]) -> set[str]:
 
 def main() -> None:
     rust_count = validate_rust_test_names()
+    guard = validate_rust_product_test_guard.validate()
     case_count, step_count, existing_test_count = validate_corpus()
     print("no duplicate TemporalStore test cases found")
     print(f"rust_attributed_tests={rust_count}")
+    print(f"rust_test_guard_grandfathered_tests={guard['grandfathered_tests']}")
+    print(f"rust_test_guard_new_shared_corpus_tests={guard['new_marked_shared_corpus_tests']}")
+    print(f"rust_test_guard_new_internal_tests={guard['new_marked_rust_internal_tests']}")
     print(f"shared_corpus_cases={case_count}")
     print(f"shared_corpus_steps={step_count}")
     print(f"cpp_existing_test_surfaces={existing_test_count}")

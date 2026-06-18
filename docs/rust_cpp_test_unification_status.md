@@ -2,14 +2,16 @@
 
 ## Snapshot
 
-Date: 2026-06-16
+Date: 2026-06-18
 
 Rust attributed tests counted with `#[test]` and `#[tokio::test]` under
-`crates/temporalstore-rust`: **488**.
+`crates/temporalstore-rust`: **540**.
 
-Already tied directly to shared/C++ parity harnesses: **20 Rust test functions**.
+Current grandfathered migration baseline: **540 Rust test functions**.
 
-Still Rust-specific: **468 Rust test functions**.
+Product behavior still to move into shared corpus: **533 Rust test functions**.
+
+Rust-only internals that can remain local: **7 Rust test functions**.
 
 Unification target:
 
@@ -26,6 +28,7 @@ Duplicate test status:
 ```text
 python3 tools/validate_no_duplicate_tests.py
 rust_attributed_tests: no duplicate function names
+Rust product-test guard: new tests require shared-corpus or rust-internal markers
 shared corpus: no duplicate case names, per-case step names, or per-case command payloads
 C++ existing-test surfaces: no repeated required_paths
 ```
@@ -171,22 +174,24 @@ surfaces. The next same-test step is native C++ execution of those ingestion wor
 
 ## Rust-Specific Tests Remaining
 
-These counts are a migration backlog, not the desired end state. Each bucket should be split into
-shared product/parity cases versus true language-internal tests. The shared portion moves into
-`compat/unified_temporalstore_cases.json` or a sibling shared corpus stored in this Rust repo first.
+These counts are a migration backlog, not the desired end state. The detailed split and new-test
+guard are documented in `docs/rust_product_test_reduction_guard.md`. The current split is 533
+product-behavior tests to move into shared corpus coverage and 7 Rust-only internal tests that can
+remain local.
 
 | Bucket | Rust-specific tests | Main files |
 | --- | ---: | --- |
-| Storage/cache/local durability | 157 | `engine.rs`, `page_store.rs`, `cache.rs`, `shared_store.rs`, `oplog.rs`, `index_log.rs` |
-| Control plane/service behavior | 157 | `client.rs`, `proxy.rs`, `data_node.rs`, `meta.rs`, `rebalance.rs`, `bin/server.rs`, `bin/metaserver.rs` |
-| Raft/local consensus model | 110 | `raft.rs`, `bin/raft_node.rs` |
-| API/model/ingestion/context/SDK | 17 | `redis.rs`, `context_workflow.rs`, `ingestion.rs`, `sdk.rs`, `types.rs` |
-| Rust storage crash harness | 2 | `tests/storage_crash_harness.rs` |
-| Other local tests | 24 | readiness, e2e, partition id, external chaos, HTTP, replica replay |
+| Storage/cache/local durability | 163 | `engine.rs`, `page_store.rs`, `cache.rs`, `shared_store.rs`, `oplog.rs`, `index_log.rs`, storage crash/migration tests |
+| Control plane/service behavior | 174 | `client.rs`, `proxy.rs`, `data_node.rs`, `meta.rs`, `rebalance.rs`, `bin/server.rs`, `bin/metaserver.rs`, `e2e.rs` |
+| Raft/distributed behavior | 140 | `raft.rs`, `bin/raft_node.rs` |
+| API/model/ingestion/context/SDK | 36 | `temporalstore_compat.rs`, `redis.rs`, `context_workflow.rs`, `ingestion.rs`, `sdk.rs` |
+| Readiness/ops/fault behavior | 20 | `readiness.rs`, `bin/readiness_gate.rs`, `bin/external_chaos_gate.rs`, `replica_replay.rs` |
+| Rust-only internals that can remain local | 7 | `tests/unified_temporalstore_corpus.rs`, `partition_id.rs`, `http.rs`, `types.rs` |
 
 The duplicate-test validator currently reports `rust_attributed_tests=540`,
 `shared_corpus_cases=72`, `shared_corpus_steps=159`, and `cpp_existing_test_surfaces=117`.
-The Rust-attributed count is a migration backlog, not the desired final state.
+It now also checks `tools/rust_product_test_baseline.json` so new Rust tests must declare either
+`shared-corpus: <case>` or `rust-internal: <reason>`.
 
 Target disposition:
 
@@ -235,8 +240,9 @@ Target disposition:
    readiness blockers and scale/fault workflow log assertions.
 
 8. Add a guard for new tests:
-   any new product behavior test should be rejected or called out unless it is backed by a shared
-   corpus case. Language-specific tests should name the internal Rust or C++ mechanic they protect.
+   Done for Rust with `tools/validate_rust_product_test_guard.py`. Any new product behavior test is
+   rejected unless it is backed by a shared corpus case; language-specific tests must name the
+   internal Rust mechanic they protect.
 
 ## Current Limitation
 

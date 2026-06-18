@@ -313,6 +313,22 @@ New product behavior tests should follow this path:
 4. Only add language-specific unit coverage for implementation details that cannot be expressed as
    a shared product behavior.
 
+Rust now enforces this for new attributed tests. Existing Rust tests are grandfathered in
+`tools/rust_product_test_baseline.json`; any new test must include either:
+
+```rust
+// shared-corpus: case_name
+```
+
+or:
+
+```rust
+// rust-internal: validates local helper parsing only
+```
+
+The guard is `python3 tools/validate_rust_product_test_guard.py`, and it is also run by
+`python3 tools/validate_no_duplicate_tests.py`.
+
 ## Local Test Run: 2026-06-16
 
 Rust checkout:
