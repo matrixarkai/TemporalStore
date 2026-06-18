@@ -1887,6 +1887,48 @@ pub struct RaftDistributedReadiness {
     pub missing: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftTransportSecurityReadiness {
+    pub auth_token_validation_present: bool,
+    pub mtls_cert_key_ca_validation_present: bool,
+    pub authenticated_http_transport_present: bool,
+    pub plaintext_local_chaos_guard_present: bool,
+    pub service_process_mtls_enforcement_present: bool,
+    pub production_ready: bool,
+    pub missing: Vec<String>,
+}
+
+pub fn raft_transport_security_readiness() -> RaftTransportSecurityReadiness {
+    let auth_token_validation_present = true;
+    let mtls_cert_key_ca_validation_present = true;
+    let authenticated_http_transport_present = true;
+    let plaintext_local_chaos_guard_present = true;
+    let service_process_mtls_enforcement_present = false;
+    let production_ready = auth_token_validation_present
+        && mtls_cert_key_ca_validation_present
+        && authenticated_http_transport_present
+        && plaintext_local_chaos_guard_present
+        && service_process_mtls_enforcement_present;
+    let missing = if production_ready {
+        Vec::new()
+    } else {
+        vec![
+            "add production mTLS transport implementation instead of validation-only config"
+                .to_string(),
+        ]
+    };
+
+    RaftTransportSecurityReadiness {
+        auth_token_validation_present,
+        mtls_cert_key_ca_validation_present,
+        authenticated_http_transport_present,
+        plaintext_local_chaos_guard_present,
+        service_process_mtls_enforcement_present,
+        production_ready,
+        missing,
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RaftDeploymentMode {
@@ -1918,16 +1960,16 @@ impl std::fmt::Display for RaftProductionReadinessError {
 impl std::error::Error for RaftProductionReadinessError {}
 
 pub fn distributed_raft_readiness() -> RaftDistributedReadiness {
-    let missing = vec![
+    let transport_security = raft_transport_security_readiness();
+    let mut missing = vec![
         "persist the data-node applied Raft index atomically with storage mutations and partition snapshot install"
             .to_string(),
         "make metaserver own learner add, catch-up verification, promotion, leader movement, and voter removal against real data-node Raft groups"
             .to_string(),
         "integrate metaserver shard membership changes with networked Raft groups".to_string(),
-        "add production mTLS transport implementation instead of validation-only config"
-            .to_string(),
         "run external packet-loss, disk-pressure, and process-chaos tests".to_string(),
     ];
+    missing.extend(transport_security.missing.clone());
     RaftDistributedReadiness {
         complete: missing.is_empty(),
         production_ready: false,
@@ -1955,7 +1997,7 @@ pub fn distributed_raft_readiness() -> RaftDistributedReadiness {
         learner_catchup_promotion_present: true,
         metaserver_membership_workflow_present: true,
         metaserver_driven_membership_present: false,
-        production_mtls_transport_present: false,
+        production_mtls_transport_present: transport_security.production_ready,
         external_chaos_validation_present: false,
         missing,
     }
@@ -10847,6 +10889,28 @@ mod tests {
             .missing
             .iter()
             .any(|item| item.contains("process startup")));
+    }
+
+    #[test]
+    fn raft_transport_security_readiness_keeps_service_mtls_blocked() {
+        let readiness = raft_transport_security_readiness();
+        assert!(readiness.auth_token_validation_present);
+        assert!(readiness.mtls_cert_key_ca_validation_present);
+        assert!(readiness.authenticated_http_transport_present);
+        assert!(readiness.plaintext_local_chaos_guard_present);
+        assert!(!readiness.service_process_mtls_enforcement_present);
+        assert!(!readiness.production_ready);
+        assert!(readiness
+            .missing
+            .iter()
+            .any(|item| item.contains("production mTLS transport implementation")));
+
+        let distributed = distributed_raft_readiness();
+        assert!(!distributed.production_mtls_transport_present);
+        assert!(distributed
+            .missing
+            .iter()
+            .any(|item| item.contains("validation-only config")));
     }
 
     #[test]

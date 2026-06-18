@@ -148,7 +148,10 @@ The readiness gate intentionally still blocks production readiness on:
   membership changes.
 - Metaserver-owned learner add, catch-up verification, promotion, leader movement, and voter
   removal for real data-node Raft groups.
-- Production mTLS transport implementation instead of validation-only config.
+- Raft transport security readiness is now explicit in the readiness gate: auth-token validation,
+  mTLS cert/key/CA config validation, authenticated HTTP transport, and plaintext-only local chaos
+  guardrails are covered. Real service-process mTLS enforcement remains blocked until every
+  production Raft API path requires it at runtime.
 - External multi-process packet-loss, disk-pressure, and process-chaos tests.
 - Rust-local storage migration corpus readiness is now explicit in the readiness gate: converted
   corpus replay through engine, shared-store, Raft read paths, and the unified C++/Rust runner is

@@ -353,6 +353,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "ProductionMetaRaftRuntime can drive a data-Raft membership workflow for learner add, catch-up verification, promotion, leader transfer, and voter removal"
                     .to_string(),
+                "Raft transport security readiness covers auth-token validation, mTLS cert/key/CA config validation, authenticated HTTP transport, and plaintext-only local chaos guardrails while keeping service-process mTLS enforcement fail-closed"
+                    .to_string(),
             ],
             missing: raft.missing,
         },
@@ -498,6 +500,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "metaserver-owned data-Raft membership workflow reports learner add, catch-up verification, promotion, leader transfer, and voter removal"
                     .to_string(),
                 "ByteRaft-style leader write authority, ReadIndex guards, learner catch-up/promotion checks, and fail-closed stale leader-transfer checks are modeled locally"
+                    .to_string(),
+                "Raft transport security readiness covers auth-token validation, mTLS cert/key/CA config validation, authenticated HTTP transport, and plaintext-only local chaos guardrails while keeping service-process mTLS enforcement fail-closed"
                     .to_string(),
             ],
             missing: vec![
@@ -701,6 +705,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "C++-style membership update task model filters sibling replicas, applies success thresholds, treats not_found as acceptable reboot state, and gates FSM submit"
                     .to_string(),
                 "rolling upgrade and rollback runbook covers metaserver, data-node, proxy, client, storage, ingestion, preflight, quick chaos gate, and audit artifacts"
+                    .to_string(),
+                "Raft transport security readiness covers validation-only auth/TLS evidence and keeps real service-process mTLS enforcement blocked"
                     .to_string(),
             ],
             missing: vec![
@@ -1475,9 +1481,23 @@ mod tests {
         assert!(covered
             .iter()
             .any(|item| item.contains("ProductionRaftEngineKind::OpenRaft")));
+        assert!(covered.iter().any(|item| {
+            item.contains("Raft transport security readiness")
+                && item.contains("service-process mTLS enforcement fail-closed")
+        }));
         assert!(!data_raft
             .iter()
             .any(|item| item.contains("roll out the adapter")));
+
+        let deployment_ops = report
+            .areas
+            .iter()
+            .find(|area| area.area == "deployment_ops")
+            .expect("deployment ops area must exist");
+        assert!(deployment_ops
+            .covered
+            .iter()
+            .any(|item| item.contains("validation-only auth/TLS evidence")));
 
         let fault_tolerance = report
             .areas
