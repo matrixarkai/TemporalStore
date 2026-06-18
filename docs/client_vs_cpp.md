@@ -95,8 +95,27 @@ Rust now has:
   `TableOptions.drop_percent`, and table execute/batch paths reject sampled keys with
   `traffic_dropped` before contacting a backend
 - stats for backend errors, backend error streaks, continuous backend failures, and successful retry recovery
+- tracked C++ caller migration decision: brpc/thrift client shims are explicitly out of scope, and
+  C++ callers must migrate through the Rust-native HTTP/JSON, RESP, or tonic contract
+- `ClientMigrationCompatibilityReport` and `ClientProductionReplacementContract`, which preserve
+  the typed table client, topology sync, separate read/write retry budgets, Neptune routing hooks,
+  and deployment placement hooks as tracked production replacement behavior
 
 The old `TemporalStoreClient::new(proxy_addr)` API still works and routes through the proxy.
+
+## Wire Compatibility Decision
+
+Rust keeps the Rust-native production surface instead of adding brpc/thrift migration shims in this
+pass. The tracked replacement contract is:
+
+- HTTP/JSON for existing admin, proxy, server, and table execution routes.
+- RESP for Redis-compatible command migration.
+- tonic/prost for the versioned `temporalstore.v1` client SDK contract.
+- Existing typed table client behavior, background topology sync, retry budgets, Neptune routing
+  hooks, and deployment placement hooks must remain intact during caller migration.
+
+This is a parity decision, not an accidental gap. The readiness gate marks the decision and
+Rust-native migration contract as ready, while keeping C++ wire migration readiness fail-closed.
 
 ## Still Missing
 

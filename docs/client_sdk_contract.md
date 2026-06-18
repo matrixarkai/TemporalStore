@@ -7,6 +7,12 @@ existing HTTP/JSON client and proxy paths. It is not a claim of legacy C++ wire 
 production target is a Rust-native API surface with a stable schema, generated SDK bindings, and
 the same logical behavior as the shared C++/Rust corpus.
 
+The client/proxy wire-compatibility decision is explicit: brpc/thrift migration shims stay out of
+scope for this pass. Existing C++ callers migrate through the Rust-native HTTP/JSON, RESP, or tonic
+contract while preserving typed table clients, topology sync, retry budgets, Neptune routing hooks,
+deployment placement hooks, proxy admission, route quarantine, topology-version invalidation, and
+heartbeat/config application behavior.
+
 The versioned schema lives at:
 
 ```text

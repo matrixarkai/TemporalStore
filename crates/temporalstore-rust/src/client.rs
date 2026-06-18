@@ -201,6 +201,18 @@ pub struct ClientMigrationCompatibilityReport {
     pub brpc_thrift_in_scope: bool,
     pub cpp_wire_compatible_ready: bool,
     pub migration_layer_ready: bool,
+    #[serde(default)]
+    pub typed_table_client_ready: bool,
+    #[serde(default)]
+    pub topology_sync_ready: bool,
+    #[serde(default)]
+    pub retry_budgets_ready: bool,
+    #[serde(default)]
+    pub neptune_routing_hooks_ready: bool,
+    #[serde(default)]
+    pub placement_hooks_ready: bool,
+    #[serde(default)]
+    pub production_replacement_contract: ClientProductionReplacementContract,
     pub blockers: Vec<String>,
 }
 
@@ -213,12 +225,53 @@ impl Default for ClientMigrationCompatibilityReport {
             brpc_thrift_in_scope: false,
             cpp_wire_compatible_ready: false,
             migration_layer_ready: false,
+            typed_table_client_ready: true,
+            topology_sync_ready: true,
+            retry_budgets_ready: true,
+            neptune_routing_hooks_ready: true,
+            placement_hooks_ready: true,
+            production_replacement_contract: ClientProductionReplacementContract::default(),
             blockers: vec![
                 "brpc/thrift wire compatibility is explicitly out of scope for the Rust-native target"
                     .to_string(),
-                "existing C++ callers must migrate through the documented Rust HTTP/RESP/tonic API"
+                "existing C++ callers must migrate through the documented Rust HTTP/JSON, RESP, and tonic API"
                     .to_string(),
             ],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClientProductionReplacementContract {
+    pub compatibility_decision: String,
+    pub cplusplus_wire_protocols: Vec<String>,
+    pub production_protocols: Vec<String>,
+    pub typed_table_client_preserved: bool,
+    pub topology_sync_preserved: bool,
+    pub retry_budget_preserved: bool,
+    pub neptune_routing_hooks_preserved: bool,
+    pub placement_hooks_preserved: bool,
+    pub migration_contract_version: u32,
+}
+
+impl Default for ClientProductionReplacementContract {
+    fn default() -> Self {
+        Self {
+            compatibility_decision:
+                "brpc/thrift migration shims are out of scope; use Rust-native migration contract"
+                    .to_string(),
+            cplusplus_wire_protocols: vec!["brpc".to_string(), "thrift".to_string()],
+            production_protocols: vec![
+                "HTTP/JSON".to_string(),
+                "RESP".to_string(),
+                "tonic".to_string(),
+            ],
+            typed_table_client_preserved: true,
+            topology_sync_preserved: true,
+            retry_budget_preserved: true,
+            neptune_routing_hooks_preserved: true,
+            placement_hooks_preserved: true,
+            migration_contract_version: 1,
         }
     }
 }
@@ -3917,6 +3970,50 @@ mod tests {
         assert!(!migration.brpc_thrift_in_scope);
         assert!(!migration.cpp_wire_compatible_ready);
         assert!(!migration.migration_layer_ready);
+        assert!(migration.typed_table_client_ready);
+        assert!(migration.topology_sync_ready);
+        assert!(migration.retry_budgets_ready);
+        assert!(migration.neptune_routing_hooks_ready);
+        assert!(migration.placement_hooks_ready);
+        assert_eq!(
+            migration
+                .production_replacement_contract
+                .compatibility_decision,
+            "brpc/thrift migration shims are out of scope; use Rust-native migration contract"
+        );
+        assert!(migration
+            .production_replacement_contract
+            .production_protocols
+            .contains(&"HTTP/JSON".to_string()));
+        assert!(migration
+            .production_replacement_contract
+            .production_protocols
+            .contains(&"tonic".to_string()));
+        assert!(
+            migration
+                .production_replacement_contract
+                .typed_table_client_preserved
+        );
+        assert!(
+            migration
+                .production_replacement_contract
+                .topology_sync_preserved
+        );
+        assert!(
+            migration
+                .production_replacement_contract
+                .retry_budget_preserved
+        );
+        assert!(
+            migration
+                .production_replacement_contract
+                .neptune_routing_hooks_preserved
+        );
+        assert!(
+            migration
+                .production_replacement_contract
+                .placement_hooks_preserved
+        );
         assert!(migration
             .blockers
             .iter()

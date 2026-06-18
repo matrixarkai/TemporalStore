@@ -118,6 +118,8 @@ pub struct ClientRoutingReadinessReport {
     pub topology_preflight_ready: bool,
     pub neptune_routing_ready: bool,
     pub deployment_placement_hooks_ready: bool,
+    pub wire_compatibility_decision_tracked: bool,
+    pub rust_native_migration_contract_ready: bool,
     pub cpp_wire_migration_ready: bool,
     pub local_client_ready: bool,
     pub production_ready: bool,
@@ -132,6 +134,8 @@ pub struct ProxyServingReadinessReport {
     pub admission_policy_ready: bool,
     pub service_discovery_ready: bool,
     pub tonic_proxy_surface_ready: bool,
+    pub wire_compatibility_decision_tracked: bool,
+    pub rust_native_proxy_migration_contract_ready: bool,
     pub cpp_wire_proxy_transport_ready: bool,
     pub local_proxy_ready: bool,
     pub production_ready: bool,
@@ -182,6 +186,8 @@ pub fn client_routing_readiness_report() -> ClientRoutingReadinessReport {
     let topology_preflight_ready = true;
     let neptune_routing_ready = true;
     let deployment_placement_hooks_ready = true;
+    let wire_compatibility_decision_tracked = true;
+    let rust_native_migration_contract_ready = true;
     let cpp_wire_migration_ready = false;
     let local_client_ready = typed_table_client_ready
         && route_refresh_ready
@@ -189,12 +195,14 @@ pub fn client_routing_readiness_report() -> ClientRoutingReadinessReport {
         && retry_classifier_ready
         && topology_preflight_ready
         && neptune_routing_ready
-        && deployment_placement_hooks_ready;
+        && deployment_placement_hooks_ready
+        && wire_compatibility_decision_tracked
+        && rust_native_migration_contract_ready;
     let production_ready = local_client_ready && cpp_wire_migration_ready;
     let missing = if production_ready {
         Vec::new()
     } else {
-        vec!["wire-compatible migration layer for existing C++ client callers remains out of scope; use the documented Rust-native HTTP/RESP/tonic migration API".to_string()]
+        vec!["brpc/thrift wire-compatible migration shims for existing C++ client callers are explicitly out of scope; use the tracked Rust-native HTTP/JSON, RESP, and tonic migration contract".to_string()]
     };
 
     ClientRoutingReadinessReport {
@@ -205,6 +213,8 @@ pub fn client_routing_readiness_report() -> ClientRoutingReadinessReport {
         topology_preflight_ready,
         neptune_routing_ready,
         deployment_placement_hooks_ready,
+        wire_compatibility_decision_tracked,
+        rust_native_migration_contract_ready,
         cpp_wire_migration_ready,
         local_client_ready,
         production_ready,
@@ -219,19 +229,23 @@ pub fn proxy_serving_readiness_report() -> ProxyServingReadinessReport {
     let admission_policy_ready = true;
     let service_discovery_ready = true;
     let tonic_proxy_surface_ready = true;
+    let wire_compatibility_decision_tracked = true;
+    let rust_native_proxy_migration_contract_ready = true;
     let cpp_wire_proxy_transport_ready = false;
     let local_proxy_ready = http_execute_routes_ready
         && heartbeat_config_ready
         && topology_refresh_ready
         && admission_policy_ready
-        && service_discovery_ready;
+        && service_discovery_ready
+        && wire_compatibility_decision_tracked
+        && rust_native_proxy_migration_contract_ready;
     let production_ready =
         local_proxy_ready && tonic_proxy_surface_ready && cpp_wire_proxy_transport_ready;
     let missing = if production_ready {
         Vec::new()
     } else {
         vec![
-            "brpc/thrift wire-compatible command-specific proxy transport for existing C++ callers is explicitly out of scope for the Rust-native proxy target"
+            "brpc/thrift wire-compatible command-specific proxy transport for existing C++ callers is explicitly out of scope; HTTP/JSON aliases plus tonic are the tracked production replacement"
                 .to_string(),
         ]
     };
@@ -243,6 +257,8 @@ pub fn proxy_serving_readiness_report() -> ProxyServingReadinessReport {
         admission_policy_ready,
         service_discovery_ready,
         tonic_proxy_surface_ready,
+        wire_compatibility_decision_tracked,
+        rust_native_proxy_migration_contract_ready,
         cpp_wire_proxy_transport_ready,
         local_proxy_ready,
         production_ready,
@@ -644,7 +660,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "client preflight exposes a C++-style partition-set compatibility view derived from cached table ranges and shard routes"
                     .to_string(),
-                "client routing readiness covers typed table client, route refresh, background meta sync, retry classification, topology preflight, Neptune routing hooks, and deployment placement hooks while keeping C++ wire migration fail-closed"
+                "client routing readiness covers typed table client, topology sync, retry budgets, topology preflight, Neptune routing hooks, deployment placement hooks, and the tracked Rust-native HTTP/JSON, RESP, and tonic migration contract while keeping C++ brpc/thrift wire migration fail-closed"
                     .to_string(),
             ],
             missing: client_routing.missing,
@@ -667,7 +683,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "Rust-native service discovery replacement for consul via proxy auto-register, heartbeat TTL, admin inspection, and Prometheus stale/registered metrics"
                     .to_string(),
-                "proxy serving readiness covers HTTP execute routes, heartbeat/config application, topology refresh, admission policy, Rust-native service discovery, and tonic streaming/callback shape while keeping brpc/thrift C++ wire proxy transport out of scope"
+                "proxy serving readiness covers HTTP execute routes, heartbeat/config application, topology-version invalidation, admission policy, route quarantine, Rust-native service discovery, tonic streaming/callback shape, and the tracked HTTP/JSON plus tonic migration contract while keeping brpc/thrift C++ wire proxy transport out of scope"
                     .to_string(),
             ],
             missing: proxy_serving.missing,
@@ -1104,10 +1120,10 @@ fn service_next_action(service: &str, blocker_classes: &[String]) -> &'static st
     };
     match (service, first_class) {
         ("client", "client_sync_preflight") => {
-            "finish or explicitly re-scope brpc/thrift wire-compatible migration for existing C++ client callers"
+            "keep brpc/thrift client shims explicitly out of scope and migrate C++ callers through the tracked HTTP/JSON, RESP, and tonic contract"
         }
         ("proxy", "proxy_topology_admission") => {
-            "finish proxy topology-version guarded cache invalidation and admission policy enforcement"
+            "keep brpc/thrift proxy transport explicitly out of scope and use the tracked HTTP/JSON plus tonic migration contract"
         }
         ("ingestion", "ingestion_durability") => {
             "finish network Kafka/Flink runtime failover, lag metrics, and dead-letter export"
@@ -1269,12 +1285,11 @@ mod tests {
         assert!(client.local_client_ready);
         assert!(client.neptune_routing_ready);
         assert!(client.deployment_placement_hooks_ready);
+        assert!(client.wire_compatibility_decision_tracked);
+        assert!(client.rust_native_migration_contract_ready);
         assert!(!client.cpp_wire_migration_ready);
         assert!(!client.production_ready);
-        assert!(client
-            .missing
-            .iter()
-            .any(|item| item.contains("wire-compatible migration")));
+        assert!(client.missing.iter().any(|item| item.contains("HTTP/JSON")));
 
         let proxy = proxy_serving_readiness_report();
         assert!(proxy.http_execute_routes_ready);
@@ -1284,6 +1299,8 @@ mod tests {
         assert!(proxy.service_discovery_ready);
         assert!(proxy.local_proxy_ready);
         assert!(proxy.tonic_proxy_surface_ready);
+        assert!(proxy.wire_compatibility_decision_tracked);
+        assert!(proxy.rust_native_proxy_migration_contract_ready);
         assert!(!proxy.cpp_wire_proxy_transport_ready);
         assert!(!proxy.production_ready);
         assert!(proxy
@@ -1301,6 +1318,10 @@ mod tests {
             .covered
             .iter()
             .any(|item| item.contains("Neptune routing hooks")));
+        assert!(client_area
+            .covered
+            .iter()
+            .any(|item| item.contains("Rust-native HTTP/JSON")));
         let proxy_area = readiness
             .areas
             .iter()
@@ -1310,6 +1331,10 @@ mod tests {
             .covered
             .iter()
             .any(|item| item.contains("proxy serving readiness")));
+        assert!(proxy_area
+            .covered
+            .iter()
+            .any(|item| item.contains("route quarantine")));
     }
 
     #[test]

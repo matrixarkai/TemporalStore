@@ -59,6 +59,11 @@ Rust now has a reusable `ProxyService`:
   - continuous backend failures
   - metaserver errors
   - bad requests
+- tracked C++ proxy migration decision: brpc/thrift command transport is explicitly out of scope,
+  and HTTP/JSON aliases plus tonic are the production replacement
+- `/proxy/cpp_migration_contract` and `/ProxyService/GetCppMigrationContract` expose the migration
+  contract, including topology-version invalidation, admission policy, route quarantine, and
+  heartbeat/config behavior preservation
 
 The Rust `proxy` binary now delegates to `ProxyService` and supports:
 
@@ -69,6 +74,20 @@ The Rust `proxy` binary now delegates to `ProxyService` and supports:
 - `TS_PROXY_MAX_RETRIES`
 - `TS_PROXY_REFRESH_ROUTE_ON_BACKEND_ERROR`
 - `TS_PROXY_BACKEND_CONTINUOUS_FAILED_TIME_MS`
+
+## Wire Compatibility Decision
+
+Rust keeps the Rust-native proxy surface instead of implementing brpc/thrift command transport in
+this pass. The production replacement is:
+
+- HTTP/JSON proxy routes and C++ service-name JSON aliases for migration tests.
+- tonic `temporalstore.v1.ProxyService` streaming/callback shape.
+- Existing topology-version invalidation, admission policy, backend quarantine/recovery, and
+  heartbeat/config readiness behavior remain preserved.
+
+This decision is tracked in code through `ProxyCppMigrationContract` and readiness fields. The
+readiness gate can therefore distinguish "decision documented and Rust-native replacement ready"
+from "brpc/thrift wire-compatible proxy transport still not implemented."
 
 ## Still Missing
 

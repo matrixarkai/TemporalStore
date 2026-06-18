@@ -241,6 +241,41 @@ impl Default for ProxyTonicStreamingContract {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyCppMigrationContract {
+    pub compatibility_decision: String,
+    pub brpc_thrift_in_scope: bool,
+    pub cpp_wire_proxy_transport_ready: bool,
+    pub production_protocols: Vec<String>,
+    pub http_json_aliases_ready: bool,
+    pub tonic_streaming_ready: bool,
+    pub topology_version_invalidation_preserved: bool,
+    pub admission_policy_preserved: bool,
+    pub backend_quarantine_preserved: bool,
+    pub heartbeat_config_preserved: bool,
+    pub migration_contract_version: u32,
+}
+
+impl Default for ProxyCppMigrationContract {
+    fn default() -> Self {
+        Self {
+            compatibility_decision:
+                "brpc/thrift command transport is out of scope; use Rust-native HTTP/JSON plus tonic"
+                    .to_string(),
+            brpc_thrift_in_scope: false,
+            cpp_wire_proxy_transport_ready: false,
+            production_protocols: vec!["HTTP/JSON".to_string(), "tonic".to_string()],
+            http_json_aliases_ready: true,
+            tonic_streaming_ready: true,
+            topology_version_invalidation_preserved: true,
+            admission_policy_preserved: true,
+            backend_quarantine_preserved: true,
+            heartbeat_config_preserved: true,
+            migration_contract_version: 1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyTopologyRefreshResponse {
     pub status: Status,
     pub report: Option<ClientTopologyRefreshReport>,
@@ -433,6 +468,10 @@ impl ProxyService {
             }
             ("GET", "/proxy/tonic_contract") | ("GET", "/ProxyService/GetTonicContract") => {
                 json_response(200, &self.tonic_streaming_contract())
+            }
+            ("GET", "/proxy/cpp_migration_contract")
+            | ("GET", "/ProxyService/GetCppMigrationContract") => {
+                json_response(200, &self.cpp_migration_contract())
             }
             ("GET", "/proxy/service_discovery") | ("GET", "/ProxyService/GetServiceDiscovery") => {
                 json_response(200, &self.service_discovery_report())
@@ -994,6 +1033,10 @@ impl ProxyService {
 
     pub fn tonic_streaming_contract(&self) -> ProxyTonicStreamingContract {
         ProxyTonicStreamingContract::default()
+    }
+
+    pub fn cpp_migration_contract(&self) -> ProxyCppMigrationContract {
+        ProxyCppMigrationContract::default()
     }
 
     pub fn service_discovery_report(&self) -> ProxyServiceDiscoveryReport {
@@ -1930,6 +1973,37 @@ mod tests {
         assert_eq!(
             parse_json::<ProxyTonicStreamingContract>(&body).unwrap(),
             contract
+        );
+
+        let migration = proxy.cpp_migration_contract();
+        assert_eq!(
+            migration.compatibility_decision,
+            "brpc/thrift command transport is out of scope; use Rust-native HTTP/JSON plus tonic"
+        );
+        assert!(!migration.brpc_thrift_in_scope);
+        assert!(!migration.cpp_wire_proxy_transport_ready);
+        assert!(migration.http_json_aliases_ready);
+        assert!(migration.tonic_streaming_ready);
+        assert!(migration.topology_version_invalidation_preserved);
+        assert!(migration.admission_policy_preserved);
+        assert!(migration.backend_quarantine_preserved);
+        assert!(migration.heartbeat_config_preserved);
+        assert!(migration
+            .production_protocols
+            .contains(&"HTTP/JSON".to_string()));
+        assert!(migration
+            .production_protocols
+            .contains(&"tonic".to_string()));
+
+        let (code, body) = proxy.handle(HttpRequest {
+            method: "GET".to_string(),
+            path: "/proxy/cpp_migration_contract".to_string(),
+            body: Vec::new(),
+        });
+        assert_eq!(code, 200);
+        assert_eq!(
+            parse_json::<ProxyCppMigrationContract>(&body).unwrap(),
+            migration
         );
     }
 

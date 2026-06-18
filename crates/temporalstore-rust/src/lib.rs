@@ -100,9 +100,9 @@ pub use partition_id::{
     PARTITION_VERSION_MASK, SLOT_COUNT, SLOT_MASK,
 };
 pub use proxy::{
-    ProxyClientPreflightReport, ProxyConfigUpdateReport, ProxyInfo, ProxyOpenTableRequest,
-    ProxyOpenTableResponse, ProxyOptions, ProxyPolicyReport, ProxyPreflightReport,
-    ProxyReplicaReadPolicy, ProxyService, ProxyServingMode, ProxyStats,
+    ProxyClientPreflightReport, ProxyConfigUpdateReport, ProxyCppMigrationContract, ProxyInfo,
+    ProxyOpenTableRequest, ProxyOpenTableResponse, ProxyOptions, ProxyPolicyReport,
+    ProxyPreflightReport, ProxyReplicaReadPolicy, ProxyService, ProxyServingMode, ProxyStats,
     ProxyTableBatchExecuteRequest, ProxyTableExecuteRequest, ProxyTableOptionsView,
 };
 #[cfg(feature = "openraft-engine")]
