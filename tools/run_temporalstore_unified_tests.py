@@ -102,10 +102,12 @@ def validate_corpus(path: Path) -> dict:
     if not isinstance(coverage, dict):
         raise SystemExit(f"{path}: coverage must declare required shared C++/Rust test families")
     required_case_names = coverage.get("required_case_names")
+    required_raft_case_names = coverage.get("required_raft_case_names", [])
     required_command_kinds = coverage.get("required_command_kinds")
     required_response_kinds = coverage.get("required_response_kinds")
     for field_name, values in [
         ("required_case_names", required_case_names),
+        ("required_raft_case_names", required_raft_case_names),
         ("required_command_kinds", required_command_kinds),
         ("required_response_kinds", required_response_kinds),
     ]:
@@ -159,10 +161,13 @@ def validate_corpus(path: Path) -> dict:
         if case["name"] in COMBINED_RAFT_GATE_CASES:
             validate_combined_raft_case(path, case)
     missing_cases = sorted(set(required_case_names) - seen_case_names)
+    missing_raft_cases = sorted(set(required_raft_case_names) - seen_case_names)
     missing_commands = sorted(set(required_command_kinds) - seen_command_kinds)
     missing_responses = sorted(set(required_response_kinds) - seen_response_kinds)
     if missing_cases:
         raise SystemExit(f"{path}: missing required cases: {', '.join(missing_cases)}")
+    if missing_raft_cases:
+        raise SystemExit(f"{path}: missing required Raft cases: {', '.join(missing_raft_cases)}")
     if missing_commands:
         raise SystemExit(f"{path}: missing required command kinds: {', '.join(missing_commands)}")
     if missing_responses:

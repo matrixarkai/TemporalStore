@@ -333,6 +333,12 @@ AREAS: tuple[ParityArea, ...] = (
             RustEvidence(
                 "compat/unified_temporalstore_cases.json",
                 (
+                    '"required_raft_case_names"',
+                    '"storage_data_raft_replication_gtest"',
+                    '"raft_metaserver_membership_failover_snapshot"',
+                    '"raft_data_node_scale_failover_snapshot"',
+                    '"raft_data_node_mixed_rw_and_membership"',
+                    '"raft_production_gate"',
                     "tools/run_storage_raft_production_readiness.sh && tools/run_raft_distributed_parity.sh",
                     "temporalstore-raft-distributed-parity-validation",
                 ),

@@ -50,6 +50,13 @@
       "cpp_metaserver_scheduler_repair_parity_surfaces",
       "cpp_data_node_lifecycle_server_parity_surfaces"
     ],
+    "required_raft_case_names": [
+      "storage_data_raft_replication_gtest",
+      "raft_metaserver_membership_failover_snapshot",
+      "raft_data_node_scale_failover_snapshot",
+      "raft_data_node_mixed_rw_and_membership",
+      "raft_production_gate"
+    ],
     "required_command_kinds": [
       "string_set",
       "string_get",
