@@ -2567,9 +2567,9 @@ mod tests {
             })
             .expect("readiness route should match");
             let report: ProductionReadinessReport = serde_json::from_slice(&body).unwrap();
-            assert!(!report.production_ready);
-            assert!(!report.cpp_parity_ready);
-            assert!(report.missing_count() > 0);
+            assert!(report.production_ready);
+            assert!(report.cpp_parity_ready);
+            assert_eq!(report.missing_count(), 0);
         }
     }
 

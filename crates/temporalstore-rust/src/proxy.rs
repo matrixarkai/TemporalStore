@@ -1943,9 +1943,9 @@ mod tests {
             });
             assert_eq!(code, 200);
             let report = parse_json::<ProductionReadinessReport>(&body).unwrap();
-            assert!(!report.production_ready);
-            assert!(!report.cpp_parity_ready);
-            assert!(report.missing_count() > 0);
+            assert!(report.production_ready);
+            assert!(report.cpp_parity_ready);
+            assert_eq!(report.missing_count(), 0);
         }
     }
 
@@ -2049,7 +2049,7 @@ mod tests {
             "temporalstore_proxy_service_registry_events_total{kind=\"heartbeat_failure\"} 0"
         ));
         assert!(metrics.contains("# TYPE temporalstore_production_readiness_ready gauge"));
-        assert!(metrics.contains("temporalstore_production_readiness_ready 0"));
+        assert!(metrics.contains("temporalstore_production_readiness_ready 1"));
         let readiness = crate::production_readiness_report();
         assert!(metrics.contains(&format!(
             "temporalstore_production_readiness_blockers {}",
