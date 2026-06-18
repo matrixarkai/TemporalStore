@@ -36,7 +36,7 @@ Raft/storage parity evidence status:
 python3 tools/validate_raft_storage_parity_evidence.py
 raft_storage_parity_areas: 11
 corpus_required_cpp_paths: 49
-rust_evidence_snippets: 96
+rust_evidence_snippets: 98
 ```
 
 The eleven checked areas are storage object/page/slot lifecycle, slot dump/load recovery,

@@ -2298,6 +2298,8 @@
     {
       "name": "raft_data_node_scale_failover_snapshot",
       "shard_id": 31,
+      "rust_parity_gate": "tools/run_raft_distributed_parity.sh",
+      "rust_parity_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
       "steps": [
         {
           "name": "data_raft_2node_scale",
@@ -2358,6 +2360,8 @@
     {
       "name": "raft_data_node_mixed_rw_and_membership",
       "shard_id": 32,
+      "rust_parity_gate": "tools/run_raft_distributed_parity.sh",
+      "rust_parity_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
       "steps": [
         {
           "name": "data_raft_mixed_rw",

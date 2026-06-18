@@ -136,6 +136,13 @@ AREAS: tuple[ParityArea, ...] = (
                 "crates/temporalstore-rust/tests/temporalstore_compat.rs",
                 ("consistency_bench_style_hash_writes_are_linearizable_through_raft",),
             ),
+            RustEvidence(
+                "compat/unified_temporalstore_cases.json",
+                (
+                    '"rust_parity_gate": "tools/run_raft_distributed_parity.sh"',
+                    '"rust_parity_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>"',
+                ),
+            ),
         ),
     ),
     ParityArea(
