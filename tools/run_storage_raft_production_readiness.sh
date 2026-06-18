@@ -9,6 +9,10 @@ TIMEOUT="${TS_STORAGE_RAFT_TIMEOUT:-120s}"
 cd "${ROOT}"
 export CARGO_TARGET_DIR="${TARGET_DIR}"
 mkdir -p "${ARTIFACT_DIR}"
+RAFT_CPP_EVIDENCE_ARGS=()
+if [[ -n "${TS_CPP_REPO:-}" ]]; then
+  RAFT_CPP_EVIDENCE_ARGS+=(--cpp-repo "${TS_CPP_REPO}")
+fi
 
 echo "== 1/7 storage recovery/fault matrix hardening =="
 timeout "${TIMEOUT}" cargo run -p temporalstore-rust --bin storage_fault_matrix_harness -- \
@@ -114,7 +118,7 @@ PY
 
 echo "== 7/7 unified corpus and readiness docs =="
 python3 tools/run_temporalstore_unified_tests.py --validate-only
-python3 tools/validate_raft_storage_parity_evidence.py
+python3 tools/validate_raft_storage_parity_evidence.py "${RAFT_CPP_EVIDENCE_ARGS[@]}"
 python3 tools/validate_no_duplicate_tests.py
 git diff --check
 

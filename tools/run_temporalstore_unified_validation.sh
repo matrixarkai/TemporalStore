@@ -41,12 +41,16 @@ done
 
 cd "${ROOT}"
 export CARGO_TARGET_DIR="${TARGET_DIR}"
+RAFT_CPP_EVIDENCE_ARGS=()
+if [[ -n "${TS_CPP_REPO:-}" ]]; then
+  RAFT_CPP_EVIDENCE_ARGS+=(--cpp-repo "${TS_CPP_REPO}")
+fi
 
 echo "== unified: workflow/test contract guards =="
 python3 tools/validate_readiness_workflow.py
 python3 tools/run_temporalstore_unified_tests.py --validate-only
 python3 tools/validate_no_duplicate_tests.py
-python3 tools/validate_raft_storage_parity_evidence.py
+python3 tools/validate_raft_storage_parity_evidence.py "${RAFT_CPP_EVIDENCE_ARGS[@]}"
 python3 tools/validate_storage_raft_production_plan.py
 python3 tools/validate_control_plane_parity_evidence.py
 python3 tools/validate_api_model_parity_evidence.py

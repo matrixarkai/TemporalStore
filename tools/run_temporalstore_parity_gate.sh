@@ -52,9 +52,14 @@ require() {
 
 cd "${ROOT}"
 export CARGO_TARGET_DIR="${TARGET_DIR}"
+RAFT_CPP_EVIDENCE_ARGS=()
+if [[ -n "${TS_CPP_REPO:-}" ]]; then
+  RAFT_CPP_EVIDENCE_ARGS+=(--cpp-repo "${TS_CPP_REPO}")
+fi
 
 echo "== local: SDK contract validation =="
 python3 tools/validate_sdk_contract.py
+python3 tools/validate_raft_storage_parity_evidence.py "${RAFT_CPP_EVIDENCE_ARGS[@]}"
 
 echo "== local: cargo test all targets =="
 cargo test -p temporalstore-rust --all-targets -- --test-threads=1

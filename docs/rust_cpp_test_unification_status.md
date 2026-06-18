@@ -34,6 +34,10 @@ The shared corpus validator also requires every runtime/stress `cpp_data_raft_pa
 declare a Rust runner/validator, and requires the data-node and production Raft cases to point at
 the combined data-node plus metaserver parity gate.
 
+When `TS_CPP_REPO` is set, the unified, parity, and storage/Raft gates pass it through to
+`validate_raft_storage_parity_evidence.py --cpp-repo`, so the Raft parity evidence is checked
+against the current C++ checkout instead of Rust evidence alone.
+
 Raft/storage parity evidence status:
 
 ```text
