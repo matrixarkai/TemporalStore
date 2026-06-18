@@ -1824,6 +1824,7 @@ pub struct RaftDistributedReadiness {
     pub byteraft_rpc_transport_contract_present: bool,
     pub byteraft_log_retention_snapshot_trigger_present: bool,
     pub byteraft_apply_snapshot_fence_present: bool,
+    pub byteraft_snapshot_floor_log_matching_present: bool,
     pub durable_apply_index_snapshot_integrated: bool,
     pub learner_catchup_promotion_present: bool,
     pub metaserver_driven_membership_present: bool,
@@ -1887,6 +1888,7 @@ pub fn distributed_raft_readiness() -> RaftDistributedReadiness {
         byteraft_rpc_transport_contract_present: true,
         byteraft_log_retention_snapshot_trigger_present: true,
         byteraft_apply_snapshot_fence_present: true,
+        byteraft_snapshot_floor_log_matching_present: true,
         durable_apply_index_snapshot_integrated: false,
         learner_catchup_promotion_present: true,
         metaserver_driven_membership_present: false,
@@ -4008,7 +4010,7 @@ impl RaftCluster {
             .ok_or(RaftError::LeaderUnavailable)?;
         let entry = RaftLogEntry {
             term: leader.current_term,
-            index: leader.log.last().map(|entry| entry.index + 1).unwrap_or(1),
+            index: node_next_log_index(leader),
             shard_id,
             command,
         };
@@ -4104,7 +4106,7 @@ impl RaftCluster {
                 .ok_or(RaftError::LeaderUnavailable)?;
             let entry = RaftLogEntry {
                 term: leader.current_term,
-                index: leader.log.last().map(|entry| entry.index + 1).unwrap_or(1),
+                index: node_next_log_index(leader),
                 shard_id,
                 command,
             };
@@ -4206,12 +4208,9 @@ impl RaftCluster {
                             .get(&leader_id)
                             .ok_or(RaftError::LeaderUnavailable)?;
                         let prev_log_index = entry.index.saturating_sub(1);
-                        let prev_log_term = leader
-                            .log
-                            .iter()
-                            .find(|log_entry| log_entry.index == prev_log_index)
-                            .map(|log_entry| log_entry.term)
-                            .unwrap_or_default();
+                        let prev_log_term =
+                            node_term_at_log_or_snapshot_index(leader, prev_log_index)
+                                .unwrap_or_default();
                         AppendEntriesRequest {
                             rpc: None,
                             shard_id: entry.shard_id,
@@ -4780,21 +4779,14 @@ impl RaftCluster {
             .nodes
             .get(&inner.leader_id)
             .ok_or(RaftError::LeaderUnavailable)?;
-        let target_last_index = inner
+        let target = inner
             .nodes
             .get(&target_id)
-            .ok_or(RaftError::NodeNotFound(target_id))?
-            .log
-            .last()
-            .map(|entry| entry.index)
-            .unwrap_or_default();
-        let prev_log_index = target_last_index.min(leader.log.len() as u64);
-        let prev_log_term = leader
-            .log
-            .iter()
-            .find(|entry| entry.index == prev_log_index)
-            .map(|entry| entry.term)
-            .unwrap_or_default();
+            .ok_or(RaftError::NodeNotFound(target_id))?;
+        let target_last_index = node_last_log_or_snapshot_index(target);
+        let prev_log_index = target_last_index.min(node_last_log_or_snapshot_index(leader));
+        let prev_log_term =
+            node_term_at_log_or_snapshot_index(leader, prev_log_index).unwrap_or_default();
         let entries = leader
             .log
             .iter()
@@ -4846,19 +4838,7 @@ impl RaftCluster {
                 });
             }
             if request.prev_log_index > 0 {
-                let prev_term = node
-                    .log
-                    .iter()
-                    .find(|entry| entry.index == request.prev_log_index)
-                    .map(|entry| entry.term)
-                    .or_else(|| {
-                        node.installed_snapshot
-                            .as_ref()
-                            .filter(|snapshot| {
-                                snapshot.last_included_index == request.prev_log_index
-                            })
-                            .map(|snapshot| snapshot.last_included_term)
-                    });
+                let prev_term = node_term_at_log_or_snapshot_index(node, request.prev_log_index);
                 if prev_term != Some(request.prev_log_term) {
                     return Ok(AppendEntriesResponse {
                         term: node.current_term,
@@ -6488,6 +6468,26 @@ fn node_last_log_or_snapshot_index(node: &RaftNode) -> u64 {
                 .map(|snapshot| snapshot.last_included_index)
         })
         .unwrap_or_default()
+}
+
+fn node_next_log_index(node: &RaftNode) -> u64 {
+    node_last_log_or_snapshot_index(node).saturating_add(1)
+}
+
+fn node_term_at_log_or_snapshot_index(node: &RaftNode, index: u64) -> Option<u64> {
+    if index == 0 {
+        return Some(0);
+    }
+    node.log
+        .iter()
+        .find(|entry| entry.index == index)
+        .map(|entry| entry.term)
+        .or_else(|| {
+            node.installed_snapshot
+                .as_ref()
+                .filter(|snapshot| snapshot.last_included_index == index)
+                .map(|snapshot| snapshot.last_included_term)
+        })
 }
 
 fn replication_health_from_status(
@@ -10334,6 +10334,7 @@ mod tests {
         assert!(readiness.byteraft_rpc_transport_contract_present);
         assert!(readiness.byteraft_log_retention_snapshot_trigger_present);
         assert!(readiness.byteraft_apply_snapshot_fence_present);
+        assert!(readiness.byteraft_snapshot_floor_log_matching_present);
         assert!(readiness.learner_catchup_promotion_present);
         assert!(!readiness.durable_apply_index_snapshot_integrated);
         assert!(!readiness.metaserver_driven_membership_present);
@@ -12001,6 +12002,72 @@ mod tests {
                 .unwrap(),
             CommandResponse::Bytes {
                 value: Some(b"snapshot-value".to_vec())
+            }
+        );
+    }
+
+    #[test]
+    fn append_entries_matches_snapshot_floor_after_leader_compaction() {
+        let cluster = RaftCluster::new_single_shard_with_config(
+            1,
+            [1, 2, 3],
+            RaftConfig {
+                max_applied_log_bytes: 1,
+                ..RaftConfig::default()
+            },
+        )
+        .unwrap();
+        cluster
+            .propose(Command::StringSet {
+                key: "snapshot-floor".to_string(),
+                value: b"before-a".to_vec(),
+            })
+            .unwrap();
+        cluster
+            .propose(Command::StringSet {
+                key: "snapshot-floor".to_string(),
+                value: b"before-b".to_vec(),
+            })
+            .unwrap();
+        let snapshot_report = cluster.maybe_trigger_snapshot().unwrap();
+        assert!(snapshot_report.triggered);
+        assert_eq!(snapshot_report.applied_index, 2);
+
+        cluster.set_alive(3, false).unwrap();
+        cluster
+            .propose(Command::StringSet {
+                key: "snapshot-floor".to_string(),
+                value: b"after".to_vec(),
+            })
+            .unwrap();
+        cluster.set_alive(3, true).unwrap();
+
+        let request = cluster.build_append_entries_request(3).unwrap();
+        assert_eq!(request.prev_log_index, 2);
+        assert_eq!(request.prev_log_term, 1);
+        assert_eq!(
+            request
+                .entries
+                .iter()
+                .map(|entry| entry.index)
+                .collect::<Vec<_>>(),
+            vec![3]
+        );
+        let response = cluster.receive_append_entries(request).unwrap();
+        assert!(response.success);
+        assert_eq!(response.match_index, 3);
+        assert_eq!(cluster.commit_index(3).unwrap(), 3);
+        assert_eq!(
+            cluster
+                .read_from_replica(
+                    3,
+                    Command::StringGet {
+                        key: "snapshot-floor".to_string()
+                    },
+                )
+                .unwrap(),
+            CommandResponse::Bytes {
+                value: Some(b"after".to_vec())
             }
         );
     }

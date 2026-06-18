@@ -404,6 +404,7 @@ AREAS: tuple[ParityArea, ...] = (
                     "rpc_retry_backpressure_auth_deadline",
                     "log_retention_and_snapshot_trigger",
                     "apply_snapshot_durability_fence",
+                    "snapshot_floor_log_matching",
                     "operator_control_surfaces",
                 ),
             ),

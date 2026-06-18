@@ -284,6 +284,26 @@ AREAS: tuple[ReadinessArea, ...] = (
         ),
     ),
     ReadinessArea(
+        name="snapshot_floor_log_matching",
+        evidence=(
+            Evidence(
+                "crates/temporalstore-rust/src/raft.rs",
+                (
+                    "node_next_log_index",
+                    "node_term_at_log_or_snapshot_index",
+                    "build_append_entries_request",
+                    "receive_append_entries",
+                    "append_entries_matches_snapshot_floor_after_leader_compaction",
+                    "byteraft_snapshot_floor_log_matching_present",
+                ),
+            ),
+            Evidence(
+                "docs/distributed_raft_readiness.md",
+                ("snapshot-floor log matching", "post-compaction AppendEntries continuity"),
+            ),
+        ),
+    ),
+    ReadinessArea(
         name="operator_control_surfaces",
         evidence=(
             Evidence(
