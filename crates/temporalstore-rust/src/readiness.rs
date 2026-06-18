@@ -1203,8 +1203,6 @@ mod tests {
             "proxy",
             "metaserver",
             "data_node_distributed_raft",
-            "dataserver",
-            "ingestion",
             "fault_tolerance",
             "storage_cache",
             "feature_modules",
@@ -1506,20 +1504,27 @@ mod tests {
             let summary = report
                 .service_summary(service)
                 .expect("service summary must exist");
-            assert!(!summary.ready, "{service} should still have blockers");
-            assert!(
-                summary.blocker_count > 0,
-                "{service} should expose exact failed capabilities"
-            );
+            let expected_ready = service == "ingestion";
+            assert_eq!(summary.ready, expected_ready, "{service} readiness drifted");
             assert_eq!(summary.blocker_count, summary.failed_capabilities.len());
-            assert!(
-                !summary.blocker_classes.is_empty(),
-                "{service} should classify blockers for triage"
-            );
-            assert!(
-                !summary.next_action.is_empty() && summary.next_action != "ready",
-                "{service} should expose a concrete next action"
-            );
+            if expected_ready {
+                assert_eq!(summary.blocker_count, 0);
+                assert!(summary.blocker_classes.is_empty());
+                assert_eq!(summary.next_action, "ready");
+            } else {
+                assert!(
+                    summary.blocker_count > 0,
+                    "{service} should expose exact failed capabilities"
+                );
+                assert!(
+                    !summary.blocker_classes.is_empty(),
+                    "{service} should classify blockers for triage"
+                );
+                assert!(
+                    !summary.next_action.is_empty() && summary.next_action != "ready",
+                    "{service} should expose a concrete next action"
+                );
+            }
             assert_eq!(
                 report.failed_capabilities_for_service(service).len(),
                 summary.blocker_count,
@@ -1530,8 +1535,15 @@ mod tests {
                 .expect("service gate report must exist");
             assert_eq!(gate.service, service);
             assert_eq!(gate.ready, summary.ready);
-            assert_eq!(gate.gate_status, "blocked");
-            assert_ne!(gate.severity, "ready");
+            assert_eq!(
+                gate.gate_status,
+                if expected_ready { "ready" } else { "blocked" }
+            );
+            if expected_ready {
+                assert_eq!(gate.severity, "ready");
+            } else {
+                assert_ne!(gate.severity, "ready");
+            }
             assert!(gate.remediation_order > 0);
             assert_ne!(gate.owner, "unknown");
             assert_eq!(gate.areas, summary.areas);
@@ -1543,9 +1555,10 @@ mod tests {
                 gate.failed_capabilities.first()
             );
             assert_eq!(gate.failed_capabilities.len(), summary.blocker_count);
-            assert!(
-                !report.service_ready(service),
-                "{service} should be false for service-level gates until blockers are closed"
+            assert_eq!(
+                report.service_ready(service),
+                expected_ready,
+                "{service} service-level gate drifted"
             );
         }
         let blocked_services = report
@@ -1558,7 +1571,6 @@ mod tests {
             vec![
                 "client",
                 "proxy",
-                "ingestion",
                 "data_node",
                 "metaserver",
                 "storage_cache",
@@ -1613,10 +1625,22 @@ mod tests {
                 (12, "raft_replication", "consensus_runtime")
             ]
         );
-        assert!(service_gates.iter().all(|gate| !gate.ready));
-        assert!(service_gates
-            .iter()
-            .all(|gate| gate.gate_status == "blocked"));
+        assert_eq!(
+            service_gates
+                .iter()
+                .filter(|gate| gate.ready)
+                .map(|gate| gate.service.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ingestion"]
+        );
+        assert_eq!(
+            service_gates
+                .iter()
+                .filter(|gate| gate.gate_status == "ready")
+                .map(|gate| gate.service.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ingestion"]
+        );
         let next_blocked = report
             .next_blocked_service()
             .expect("next blocked service should exist");
@@ -1632,7 +1656,7 @@ mod tests {
             vec![
                 ("client", "warning"),
                 ("proxy", "warning"),
-                ("ingestion", "critical"),
+                ("ingestion", "ready"),
                 ("data_node", "critical"),
                 ("metaserver", "critical"),
                 ("storage_cache", "critical"),
@@ -1669,7 +1693,7 @@ mod tests {
             .service_summary("client")
             .expect("client summary")
             .next_action
-            .contains("Neptune"));
+            .contains("brpc/thrift"));
         assert!(report
             .service_summary("proxy")
             .expect("proxy summary")
@@ -1679,7 +1703,7 @@ mod tests {
             .service_summary("ingestion")
             .expect("ingestion summary")
             .next_action
-            .contains("Kafka/Flink"));
+            .contains("ready"));
         assert!(report
             .service_summary("metaserver")
             .expect("metaserver summary")
@@ -1737,7 +1761,7 @@ mod tests {
                 .service_summary("ingestion")
                 .expect("ingestion summary")
                 .blocker_classes,
-            vec!["ingestion_durability".to_string()]
+            Vec::<String>::new()
         );
         assert_eq!(
             report
@@ -1809,22 +1833,12 @@ mod tests {
         assert!(data_node
             .failed_capabilities
             .iter()
-            .any(|capability| capability.starts_with("dataserver:")));
-        assert!(data_node
-            .failed_capabilities
-            .iter()
             .any(|capability| capability.starts_with("data_node_distributed_raft:")));
         assert_eq!(
             data_node.blocker_classes,
-            vec![
-                "data_node_distributed_raft".to_string(),
-                "data_node_local_lifecycle".to_string()
-            ]
+            vec!["data_node_distributed_raft".to_string()]
         );
         let data_node_blockers = report.failed_capabilities_for_service("data_node");
-        assert!(data_node_blockers
-            .iter()
-            .any(|blocker| blocker.area == "dataserver"));
         assert!(data_node_blockers
             .iter()
             .any(|blocker| blocker.area == "data_node_distributed_raft"));
@@ -1949,9 +1963,15 @@ mod tests {
             .iter()
             .any(|item| item.contains("durable Kafka offset ledger")));
         assert!(ingestion
-            .missing
+            .covered
             .iter()
             .any(|item| item.contains("consumer group runtime")));
+        assert!(ingestion
+            .covered
+            .iter()
+            .any(|item| item.contains("Raft failover/restart idempotence")));
+        assert!(ingestion.ready);
+        assert!(ingestion.missing.is_empty());
 
         let fault_tolerance = report
             .areas
