@@ -236,6 +236,32 @@ AREAS: tuple[ReadinessArea, ...] = (
         ),
     ),
     ReadinessArea(
+        name="log_retention_and_snapshot_trigger",
+        evidence=(
+            Evidence(
+                "crates/temporalstore-rust/src/raft.rs",
+                (
+                    "RaftSnapshotTriggerReport",
+                    "max_disk_replicate_log_num",
+                    "max_applied_log_bytes",
+                    "persist_node_with_retention",
+                    "compact_node_records",
+                    "maybe_trigger_snapshot",
+                    "applied_log_bytes_threshold",
+                    "local_raft_wal_segments_roll_retain_and_recover_latest_state",
+                    "wal_backed_raft_cluster_compacts_wal_tail_but_recovers_latest_state",
+                    "data_raft_snapshot_trigger_compacts_applied_log_bytes",
+                    "metaserver_raft_snapshot_trigger_compacts_applied_log_bytes",
+                    "byteraft_log_retention_snapshot_trigger_present",
+                ),
+            ),
+            Evidence(
+                "docs/distributed_raft_readiness.md",
+                ("bounded local WAL retention", "deterministic ByteRaft-style snapshot trigger reports"),
+            ),
+        ),
+    ),
+    ReadinessArea(
         name="operator_control_surfaces",
         evidence=(
             Evidence(

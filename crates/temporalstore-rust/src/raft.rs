@@ -1812,6 +1812,7 @@ pub struct RaftDistributedReadiness {
     pub byteraft_leader_write_authority_present: bool,
     pub byteraft_operator_observability_present: bool,
     pub byteraft_rpc_transport_contract_present: bool,
+    pub byteraft_log_retention_snapshot_trigger_present: bool,
     pub durable_apply_index_snapshot_integrated: bool,
     pub learner_catchup_promotion_present: bool,
     pub metaserver_driven_membership_present: bool,
@@ -1873,6 +1874,7 @@ pub fn distributed_raft_readiness() -> RaftDistributedReadiness {
         byteraft_leader_write_authority_present: true,
         byteraft_operator_observability_present: true,
         byteraft_rpc_transport_contract_present: true,
+        byteraft_log_retention_snapshot_trigger_present: true,
         durable_apply_index_snapshot_integrated: false,
         learner_catchup_promotion_present: true,
         metaserver_driven_membership_present: false,
@@ -10236,6 +10238,7 @@ mod tests {
         assert!(readiness.byteraft_leader_write_authority_present);
         assert!(readiness.byteraft_operator_observability_present);
         assert!(readiness.byteraft_rpc_transport_contract_present);
+        assert!(readiness.byteraft_log_retention_snapshot_trigger_present);
         assert!(readiness.learner_catchup_promotion_present);
         assert!(!readiness.durable_apply_index_snapshot_integrated);
         assert!(!readiness.metaserver_driven_membership_present);
