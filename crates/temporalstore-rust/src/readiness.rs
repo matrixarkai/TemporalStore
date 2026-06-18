@@ -161,6 +161,7 @@ pub struct MetaServerControlPlaneReadinessReport {
     pub preflight_ready: bool,
     pub networked_metaserver_raft_ready: bool,
     pub cpp_partition_set_topology_ready: bool,
+    pub scheduler_task_state_raft_persistence_ready: bool,
     pub real_process_scheduler_loop_ready: bool,
     pub durable_data_raft_membership_ready: bool,
     pub local_control_plane_ready: bool,
@@ -296,7 +297,8 @@ pub fn metaserver_control_plane_readiness_report() -> MetaServerControlPlaneRead
     let scheduler_snapshot_ready = true;
     let preflight_ready = true;
     let networked_metaserver_raft_ready = false;
-    let cpp_partition_set_topology_ready = false;
+    let cpp_partition_set_topology_ready = true;
+    let scheduler_task_state_raft_persistence_ready = true;
     let real_process_scheduler_loop_ready = false;
     let durable_data_raft_membership_ready = false;
     let local_control_plane_ready = inventory_heartbeat_ready
@@ -310,6 +312,7 @@ pub fn metaserver_control_plane_readiness_report() -> MetaServerControlPlaneRead
     let production_ready = local_control_plane_ready
         && networked_metaserver_raft_ready
         && cpp_partition_set_topology_ready
+        && scheduler_task_state_raft_persistence_ready
         && real_process_scheduler_loop_ready
         && durable_data_raft_membership_ready;
     let missing = if production_ready {
@@ -317,7 +320,6 @@ pub fn metaserver_control_plane_readiness_report() -> MetaServerControlPlaneRead
     } else {
         vec![
             "networked multi-process metaserver Raft".to_string(),
-            "C++ partition-set/member/version topology model".to_string(),
             "full background scheduler loop executing repair tasks against real data-node processes, cooldowns, and safe mode"
                 .to_string(),
             "durable shard membership changes coupled to data-node Raft groups".to_string(),
@@ -335,6 +337,7 @@ pub fn metaserver_control_plane_readiness_report() -> MetaServerControlPlaneRead
         preflight_ready,
         networked_metaserver_raft_ready,
         cpp_partition_set_topology_ready,
+        scheduler_task_state_raft_persistence_ready,
         real_process_scheduler_loop_ready,
         durable_data_raft_membership_ready,
         local_control_plane_ready,
@@ -673,7 +676,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "metaserver preflight is exposed for both single-node and Raft-backed metadata runtimes, including MasterService aliases"
                     .to_string(),
-                "metaserver control-plane readiness covers inventory heartbeat, namespace/table topology, local Raft mutation path, load-aware placement, local snapshots, scheduler admin, scheduler snapshots, and preflight while keeping networked Raft and real-process scheduler execution fail-closed"
+                "metaserver control-plane readiness covers inventory heartbeat, namespace/table topology, C++ partition-set/member/version topology, local Raft mutation path, load-aware placement, local snapshots, scheduler admin, scheduler snapshots, scheduler retry/task Raft persistence, and preflight while keeping networked Raft and real-process scheduler execution fail-closed"
                     .to_string(),
             ],
             missing: metaserver_control_plane.missing,
@@ -1358,7 +1361,8 @@ mod tests {
         assert!(report.preflight_ready);
         assert!(report.local_control_plane_ready);
         assert!(!report.networked_metaserver_raft_ready);
-        assert!(!report.cpp_partition_set_topology_ready);
+        assert!(report.cpp_partition_set_topology_ready);
+        assert!(report.scheduler_task_state_raft_persistence_ready);
         assert!(!report.real_process_scheduler_loop_ready);
         assert!(!report.durable_data_raft_membership_ready);
         assert!(!report.production_ready);
@@ -1366,7 +1370,7 @@ mod tests {
             .missing
             .iter()
             .any(|item| item.contains("networked multi-process metaserver Raft")));
-        assert!(report
+        assert!(!report
             .missing
             .iter()
             .any(|item| item.contains("C++ partition-set")));

@@ -29,6 +29,7 @@ use crate::meta::{
     StaleResourceReport, StaleServerReport, StateChangeRequest, TableTopologyResponse,
     TopologyVersionReport, TopologyVersionRequest, UpdateTableRequest,
 };
+use crate::rebalance::RaftPersistedSchedulerState;
 use crate::types::{Command, CommandResponse, ExecuteRequest, ShardId, Status};
 use bytes::Bytes;
 use temporalstore_snapshot::{ObjectStore, S3SnapshotStore, SnapshotRef, SnapshotStore};
@@ -7828,11 +7829,14 @@ pub enum MetaCommand {
     PutShardLocation(ShardLocation),
     RemoveShard(ShardId),
     ApplyMutation(MetaMutation),
+    PersistSchedulerState(RaftPersistedSchedulerState),
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct MetaState {
     pub shards: BTreeMap<ShardId, ShardLocation>,
+    #[serde(default)]
+    pub scheduler_state: Option<RaftPersistedSchedulerState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -8641,6 +8645,7 @@ impl MetaRaftCluster {
                 .iter()
                 .map(|(id, location)| (*id, location.clone()))
                 .collect(),
+            scheduler_state: None,
         };
         let mut inner = self.inner.write().expect("meta raft lock poisoned");
         let leader = inner
@@ -9281,6 +9286,16 @@ fn apply_meta_committed(node: &mut MetaRaftNode) -> Option<Status> {
                         _ => {}
                     }
                 }
+                MetaCommand::PersistSchedulerState(state) => match state.validate() {
+                    Ok(()) => {
+                        node.state.scheduler_state = Some(state.clone());
+                        last_status = Some(Status::ok());
+                    }
+                    Err(err) => {
+                        last_status =
+                            Some(Status::error("scheduler_state_rejected", err.to_string()));
+                    }
+                },
             }
         }
     }
@@ -9327,6 +9342,11 @@ mod tests {
         json_response, parse_json, post_json_with_options, serve, HttpRequestOptions,
     };
     use crate::meta::{TableMetaInfo, TablePartition};
+    use crate::rebalance::{
+        CppPartitionSetTopology, DeterministicTaskScheduler, NetworkSchedulerTaskExecution,
+        RebalanceStep, SchedulerTaskKind, SchedulerTaskResult, ShardReplica, ShardReplicaState,
+        ShardRole, TaskSchedulerOptions,
+    };
     use crate::types::{Command, FeatureFilter, FeatureFilterOp, FeaturePoint, SequenceFeatureRow};
     use std::time::{Duration, Instant};
 
@@ -13507,6 +13527,93 @@ mod tests {
             assert_eq!(
                 meta.get_shard_location(node_id, 1).unwrap(),
                 Some(location.clone())
+            );
+        }
+    }
+
+    #[test]
+    fn metaserver_raft_replays_scheduler_state_and_cpp_partition_set_topology() {
+        let meta = MetaRaftCluster::new([10, 11, 12]);
+        let mut scheduler = DeterministicTaskScheduler::default();
+        let task = scheduler.submit(
+            0,
+            100,
+            SchedulerTaskKind::RebalanceStep(RebalanceStep::LoadTarget {
+                shard_id: 42,
+                replica_id: 2,
+                node_id: 11,
+                load_version: 9,
+            }),
+        );
+        scheduler
+            .run_next(
+                200,
+                SchedulerTaskResult::RetryLater,
+                TaskSchedulerOptions::default(),
+            )
+            .unwrap();
+        let topology = CppPartitionSetTopology::from_replicas(
+            "ns",
+            "tbl",
+            7,
+            700,
+            42,
+            12,
+            5,
+            3,
+            &BTreeMap::from([
+                (10, "127.0.0.1:18010".to_string()),
+                (11, "127.0.0.1:18011".to_string()),
+            ]),
+            [
+                ShardReplica {
+                    shard_id: 42,
+                    replica_id: 1,
+                    node_id: 10,
+                    role: ShardRole::Primary,
+                    state: ShardReplicaState::Normal,
+                    load_version: 8,
+                },
+                ShardReplica {
+                    shard_id: 42,
+                    replica_id: 2,
+                    node_id: 11,
+                    role: ShardRole::Secondary,
+                    state: ShardReplicaState::Normal,
+                    load_version: 9,
+                },
+            ],
+        )
+        .unwrap();
+        let persisted = RaftPersistedSchedulerState {
+            scheduler: scheduler.export_snapshot(),
+            topology,
+            executions: vec![NetworkSchedulerTaskExecution {
+                task_id: task.id,
+                target_node_id: 11,
+                target_addr: "127.0.0.1:18011".to_string(),
+                result: SchedulerTaskResult::RetryLater,
+                retry_times: 1,
+                next_run_time_ms: Some(1200),
+                status: Status::error("node_request_failed", "timeout"),
+                lifecycle_token: task.lifecycle_token(),
+            }],
+            raft_generation: 44,
+        };
+
+        meta.propose(MetaCommand::PersistSchedulerState(persisted.clone()))
+            .unwrap();
+        let snapshot = meta.create_snapshot().unwrap();
+        assert_eq!(snapshot.state.scheduler_state.as_ref().unwrap(), &persisted);
+        for node_id in [10, 11, 12] {
+            assert_eq!(
+                meta.status()
+                    .nodes
+                    .iter()
+                    .find(|node| node.node_id == node_id)
+                    .unwrap()
+                    .commit_index,
+                snapshot.last_included_index
             );
         }
     }

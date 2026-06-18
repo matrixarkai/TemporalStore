@@ -78,7 +78,7 @@ Control-plane parity evidence status:
 python3 tools/validate_control_plane_parity_evidence.py
 control_plane_parity_areas: 4
 corpus_required_cpp_paths: 38
-rust_evidence_snippets: 44
+rust_evidence_snippets: 49
 ```
 
 The four checked areas are client meta-sync/route retry, proxy serving/admission/topology,
@@ -90,12 +90,13 @@ blocked; `ProxyServingReadinessReport` covers HTTP execute routes, heartbeat/con
 topology refresh, admission policy, and Rust-native discovery while keeping tonic streaming and C++
 wire proxy transport blocked.
 Metaserver and data-node readiness now expose the same split. `MetaServerControlPlaneReadinessReport`
-covers inventory heartbeat, namespace/table topology, local Raft mutation, placement, local
-snapshots, scheduler admin/snapshot, and preflight while keeping networked metaserver Raft,
-C++ partition-set topology, real-process scheduler execution, and durable data-Raft membership
-blocked. `DataNodeServiceReadinessReport` covers execute runtime, async jobs, lifecycle admin,
-shard-affine workers, local admission, and crash-recovery reports while keeping tonic/gRPC
-streaming callbacks and distributed admission policy blocked.
+covers inventory heartbeat, namespace/table topology, C++ partition-set/member/version topology,
+local Raft mutation, placement, local snapshots, scheduler admin/snapshot, scheduler retry/task
+Raft persistence, and preflight while keeping networked metaserver Raft, real-process scheduler
+execution, and durable data-Raft membership blocked. `DataNodeServiceReadinessReport` covers
+execute runtime, async jobs, lifecycle admin, shard-affine workers, local admission, and
+crash-recovery reports while keeping tonic/gRPC streaming callbacks and distributed admission
+policy blocked.
 
 API/model parity evidence status:
 

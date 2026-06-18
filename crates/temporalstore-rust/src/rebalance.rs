@@ -215,6 +215,54 @@ pub struct TaskSchedulerSnapshot {
     pub next_task_id: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CppPartitionSetMember {
+    pub replica_id: u64,
+    pub node_id: RaftNodeId,
+    pub role: ShardRole,
+    pub state: ShardReplicaState,
+    pub load_version: u64,
+    pub membership_version: u64,
+    pub server_addr: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CppPartitionSetTopology {
+    pub namespace: String,
+    pub table_name: String,
+    pub table_id: u64,
+    pub partition_set_id: u64,
+    pub shard_id: ShardId,
+    pub topology_version: u64,
+    pub membership_version: u64,
+    pub unit_version: u64,
+    pub primary_replica_id: u64,
+    pub active_replica_ids: Vec<u64>,
+    pub frozen_replica_ids: Vec<u64>,
+    pub members: Vec<CppPartitionSetMember>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NetworkSchedulerTaskExecution {
+    pub task_id: u64,
+    pub target_node_id: RaftNodeId,
+    pub target_addr: String,
+    pub result: SchedulerTaskResult,
+    pub retry_times: u64,
+    pub next_run_time_ms: Option<u64>,
+    pub status: Status,
+    #[serde(default)]
+    pub lifecycle_token: Option<SchedulerLifecycleToken>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RaftPersistedSchedulerState {
+    pub scheduler: TaskSchedulerSnapshot,
+    pub topology: CppPartitionSetTopology,
+    pub executions: Vec<NetworkSchedulerTaskExecution>,
+    pub raft_generation: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RebalanceOptions {
     pub max_moves_per_round: usize,
@@ -275,6 +323,16 @@ pub enum RebalanceError {
     InvalidSchedulerInflight,
     #[error("scheduler snapshot is corrupt: {0}")]
     CorruptSchedulerSnapshot(String),
+    #[error("partition-set topology is invalid: {0}")]
+    InvalidPartitionSetTopology(String),
+    #[error(
+        "scheduler task {task_id} references shard {task_shard_id}, expected {topology_shard_id}"
+    )]
+    SchedulerShardMismatch {
+        task_id: u64,
+        task_shard_id: ShardId,
+        topology_shard_id: ShardId,
+    },
 }
 
 impl DeterministicTaskScheduler {
@@ -431,6 +489,182 @@ impl SchedulerTask {
             load_version,
             generation: self.create_time_ms,
         })
+    }
+}
+
+impl CppPartitionSetTopology {
+    pub fn from_replicas(
+        namespace: impl Into<String>,
+        table_name: impl Into<String>,
+        table_id: u64,
+        partition_set_id: u64,
+        shard_id: ShardId,
+        topology_version: u64,
+        membership_version: u64,
+        unit_version: u64,
+        server_addrs: &BTreeMap<RaftNodeId, String>,
+        replicas: impl IntoIterator<Item = ShardReplica>,
+    ) -> Result<Self, RebalanceError> {
+        let mut members = replicas
+            .into_iter()
+            .filter(|replica| replica.shard_id == shard_id)
+            .map(|replica| CppPartitionSetMember {
+                replica_id: replica.replica_id,
+                node_id: replica.node_id,
+                role: replica.role,
+                state: replica.state,
+                load_version: replica.load_version,
+                membership_version,
+                server_addr: server_addrs
+                    .get(&replica.node_id)
+                    .cloned()
+                    .unwrap_or_default(),
+            })
+            .collect::<Vec<_>>();
+        members.sort_by_key(|member| member.replica_id);
+        let active_replica_ids = members
+            .iter()
+            .filter(|member| matches!(member.state, ShardReplicaState::Normal))
+            .map(|member| member.replica_id)
+            .collect::<Vec<_>>();
+        let frozen_replica_ids = members
+            .iter()
+            .filter(|member| {
+                matches!(
+                    member.state,
+                    ShardReplicaState::Freezing | ShardReplicaState::Frozen
+                )
+            })
+            .map(|member| member.replica_id)
+            .collect::<Vec<_>>();
+        let primary_replica_id = members
+            .iter()
+            .find(|member| member.role == ShardRole::Primary)
+            .map(|member| member.replica_id)
+            .unwrap_or_default();
+        let topology = Self {
+            namespace: namespace.into(),
+            table_name: table_name.into(),
+            table_id,
+            partition_set_id,
+            shard_id,
+            topology_version,
+            membership_version,
+            unit_version,
+            primary_replica_id,
+            active_replica_ids,
+            frozen_replica_ids,
+            members,
+        };
+        topology.validate()?;
+        Ok(topology)
+    }
+
+    pub fn validate(&self) -> Result<(), RebalanceError> {
+        if self.namespace.is_empty() || self.table_name.is_empty() {
+            return Err(RebalanceError::InvalidPartitionSetTopology(
+                "namespace/table_name are required".to_string(),
+            ));
+        }
+        if self.topology_version == 0 || self.membership_version == 0 {
+            return Err(RebalanceError::InvalidPartitionSetTopology(
+                "topology_version and membership_version must be non-zero".to_string(),
+            ));
+        }
+        if self.members.is_empty() {
+            return Err(RebalanceError::InvalidPartitionSetTopology(
+                "partition set must contain at least one member".to_string(),
+            ));
+        }
+        let member_ids = self
+            .members
+            .iter()
+            .map(|member| member.replica_id)
+            .collect::<BTreeSet<_>>();
+        if member_ids.len() != self.members.len() {
+            return Err(RebalanceError::InvalidPartitionSetTopology(
+                "duplicate replica ids".to_string(),
+            ));
+        }
+        if !member_ids.contains(&self.primary_replica_id) {
+            return Err(RebalanceError::InvalidPartitionSetTopology(
+                "primary replica is not a member".to_string(),
+            ));
+        }
+        let active = self
+            .active_replica_ids
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        if !active.is_subset(&member_ids) {
+            return Err(RebalanceError::InvalidPartitionSetTopology(
+                "active replica ids must be members".to_string(),
+            ));
+        }
+        if !active.contains(&self.primary_replica_id) {
+            return Err(RebalanceError::InvalidPartitionSetTopology(
+                "primary replica must be active".to_string(),
+            ));
+        }
+        let frozen = self
+            .frozen_replica_ids
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        if !frozen.is_subset(&member_ids) {
+            return Err(RebalanceError::InvalidPartitionSetTopology(
+                "frozen replica ids must be members".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn member_addr(&self, node_id: RaftNodeId) -> Option<&str> {
+        self.members
+            .iter()
+            .find(|member| member.node_id == node_id)
+            .map(|member| member.server_addr.as_str())
+    }
+}
+
+impl RaftPersistedSchedulerState {
+    pub fn validate(&self) -> Result<(), RebalanceError> {
+        self.topology.validate()?;
+        let scheduler = DeterministicTaskScheduler::restore_snapshot(self.scheduler.clone())?;
+        for task in scheduler.snapshot() {
+            if let Some(token) = task.lifecycle_token() {
+                if token.shard_id != self.topology.shard_id {
+                    return Err(RebalanceError::SchedulerShardMismatch {
+                        task_id: task.id,
+                        task_shard_id: token.shard_id,
+                        topology_shard_id: self.topology.shard_id,
+                    });
+                }
+            }
+        }
+        for execution in &self.executions {
+            if !self
+                .topology
+                .members
+                .iter()
+                .any(|member| member.node_id == execution.target_node_id)
+            {
+                return Err(RebalanceError::InvalidPartitionSetTopology(format!(
+                    "execution target node {} is not a partition-set member",
+                    execution.target_node_id
+                )));
+            }
+            if let Some(token) = &execution.lifecycle_token {
+                if token.shard_id != self.topology.shard_id {
+                    return Err(RebalanceError::SchedulerShardMismatch {
+                        task_id: execution.task_id,
+                        task_shard_id: token.shard_id,
+                        topology_shard_id: self.topology.shard_id,
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1410,5 +1644,103 @@ mod tests {
                 .unwrap_err(),
             RebalanceError::ReplicaNotFound(99)
         );
+    }
+
+    #[test]
+    fn cpp_partition_set_topology_tracks_members_versions_and_addresses() {
+        let mut addrs = BTreeMap::new();
+        addrs.insert(1, "127.0.0.1:18001".to_string());
+        addrs.insert(2, "127.0.0.1:18002".to_string());
+        let mut frozen = replica(3, 10, 3, ShardRole::Secondary);
+        frozen.state = ShardReplicaState::Frozen;
+        let topology = CppPartitionSetTopology::from_replicas(
+            "ns",
+            "tbl",
+            9,
+            90,
+            10,
+            12,
+            7,
+            3,
+            &addrs,
+            [
+                replica(1, 10, 1, ShardRole::Primary),
+                replica(2, 10, 2, ShardRole::Secondary),
+                frozen,
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(topology.primary_replica_id, 1);
+        assert_eq!(topology.active_replica_ids, vec![1, 2]);
+        assert_eq!(topology.frozen_replica_ids, vec![3]);
+        assert_eq!(topology.member_addr(2), Some("127.0.0.1:18002"));
+        assert_eq!(topology.members[0].membership_version, 7);
+        assert_eq!(topology.unit_version, 3);
+        topology.validate().unwrap();
+    }
+
+    #[test]
+    fn raft_persisted_scheduler_state_validates_task_retry_state_against_partition_set() {
+        let mut scheduler = DeterministicTaskScheduler::default();
+        let task = scheduler.submit(
+            0,
+            100,
+            SchedulerTaskKind::RebalanceStep(RebalanceStep::LoadTarget {
+                shard_id: 10,
+                replica_id: 2,
+                node_id: 2,
+                load_version: 8,
+            }),
+        );
+        scheduler
+            .run_next(
+                200,
+                SchedulerTaskResult::RetryLater,
+                TaskSchedulerOptions::default(),
+            )
+            .unwrap();
+        let topology = CppPartitionSetTopology::from_replicas(
+            "ns",
+            "tbl",
+            9,
+            90,
+            10,
+            12,
+            7,
+            3,
+            &BTreeMap::from([
+                (1, "127.0.0.1:18001".to_string()),
+                (2, "127.0.0.1:18002".to_string()),
+            ]),
+            [
+                replica(1, 10, 1, ShardRole::Primary),
+                replica(2, 10, 2, ShardRole::Secondary),
+            ],
+        )
+        .unwrap();
+        let state = RaftPersistedSchedulerState {
+            scheduler: scheduler.export_snapshot(),
+            topology,
+            executions: vec![NetworkSchedulerTaskExecution {
+                task_id: task.id,
+                target_node_id: 2,
+                target_addr: "127.0.0.1:18002".to_string(),
+                result: SchedulerTaskResult::RetryLater,
+                retry_times: 1,
+                next_run_time_ms: Some(1200),
+                status: Status::error("node_request_failed", "timeout"),
+                lifecycle_token: task.lifecycle_token(),
+            }],
+            raft_generation: 22,
+        };
+        state.validate().unwrap();
+
+        let mut bad = state.clone();
+        bad.topology.shard_id = 99;
+        assert!(matches!(
+            bad.validate(),
+            Err(RebalanceError::SchedulerShardMismatch { .. })
+        ));
     }
 }

@@ -133,10 +133,11 @@ pub use readiness::{
     ReadinessCapabilityBlocker, ServiceReadinessGateReport, ServiceReadinessSummary,
 };
 pub use rebalance::{
-    MembershipUpdatePeerRequest, MembershipUpdatePeerStatus, MembershipUpdateTaskOptions,
-    MembershipUpdateTaskPlan, MembershipUpdateTaskReport, RebalanceController, RebalanceError,
-    RebalanceOptions, RebalanceRoundReport, RebalanceStep, SchedulerLifecycleToken, ShardMovePlan,
-    ShardReplica, ShardReplicaState, ShardRole,
+    CppPartitionSetMember, CppPartitionSetTopology, MembershipUpdatePeerRequest,
+    MembershipUpdatePeerStatus, MembershipUpdateTaskOptions, MembershipUpdateTaskPlan,
+    MembershipUpdateTaskReport, NetworkSchedulerTaskExecution, RaftPersistedSchedulerState,
+    RebalanceController, RebalanceError, RebalanceOptions, RebalanceRoundReport, RebalanceStep,
+    SchedulerLifecycleToken, ShardMovePlan, ShardReplica, ShardReplicaState, ShardRole,
 };
 pub use redis::{execute_redis_command, read_command, serve_redis_proxy, RespValue};
 pub use replica_replay::{

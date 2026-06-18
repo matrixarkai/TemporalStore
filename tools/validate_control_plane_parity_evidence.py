@@ -126,6 +126,21 @@ AREAS: tuple[ParityArea, ...] = (
                     "metaserver_control_plane_readiness_splits_local_and_production_surfaces",
                 ),
             ),
+            RustEvidence(
+                "crates/temporalstore-rust/src/rebalance.rs",
+                (
+                    "CppPartitionSetTopology",
+                    "RaftPersistedSchedulerState",
+                    "raft_persisted_scheduler_state_validates_task_retry_state_against_partition_set",
+                ),
+            ),
+            RustEvidence(
+                "crates/temporalstore-rust/src/raft.rs",
+                (
+                    "PersistSchedulerState",
+                    "metaserver_raft_replays_scheduler_state_and_cpp_partition_set_topology",
+                ),
+            ),
         ),
     ),
     ParityArea(
