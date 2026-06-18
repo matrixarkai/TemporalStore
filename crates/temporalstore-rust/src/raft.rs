@@ -1811,6 +1811,7 @@ pub struct RaftDistributedReadiness {
     pub timer_election_tested: bool,
     pub byteraft_leader_write_authority_present: bool,
     pub byteraft_operator_observability_present: bool,
+    pub byteraft_rpc_transport_contract_present: bool,
     pub durable_apply_index_snapshot_integrated: bool,
     pub learner_catchup_promotion_present: bool,
     pub metaserver_driven_membership_present: bool,
@@ -1871,6 +1872,7 @@ pub fn distributed_raft_readiness() -> RaftDistributedReadiness {
         timer_election_tested: true,
         byteraft_leader_write_authority_present: true,
         byteraft_operator_observability_present: true,
+        byteraft_rpc_transport_contract_present: true,
         durable_apply_index_snapshot_integrated: false,
         learner_catchup_promotion_present: true,
         metaserver_driven_membership_present: false,
@@ -10233,6 +10235,7 @@ mod tests {
         );
         assert!(readiness.byteraft_leader_write_authority_present);
         assert!(readiness.byteraft_operator_observability_present);
+        assert!(readiness.byteraft_rpc_transport_contract_present);
         assert!(readiness.learner_catchup_promotion_present);
         assert!(!readiness.durable_apply_index_snapshot_integrated);
         assert!(!readiness.metaserver_driven_membership_present);

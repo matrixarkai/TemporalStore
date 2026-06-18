@@ -93,7 +93,7 @@ Raft local coverage:
   election/pre-vote guards, durable hard state and membership, safe joint-consensus scale changes,
   leader lease/read-index behavior, bounded stale reads, learner promotion, leader transfer,
   snapshot bootstrap, lag/catch-up, failover, operator status/local-status/metrics, and operator
-  routes.
+  routes, plus RPC retry/backpressure/auth/deadline behavior.
 - Local production Raft runtime wrapper.
 - HTTP Raft transport for proposal/read/admin paths.
 - WAL-backed local recovery.

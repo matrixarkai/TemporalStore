@@ -88,7 +88,7 @@ The Rust code currently has:
 - ByteRaft-derived readiness guard covering config/election guards, durable WAL hard state, joint
   membership, linearizable and bounded reads, learner promotion, leader transfer, snapshot
   bootstrap, replication lag/catch-up, failover, operator status/local-status/metrics, and
-  operator control routes
+  RPC retry/backpressure/auth/deadline behavior, and operator control routes
 - strict shared-store oplog gap rejection
 - partition/heal chaos coverage in the local model
 - tests for the above behavior

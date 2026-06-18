@@ -200,6 +200,42 @@ AREAS: tuple[ReadinessArea, ...] = (
         ),
     ),
     ReadinessArea(
+        name="rpc_retry_backpressure_auth_deadline",
+        evidence=(
+            Evidence(
+                "crates/temporalstore-rust/src/raft.rs",
+                (
+                    "RaftRpcRuntime",
+                    "RaftRpcRuntimeOptions",
+                    "RaftRpcRuntimeMetrics",
+                    "RaftRpcMetadata",
+                    "AuthenticatedRaftTransport",
+                    "handle_authenticated_raft_http",
+                    "validate_raft_rpc_metadata",
+                    "backpressure_rejections",
+                    "retry_backoff_ms",
+                    "deadline_ms",
+                    "auth_token_required",
+                    "raft_rpc_runtime_retries_transport_errors_and_releases_inflight",
+                    "raft_rpc_runtime_attaches_auth_and_deadline_metadata",
+                    "byteraft_rpc_transport_contract_present",
+                ),
+            ),
+            Evidence(
+                "crates/temporalstore-rust/src/bin/raft_node.rs",
+                ("handle_authenticated_raft_http", "TS_RAFT_RPC_DEADLINE_MS", "TS_RAFT_AUTH_TOKEN"),
+            ),
+            Evidence(
+                "crates/temporalstore-rust/src/bin/server.rs",
+                ("handle_authenticated_raft_http", "TS_RAFT_RPC_DEADLINE_MS", "TS_RAFT_AUTH_TOKEN"),
+            ),
+            Evidence(
+                "crates/temporalstore-rust/src/bin/raft_secondary_replication_harness.rs",
+                ("unauthorized_rejection", "RaftRpcMetadata", "deadline_ms"),
+            ),
+        ),
+    ),
+    ReadinessArea(
         name="operator_control_surfaces",
         evidence=(
             Evidence(

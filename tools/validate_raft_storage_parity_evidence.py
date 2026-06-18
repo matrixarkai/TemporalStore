@@ -401,6 +401,7 @@ AREAS: tuple[ParityArea, ...] = (
                     "snapshot_install_bootstrap_and_catchup",
                     "replication_health_lag_and_failover",
                     "operator_status_metrics_and_local_status",
+                    "rpc_retry_backpressure_auth_deadline",
                     "operator_control_surfaces",
                 ),
             ),
