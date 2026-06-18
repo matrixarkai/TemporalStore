@@ -62,6 +62,58 @@ pub struct ServiceReadinessGateReport {
     pub failed_capabilities: Vec<ReadinessCapabilityBlocker>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StorageCacheDependencyMatrixReport {
+    pub local_file_store_ready: bool,
+    pub shared_store_checkpoint_manifest_ready: bool,
+    pub oplog_cursor_retention_ready: bool,
+    pub page_segment_manifest_ready: bool,
+    pub follower_cursor_retention_ready: bool,
+    pub bytestore_live_backend_ready: bool,
+    pub s3_live_backend_ready: bool,
+    pub local_shared_store_ready: bool,
+    pub production_ready: bool,
+    pub missing: Vec<String>,
+}
+
+pub fn storage_cache_dependency_matrix_report() -> StorageCacheDependencyMatrixReport {
+    let local_file_store_ready = true;
+    let shared_store_checkpoint_manifest_ready = true;
+    let oplog_cursor_retention_ready = true;
+    let page_segment_manifest_ready = true;
+    let follower_cursor_retention_ready = true;
+    let bytestore_live_backend_ready = false;
+    let s3_live_backend_ready = false;
+    let local_shared_store_ready = local_file_store_ready
+        && shared_store_checkpoint_manifest_ready
+        && oplog_cursor_retention_ready
+        && page_segment_manifest_ready
+        && follower_cursor_retention_ready;
+    let production_ready =
+        local_shared_store_ready && bytestore_live_backend_ready && s3_live_backend_ready;
+    let missing = if production_ready {
+        Vec::new()
+    } else {
+        vec![
+            "live ByteStore/S3 object-store manifest dependency matrix tied to follower cursors and Raft snapshots"
+                .to_string(),
+        ]
+    };
+
+    StorageCacheDependencyMatrixReport {
+        local_file_store_ready,
+        shared_store_checkpoint_manifest_ready,
+        oplog_cursor_retention_ready,
+        page_segment_manifest_ready,
+        follower_cursor_retention_ready,
+        bytestore_live_backend_ready,
+        s3_live_backend_ready,
+        local_shared_store_ready,
+        production_ready,
+        missing,
+    }
+}
+
 impl ProductionReadinessReport {
     pub fn missing_count(&self) -> usize {
         self.areas.iter().map(|area| area.missing.len()).sum()
@@ -164,6 +216,7 @@ impl ProductionReadinessReport {
 pub fn production_readiness_report() -> ProductionReadinessReport {
     let raft = distributed_raft_readiness();
     let ingestion = ingestion_readiness_report();
+    let storage_cache_dependency_matrix = storage_cache_dependency_matrix_report();
     let areas = vec![
         ReadinessArea {
             area: "raft_replication".to_string(),
@@ -446,16 +499,23 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "local storage dump/load fault matrix harness rejects checksum mismatch, partial manifests, missing segments, stale manifests, restart-during-install recovery, and corrupt page segments"
                     .to_string(),
-            ],
-            missing: vec![
-                "external C++ binary-artifact exporter plus CI-published golden corpus for the migration-only storage compatibility path"
+                "local/shared-store object manifest dependency matrix covers local file objects, checkpoint manifests, oplog cursor retention, page segment manifests, and follower-cursor retention"
                     .to_string(),
-                "live object-store manifest dependency matrix".to_string(),
-                "production SSD cache tiering policy, admission tuning, and long-running live pressure validation"
-                    .to_string(),
-                "ByteStore/S3 live backend integration tied to follower cursors/Raft snapshots"
+                "storage cache dependency matrix keeps live ByteStore/S3 object-store readiness fail-closed"
                     .to_string(),
             ],
+            missing: {
+                let mut missing = vec![
+                    "external C++ binary-artifact exporter plus CI-published golden corpus for the migration-only storage compatibility path"
+                        .to_string(),
+                    "production SSD cache tiering policy, admission tuning, and long-running live pressure validation"
+                        .to_string(),
+                    "ByteStore/S3 live backend integration tied to follower cursors/Raft snapshots"
+                        .to_string(),
+                ];
+                missing.extend(storage_cache_dependency_matrix.missing.clone());
+                missing
+            },
         },
         ReadinessArea {
             area: "feature_modules".to_string(),
@@ -781,6 +841,43 @@ mod tests {
             );
         }
         assert!(report.missing_count() >= 20);
+    }
+
+    #[test]
+    fn storage_cache_dependency_matrix_splits_local_and_live_store_readiness() {
+        let matrix = storage_cache_dependency_matrix_report();
+        assert!(matrix.local_file_store_ready);
+        assert!(matrix.shared_store_checkpoint_manifest_ready);
+        assert!(matrix.oplog_cursor_retention_ready);
+        assert!(matrix.page_segment_manifest_ready);
+        assert!(matrix.follower_cursor_retention_ready);
+        assert!(matrix.local_shared_store_ready);
+        assert!(!matrix.bytestore_live_backend_ready);
+        assert!(!matrix.s3_live_backend_ready);
+        assert!(!matrix.production_ready);
+        assert!(matrix
+            .missing
+            .iter()
+            .any(|item| item.contains("ByteStore/S3 object-store manifest dependency matrix")));
+
+        let report = production_readiness_report();
+        let storage_cache = report
+            .areas
+            .iter()
+            .find(|area| area.area == "storage_cache")
+            .expect("storage cache area must exist");
+        assert!(storage_cache
+            .covered
+            .iter()
+            .any(|item| item.contains("local/shared-store object manifest dependency matrix")));
+        assert!(storage_cache
+            .covered
+            .iter()
+            .any(|item| item.contains("ByteStore/S3 object-store readiness fail-closed")));
+        assert!(storage_cache
+            .missing
+            .iter()
+            .any(|item| item.contains("ByteStore/S3 object-store manifest dependency matrix")));
     }
 
     #[test]

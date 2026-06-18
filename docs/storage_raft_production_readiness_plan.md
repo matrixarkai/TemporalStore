@@ -151,7 +151,10 @@ The readiness gate intentionally still blocks production readiness on:
 - Production mTLS transport implementation instead of validation-only config.
 - External multi-process packet-loss, disk-pressure, and process-chaos tests.
 - External C++ binary-artifact exporter and CI-published golden storage migration corpus.
-- Live object-store manifest dependency matrix.
+- Local/shared-store object manifest dependency matrix is now explicit in the readiness gate:
+  local file objects, checkpoint manifests, oplog cursor retention, page segment manifests, and
+  follower-cursor retention are covered for the local-file/shared-store target. Live ByteStore/S3
+  object-store dependency wiring remains blocked until those backends are implemented and validated.
 - Production SSD cache tiering policy, admission tuning, and long-running pressure validation.
 - ByteStore/S3 live backend integration tied to follower cursors and Raft snapshots.
 

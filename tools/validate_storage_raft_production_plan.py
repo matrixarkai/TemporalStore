@@ -40,6 +40,8 @@ REQUIRED_READINESS_SNIPPETS = (
     "RaftStorageApplyFence persists shard, term, committed/applied index, snapshot id, storage epoch, and checksum",
     "RaftSnapshotInstallReport exposes freeze, flush, manifest verify, checksum verify, install, tail replay, and rollback status",
     "metaserver-owned data-Raft membership workflow reports learner add, catch-up verification, promotion, leader transfer, and voter removal",
+    "local/shared-store object manifest dependency matrix covers local file objects, checkpoint manifests, oplog cursor retention, page segment manifests, and follower-cursor retention",
+    "storage cache dependency matrix keeps live ByteStore/S3 object-store readiness fail-closed",
     "networked metaserver Raft transport and scheduler loop",
 )
 
