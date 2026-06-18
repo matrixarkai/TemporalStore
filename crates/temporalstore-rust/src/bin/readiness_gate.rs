@@ -281,16 +281,17 @@ mod tests {
         let lines = service_failure_lines(&report);
         assert!(lines
             .iter()
-            .any(|line| line.contains("service client") && line.contains("Neptune")));
+            .any(|line| line.contains("service client")
+                && line.contains("HTTP/JSON, RESP, and tonic")));
         assert!(lines
             .iter()
-            .any(|line| line.contains("service proxy") && line.contains("topology-version")));
-        assert!(lines
-            .iter()
-            .any(|line| line.contains("service ingestion") && line.contains("Kafka/Flink")));
-        assert!(lines
-            .iter()
-            .any(|line| line.contains("service data_node") && line.contains("Raft")));
+            .any(|line| line.contains("service proxy") && line.contains("HTTP/JSON plus tonic")));
+        assert!(
+            lines
+                .iter()
+                .all(|line| !line.contains("service ingestion")
+                    && !line.contains("service data_node"))
+        );
         assert!(lines
             .iter()
             .any(|line| line.contains("service metaserver") && line.contains("scheduler")));
@@ -301,7 +302,7 @@ mod tests {
         let report = production_readiness_report();
         let proxy_lines = service_failure_lines_for_service(&report, "proxy");
         assert_eq!(proxy_lines.len(), 1);
-        assert!(proxy_lines[0].contains("topology-version"));
+        assert!(proxy_lines[0].contains("HTTP/JSON plus tonic"));
         assert!(service_failure_lines_for_service(&report, "client")
             .iter()
             .all(|line| !line.contains("service proxy")));

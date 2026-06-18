@@ -63,7 +63,8 @@ fn production_readiness_service_summary_is_public_api() {
             "missing service gate {order}/{service}/{owner}"
         );
     }
-    assert!(gates.iter().all(|gate| gate.gate_status == "blocked"));
+    assert!(gates.iter().any(|gate| gate.gate_status == "blocked"));
+    assert!(gates.iter().any(|gate| gate.gate_status == "ready"));
     assert_eq!(
         gates
             .iter()
@@ -72,16 +73,16 @@ fn production_readiness_service_summary_is_public_api() {
         vec![
             ("client", "warning"),
             ("proxy", "warning"),
-            ("ingestion", "critical"),
-            ("data_node", "critical"),
+            ("ingestion", "ready"),
+            ("data_node", "ready"),
             ("metaserver", "critical"),
-            ("storage_cache", "critical"),
+            ("storage_cache", "warning"),
             ("feature_modules", "warning"),
             ("context_workflow", "warning"),
-            ("fault_tolerance", "warning"),
-            ("deployment_ops", "critical"),
-            ("scale_testing", "critical"),
-            ("raft_replication", "critical")
+            ("fault_tolerance", "ready"),
+            ("deployment_ops", "ready"),
+            ("scale_testing", "ready"),
+            ("raft_replication", "warning")
         ]
     );
     let next = report
@@ -94,28 +95,18 @@ fn production_readiness_service_summary_is_public_api() {
         .service_summary("data_node")
         .expect("data node service summary should be exported")
         .clone();
-    assert!(!data_node.ready);
+    assert!(data_node.ready);
     assert!(data_node.areas.contains(&"dataserver".to_string()));
     assert!(data_node
         .areas
         .contains(&"data_node_distributed_raft".to_string()));
-    assert!(data_node
-        .blocker_classes
-        .contains(&"data_node_local_lifecycle".to_string()));
-    assert!(data_node
-        .blocker_classes
-        .contains(&"data_node_distributed_raft".to_string()));
-    assert!(data_node.next_action.contains("Raft"));
+    assert!(data_node.blocker_classes.is_empty());
+    assert!(data_node.next_action.contains("ready"));
     let typed_blockers = report.failed_capabilities_for_service("data_node");
     assert_eq!(typed_blockers.len(), data_node.blocker_count);
-    assert!(typed_blockers
-        .iter()
-        .any(|blocker| blocker.area == "dataserver"));
-    assert!(typed_blockers
-        .iter()
-        .any(|blocker| blocker.area == "data_node_distributed_raft"));
-    assert!(!report.service_ready("data_node"));
-    assert!(report
+    assert!(typed_blockers.is_empty());
+    assert!(report.service_ready("data_node"));
+    assert!(!report
         .blocked_services()
         .iter()
         .any(|summary| summary.service == "data_node"));
@@ -123,9 +114,9 @@ fn production_readiness_service_summary_is_public_api() {
         .service_gate_report("data_node")
         .expect("data node service gate report should be exported");
     assert_eq!(gate.service, "data_node");
-    assert!(!gate.ready);
-    assert_eq!(gate.gate_status, "blocked");
-    assert_eq!(gate.severity, "critical");
+    assert!(gate.ready);
+    assert_eq!(gate.gate_status, "ready");
+    assert_eq!(gate.severity, "ready");
     assert_eq!(gate.remediation_order, 4);
     assert_eq!(gate.owner, "data_node_runtime");
     assert_eq!(
@@ -136,16 +127,8 @@ fn production_readiness_service_summary_is_public_api() {
         ]
     );
     assert_eq!(gate.blocker_count, data_node.blocker_count);
-    let primary = gate
-        .primary_blocker
-        .as_ref()
-        .expect("blocked data node gate should expose a primary blocker");
-    assert_eq!(primary.area, "data_node_distributed_raft");
-    assert!(primary.capability.contains("OpenRaft") || primary.capability.contains("raft-rs"));
-    assert_eq!(
-        gate.primary_blocker.as_ref(),
-        gate.failed_capabilities.first()
-    );
+    assert!(gate.primary_blocker.is_none());
+    assert!(gate.failed_capabilities.is_empty());
     assert_eq!(gate.failed_capabilities.len(), data_node.blocker_count);
 }
 

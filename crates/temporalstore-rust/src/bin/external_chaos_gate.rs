@@ -367,7 +367,7 @@ mod tests {
             cargo: "cargo".to_string(),
         };
         let plan = scenario_plan(&options);
-        assert_eq!(plan.len(), 3);
+        assert_eq!(plan.len(), 9);
         assert!(plan
             .iter()
             .any(|scenario| scenario.binary == "raft_secondary_replication_harness"));
@@ -377,6 +377,21 @@ mod tests {
         assert!(plan
             .iter()
             .any(|scenario| scenario.binary == "storage_modes_harness"));
+        assert!(plan
+            .iter()
+            .any(|scenario| scenario.name == "metaserver_raft_membership_failover_snapshot"));
+        assert!(plan
+            .iter()
+            .any(|scenario| scenario.name == "storage_dump_load_fault_matrix"));
+        assert!(plan
+            .iter()
+            .any(|scenario| scenario.name == "external_packet_loss_partition_heal"));
+        assert!(plan
+            .iter()
+            .any(|scenario| scenario.name == "external_disk_pressure_storage_faults"));
+        assert!(plan
+            .iter()
+            .any(|scenario| scenario.name == "external_process_chaos_restart_failover"));
     }
 
     #[test]
@@ -387,7 +402,7 @@ mod tests {
             cargo: "cargo".to_string(),
         };
         let plan = scenario_plan(&options);
-        assert_eq!(plan.len(), 4);
+        assert_eq!(plan.len(), 10);
         assert!(plan
             .iter()
             .any(|scenario| scenario.binary == "scale_harness"));

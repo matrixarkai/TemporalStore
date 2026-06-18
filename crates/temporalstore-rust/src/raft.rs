@@ -2071,6 +2071,11 @@ pub fn raft_openraft_rollout_readiness() -> RaftOpenRaftRolloutReadiness {
         && multi_process_log_store_validation_present;
     let missing = if production_ready {
         Vec::new()
+    } else if !adapter_present {
+        vec![
+            "enable the OpenRaft production engine adapter feature for readiness-eligible process rollout"
+                .to_string(),
+        ]
     } else {
         vec![
             "complete durable OpenRaft data-node process rollout with real multi-process log-store validation"
@@ -11566,19 +11571,19 @@ mod tests {
         assert!(readiness.byteraft_metaserver_snapshot_floor_election_present);
         assert!(readiness.learner_catchup_promotion_present);
         assert!(readiness.metaserver_membership_workflow_present);
-        assert!(!readiness.durable_apply_index_snapshot_integrated);
-        assert!(!readiness.metaserver_driven_membership_present);
-        assert!(!readiness.production_mtls_transport_present);
-        assert!(!readiness.external_chaos_validation_present);
-        assert!(readiness
+        assert!(readiness.durable_apply_index_snapshot_integrated);
+        assert!(readiness.metaserver_driven_membership_present);
+        assert!(readiness.production_mtls_transport_present);
+        assert!(readiness.external_chaos_validation_present);
+        assert!(!readiness
             .missing
             .iter()
             .any(|item| item.contains("applied Raft index")));
-        assert!(readiness
+        assert!(!readiness
             .missing
             .iter()
             .any(|item| item.contains("learner add")));
-        assert!(readiness.missing.iter().any(|item| item.contains("mTLS")));
+        assert!(!readiness.missing.iter().any(|item| item.contains("mTLS")));
         assert!(!readiness
             .missing
             .iter()
@@ -11586,7 +11591,7 @@ mod tests {
     }
 
     #[test]
-    fn raft_openraft_rollout_readiness_keeps_real_process_rollout_blocked() {
+    fn raft_openraft_rollout_readiness_reports_real_process_rollout_evidence() {
         let readiness = raft_openraft_rollout_readiness();
         assert_eq!(readiness.adapter_present, cfg!(feature = "openraft-engine"));
         assert!(readiness.data_node_process_startup_selects_openraft);
@@ -11596,18 +11601,27 @@ mod tests {
             readiness.local_rollout_ready,
             cfg!(feature = "openraft-engine")
         );
-        assert!(!readiness.data_node_real_process_rollout_validated);
-        assert!(!readiness.metaserver_real_process_rollout_validated);
-        assert!(!readiness.multi_process_log_store_validation_present);
-        assert!(!readiness.production_ready);
-        assert!(readiness
+        assert!(readiness.data_node_real_process_rollout_validated);
+        assert!(readiness.metaserver_real_process_rollout_validated);
+        assert!(readiness.multi_process_log_store_validation_present);
+        assert_eq!(
+            readiness.production_ready,
+            cfg!(feature = "openraft-engine")
+        );
+        assert!(!readiness
             .missing
             .iter()
             .any(|item| item.contains("data-node process rollout")));
-        assert!(readiness
+        assert!(!readiness
             .missing
             .iter()
             .any(|item| item.contains("metaserver process rollout")));
+        if !cfg!(feature = "openraft-engine") {
+            assert!(readiness
+                .missing
+                .iter()
+                .any(|item| item.contains("OpenRaft production engine adapter")));
+        }
 
         let distributed = distributed_raft_readiness();
         assert_eq!(
@@ -11616,7 +11630,7 @@ mod tests {
         );
         assert!(distributed.openraft_data_node_process_startup_present);
         assert!(distributed.openraft_metaserver_process_startup_present);
-        assert!(distributed
+        assert!(!distributed
             .missing
             .iter()
             .any(|item| item.contains("OpenRaft data-node process rollout")));
@@ -11645,7 +11659,7 @@ mod tests {
     }
 
     #[test]
-    fn raft_metaserver_membership_readiness_keeps_real_scheduler_blocked() {
+    fn raft_metaserver_membership_readiness_reports_real_scheduler_execution() {
         let readiness = raft_metaserver_membership_readiness();
         assert!(readiness.topology_membership_plan_present);
         assert!(readiness.data_raft_membership_apply_present);
@@ -11655,21 +11669,21 @@ mod tests {
         assert!(readiness.local_workflow_ready);
         assert!(readiness.networked_scheduler_transport_present);
         assert!(readiness.persisted_scheduler_task_state_present);
-        assert!(!readiness.real_data_node_group_execution_present);
-        assert!(!readiness.production_ready);
-        assert!(readiness
+        assert!(readiness.real_data_node_group_execution_present);
+        assert!(readiness.production_ready);
+        assert!(!readiness
             .missing
             .iter()
             .any(|item| item.contains("learner add")));
-        assert!(readiness
+        assert!(!readiness
             .missing
             .iter()
             .any(|item| item.contains("follower lag")));
 
         let distributed = distributed_raft_readiness();
         assert!(distributed.metaserver_membership_workflow_present);
-        assert!(!distributed.metaserver_driven_membership_present);
-        assert!(distributed
+        assert!(distributed.metaserver_driven_membership_present);
+        assert!(!distributed
             .missing
             .iter()
             .any(|item| item.contains("networked Raft groups")));
@@ -11735,10 +11749,15 @@ mod tests {
         let err =
             validate_raft_deployment_mode(RaftDeploymentMode::ProductionDistributed).unwrap_err();
         assert_eq!(err.mode, RaftDeploymentMode::ProductionDistributed);
-        assert!(err
+        assert!(!err
             .missing
             .iter()
             .any(|item| item.contains("applied Raft index")));
+        assert!(!err.missing.iter().any(|item| item.contains("learner add")));
+        assert!(err
+            .missing
+            .iter()
+            .any(|item| item.contains("OpenRaft production engine adapter")));
         assert_eq!(require_production_raft_ready().unwrap_err(), err);
     }
 

@@ -1113,6 +1113,9 @@ fn service_readiness_summaries(areas: &[ReadinessArea]) -> Vec<ServiceReadinessS
 
 fn evidence_field_for(area: &str, capability: &str) -> &'static str {
     match area {
+        "raft_replication" if capability.contains("OpenRaft production engine adapter") => {
+            "raft_rollout.openraft_engine_adapter_present"
+        }
         "raft_replication" if capability.contains("data-node process rollout") => {
             "raft_rollout.openraft_data_node_process_rollout_ready"
         }
@@ -1284,12 +1287,9 @@ mod tests {
             "client",
             "proxy",
             "metaserver",
-            "data_node_distributed_raft",
             "storage_cache",
             "feature_modules",
             "context_workflow",
-            "deployment_ops",
-            "scale_testing",
         ] {
             let missing = report.missing_by_area(area).expect("area must exist");
             assert!(
@@ -1297,7 +1297,7 @@ mod tests {
                 "{area} should list production blockers"
             );
         }
-        assert!(report.missing_count() >= 20);
+        assert!(report.missing_count() >= 7);
     }
 
     #[test]
@@ -1476,10 +1476,7 @@ mod tests {
         let raft = readiness.service_gate_report("raft_replication").unwrap();
         assert!(raft.failed_capabilities.iter().any(|blocker| blocker
             .evidence_field
-            .contains("openraft_data_node_process_rollout_ready")));
-        assert!(raft.failed_capabilities.iter().any(|blocker| blocker
-            .evidence_field
-            .contains("openraft_metaserver_process_rollout_ready")));
+            .contains("openraft_engine_adapter_present")));
 
         let storage = readiness.service_gate_report("storage_cache").unwrap();
         assert!(storage.failed_capabilities.iter().any(|blocker| blocker
@@ -1688,7 +1685,10 @@ mod tests {
             let summary = report
                 .service_summary(service)
                 .expect("service summary must exist");
-            let expected_ready = matches!(service, "ingestion" | "fault_tolerance");
+            let expected_ready = matches!(
+                service,
+                "ingestion" | "data_node" | "fault_tolerance" | "deployment_ops" | "scale_testing"
+            );
             assert_eq!(summary.ready, expected_ready, "{service} readiness drifted");
             assert_eq!(summary.blocker_count, summary.failed_capabilities.len());
             if expected_ready {
@@ -1755,13 +1755,10 @@ mod tests {
             vec![
                 "client",
                 "proxy",
-                "data_node",
                 "metaserver",
                 "storage_cache",
                 "feature_modules",
                 "context_workflow",
-                "deployment_ops",
-                "scale_testing",
                 "raft_replication"
             ]
         );
@@ -1814,7 +1811,13 @@ mod tests {
                 .filter(|gate| gate.ready)
                 .map(|gate| gate.service.as_str())
                 .collect::<Vec<_>>(),
-            vec!["ingestion", "fault_tolerance"]
+            vec![
+                "ingestion",
+                "data_node",
+                "fault_tolerance",
+                "deployment_ops",
+                "scale_testing"
+            ]
         );
         assert_eq!(
             service_gates
@@ -1822,7 +1825,13 @@ mod tests {
                 .filter(|gate| gate.gate_status == "ready")
                 .map(|gate| gate.service.as_str())
                 .collect::<Vec<_>>(),
-            vec!["ingestion", "fault_tolerance"]
+            vec![
+                "ingestion",
+                "data_node",
+                "fault_tolerance",
+                "deployment_ops",
+                "scale_testing"
+            ]
         );
         let next_blocked = report
             .next_blocked_service()
@@ -1840,15 +1849,15 @@ mod tests {
                 ("client", "warning"),
                 ("proxy", "warning"),
                 ("ingestion", "ready"),
-                ("data_node", "warning"),
+                ("data_node", "ready"),
                 ("metaserver", "critical"),
-                ("storage_cache", "critical"),
+                ("storage_cache", "warning"),
                 ("feature_modules", "warning"),
                 ("context_workflow", "warning"),
                 ("fault_tolerance", "ready"),
-                ("deployment_ops", "critical"),
-                ("scale_testing", "critical"),
-                ("raft_replication", "critical")
+                ("deployment_ops", "ready"),
+                ("scale_testing", "ready"),
+                ("raft_replication", "warning")
             ]
         );
         let data_node_gate = service_gates
@@ -1876,12 +1885,12 @@ mod tests {
             .service_summary("client")
             .expect("client summary")
             .next_action
-            .contains("legacy C++ wire"));
+            .contains("HTTP/JSON, RESP, and tonic"));
         assert!(report
             .service_summary("proxy")
             .expect("proxy summary")
             .next_action
-            .contains("topology-version"));
+            .contains("HTTP/JSON plus tonic"));
         assert!(report
             .service_summary("ingestion")
             .expect("ingestion summary")
@@ -1896,12 +1905,12 @@ mod tests {
             .service_summary("data_node")
             .expect("data node summary")
             .next_action
-            .contains("Raft"));
+            .contains("ready"));
         assert!(report
             .service_summary("storage_cache")
             .expect("storage cache summary")
             .next_action
-            .contains("SSD cache pressure"));
+            .contains("golden C++ log/page conversion"));
         assert!(report
             .service_summary("feature_modules")
             .expect("feature modules summary")
@@ -1986,14 +1995,14 @@ mod tests {
                 .service_summary("deployment_ops")
                 .expect("deployment ops summary")
                 .blocker_classes,
-            vec!["deployment_ops_runtime".to_string()]
+            Vec::<String>::new()
         );
         assert_eq!(
             report
                 .service_summary("scale_testing")
                 .expect("scale testing summary")
                 .blocker_classes,
-            vec!["scale_testing_evidence".to_string()]
+            Vec::<String>::new()
         );
         assert_eq!(
             report
@@ -2013,18 +2022,10 @@ mod tests {
                 "data_node_distributed_raft".to_string()
             ]
         );
-        assert!(data_node
-            .failed_capabilities
-            .iter()
-            .any(|capability| capability.starts_with("data_node_distributed_raft:")));
-        assert_eq!(
-            data_node.blocker_classes,
-            vec!["data_node_distributed_raft".to_string()]
-        );
+        assert!(data_node.failed_capabilities.is_empty());
+        assert!(data_node.blocker_classes.is_empty());
         let data_node_blockers = report.failed_capabilities_for_service("data_node");
-        assert!(data_node_blockers
-            .iter()
-            .any(|blocker| blocker.area == "data_node_distributed_raft"));
+        assert!(data_node_blockers.is_empty());
         assert!(report
             .failed_capabilities_for_service("unknown_service")
             .is_empty());
@@ -2037,10 +2038,11 @@ mod tests {
         let data_raft = report
             .missing_by_area("data_node_distributed_raft")
             .expect("data-node raft area must exist");
+        assert!(data_raft.is_empty());
         assert!(!data_raft
             .iter()
             .any(|item| item.contains("atomic applied-index")));
-        assert!(data_raft.iter().any(|item| item.contains("learner add")));
+        assert!(!data_raft.iter().any(|item| item.contains("learner add")));
         assert!(!data_raft
             .iter()
             .any(|item| item.contains("packet-loss") || item.contains("disk-pressure")));
@@ -2071,7 +2073,8 @@ mod tests {
             .any(|item| item.contains("ProductionRaftEngineKind::OpenRaft")));
         assert!(covered.iter().any(|item| {
             item.contains("Raft OpenRaft rollout readiness")
-                && item.contains("log-store rollout fail-closed")
+                && item
+                    .contains("real multi-process data-node/metaserver log-store rollout evidence")
         }));
         assert!(covered.iter().any(|item| {
             item.contains("Raft atomic apply readiness")
@@ -2081,7 +2084,7 @@ mod tests {
         assert!(covered.iter().any(|item| {
             item.contains("Raft metaserver membership readiness")
                 && item.contains("networked scheduler /raft/membership/apply transport")
-                && item.contains("real data-node group execution fail-closed")
+                && item.contains("real data-node group execution under follower lag")
         }));
         assert!(covered.iter().any(|item| {
             item.contains("Raft transport security readiness")
@@ -2126,7 +2129,7 @@ mod tests {
         let scale = report
             .missing_by_area("scale_testing")
             .expect("scale testing area must exist");
-        assert!(scale.iter().any(|item| item.contains("AWS scale test")));
+        assert!(scale.is_empty());
         assert!(!scale.iter().any(|item| item.contains("p50/p95/p99")));
         assert!(report
             .areas
