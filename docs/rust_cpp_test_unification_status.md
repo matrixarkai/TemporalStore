@@ -17,7 +17,7 @@ Unification target:
   corpus files first, then be consumed by both Rust and C++ runners.
 - Rust-specific and C++-specific tests should remain only for language/runtime internals that are
   not a product contract: Rust helper units, serde-only details, borrow/async mechanics, C++
-  object ownership, brpc/thrift glue, CMake/linking, and other implementation-only checks.
+  object ownership, legacy C++ wire glue, CMake/linking, and other implementation-only checks.
 - No new duplicate behavioral tests should be added separately in Rust and C++; add a shared corpus
   case instead, then adapt each runner.
 
@@ -88,7 +88,7 @@ Client and proxy readiness now also expose typed local-vs-production splits:
 retry classification, topology preflight, Neptune routing hooks, and deployment placement hooks
 while keeping C++ wire migration blocked; `ProxyServingReadinessReport` covers HTTP execute routes,
 heartbeat/config application, topology refresh, admission policy, Rust-native discovery, and tonic
-streaming/callback shape while keeping brpc/thrift C++ wire proxy transport out of scope.
+streaming/callback shape while keeping legacy C++ wire C++ wire proxy transport out of scope.
 Metaserver and data-node readiness now expose the same split. `MetaServerControlPlaneReadinessReport`
 covers inventory heartbeat, namespace/table topology, C++ partition-set/member/version topology,
 local Raft mutation, placement, local snapshots, scheduler admin/snapshot, scheduler retry/task

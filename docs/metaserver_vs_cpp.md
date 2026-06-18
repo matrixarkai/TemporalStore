@@ -97,7 +97,7 @@ New/expanded HTTP routes:
 
 Rust metaserver is still not a production C++ metaserver replacement:
 
-- no brpc/protobuf wire compatibility
+- no legacy C++ RPC/protobuf wire compatibility
 - no networked multi-process Raft transport for the metaserver yet; the current
   HTTP binary uses the local in-process MetaRaft model
 - no Raft-metaserver snapshot export/install wired through the networked Raft path yet

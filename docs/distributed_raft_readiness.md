@@ -196,7 +196,7 @@ Production deployments should use `ProductionRaftSecurity::mtls`. Local chaos te
 
 - AWS or other external multi-node SLO runs with real metaserver, proxy, client, and data-node
   deployments remain part of the broader `scale_testing` gate.
-- brpc/thrift compatibility remains out of scope for the Rust-native Raft process path.
+- legacy C++ wire compatibility remains out of scope for the Rust-native Raft process path.
 - Non-Raft service API TLS/auth, dashboards, autoscale, and deployment automation remain tracked by
   the broader deployment-ops gate.
 

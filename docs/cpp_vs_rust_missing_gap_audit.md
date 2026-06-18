@@ -56,7 +56,7 @@ The Rust code now covers the local correctness skeleton for TemporalStore-style 
 
 It is still not production C++ TemporalStore parity. The largest missing areas for the current Rust target are production storage lifecycle, real Raft engine integration, recovery/chaos validation, and operational controls.
 
-brpc and Thrift are intentionally not part of the Rust target. The Rust open-source target is Rust-native service RPC where needed, HTTP/JSON for admin/debug, RESP for Redis compatibility, and Prometheus text for metrics. S3 and ByteStore live-backend integration are also out of scope for the current parity push.
+legacy C++ wire are intentionally not part of the Rust target. The Rust open-source target is Rust-native service RPC where needed, HTTP/JSON for admin/debug, RESP for Redis compatibility, and Prometheus text for metrics. S3 and ByteStore live-backend integration are also out of scope for the current parity push.
 
 ## What Was Closed In The Latest Pass
 
@@ -383,7 +383,7 @@ This pass closed the next node-server load lifecycle gap:
    readonly transition enforcement, lifecycle/preflight accounting, and C++ alias route behavior.
 
 This improves C++ `NodeServer` load/reload observability and serving-state parity without adding
-brpc/Thrift. Remaining node-server work includes richer transitional loading/unloading states,
+legacy C++ wire. Remaining node-server work includes richer transitional loading/unloading states,
 scheduler-driven reload orchestration, and a multi-node move/failover harness that exercises these
 states end to end.
 
@@ -402,7 +402,7 @@ This pass closed the next metaserver lifecycle-guard gap:
    recovery, unknown-server finish-load rejection, stale load-version rejection, and frozen-server
    rejection.
 
-This improves C++-style table/shard lifecycle safety without adding brpc/Thrift. Remaining
+This improves C++-style table/shard lifecycle safety without adding legacy C++ wire. Remaining
 metaserver work includes richer creating/loading/dropping transitional states and tying these
 transitions into scheduler-driven repair/rebalance workflows.
 
@@ -491,7 +491,7 @@ This pass closed the next nodeserver topology-validation gap:
 3. Node preflight still includes the cheap local-only validation summary, while the new admin route
    performs the heavier authoritative partition-map validation on demand.
 
-This improves C++-style node/topology audit behavior without adding brpc/Thrift surfaces.
+This improves C++-style node/topology audit behavior without adding legacy C++ wire surfaces.
 
 ## What Was Closed In The Previous Pass
 
@@ -525,7 +525,7 @@ This pass closed a node-server/metaserver heartbeat observability gap:
 4. Server heartbeat sending records both successful and failed metaserver heartbeat attempts into
    the runtime preflight surface.
 
-This improves C++-style node/control-plane diagnosis. It does not add brpc/Thrift surfaces and
+This improves C++-style node/control-plane diagnosis. It does not add legacy C++ wire surfaces and
 does not change the Rust-native heartbeat transport.
 
 ## What Was Closed In The Previous Pass
@@ -544,7 +544,7 @@ This pass closed a client/proxy/metaserver operational topology gap:
    version. The same read path works in single-node and Raft-backed metaserver mode.
 
 This improves C++-style route/topology observability and stale-cache diagnosis. It does not claim
-brpc/Thrift compatibility, and it does not replace the Rust-native HTTP/admin surface.
+legacy C++ wire compatibility, and it does not replace the Rust-native HTTP/admin surface.
 
 ## What Was Closed In The Previous Pass
 
@@ -581,7 +581,7 @@ practical local testing gap:
    for client, proxy, data-node, metaserver, Redis/function reachability, and scale validation.
 
 These changes improve local Rust parity validation. They do not change the remaining production
-gap statement: brpc/Thrift wire compatibility, tonic/prost service definitions, production storage
+gap statement: legacy C++ wire wire compatibility, tonic/prost service definitions, production storage
 lifecycle, real OpenRaft/raft-rs FSM/storage, and multi-process operational workflows remain open.
 
 ## What Was Closed In The Previous Pass
@@ -857,7 +857,7 @@ This pass repeated the C++ vs Rust audit and closed eight smaller, test-backed p
 7. Client backend failure pool shape: `ClientStats` now tracks backend error streaks and successful retry recovery.
 8. Proxy heartbeat/report shape plus stream safety: `ProxyHeartbeatReport` exposes config/stats/boot data, and invalid stream ranges now return `invalid_stream_range`.
 
-These are open-source Rust API and behavior increments. They are not brpc/thrift wire compatibility.
+These are open-source Rust API and behavior increments. They are not legacy C++ wire wire compatibility.
 
 This pass closed another ByteRaft/ByteKV `RaftEngine` API/configuration gap:
 
@@ -879,7 +879,7 @@ This pass closed another ByteRaft/ByteKV `RaftEngine` API/configuration gap:
 - data-node Raft now exposes a safe membership-change unit for add/remove/replace voter plans: it validates target quorum, opens joint consensus, catches up live followers, commits the new voter set, aborts on failure, and returns a scheduler-friendly report with old/new voters and deltas.
 
 This pass repeated the client/proxy/data-node/metaserver surface comparison and closed eight
-operational parity gaps without adding brpc/thrift:
+operational parity gaps without adding legacy C++ wire:
 
 1. Client now exposes a serializable `ClientPreflightReport` for route/table cache size,
    backend-failure backlog, stats, options, and degraded reasons.
@@ -961,7 +961,7 @@ This pass also widened data-node heartbeat/load-report parity:
 
 ## What Was Closed In The Previous Pass
 
-This pass closed several behavior gaps without carrying brpc or Thrift forward:
+This pass closed several behavior gaps without carrying legacy C++ wire forward:
 
 - atomic string conditional write command: `StringSetConditional` with `always`, `if_exists`, and `if_not_exists`
 - Redis `SET` options: `NX`, `XX`, `GET`, `EX`, and `PX`
@@ -1018,7 +1018,7 @@ Measured locally against `/root/src/github-services/TemporalStore-main-no-deps`
 and the Rust `rust-main` branch:
 
 - C++ TemporalStore first-party service code: about 96,293 LOC across 566
-  C/C++/proto/thrift files.
+  C/C++/proto/legacy framed RPC files.
 - C++ byteraft dependency: about 37,629 LOC.
 - C++ byte dependency: about 65,828 LOC.
 - Rust TemporalStore code: about 47,034 total Rust LOC, with about 23,971
@@ -1028,7 +1028,7 @@ The largest C++ first-party areas are partition/storage, model modules,
 metaserver, client, stream, server, and extensions. The Rust implementation has
 substantial local models for those areas, but still omits large production
 pieces such as full ByteRaft/byte integration, object-manager/page-layout
-internals, production model internals, brpc/thrift SDKs, dashboards, and
+internals, production model internals, legacy C++ wire SDKs, dashboards, and
 deployment automation.
 
 This pass closed one concrete Risk module gap from the C++ `HSET`/`HQUERY`
@@ -1556,14 +1556,14 @@ service preflight visibility:
 14. Compared C++ partition-worker ownership: data-node preflight includes queued
     shard worker mapping.
 15. Compared route aliases: proxy preflight has both Rust and C++-named routes,
-    while brpc/thrift remains intentionally out of scope.
+    while legacy C++ wire remains intentionally out of scope.
 16. Compared tests: unit tests cover healthy/degraded proxy preflight,
     metaserver frozen inventory, and data-node dirty/queue degradation.
 17. Compared local scale validation: the local scale harness still validates
     proxy/client/data-node/Raft/shared-store paths after the service visibility
     change.
 18. Remaining gap: Rust still lacks Consul/service-discovery integration,
-    production dashboard/alert wiring, and C++ brpc/thrift surfaces by design.
+    production dashboard/alert wiring, and C++ legacy C++ wire surfaces by design.
 
 Eighteen-loop storage-specific C++ gap-fill pass focused on compaction utility
 reporting:
@@ -2141,7 +2141,7 @@ Eight storage audit passes completed against C++ storage code:
 8. `Evicter`/`Expirer`/metrics loop -> Rust cache eviction, TTL sweep, runtime
    stats, Prometheus storage metrics, and local scale validation.
 
-Remaining explicit non-goals for this pass: brpc/thrift surfaces, S3/ByteStore
+Remaining explicit non-goals for this pass: legacy C++ wire surfaces, S3/ByteStore
 integration, C++ byte-for-byte page/header compatibility, and CacheLib/mtcache
 FFI. Remaining future parity depth is the larger C++ object/page allocator and
 stream-backend internals, but the Rust storage lifecycle now has concrete
@@ -2166,7 +2166,7 @@ cursor-safe local shared-store oplog/checkpoint GC, and local cache warmup cover
     heartbeat sends them, and metaserver stores/exposes them through
     `ServerMetaInfo`. This gives meta/proxy/client control-plane code concrete
     queue, dirty, background lifecycle, worker, readonly, load-version, storage,
-    cache, and oplog state without adding brpc/thrift.
+    cache, and oplog state without adding legacy C++ wire.
 17. Closed a metaserver placement-input gap: Rust table topology placement now
     scores normal servers using heartbeat runtime load and shard serving-state
     penalties before legacy key/memory load. This makes placement prefer
@@ -2175,12 +2175,12 @@ cursor-safe local shared-store oplog/checkpoint GC, and local cache warmup cover
 
 | Area | C++ TemporalStore | Rust Today | Missing |
 | --- | --- | --- | --- |
-| Protocol | brpc/thrift/protobuf APIs and extension protos | JSON/HTTP command API plus RESP adapter; C++ `ServerService`-named JSON route aliases for load/unload/execute/batch/apply-data-raft-log/config/info/stats/stream/update-membership/ping; C++ `MasterService`-named JSON route aliases for implemented table/server control-plane operations including table update/delete; brpc/thrift intentionally excluded from the Rust parity target | SDK compatibility for the supported Rust HTTP/RESP API; no brpc/thrift parity target now |
-| Proxy | brpc/thrift server, C++ client wrapper, MetaSyncer, heartbeat/config, consul registration | HTTP proxy service with `/execute`, `/batch_execute`, `/shards`, `/proxy/info`, `/proxy/config`, `/proxy/heartbeat`, `/proxy/preflight`, `/proxy/open_table`, `/proxy/table_execute`, and `/proxy/table_batch_execute`; forwarding delegates through `TemporalStoreClient` for route cache, stats sync, retries/timeouts, backend-error route refresh, continuous-failure bypass, table topology sync, key-to-shard routing, C++-style duplicate config-update no-op handling, C++-style preflight alias `/ProxyService/Preflight`, and degraded preflight reasons for meta/backend/bad-request issues; background heartbeat loop, heartbeat auto-register helper, and Rust-native tonic `ProxyService` streaming/callback contract | no brpc/thrift proxy wire-compatibility target now |
-| Client SDK | C++ `Client`, `Table`, `Pipeline`, `MetaSyncer`, router, backend pool | Rust `TemporalStoreClient`, `TemporalStoreTable`, `TemporalStorePipeline`, typed methods, open/close table cache, close-table route-cache eviction, stats surfaced through proxy preflight, timeouts, transport retries, C++-style retryable-status read/write budgets with linear backoff, direct route refresh, per-backend continuous-failure windows, backend error streak tracking, open table from metaserver topology, background topology sync, C++ `crc64 >> 34` slot router, primary routing for writes, optional first-secondary/round-robin secondary routing for reads, location-affine replica preference, deterministic drop-percent traffic shedding, Neptune/deployment placement hooks, and explicit Rust-native migration compatibility report | documented Rust HTTP/RESP/tonic SDK migration API, full C++ partition-set hierarchy; brpc/thrift wire compatibility explicitly out of scope |
+| Protocol | legacy C++ wire/protobuf APIs and extension protos | JSON/HTTP command API plus RESP adapter; C++ `ServerService`-named JSON route aliases for load/unload/execute/batch/apply-data-raft-log/config/info/stats/stream/update-membership/ping; C++ `MasterService`-named JSON route aliases for implemented table/server control-plane operations including table update/delete; legacy C++ wire intentionally excluded from the Rust parity target | SDK compatibility for the supported Rust HTTP/RESP API; no legacy C++ wire parity target now |
+| Proxy | legacy C++ wire server, C++ client wrapper, MetaSyncer, heartbeat/config, consul registration | HTTP proxy service with `/execute`, `/batch_execute`, `/shards`, `/proxy/info`, `/proxy/config`, `/proxy/heartbeat`, `/proxy/preflight`, `/proxy/open_table`, `/proxy/table_execute`, and `/proxy/table_batch_execute`; forwarding delegates through `TemporalStoreClient` for route cache, stats sync, retries/timeouts, backend-error route refresh, continuous-failure bypass, table topology sync, key-to-shard routing, C++-style duplicate config-update no-op handling, C++-style preflight alias `/ProxyService/Preflight`, and degraded preflight reasons for meta/backend/bad-request issues; background heartbeat loop, heartbeat auto-register helper, and Rust-native tonic `ProxyService` streaming/callback contract | no legacy C++ wire proxy wire-compatibility target now |
+| Client SDK | C++ `Client`, `Table`, `Pipeline`, `MetaSyncer`, router, backend pool | Rust `TemporalStoreClient`, `TemporalStoreTable`, `TemporalStorePipeline`, typed methods, open/close table cache, close-table route-cache eviction, stats surfaced through proxy preflight, timeouts, transport retries, C++-style retryable-status read/write budgets with linear backoff, direct route refresh, per-backend continuous-failure windows, backend error streak tracking, open table from metaserver topology, background topology sync, C++ `crc64 >> 34` slot router, primary routing for writes, optional first-secondary/round-robin secondary routing for reads, location-affine replica preference, deterministic drop-percent traffic shedding, Neptune/deployment placement hooks, and explicit Rust-native migration compatibility report | documented Rust HTTP/RESP/tonic SDK migration API, full C++ partition-set hierarchy; legacy C++ wire wire compatibility explicitly out of scope |
 | Routing | namespace/table/partition-set/slot routing | key-to-shard routing from table options using C++ CRC64 slot formula, explicit `shard_id` request, simple metaserver route, topology-cached primary/replica endpoint choice, C++ `PartitionId` bit layout helper and opt-in C++-encoded table partition ids | full partition-set hierarchy, route versioning, placement hierarchy |
 | Metaserver | full topology, heartbeat, placement, scheduling, Raft-backed metadata | shard route map, namespace/table topology, C++ `MasterService`-named JSON aliases for implemented table/server control-plane operations, table update/delete lifecycle with topology-version bumps, dropped-table state, and topology rejection, table serving-option catalog for client routing/retry/drop/read-policy/timeouts, opt-in C++ `PartitionId` generation for table partitions, load-aware replica fill with location and host diversity, heartbeat runtime-load and shard-serving-state scoring, server/proxy register/list/heartbeat, data-node runtime load and per-shard serving-state heartbeat persistence, stale resource failure-detector loop with safe-mode cooldown gates for server/proxy rejoin, durable local JSONL mutation log/replay, single-node metabase snapshot export/import and atomic local snapshot save/load, Raft-mode metabase snapshot export/save/load/restore through the metaserver admin routes, meta stats and `MetaPreflightReport` for normal/frozen server/proxy inventory and shard-route counts, optional Raft-backed HTTP mutation path through `ProductionMetaRaftRuntime`, rebalance model with C++-style balance partition counts and placement-failure counters, C++-style update-membership task model with sibling filtering, threshold checks, not-found-as-reboot success, FSM-submit gating, deterministic priority task scheduler model with retry-later backoff and abort handling, scheduler HTTP admin surface, scheduler snapshot/restore, optional local scheduler snapshot persistence, freezing-shard repair into UpdateMembership tasks | networked multi-process metaserver Raft transport, full C++ placement rule chain, full background scheduler loop executing tasks against real data-node processes |
-| Data node execution | partition workers, async callbacks, load-version guards | `TemporalEngine` plus `DataNodeRuntime` shard-affine worker lanes, bounded foreground/background queue admission, foreground-over-background scheduler priority, per-shard FIFO single-lane execution, cross-shard parallelism, async jobs, immediate in-flight cancel-request status, cooperative cancellation checkpoints before destructive background phases, dirty tracking, slot-selected dump requests with persisted slot dump manifests, storage lifecycle dry-run/apply reports, `DataNodePreflightReport` for queue saturation, dirty backlog, queued shard workers, rejections, and timeouts, C++-style server runtime load reports, per-shard serving-state heartbeat payloads with worker/readonly/load-version/storage/cache/oplog/dirty state, checked execute/batch routes, invalid stream range rejection, background expiry sweep, C++-style duplicate-load/not-found-unload/config-not-found handling, C++-style membership update version guards and local-membership validity reporting, C++ `Partition::SetConfig` stale/equal/newer version semantics, shard/table/tenant scoped QPS admission, readonly replica replay route-change reset and metrics, Rust-native `DataNodeService` tonic streaming/callback contract, distributed admission aggregation across data-node peer snapshots, and multi-process lifecycle validation for load/reload/unload/restart reports | brpc closure wire compatibility, preemptive hard cancellation of arbitrary running user work, external deployment wiring for distributed admission snapshots across all production data-node processes |
+| Data node execution | partition workers, async callbacks, load-version guards | `TemporalEngine` plus `DataNodeRuntime` shard-affine worker lanes, bounded foreground/background queue admission, foreground-over-background scheduler priority, per-shard FIFO single-lane execution, cross-shard parallelism, async jobs, immediate in-flight cancel-request status, cooperative cancellation checkpoints before destructive background phases, dirty tracking, slot-selected dump requests with persisted slot dump manifests, storage lifecycle dry-run/apply reports, `DataNodePreflightReport` for queue saturation, dirty backlog, queued shard workers, rejections, and timeouts, C++-style server runtime load reports, per-shard serving-state heartbeat payloads with worker/readonly/load-version/storage/cache/oplog/dirty state, checked execute/batch routes, invalid stream range rejection, background expiry sweep, C++-style duplicate-load/not-found-unload/config-not-found handling, C++-style membership update version guards and local-membership validity reporting, C++ `Partition::SetConfig` stale/equal/newer version semantics, shard/table/tenant scoped QPS admission, readonly replica replay route-change reset and metrics, Rust-native `DataNodeService` tonic streaming/callback contract, distributed admission aggregation across data-node peer snapshots, and multi-process lifecycle validation for load/reload/unload/restart reports | legacy C++ RPC closure wire compatibility, preemptive hard cancellation of arbitrary running user work, external deployment wiring for distributed admission snapshots across all production data-node processes |
 | Hot object model | `ObjectManager`, model objects, dirty slots | per-type maps of key/field/timestamp to `PageAddress` plus stable page/object/routing-slot metadata, per-slot storage summaries for object/page refs, logical/physical bytes, dirty generation/counts, page segments and last zone, C++-style stats for logical object count, page refs, dirty objects, dirty routing slots, partition info, and recovery/lifecycle object counters for live object IDs, stale page estimates, tombstones, reused object-id conflicts, missing owner refs, and owner mismatches | full model-specific memory layout |
 | Oplog | binary mutation log with replay/reclaim semantics | JSONL command oplog with synced append, corrupt-tail truncation on recovery, explicit retain-from-sequence GC rewrite, synced temp-file GC rewrite, and reopen-after-GC tests | binary/protobuf compatibility where needed by migration API, replay into hot object manager |
 | Index log | binary metadata/index log | JSONL index-log with current index metadata, synced append, corrupt-tail truncation on recovery, explicit retain-from-sequence GC rewrite, synced temp-file GC rewrite, and reopen-after-GC tests | compact incremental deltas, page/object ids, checksums, replay ordering with oplog and page dumps |

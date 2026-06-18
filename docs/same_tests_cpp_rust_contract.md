@@ -10,7 +10,7 @@ The desired end state is no duplicate Rust-only and C++-only tests for product b
 repo owns the canonical shared cases first, and both implementations consume them. Tests may remain
 language-specific only when they protect implementation mechanics that are not a cross-language
 TemporalStore contract, such as Rust helper structs/serde internals, C++ object ownership,
-brpc/thrift glue, build/linking behavior, or temporary harness plumbing.
+legacy C++ wire glue, build/linking behavior, or temporary harness plumbing.
 
 The current shared corpus is:
 
@@ -245,7 +245,7 @@ Allowed language-specific tests after unification:
 
 - Rust-only internals: page-store helper units, cache data structures, serde/codec edge units,
   async worker lifecycle helpers, CLI argument parsing, and Rust-only test fixture plumbing.
-- C++-only internals: object lifetime/ownership units, brpc/thrift service glue, CMake/linking,
+- C++-only internals: object lifetime/ownership units, legacy C++ wire service glue, CMake/linking,
   allocator or memory-layout tests, and C++-only fixture plumbing.
 - Temporary scaffolding tests while a product behavior is being moved into a shared corpus. These
   should name the target shared case or parity area they are waiting on.

@@ -198,7 +198,7 @@ pub struct ClientMigrationCompatibilityReport {
     pub compatibility_mode: ClientCompatibilityMode,
     pub rust_native_http_ready: bool,
     pub rust_native_tonic_ready: bool,
-    pub brpc_thrift_in_scope: bool,
+    pub legacy_cplusplus_wire_in_scope: bool,
     pub cpp_wire_compatible_ready: bool,
     pub migration_layer_ready: bool,
     #[serde(default)]
@@ -222,7 +222,7 @@ impl Default for ClientMigrationCompatibilityReport {
             compatibility_mode: ClientCompatibilityMode::CppWireMigrationOutOfScope,
             rust_native_http_ready: true,
             rust_native_tonic_ready: true,
-            brpc_thrift_in_scope: false,
+            legacy_cplusplus_wire_in_scope: false,
             cpp_wire_compatible_ready: false,
             migration_layer_ready: false,
             typed_table_client_ready: true,
@@ -232,7 +232,7 @@ impl Default for ClientMigrationCompatibilityReport {
             placement_hooks_ready: true,
             production_replacement_contract: ClientProductionReplacementContract::default(),
             blockers: vec![
-                "brpc/thrift wire compatibility is explicitly out of scope for the Rust-native target"
+                "legacy C++ wire compatibility is explicitly out of scope for the Rust-native target"
                     .to_string(),
                 "existing C++ callers must migrate through the documented Rust HTTP/JSON, RESP, and tonic API"
                     .to_string(),
@@ -244,7 +244,7 @@ impl Default for ClientMigrationCompatibilityReport {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ClientProductionReplacementContract {
     pub compatibility_decision: String,
-    pub cplusplus_wire_protocols: Vec<String>,
+    pub legacy_cplusplus_wire_protocols_in_scope: Vec<String>,
     pub production_protocols: Vec<String>,
     pub typed_table_client_preserved: bool,
     pub topology_sync_preserved: bool,
@@ -258,9 +258,9 @@ impl Default for ClientProductionReplacementContract {
     fn default() -> Self {
         Self {
             compatibility_decision:
-                "brpc/thrift migration shims are out of scope; use Rust-native migration contract"
+                "legacy C++ wire migration shims are out of scope; use Rust-native migration contract"
                     .to_string(),
-            cplusplus_wire_protocols: vec!["brpc".to_string(), "thrift".to_string()],
+            legacy_cplusplus_wire_protocols_in_scope: Vec::new(),
             production_protocols: vec![
                 "HTTP/JSON".to_string(),
                 "RESP".to_string(),
@@ -3967,7 +3967,7 @@ mod tests {
         );
         assert!(migration.rust_native_http_ready);
         assert!(migration.rust_native_tonic_ready);
-        assert!(!migration.brpc_thrift_in_scope);
+        assert!(!migration.legacy_cplusplus_wire_in_scope);
         assert!(!migration.cpp_wire_compatible_ready);
         assert!(!migration.migration_layer_ready);
         assert!(migration.typed_table_client_ready);
@@ -3979,7 +3979,7 @@ mod tests {
             migration
                 .production_replacement_contract
                 .compatibility_decision,
-            "brpc/thrift migration shims are out of scope; use Rust-native migration contract"
+            "legacy C++ wire migration shims are out of scope; use Rust-native migration contract"
         );
         assert!(migration
             .production_replacement_contract
@@ -4017,7 +4017,7 @@ mod tests {
         assert!(migration
             .blockers
             .iter()
-            .any(|blocker| blocker.contains("brpc/thrift")));
+            .any(|blocker| blocker.contains("legacy C++ wire")));
     }
 
     #[test]

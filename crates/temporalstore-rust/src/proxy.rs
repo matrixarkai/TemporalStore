@@ -243,7 +243,7 @@ impl Default for ProxyTonicStreamingContract {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyCppMigrationContract {
     pub compatibility_decision: String,
-    pub brpc_thrift_in_scope: bool,
+    pub legacy_cplusplus_wire_in_scope: bool,
     pub cpp_wire_proxy_transport_ready: bool,
     pub production_protocols: Vec<String>,
     pub http_json_aliases_ready: bool,
@@ -259,9 +259,9 @@ impl Default for ProxyCppMigrationContract {
     fn default() -> Self {
         Self {
             compatibility_decision:
-                "brpc/thrift command transport is out of scope; use Rust-native HTTP/JSON plus tonic"
+                "legacy C++ command transport is out of scope; use Rust-native HTTP/JSON plus tonic"
                     .to_string(),
-            brpc_thrift_in_scope: false,
+            legacy_cplusplus_wire_in_scope: false,
             cpp_wire_proxy_transport_ready: false,
             production_protocols: vec!["HTTP/JSON".to_string(), "tonic".to_string()],
             http_json_aliases_ready: true,
@@ -1978,9 +1978,9 @@ mod tests {
         let migration = proxy.cpp_migration_contract();
         assert_eq!(
             migration.compatibility_decision,
-            "brpc/thrift command transport is out of scope; use Rust-native HTTP/JSON plus tonic"
+            "legacy C++ command transport is out of scope; use Rust-native HTTP/JSON plus tonic"
         );
-        assert!(!migration.brpc_thrift_in_scope);
+        assert!(!migration.legacy_cplusplus_wire_in_scope);
         assert!(!migration.cpp_wire_proxy_transport_ready);
         assert!(migration.http_json_aliases_ready);
         assert!(migration.tonic_streaming_ready);

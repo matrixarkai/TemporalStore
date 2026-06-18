@@ -26,7 +26,7 @@ What is still missing versus C++:
   page compaction; Rust already has logical object/page-ref/dirty-slot stats, append-only oplog and
   index-log streams, GC retention boundaries, and readonly replica replay from primary streams
 - full Feature, IPS, and Risk semantics from the C++ extension protos
-- ByteStore stream backend parity, blockcache/mtcache-compatible cache engine, brpc/thrift SDK
+- ByteStore stream backend parity, blockcache/mtcache-compatible cache engine, legacy C++ wire SDK
   compatibility, full dashboards/runbooks, and operational tooling. Rust already has shared-store
   object/file flows, local multi-layer cache, local quota/admission, heartbeat/load reporting, and
   Prometheus metric output.
@@ -154,7 +154,7 @@ Supported Redis-style commands include:
 - set: `SADD`, `SMEMBERS`, `SREM`
 - feature extensions: `FAPPEND`, `FQUERY`, `FREPLACE`, `FDEL`, `FAGG`
 
-C++ TemporalStore has richer protocol surfaces through brpc/thrift/protobuf extension APIs. The Rust RESP layer is useful for local compatibility and load tests, but it does not yet provide C++ SDK wire compatibility.
+C++ TemporalStore has richer protocol surfaces through legacy C++ wire/protobuf extension APIs. The Rust RESP layer is useful for local compatibility and load tests, but it does not yet provide C++ SDK wire compatibility.
 
 ## Raft/Replication Deep Dive
 
@@ -248,7 +248,7 @@ From the C++ deep-dive docs and local source, C++ TemporalStore is a mature serv
 - readonly replica replay from primary
 - heartbeat/load reporting
 - quota and admission control
-- brpc/thrift/protobuf SDK/runtime integration
+- legacy C++ wire/protobuf SDK/runtime integration
 - ByteRaft/internal raft dependency
 - richer Feature, IPS, and Risk modules
 
@@ -290,7 +290,7 @@ That is why "rewrite C++ TemporalStore in Rust" is not just translating syntax. 
 - **Storage durability is incomplete:** page files plus JSON indexes are useful for local tests, but production needs WAL/oplog, atomic install, compaction, crash recovery, and checksums.
 - **C++ semantics are deep:** IPS and Risk alone are large domain modules, not small Redis-style command aliases.
 - **Performance is unknown:** simple locks, JSON indexes, local disk cache, and per-value appends are not benchmarked against C++.
-- **Wire compatibility is not done:** Redis compatibility is helpful, but C++ clients expect brpc/thrift/protobuf-specific behavior.
+- **Wire compatibility is not done:** Redis compatibility is helpful, but C++ clients expect legacy C++ wire/protobuf-specific behavior.
 - **Ops surface is thin:** no metrics server, dashboards, autoscale controller, production service discovery, auth, TLS, or chaos suite yet.
 
 ## Pros Of Keeping/Using The C++ Code
@@ -304,7 +304,7 @@ That is why "rewrite C++ TemporalStore in Rust" is not just translating syntax. 
 ## Cons Of Keeping/Using The C++ Code
 
 - **Hard to open source:** critical dependencies like `byte`, `byteraft`, `mtcache`, ByteStore, and likely internal build/runtime pieces are not open source.
-- **Complex build/dependency graph:** brpc/protobuf/library ABI details make external builds harder.
+- **Complex build/dependency graph:** legacy C++ RPC/protobuf/library ABI details make external builds harder.
 - **Harder to simplify:** historical naming and internal architecture make a clean public product harder to explain and maintain.
 - **Memory safety risk:** C++ needs stricter review and testing discipline for lifetime, concurrency, and ABI issues.
 - **Operational coupling:** the code assumes internal infrastructure that must be replaced or shimmed for AWS/open-source users.
@@ -326,7 +326,7 @@ P0, required for a serious distributed alpha:
 P1, required for production-like parity:
 
 - full C++ Feature/IPS/Risk semantics
-- C++ protobuf/brpc/thrift compatibility or a documented migration API
+- C++ protobuf/legacy C++ wire compatibility or a documented migration API
 - production cache backend, likely CacheLib via FFI or a Rust cache with SSD tier support; the
   current Rust cache is a local memory plus disk read-through cache
 - page/index compaction and full C++ page rewrite garbage collection; local GC retention boundaries

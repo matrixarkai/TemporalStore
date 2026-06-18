@@ -19,7 +19,7 @@ surfaces that matter for the current Rust alpha:
 The comparison input was the current Rust source under `crates/temporalstore-rust`,
 the existing C++ parity docs in `docs/`, and the local C++ build/source artifacts
 available under `build-ubuntu22/src`. The Rust target remains HTTP/JSON plus RESP
-and Prometheus for the open-source path; brpc and Thrift are not claimed as Rust
+and Prometheus for the open-source path; legacy C++ wire are not claimed as Rust
 wire parity.
 
 ## Pass 1: Client Surface
@@ -51,7 +51,7 @@ Remaining client gaps:
 
 - tonic/prost SDK surface for the future Rust wire API
 - full C++ partition-set hierarchy and Neptune-specific routing
-- C++ thrift request/response compatibility
+- C++ legacy framed RPC request/response compatibility
 
 ## Pass 2: Proxy Surface
 
@@ -76,8 +76,8 @@ Filled this pass:
 
 Remaining proxy gaps:
 
-- brpc/Thrift framed server compatibility
-- command-specific C++ thrift method aliases such as `Get`, `Set`, `FeatureAdd`,
+- legacy C++ wire framed server compatibility
+- command-specific C++ legacy framed RPC method aliases such as `Get`, `Set`, `FeatureAdd`,
   `RiskHset`, `HMGet`, `HMSet`, `HGetAll`, and `HLen`
 - consul/service-discovery registration
 - full C++ partition-set topology beyond the current open-source table topology model
@@ -182,7 +182,7 @@ Findings:
 - The local scale harness is the right validation for current Rust alpha behavior:
   multi-node routing, failover cadence, string/hash/sequence writes, and optional
   shared-store comparison.
-- It does not prove production C++ parity for brpc/Thrift, real ByteStore, OpenRaft or
+- It does not prove production C++ parity for legacy C++ wire, real ByteStore, OpenRaft or
   raft-rs FSM/storage, AWS multi-node chaos, or crash recovery under disk faults.
 
 Filled:

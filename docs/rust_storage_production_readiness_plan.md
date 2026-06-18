@@ -1,7 +1,7 @@
 # Rust Storage Production Readiness Plan
 
 Goal: make Rust storage production-ready and scalable enough for the current Rust-native target
-while matching the important C++ TemporalStore storage lifecycle behavior. brpc, Thrift, S3, and
+while matching the important C++ TemporalStore storage lifecycle behavior. legacy C++ wire, S3, and
 ByteStore integration remain out of scope for this plan.
 
 ## 25-Cycle Backlog

@@ -230,7 +230,7 @@ backoff up to `TS_REPLICA_REPLAY_MAX_BACKOFF_MS`.
 
 Still missing major data-node internals:
 
-- brpc closure wire compatibility for existing C++ callers; Rust-native tonic/gRPC streaming
+- legacy C++ RPC closure wire compatibility for existing C++ callers; Rust-native tonic/gRPC streaming
   callbacks are covered by `DataNodeService`
 - in-flight cancellation after a worker has started executing
 - batch write/read splitting and pin-primary details at server layer

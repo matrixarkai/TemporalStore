@@ -14,7 +14,7 @@ service TemporalStoreService {
 }
 
 // ProxyService is the Rust-native proxy RPC contract. It intentionally does
-// not claim brpc/thrift wire compatibility; existing C++ callers must migrate
+// not claim legacy C++ wire compatibility; existing C++ callers must migrate
 // through the Rust-native HTTP/RESP/tonic surfaces.
 service ProxyService {
   rpc ProxyExecuteStream(stream ProxyStreamRequest) returns (stream ProxyStreamEvent);

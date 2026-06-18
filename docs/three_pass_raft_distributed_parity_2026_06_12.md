@@ -16,7 +16,7 @@ replication and failover:
 - local distributed Raft harnesses
 
 The Rust path remains HTTP/JSON for the open-source control plane. This pass does not claim
-brpc/protobuf wire compatibility.
+legacy C++ RPC/protobuf wire compatibility.
 
 ## Pass 1: C++ Control Surface
 
@@ -91,7 +91,7 @@ What the local validation proves:
 
 What it does not prove:
 
-- C++ brpc/protobuf wire compatibility
+- C++ legacy C++ RPC/protobuf wire compatibility
 - production OpenRaft/raft-rs storage behavior
 - external multi-host network partitions, disk-full behavior, or packet loss
 - production engine freeze/flush/snapshot install lifecycle

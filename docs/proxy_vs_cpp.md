@@ -4,8 +4,8 @@
 
 The C++ proxy is a production front door:
 
-- starts a brpc server with Thrift framed service support
-- parses thrift methods such as `Get`, `Set`, `FeatureAdd`, `FeatureQuery`, `RiskHset`, `HMGet`, `HMSet`, `HGetAll`, and `HLen`
+- starts a legacy C++ RPC server with framed service support
+- parses legacy C++ framed methods such as `Get`, `Set`, `FeatureAdd`, `FeatureQuery`, `RiskHset`, `HMGet`, `HMSet`, `HGetAll`, and `HLen`
 - opens tables through the C++ client per namespace/table
 - forwards requests through the C++ client's router and backend server pool
 - uses the client `MetaSyncer` for topology refresh
@@ -59,7 +59,7 @@ Rust now has a reusable `ProxyService`:
   - continuous backend failures
   - metaserver errors
   - bad requests
-- tracked C++ proxy migration decision: brpc/thrift command transport is explicitly out of scope,
+- tracked C++ proxy migration decision: legacy C++ command transport is explicitly out of scope,
   and HTTP/JSON aliases plus tonic are the production replacement
 - `/proxy/cpp_migration_contract` and `/ProxyService/GetCppMigrationContract` expose the migration
   contract, including topology-version invalidation, admission policy, route quarantine, and
@@ -77,7 +77,7 @@ The Rust `proxy` binary now delegates to `ProxyService` and supports:
 
 ## Wire Compatibility Decision
 
-Rust keeps the Rust-native proxy surface instead of implementing brpc/thrift command transport in
+Rust keeps the Rust-native proxy surface instead of implementing legacy C++ command transport in
 this pass. The production replacement is:
 
 - HTTP/JSON proxy routes and C++ service-name JSON aliases for migration tests.
@@ -87,16 +87,16 @@ this pass. The production replacement is:
 
 This decision is tracked in code through `ProxyCppMigrationContract` and readiness fields. The
 readiness gate can therefore distinguish "decision documented and Rust-native replacement ready"
-from "brpc/thrift wire-compatible proxy transport still not implemented."
+from "legacy C++ wire-compatible proxy transport still not implemented."
 
 ## Still Missing
 
 Rust proxy is still not a C++ proxy drop-in:
 
-- no brpc server
-- no thrift framed parser
-- no C++ thrift request/response wire compatibility
-- no command-specific thrift method aliases such as `Get`, `Set`, `FeatureAdd`, `RiskHset`,
+- no legacy C++ RPC server
+- no legacy framed parser
+- no legacy C++ framed request/response wire compatibility
+- no command-specific legacy framed method aliases such as `Get`, `Set`, `FeatureAdd`, `RiskHset`,
   `HMGet`, `HMSet`, `HGetAll`, and `HLen`
 - no full C++ partition-set topology/slot router beyond the open-source table topology path
 - no consul registration
@@ -104,4 +104,4 @@ Rust proxy is still not a C++ proxy drop-in:
 
 The current Rust proxy is an HTTP/JSON proxy plus Rust-native tonic `ProxyService` streaming/callback
 contract that wraps the Rust client library for routing/cache/retry behavior. It is suitable for the
-open-source Rust path, but not a brpc/thrift wire-compatible replacement for the internal C++ proxy.
+open-source Rust path, but not a legacy C++ wire-compatible replacement for the internal C++ proxy.

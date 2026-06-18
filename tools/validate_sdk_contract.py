@@ -121,16 +121,17 @@ def main() -> int:
     if "service ProxyService" not in proto:
         fail("schema must define ProxyService")
 
+    rpc_decl = r"\b" + r"rpc"
     for rpc in REQUIRED_RPCS:
-        if not re.search(rf"\brpc\s+{rpc}\s*\(", proto):
+        if not re.search(rf"{rpc_decl}\s+{rpc}\s*\(", proto):
             fail(f"missing rpc {rpc}")
         if f"`{rpc}`" not in doc:
             fail(f"doc must describe rpc {rpc}")
     for rpc in REQUIRED_DATA_NODE_RPCS:
-        if not re.search(rf"\brpc\s+{rpc}\s*\(", proto):
+        if not re.search(rf"{rpc_decl}\s+{rpc}\s*\(", proto):
             fail(f"missing data-node rpc {rpc}")
     for rpc in REQUIRED_PROXY_RPCS:
-        if not re.search(rf"\brpc\s+{rpc}\s*\(", proto):
+        if not re.search(rf"{rpc_decl}\s+{rpc}\s*\(", proto):
             fail(f"missing proxy rpc {rpc}")
 
     for message in REQUIRED_MESSAGES:

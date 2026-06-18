@@ -7,7 +7,7 @@ existing HTTP/JSON client and proxy paths. It is not a claim of legacy C++ wire 
 production target is a Rust-native API surface with a stable schema, generated SDK bindings, and
 the same logical behavior as the shared C++/Rust corpus.
 
-The client/proxy wire-compatibility decision is explicit: brpc/thrift migration shims stay out of
+The client/proxy wire-compatibility decision is explicit: legacy C++ wire migration shims stay out of
 scope for this pass. Existing C++ callers migrate through the Rust-native HTTP/JSON, RESP, or tonic
 contract while preserving typed table clients, topology sync, retry budgets, Neptune routing hooks,
 deployment placement hooks, proxy admission, route quarantine, topology-version invalidation, and
@@ -96,7 +96,7 @@ sub-gaps. It also closes the runtime tonic adapter sub-gap for `Execute`, `Batch
 
 - full C++ partition-set hierarchy, if required by a deployment; Rust-native Neptune/deployment
   placement hooks are covered
-- brpc/thrift wire-compatible migration for existing C++ client callers, which remains explicitly
+- legacy C++ wire-compatible migration for existing C++ client callers, which remains explicitly
   out of scope for the Rust-native schema
 
 The readiness gate must continue to report the client as blocked until those remaining capabilities

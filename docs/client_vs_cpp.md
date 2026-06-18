@@ -95,7 +95,7 @@ Rust now has:
   `TableOptions.drop_percent`, and table execute/batch paths reject sampled keys with
   `traffic_dropped` before contacting a backend
 - stats for backend errors, backend error streaks, continuous backend failures, and successful retry recovery
-- tracked C++ caller migration decision: brpc/thrift client shims are explicitly out of scope, and
+- tracked C++ caller migration decision: legacy C++ wire shims are explicitly out of scope, and
   C++ callers must migrate through the Rust-native HTTP/JSON, RESP, or tonic contract
 - `ClientMigrationCompatibilityReport` and `ClientProductionReplacementContract`, which preserve
   the typed table client, topology sync, separate read/write retry budgets, Neptune routing hooks,
@@ -105,7 +105,7 @@ The old `TemporalStoreClient::new(proxy_addr)` API still works and routes throug
 
 ## Wire Compatibility Decision
 
-Rust keeps the Rust-native production surface instead of adding brpc/thrift migration shims in this
+Rust keeps the Rust-native production surface instead of adding legacy C++ wire migration shims in this
 pass. The tracked replacement contract is:
 
 - HTTP/JSON for existing admin, proxy, server, and table execution routes.
@@ -121,9 +121,9 @@ Rust-native migration contract as ready, while keeping C++ wire migration readin
 
 Rust still does not have C++ client wire parity:
 
-- no brpc/protobuf client
+- no legacy C++ wire client
 - no exact C++ `CmdRequest`/`CmdResponse` command encoding
-- no brpc/protobuf wire-compatible backend pool; Rust now uses the C++ slot formula `crc64_signed(0, key) >> 34` for table shard routing
+- no legacy C++ wire-compatible backend pool; Rust now uses the C++ slot formula `crc64_signed(0, key) >> 34` for table shard routing
 - no full partition-set hierarchy, but Rust now has primary/secondary endpoint selection from
   metaserver table topology for the open-source route model
 - Neptune/deployment placement hooks are present for the Rust-native route model, but not the full

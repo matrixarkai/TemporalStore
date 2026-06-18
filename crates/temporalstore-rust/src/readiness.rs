@@ -202,7 +202,7 @@ pub fn client_routing_readiness_report() -> ClientRoutingReadinessReport {
     let missing = if production_ready {
         Vec::new()
     } else {
-        vec!["brpc/thrift wire-compatible migration shims for existing C++ client callers are explicitly out of scope; use the tracked Rust-native HTTP/JSON, RESP, and tonic migration contract".to_string()]
+        vec!["legacy C++ wire-compatible migration shims for existing C++ client callers are explicitly out of scope; use the tracked Rust-native HTTP/JSON, RESP, and tonic migration contract".to_string()]
     };
 
     ClientRoutingReadinessReport {
@@ -245,7 +245,7 @@ pub fn proxy_serving_readiness_report() -> ProxyServingReadinessReport {
         Vec::new()
     } else {
         vec![
-            "brpc/thrift wire-compatible command-specific proxy transport for existing C++ callers is explicitly out of scope; HTTP/JSON aliases plus tonic are the tracked production replacement"
+            "legacy C++ wire-compatible command-specific proxy transport for existing C++ callers is explicitly out of scope; HTTP/JSON aliases plus tonic are the tracked production replacement"
                 .to_string(),
         ]
     };
@@ -660,7 +660,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "client preflight exposes a C++-style partition-set compatibility view derived from cached table ranges and shard routes"
                     .to_string(),
-                "client routing readiness covers typed table client, topology sync, retry budgets, topology preflight, Neptune routing hooks, deployment placement hooks, and the tracked Rust-native HTTP/JSON, RESP, and tonic migration contract while keeping C++ brpc/thrift wire migration fail-closed"
+                "client routing readiness covers typed table client, topology sync, retry budgets, topology preflight, Neptune routing hooks, deployment placement hooks, and the tracked Rust-native HTTP/JSON, RESP, and tonic migration contract while keeping legacy C++ wire migration fail-closed"
                     .to_string(),
             ],
             missing: client_routing.missing,
@@ -683,7 +683,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "Rust-native service discovery replacement for consul via proxy auto-register, heartbeat TTL, admin inspection, and Prometheus stale/registered metrics"
                     .to_string(),
-                "proxy serving readiness covers HTTP execute routes, heartbeat/config application, topology-version invalidation, admission policy, route quarantine, Rust-native service discovery, tonic streaming/callback shape, and the tracked HTTP/JSON plus tonic migration contract while keeping brpc/thrift C++ wire proxy transport out of scope"
+                "proxy serving readiness covers HTTP execute routes, heartbeat/config application, topology-version invalidation, admission policy, route quarantine, Rust-native service discovery, tonic streaming/callback shape, and the tracked HTTP/JSON plus tonic migration contract while keeping legacy C++ wire proxy transport out of scope"
                     .to_string(),
             ],
             missing: proxy_serving.missing,
@@ -1120,10 +1120,10 @@ fn service_next_action(service: &str, blocker_classes: &[String]) -> &'static st
     };
     match (service, first_class) {
         ("client", "client_sync_preflight") => {
-            "keep brpc/thrift client shims explicitly out of scope and migrate C++ callers through the tracked HTTP/JSON, RESP, and tonic contract"
+            "keep legacy C++ client wire shims explicitly out of scope and migrate C++ callers through the tracked HTTP/JSON, RESP, and tonic contract"
         }
         ("proxy", "proxy_topology_admission") => {
-            "keep brpc/thrift proxy transport explicitly out of scope and use the tracked HTTP/JSON plus tonic migration contract"
+            "keep legacy C++ proxy wire transport explicitly out of scope and use the tracked HTTP/JSON plus tonic migration contract"
         }
         ("ingestion", "ingestion_durability") => {
             "finish network Kafka/Flink runtime failover, lag metrics, and dead-letter export"
@@ -1306,7 +1306,7 @@ mod tests {
         assert!(proxy
             .missing
             .iter()
-            .any(|item| item.contains("brpc/thrift")));
+            .any(|item| item.contains("legacy C++ wire")));
 
         let readiness = production_readiness_report();
         let client_area = readiness
@@ -1715,7 +1715,7 @@ mod tests {
             .service_summary("client")
             .expect("client summary")
             .next_action
-            .contains("brpc/thrift"));
+            .contains("legacy C++ wire"));
         assert!(report
             .service_summary("proxy")
             .expect("proxy summary")

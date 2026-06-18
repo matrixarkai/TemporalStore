@@ -1,7 +1,7 @@
 # Rust Client/Proxy/Metaserver/Nodeserver C++ Parity Plan
 
 Goal: close the remaining Rust-native control-plane gaps versus C++ TemporalStore without adding
-brpc or Thrift surfaces. Each cycle should plan, implement, test locally, update the gap audit, and
+legacy C++ wire surfaces. Each cycle should plan, implement, test locally, update the gap audit, and
 push.
 
 ## 25-Cycle Backlog

@@ -2,7 +2,7 @@
 
 This runbook covers the open-source Rust deployment shape: metaserver, data nodes, proxy, clients,
 and optional local Raft/replica harnesses. It is not a claim of AWS multi-node performance parity or
-brpc/thrift compatibility.
+legacy C++ wire compatibility.
 
 ## Preflight Gate
 

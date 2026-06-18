@@ -260,7 +260,7 @@ Partially covered, but still materially smaller than C++:
   complete.
 - Proxy exposes Rust HTTP/JSON command-shaped aliases for C++ proxy methods including `Get`, `Set`,
   `FeatureAdd`, `RiskHset`, `HMGet`, `HMSet`, `HGetAll`, and `HLen`, all delegated through the
-  normal table-routed client execution path. This is API-shape coverage, not brpc/thrift wire
+  normal table-routed client execution path. This is API-shape coverage, not legacy C++ wire wire
   compatibility.
 - Hot object state is represented by per-type maps of key/field/timestamp to `PageAddress`, with
   logical object/page-ref/dirty-object/dirty-slot stats. Rust still does not clone the full C++
@@ -278,7 +278,7 @@ Partially covered, but still materially smaller than C++:
 
 Still intentionally missing from the open-source Rust target:
 
-- brpc/thrift SDK wire compatibility. The Rust target uses HTTP/JSON admin/debug, RESP compatibility,
+- legacy C++ wire SDK wire compatibility. The Rust target uses HTTP/JSON admin/debug, RESP compatibility,
   and a Rust client API today; tonic/gRPC remains the intended open internal RPC path.
 - Full C++ dashboards/runbooks/production alerting package. Prometheus metric output exists, but the
   complete dashboard and operations bundle is not done.
