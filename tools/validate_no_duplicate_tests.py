@@ -8,7 +8,8 @@ that matter when pruning duplicate test cases:
 * Rust attributed test function names are unique across temporalstore-rust.
 * Shared corpus case names are unique.
 * Shared corpus step names and command payloads are unique within each case.
-* C++ existing-test surface references are not repeated across cases.
+* C++ existing-test surface references are not repeated across cases except for
+  the Raft aliases listed by coverage.required_raft_case_names.
 """
 
 from __future__ import annotations
@@ -23,18 +24,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 RUST_CRATE = ROOT / "crates" / "temporalstore-rust"
 CORPUS = ROOT / "compat" / "unified_temporalstore_cases.json"
-
-# These cases intentionally reuse lower-level C++ required_paths so the shared
-# corpus can carry the exact current C++ Raft case names while preserving the
-# older granular surface gates. Treat them as aliases for duplicate-path checks,
-# not as duplicate behavioral tests.
-CPP_RAFT_CASE_ALIASES = {
-    "storage_data_raft_replication_gtest",
-    "raft_metaserver_membership_failover_snapshot",
-    "raft_data_node_scale_failover_snapshot",
-    "raft_data_node_mixed_rw_and_membership",
-    "raft_production_gate",
-}
 
 TEST_ATTR = re.compile(r"^\s*#\[(?:tokio::)?test\]")
 FN_NAME = re.compile(r"\bfn\s+([A-Za-z0-9_]+)\s*\(")
@@ -86,6 +75,7 @@ def validate_corpus() -> tuple[int, int, int]:
     cases = corpus.get("cases")
     if not isinstance(cases, list):
         raise SystemExit(f"{relative(CORPUS)}: cases must be a list")
+    raft_case_aliases = validate_required_raft_cases(corpus, cases)
 
     case_locations: dict[str, list[str]] = defaultdict(list)
     existing_test_refs: dict[str, list[str]] = defaultdict(list)
@@ -116,7 +106,7 @@ def validate_corpus() -> tuple[int, int, int]:
                 raise SystemExit(f"{location}: command must be an object")
             command_locations[command_signature(command)].append(location)
 
-            if command.get("kind") == "existing_test" and case_name not in CPP_RAFT_CASE_ALIASES:
+            if command.get("kind") == "existing_test" and case_name not in raft_case_aliases:
                 for required_path in command.get("required_paths", []):
                     if not isinstance(required_path, str) or not required_path:
                         raise SystemExit(f"{location}: existing_test required_paths must be strings")
@@ -148,6 +138,38 @@ def validate_corpus() -> tuple[int, int, int]:
         {path: locations for path, locations in existing_test_refs.items() if len(locations) > 1},
     )
     return len(cases), step_count, len(existing_test_refs)
+
+
+def validate_required_raft_cases(corpus: dict, cases: list[dict]) -> set[str]:
+    coverage = corpus.get("coverage")
+    if not isinstance(coverage, dict):
+        raise SystemExit(f"{relative(CORPUS)}: coverage must be an object")
+    required_raft_cases = coverage.get("required_raft_case_names")
+    if not isinstance(required_raft_cases, list) or not required_raft_cases:
+        raise SystemExit(
+            f"{relative(CORPUS)}: coverage.required_raft_case_names must be a non-empty list"
+        )
+    if not all(isinstance(name, str) and name for name in required_raft_cases):
+        raise SystemExit(
+            f"{relative(CORPUS)}: coverage.required_raft_case_names must contain strings"
+        )
+    duplicates = {
+        name: [f"{relative(CORPUS)}:coverage.required_raft_case_names"]
+        for name in required_raft_cases
+        if required_raft_cases.count(name) > 1
+    }
+    fail_duplicates("duplicate required Raft case names:", duplicates)
+    case_names = {
+        case.get("name")
+        for case in cases
+        if isinstance(case.get("name"), str) and case.get("name")
+    }
+    missing = sorted(set(required_raft_cases) - case_names)
+    if missing:
+        raise SystemExit(
+            f"{relative(CORPUS)}: missing required Raft cases: {', '.join(missing)}"
+        )
+    return set(required_raft_cases)
 
 
 def main() -> None:

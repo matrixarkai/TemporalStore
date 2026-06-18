@@ -30,6 +30,10 @@ shared corpus: no duplicate case names, per-case step names, or per-case command
 C++ existing-test surfaces: no repeated required_paths
 ```
 
+The duplicate-test guard derives its C++ Raft alias exemptions from
+`coverage.required_raft_case_names`, so the duplicate path rules and the unified Raft schema cannot
+drift apart.
+
 The shared corpus validator also requires every runtime/stress `cpp_data_raft_parity` step to
 declare a Rust runner/validator, and requires the data-node and production Raft cases to point at
 the combined data-node plus metaserver parity gate.
