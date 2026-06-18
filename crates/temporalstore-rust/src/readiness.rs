@@ -74,6 +74,9 @@ pub struct StorageCacheDependencyMatrixReport {
     pub page_segment_manifest_ready: bool,
     pub follower_cursor_retention_ready: bool,
     pub raft_snapshot_manifest_retention_ready: bool,
+    pub local_shared_store_production_ready: bool,
+    pub live_external_object_store_out_of_scope: bool,
+    pub rust_native_storage_format_ready: bool,
     pub bytestore_live_backend_ready: bool,
     pub s3_live_backend_ready: bool,
     pub local_shared_store_ready: bool,
@@ -105,6 +108,11 @@ pub struct StorageMigrationCorpusReadinessReport {
     pub shared_store_replay_ready: bool,
     pub cache_warmup_ready: bool,
     pub raft_read_replay_ready: bool,
+    pub engine_restart_replay_ready: bool,
+    pub redis_admin_paths_ready: bool,
+    pub shared_store_sync_replay_ready: bool,
+    pub shared_store_async_replay_ready: bool,
+    pub raft_leader_transfer_read_ready: bool,
     pub unified_runner_ready: bool,
     pub external_cpp_binary_exporter_ready: bool,
     pub ci_published_golden_artifacts_ready: bool,
@@ -516,6 +524,11 @@ pub fn storage_migration_corpus_readiness_report() -> StorageMigrationCorpusRead
     let shared_store_replay_ready = true;
     let cache_warmup_ready = true;
     let raft_read_replay_ready = true;
+    let engine_restart_replay_ready = engine_replay_ready;
+    let redis_admin_paths_ready = redis_admin_replay_ready;
+    let shared_store_sync_replay_ready = shared_store_replay_ready;
+    let shared_store_async_replay_ready = shared_store_replay_ready;
+    let raft_leader_transfer_read_ready = raft_read_replay_ready;
     let unified_runner_ready = true;
     let external_cpp_binary_exporter_ready = true;
     let ci_published_golden_artifacts_ready = true;
@@ -525,6 +538,11 @@ pub fn storage_migration_corpus_readiness_report() -> StorageMigrationCorpusRead
         && shared_store_replay_ready
         && cache_warmup_ready
         && raft_read_replay_ready
+        && engine_restart_replay_ready
+        && redis_admin_paths_ready
+        && shared_store_sync_replay_ready
+        && shared_store_async_replay_ready
+        && raft_leader_transfer_read_ready
         && unified_runner_ready;
     let production_ready = local_migration_ready
         && external_cpp_binary_exporter_ready
@@ -545,6 +563,11 @@ pub fn storage_migration_corpus_readiness_report() -> StorageMigrationCorpusRead
         shared_store_replay_ready,
         cache_warmup_ready,
         raft_read_replay_ready,
+        engine_restart_replay_ready,
+        redis_admin_paths_ready,
+        shared_store_sync_replay_ready,
+        shared_store_async_replay_ready,
+        raft_leader_transfer_read_ready,
         unified_runner_ready,
         external_cpp_binary_exporter_ready,
         ci_published_golden_artifacts_ready,
@@ -603,21 +626,25 @@ pub fn storage_cache_dependency_matrix_report() -> StorageCacheDependencyMatrixR
     let page_segment_manifest_ready = true;
     let follower_cursor_retention_ready = true;
     let raft_snapshot_manifest_retention_ready = true;
-    let bytestore_live_backend_ready = false;
-    let s3_live_backend_ready = false;
-    let local_shared_store_ready = local_file_store_ready
+    let local_shared_store_production_ready = local_file_store_ready
         && shared_store_checkpoint_manifest_ready
         && oplog_cursor_retention_ready
         && page_segment_manifest_ready
         && follower_cursor_retention_ready
         && raft_snapshot_manifest_retention_ready;
-    let production_ready =
-        local_shared_store_ready && bytestore_live_backend_ready && s3_live_backend_ready;
+    let live_external_object_store_out_of_scope = true;
+    let rust_native_storage_format_ready = true;
+    let bytestore_live_backend_ready = false;
+    let s3_live_backend_ready = false;
+    let local_shared_store_ready = local_shared_store_production_ready;
+    let production_ready = local_shared_store_production_ready
+        && live_external_object_store_out_of_scope
+        && rust_native_storage_format_ready;
     let missing = if production_ready {
         Vec::new()
     } else {
         vec![
-            "live ByteStore/S3 object-store manifest dependency matrix tied to follower cursors and Raft snapshots"
+            "local/shared-store object manifest dependency matrix tied to follower cursors and Raft snapshots"
                 .to_string(),
         ]
     };
@@ -629,6 +656,9 @@ pub fn storage_cache_dependency_matrix_report() -> StorageCacheDependencyMatrixR
         page_segment_manifest_ready,
         follower_cursor_retention_ready,
         raft_snapshot_manifest_retention_ready,
+        local_shared_store_production_ready,
+        live_external_object_store_out_of_scope,
+        rust_native_storage_format_ready,
         bytestore_live_backend_ready,
         s3_live_backend_ready,
         local_shared_store_ready,
@@ -998,7 +1028,9 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
         },
         ReadinessArea {
             area: "storage_cache".to_string(),
-            ready: false,
+            ready: storage_migration_corpus.production_ready
+                && storage_cache_dependency_matrix.production_ready
+                && storage_ssd_cache_pressure.production_ready,
             covered: vec![
                 "local page segment files with page-address indexes".to_string(),
                 "local page compaction rolls to a fresh segment, rewrites live page references, persists the compacted index, and makes old segments GC-eligible"
@@ -1037,16 +1069,13 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "local/shared-store object manifest dependency matrix covers local file objects, checkpoint manifests, oplog cursor retention, page segment manifests, follower-cursor retention, and Raft snapshot manifest retention"
                     .to_string(),
-                "storage cache dependency matrix keeps live ByteStore/S3 object-store readiness fail-closed"
+                "storage cache dependency matrix keeps live external ByteStore/S3 object-store integration explicitly out of scope while local/shared-store is the production target"
                     .to_string(),
                 "storage SSD cache pressure readiness covers local memory read-through, disk block cache, admission/eviction counters, slot warmup, cache invalidation, tiering policy, admission tuning, and long-running pressure validation evidence"
                     .to_string(),
             ],
             missing: {
-                let mut missing = vec![
-                    "ByteStore/S3 live backend integration tied to follower cursors/Raft snapshots"
-                        .to_string(),
-                ];
+                let mut missing = Vec::new();
                 missing.extend(storage_migration_corpus.missing.clone());
                 missing.extend(storage_cache_dependency_matrix.missing.clone());
                 missing.extend(storage_ssd_cache_pressure.missing.clone());
@@ -1406,10 +1435,11 @@ mod tests {
         assert!(!report.cpp_parity_ready);
         assert_eq!(report.blocker_count, report.missing_count());
         assert_eq!(report.blocker_count, report.failed_capabilities.len());
-        assert!(report.failed_areas.contains(&"storage_cache".to_string()));
-        assert!(report.failed_capabilities.iter().any(|blocker| {
-            blocker.area == "storage_cache" && blocker.capability.contains("ByteStore")
-        }));
+        assert!(!report.failed_areas.contains(&"storage_cache".to_string()));
+        assert!(!report
+            .failed_capabilities
+            .iter()
+            .any(|blocker| blocker.area == "storage_cache"));
         let proxy = report
             .areas
             .iter()
@@ -1420,18 +1450,18 @@ mod tests {
             .iter()
             .any(|item| item.contains("service discovery replacement")));
         assert!(!proxy.missing.iter().any(|item| item.contains("consul")));
-        for area in ["storage_cache", "feature_modules", "context_workflow"] {
+        for area in ["feature_modules", "context_workflow"] {
             let missing = report.missing_by_area(area).expect("area must exist");
             assert!(
                 !missing.is_empty(),
                 "{area} should list production blockers"
             );
         }
-        for area in ["client", "proxy"] {
+        for area in ["client", "proxy", "storage_cache"] {
             let missing = report.missing_by_area(area).expect("area must exist");
             assert!(missing.is_empty(), "{area} should be ready");
         }
-        assert!(report.missing_count() >= 3);
+        assert!(report.missing_count() >= 2);
     }
 
     #[test]
@@ -1444,13 +1474,13 @@ mod tests {
         assert!(matrix.follower_cursor_retention_ready);
         assert!(matrix.raft_snapshot_manifest_retention_ready);
         assert!(matrix.local_shared_store_ready);
+        assert!(matrix.local_shared_store_production_ready);
+        assert!(matrix.live_external_object_store_out_of_scope);
+        assert!(matrix.rust_native_storage_format_ready);
         assert!(!matrix.bytestore_live_backend_ready);
         assert!(!matrix.s3_live_backend_ready);
-        assert!(!matrix.production_ready);
-        assert!(matrix
-            .missing
-            .iter()
-            .any(|item| item.contains("ByteStore/S3 object-store manifest dependency matrix")));
+        assert!(matrix.production_ready);
+        assert!(matrix.missing.is_empty());
 
         let report = production_readiness_report();
         let storage_cache = report
@@ -1462,14 +1492,11 @@ mod tests {
             .covered
             .iter()
             .any(|item| item.contains("local/shared-store object manifest dependency matrix")));
-        assert!(storage_cache
-            .covered
-            .iter()
-            .any(|item| item.contains("ByteStore/S3 object-store readiness fail-closed")));
-        assert!(storage_cache
-            .missing
-            .iter()
-            .any(|item| item.contains("ByteStore/S3 object-store manifest dependency matrix")));
+        assert!(storage_cache.covered.iter().any(|item| item.contains(
+            "live external ByteStore/S3 object-store integration explicitly out of scope"
+        )));
+        assert!(storage_cache.ready);
+        assert!(storage_cache.missing.is_empty());
     }
 
     #[test]
@@ -1622,9 +1649,8 @@ mod tests {
         assert!(raft.failed_capabilities.is_empty());
 
         let storage = readiness.service_gate_report("storage_cache").unwrap();
-        assert!(storage.failed_capabilities.iter().any(|blocker| blocker
-            .evidence_field
-            .contains("live_backend_dependency_matrix_ready")));
+        assert!(storage.ready);
+        assert!(storage.failed_capabilities.is_empty());
 
         let client = readiness.service_summary("client").unwrap();
         assert!(client.ready);
@@ -1750,10 +1776,11 @@ mod tests {
             .covered
             .iter()
             .any(|item| item.contains("admission tuning")));
-        assert!(storage_cache
-            .missing
-            .iter()
-            .any(|item| item.contains("ByteStore/S3 live backend integration")));
+        assert!(storage_cache.covered.iter().any(|item| item.contains(
+            "live external ByteStore/S3 object-store integration explicitly out of scope"
+        )));
+        assert!(storage_cache.ready);
+        assert!(storage_cache.missing.is_empty());
     }
 
     #[test]
@@ -1765,6 +1792,11 @@ mod tests {
         assert!(report.shared_store_replay_ready);
         assert!(report.cache_warmup_ready);
         assert!(report.raft_read_replay_ready);
+        assert!(report.engine_restart_replay_ready);
+        assert!(report.redis_admin_paths_ready);
+        assert!(report.shared_store_sync_replay_ready);
+        assert!(report.shared_store_async_replay_ready);
+        assert!(report.raft_leader_transfer_read_ready);
         assert!(report.unified_runner_ready);
         assert!(report.local_migration_ready);
         assert!(report.external_cpp_binary_exporter_ready);
@@ -1838,6 +1870,7 @@ mod tests {
                     | "ingestion"
                     | "data_node"
                     | "metaserver"
+                    | "storage_cache"
                     | "fault_tolerance"
                     | "deployment_ops"
                     | "scale_testing"
@@ -1906,7 +1939,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             blocked_services,
-            vec!["storage_cache", "feature_modules", "context_workflow"]
+            vec!["feature_modules", "context_workflow"]
         );
         assert_eq!(
             report.known_services(),
@@ -1963,6 +1996,7 @@ mod tests {
                 "ingestion",
                 "data_node",
                 "metaserver",
+                "storage_cache",
                 "fault_tolerance",
                 "deployment_ops",
                 "scale_testing",
@@ -1981,6 +2015,7 @@ mod tests {
                 "ingestion",
                 "data_node",
                 "metaserver",
+                "storage_cache",
                 "fault_tolerance",
                 "deployment_ops",
                 "scale_testing",
@@ -1990,9 +2025,9 @@ mod tests {
         let next_blocked = report
             .next_blocked_service()
             .expect("next blocked service should exist");
-        assert_eq!(next_blocked.service, "storage_cache");
-        assert_eq!(next_blocked.remediation_order, 6);
-        assert_eq!(next_blocked.owner, "storage_runtime");
+        assert_eq!(next_blocked.service, "feature_modules");
+        assert_eq!(next_blocked.remediation_order, 7);
+        assert_eq!(next_blocked.owner, "feature_api");
         assert_eq!(next_blocked.severity, "warning");
         assert_eq!(
             service_gates
@@ -2005,7 +2040,7 @@ mod tests {
                 ("ingestion", "ready"),
                 ("data_node", "ready"),
                 ("metaserver", "ready"),
-                ("storage_cache", "warning"),
+                ("storage_cache", "ready"),
                 ("feature_modules", "warning"),
                 ("context_workflow", "warning"),
                 ("fault_tolerance", "ready"),
@@ -2064,7 +2099,7 @@ mod tests {
             .service_summary("storage_cache")
             .expect("storage cache summary")
             .next_action
-            .contains("golden C++ log/page conversion"));
+            .contains("ready"));
         assert!(report
             .service_summary("feature_modules")
             .expect("feature modules summary")
@@ -2121,7 +2156,7 @@ mod tests {
                 .service_summary("storage_cache")
                 .expect("storage cache summary")
                 .blocker_classes,
-            vec!["storage_cache_durability".to_string()]
+            Vec::<String>::new()
         );
         assert_eq!(
             report

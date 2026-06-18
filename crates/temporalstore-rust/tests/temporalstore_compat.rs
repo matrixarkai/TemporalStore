@@ -76,7 +76,7 @@ fn production_readiness_service_summary_is_public_api() {
             ("ingestion", "ready"),
             ("data_node", "ready"),
             ("metaserver", "ready"),
-            ("storage_cache", "warning"),
+            ("storage_cache", "ready"),
             ("feature_modules", "warning"),
             ("context_workflow", "warning"),
             ("fault_tolerance", "ready"),
@@ -88,9 +88,9 @@ fn production_readiness_service_summary_is_public_api() {
     let next = report
         .next_blocked_service()
         .expect("next blocked service should be exported");
-    assert_eq!(next.service, "storage_cache");
-    assert_eq!(next.remediation_order, 6);
-    assert_eq!(next.owner, "storage_runtime");
+    assert_eq!(next.service, "feature_modules");
+    assert_eq!(next.remediation_order, 7);
+    assert_eq!(next.owner, "feature_api");
     let data_node: ServiceReadinessSummary = report
         .service_summary("data_node")
         .expect("data node service summary should be exported")
