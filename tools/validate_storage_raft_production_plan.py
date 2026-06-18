@@ -38,6 +38,7 @@ REQUIRED_READINESS_SNIPPETS = (
     "OpenRaft-backed data-node and metaserver adapter is available behind the openraft-engine feature",
     "ProductionRaftEngineKind::OpenRaft",
     "RaftStorageApplyFence persists shard, term, committed/applied index, snapshot id, storage epoch, and checksum",
+    "RaftSnapshotInstallReport exposes freeze, flush, manifest verify, checksum verify, install, tail replay, and rollback status",
     "networked metaserver Raft transport and scheduler loop",
 )
 

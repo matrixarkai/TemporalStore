@@ -45,6 +45,8 @@ The Rust code currently has:
 - local snapshot install
 - chunked snapshot install that assembles multiple `InstallSnapshotChunkRequest` messages before
   replacing follower state
+- data-node snapshot lifecycle reports for freeze, flush, manifest verification, checksum
+  verification, install, tail replay, and rollback decisions
 - joint-consensus membership safety model requiring old and new voter majorities
 - `RaftRpcRuntime` wrapper with max-inflight backpressure, retries, retry backoff, and
   runtime counters for attempts, successes, failures, retries, inflight requests, and

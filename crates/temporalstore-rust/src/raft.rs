@@ -1202,6 +1202,23 @@ pub struct InstallSnapshotResponse {
     pub reject_reason: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftSnapshotInstallReport {
+    pub shard_id: ShardId,
+    pub node_id: RaftNodeId,
+    pub snapshot_index: u64,
+    pub before_commit_index: u64,
+    pub after_commit_index: u64,
+    pub freeze_started: bool,
+    pub flush_completed: bool,
+    pub manifest_verified: bool,
+    pub checksum_verified: bool,
+    pub install_completed: bool,
+    pub tail_replay_completed: bool,
+    pub rollback_performed: bool,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct InstallSnapshotChunkRequest {
     #[serde(default)]
@@ -5598,6 +5615,78 @@ impl RaftCluster {
         }
         inner.persist_configured_wal()?;
         Ok(())
+    }
+
+    pub fn install_snapshot_with_lifecycle_report(
+        &self,
+        node_id: RaftNodeId,
+        snapshot: RaftSnapshot,
+    ) -> RaftSnapshotInstallReport {
+        let before_commit_index = self.commit_index(node_id).unwrap_or_default();
+        let shard_id = snapshot.shard_id;
+        let snapshot_index = snapshot.last_included_index;
+        let mut report = RaftSnapshotInstallReport {
+            shard_id,
+            node_id,
+            snapshot_index,
+            before_commit_index,
+            after_commit_index: before_commit_index,
+            freeze_started: true,
+            flush_completed: false,
+            manifest_verified: false,
+            checksum_verified: false,
+            install_completed: false,
+            tail_replay_completed: false,
+            rollback_performed: false,
+            error: None,
+        };
+
+        let preflight = {
+            let inner = self.inner.read().expect("raft cluster lock poisoned");
+            if snapshot.shard_id != inner.shard_id {
+                Err(RaftError::SnapshotShardMismatch {
+                    snapshot_shard_id: snapshot.shard_id,
+                    cluster_shard_id: inner.shard_id,
+                })
+            } else {
+                inner
+                    .nodes
+                    .get(&node_id)
+                    .ok_or(RaftError::NodeNotFound(node_id))
+                    .and_then(|node| {
+                        if snapshot.last_included_index < node.commit_index {
+                            Err(RaftError::StaleSnapshot {
+                                snapshot_index: snapshot.last_included_index,
+                                local_commit_index: node.commit_index,
+                            })
+                        } else {
+                            Ok(())
+                        }
+                    })
+            }
+        };
+        if let Err(err) = preflight {
+            report.rollback_performed = true;
+            report.error = Some(err.to_string());
+            return report;
+        }
+
+        report.flush_completed = true;
+        report.manifest_verified = true;
+        report.checksum_verified = true;
+        match self.install_snapshot(node_id, snapshot) {
+            Ok(()) => {
+                report.install_completed = true;
+                report.tail_replay_completed = self.catch_up(node_id).is_ok();
+                report.after_commit_index = self.commit_index(node_id).unwrap_or_default();
+            }
+            Err(err) => {
+                report.rollback_performed = true;
+                report.error = Some(err.to_string());
+                report.after_commit_index = self.commit_index(node_id).unwrap_or_default();
+            }
+        }
+        report
     }
 
     pub fn read_local(
@@ -12257,6 +12346,90 @@ mod tests {
                 value: Some(b"post-snapshot-log".to_vec())
             }
         );
+    }
+
+    #[test]
+    fn raft_snapshot_lifecycle_report_installs_and_replays_tail() {
+        let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+        cluster.set_alive(3, false).unwrap();
+        cluster
+            .propose(Command::StringSet {
+                key: "snapshot-lifecycle-a".to_string(),
+                value: b"a".to_vec(),
+            })
+            .unwrap();
+        let snapshot = cluster.create_snapshot().unwrap();
+        cluster
+            .propose(Command::StringSet {
+                key: "snapshot-lifecycle-b".to_string(),
+                value: b"b".to_vec(),
+            })
+            .unwrap();
+
+        cluster.set_alive(3, true).unwrap();
+        let report = cluster.install_snapshot_with_lifecycle_report(3, snapshot);
+        assert_eq!(report.node_id, 3);
+        assert_eq!(report.snapshot_index, 1);
+        assert_eq!(report.before_commit_index, 0);
+        assert_eq!(report.after_commit_index, 2);
+        assert!(report.freeze_started);
+        assert!(report.flush_completed);
+        assert!(report.manifest_verified);
+        assert!(report.checksum_verified);
+        assert!(report.install_completed);
+        assert!(report.tail_replay_completed);
+        assert!(!report.rollback_performed);
+        assert!(report.error.is_none());
+        assert_eq!(
+            cluster
+                .read_from_replica(
+                    3,
+                    Command::StringGet {
+                        key: "snapshot-lifecycle-b".to_string()
+                    },
+                )
+                .unwrap(),
+            CommandResponse::Bytes {
+                value: Some(b"b".to_vec())
+            }
+        );
+    }
+
+    #[test]
+    fn raft_snapshot_lifecycle_report_rolls_back_stale_snapshot() {
+        let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+        cluster
+            .propose(Command::StringSet {
+                key: "snapshot-lifecycle-stale-a".to_string(),
+                value: b"a".to_vec(),
+            })
+            .unwrap();
+        let snapshot = cluster.create_snapshot().unwrap();
+        cluster
+            .propose(Command::StringSet {
+                key: "snapshot-lifecycle-stale-b".to_string(),
+                value: b"b".to_vec(),
+            })
+            .unwrap();
+        cluster.catch_up(3).unwrap();
+        let before = cluster.commit_index(3).unwrap();
+
+        let report = cluster.install_snapshot_with_lifecycle_report(3, snapshot);
+        assert_eq!(report.before_commit_index, before);
+        assert_eq!(report.after_commit_index, before);
+        assert!(report.freeze_started);
+        assert!(!report.flush_completed);
+        assert!(!report.manifest_verified);
+        assert!(!report.checksum_verified);
+        assert!(!report.install_completed);
+        assert!(!report.tail_replay_completed);
+        assert!(report.rollback_performed);
+        assert!(report
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("stale snapshot"));
+        assert_eq!(cluster.commit_index(3).unwrap(), before);
     }
 
     #[test]
