@@ -304,6 +304,25 @@ AREAS: tuple[ReadinessArea, ...] = (
         ),
     ),
     ReadinessArea(
+        name="snapshot_tail_catchup",
+        evidence=(
+            Evidence(
+                "crates/temporalstore-rust/src/raft.rs",
+                (
+                    "install_leader_snapshot_tail",
+                    "install_snapshot_state_for_role",
+                    "catch_up_live_followers_bounded",
+                    "add_node_after_leader_snapshot_installs_snapshot_and_tail",
+                    "byteraft_snapshot_tail_catchup_present",
+                ),
+            ),
+            Evidence(
+                "docs/distributed_raft_readiness.md",
+                ("snapshot-tail catch-up", "replicas receive the leader snapshot floor"),
+            ),
+        ),
+    ),
+    ReadinessArea(
         name="operator_control_surfaces",
         evidence=(
             Evidence(

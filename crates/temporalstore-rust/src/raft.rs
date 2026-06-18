@@ -1825,6 +1825,7 @@ pub struct RaftDistributedReadiness {
     pub byteraft_log_retention_snapshot_trigger_present: bool,
     pub byteraft_apply_snapshot_fence_present: bool,
     pub byteraft_snapshot_floor_log_matching_present: bool,
+    pub byteraft_snapshot_tail_catchup_present: bool,
     pub durable_apply_index_snapshot_integrated: bool,
     pub learner_catchup_promotion_present: bool,
     pub metaserver_driven_membership_present: bool,
@@ -1889,6 +1890,7 @@ pub fn distributed_raft_readiness() -> RaftDistributedReadiness {
         byteraft_log_retention_snapshot_trigger_present: true,
         byteraft_apply_snapshot_fence_present: true,
         byteraft_snapshot_floor_log_matching_present: true,
+        byteraft_snapshot_tail_catchup_present: true,
         durable_apply_index_snapshot_integrated: false,
         learner_catchup_promotion_present: true,
         metaserver_driven_membership_present: false,
@@ -4421,11 +4423,12 @@ impl RaftCluster {
         let mut node = new_node(node_id, RaftRole::Follower, inner.shard_id);
         node.replica_role = replica_role;
         node.current_term = leader.current_term;
-        node.log = leader.log.clone();
-        node.commit_index = leader.commit_index;
-        if node.replica_role.can_serve_data() {
-            apply_committed(&mut node);
-        }
+        install_leader_snapshot_tail(
+            &mut node,
+            leader.installed_snapshot.clone(),
+            leader.log.clone(),
+            leader.commit_index,
+        );
         inner.nodes.insert(node_id, node);
         inner.persist_configured_wal()?;
         Ok(())
@@ -5905,6 +5908,7 @@ impl RaftClusterInner {
             .ok_or(RaftError::LeaderUnavailable)?;
         let leader_log = leader.log.clone();
         let leader_commit_index = leader.commit_index;
+        let leader_snapshot = leader.installed_snapshot.clone();
         let mut caught_up = Vec::new();
         for node in self
             .nodes
@@ -5918,11 +5922,12 @@ impl RaftClusterInner {
                         .map(|entry| entry.index)
                         .unwrap_or_default()
             {
-                node.log = leader_log.clone();
-                node.commit_index = leader_commit_index;
-                if node.replica_role.can_serve_data() {
-                    apply_committed(node);
-                }
+                install_leader_snapshot_tail(
+                    node,
+                    leader_snapshot.clone(),
+                    leader_log.clone(),
+                    leader_commit_index,
+                );
             }
             if node.commit_index >= leader_commit_index {
                 caught_up.push(node.id);
@@ -5943,6 +5948,7 @@ impl RaftClusterInner {
             .ok_or(RaftError::LeaderUnavailable)?;
         let leader_log = leader.log.clone();
         let leader_commit_index = leader.commit_index;
+        let leader_snapshot = leader.installed_snapshot.clone();
         let mut replayed_log_entries = 0u64;
         for node in self
             .nodes
@@ -5953,8 +5959,18 @@ impl RaftClusterInner {
                 continue;
             }
             let before = node.commit_index;
-            let target_commit_index =
-                leader_commit_index.min(node.commit_index + max_entries_per_follower);
+            let snapshot_floor = leader_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.last_included_index)
+                .unwrap_or_default();
+            let target_commit_index = leader_commit_index
+                .min(node.commit_index + max_entries_per_follower)
+                .max(snapshot_floor.min(leader_commit_index));
+            if let Some(snapshot) = leader_snapshot.clone() {
+                if node_last_log_or_snapshot_index(node) < snapshot.last_included_index {
+                    install_snapshot_state_for_role(node, snapshot);
+                }
+            }
             node.log = leader_log
                 .iter()
                 .filter(|entry| entry.index <= target_commit_index)
@@ -6773,6 +6789,38 @@ fn install_snapshot_state(node: &mut RaftNode, snapshot: RaftSnapshot) {
         .extend(snapshot.entries.iter().map(|entry| entry.index));
     node.applied_index = snapshot.last_included_index;
     node.installed_snapshot = Some(snapshot);
+}
+
+fn install_snapshot_state_for_role(node: &mut RaftNode, snapshot: RaftSnapshot) {
+    if node.replica_role.can_serve_data() {
+        install_snapshot_state(node, snapshot);
+    } else {
+        node.current_term = node.current_term.max(snapshot.last_included_term);
+        node.commit_index = node.commit_index.max(snapshot.last_included_index);
+        node.log
+            .retain(|entry| entry.index > snapshot.last_included_index);
+        node.applied.clear();
+        node.applied_index = snapshot.last_included_index;
+        node.installed_snapshot = Some(snapshot);
+    }
+}
+
+fn install_leader_snapshot_tail(
+    node: &mut RaftNode,
+    leader_snapshot: Option<RaftSnapshot>,
+    leader_log: Vec<RaftLogEntry>,
+    leader_commit_index: u64,
+) {
+    if let Some(snapshot) = leader_snapshot {
+        if node_last_log_or_snapshot_index(node) < snapshot.last_included_index {
+            install_snapshot_state_for_role(node, snapshot);
+        }
+    }
+    node.log = leader_log;
+    node.commit_index = leader_commit_index;
+    if node.replica_role.can_serve_data() {
+        apply_committed(node);
+    }
 }
 
 fn raft_apply_snapshot_fence(node: &RaftNode) -> RaftApplySnapshotFence {
@@ -10335,6 +10383,7 @@ mod tests {
         assert!(readiness.byteraft_log_retention_snapshot_trigger_present);
         assert!(readiness.byteraft_apply_snapshot_fence_present);
         assert!(readiness.byteraft_snapshot_floor_log_matching_present);
+        assert!(readiness.byteraft_snapshot_tail_catchup_present);
         assert!(readiness.learner_catchup_promotion_present);
         assert!(!readiness.durable_apply_index_snapshot_integrated);
         assert!(!readiness.metaserver_driven_membership_present);
@@ -12068,6 +12117,64 @@ mod tests {
                 .unwrap(),
             CommandResponse::Bytes {
                 value: Some(b"after".to_vec())
+            }
+        );
+    }
+
+    #[test]
+    fn add_node_after_leader_snapshot_installs_snapshot_and_tail() {
+        let cluster = RaftCluster::new_single_shard_with_config(
+            1,
+            [1, 2, 3],
+            RaftConfig {
+                max_applied_log_bytes: 1,
+                ..RaftConfig::default()
+            },
+        )
+        .unwrap();
+        cluster
+            .propose(Command::StringSet {
+                key: "snapshotted-key".to_string(),
+                value: b"base".to_vec(),
+            })
+            .unwrap();
+        let snapshot_report = cluster.maybe_trigger_snapshot().unwrap();
+        assert!(snapshot_report.triggered);
+        assert_eq!(snapshot_report.applied_index, 1);
+        cluster
+            .propose(Command::StringSet {
+                key: "tail-key".to_string(),
+                value: b"tail".to_vec(),
+            })
+            .unwrap();
+
+        cluster.add_node(4).unwrap();
+        assert_eq!(cluster.commit_index(4).unwrap(), 2);
+        assert_eq!(cluster.local_status(4).unwrap().last_log_index, 2);
+        assert_eq!(
+            cluster
+                .read_from_replica(
+                    4,
+                    Command::StringGet {
+                        key: "snapshotted-key".to_string()
+                    },
+                )
+                .unwrap(),
+            CommandResponse::Bytes {
+                value: Some(b"base".to_vec())
+            }
+        );
+        assert_eq!(
+            cluster
+                .read_from_replica(
+                    4,
+                    Command::StringGet {
+                        key: "tail-key".to_string()
+                    },
+                )
+                .unwrap(),
+            CommandResponse::Bytes {
+                value: Some(b"tail".to_vec())
             }
         );
     }

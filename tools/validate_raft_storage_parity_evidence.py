@@ -405,6 +405,7 @@ AREAS: tuple[ParityArea, ...] = (
                     "log_retention_and_snapshot_trigger",
                     "apply_snapshot_durability_fence",
                     "snapshot_floor_log_matching",
+                    "snapshot_tail_catchup",
                     "operator_control_surfaces",
                 ),
             ),

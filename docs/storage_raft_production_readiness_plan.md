@@ -101,6 +101,9 @@ Raft local coverage:
 - Data-node Raft log matching is snapshot-floor aware: post-compaction entries continue after the
   installed snapshot index and AppendEntries can match previous terms against either retained log
   entries or the installed snapshot floor.
+- Data-node replica catch-up installs the leader snapshot floor before replaying the retained
+  post-snapshot tail, so newly added or lagging replicas do not serve tail-only state after
+  compaction.
 - Local production Raft runtime wrapper.
 - HTTP Raft transport for proposal/read/admin paths.
 - WAL-backed local recovery.

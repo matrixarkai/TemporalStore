@@ -86,6 +86,9 @@ The Rust code currently has:
 - snapshot-floor log matching for post-compaction AppendEntries continuity, so leaders continue log
   indexes after an installed snapshot and followers can match `prev_log_index`/term against either
   retained log entries or the installed snapshot boundary
+- snapshot-tail catch-up for new and lagging data-node replicas after leader compaction; new and
+  lagging replicas receive the leader snapshot floor before replaying retained post-snapshot log
+  entries
 - leader election rejects stale candidates unless their log is up-to-date with a voting majority
 - deterministic ByteRaft-style snapshot trigger reports for data-node and metaserver Raft when
   applied log bytes since the latest snapshot floor exceed `max_applied_log_bytes`
@@ -94,7 +97,8 @@ The Rust code currently has:
   membership, linearizable and bounded reads, learner promotion, leader transfer, snapshot
   bootstrap, replication lag/catch-up, failover, operator status/local-status/metrics, and
   RPC retry/backpressure/auth/deadline behavior, bounded WAL retention, applied-log-byte snapshot
-  triggers, durable apply/snapshot fencing, snapshot-floor log matching, and operator control routes
+  triggers, durable apply/snapshot fencing, snapshot-floor log matching, snapshot-tail catch-up, and
+  operator control routes
 - strict shared-store oplog gap rejection
 - partition/heal chaos coverage in the local model
 - tests for the above behavior
