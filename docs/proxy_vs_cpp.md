@@ -83,4 +83,6 @@ Rust proxy is still not a C++ proxy drop-in:
 - no consul registration
 - no proxy location/VDC/CMDB integration
 
-The current Rust proxy is an HTTP/JSON proxy that wraps the Rust client library for routing/cache/retry behavior. It is suitable for the open-source Rust path, but not yet a wire-compatible replacement for the internal C++ proxy.
+The current Rust proxy is an HTTP/JSON proxy plus Rust-native tonic `ProxyService` streaming/callback
+contract that wraps the Rust client library for routing/cache/retry behavior. It is suitable for the
+open-source Rust path, but not a brpc/thrift wire-compatible replacement for the internal C++ proxy.

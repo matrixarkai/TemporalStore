@@ -107,7 +107,8 @@ Rust still does not have C++ client wire parity:
 - no brpc/protobuf wire-compatible backend pool; Rust now uses the C++ slot formula `crc64_signed(0, key) >> 34` for table shard routing
 - no full partition-set hierarchy, but Rust now has primary/secondary endpoint selection from
   metaserver table topology for the open-source route model
-- no Neptune-specific routing behavior
+- Neptune/deployment placement hooks are present for the Rust-native route model, but not the full
+  internal C++ partition-set hierarchy
 - no async callback API
 - no full internal C++ Risk/IPS proto semantics such as manager/debug APIs, CPC/list-specific behavior, IPS load/snapshot/stat/filter, or server aggregation
 

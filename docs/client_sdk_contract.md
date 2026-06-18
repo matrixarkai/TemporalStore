@@ -30,6 +30,12 @@ adapters:
 - `LifecycleCallbacks`: streaming load/reload/unload callback channel with explicit ack status.
 - `WatchJobStatus`: server-streamed async job status updates for lifecycle and execute jobs.
 
+The Rust-native `ProxyService` contract covers proxy streaming and route callback shape:
+
+- `ProxyExecuteStream`: bidirectional proxy execute/topology stream.
+- `RouteCallbacks`: streaming route-refresh callback channel with explicit ack status.
+- `WatchProxyPreflight`: server-streamed proxy readiness/degraded-mode updates.
+
 The committed schema is the source of truth for generated tonic/prost bindings. The Rust crate
 generates client and server binding types at build time from `crates/temporalstore-rust/build.rs`
 and exports them through `temporalstore_rust::sdk::v1`. The schema and generation path are
@@ -82,9 +88,10 @@ This closes the "versioned Rust-native SDK contract" and "generated tonic/prost 
 sub-gaps. It also closes the runtime tonic adapter sub-gap for `Execute`, `BatchExecute`,
 `OpenTable`, `SyncTopology`, and `GetClientPreflight`. Production readiness still blocks on:
 
-- full C++ partition-set hierarchy and Neptune-specific routing, if required by a deployment
-- wire-compatible migration for existing C++ client callers, if existing callers must migrate
-  without adapting to the Rust-native schema
+- full C++ partition-set hierarchy, if required by a deployment; Rust-native Neptune/deployment
+  placement hooks are covered
+- brpc/thrift wire-compatible migration for existing C++ client callers, which remains explicitly
+  out of scope for the Rust-native schema
 
 The readiness gate must continue to report the client as blocked until those remaining capabilities
 are implemented and locally validated.

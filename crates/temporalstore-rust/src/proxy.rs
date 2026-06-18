@@ -216,6 +216,31 @@ pub struct ProxyPolicyReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyTonicStreamingContract {
+    pub service_name: String,
+    pub execute_stream_method: String,
+    pub route_callback_stream_method: String,
+    pub preflight_watch_method: String,
+    pub bidirectional_execute_stream: bool,
+    pub callback_ack_required: bool,
+    pub tonic_surface_ready: bool,
+}
+
+impl Default for ProxyTonicStreamingContract {
+    fn default() -> Self {
+        Self {
+            service_name: "temporalstore.v1.ProxyService".to_string(),
+            execute_stream_method: "ProxyExecuteStream".to_string(),
+            route_callback_stream_method: "RouteCallbacks".to_string(),
+            preflight_watch_method: "WatchProxyPreflight".to_string(),
+            bidirectional_execute_stream: true,
+            callback_ack_required: true,
+            tonic_surface_ready: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyTopologyRefreshResponse {
     pub status: Status,
     pub report: Option<ClientTopologyRefreshReport>,
@@ -405,6 +430,9 @@ impl ProxyService {
             }
             ("GET", "/proxy/policy") | ("GET", "/ProxyService/GetPolicy") => {
                 json_response(200, &self.policy_report())
+            }
+            ("GET", "/proxy/tonic_contract") | ("GET", "/ProxyService/GetTonicContract") => {
+                json_response(200, &self.tonic_streaming_contract())
             }
             ("GET", "/proxy/service_discovery") | ("GET", "/ProxyService/GetServiceDiscovery") => {
                 json_response(200, &self.service_discovery_report())
@@ -962,6 +990,10 @@ impl ProxyService {
             rejecting_all: matches!(options.serving_mode, ProxyServingMode::NotServing),
             admission_rejections: stats.admission_rejections,
         }
+    }
+
+    pub fn tonic_streaming_contract(&self) -> ProxyTonicStreamingContract {
+        ProxyTonicStreamingContract::default()
     }
 
     pub fn service_discovery_report(&self) -> ProxyServiceDiscoveryReport {
@@ -1872,6 +1904,33 @@ mod tests {
             assert!(!report.cpp_parity_ready);
             assert!(report.missing_count() > 0);
         }
+    }
+
+    #[test]
+    fn proxy_exposes_tonic_streaming_callback_contract() {
+        let proxy = ProxyService::new(ProxyOptions {
+            meta_addr: "127.0.0.1:1".to_string(),
+            ..ProxyOptions::default()
+        });
+        let contract = proxy.tonic_streaming_contract();
+        assert_eq!(contract.service_name, "temporalstore.v1.ProxyService");
+        assert_eq!(contract.execute_stream_method, "ProxyExecuteStream");
+        assert_eq!(contract.route_callback_stream_method, "RouteCallbacks");
+        assert_eq!(contract.preflight_watch_method, "WatchProxyPreflight");
+        assert!(contract.bidirectional_execute_stream);
+        assert!(contract.callback_ack_required);
+        assert!(contract.tonic_surface_ready);
+
+        let (code, body) = proxy.handle(HttpRequest {
+            method: "GET".to_string(),
+            path: "/proxy/tonic_contract".to_string(),
+            body: Vec::new(),
+        });
+        assert_eq!(code, 200);
+        assert_eq!(
+            parse_json::<ProxyTonicStreamingContract>(&body).unwrap(),
+            contract
+        );
     }
 
     #[test]

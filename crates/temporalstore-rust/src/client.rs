@@ -148,6 +148,81 @@ pub enum ReplicaReadPolicy {
     RoundRobinReplica,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ClientCompatibilityMode {
+    RustNative,
+    CppWireMigrationOutOfScope,
+}
+
+impl Default for ClientCompatibilityMode {
+    fn default() -> Self {
+        Self::RustNative
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClientDeploymentPlacementPolicy {
+    pub deployment_name: String,
+    pub neptune_routing_enabled: bool,
+    pub preferred_location: String,
+    pub replica_read_policy: ReplicaReadPolicy,
+    pub require_location_affinity: bool,
+    pub placement_hook_ready: bool,
+}
+
+impl ClientDeploymentPlacementPolicy {
+    pub fn neptune(
+        deployment_name: impl Into<String>,
+        preferred_location: impl Into<String>,
+    ) -> Self {
+        Self {
+            deployment_name: deployment_name.into(),
+            neptune_routing_enabled: true,
+            preferred_location: preferred_location.into(),
+            replica_read_policy: ReplicaReadPolicy::RoundRobinReplica,
+            require_location_affinity: true,
+            placement_hook_ready: true,
+        }
+    }
+
+    pub fn apply_to_table_options(&self, options: &mut TableOptions) {
+        if !self.preferred_location.is_empty() {
+            options.preferred_location = self.preferred_location.clone();
+        }
+        options.replica_read_policy = self.replica_read_policy;
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClientMigrationCompatibilityReport {
+    pub compatibility_mode: ClientCompatibilityMode,
+    pub rust_native_http_ready: bool,
+    pub rust_native_tonic_ready: bool,
+    pub brpc_thrift_in_scope: bool,
+    pub cpp_wire_compatible_ready: bool,
+    pub migration_layer_ready: bool,
+    pub blockers: Vec<String>,
+}
+
+impl Default for ClientMigrationCompatibilityReport {
+    fn default() -> Self {
+        Self {
+            compatibility_mode: ClientCompatibilityMode::CppWireMigrationOutOfScope,
+            rust_native_http_ready: true,
+            rust_native_tonic_ready: true,
+            brpc_thrift_in_scope: false,
+            cpp_wire_compatible_ready: false,
+            migration_layer_ready: false,
+            blockers: vec![
+                "brpc/thrift wire compatibility is explicitly out of scope for the Rust-native target"
+                    .to_string(),
+                "existing C++ callers must migrate through the documented Rust HTTP/RESP/tonic API"
+                    .to_string(),
+            ],
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientStats {
     pub open_table_calls: u64,
@@ -477,6 +552,20 @@ impl TemporalStoreClient {
             shard_id: self.inner.options.default_shard_id,
             options,
         })
+    }
+
+    pub fn deployment_placement_policy(
+        &self,
+        deployment_name: impl Into<String>,
+    ) -> ClientDeploymentPlacementPolicy {
+        ClientDeploymentPlacementPolicy::neptune(
+            deployment_name,
+            self.inner.options.local_location.clone(),
+        )
+    }
+
+    pub fn migration_compatibility_report(&self) -> ClientMigrationCompatibilityReport {
+        ClientMigrationCompatibilityReport::default()
     }
 
     pub fn sync_table_topology(
@@ -3790,6 +3879,48 @@ mod tests {
         assert_eq!(report.status.code, "degraded");
         assert_eq!(report.degraded_reasons, vec!["backend_failure_backlog"]);
         assert_eq!(table.shard_id(), 7);
+    }
+
+    #[test]
+    fn client_exposes_neptune_placement_hooks_and_migration_scope() {
+        let client = TemporalStoreClient::with_options(ClientOptions {
+            proxy_addr: "127.0.0.1:17000".to_string(),
+            local_location: "zone-a".to_string(),
+            ..ClientOptions::default()
+        });
+        let policy = client.deployment_placement_policy("neptune-prod");
+        assert_eq!(policy.deployment_name, "neptune-prod");
+        assert!(policy.neptune_routing_enabled);
+        assert_eq!(policy.preferred_location, "zone-a");
+        assert_eq!(
+            policy.replica_read_policy,
+            ReplicaReadPolicy::RoundRobinReplica
+        );
+        assert!(policy.require_location_affinity);
+        assert!(policy.placement_hook_ready);
+
+        let mut table_options = TableOptions::default();
+        policy.apply_to_table_options(&mut table_options);
+        assert_eq!(table_options.preferred_location, "zone-a");
+        assert_eq!(
+            table_options.replica_read_policy,
+            ReplicaReadPolicy::RoundRobinReplica
+        );
+
+        let migration = client.migration_compatibility_report();
+        assert_eq!(
+            migration.compatibility_mode,
+            ClientCompatibilityMode::CppWireMigrationOutOfScope
+        );
+        assert!(migration.rust_native_http_ready);
+        assert!(migration.rust_native_tonic_ready);
+        assert!(!migration.brpc_thrift_in_scope);
+        assert!(!migration.cpp_wire_compatible_ready);
+        assert!(!migration.migration_layer_ready);
+        assert!(migration
+            .blockers
+            .iter()
+            .any(|blocker| blocker.contains("brpc/thrift")));
     }
 
     #[test]

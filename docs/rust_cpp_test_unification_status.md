@@ -85,10 +85,10 @@ The four checked areas are client meta-sync/route retry, proxy serving/admission
 metaserver scheduler repair/snapshot, and data-node lifecycle/server surfaces.
 Client and proxy readiness now also expose typed local-vs-production splits:
 `ClientRoutingReadinessReport` covers typed client routing, route refresh, background meta sync,
-retry classification, and topology preflight while keeping Neptune routing and C++ wire migration
-blocked; `ProxyServingReadinessReport` covers HTTP execute routes, heartbeat/config application,
-topology refresh, admission policy, and Rust-native discovery while keeping tonic streaming and C++
-wire proxy transport blocked.
+retry classification, topology preflight, Neptune routing hooks, and deployment placement hooks
+while keeping C++ wire migration blocked; `ProxyServingReadinessReport` covers HTTP execute routes,
+heartbeat/config application, topology refresh, admission policy, Rust-native discovery, and tonic
+streaming/callback shape while keeping brpc/thrift C++ wire proxy transport out of scope.
 Metaserver and data-node readiness now expose the same split. `MetaServerControlPlaneReadinessReport`
 covers inventory heartbeat, namespace/table topology, C++ partition-set/member/version topology,
 local Raft mutation, placement, local snapshots, scheduler admin/snapshot, scheduler retry/task

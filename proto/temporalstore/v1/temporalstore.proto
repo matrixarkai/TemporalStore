@@ -13,6 +13,15 @@ service TemporalStoreService {
   rpc GetClientPreflight(ClientPreflightRequest) returns (ClientPreflightResponse);
 }
 
+// ProxyService is the Rust-native proxy RPC contract. It intentionally does
+// not claim brpc/thrift wire compatibility; existing C++ callers must migrate
+// through the Rust-native HTTP/RESP/tonic surfaces.
+service ProxyService {
+  rpc ProxyExecuteStream(stream ProxyStreamRequest) returns (stream ProxyStreamEvent);
+  rpc RouteCallbacks(stream ProxyRouteCallback) returns (stream ProxyRouteAck);
+  rpc WatchProxyPreflight(ProxyPreflightWatchRequest) returns (stream ProxyPreflightEvent);
+}
+
 // DataNodeService is the Rust-native data-node RPC contract. HTTP routes keep
 // serving local tests, while production adapters use this streaming shape for
 // shard-affine execution, async lifecycle callbacks, and job status updates.
@@ -88,6 +97,50 @@ message ClientPreflightResponse {
   uint64 topology_version = 5;
   bool degraded = 6;
   repeated string warnings = 7;
+}
+
+message ProxyStreamRequest {
+  oneof kind {
+    ExecuteRequest execute = 1;
+    BatchExecuteRequest batch_execute = 2;
+    SyncTopologyRequest sync_topology = 3;
+  }
+}
+
+message ProxyStreamEvent {
+  Status status = 1;
+  uint64 topology_version = 2;
+  ExecuteResponse execute = 3;
+  BatchExecuteResponse batch_execute = 4;
+  repeated string route_refreshes = 5;
+}
+
+message ProxyRouteCallback {
+  string table_key = 1;
+  uint64 shard_id = 2;
+  uint64 topology_version = 3;
+  string reason = 4;
+  Status status = 5;
+}
+
+message ProxyRouteAck {
+  Status status = 1;
+  string table_key = 2;
+  uint64 shard_id = 3;
+  uint64 topology_version = 4;
+}
+
+message ProxyPreflightWatchRequest {
+  bool include_routes = 1;
+  bool include_policy = 2;
+  uint64 min_topology_version = 3;
+}
+
+message ProxyPreflightEvent {
+  Status status = 1;
+  uint64 topology_version = 2;
+  bool degraded = 3;
+  repeated string warnings = 4;
 }
 
 message DataNodeStreamRequest {

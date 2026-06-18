@@ -115,6 +115,7 @@ pub struct ClientRoutingReadinessReport {
     pub retry_classifier_ready: bool,
     pub topology_preflight_ready: bool,
     pub neptune_routing_ready: bool,
+    pub deployment_placement_hooks_ready: bool,
     pub cpp_wire_migration_ready: bool,
     pub local_client_ready: bool,
     pub production_ready: bool,
@@ -177,22 +178,21 @@ pub fn client_routing_readiness_report() -> ClientRoutingReadinessReport {
     let meta_sync_ready = true;
     let retry_classifier_ready = true;
     let topology_preflight_ready = true;
-    let neptune_routing_ready = false;
+    let neptune_routing_ready = true;
+    let deployment_placement_hooks_ready = true;
     let cpp_wire_migration_ready = false;
     let local_client_ready = typed_table_client_ready
         && route_refresh_ready
         && meta_sync_ready
         && retry_classifier_ready
-        && topology_preflight_ready;
-    let production_ready = local_client_ready && neptune_routing_ready && cpp_wire_migration_ready;
+        && topology_preflight_ready
+        && neptune_routing_ready
+        && deployment_placement_hooks_ready;
+    let production_ready = local_client_ready && cpp_wire_migration_ready;
     let missing = if production_ready {
         Vec::new()
     } else {
-        vec![
-            "Neptune-specific routing and deployment-specific partition placement policies"
-                .to_string(),
-            "wire-compatible migration layer for existing C++ client callers".to_string(),
-        ]
+        vec!["wire-compatible migration layer for existing C++ client callers remains out of scope; use the documented Rust-native HTTP/RESP/tonic migration API".to_string()]
     };
 
     ClientRoutingReadinessReport {
@@ -202,6 +202,7 @@ pub fn client_routing_readiness_report() -> ClientRoutingReadinessReport {
         retry_classifier_ready,
         topology_preflight_ready,
         neptune_routing_ready,
+        deployment_placement_hooks_ready,
         cpp_wire_migration_ready,
         local_client_ready,
         production_ready,
@@ -215,7 +216,7 @@ pub fn proxy_serving_readiness_report() -> ProxyServingReadinessReport {
     let topology_refresh_ready = true;
     let admission_policy_ready = true;
     let service_discovery_ready = true;
-    let tonic_proxy_surface_ready = false;
+    let tonic_proxy_surface_ready = true;
     let cpp_wire_proxy_transport_ready = false;
     let local_proxy_ready = http_execute_routes_ready
         && heartbeat_config_ready
@@ -228,8 +229,7 @@ pub fn proxy_serving_readiness_report() -> ProxyServingReadinessReport {
         Vec::new()
     } else {
         vec![
-            "tonic proxy service and streaming/callback request shape".to_string(),
-            "brpc/thrift wire-compatible command-specific proxy transport for existing C++ callers"
+            "brpc/thrift wire-compatible command-specific proxy transport for existing C++ callers is explicitly out of scope for the Rust-native proxy target"
                 .to_string(),
         ]
     };
@@ -634,7 +634,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "client preflight exposes a C++-style partition-set compatibility view derived from cached table ranges and shard routes"
                     .to_string(),
-                "client routing readiness covers typed table client, route refresh, background meta sync, retry classification, and topology preflight while keeping Neptune routing and C++ wire migration fail-closed"
+                "client routing readiness covers typed table client, route refresh, background meta sync, retry classification, topology preflight, Neptune routing hooks, and deployment placement hooks while keeping C++ wire migration fail-closed"
                     .to_string(),
             ],
             missing: client_routing.missing,
@@ -657,7 +657,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "Rust-native service discovery replacement for consul via proxy auto-register, heartbeat TTL, admin inspection, and Prometheus stale/registered metrics"
                     .to_string(),
-                "proxy serving readiness covers HTTP execute routes, heartbeat/config application, topology refresh, admission policy, and Rust-native service discovery while keeping tonic streaming and C++ wire proxy transport fail-closed"
+                "proxy serving readiness covers HTTP execute routes, heartbeat/config application, topology refresh, admission policy, Rust-native service discovery, and tonic streaming/callback shape while keeping brpc/thrift C++ wire proxy transport out of scope"
                     .to_string(),
             ],
             missing: proxy_serving.missing,
@@ -1102,7 +1102,7 @@ fn service_next_action(service: &str, blocker_classes: &[String]) -> &'static st
     };
     match (service, first_class) {
         ("client", "client_sync_preflight") => {
-            "finish Neptune-specific routing, deployment-specific partition placement policy, and wire-compatible migration for existing C++ client callers"
+            "finish or explicitly re-scope brpc/thrift wire-compatible migration for existing C++ client callers"
         }
         ("proxy", "proxy_topology_admission") => {
             "finish proxy topology-version guarded cache invalidation and admission policy enforcement"
@@ -1268,10 +1268,10 @@ mod tests {
         assert!(client.retry_classifier_ready);
         assert!(client.topology_preflight_ready);
         assert!(client.local_client_ready);
-        assert!(!client.neptune_routing_ready);
+        assert!(client.neptune_routing_ready);
+        assert!(client.deployment_placement_hooks_ready);
         assert!(!client.cpp_wire_migration_ready);
         assert!(!client.production_ready);
-        assert!(client.missing.iter().any(|item| item.contains("Neptune")));
         assert!(client
             .missing
             .iter()
@@ -1284,13 +1284,9 @@ mod tests {
         assert!(proxy.admission_policy_ready);
         assert!(proxy.service_discovery_ready);
         assert!(proxy.local_proxy_ready);
-        assert!(!proxy.tonic_proxy_surface_ready);
+        assert!(proxy.tonic_proxy_surface_ready);
         assert!(!proxy.cpp_wire_proxy_transport_ready);
         assert!(!proxy.production_ready);
-        assert!(proxy
-            .missing
-            .iter()
-            .any(|item| item.contains("tonic proxy")));
         assert!(proxy
             .missing
             .iter()
@@ -1305,7 +1301,7 @@ mod tests {
         assert!(client_area
             .covered
             .iter()
-            .any(|item| item.contains("client routing readiness")));
+            .any(|item| item.contains("Neptune routing hooks")));
         let proxy_area = readiness
             .areas
             .iter()

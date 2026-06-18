@@ -28,6 +28,12 @@ REQUIRED_DATA_NODE_RPCS = [
     "WatchJobStatus",
 ]
 
+REQUIRED_PROXY_RPCS = [
+    "ProxyExecuteStream",
+    "RouteCallbacks",
+    "WatchProxyPreflight",
+]
+
 REQUIRED_MESSAGES = [
     "Status",
     "ExecuteRequest",
@@ -55,6 +61,12 @@ REQUIRED_MESSAGES = [
     "DataNodeLifecycleAck",
     "DataNodeJobStatusRequest",
     "DataNodeJobStatusEvent",
+    "ProxyStreamRequest",
+    "ProxyStreamEvent",
+    "ProxyRouteCallback",
+    "ProxyRouteAck",
+    "ProxyPreflightWatchRequest",
+    "ProxyPreflightEvent",
 ]
 
 REQUIRED_COMMANDS = [
@@ -106,6 +118,8 @@ def main() -> int:
         fail("schema must define TemporalStoreService")
     if "service DataNodeService" not in proto:
         fail("schema must define DataNodeService")
+    if "service ProxyService" not in proto:
+        fail("schema must define ProxyService")
 
     for rpc in REQUIRED_RPCS:
         if not re.search(rf"\brpc\s+{rpc}\s*\(", proto):
@@ -115,6 +129,9 @@ def main() -> int:
     for rpc in REQUIRED_DATA_NODE_RPCS:
         if not re.search(rf"\brpc\s+{rpc}\s*\(", proto):
             fail(f"missing data-node rpc {rpc}")
+    for rpc in REQUIRED_PROXY_RPCS:
+        if not re.search(rf"\brpc\s+{rpc}\s*\(", proto):
+            fail(f"missing proxy rpc {rpc}")
 
     for message in REQUIRED_MESSAGES:
         if not re.search(rf"\bmessage\s+{message}\b", proto):
