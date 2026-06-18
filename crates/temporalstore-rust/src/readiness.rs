@@ -355,6 +355,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "Raft transport security readiness covers auth-token validation, mTLS cert/key/CA config validation, authenticated HTTP transport, and plaintext-only local chaos guardrails while keeping service-process mTLS enforcement fail-closed"
                     .to_string(),
+                "Raft external chaos readiness covers local OS-process restart/failover, stale-read partition heal, lagging follower catch-up, networked membership/snapshot, and storage replay gates while keeping external packet-loss/disk-pressure/process-chaos fail-closed"
+                    .to_string(),
             ],
             missing: raft.missing,
         },
@@ -503,6 +505,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "Raft transport security readiness covers auth-token validation, mTLS cert/key/CA config validation, authenticated HTTP transport, and plaintext-only local chaos guardrails while keeping service-process mTLS enforcement fail-closed"
                     .to_string(),
+                "Raft external chaos readiness covers local OS-process restart/failover, stale-read partition heal, lagging follower catch-up, networked membership/snapshot, and storage replay gates while keeping external packet-loss/disk-pressure/process-chaos fail-closed"
+                    .to_string(),
             ],
             missing: vec![
                 "persist the data-node applied Raft index atomically with storage mutations and partition snapshot install"
@@ -575,6 +579,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "Prometheus alert rules and fault runbook cover stuck replica, split-brain risk, slow follower, and storage pressure triage"
                     .to_string(),
                 "external_chaos_gate composes OS-process Raft kill/restart, stale-read partition, lag/heal, rolling restart, networked membership/snapshot, and storage replay harnesses"
+                    .to_string(),
+                "Raft external chaos readiness covers local OS-process restart/failover, stale-read partition heal, lagging follower catch-up, networked membership/snapshot, and storage replay gates while keeping external packet-loss/disk-pressure/process-chaos fail-closed"
                     .to_string(),
             ],
             missing: vec![
@@ -1485,6 +1491,10 @@ mod tests {
             item.contains("Raft transport security readiness")
                 && item.contains("service-process mTLS enforcement fail-closed")
         }));
+        assert!(covered.iter().any(|item| {
+            item.contains("Raft external chaos readiness")
+                && item.contains("external packet-loss/disk-pressure/process-chaos fail-closed")
+        }));
         assert!(!data_raft
             .iter()
             .any(|item| item.contains("roll out the adapter")));
@@ -1508,6 +1518,10 @@ mod tests {
             .covered
             .iter()
             .any(|item| item.contains("Prometheus alert rules and fault runbook")));
+        assert!(fault_tolerance
+            .covered
+            .iter()
+            .any(|item| item.contains("Raft external chaos readiness")));
         assert!(!fault_tolerance
             .missing
             .iter()

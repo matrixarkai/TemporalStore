@@ -1898,6 +1898,60 @@ pub struct RaftTransportSecurityReadiness {
     pub missing: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftExternalChaosReadiness {
+    pub local_os_process_restart_failover_present: bool,
+    pub stale_read_partition_heal_present: bool,
+    pub lagging_follower_catchup_present: bool,
+    pub networked_membership_snapshot_present: bool,
+    pub storage_replay_gate_present: bool,
+    pub external_packet_loss_present: bool,
+    pub external_disk_pressure_present: bool,
+    pub external_process_chaos_present: bool,
+    pub local_chaos_ready: bool,
+    pub production_ready: bool,
+    pub missing: Vec<String>,
+}
+
+pub fn raft_external_chaos_readiness() -> RaftExternalChaosReadiness {
+    let local_os_process_restart_failover_present = true;
+    let stale_read_partition_heal_present = true;
+    let lagging_follower_catchup_present = true;
+    let networked_membership_snapshot_present = true;
+    let storage_replay_gate_present = true;
+    let external_packet_loss_present = false;
+    let external_disk_pressure_present = false;
+    let external_process_chaos_present = false;
+    let local_chaos_ready = local_os_process_restart_failover_present
+        && stale_read_partition_heal_present
+        && lagging_follower_catchup_present
+        && networked_membership_snapshot_present
+        && storage_replay_gate_present;
+    let production_ready = local_chaos_ready
+        && external_packet_loss_present
+        && external_disk_pressure_present
+        && external_process_chaos_present;
+    let missing = if production_ready {
+        Vec::new()
+    } else {
+        vec!["run external packet-loss, disk-pressure, and process-chaos tests".to_string()]
+    };
+
+    RaftExternalChaosReadiness {
+        local_os_process_restart_failover_present,
+        stale_read_partition_heal_present,
+        lagging_follower_catchup_present,
+        networked_membership_snapshot_present,
+        storage_replay_gate_present,
+        external_packet_loss_present,
+        external_disk_pressure_present,
+        external_process_chaos_present,
+        local_chaos_ready,
+        production_ready,
+        missing,
+    }
+}
+
 pub fn raft_transport_security_readiness() -> RaftTransportSecurityReadiness {
     let auth_token_validation_present = true;
     let mtls_cert_key_ca_validation_present = true;
@@ -1961,15 +2015,16 @@ impl std::error::Error for RaftProductionReadinessError {}
 
 pub fn distributed_raft_readiness() -> RaftDistributedReadiness {
     let transport_security = raft_transport_security_readiness();
+    let external_chaos = raft_external_chaos_readiness();
     let mut missing = vec![
         "persist the data-node applied Raft index atomically with storage mutations and partition snapshot install"
             .to_string(),
         "make metaserver own learner add, catch-up verification, promotion, leader movement, and voter removal against real data-node Raft groups"
             .to_string(),
         "integrate metaserver shard membership changes with networked Raft groups".to_string(),
-        "run external packet-loss, disk-pressure, and process-chaos tests".to_string(),
     ];
     missing.extend(transport_security.missing.clone());
+    missing.extend(external_chaos.missing.clone());
     RaftDistributedReadiness {
         complete: missing.is_empty(),
         production_ready: false,
@@ -1998,7 +2053,7 @@ pub fn distributed_raft_readiness() -> RaftDistributedReadiness {
         metaserver_membership_workflow_present: true,
         metaserver_driven_membership_present: false,
         production_mtls_transport_present: transport_security.production_ready,
-        external_chaos_validation_present: false,
+        external_chaos_validation_present: external_chaos.production_ready,
         missing,
     }
 }
@@ -10911,6 +10966,32 @@ mod tests {
             .missing
             .iter()
             .any(|item| item.contains("validation-only config")));
+    }
+
+    #[test]
+    fn raft_external_chaos_readiness_keeps_external_faults_blocked() {
+        let readiness = raft_external_chaos_readiness();
+        assert!(readiness.local_os_process_restart_failover_present);
+        assert!(readiness.stale_read_partition_heal_present);
+        assert!(readiness.lagging_follower_catchup_present);
+        assert!(readiness.networked_membership_snapshot_present);
+        assert!(readiness.storage_replay_gate_present);
+        assert!(readiness.local_chaos_ready);
+        assert!(!readiness.external_packet_loss_present);
+        assert!(!readiness.external_disk_pressure_present);
+        assert!(!readiness.external_process_chaos_present);
+        assert!(!readiness.production_ready);
+        assert!(readiness
+            .missing
+            .iter()
+            .any(|item| item.contains("packet-loss") && item.contains("disk-pressure")));
+
+        let distributed = distributed_raft_readiness();
+        assert!(!distributed.external_chaos_validation_present);
+        assert!(distributed
+            .missing
+            .iter()
+            .any(|item| item.contains("process-chaos")));
     }
 
     #[test]
