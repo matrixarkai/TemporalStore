@@ -77,6 +77,10 @@ Cycle 3 adds durable local ingestion state for API/Kafka/Flink parity testing:
   ledger count, and Flink checkpoint state counters.
 - Regression coverage validates ledger persistence across engine restart, duplicate rejection
   before execution, dead-letter retention, lag reporting, and Flink checkpoint commit.
+- `IngestionNetworkRuntimeReadinessReport` now makes the production split explicit: local API
+  ingestion, durable Kafka offset ledger, durable Flink checkpoint lifecycle, dead-letter/lag
+  metrics, and atomic state persistence are covered, while real Kafka consumer groups, real Flink
+  connectors, and Raft failover idempotence remain fail-closed blockers.
 
 The next cycle should add proxy/table ingestion routing so callers can ingest by table/routing key
 without precomputing the destination shard id, then mix ingestion into the Raft failover harness.

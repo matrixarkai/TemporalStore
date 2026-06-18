@@ -64,9 +64,12 @@ AREAS: tuple[IngestionOpsArea, ...] = (
                 "crates/temporalstore-rust/src/ingestion.rs",
                 (
                     "ingestion_readiness_report",
+                    "ingestion_network_runtime_readiness_report",
+                    "ingestion network runtime readiness covers local API ingestion",
                     "Kafka lag and ingestion/dead-letter counters",
                     "Prometheus ingestion metrics",
                     "ingestion_readiness_report_tracks_done_and_remaining_production_gaps",
+                    "ingestion_network_runtime_readiness_keeps_real_connectors_blocked",
                 ),
             ),
         ),

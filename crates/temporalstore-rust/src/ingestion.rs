@@ -166,6 +166,67 @@ pub struct IngestionReadinessReport {
     pub blocker_count: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IngestionNetworkRuntimeReadinessReport {
+    pub api_route_ready: bool,
+    pub durable_kafka_offset_ledger_ready: bool,
+    pub durable_flink_checkpoint_lifecycle_ready: bool,
+    pub dead_letter_and_lag_metrics_ready: bool,
+    pub atomic_state_persistence_ready: bool,
+    pub network_kafka_consumer_group_ready: bool,
+    pub network_flink_connector_ready: bool,
+    pub raft_failover_idempotence_harness_ready: bool,
+    pub local_ingestion_ready: bool,
+    pub production_ready: bool,
+    pub missing: Vec<String>,
+}
+
+pub fn ingestion_network_runtime_readiness_report() -> IngestionNetworkRuntimeReadinessReport {
+    let api_route_ready = true;
+    let durable_kafka_offset_ledger_ready = true;
+    let durable_flink_checkpoint_lifecycle_ready = true;
+    let dead_letter_and_lag_metrics_ready = true;
+    let atomic_state_persistence_ready = true;
+    let network_kafka_consumer_group_ready = false;
+    let network_flink_connector_ready = false;
+    let raft_failover_idempotence_harness_ready = false;
+    let local_ingestion_ready = api_route_ready
+        && durable_kafka_offset_ledger_ready
+        && durable_flink_checkpoint_lifecycle_ready
+        && dead_letter_and_lag_metrics_ready
+        && atomic_state_persistence_ready;
+    let production_ready = local_ingestion_ready
+        && network_kafka_consumer_group_ready
+        && network_flink_connector_ready
+        && raft_failover_idempotence_harness_ready;
+    let missing = if production_ready {
+        Vec::new()
+    } else {
+        vec![
+            "network Kafka consumer group runtime with partition assignment, rebalance, and backpressure"
+                .to_string(),
+            "network Flink sink/source connector with checkpoint handshake over the production API"
+                .to_string(),
+            "Raft failover and restart harness that proves offset/checkpoint idempotence end-to-end"
+                .to_string(),
+        ]
+    };
+
+    IngestionNetworkRuntimeReadinessReport {
+        api_route_ready,
+        durable_kafka_offset_ledger_ready,
+        durable_flink_checkpoint_lifecycle_ready,
+        dead_letter_and_lag_metrics_ready,
+        atomic_state_persistence_ready,
+        network_kafka_consumer_group_ready,
+        network_flink_connector_ready,
+        raft_failover_idempotence_harness_ready,
+        local_ingestion_ready,
+        production_ready,
+        missing,
+    }
+}
+
 impl Default for IngestionStateReport {
     fn default() -> Self {
         Self {
@@ -179,6 +240,7 @@ impl Default for IngestionStateReport {
 }
 
 pub fn ingestion_readiness_report() -> IngestionReadinessReport {
+    let network_runtime = ingestion_network_runtime_readiness_report();
     let covered = vec![
         "proxy/table ingestion route accepts API, Kafka, and Flink sourced records".to_string(),
         "durable Kafka offset ledger rejects duplicate committed offsets before executing writes"
@@ -190,15 +252,10 @@ pub fn ingestion_readiness_report() -> IngestionReadinessReport {
         "Prometheus ingestion metrics expose accepted/failed/duplicate/dead-letter counters, Kafka lag/offsets, and Flink checkpoint state from live engine scrapes"
             .to_string(),
         "ingestion state is persisted through atomic temp-file rename".to_string(),
-    ];
-    let missing = vec![
-        "network Kafka consumer group runtime with partition assignment, rebalance, and backpressure"
-            .to_string(),
-        "network Flink sink/source connector with checkpoint handshake over the production API"
-            .to_string(),
-        "Raft failover and restart harness that proves offset/checkpoint idempotence end-to-end"
+        "ingestion network runtime readiness covers local API ingestion, durable Kafka offset ledger, durable Flink checkpoint lifecycle, dead-letter/lag metrics, and atomic state persistence while keeping real Kafka/Flink network runtimes and Raft failover idempotence fail-closed"
             .to_string(),
     ];
+    let missing = network_runtime.missing.clone();
     IngestionReadinessReport {
         production_ready: missing.is_empty(),
         blocker_count: missing.len(),
@@ -874,9 +931,40 @@ mod tests {
             .iter()
             .any(|item| item.contains("Flink checkpoint precommit")));
         assert!(report
+            .covered
+            .iter()
+            .any(|item| item.contains("ingestion network runtime readiness")));
+        assert!(report
             .missing
             .iter()
             .any(|item| item.contains("consumer group runtime")));
+        assert!(report
+            .missing
+            .iter()
+            .any(|item| item.contains("Raft failover")));
+    }
+
+    #[test]
+    fn ingestion_network_runtime_readiness_keeps_real_connectors_blocked() {
+        let report = ingestion_network_runtime_readiness_report();
+        assert!(report.api_route_ready);
+        assert!(report.durable_kafka_offset_ledger_ready);
+        assert!(report.durable_flink_checkpoint_lifecycle_ready);
+        assert!(report.dead_letter_and_lag_metrics_ready);
+        assert!(report.atomic_state_persistence_ready);
+        assert!(report.local_ingestion_ready);
+        assert!(!report.network_kafka_consumer_group_ready);
+        assert!(!report.network_flink_connector_ready);
+        assert!(!report.raft_failover_idempotence_harness_ready);
+        assert!(!report.production_ready);
+        assert!(report
+            .missing
+            .iter()
+            .any(|item| item.contains("consumer group runtime")));
+        assert!(report
+            .missing
+            .iter()
+            .any(|item| item.contains("Flink sink/source connector")));
         assert!(report
             .missing
             .iter()
