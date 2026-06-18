@@ -92,6 +92,59 @@ pub struct StorageSsdCachePressureReadinessReport {
     pub missing: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StorageMigrationCorpusReadinessReport {
+    pub rust_local_corpus_ready: bool,
+    pub engine_replay_ready: bool,
+    pub shared_store_replay_ready: bool,
+    pub raft_read_replay_ready: bool,
+    pub unified_runner_ready: bool,
+    pub external_cpp_binary_exporter_ready: bool,
+    pub ci_published_golden_artifacts_ready: bool,
+    pub local_migration_ready: bool,
+    pub production_ready: bool,
+    pub missing: Vec<String>,
+}
+
+pub fn storage_migration_corpus_readiness_report() -> StorageMigrationCorpusReadinessReport {
+    let rust_local_corpus_ready = true;
+    let engine_replay_ready = true;
+    let shared_store_replay_ready = true;
+    let raft_read_replay_ready = true;
+    let unified_runner_ready = true;
+    let external_cpp_binary_exporter_ready = false;
+    let ci_published_golden_artifacts_ready = false;
+    let local_migration_ready = rust_local_corpus_ready
+        && engine_replay_ready
+        && shared_store_replay_ready
+        && raft_read_replay_ready
+        && unified_runner_ready;
+    let production_ready = local_migration_ready
+        && external_cpp_binary_exporter_ready
+        && ci_published_golden_artifacts_ready;
+    let missing = if production_ready {
+        Vec::new()
+    } else {
+        vec![
+            "external C++ binary-artifact exporter plus CI-published golden corpus for the migration-only storage compatibility path"
+                .to_string(),
+        ]
+    };
+
+    StorageMigrationCorpusReadinessReport {
+        rust_local_corpus_ready,
+        engine_replay_ready,
+        shared_store_replay_ready,
+        raft_read_replay_ready,
+        unified_runner_ready,
+        external_cpp_binary_exporter_ready,
+        ci_published_golden_artifacts_ready,
+        local_migration_ready,
+        production_ready,
+        missing,
+    }
+}
+
 pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureReadinessReport {
     let memory_read_through_ready = true;
     let disk_block_cache_ready = true;
@@ -279,6 +332,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
     let ingestion = ingestion_readiness_report();
     let storage_cache_dependency_matrix = storage_cache_dependency_matrix_report();
     let storage_ssd_cache_pressure = storage_ssd_cache_pressure_readiness_report();
+    let storage_migration_corpus = storage_migration_corpus_readiness_report();
     let areas = vec![
         ReadinessArea {
             area: "raft_replication".to_string(),
@@ -557,6 +611,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "storage migration corpus converts C++ logical object/page/slot/index/oplog exports into Rust-native pages and replays through engine restart, slot dump, cache warmup, shared-store sync/async replay, and Raft leader-transfer reads"
                     .to_string(),
+                "storage migration corpus readiness covers Rust-local converted corpus replay through engine, shared-store, Raft read paths, and the unified C++/Rust runner while keeping external C++ artifact publication fail-closed"
+                    .to_string(),
                 "local storage production harness combines dump, cache pressure, restart recovery, shared-store replay, and Raft movement into one repeatable gate"
                     .to_string(),
                 "local storage dump/load fault matrix harness rejects checksum mismatch, partial manifests, missing segments, stale manifests, restart-during-install recovery, and corrupt page segments"
@@ -570,11 +626,10 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
             ],
             missing: {
                 let mut missing = vec![
-                    "external C++ binary-artifact exporter plus CI-published golden corpus for the migration-only storage compatibility path"
-                        .to_string(),
                     "ByteStore/S3 live backend integration tied to follower cursors/Raft snapshots"
                         .to_string(),
                 ];
+                missing.extend(storage_migration_corpus.missing.clone());
                 missing.extend(storage_cache_dependency_matrix.missing.clone());
                 missing.extend(storage_ssd_cache_pressure.missing.clone());
                 missing
@@ -976,6 +1031,39 @@ mod tests {
             .missing
             .iter()
             .any(|item| item.contains("long-running live pressure validation")));
+    }
+
+    #[test]
+    fn storage_migration_corpus_report_keeps_external_cpp_export_blocked() {
+        let report = storage_migration_corpus_readiness_report();
+        assert!(report.rust_local_corpus_ready);
+        assert!(report.engine_replay_ready);
+        assert!(report.shared_store_replay_ready);
+        assert!(report.raft_read_replay_ready);
+        assert!(report.unified_runner_ready);
+        assert!(report.local_migration_ready);
+        assert!(!report.external_cpp_binary_exporter_ready);
+        assert!(!report.ci_published_golden_artifacts_ready);
+        assert!(!report.production_ready);
+        assert!(report
+            .missing
+            .iter()
+            .any(|item| item.contains("external C++ binary-artifact exporter")));
+
+        let readiness = production_readiness_report();
+        let storage_cache = readiness
+            .areas
+            .iter()
+            .find(|area| area.area == "storage_cache")
+            .expect("storage cache area must exist");
+        assert!(storage_cache
+            .covered
+            .iter()
+            .any(|item| item.contains("storage migration corpus readiness")));
+        assert!(storage_cache
+            .missing
+            .iter()
+            .any(|item| item.contains("CI-published golden corpus")));
     }
 
     #[test]

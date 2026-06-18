@@ -150,7 +150,10 @@ The readiness gate intentionally still blocks production readiness on:
   removal for real data-node Raft groups.
 - Production mTLS transport implementation instead of validation-only config.
 - External multi-process packet-loss, disk-pressure, and process-chaos tests.
-- External C++ binary-artifact exporter and CI-published golden storage migration corpus.
+- Rust-local storage migration corpus readiness is now explicit in the readiness gate: converted
+  corpus replay through engine, shared-store, Raft read paths, and the unified C++/Rust runner is
+  covered. The external C++ binary-artifact exporter and CI-published golden storage migration
+  corpus remain blocked until the C++ build publishes real binary page/log artifacts.
 - Local/shared-store object manifest dependency matrix is now explicit in the readiness gate:
   local file objects, checkpoint manifests, oplog cursor retention, page segment manifests, and
   follower-cursor retention are covered for the local-file/shared-store target. Live ByteStore/S3
