@@ -30,6 +30,10 @@ shared corpus: no duplicate case names, per-case step names, or per-case command
 C++ existing-test surfaces: no repeated required_paths
 ```
 
+The shared corpus validator also requires every runtime/stress `cpp_data_raft_parity` step to
+declare a Rust runner/validator, and requires the data-node and production Raft cases to point at
+the combined data-node plus metaserver parity gate.
+
 Raft/storage parity evidence status:
 
 ```text

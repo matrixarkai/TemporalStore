@@ -22,6 +22,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CORPUS = ROOT / "compat" / "unified_temporalstore_cases.json"
 DEFAULT_CPP_RUNNER_RELATIVE = Path("tools") / "run_temporalstore_unified_tests.sh"
+CPP_RAFT_PARITY_SUITE = "cpp_data_raft_parity"
+COMBINED_RAFT_GATE_CASES = {
+    "raft_data_node_scale_failover_snapshot",
+    "raft_data_node_mixed_rw_and_membership",
+    "raft_production_gate",
+}
+COMBINED_RAFT_GATE = "tools/run_raft_distributed_parity.sh"
+COMBINED_RAFT_VALIDATOR = (
+    "python3 tools/validate_aws_validation_log.py --job "
+    "temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>"
+)
 
 CPP_RUNNER_TEMPLATE = """#!/usr/bin/env bash
 set -euo pipefail
@@ -141,8 +152,12 @@ def validate_corpus(path: Path) -> dict:
                 if not isinstance(step["expect"], dict) or "kind" not in step["expect"]:
                     raise SystemExit(
                         f"{path}: step {case['name']}/{step['name']} expect needs kind"
-                    )
+                )
                 seen_response_kinds.add(step["expect"]["kind"])
+            if step["command"].get("suite") == CPP_RAFT_PARITY_SUITE:
+                validate_cpp_raft_step(path, case, step)
+        if case["name"] in COMBINED_RAFT_GATE_CASES:
+            validate_combined_raft_case(path, case)
     missing_cases = sorted(set(required_case_names) - seen_case_names)
     missing_commands = sorted(set(required_command_kinds) - seen_command_kinds)
     missing_responses = sorted(set(required_response_kinds) - seen_response_kinds)
@@ -153,6 +168,55 @@ def validate_corpus(path: Path) -> dict:
     if missing_responses:
         raise SystemExit(f"{path}: missing required response kinds: {', '.join(missing_responses)}")
     return corpus
+
+
+def validate_cpp_raft_step(path: Path, case: dict, step: dict) -> None:
+    location = f"{path}: case {case['name']} step {step['name']}"
+    if step["command"].get("mode") == "static":
+        return
+    rust_runner = step["command"].get("rust_runner")
+    if not isinstance(rust_runner, str) or not rust_runner:
+        raise SystemExit(f"{location}: cpp_data_raft_parity step must declare rust_runner")
+    if "metaserver" in step["name"] or "metaserver" in case["name"]:
+        expected_validator = "temporalstore-metaserver-raft-validation"
+    elif "production_gate" in step["name"] or case["name"] == "raft_production_gate":
+        expected_validator = "temporalstore-raft-distributed-parity-validation"
+    else:
+        expected_validator = "temporalstore-raft"
+    rust_validator = step["command"].get("rust_validator", "")
+    if expected_validator not in rust_validator and case["name"] != "raft_production_gate":
+        raise SystemExit(
+            f"{location}: rust_validator must include {expected_validator!r}"
+        )
+
+
+def validate_combined_raft_case(path: Path, case: dict) -> None:
+    gate = case.get("rust_parity_gate")
+    validator = case.get("rust_parity_validator")
+    if case["name"] == "raft_production_gate":
+        step_runners = " ".join(
+            step.get("command", {}).get("rust_runner", "") for step in case.get("steps", [])
+        )
+        if COMBINED_RAFT_GATE not in step_runners:
+            raise SystemExit(
+                f"{path}: case {case['name']} rust_runner must include {COMBINED_RAFT_GATE}"
+            )
+        step_validators = " ".join(
+            step.get("command", {}).get("rust_validator", "") for step in case.get("steps", [])
+        )
+        if "temporalstore-raft-distributed-parity-validation" not in step_validators:
+            raise SystemExit(
+                f"{path}: case {case['name']} rust_validator must include combined Raft validation"
+            )
+        return
+    if gate != COMBINED_RAFT_GATE:
+        raise SystemExit(
+            f"{path}: case {case['name']} rust_parity_gate must be {COMBINED_RAFT_GATE!r}"
+        )
+    if validator != COMBINED_RAFT_VALIDATOR:
+        raise SystemExit(
+            f"{path}: case {case['name']} rust_parity_validator must be {COMBINED_RAFT_VALIDATOR!r}"
+        )
 
 
 def run(cmd: list[str], *, env: dict[str, str] | None = None) -> None:
