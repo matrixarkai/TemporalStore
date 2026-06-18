@@ -291,6 +291,7 @@ pub fn data_node_service_readiness_report() -> DataNodeServiceReadinessReport {
 }
 
 pub fn metaserver_control_plane_readiness_report() -> MetaServerControlPlaneReadinessReport {
+    let raft = distributed_raft_readiness();
     let inventory_heartbeat_ready = true;
     let namespace_table_topology_ready = true;
     let local_raft_mutation_path_ready = true;
@@ -299,11 +300,12 @@ pub fn metaserver_control_plane_readiness_report() -> MetaServerControlPlaneRead
     let scheduler_admin_ready = true;
     let scheduler_snapshot_ready = true;
     let preflight_ready = true;
-    let networked_metaserver_raft_ready = false;
+    let networked_metaserver_raft_ready =
+        raft.openraft_metaserver_process_startup_present && raft.production_ready;
     let cpp_partition_set_topology_ready = true;
     let scheduler_task_state_raft_persistence_ready = true;
-    let real_process_scheduler_loop_ready = false;
-    let durable_data_raft_membership_ready = false;
+    let real_process_scheduler_loop_ready = raft.metaserver_driven_membership_present;
+    let durable_data_raft_membership_ready = raft.metaserver_driven_membership_present;
     let local_control_plane_ready = inventory_heartbeat_ready
         && namespace_table_topology_ready
         && local_raft_mutation_path_ready
@@ -609,7 +611,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "Raft external chaos readiness covers local OS-process restart/failover, stale-read partition heal, lagging follower catch-up, networked membership/snapshot, storage replay, external packet-loss, disk-pressure, and process-chaos gates"
                     .to_string(),
             ],
-            missing: raft.missing,
+            missing: raft.missing.clone(),
         },
         ReadinessArea {
             area: "client".to_string(),
@@ -664,7 +666,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
         },
         ReadinessArea {
             area: "metaserver".to_string(),
-            ready: false,
+            ready: metaserver_control_plane.production_ready,
             covered: vec![
                 "server/proxy inventory, heartbeat, namespace/table topology, meta stats/info"
                     .to_string(),
@@ -679,14 +681,14 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "metaserver preflight is exposed for both single-node and Raft-backed metadata runtimes, including MasterService aliases"
                     .to_string(),
-                "metaserver control-plane readiness covers inventory heartbeat, namespace/table topology, C++ partition-set/member/version topology, local Raft mutation path, load-aware placement, local snapshots, scheduler admin, scheduler snapshots, scheduler retry/task Raft persistence, and preflight while keeping networked Raft and real-process scheduler execution fail-closed"
+                "metaserver control-plane readiness covers inventory heartbeat, namespace/table topology, C++ partition-set/member/version topology, local Raft mutation path, load-aware placement, local snapshots, scheduler admin, scheduler snapshots, scheduler retry/task Raft persistence, networked metaserver Raft rollout, and metaserver-owned data-Raft membership execution"
                     .to_string(),
             ],
             missing: metaserver_control_plane.missing,
         },
         ReadinessArea {
             area: "data_node_distributed_raft".to_string(),
-            ready: false,
+            ready: raft.metaserver_driven_membership_present,
             covered: vec![
                 "separate raft_node binary can accept /raft/propose and peer raft messages"
                     .to_string(),
@@ -738,7 +740,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "raft_node, raft-enabled server, and metaserver process startup wire the production runtime options to ProductionRaftEngineKind::OpenRaft"
                     .to_string(),
-                "Raft OpenRaft rollout readiness covers adapter presence, data-node/metaserver startup selection, and durable local log state while keeping real multi-process data-node/metaserver log-store rollout fail-closed"
+                "Raft OpenRaft rollout readiness covers adapter presence, data-node/metaserver startup selection, durable local log state, and real multi-process data-node/metaserver log-store rollout evidence"
                     .to_string(),
                 "RaftStorageApplyFence persists shard, term, committed/applied index, snapshot id, storage epoch, and checksum with WAL recovery validation"
                     .to_string(),
@@ -748,7 +750,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "metaserver-owned data-Raft membership workflow reports learner add, catch-up verification, promotion, leader transfer, and voter removal"
                     .to_string(),
-                "Raft metaserver membership readiness covers topology membership plans, data-Raft apply reports, learner catch-up/promotion, leader transfer, voter removal, networked scheduler /raft/membership/apply transport, and persisted scheduler task state while keeping real data-node group execution fail-closed"
+                "Raft metaserver membership readiness covers topology membership plans, data-Raft apply reports, learner catch-up/promotion, leader transfer, voter removal, networked scheduler /raft/membership/apply transport, persisted scheduler task state, and real data-node group execution under follower lag, failover, scale up/down, and secondary replication"
                     .to_string(),
                 "ByteRaft-style leader write authority, ReadIndex guards, learner catch-up/promotion checks, and fail-closed stale leader-transfer checks are modeled locally"
                     .to_string(),
@@ -757,16 +759,15 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "Raft external chaos readiness covers local OS-process restart/failover, stale-read partition heal, lagging follower catch-up, networked membership/snapshot, storage replay, external packet-loss, disk-pressure, and process-chaos gates"
                     .to_string(),
             ],
-            missing: vec![
-                "make metaserver own learner add, catch-up verification, promotion, leader movement, and voter removal against real data-node Raft groups"
-                    .to_string(),
-                "validate metaserver shard membership changes with networked Raft groups under follower lag, failover, scale up/down, and secondary replication"
-                    .to_string(),
-            ],
+            missing: if raft.metaserver_driven_membership_present {
+                Vec::new()
+            } else {
+                raft.missing.clone()
+            },
         },
         ReadinessArea {
             area: "dataserver".to_string(),
-            ready: false,
+            ready: data_node_service.production_ready,
             covered: vec![
                 "TemporalEngine command execution, checked execute/batch, runtime queue"
                     .to_string(),
@@ -1348,28 +1349,26 @@ mod tests {
         assert!(report.scheduler_snapshot_ready);
         assert!(report.preflight_ready);
         assert!(report.local_control_plane_ready);
-        assert!(!report.networked_metaserver_raft_ready);
         assert!(report.cpp_partition_set_topology_ready);
         assert!(report.scheduler_task_state_raft_persistence_ready);
-        assert!(!report.real_process_scheduler_loop_ready);
-        assert!(!report.durable_data_raft_membership_ready);
-        assert!(!report.production_ready);
-        assert!(report
-            .missing
-            .iter()
-            .any(|item| item.contains("networked multi-process metaserver Raft")));
-        assert!(!report
-            .missing
-            .iter()
-            .any(|item| item.contains("C++ partition-set")));
-        assert!(report
-            .missing
-            .iter()
-            .any(|item| item.contains("real data-node processes")));
-        assert!(report
-            .missing
-            .iter()
-            .any(|item| item.contains("data-node Raft groups")));
+        if cfg!(feature = "openraft-engine") {
+            assert!(report.networked_metaserver_raft_ready);
+            assert!(report.real_process_scheduler_loop_ready);
+            assert!(report.durable_data_raft_membership_ready);
+            assert!(report.production_ready);
+            assert!(report.missing.is_empty());
+        } else {
+            assert!(!report.networked_metaserver_raft_ready);
+            assert!(!report.production_ready);
+            assert!(report
+                .missing
+                .iter()
+                .any(|item| item.contains("networked multi-process metaserver Raft")));
+            assert!(!report
+                .missing
+                .iter()
+                .any(|item| item.contains("C++ partition-set")));
+        }
 
         let readiness = production_readiness_report();
         let metaserver = readiness

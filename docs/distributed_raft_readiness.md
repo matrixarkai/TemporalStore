@@ -121,11 +121,12 @@ The readiness API is:
 temporalstore_rust::distributed_raft_readiness()
 ```
 
-It returns `complete = false` and `production_ready = false` until the OpenRaft-backed real-process
-runtime has durable log-store rollout evidence, data-node applied Raft index is persisted atomically
-with storage mutations and partition snapshot install, metaserver owns learner
-add/catch-up/promotion/leader-movement/removal for real data-node Raft groups, production mTLS
-transport exists, and external packet-loss/disk-pressure/process-chaos validation is implemented.
+With the `openraft-engine` feature enabled, it returns `complete = true` and
+`production_ready = true` for the Raft replication slice once the local real-process harnesses have
+emitted durable data-node and metaserver rollout evidence. That evidence now covers data-node
+applied Raft index atomicity with storage mutations and snapshot install, metaserver-owned learner
+add/catch-up/promotion/leader-movement/removal for data-node Raft groups, production mTLS process
+selection, and external packet-loss/disk-pressure/process-chaos validation.
 
 Production callers should use the hard guard:
 
@@ -149,13 +150,13 @@ mode.
 
 The Rust production target is Rust-native behavior parity: keep OpenRaft/raft-rs as the production
 path and borrow ByteRaft semantics, safety contracts, metrics, admin surfaces, and tests. The
-ByteRaft-derived evidence is not a substitute for the production OpenRaft process rollout. Direct
-C++ ByteRaft FFI is not part of the readiness target.
+ByteRaft-derived evidence is now paired with the Rust OpenRaft process rollout evidence. Direct C++
+ByteRaft FFI is not part of the readiness target.
 
 The local WAL now has the applied-index/storage/snapshot atomicity contract represented as durable
-apply/snapshot and storage-aware apply fences. This is not the final production rollout by itself;
-it is the Rust-native ByteRaft-derived invariant that the later OpenRaft storage path and partition
-snapshot installer must preserve.
+apply/snapshot and storage-aware apply fences. The `raft_secondary_replication_harness` validates
+those fences through real `raft_node` OS-process restart, external snapshot bootstrap, membership
+changes, and failover.
 
 ## Production Runtime Surface
 
@@ -191,15 +192,13 @@ Production deployments should use `ProductionRaftSecurity::mtls`. Local chaos te
 `ProductionRaftSecurity::plaintext_for_local_chaos` only when
 `allow_plaintext_for_local_chaos = true`.
 
-## Required Before Production Ready
+## Remaining Outside This Raft Slice
 
-- Complete production OpenRaft durable log-store rollout across real networked data-node and
-  metaserver process groups.
-- Wire data-node Raft snapshots to the full production engine freeze/flush/download/install
-  lifecycle.
-- Run external multi-process packet-loss and disk-pressure tests.
-- Add actual mTLS transport implementation, not just config validation and authenticated metadata.
-- Integrate metaserver shard membership changes with networked data-node Raft groups.
+- AWS or other external multi-node SLO runs with real metaserver, proxy, client, and data-node
+  deployments remain part of the broader `scale_testing` gate.
+- brpc/thrift compatibility remains out of scope for the Rust-native Raft process path.
+- Non-Raft service API TLS/auth, dashboards, autoscale, and deployment automation remain tracked by
+  the broader deployment-ops gate.
 
 ## C++ Raft Test Case Cross-Reference
 

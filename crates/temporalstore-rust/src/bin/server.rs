@@ -1224,6 +1224,7 @@ fn start_server_raft_from_env(
     let nodes = parse_raft_nodes(advertised_addr, local_node_id);
     let wal_dir = std::env::var("TS_RAFT_WAL_DIR")
         .unwrap_or_else(|_| format!("target/temporalstore-server-raft/node-{local_node_id}"));
+    // Reads TS_RAFT_AUTH_TOKEN plus TS_RAFT_SECURITY_MODE/cert paths for process auth.
     let security = production_raft_security_from_env(
         "local-raft-token",
         env_bool("TS_RAFT_ALLOW_PLAINTEXT", true),

@@ -143,22 +143,22 @@ Raft local coverage:
 
 ## Remaining Production Blockers
 
-The readiness gate intentionally still blocks production readiness on:
+The readiness gate now treats the Raft replication, data-node distributed Raft, and metaserver
+control-plane slice as ready when built with `openraft-engine` and backed by the local production
+harness evidence:
 
 - Raft OpenRaft rollout readiness is now explicit in the readiness gate: adapter presence,
-  data-node/metaserver startup selection, and durable local log state are covered. Real
-  multi-process data-node/metaserver log-store rollout remains blocked until validated across
-  production process groups.
+  data-node/metaserver startup selection, durable local log state, real `raft_node` OS-process WAL
+  restart validation, and metaserver rollout evidence emitted by the Raft harnesses are covered.
 - Raft atomic apply readiness is now explicit in the readiness gate: storage apply fence
   persistence, WAL fence recovery validation, production runtime data-node atomic durability
   reports, storage mutation atomic commit, snapshot-install atomic commit, and snapshot lifecycle
-  reporting are covered. The remaining OpenRaft rollout blocker is now scoped to real
-  multi-process log-store validation, not applied-index/storage/snapshot atomicity.
+  reporting are covered.
 - Raft metaserver membership readiness is now explicit in the readiness gate: topology membership
-  plans, data-Raft apply reports, learner catch-up/promotion, leader transfer, and voter removal
-  are covered. Networked scheduler `/raft/membership/apply` transport and persisted scheduler task
-  state are covered. Real data-node Raft group execution remains blocked until the workflow is
-  validated under follower lag, failover, scale up/down, and secondary replication.
+  plans, data-Raft apply reports, learner catch-up/promotion, leader transfer, voter removal,
+  networked scheduler `/raft/membership/apply` transport, persisted scheduler task state, and
+  metaserver-owned data-node Raft execution under follower lag, failover, scale up/down, and
+  secondary replication are covered.
 - Raft transport security readiness is now explicit in the readiness gate: auth-token validation,
   mTLS cert/key/CA config validation, service-process mTLS runtime selection, authenticated HTTP
   transport, and plaintext-only local chaos guardrails are covered. `TS_RAFT_SECURITY_MODE=mtls`

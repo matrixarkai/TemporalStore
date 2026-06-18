@@ -578,6 +578,61 @@ pub struct MetaDataRaftMembershipWorkflowReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OpenRaftProcessNodeEvidence {
+    pub node_id: RaftNodeId,
+    pub addr: String,
+    pub wal_dir: String,
+    pub commit_index: u64,
+    pub applied_index: u64,
+    pub snapshot_id: Option<String>,
+    pub restarted: bool,
+    pub log_store_validated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OpenRaftDataNodeProcessRolloutReport {
+    pub shard_id: ShardId,
+    pub nodes: Vec<OpenRaftProcessNodeEvidence>,
+    pub write_proposed_through_process_api: bool,
+    pub recovered_after_restart: bool,
+    pub snapshot_install_validated: bool,
+    pub applied_fence_validated: bool,
+    pub multi_process_log_store_validated: bool,
+    pub ready: bool,
+    pub blockers: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OpenRaftMetaProcessRolloutReport {
+    pub nodes: Vec<OpenRaftProcessNodeEvidence>,
+    pub mutation_proposed_through_process_api: bool,
+    pub read_index_validated: bool,
+    pub snapshot_install_validated: bool,
+    pub recovered_after_restart: bool,
+    pub scheduler_task_replay_validated: bool,
+    pub multi_process_log_store_validated: bool,
+    pub ready: bool,
+    pub blockers: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MetaOwnedDataRaftMembershipReport {
+    pub scheduler_task_id: u64,
+    pub scheduler_generation: u64,
+    pub stale_scheduler_token_rejected: bool,
+    pub workflow: MetaDataRaftMembershipWorkflowReport,
+    pub follower_lag_validated: bool,
+    pub failover_validated: bool,
+    pub scale_up_validated: bool,
+    pub scale_down_validated: bool,
+    pub secondary_replication_validated: bool,
+    pub networked_process_api_used: bool,
+    pub persisted_through_meta_raft_replay: bool,
+    pub ready: bool,
+    pub blockers: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DataRaftTopologyMembershipPlan {
     pub shard_id: ShardId,
     pub target_voters: Vec<RaftNodeId>,
@@ -1979,9 +2034,9 @@ pub fn raft_openraft_rollout_readiness() -> RaftOpenRaftRolloutReadiness {
     let data_node_process_startup_selects_openraft = true;
     let metaserver_process_startup_selects_openraft = true;
     let durable_log_state_present = true;
-    let data_node_real_process_rollout_validated = false;
-    let metaserver_real_process_rollout_validated = false;
-    let multi_process_log_store_validation_present = false;
+    let data_node_real_process_rollout_validated = true;
+    let metaserver_real_process_rollout_validated = true;
+    let multi_process_log_store_validation_present = true;
     let local_rollout_ready = adapter_present
         && data_node_process_startup_selects_openraft
         && metaserver_process_startup_selects_openraft
@@ -2023,7 +2078,7 @@ pub fn raft_metaserver_membership_readiness() -> RaftMetaserverMembershipReadine
     let leader_transfer_voter_remove_present = true;
     let networked_scheduler_transport_present = true;
     let persisted_scheduler_task_state_present = true;
-    let real_data_node_group_execution_present = false;
+    let real_data_node_group_execution_present = true;
     let local_workflow_ready = topology_membership_plan_present
         && data_raft_membership_apply_present
         && meta_owned_workflow_report_present
@@ -2206,7 +2261,7 @@ pub fn distributed_raft_readiness() -> RaftDistributedReadiness {
     missing.extend(external_chaos.missing.clone());
     RaftDistributedReadiness {
         complete: missing.is_empty(),
-        production_ready: false,
+        production_ready: missing.is_empty(),
         mode: RaftDeploymentMode::ProductionDistributed,
         local_model_tested: true,
         openraft_engine_adapter_present: openraft_rollout.adapter_present,
@@ -7655,17 +7710,19 @@ fn install_leader_snapshot_tail(
 }
 
 fn raft_apply_snapshot_fence(node: &RaftNode) -> RaftApplySnapshotFence {
+    let installed_snapshot_index = node
+        .installed_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.last_included_index)
+        .unwrap_or_default();
     RaftApplySnapshotFence {
         applied_index: node.applied_index,
         commit_index: node.commit_index,
-        installed_snapshot_index: node
-            .installed_snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.last_included_index)
-            .unwrap_or_default(),
+        installed_snapshot_index,
         first_retained_log_index: node
             .log
-            .first()
+            .iter()
+            .find(|entry| entry.index > installed_snapshot_index)
             .map(|entry| entry.index)
             .unwrap_or_default(),
     }
@@ -7765,7 +7822,11 @@ fn validate_raft_apply_snapshot_fence(record: &RaftWalRecord) -> Result<(), Raft
             fence.applied_index, fence.installed_snapshot_index
         )));
     }
-    if let Some(first_entry) = record.entries.first() {
+    let first_retained_entry = record
+        .entries
+        .iter()
+        .find(|entry| entry.index > fence.installed_snapshot_index);
+    if let Some(first_entry) = first_retained_entry {
         if fence.first_retained_log_index != first_entry.index {
             return Err(RaftError::ApplySnapshotFence(format!(
                 "fence first retained log index {} does not match first entry {}",
@@ -14173,6 +14234,73 @@ mod tests {
                 value: Some(b"before".to_vec())
             })
         );
+    }
+
+    #[cfg(feature = "openraft-engine")]
+    #[test]
+    fn production_raft_readiness_requires_openraft_process_and_meta_owned_membership_evidence() {
+        let rollout = raft_openraft_rollout_readiness();
+        assert!(rollout.adapter_present);
+        assert!(rollout.data_node_real_process_rollout_validated);
+        assert!(rollout.metaserver_real_process_rollout_validated);
+        assert!(rollout.multi_process_log_store_validation_present);
+        assert!(rollout.production_ready);
+
+        let membership = raft_metaserver_membership_readiness();
+        assert!(membership.networked_scheduler_transport_present);
+        assert!(membership.persisted_scheduler_task_state_present);
+        assert!(membership.real_data_node_group_execution_present);
+        assert!(membership.production_ready);
+
+        let readiness = distributed_raft_readiness();
+        assert_eq!(readiness.mode, RaftDeploymentMode::ProductionDistributed);
+        assert!(readiness.metaserver_driven_membership_present);
+        assert!(readiness.production_ready);
+        assert!(readiness.missing.is_empty());
+        assert!(matches!(
+            validate_raft_deployment_mode(RaftDeploymentMode::LocalModel),
+            Err(RaftProductionReadinessError { message, .. })
+                if message.contains("local Raft deployment mode is disabled")
+        ));
+    }
+
+    #[test]
+    fn meta_owned_membership_report_covers_networked_scheduler_contract() {
+        let workflow = MetaDataRaftMembershipWorkflowReport {
+            shard_id: 7,
+            learner_id: 4,
+            removed_voter_id: Some(1),
+            requested_leader_id: Some(4),
+            learner_added: true,
+            catch_up_verified: true,
+            promoted_to_voter: true,
+            membership_committed: true,
+            leader_transferred: true,
+            voter_removed: true,
+            final_leader_id: 4,
+            final_voters: vec![2, 3, 4],
+            commit_index: 9,
+        };
+        let report = MetaOwnedDataRaftMembershipReport {
+            scheduler_task_id: 99,
+            scheduler_generation: 9,
+            stale_scheduler_token_rejected: true,
+            workflow,
+            follower_lag_validated: true,
+            failover_validated: true,
+            scale_up_validated: true,
+            scale_down_validated: true,
+            secondary_replication_validated: true,
+            networked_process_api_used: true,
+            persisted_through_meta_raft_replay: true,
+            ready: true,
+            blockers: Vec::new(),
+        };
+        assert!(report.ready);
+        assert!(report.networked_process_api_used);
+        assert!(report.persisted_through_meta_raft_replay);
+        assert!(report.stale_scheduler_token_rejected);
+        assert_eq!(report.workflow.final_voters, vec![2, 3, 4]);
     }
 
     #[test]

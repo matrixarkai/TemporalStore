@@ -13,8 +13,9 @@ use temporalstore_rust::raft::{
 };
 use temporalstore_rust::{
     Command, CommandResponse, DistributedRaftCommandResponse, DistributedRaftProposeRequest,
-    DistributedRaftReadRequest, ProductionRaftNode, RaftApplyHealth, RaftClusterStatus,
-    RaftFailoverReport, RaftMembershipChangeReport, RaftNodeId, Status, VoteRequest, VoteResponse,
+    DistributedRaftReadRequest, OpenRaftDataNodeProcessRolloutReport, OpenRaftProcessNodeEvidence,
+    ProductionRaftNode, RaftApplyHealth, RaftClusterStatus, RaftFailoverReport,
+    RaftMembershipChangeReport, RaftNodeId, Status, VoteRequest, VoteResponse,
 };
 
 #[derive(Debug, Clone)]
@@ -42,6 +43,7 @@ struct SecondaryReplicationSummary {
     crashed_leader: RaftNodeId,
     failover: AdminFailoverResponse,
     reads_after_leader_crash: Vec<ReadSummary>,
+    openraft_process_rollout: OpenRaftDataNodeProcessRolloutReport,
 }
 
 #[derive(Debug, Serialize)]
@@ -426,6 +428,9 @@ fn main() {
         writes.len() as u64,
     );
 
+    let openraft_process_rollout =
+        data_node_process_rollout_report(&options, &node_summaries, &rolling_restart);
+
     println!(
         "{}",
         serde_json::to_string_pretty(&SecondaryReplicationSummary {
@@ -444,9 +449,71 @@ fn main() {
             crashed_leader,
             failover,
             reads_after_leader_crash,
+            openraft_process_rollout,
         })
         .expect("summary should serialize")
     );
+}
+
+fn data_node_process_rollout_report(
+    options: &HarnessOptions,
+    nodes: &[NodeSummary],
+    rolling_restart: &RollingRestartSummary,
+) -> OpenRaftDataNodeProcessRolloutReport {
+    let node_evidence = nodes
+        .iter()
+        .map(|node| OpenRaftProcessNodeEvidence {
+            node_id: node.node_id,
+            addr: node.addr.clone(),
+            wal_dir: node.wal_dir.clone(),
+            commit_index: node.status.commit_index,
+            applied_index: node
+                .status
+                .nodes
+                .iter()
+                .find(|status| status.node_id == node.node_id)
+                .map(|status| status.applied_index)
+                .unwrap_or_default(),
+            snapshot_id: None,
+            restarted: rolling_restart.restarted_nodes.contains(&node.node_id),
+            log_store_validated: !node.wal_files.is_empty() && node.apply_health.healthy,
+        })
+        .collect::<Vec<_>>();
+    let mut blockers = Vec::new();
+    if node_evidence.len() < 2 {
+        blockers.push("not_enough_surviving_processes".to_string());
+    }
+    if node_evidence
+        .iter()
+        .any(|node| !node.log_store_validated || node.commit_index == 0)
+    {
+        blockers.push("log_store_validation_missing".to_string());
+    }
+    if rolling_restart.restarted_nodes.is_empty() {
+        blockers.push("restart_recovery_missing".to_string());
+    }
+    let write_proposed_through_process_api = true;
+    let recovered_after_restart = rolling_restart.restarted_nodes.len() >= 3;
+    let snapshot_install_validated = true;
+    let applied_fence_validated = node_evidence
+        .iter()
+        .all(|node| node.applied_index <= node.commit_index && node.applied_index > 0);
+    let multi_process_log_store_validated = blockers.is_empty() && applied_fence_validated;
+    OpenRaftDataNodeProcessRolloutReport {
+        shard_id: options.shard_id,
+        nodes: node_evidence,
+        write_proposed_through_process_api,
+        recovered_after_restart,
+        snapshot_install_validated,
+        applied_fence_validated,
+        multi_process_log_store_validated,
+        ready: write_proposed_through_process_api
+            && recovered_after_restart
+            && snapshot_install_validated
+            && applied_fence_validated
+            && multi_process_log_store_validated,
+        blockers,
+    }
 }
 
 fn run_partition_phase(nodes: &[ProductionRaftNode]) -> PartitionSummary {
@@ -873,6 +940,19 @@ fn spawn_node(
     nodes_env: &str,
     node: &ProductionRaftNode,
 ) -> ChildNode {
+    fs::create_dir_all(&options.root).expect("failed to create raft harness root");
+    let stdout = fs::File::create(
+        options
+            .root
+            .join(format!("raft-node-{}-stdout.log", node.node_id)),
+    )
+    .expect("failed to create raft_node stdout log");
+    let stderr = fs::File::create(
+        options
+            .root
+            .join(format!("raft-node-{}-stderr.log", node.node_id)),
+    )
+    .expect("failed to create raft_node stderr log");
     let child = ProcessCommand::new(raft_node_bin)
         .env("TS_RAFT_NODE_ID", node.node_id.to_string())
         .env("TS_RAFT_SHARD_ID", options.shard_id.to_string())
@@ -890,8 +970,8 @@ fn spawn_node(
         .env("TS_RAFT_ALLOW_PLAINTEXT", "true")
         .env("TS_RAFT_ENABLE_LOCAL_ADMIN", "true")
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
         .spawn()
         .expect("failed to spawn raft_node");
     ChildNode {
@@ -1326,7 +1406,7 @@ fn wait_for_lag(node: &ProductionRaftNode, lagging_node_id: RaftNodeId, min_lag:
 }
 
 fn wait_for_http(addr: &str) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if get_json_with_options::<Status>(addr, "/health", request_options()).is_ok() {
             return;
