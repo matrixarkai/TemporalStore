@@ -406,6 +406,7 @@ AREAS: tuple[ParityArea, ...] = (
                     "apply_snapshot_durability_fence",
                     "snapshot_floor_log_matching",
                     "snapshot_tail_catchup",
+                    "compacted_entry_rejection",
                     "operator_control_surfaces",
                 ),
             ),

@@ -1826,6 +1826,7 @@ pub struct RaftDistributedReadiness {
     pub byteraft_apply_snapshot_fence_present: bool,
     pub byteraft_snapshot_floor_log_matching_present: bool,
     pub byteraft_snapshot_tail_catchup_present: bool,
+    pub byteraft_compacted_entry_rejection_present: bool,
     pub durable_apply_index_snapshot_integrated: bool,
     pub learner_catchup_promotion_present: bool,
     pub metaserver_driven_membership_present: bool,
@@ -1891,6 +1892,7 @@ pub fn distributed_raft_readiness() -> RaftDistributedReadiness {
         byteraft_apply_snapshot_fence_present: true,
         byteraft_snapshot_floor_log_matching_present: true,
         byteraft_snapshot_tail_catchup_present: true,
+        byteraft_compacted_entry_rejection_present: true,
         durable_apply_index_snapshot_integrated: false,
         learner_catchup_promotion_present: true,
         metaserver_driven_membership_present: false,
@@ -6657,6 +6659,14 @@ fn new_node(id: RaftNodeId, role: RaftRole, shard_id: ShardId) -> RaftNode {
 }
 
 fn append_entry(node: &mut RaftNode, entry: RaftLogEntry) {
+    if node
+        .installed_snapshot
+        .as_ref()
+        .map(|snapshot| entry.index <= snapshot.last_included_index)
+        .unwrap_or(false)
+    {
+        return;
+    }
     if node.log.last().map(|last| last.index) >= Some(entry.index) {
         node.log.retain(|existing| existing.index < entry.index);
         node.applied.retain(|applied| *applied < entry.index);
@@ -10384,6 +10394,7 @@ mod tests {
         assert!(readiness.byteraft_apply_snapshot_fence_present);
         assert!(readiness.byteraft_snapshot_floor_log_matching_present);
         assert!(readiness.byteraft_snapshot_tail_catchup_present);
+        assert!(readiness.byteraft_compacted_entry_rejection_present);
         assert!(readiness.learner_catchup_promotion_present);
         assert!(!readiness.durable_apply_index_snapshot_integrated);
         assert!(!readiness.metaserver_driven_membership_present);
@@ -12175,6 +12186,81 @@ mod tests {
                 .unwrap(),
             CommandResponse::Bytes {
                 value: Some(b"tail".to_vec())
+            }
+        );
+    }
+
+    #[test]
+    fn append_entries_ignores_entries_at_or_below_snapshot_floor() {
+        let cluster = RaftCluster::new_single_shard_with_config(
+            1,
+            [1, 2, 3],
+            RaftConfig {
+                max_applied_log_bytes: 1,
+                ..RaftConfig::default()
+            },
+        )
+        .unwrap();
+        cluster
+            .propose(Command::StringSet {
+                key: "compacted".to_string(),
+                value: b"snapshot".to_vec(),
+            })
+            .unwrap();
+        cluster
+            .propose(Command::StringSet {
+                key: "compacted-tail".to_string(),
+                value: b"before".to_vec(),
+            })
+            .unwrap();
+        let snapshot_report = cluster.maybe_trigger_snapshot().unwrap();
+        assert!(snapshot_report.triggered);
+        assert_eq!(snapshot_report.applied_index, 2);
+
+        let request = AppendEntriesRequest {
+            rpc: None,
+            shard_id: 1,
+            term: 1,
+            leader_id: 1,
+            target_id: 3,
+            prev_log_index: 2,
+            prev_log_term: 1,
+            entries: vec![
+                RaftLogEntry {
+                    term: 1,
+                    index: 2,
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: "compacted-tail".to_string(),
+                        value: b"stale-should-not-replay".to_vec(),
+                    },
+                },
+                RaftLogEntry {
+                    term: 1,
+                    index: 3,
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: "compacted-tail".to_string(),
+                        value: b"after".to_vec(),
+                    },
+                },
+            ],
+            leader_commit: 3,
+        };
+        let response = cluster.receive_append_entries(request).unwrap();
+        assert!(response.success);
+        assert_eq!(response.match_index, 3);
+        assert_eq!(
+            cluster
+                .read_from_replica(
+                    3,
+                    Command::StringGet {
+                        key: "compacted-tail".to_string()
+                    },
+                )
+                .unwrap(),
+            CommandResponse::Bytes {
+                value: Some(b"after".to_vec())
             }
         );
     }

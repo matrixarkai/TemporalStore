@@ -323,6 +323,24 @@ AREAS: tuple[ReadinessArea, ...] = (
         ),
     ),
     ReadinessArea(
+        name="compacted_entry_rejection",
+        evidence=(
+            Evidence(
+                "crates/temporalstore-rust/src/raft.rs",
+                (
+                    "append_entry",
+                    "last_included_index",
+                    "append_entries_ignores_entries_at_or_below_snapshot_floor",
+                    "byteraft_compacted_entry_rejection_present",
+                ),
+            ),
+            Evidence(
+                "docs/distributed_raft_readiness.md",
+                ("compacted-entry rejection", "snapshot floor are ignored"),
+            ),
+        ),
+    ),
+    ReadinessArea(
         name="operator_control_surfaces",
         evidence=(
             Evidence(

@@ -104,6 +104,8 @@ Raft local coverage:
 - Data-node replica catch-up installs the leader snapshot floor before replaying the retained
   post-snapshot tail, so newly added or lagging replicas do not serve tail-only state after
   compaction.
+- Data-node AppendEntries apply rejects compacted entries at or below the installed snapshot floor,
+  preventing stale log replay over snapshotted state.
 - Local production Raft runtime wrapper.
 - HTTP Raft transport for proposal/read/admin paths.
 - WAL-backed local recovery.
