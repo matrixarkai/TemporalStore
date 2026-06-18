@@ -6,11 +6,14 @@ use std::{fs, path::Path};
 
 use serde::Deserialize;
 use serde_json::Value;
+use temporalstore_rust::engine::SlotDumpFollowerReplayCursor;
 use temporalstore_rust::http::{json_response, parse_json, serve};
 use temporalstore_rust::{
-    ClientOptions, Command, CommandResponse, ExecuteRequest, Status, TableOptions, TemporalEngine,
+    ClientOptions, Command, CommandResponse, ExecuteRequest, SharedStoreReplicator,
+    SharedStoreStorageMode, Status, StorageLifecycleRequest, TableOptions, TemporalEngine,
     TemporalStoreClient,
 };
+use temporalstore_snapshot::FileObjectStore;
 
 #[derive(Debug, Deserialize)]
 struct UnifiedCorpus {
@@ -46,6 +49,40 @@ struct UnifiedStep {
     expect_status: Option<Status>,
     #[serde(default)]
     expect: Option<CommandResponse>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StorageMigrationCorpus {
+    schema_version: u32,
+    name: String,
+    source_format: String,
+    format_compatibility: String,
+    cases: Vec<StorageMigrationCase>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StorageMigrationCase {
+    name: String,
+    shard_id: u64,
+    operations: Vec<StorageMigrationStep>,
+    expected_reads: Vec<StorageMigrationStep>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct StorageMigrationStep {
+    name: String,
+    #[serde(default)]
+    storage_mutation: bool,
+    command: Command,
+    #[serde(default)]
+    expect: Option<CommandResponse>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StorageUnifiedCommand {
+    migration_case: String,
+    #[serde(default)]
+    mode: Option<SharedStoreStorageMode>,
 }
 
 #[test]
@@ -194,6 +231,9 @@ fn run_engine_case(case: &UnifiedCase) {
             drop(engine);
             engine = new_engine(dir.path(), &page_dir, &index_dir, case.shard_id);
         }
+        if maybe_run_storage_parity_command(case, step) {
+            continue;
+        }
         if command_kind(&step.command) == "existing_test" {
             continue;
         }
@@ -264,6 +304,12 @@ fn run_client_case(case: &UnifiedCase) {
         if step.skip_client {
             continue;
         }
+        assert!(
+            !is_storage_parity_command(&step.command),
+            "case={} step={} storage parity commands must set skip_client=true",
+            case.name,
+            step.name
+        );
         if step.restart_before {
             *engine.lock().expect("engine lock poisoned") =
                 new_engine(dir.path(), &page_dir, &index_dir, case.shard_id);
@@ -295,6 +341,334 @@ fn step_command(case: &UnifiedCase, step: &UnifiedStep) -> Command {
             case.name, step.name
         )
     })
+}
+
+fn is_storage_parity_command(command: &Value) -> bool {
+    command_kind(command).starts_with("storage_")
+}
+
+fn maybe_run_storage_parity_command(case: &UnifiedCase, step: &UnifiedStep) -> bool {
+    let kind = command_kind(&step.command);
+    if !kind.starts_with("storage_") {
+        return false;
+    }
+    let command: StorageUnifiedCommand = serde_json::from_value(step.command.clone())
+        .unwrap_or_else(|error| {
+            panic!(
+                "case={} step={} invalid storage command: {error}",
+                case.name, step.name
+            )
+        });
+    let storage_case = load_storage_migration_case(&command.migration_case);
+    match kind {
+        "storage_dump_load_recovery" => verify_storage_dump_load_recovery(&storage_case),
+        "storage_fault_matrix" => verify_storage_fault_matrix(&storage_case),
+        "storage_follower_safe_gc" => verify_storage_follower_safe_gc(&storage_case),
+        "storage_cache_refill" => verify_storage_cache_refill(&storage_case),
+        "storage_shared_store_replay" => {
+            let mode = command.mode.unwrap_or(SharedStoreStorageMode::Sync);
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("storage replay runtime should start");
+            runtime.block_on(verify_storage_shared_store_replay(&storage_case, mode));
+        }
+        other => panic!(
+            "case={} step={} unsupported storage command {other}",
+            case.name, step.name
+        ),
+    }
+    true
+}
+
+fn load_storage_migration_case(case_name: &str) -> StorageMigrationCase {
+    let corpus_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("compat/storage_migration_corpus.json");
+    let corpus_bytes = fs::read(&corpus_path).expect("storage migration corpus should be readable");
+    let corpus: StorageMigrationCorpus =
+        serde_json::from_slice(&corpus_bytes).expect("storage migration corpus should deserialize");
+
+    assert_eq!(corpus.schema_version, 1);
+    assert_eq!(corpus.name, "temporalstore-storage-migration-corpus");
+    assert_eq!(corpus.source_format, "cpp_exported_logical_artifacts_v1");
+    assert_eq!(
+        corpus.format_compatibility,
+        "migration_only_rust_native_pages"
+    );
+    corpus
+        .cases
+        .into_iter()
+        .find(|case| case.name == case_name)
+        .unwrap_or_else(|| panic!("storage migration case {case_name} should exist"))
+}
+
+fn verify_storage_dump_load_recovery(case: &StorageMigrationCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let mut engine = new_engine(dir.path(), &page_dir, &index_dir, case.shard_id);
+
+    execute_storage_steps(&engine, case.shard_id, &case.operations, &case.name);
+
+    let summaries = engine.slot_storage_summaries(case.shard_id);
+    assert!(
+        !summaries.is_empty(),
+        "case={} should create slot summaries",
+        case.name
+    );
+    assert!(
+        summaries
+            .iter()
+            .any(|summary| summary.dirty_generation > 0 && summary.page_ref_count > 0),
+        "case={} should track dirty generations and page refs",
+        case.name
+    );
+    let dirty_slots = summaries
+        .iter()
+        .filter(|summary| summary.dirty_generation > 0)
+        .map(|summary| summary.routing_slot)
+        .collect::<Vec<_>>();
+    let manifest = engine
+        .create_slot_dump_manifest(case.shard_id, dirty_slots.clone())
+        .expect("slot dump manifest should be created");
+    assert!(!manifest.checksum.is_empty());
+    assert!(!manifest.index_bytes.is_empty());
+    assert!(!manifest.slot_summaries.is_empty());
+    assert_clean_storage_recovery(&engine, case.shard_id, &case.name);
+
+    drop(engine);
+    engine = new_engine(dir.path(), &page_dir, &index_dir, case.shard_id);
+    engine
+        .install_slot_dump_manifest(&manifest)
+        .unwrap_or_else(|status| {
+            panic!("case={} slot dump install failed: {:?}", case.name, status)
+        });
+    assert_clean_storage_recovery(&engine, case.shard_id, &case.name);
+    execute_storage_steps(&engine, case.shard_id, &case.expected_reads, &case.name);
+}
+
+fn verify_storage_fault_matrix(case: &StorageMigrationCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = new_engine(
+        dir.path(),
+        &dir.path().join("pages"),
+        &dir.path().join("indexes"),
+        case.shard_id,
+    );
+    execute_storage_steps(&engine, case.shard_id, &case.operations, &case.name);
+    let report = engine.slot_dump_fault_matrix_report(case.shard_id);
+    assert!(
+        report.production_ready_slice,
+        "case={} storage fault matrix failed: {:?}",
+        case.name, report.failed_scenarios
+    );
+    assert!(report.scenario_count >= 5);
+    assert_eq!(report.passed_count, report.scenario_count);
+    let scenarios = report
+        .scenarios
+        .iter()
+        .map(|scenario| scenario.scenario.as_str())
+        .collect::<BTreeSet<_>>();
+    for required in [
+        "checksum_mismatch",
+        "partial_manifest",
+        "missing_page_segment",
+        "stale_manifest",
+        "corrupt_page_segment",
+    ] {
+        assert!(
+            scenarios.contains(required),
+            "case={} storage fault matrix missing scenario {required}",
+            case.name
+        );
+    }
+}
+
+fn verify_storage_follower_safe_gc(case: &StorageMigrationCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = new_engine(
+        dir.path(),
+        &dir.path().join("pages"),
+        &dir.path().join("indexes"),
+        case.shard_id,
+    );
+    execute_storage_steps(&engine, case.shard_id, &case.operations, &case.name);
+    let dirty_slots = engine
+        .slot_storage_summaries(case.shard_id)
+        .into_iter()
+        .filter(|summary| summary.dirty_generation > 0)
+        .map(|summary| summary.routing_slot)
+        .collect::<Vec<_>>();
+    assert!(!dirty_slots.is_empty());
+    let lifecycle = engine.apply_storage_lifecycle(StorageLifecycleRequest {
+        shard_id: case.shard_id,
+        selected_dump_slots: dirty_slots,
+        max_dump_slots_per_round: 64,
+        min_undumped_oplog_records: 0,
+        purge_delayed_destroy: true,
+        prune_slot_dump_manifests: true,
+        roll_forward_slot_dump_installs: true,
+        follower_replay_cursors: vec![SlotDumpFollowerReplayCursor {
+            follower_id: "unified-storage-lagging-follower".to_string(),
+            shard_id: case.shard_id,
+            oplog_sequence: 0,
+            index_log_sequence: 0,
+        }],
+        invalidate_cache: true,
+        warm_cache: true,
+    });
+    assert!(lifecycle.dump_manifest.is_some());
+    assert_eq!(lifecycle.cache_warmup.failed_page_refs, 0);
+    assert!(
+        lifecycle.manifest_prune_plan.retained_manifest_ids.len()
+            >= lifecycle.manifest_prune_plan.prunable_manifest_ids.len(),
+        "case={} follower-safe GC should retain at least as many manifests as it prunes",
+        case.name
+    );
+    assert_clean_storage_recovery(&engine, case.shard_id, &case.name);
+}
+
+fn verify_storage_cache_refill(case: &StorageMigrationCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = new_engine(
+        dir.path(),
+        &dir.path().join("pages"),
+        &dir.path().join("indexes"),
+        case.shard_id,
+    );
+    execute_storage_steps(&engine, case.shard_id, &case.operations, &case.name);
+    engine.cache().invalidate_shard(case.shard_id).unwrap();
+    let before = engine.storage_cache_inspection_report(case.shard_id);
+    assert_eq!(before.entries.len(), 0);
+    let selected_slots = engine
+        .slot_storage_summaries(case.shard_id)
+        .into_iter()
+        .filter(|summary| summary.page_ref_count > 0)
+        .map(|summary| summary.routing_slot)
+        .collect::<Vec<_>>();
+    let report = engine.storage_cache_warmup_report(case.shard_id, selected_slots);
+    assert!(report.considered_page_refs > 0);
+    assert!(report.page_store_reads > 0);
+    assert_eq!(report.failed_page_refs, 0);
+    assert_eq!(report.warmed_page_refs, report.considered_page_refs);
+    let after = engine.storage_cache_inspection_report(case.shard_id);
+    assert!(!after.entries.is_empty());
+    assert!(!after.slot_summaries.is_empty());
+}
+
+async fn verify_storage_shared_store_replay(
+    case: &StorageMigrationCase,
+    mode: SharedStoreStorageMode,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(FileObjectStore::new(
+        dir.path().join(format!("objects-{mode:?}")),
+    ));
+    let replicator = SharedStoreReplicator::new("unified-storage-corpus", store);
+    let writer = replicator.storage_writer(mode, 1);
+
+    for step in case.operations.iter().filter(|step| step.storage_mutation) {
+        writer
+            .write(case.shard_id, step.command.clone())
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "case={} step={} shared-store write failed: {error}",
+                    case.name, step.name
+                )
+            });
+    }
+    if mode == SharedStoreStorageMode::Async {
+        while writer.queued_len() > 0 {
+            writer
+                .flush_pending(1)
+                .await
+                .expect("async shared-store replay flush should succeed");
+        }
+    }
+
+    let follower_dir = tempfile::tempdir().unwrap();
+    let follower = new_engine(
+        follower_dir.path(),
+        &follower_dir.path().join("pages"),
+        &follower_dir.path().join("indexes"),
+        case.shard_id,
+    );
+    let replay = replicator
+        .replay_oplog_strict(case.shard_id, 0, &follower)
+        .await
+        .expect("shared-store replay should succeed");
+    assert_eq!(
+        replay.applied,
+        case.operations
+            .iter()
+            .filter(|step| step.storage_mutation)
+            .count()
+    );
+    execute_storage_steps(&follower, case.shard_id, &case.expected_reads, &case.name);
+    assert_clean_storage_recovery(&follower, case.shard_id, &case.name);
+}
+
+fn execute_storage_steps(
+    engine: &TemporalEngine,
+    shard_id: u64,
+    steps: &[StorageMigrationStep],
+    case_name: &str,
+) {
+    for step in steps {
+        let response = engine.execute_durable(ExecuteRequest {
+            shard_id,
+            command: step.command.clone(),
+        });
+        assert!(
+            response.status.ok,
+            "case={} step={} failed status={:?}",
+            case_name, step.name, response.status
+        );
+        if let Some(expected) = &step.expect {
+            assert_eq!(
+                &response.response, expected,
+                "case={} step={} response mismatch",
+                case_name, step.name
+            );
+        }
+    }
+}
+
+fn assert_clean_storage_recovery(engine: &TemporalEngine, shard_id: u64, case_name: &str) {
+    let recovery = engine.storage_recovery_report(shard_id);
+    assert!(
+        recovery.all_live_pages_readable,
+        "case={} live pages should be readable: {:?}",
+        case_name, recovery.unreadable_page_refs
+    );
+    assert!(
+        recovery.segment_integrity.integrity_ok,
+        "case={} segment integrity failed: {:?}",
+        case_name, recovery.segment_integrity
+    );
+    assert_eq!(recovery.segment_integrity.stale_page_ref_count, 0);
+    assert_eq!(recovery.segment_integrity.corrupt_page_segment_count, 0);
+    assert_eq!(recovery.segment_integrity.unreadable_page_ref_count, 0);
+    assert_eq!(
+        recovery
+            .feature_page_layout
+            .missing_indexed_timestamps
+            .len(),
+        0
+    );
+    assert_eq!(
+        recovery.feature_page_layout.orphan_packed_timestamps.len(),
+        0
+    );
+    assert_eq!(
+        recovery
+            .feature_page_layout
+            .duplicate_packed_timestamps
+            .len(),
+        0
+    );
 }
 
 fn assert_step_status(case: &UnifiedCase, step: &UnifiedStep, actual: &Status) {

@@ -29,11 +29,11 @@ Current corpus:
 ```text
 schema_version: 1
 name: temporalstore-unified-cpp-rust-corpus
-cases: 47
-steps: 134
-executable behavior cases: 20
-executable behavior steps: 100
-required command kinds: 54
+cases: 53
+steps: 140
+executable behavior cases: 26
+executable behavior steps: 106
+required command kinds: 59
 required response kinds: 19
 C++ existing-test parity surfaces: 86 unique required paths plus 54 Raft path references
 ```
@@ -67,6 +67,16 @@ The shared cases are:
   count semantics, batch query groups, and missing sequence groups.
 - `context_missing_node_semantics`: missing Context node returns a stable object key with `null`
   node.
+- `storage_dump_load_recovery`: Rust executes the C++ migration storage corpus through slot
+  dump/load, restart, recovery, and logical reads.
+- `storage_fault_matrix`: Rust validates checksum mismatch, partial manifest, missing segment,
+  stale manifest, and corrupt page-segment rejection.
+- `storage_follower_safe_gc`: Rust runs storage lifecycle with a lagging follower cursor and
+  verifies recovery stays clean.
+- `storage_cache_refill`: Rust invalidates cache, warms from page-store refs, and verifies memory
+  refill stats.
+- `storage_shared_store_sync_replay` and `storage_shared_store_async_replay`: Rust replays the C++
+  migration storage corpus through sync and async local shared-store replication.
 - C++ storage/Raft parity surfaces are split into narrow `existing_test` cases so missing C++
   coverage fails by exact gap:
   `cpp_storage_object_page_slot_parity_surfaces`,
@@ -232,8 +242,9 @@ These are not yet true same tests:
 - Rust-only product behavior tests under `crates/temporalstore-rust/src/**` or
   `crates/temporalstore-rust/tests/**` that do not yet have a shared corpus case.
 - C++ local smoke tests that do not consume `compat/unified_temporalstore_cases.json`.
-- Rust storage migration tests using `compat/storage_migration_corpus.json`; those should either
-  become a sibling shared storage corpus or be limited to Rust migration adapter internals.
+- Rust storage migration tests using `compat/storage_migration_corpus.json`; the main dump/load,
+  fault-matrix, cache-refill, and shared-store replay paths are now referenced from the unified
+  corpus, while adapter-only migration details can remain Rust-local.
 - Rust SDK contract validation in `tools/validate_sdk_contract.py`; that check protects the
   versioned open-source API schema, but behavior should still be represented in shared cases.
 - C++ p99/performance gates; those compare thresholds and workload classes, but should eventually
@@ -463,7 +474,7 @@ Result: all 8 iterations passed against the 34-case shared corpus.
 
 ## Current Unified API/Model Expansion: 2026-06-16
 
-The shared corpus has 47 cases and 134 steps after exact C++ Raft case-name unification. Four
+The shared corpus has 53 cases and 140 steps after exact C++ Raft case-name unification. Ten
 C++-named Rust-local behavior groups were promoted into executable shared cases:
 
 ```text
@@ -471,14 +482,23 @@ feature_policy_filter_aggregate_lifecycle
 sequence_batch_filter_groups
 ips_snapshot_stat_filter_batch
 risk_manager_debug_fol
+storage_dump_load_recovery
+storage_fault_matrix
+storage_follower_safe_gc
+storage_cache_refill
+storage_shared_store_sync_replay
+storage_shared_store_async_replay
 ```
 
 These cases cover advanced Feature append policy, aggregate query, replace/delete lifecycle,
 filtered C++ feature-row payloads, Sequence filtered queries, scan-bound count semantics, batch
 query groups, missing sequence groups, IPS snapshot/filter/stat/batch metadata behavior, and Risk
-manager/debug/FOL behavior.
+manager/debug/FOL behavior. The storage cases cover slot dump/load restart recovery, manifest
+fault rejection, follower-cursor lifecycle protection, cache refill from page-store refs, and sync
+plus async local shared-store replay.
 
-The Rust runner executes all 100 executable shared behavior steps through both direct engine and
-local HTTP client paths. The C++ hook validates the same 47-case corpus, current context contract,
+The Rust runner executes 100 product behavior steps through both direct engine and local HTTP
+client paths, plus 6 storage parity steps through direct engine/admin storage paths. The C++ hook
+validates the same 53-case corpus, current context contract,
 coverage manifest, duplicate-test rules, exact C++ Raft case names, and required C++ parity
 surfaces.

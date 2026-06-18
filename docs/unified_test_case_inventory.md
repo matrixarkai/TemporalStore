@@ -11,14 +11,14 @@ compat/unified_temporalstore_cases.json
 Current inventory:
 
 ```text
-total cases: 47
-total steps: 134
-executable shared behavior cases: 20
-executable shared behavior steps: 100
+total cases: 53
+total steps: 140
+executable shared behavior cases: 26
+executable shared behavior steps: 106
 C++ existing-test parity surface cases: 27
 C++ existing-test parity surface steps: 34
 C++ required source/test/harness paths: 86 unique paths plus 54 Raft path references
-required command kinds: 54
+required command kinds: 59
 required response kinds: 19
 ```
 
@@ -66,6 +66,12 @@ C++ execution should progressively cover every executable case.
 | `feature_policy_filter_aggregate_lifecycle` | Feature append policy, aggregate, replace/delete, C++ row filtering, and scan-bound count behavior. |
 | `sequence_batch_filter_groups` | Sequence unsorted writes, filtered ordered reads, batch groups, and missing sequence groups. |
 | `context_missing_node_semantics` | Missing Context node returns a stable object key and `null` node. |
+| `storage_dump_load_recovery` | Rust executes the C++ migration storage corpus through slot dump/load, restart, recovery, and logical reads. |
+| `storage_fault_matrix` | Rust validates checksum mismatch, partial manifest, missing segment, stale manifest, and corrupt page-segment rejection. |
+| `storage_follower_safe_gc` | Rust runs storage lifecycle with a lagging follower cursor and verifies recovery stays clean. |
+| `storage_cache_refill` | Rust invalidates cache, warms from page-store refs, and verifies memory refill stats. |
+| `storage_shared_store_sync_replay` | Rust replays the C++ migration storage corpus through sync local shared-store replication. |
+| `storage_shared_store_async_replay` | Rust replays the C++ migration storage corpus through async local shared-store replication. |
 
 ## C++ Existing-Test Parity Surface Cases
 
@@ -109,8 +115,8 @@ Yes. Current Rust-local attributed test count is:
 
 ```text
 Rust attributed tests: 540
-shared corpus cases: 47
-shared corpus steps: 134
+shared corpus cases: 53
+shared corpus steps: 140
 C++ existing-test surfaces: 83
 ```
 

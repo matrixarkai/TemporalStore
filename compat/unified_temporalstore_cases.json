@@ -50,7 +50,13 @@
       "cpp_metaserver_scheduler_repair_parity_surfaces",
       "cpp_data_node_lifecycle_server_parity_surfaces",
       "ips_snapshot_stat_filter_batch",
-      "risk_manager_debug_fol"
+      "risk_manager_debug_fol",
+      "storage_dump_load_recovery",
+      "storage_fault_matrix",
+      "storage_follower_safe_gc",
+      "storage_cache_refill",
+      "storage_shared_store_sync_replay",
+      "storage_shared_store_async_replay"
     ],
     "required_raft_case_names": [
       "storage_data_raft_replication_gtest",
@@ -113,7 +119,12 @@
       "risk_fol_set",
       "risk_fol_query",
       "risk_manager",
-      "risk_debug"
+      "risk_debug",
+      "storage_dump_load_recovery",
+      "storage_fault_matrix",
+      "storage_follower_safe_gc",
+      "storage_cache_refill",
+      "storage_shared_store_replay"
     ],
     "required_response_kinds": [
       "empty",
@@ -2653,6 +2664,92 @@
             "kind": "context_node",
             "object_key": "ctx:node:123:999",
             "node": null
+          }
+        }
+      ]
+    },
+    {
+      "name": "storage_dump_load_recovery",
+      "shard_id": 11,
+      "steps": [
+        {
+          "name": "storage_dump_load_recovery_from_cpp_migration_case",
+          "skip_client": true,
+          "command": {
+            "kind": "storage_dump_load_recovery",
+            "migration_case": "cpp_logical_storage_models_packed_timestamped_pages"
+          }
+        }
+      ]
+    },
+    {
+      "name": "storage_fault_matrix",
+      "shard_id": 11,
+      "steps": [
+        {
+          "name": "storage_rejects_corrupt_partial_missing_and_stale_manifests",
+          "skip_client": true,
+          "command": {
+            "kind": "storage_fault_matrix",
+            "migration_case": "cpp_logical_storage_models_packed_timestamped_pages"
+          }
+        }
+      ]
+    },
+    {
+      "name": "storage_follower_safe_gc",
+      "shard_id": 11,
+      "steps": [
+        {
+          "name": "storage_lifecycle_honors_lagging_follower_cursor",
+          "skip_client": true,
+          "command": {
+            "kind": "storage_follower_safe_gc",
+            "migration_case": "cpp_logical_storage_models_packed_timestamped_pages"
+          }
+        }
+      ]
+    },
+    {
+      "name": "storage_cache_refill",
+      "shard_id": 11,
+      "steps": [
+        {
+          "name": "storage_cache_refills_from_page_store_after_invalidation",
+          "skip_client": true,
+          "command": {
+            "kind": "storage_cache_refill",
+            "migration_case": "cpp_logical_storage_models_packed_timestamped_pages"
+          }
+        }
+      ]
+    },
+    {
+      "name": "storage_shared_store_sync_replay",
+      "shard_id": 11,
+      "steps": [
+        {
+          "name": "storage_shared_store_sync_replays_cpp_migration_case",
+          "skip_client": true,
+          "command": {
+            "kind": "storage_shared_store_replay",
+            "migration_case": "cpp_logical_storage_models_packed_timestamped_pages",
+            "mode": "Sync"
+          }
+        }
+      ]
+    },
+    {
+      "name": "storage_shared_store_async_replay",
+      "shard_id": 11,
+      "steps": [
+        {
+          "name": "storage_shared_store_async_replays_cpp_migration_case",
+          "skip_client": true,
+          "command": {
+            "kind": "storage_shared_store_replay",
+            "migration_case": "cpp_logical_storage_models_packed_timestamped_pages",
+            "mode": "Async"
           }
         }
       ]
