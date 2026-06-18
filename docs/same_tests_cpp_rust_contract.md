@@ -29,13 +29,13 @@ Current corpus:
 ```text
 schema_version: 1
 name: temporalstore-unified-cpp-rust-corpus
-cases: 45
-steps: 110
-executable behavior cases: 18
-executable behavior steps: 78
-required command kinds: 43
-required response kinds: 16
-C++ existing-test parity surfaces: 83 unique required paths plus 30 exact Raft alias references
+cases: 47
+steps: 134
+executable behavior cases: 20
+executable behavior steps: 100
+required command kinds: 54
+required response kinds: 19
+C++ existing-test parity surfaces: 86 unique required paths plus 54 Raft path references
 ```
 
 The shared cases are:
@@ -47,8 +47,12 @@ The shared cases are:
 - `feature_packed_timestamped_pages`: packed timestamped Feature points and restart query.
 - `sequence_cpp_feature_rows`: Sequence rows encoded in the C++ feature-row shape.
 - `ips_options_range`: IPS add/query range with action/table/request metadata.
+- `ips_snapshot_stat_filter_batch`: IPS load, batch-last grouping, snapshot, metadata filter,
+  stats, and snapshot-report behavior.
 - `risk_counter_window`: Risk increment/count over a time window.
 - `risk_family_query_and_delete`: C++ risk-family set/query plus common delete cleanup.
+- `risk_manager_debug_fol`: Risk set-and-get, first/last FOL selection, manager summary, and
+  debug window report behavior.
 - `context_node_roundtrip`: Context node upsert/read.
 - `context_event_index_audit_dirty_models`: Context event, secondary index, prompt-pack audit, and
   dirty-summary models with restart-read persistence.
@@ -303,7 +307,7 @@ Result:
 - Rust unified corpus runner passed.
 - Rust direct engine path passed.
 - Rust `TemporalStoreClient` plus local HTTP path passed.
-- C++ unified hook passed against the same 45-case `compat/unified_temporalstore_cases.json`.
+- C++ unified hook passed against the then-current 45-case `compat/unified_temporalstore_cases.json`.
 - C++ hook validated the shared `coverage` manifest, duplicate-test rejection rules, and current
   unified command names.
 - C++ hook confirmed the required local C++ parity surfaces are present.
@@ -405,7 +409,7 @@ Validation in each iteration:
   command-response cases.
 - Rust validates the storage/Raft `existing_test` case names and command kind in the same shared
   coverage manifest.
-- C++ hook validates the same 45-case corpus, including required storage/Raft source and harness
+- C++ hook validates the then-current 45-case corpus, including required storage/Raft source and harness
   paths.
 - C++ native context contract validates the shared context subset.
 
@@ -459,19 +463,22 @@ Result: all 8 iterations passed against the 34-case shared corpus.
 
 ## Current Unified API/Model Expansion: 2026-06-16
 
-The shared corpus has 45 cases and 110 steps after exact C++ Raft case-name unification. Two
+The shared corpus has 47 cases and 134 steps after exact C++ Raft case-name unification. Four
 C++-named Rust-local behavior groups were promoted into executable shared cases:
 
 ```text
 feature_policy_filter_aggregate_lifecycle
 sequence_batch_filter_groups
+ips_snapshot_stat_filter_batch
+risk_manager_debug_fol
 ```
 
 These cases cover advanced Feature append policy, aggregate query, replace/delete lifecycle,
 filtered C++ feature-row payloads, Sequence filtered queries, scan-bound count semantics, batch
-query groups, and missing sequence groups.
+query groups, missing sequence groups, IPS snapshot/filter/stat/batch metadata behavior, and Risk
+manager/debug/FOL behavior.
 
-The Rust runner executes all 78 executable shared behavior steps through both direct engine and
-local HTTP client paths. The C++ hook validates the same 45-case corpus, current context contract,
+The Rust runner executes all 100 executable shared behavior steps through both direct engine and
+local HTTP client paths. The C++ hook validates the same 47-case corpus, current context contract,
 coverage manifest, duplicate-test rules, exact C++ Raft case names, and required C++ parity
 surfaces.

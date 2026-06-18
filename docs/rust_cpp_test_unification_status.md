@@ -127,13 +127,13 @@ Shared C++/Rust corpus:
 
 ```text
 compat/unified_temporalstore_cases.json
-cases: 45
-steps: 110
-executable behavior cases: 18
-executable behavior steps: 78
+cases: 47
+steps: 134
+executable behavior cases: 20
+executable behavior steps: 100
 C++ existing-test parity surface cases: 27
-C++ existing-test parity surface steps: 32
-C++ existing-test required paths: 83 unique paths plus 30 exact Raft alias references
+C++ existing-test parity surface steps: 34
+C++ existing-test required paths: 86 unique paths plus 54 Raft path references
 ```
 
 Detailed inventory: `docs/unified_test_case_inventory.md`.
@@ -147,7 +147,8 @@ Detailed inventory: `docs/unified_test_case_inventory.md`.
 | C++ migration corpus test | 1 | `crates/temporalstore-rust/tests/storage_migration_corpus.rs` | Rust consumes converted C++ storage artifacts and validates storage lifecycle paths. |
 
 The shared corpus currently covers common/string/hash/set, Redis-compatible set, Feature,
-Sequence, advanced Feature policy/filter/aggregate flows, Sequence batch/filter groups, IPS, Risk,
+Sequence, advanced Feature policy/filter/aggregate flows, Sequence batch/filter groups, IPS
+snapshot/filter/stat/batch metadata flows, Risk manager/debug/FOL flows,
 Context, restart reads, missing-key semantics, timestamp bounds, current C++ storage/Raft surface
 gates, and C++ client/proxy/metaserver/data-node control-plane surface gates. Ingestion/ops parity
 is currently enforced as Rust evidence plus local harness gates; the next same-test step is to
@@ -169,7 +170,9 @@ shared product/parity cases versus true language-internal tests. The shared port
 | Rust storage crash harness | 2 | `tests/storage_crash_harness.rs` |
 | Other local tests | 24 | readiness, e2e, partition id, external chaos, HTTP, replica replay |
 
-Total remaining Rust-specific tests: **467**.
+The duplicate-test validator currently reports `rust_attributed_tests=540`,
+`shared_corpus_cases=47`, `shared_corpus_steps=134`, and `cpp_existing_test_surfaces=83`.
+The Rust-attributed count is a migration backlog, not the desired final state.
 
 Target disposition:
 
@@ -223,13 +226,13 @@ every executable corpus command and compares every expected response.
 
 Until that exists, the honest status is:
 
-- Rust executes all 78 executable shared behavior steps.
-- C++ validates the 45-case corpus shape, current context subset, exact C++ Raft case names,
+- Rust executes all 100 executable shared behavior steps.
+- C++ validates the 47-case corpus shape, current context subset, exact C++ Raft case names,
   C++ storage/Raft required surfaces, the shared `raft_production_gate` metadata points at both
   `run_storage_raft_production_readiness.sh` and `run_raft_distributed_parity.sh`, C++
   client/proxy/metaserver/data-node control-plane required surfaces, the combined data-node plus
   metaserver Raft distributed parity gate, and the Rust ingestion/ops evidence gate in unified
   validation.
-- 467 Rust-specific tests remain local. The product-behavior portion should be progressively
+- 540 Rust-attributed tests remain local or partially local. The product-behavior portion should be progressively
   converted into Rust-owned shared corpus cases; only implementation-internal tests should remain
   Rust-specific.

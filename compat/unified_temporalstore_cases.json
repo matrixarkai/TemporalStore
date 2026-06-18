@@ -48,7 +48,9 @@
       "cpp_client_meta_sync_route_parity_surfaces",
       "cpp_proxy_serving_admission_parity_surfaces",
       "cpp_metaserver_scheduler_repair_parity_surfaces",
-      "cpp_data_node_lifecycle_server_parity_surfaces"
+      "cpp_data_node_lifecycle_server_parity_surfaces",
+      "ips_snapshot_stat_filter_batch",
+      "risk_manager_debug_fol"
     ],
     "required_raft_case_names": [
       "storage_data_raft_replication_gtest",
@@ -100,7 +102,18 @@
       "context_query_summary_dirty",
       "common_exists",
       "common_expire",
-      "existing_test"
+      "existing_test",
+      "ips_load",
+      "ips_batch_query_last",
+      "ips_snapshot",
+      "ips_filter",
+      "ips_stat",
+      "ips_snapshot_report",
+      "risk_set_and_get",
+      "risk_fol_set",
+      "risk_fol_query",
+      "risk_manager",
+      "risk_debug"
     ],
     "required_response_kinds": [
       "empty",
@@ -118,7 +131,10 @@
       "context_events",
       "context_index_refs",
       "context_pack_audits",
-      "context_summary_dirty_markers"
+      "context_summary_dirty_markers",
+      "feature_point_groups",
+      "ips_stats",
+      "ips_snapshot_report"
     ]
   },
   "cases": [
@@ -674,6 +690,323 @@
       ]
     },
     {
+      "name": "ips_snapshot_stat_filter_batch",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "ips_load_two_points",
+          "command": {
+            "kind": "ips_load",
+            "key": "unified:ips:deep",
+            "points": [
+              {
+                "timestamp_ms": 5100,
+                "value": [
+                  108,
+                  111,
+                  97,
+                  100,
+                  101,
+                  100,
+                  45,
+                  49,
+                  48
+                ]
+              },
+              {
+                "timestamp_ms": 5200,
+                "value": [
+                  108,
+                  111,
+                  97,
+                  100,
+                  101,
+                  100,
+                  45,
+                  50,
+                  48
+                ]
+              }
+            ]
+          },
+          "expect": {
+            "kind": "integer",
+            "value": 2
+          }
+        },
+        {
+          "name": "ips_add_option_point_table_42",
+          "command": {
+            "kind": "ips_add_with_options",
+            "key": "unified:ips:deep",
+            "timestamp_ms": 5300,
+            "instance": [
+              111,
+              112,
+              116,
+              45,
+              51,
+              48
+            ],
+            "action_type": 7,
+            "table_id": 42,
+            "request_id": "unified-ips-30"
+          },
+          "expect": {
+            "kind": "integer",
+            "value": 1
+          }
+        },
+        {
+          "name": "ips_add_option_point_table_43",
+          "command": {
+            "kind": "ips_add_with_options",
+            "key": "unified:ips:deep",
+            "timestamp_ms": 5400,
+            "instance": [
+              111,
+              112,
+              116,
+              45,
+              52,
+              48
+            ],
+            "action_type": 7,
+            "table_id": 43,
+            "request_id": "unified-ips-40"
+          },
+          "expect": {
+            "kind": "integer",
+            "value": 1
+          }
+        },
+        {
+          "name": "ips_add_other_key_for_batch",
+          "command": {
+            "kind": "ips_add",
+            "key": "unified:ips:other",
+            "timestamp_ms": 5500,
+            "instance": [
+              111,
+              116,
+              104,
+              101,
+              114
+            ]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "ips_snapshot_returns_range_prefix",
+          "command": {
+            "kind": "ips_snapshot",
+            "key": "unified:ips:deep",
+            "start_ms": 5000,
+            "end_ms": 5350,
+            "count": null
+          },
+          "expect": {
+            "kind": "feature_points",
+            "points": [
+              {
+                "timestamp_ms": 5100,
+                "value": [
+                  108,
+                  111,
+                  97,
+                  100,
+                  101,
+                  100,
+                  45,
+                  49,
+                  48
+                ]
+              },
+              {
+                "timestamp_ms": 5200,
+                "value": [
+                  108,
+                  111,
+                  97,
+                  100,
+                  101,
+                  100,
+                  45,
+                  50,
+                  48
+                ]
+              },
+              {
+                "timestamp_ms": 5300,
+                "value": [
+                  111,
+                  112,
+                  116,
+                  45,
+                  51,
+                  48
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "ips_filter_matches_action_and_table",
+          "command": {
+            "kind": "ips_filter",
+            "key": "unified:ips:deep",
+            "start_ms": 5000,
+            "end_ms": 5600,
+            "count": 10,
+            "action_type": 7,
+            "table_id": 42
+          },
+          "expect": {
+            "kind": "feature_points",
+            "points": [
+              {
+                "timestamp_ms": 5300,
+                "value": [
+                  111,
+                  112,
+                  116,
+                  45,
+                  51,
+                  48
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "ips_batch_last_groups_by_key",
+          "command": {
+            "kind": "ips_batch_query_last",
+            "keys": [
+              "unified:ips:deep",
+              "unified:ips:other"
+            ],
+            "count": 1
+          },
+          "expect": {
+            "kind": "feature_point_groups",
+            "groups": [
+              [
+                "unified:ips:deep",
+                [
+                  {
+                    "timestamp_ms": 5400,
+                    "value": [
+                      111,
+                      112,
+                      116,
+                      45,
+                      52,
+                      48
+                    ]
+                  }
+                ]
+              ],
+              [
+                "unified:ips:other",
+                [
+                  {
+                    "timestamp_ms": 5500,
+                    "value": [
+                      111,
+                      116,
+                      104,
+                      101,
+                      114
+                    ]
+                  }
+                ]
+              ]
+            ]
+          }
+        },
+        {
+          "name": "ips_stat_counts_metadata",
+          "command": {
+            "kind": "ips_stat",
+            "key": "unified:ips:deep",
+            "start_ms": 5000,
+            "end_ms": 5600
+          },
+          "expect": {
+            "kind": "ips_stats",
+            "stats": {
+              "total": 4,
+              "first_timestamp_ms": 5100,
+              "last_timestamp_ms": 5400,
+              "action_type_counts": [
+                [
+                  7,
+                  2
+                ]
+              ],
+              "table_id_counts": [
+                [
+                  42,
+                  1
+                ],
+                [
+                  43,
+                  1
+                ]
+              ]
+            }
+          }
+        },
+        {
+          "name": "ips_snapshot_report_counts_pages_and_metadata",
+          "command": {
+            "kind": "ips_snapshot_report",
+            "key": "unified:ips:deep",
+            "start_ms": 5000,
+            "end_ms": 5600,
+            "count": 3
+          },
+          "expect": {
+            "kind": "ips_snapshot_report",
+            "report": {
+              "key": "unified:ips:deep",
+              "start_ms": 5000,
+              "end_ms": 5600,
+              "requested_count": 3,
+              "returned_count": 3,
+              "total_in_range": 4,
+              "first_timestamp_ms": 5100,
+              "last_timestamp_ms": 5400,
+              "action_type_counts": [
+                [
+                  7,
+                  2
+                ]
+              ],
+              "table_id_counts": [
+                [
+                  42,
+                  1
+                ],
+                [
+                  43,
+                  1
+                ]
+              ],
+              "unique_page_ref_count": 3,
+              "packed_timestamped_page_count": 3,
+              "page_segment_ids": [
+                0
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "risk_counter_window",
       "shard_id": 1,
       "steps": [
@@ -759,6 +1092,428 @@
           "expect": {
             "kind": "integer",
             "value": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "risk_manager_debug_fol",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "risk_set_h_10",
+          "command": {
+            "kind": "risk_set",
+            "family": "h",
+            "key": "unified:risk:deep",
+            "timestamp_ms": 6100,
+            "amount": 5
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "risk_set_h_20",
+          "command": {
+            "kind": "risk_set",
+            "family": "h",
+            "key": "unified:risk:deep",
+            "timestamp_ms": 6200,
+            "amount": 7
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "risk_set_cpc_10",
+          "command": {
+            "kind": "risk_set",
+            "family": "cpc",
+            "key": "unified:risk:deep",
+            "timestamp_ms": 6100,
+            "amount": 3
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "risk_set_fol_counter_10",
+          "command": {
+            "kind": "risk_set",
+            "family": "fol",
+            "key": "unified:risk:deep",
+            "timestamp_ms": 6100,
+            "amount": 11
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "risk_set_and_get_cpc_sum",
+          "command": {
+            "kind": "risk_set_and_get",
+            "family": "cpc",
+            "key": "unified:risk:deep",
+            "timestamp_ms": 6200,
+            "amount": 4,
+            "start_ms": 6000,
+            "end_ms": 6300,
+            "aggregator": "sum"
+          },
+          "expect": {
+            "kind": "integer",
+            "value": 7
+          }
+        },
+        {
+          "name": "risk_fol_first_middle",
+          "command": {
+            "kind": "risk_fol_set",
+            "key": "unified:risk:fol:first",
+            "value": [
+              109,
+              105,
+              100,
+              100,
+              108,
+              101
+            ],
+            "occur_time_ms": 6200,
+            "ttl_ms": 60000,
+            "fol_type": "first"
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "risk_fol_first_wins_earlier",
+          "command": {
+            "kind": "risk_fol_set",
+            "key": "unified:risk:fol:first",
+            "value": [
+              102,
+              105,
+              114,
+              115,
+              116
+            ],
+            "occur_time_ms": 6100,
+            "ttl_ms": 60000,
+            "fol_type": "first"
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "risk_fol_last_middle",
+          "command": {
+            "kind": "risk_fol_set",
+            "key": "unified:risk:fol:last",
+            "value": [
+              109,
+              105,
+              100,
+              100,
+              108,
+              101
+            ],
+            "occur_time_ms": 6200,
+            "ttl_ms": 60000,
+            "fol_type": "last"
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "risk_fol_last_wins_later",
+          "command": {
+            "kind": "risk_fol_set",
+            "key": "unified:risk:fol:last",
+            "value": [
+              108,
+              97,
+              115,
+              116
+            ],
+            "occur_time_ms": 6300,
+            "ttl_ms": 60000,
+            "fol_type": "last"
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "risk_fol_query_first",
+          "command": {
+            "kind": "risk_fol_query",
+            "key": "unified:risk:fol:first"
+          },
+          "expect": {
+            "kind": "bytes",
+            "value": [
+              102,
+              105,
+              114,
+              115,
+              116
+            ]
+          }
+        },
+        {
+          "name": "risk_fol_query_last",
+          "command": {
+            "kind": "risk_fol_query",
+            "key": "unified:risk:fol:last"
+          },
+          "expect": {
+            "kind": "bytes",
+            "value": [
+              108,
+              97,
+              115,
+              116
+            ]
+          }
+        },
+        {
+          "name": "risk_manager_counts_all_families",
+          "command": {
+            "kind": "risk_manager",
+            "key": "unified:risk:deep"
+          },
+          "expect": {
+            "kind": "hash_entries",
+            "entries": [
+              [
+                "h_events",
+                [
+                  50
+                ]
+              ],
+              [
+                "h_sum",
+                [
+                  49,
+                  50
+                ]
+              ],
+              [
+                "cpc_events",
+                [
+                  50
+                ]
+              ],
+              [
+                "cpc_sum",
+                [
+                  55
+                ]
+              ],
+              [
+                "fol_events",
+                [
+                  49
+                ]
+              ],
+              [
+                "fol_sum",
+                [
+                  49,
+                  49
+                ]
+              ]
+            ]
+          }
+        },
+        {
+          "name": "risk_debug_reports_window_and_totals",
+          "command": {
+            "kind": "risk_debug",
+            "key": "unified:risk:deep",
+            "start_ms": 6000,
+            "end_ms": 6150
+          },
+          "expect": {
+            "kind": "hash_entries",
+            "entries": [
+              [
+                "key",
+                [
+                  117,
+                  110,
+                  105,
+                  102,
+                  105,
+                  101,
+                  100,
+                  58,
+                  114,
+                  105,
+                  115,
+                  107,
+                  58,
+                  100,
+                  101,
+                  101,
+                  112
+                ]
+              ],
+              [
+                "start_ms",
+                [
+                  54,
+                  48,
+                  48,
+                  48
+                ]
+              ],
+              [
+                "end_ms",
+                [
+                  54,
+                  49,
+                  53,
+                  48
+                ]
+              ],
+              [
+                "h_events",
+                [
+                  50
+                ]
+              ],
+              [
+                "h_sum",
+                [
+                  49,
+                  50
+                ]
+              ],
+              [
+                "h_window_events",
+                [
+                  49
+                ]
+              ],
+              [
+                "h_window_sum",
+                [
+                  53
+                ]
+              ],
+              [
+                "h_window_first_timestamp_ms",
+                [
+                  54,
+                  49,
+                  48,
+                  48
+                ]
+              ],
+              [
+                "h_window_last_timestamp_ms",
+                [
+                  54,
+                  49,
+                  48,
+                  48
+                ]
+              ],
+              [
+                "cpc_events",
+                [
+                  50
+                ]
+              ],
+              [
+                "cpc_sum",
+                [
+                  55
+                ]
+              ],
+              [
+                "cpc_window_events",
+                [
+                  49
+                ]
+              ],
+              [
+                "cpc_window_sum",
+                [
+                  51
+                ]
+              ],
+              [
+                "cpc_window_first_timestamp_ms",
+                [
+                  54,
+                  49,
+                  48,
+                  48
+                ]
+              ],
+              [
+                "cpc_window_last_timestamp_ms",
+                [
+                  54,
+                  49,
+                  48,
+                  48
+                ]
+              ],
+              [
+                "fol_events",
+                [
+                  49
+                ]
+              ],
+              [
+                "fol_sum",
+                [
+                  49,
+                  49
+                ]
+              ],
+              [
+                "fol_window_events",
+                [
+                  49
+                ]
+              ],
+              [
+                "fol_window_sum",
+                [
+                  49,
+                  49
+                ]
+              ],
+              [
+                "fol_window_first_timestamp_ms",
+                [
+                  54,
+                  49,
+                  48,
+                  48
+                ]
+              ],
+              [
+                "fol_window_last_timestamp_ms",
+                [
+                  54,
+                  49,
+                  48,
+                  48
+                ]
+              ]
+            ]
           }
         }
       ]

@@ -11,15 +11,15 @@ compat/unified_temporalstore_cases.json
 Current inventory:
 
 ```text
-total cases: 45
-total steps: 112
-executable shared behavior cases: 18
-executable shared behavior steps: 78
+total cases: 47
+total steps: 134
+executable shared behavior cases: 20
+executable shared behavior steps: 100
 C++ existing-test parity surface cases: 27
 C++ existing-test parity surface steps: 34
-C++ required source/test/harness paths: 83 unique paths plus 30 exact Raft alias references
-required command kinds: 43
-required response kinds: 16
+C++ required source/test/harness paths: 86 unique paths plus 54 Raft path references
+required command kinds: 54
+required response kinds: 19
 ```
 
 The target is no duplicated Rust-only and C++-only tests for product behavior. Product behavior
@@ -53,8 +53,10 @@ C++ execution should progressively cover every executable case.
 | `feature_packed_timestamped_pages` | Packed timestamped Feature points plus restart query. |
 | `sequence_cpp_feature_rows` | Sequence rows in the C++ feature-row shape. |
 | `ips_options_range` | IPS add/query with action/table/request metadata. |
+| `ips_snapshot_stat_filter_batch` | IPS load, batch-last grouping, snapshot, metadata filter, stats, and snapshot-report behavior. |
 | `risk_counter_window` | Risk increment/count over a timestamp window. |
 | `risk_family_query_and_delete` | Risk family set/query plus common delete cleanup. |
+| `risk_manager_debug_fol` | Risk set-and-get, first/last FOL selection, manager summary, and debug window report behavior. |
 | `context_node_roundtrip` | Context node upsert/read. |
 | `context_event_index_audit_dirty_models` | Context event, secondary index, prompt-pack audit, and dirty-summary models. |
 | `common_restart_persistence` | String/hash restart-read persistence. |
@@ -106,12 +108,13 @@ to them.
 Yes. Current Rust-local attributed test count is:
 
 ```text
-Rust attributed tests: 484
-directly tied to shared/C++ parity harnesses: 17
-still Rust-specific: 467
+Rust attributed tests: 540
+shared corpus cases: 47
+shared corpus steps: 134
+C++ existing-test surfaces: 83
 ```
 
-The `467` Rust-specific tests are a migration backlog, not the desired final state. They should be
+The Rust-attributed tests are a migration backlog, not the desired final state. They should be
 split into:
 
 | Rust-local bucket | Move into shared corpus | Keep Rust-specific |
