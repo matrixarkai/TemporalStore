@@ -156,9 +156,9 @@ The readiness gate intentionally still blocks production readiness on:
   replica-engine recovery contract.
 - Raft metaserver membership readiness is now explicit in the readiness gate: topology membership
   plans, data-Raft apply reports, learner catch-up/promotion, leader transfer, and voter removal
-  are covered. Networked scheduler transport, persisted scheduler task state, and real data-node
-  Raft group execution remain blocked until the metaserver drives `/raft/membership/apply`
-  against production data-node groups.
+  are covered. Networked scheduler `/raft/membership/apply` transport and persisted scheduler task
+  state are covered. Real data-node Raft group execution remains blocked until the workflow is
+  validated under follower lag, failover, scale up/down, and secondary replication.
 - Raft transport security readiness is now explicit in the readiness gate: auth-token validation,
   mTLS cert/key/CA config validation, authenticated HTTP transport, and plaintext-only local chaos
   guardrails are covered. Real service-process mTLS enforcement remains blocked until every

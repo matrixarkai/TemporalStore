@@ -745,7 +745,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "metaserver-owned data-Raft membership workflow reports learner add, catch-up verification, promotion, leader transfer, and voter removal"
                     .to_string(),
-                "Raft metaserver membership readiness covers topology membership plans, data-Raft apply reports, learner catch-up/promotion, leader transfer, and voter removal while keeping networked scheduler transport and persisted real-group execution fail-closed"
+                "Raft metaserver membership readiness covers topology membership plans, data-Raft apply reports, learner catch-up/promotion, leader transfer, voter removal, networked scheduler /raft/membership/apply transport, and persisted scheduler task state while keeping real data-node group execution fail-closed"
                     .to_string(),
                 "ByteRaft-style leader write authority, ReadIndex guards, learner catch-up/promotion checks, and fail-closed stale leader-transfer checks are modeled locally"
                     .to_string(),
@@ -757,9 +757,9 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
             missing: vec![
                 "validate the atomic applied-index/storage/snapshot fence through the real multi-process data-node OpenRaft rollout"
                     .to_string(),
-                "networked metaserver Raft transport and scheduler loop that automatically drives /raft/membership/apply across real data-node processes and persists task state"
-                    .to_string(),
                 "make metaserver own learner add, catch-up verification, promotion, leader movement, and voter removal against real data-node Raft groups"
+                    .to_string(),
+                "validate metaserver shard membership changes with networked Raft groups under follower lag, failover, scale up/down, and secondary replication"
                     .to_string(),
                 "production mTLS transport implementation instead of validation-only config"
                     .to_string(),
@@ -1843,7 +1843,7 @@ mod tests {
             .expect("data-node raft area must exist");
         assert!(data_raft
             .iter()
-            .any(|item| item.contains("applied Raft index")));
+            .any(|item| item.contains("atomic applied-index")));
         assert!(data_raft.iter().any(|item| item.contains("learner add")));
         assert!(data_raft
             .iter()
@@ -1886,7 +1886,8 @@ mod tests {
         }));
         assert!(covered.iter().any(|item| {
             item.contains("Raft metaserver membership readiness")
-                && item.contains("real-group execution fail-closed")
+                && item.contains("networked scheduler /raft/membership/apply transport")
+                && item.contains("real data-node group execution fail-closed")
         }));
         assert!(covered.iter().any(|item| {
             item.contains("Raft transport security readiness")

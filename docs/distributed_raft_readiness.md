@@ -326,8 +326,9 @@ Still missing:
 
 - production OpenRaft durable log-store rollout across real processes beyond the feature-gated
   local adapter tests
-- metaserver scheduler loop that automatically drives `/raft/membership/apply` for each shard and
-  persists task state
+- validation that the metaserver-owned membership scheduler drives real data-node Raft groups
+  through follower lag, failover, scale up/down, and secondary replication after applying
+  `/raft/membership/apply` tasks
 - production engine snapshot install with freeze/flush/download/verify/install lifecycle; the local
   external snapshot path now has process-level admin routes, stale-local-state preflight before
   download, manifest/checksum/size verification, and target replica engine-state install

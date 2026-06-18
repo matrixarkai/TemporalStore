@@ -17,11 +17,12 @@ use temporalstore_rust::meta::{
 };
 use temporalstore_rust::raft::{
     ProductionMetaRaftRuntime, ProductionMetaRaftRuntimeOptions, ProductionRaftEngineKind,
-    ProductionRaftNode, RaftClusterStatus, RaftConfig, RaftNodeId,
+    ProductionRaftNode, RaftClusterStatus, RaftConfig, RaftMembershipChangeReport, RaftNodeId,
 };
 use temporalstore_rust::rebalance::{
-    DeterministicTaskScheduler, RebalanceStep, SchedulerRunReport, SchedulerTask,
-    SchedulerTaskKind, SchedulerTaskResult, TaskSchedulerOptions, TaskSchedulerSnapshot,
+    DeterministicTaskScheduler, MembershipUpdateTaskPlan, RebalanceStep, SchedulerRunReport,
+    SchedulerTask, SchedulerTaskKind, SchedulerTaskResult, TaskSchedulerOptions,
+    TaskSchedulerSnapshot,
 };
 use temporalstore_rust::{
     production_readiness_report, types::Status, DataNodeLifecycleReport,
@@ -144,6 +145,8 @@ struct MetaSchedulerExecuteResponse {
     node_lifecycle: Option<DataNodeLifecycleReport>,
     #[serde(default)]
     lifecycle_state: Option<DataNodeShardLifecycleState>,
+    #[serde(default)]
+    raft_membership_report: Option<RaftMembershipChangeReport>,
     queue_len: usize,
 }
 
@@ -167,6 +170,8 @@ struct MetaSchedulerExecutionRecord {
     lifecycle_token: Option<SchedulerLifecycleToken>,
     #[serde(default)]
     lifecycle_state: Option<DataNodeShardLifecycleState>,
+    #[serde(default)]
+    raft_membership_report: Option<RaftMembershipChangeReport>,
     queue_len: usize,
 }
 
@@ -175,6 +180,17 @@ struct MetaSchedulerNodeCall {
     path: String,
     skipped: bool,
     status: Status,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct RaftMembershipApplyRequest {
+    voters: Vec<RaftNodeId>,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct RaftMembershipApplyResponse {
+    status: Status,
+    report: Option<RaftMembershipChangeReport>,
 }
 
 #[derive(Debug, Clone, Copy, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
@@ -315,6 +331,7 @@ impl MetaTaskScheduler {
                 scheduler_report: None,
                 node_lifecycle: None,
                 lifecycle_state: None,
+                raft_membership_report: None,
                 queue_len: self.queue_len(),
             };
         };
@@ -331,18 +348,23 @@ impl MetaTaskScheduler {
                 scheduler_report: None,
                 node_lifecycle: None,
                 lifecycle_state: None,
+                raft_membership_report: execution.raft_membership_report,
                 queue_len: self.queue_len(),
             };
         }
 
         let result = classify_scheduler_execution_result(&execution.status);
         let mut calls = execution.calls;
-        let (node_lifecycle, lifecycle_state) = fetch_node_lifecycle(
-            &request.node_addr,
-            request.http.into(),
-            execution.lifecycle_token.as_ref(),
-            &mut calls,
-        );
+        let (node_lifecycle, lifecycle_state) = if execution.lifecycle_token.is_some() {
+            fetch_node_lifecycle(
+                &request.node_addr,
+                request.http.into(),
+                execution.lifecycle_token.as_ref(),
+                &mut calls,
+            )
+        } else {
+            (None, None)
+        };
         let run = self.run_next(MetaSchedulerRunRequest {
             now_ms: request.now_ms,
             result,
@@ -363,6 +385,7 @@ impl MetaTaskScheduler {
             scheduler_report: run.report.clone(),
             node_lifecycle,
             lifecycle_state: lifecycle_state.clone(),
+            raft_membership_report: execution.raft_membership_report.clone(),
             queue_len: run.queue_len,
         };
         self.record_execution(MetaSchedulerExecutionRecord {
@@ -382,6 +405,7 @@ impl MetaTaskScheduler {
             calls,
             lifecycle_token: response.lifecycle_token.clone(),
             lifecycle_state,
+            raft_membership_report: response.raft_membership_report.clone(),
             queue_len: response.queue_len,
         });
         response
@@ -533,6 +557,7 @@ struct SchedulerNodeExecution {
     status: Status,
     lifecycle_token: Option<SchedulerLifecycleToken>,
     calls: Vec<MetaSchedulerNodeCall>,
+    raft_membership_report: Option<RaftMembershipChangeReport>,
 }
 
 fn execute_scheduler_task_on_node(
@@ -540,13 +565,33 @@ fn execute_scheduler_task_on_node(
     request: &MetaSchedulerExecuteRequest,
 ) -> SchedulerNodeExecution {
     let SchedulerTaskKind::RebalanceStep(step) = &task.kind else {
+        if let SchedulerTaskKind::UpdateMembership(plan) = &task.kind {
+            let voters = membership_voters_from_plan(plan);
+            let (status, report) = post_raft_membership_or_error(
+                &request.node_addr,
+                voters,
+                request.http.into(),
+                request.dry_run,
+            );
+            return SchedulerNodeExecution {
+                status: status.clone(),
+                lifecycle_token: None,
+                calls: vec![MetaSchedulerNodeCall {
+                    path: "/raft/membership/apply".to_string(),
+                    skipped: request.dry_run,
+                    status,
+                }],
+                raft_membership_report: report,
+            };
+        }
         return SchedulerNodeExecution {
             status: Status::error(
                 "unsupported_scheduler_task",
-                "remote execution only supports rebalance steps",
+                "remote execution only supports rebalance and membership tasks",
             ),
             lifecycle_token: None,
             calls: Vec::new(),
+            raft_membership_report: None,
         };
     };
 
@@ -571,6 +616,7 @@ fn execute_scheduler_task_on_node(
                 status: calls.last().unwrap().status.clone(),
                 lifecycle_token: token.clone().into(),
                 calls,
+                raft_membership_report: None,
             };
         }
     }
@@ -590,6 +636,7 @@ fn execute_scheduler_task_on_node(
                     ),
                     lifecycle_token: token,
                     calls,
+                    raft_membership_report: None,
                 };
             };
             if load.shard_id != *shard_id || load.load_version != *load_version {
@@ -600,6 +647,7 @@ fn execute_scheduler_task_on_node(
                     ),
                     lifecycle_token: token,
                     calls,
+                    raft_membership_report: None,
                 };
             }
             load.local_node_id.get_or_insert(*node_id);
@@ -631,6 +679,7 @@ fn execute_scheduler_task_on_node(
                     ),
                     lifecycle_token: token,
                     calls,
+                    raft_membership_report: None,
                 };
             };
             if load.shard_id != *shard_id || load.load_version != *load_version {
@@ -641,6 +690,7 @@ fn execute_scheduler_task_on_node(
                     ),
                     lifecycle_token: token,
                     calls,
+                    raft_membership_report: None,
                 };
             }
             load.local_node_id.get_or_insert(*node_id);
@@ -687,7 +737,21 @@ fn execute_scheduler_task_on_node(
         status,
         lifecycle_token: token,
         calls,
+        raft_membership_report: None,
     }
+}
+
+fn membership_voters_from_plan(plan: &MembershipUpdateTaskPlan) -> Vec<RaftNodeId> {
+    let mut voters: Vec<RaftNodeId> = plan
+        .requests
+        .first()
+        .map(|peer| peer.request.replica_node_ids.clone())
+        .unwrap_or_else(|| plan.active_replica_ids.clone())
+        .into_iter()
+        .collect();
+    voters.sort_unstable();
+    voters.dedup();
+    voters
 }
 
 fn classify_scheduler_execution_result(status: &Status) -> SchedulerTaskResult {
@@ -753,6 +817,25 @@ fn post_unload_or_error(
     post_json_with_options::<_, UnloadShardResponse>(addr, path, request, options)
         .map(|response| response.status)
         .unwrap_or_else(|err| Status::error("node_request_failed", err.to_string()))
+}
+
+fn post_raft_membership_or_error(
+    addr: &str,
+    voters: Vec<RaftNodeId>,
+    options: HttpRequestOptions,
+    dry_run: bool,
+) -> (Status, Option<RaftMembershipChangeReport>) {
+    if dry_run {
+        return (Status::ok(), None);
+    }
+    post_json_with_options::<_, RaftMembershipApplyResponse>(
+        addr,
+        "/raft/membership/apply",
+        &RaftMembershipApplyRequest { voters },
+        options,
+    )
+    .map(|response| (response.status, response.report))
+    .unwrap_or_else(|err| (Status::error("node_request_failed", err.to_string()), None))
 }
 
 fn fetch_node_lifecycle(
@@ -3190,6 +3273,138 @@ mod tests {
     }
 
     #[test]
+    fn metaserver_scheduler_drives_raft_membership_apply() {
+        let backend = MetaBackend::Single(SingleNodeMeta::default());
+        let scheduler = MetaTaskScheduler::default();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let node_addr = listener.local_addr().unwrap().to_string();
+        drop(listener);
+        let records = Arc::new(Mutex::new(Vec::new()));
+        let server_records = Arc::clone(&records);
+        let server_addr = node_addr.clone();
+        std::thread::spawn(move || {
+            serve(&server_addr, move |request| {
+                let body = if request.body.is_empty() {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::from_slice(&request.body).unwrap()
+                };
+                server_records
+                    .lock()
+                    .unwrap()
+                    .push((request.path.clone(), body));
+                match request.path.as_str() {
+                    "/raft/membership/apply" => {
+                        let apply: RaftMembershipApplyRequest =
+                            serde_json::from_slice(&request.body).unwrap();
+                        json_response(
+                            200,
+                            &RaftMembershipApplyResponse {
+                                status: Status::ok(),
+                                report: Some(RaftMembershipChangeReport {
+                                    plan: temporalstore_rust::raft::RaftMembershipChangePlan {
+                                        shard_id: 44,
+                                        kind: temporalstore_rust::raft::RaftMembershipChangeKind::AddVoter,
+                                        old_voters: vec![1, 2],
+                                        new_voters: apply.voters.clone(),
+                                        add_voters: vec![4],
+                                        remove_voters: Vec::new(),
+                                    },
+                                    joint_membership:
+                                        temporalstore_rust::raft::JointConsensusMembership {
+                                            old_voters: vec![1, 2],
+                                            new_voters: apply.voters.clone(),
+                                        },
+                                    committed_membership: temporalstore_rust::raft::RaftMembership {
+                                        shard_id: 44,
+                                        voters: apply.voters,
+                                        leader_id: 1,
+                                    },
+                                    caught_up_voters: vec![1, 2, 4],
+                                    leader_id: 1,
+                                    commit_index: 12,
+                                }),
+                            },
+                        )
+                    }
+                    _ => json_response(404, &Status::error("not_found", "unknown path")),
+                }
+            })
+            .unwrap();
+        });
+        std::thread::sleep(std::time::Duration::from_millis(25));
+
+        let (code, body) = handle(
+            &backend,
+            &scheduler,
+            HttpRequest {
+                method: "POST".to_string(),
+                path: "/meta/scheduler/submit".to_string(),
+                body: serde_json::to_vec(&serde_json::json!({
+                    "priority": 1,
+                    "now_ms": 900,
+                    "kind": SchedulerTaskKind::UpdateMembership(MembershipUpdateTaskPlan {
+                        shard_id: 44,
+                        self_replica_id: 1,
+                        active_replica_ids: vec![1, 2, 4],
+                        primary_replica_id: 1,
+                        membership_version: 3,
+                        requests: Vec::new(),
+                    }),
+                }))
+                .unwrap(),
+            },
+        );
+        assert_eq!(code, 200);
+        let submitted: MetaSchedulerTaskResponse = serde_json::from_slice(&body).unwrap();
+        assert!(submitted.status.ok);
+
+        let executed = execute_scheduler_task_with_options(
+            &backend,
+            &scheduler,
+            900,
+            &node_addr,
+            None,
+            Some(TaskSchedulerOptions {
+                base_postpone_ms: 50,
+                max_postpone_ms: 50,
+                max_retry_times: 3,
+                max_inflight: 1,
+            }),
+            HttpRequestOptionsView {
+                connect_timeout_ms: 1000,
+                io_timeout_ms: 1000,
+                max_retries: 10,
+            },
+        );
+        assert!(executed.status.ok, "{executed:?}");
+        assert_eq!(executed.queue_len, 0);
+        assert_eq!(executed.calls.len(), 1);
+        assert_eq!(executed.calls[0].path, "/raft/membership/apply");
+        let report = executed.raft_membership_report.as_ref().unwrap();
+        assert_eq!(report.committed_membership.voters, vec![1, 2, 4]);
+        assert_eq!(report.caught_up_voters, vec![1, 2, 4]);
+        assert_eq!(report.commit_index, 12);
+
+        let records = records.lock().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].0, "/raft/membership/apply");
+        assert_eq!(records[0].1["voters"], serde_json::json!([1, 2, 4]));
+        let executions = scheduler.executions();
+        assert_eq!(executions.executions.len(), 1);
+        assert!(executions.executions[0].raft_membership_report.is_some());
+        assert_eq!(
+            executions.executions[0]
+                .raft_membership_report
+                .as_ref()
+                .unwrap()
+                .plan
+                .new_voters,
+            vec![1, 2, 4]
+        );
+    }
+
+    #[test]
     fn metaserver_scheduler_drives_load_reload_unload_lifecycle_workflow() {
         let backend = MetaBackend::Single(SingleNodeMeta::default());
         let scheduler = MetaTaskScheduler::default();
@@ -3767,6 +3982,7 @@ mod tests {
                 scheduler_task_id: Some(12),
                 scheduler_generation: Some(900),
             }),
+            raft_membership_report: None,
             queue_len: 0,
         });
         assert!(path.exists());

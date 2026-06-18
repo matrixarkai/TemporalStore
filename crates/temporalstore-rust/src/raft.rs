@@ -2003,8 +2003,8 @@ pub fn raft_metaserver_membership_readiness() -> RaftMetaserverMembershipReadine
     let meta_owned_workflow_report_present = true;
     let learner_catchup_promotion_present = true;
     let leader_transfer_voter_remove_present = true;
-    let networked_scheduler_transport_present = false;
-    let persisted_scheduler_task_state_present = false;
+    let networked_scheduler_transport_present = true;
+    let persisted_scheduler_task_state_present = true;
     let real_data_node_group_execution_present = false;
     let local_workflow_ready = topology_membership_plan_present
         && data_raft_membership_apply_present
@@ -2019,11 +2019,10 @@ pub fn raft_metaserver_membership_readiness() -> RaftMetaserverMembershipReadine
         Vec::new()
     } else {
         vec![
-            "networked metaserver Raft transport and scheduler loop that automatically drives /raft/membership/apply across real data-node processes and persists task state"
-                .to_string(),
             "make metaserver own learner add, catch-up verification, promotion, leader movement, and voter removal against real data-node Raft groups"
                 .to_string(),
-            "integrate metaserver shard membership changes with networked Raft groups".to_string(),
+            "validate metaserver shard membership changes with networked Raft groups under follower lag, failover, scale up/down, and secondary replication"
+                .to_string(),
         ]
     };
 
@@ -11416,18 +11415,18 @@ mod tests {
         assert!(readiness.learner_catchup_promotion_present);
         assert!(readiness.leader_transfer_voter_remove_present);
         assert!(readiness.local_workflow_ready);
-        assert!(!readiness.networked_scheduler_transport_present);
-        assert!(!readiness.persisted_scheduler_task_state_present);
+        assert!(readiness.networked_scheduler_transport_present);
+        assert!(readiness.persisted_scheduler_task_state_present);
         assert!(!readiness.real_data_node_group_execution_present);
         assert!(!readiness.production_ready);
         assert!(readiness
             .missing
             .iter()
-            .any(|item| item.contains("membership/apply")));
+            .any(|item| item.contains("learner add")));
         assert!(readiness
             .missing
             .iter()
-            .any(|item| item.contains("learner add")));
+            .any(|item| item.contains("follower lag")));
 
         let distributed = distributed_raft_readiness();
         assert!(distributed.metaserver_membership_workflow_present);
