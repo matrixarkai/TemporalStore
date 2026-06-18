@@ -225,6 +225,8 @@ AREAS: tuple[ParityArea, ...] = (
                     "unsupported_role_rejected",
                     "unavailable_without_majority",
                     "snapshot_restore_read",
+                    "lagging_snapshot_restore_missed_tail",
+                    "lagging_catchup_read",
                 ),
             ),
             RustEvidence(
@@ -318,6 +320,7 @@ AREAS: tuple[ParityArea, ...] = (
                 (
                     "distributed_all_nodes_have_majority",
                     "partition_isolated_read_rejected",
+                    "lagging_catchup_read",
                     "namespace_after_failover_visible",
                     "unavailable_without_majority",
                 ),

@@ -42,9 +42,9 @@ process integration and external distributed fault validation.
 - Runs `raft_secondary_replication_harness`.
 - Builds and validates `raft-distributed-parity.json` from those three harness outputs.
 - Validates proposal, follower write rejection, leader transfer, data-node and metaserver
-     membership change, metaserver snapshot restore, external snapshot bootstrap/read, secondary
-     restart catch-up, partition heal, follower lag/catch-up, stale vote rejection, rolling restart,
-     and leader-crash failover reads.
+     membership change, metaserver snapshot restore plus lagging-voter tail catch-up, external
+     snapshot bootstrap/read, secondary restart catch-up, partition heal, follower lag/catch-up,
+     stale vote rejection, rolling restart, and leader-crash failover reads.
 
 6. **Combined storage+Raft production harness**
    - Runs `external_chaos_gate --profile quick`.
@@ -82,10 +82,11 @@ Raft local coverage:
   learner auto-promotion, fatal/snapshot status fields, campaign/forced campaign control, and
   fail-closed unavailable-backend behavior.
 - Metaserver Raft distributed/fault contract aligned with C++ control gates: membership list/add/remove,
-  log-applied read-index wait, snapshot trigger, leader transfer, failover after leader loss, and
-  explicit fail-closed handling for unsupported metaserver learner/witness membership.
+  log-applied read-index wait, snapshot trigger, lagging voter catch-up after stale snapshot install,
+  leader transfer, failover after leader loss, and explicit fail-closed handling for unsupported
+  metaserver learner/witness membership.
 - Dedicated `metaserver_raft_harness` JSON gate for local multi-node membership, snapshot restore,
-  failover, and no-majority rejection parity.
+  lagging-voter tail catch-up, failover, and no-majority rejection parity.
 - Dedicated `run_raft_distributed_parity.sh` JSON gate that composes data-node distributed Raft,
   data-node secondary/fault tolerance, and metaserver Raft parity in one C++-mapped local run.
 - Local production Raft runtime wrapper.

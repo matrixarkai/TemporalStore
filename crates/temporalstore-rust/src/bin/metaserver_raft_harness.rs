@@ -24,6 +24,10 @@ struct MetaserverRaftHarnessSummary {
     wait_for_log_applied_index: u64,
     snapshot_index: u64,
     snapshot_restore_read: Option<String>,
+    lagging_node_id: RaftNodeId,
+    lagging_write_hidden_before_catchup: bool,
+    lagging_snapshot_restore_missed_tail: bool,
+    lagging_catchup_read: Option<String>,
     leader_before_transfer: RaftNodeId,
     leader_after_transfer: RaftNodeId,
     leader_after_failover: RaftNodeId,
@@ -105,7 +109,8 @@ fn main() {
         .trigger_snapshot()
         .expect("metaserver snapshot trigger should pass");
     let snapshot_index = snapshot.last_included_index;
-    runtime.cluster().set_alive(13, false).unwrap();
+    let lagging_node_id = 13;
+    runtime.cluster().set_alive(lagging_node_id, false).unwrap();
     runtime
         .propose(MetaCommand::PutShardLocation(ShardLocation {
             shard_id: 56,
@@ -113,15 +118,34 @@ fn main() {
             latest_snapshot: None,
         }))
         .expect("write while node 13 is down should commit with majority");
-    runtime.cluster().set_alive(13, true).unwrap();
+    let lagging_write_hidden_before_catchup = runtime
+        .cluster()
+        .get_shard_location(lagging_node_id, 56)
+        .expect("lagging metaserver local read should not fail")
+        .is_none();
+    runtime.cluster().set_alive(lagging_node_id, true).unwrap();
     runtime
         .cluster()
-        .install_snapshot(13, snapshot)
+        .install_snapshot(lagging_node_id, snapshot)
         .expect("snapshot should bootstrap lagging metaserver replica");
     let snapshot_restore_read = runtime
         .cluster()
-        .get_shard_location(13, 55)
+        .get_shard_location(lagging_node_id, 55)
         .expect("snapshot-restored route read should not fail")
+        .map(|location| location.server_addr);
+    let lagging_snapshot_restore_missed_tail = runtime
+        .cluster()
+        .get_shard_location(lagging_node_id, 56)
+        .expect("stale snapshot tail read should not fail")
+        .is_none();
+    runtime
+        .cluster()
+        .catch_up(lagging_node_id)
+        .expect("lagging metaserver voter should catch up from raft log tail");
+    let lagging_catchup_read = runtime
+        .cluster()
+        .get_shard_location(lagging_node_id, 56)
+        .expect("caught-up route read should not fail")
         .map(|location| location.server_addr);
 
     let leader_before_transfer = runtime.status().leader_id;
@@ -175,6 +199,10 @@ fn main() {
         wait_for_log_applied_index,
         snapshot_index,
         snapshot_restore_read,
+        lagging_node_id,
+        lagging_write_hidden_before_catchup,
+        lagging_snapshot_restore_missed_tail,
+        lagging_catchup_read,
         leader_before_transfer,
         leader_after_transfer,
         leader_after_failover,
@@ -185,6 +213,18 @@ fn main() {
     assert_eq!(
         summary.snapshot_restore_read.as_deref(),
         Some("meta-snapshot-server")
+    );
+    assert!(
+        summary.lagging_write_hidden_before_catchup,
+        "lagging metaserver voter must not see tail write before catch-up"
+    );
+    assert!(
+        summary.lagging_snapshot_restore_missed_tail,
+        "stale metaserver snapshot must not contain post-snapshot tail write"
+    );
+    assert_eq!(
+        summary.lagging_catchup_read.as_deref(),
+        Some("meta-after-lag")
     );
     assert_ne!(summary.leader_after_failover, summary.leader_after_transfer);
     println!("{}", serde_json::to_string_pretty(&summary).unwrap());

@@ -232,6 +232,19 @@ def validate_metaserver_raft(job, summary):
         summary["snapshot_restore_read"] == "meta-snapshot-server",
         f"{job}: snapshot restore read mismatch",
     )
+    require(summary["lagging_node_id"] == 13, f"{job}: lagging metaserver node mismatch")
+    require(
+        summary["lagging_write_hidden_before_catchup"],
+        f"{job}: lagging metaserver saw tail write before catch-up",
+    )
+    require(
+        summary["lagging_snapshot_restore_missed_tail"],
+        f"{job}: stale metaserver snapshot included post-snapshot tail",
+    )
+    require(
+        summary["lagging_catchup_read"] == "meta-after-lag",
+        f"{job}: lagging metaserver catch-up read mismatch",
+    )
     require(
         summary["leader_after_transfer"] == 11,
         f"{job}: leader transfer target mismatch: {summary['leader_after_transfer']}",
@@ -310,6 +323,19 @@ def validate_raft_distributed_parity(job, summary):
     require(
         metaserver["snapshot_restore_read"] == "meta-snapshot-server",
         f"{job}: metaserver snapshot restore read mismatch",
+    )
+    require(metaserver["lagging_node_id"] == 13, f"{job}: metaserver lagging node mismatch")
+    require(
+        metaserver["lagging_write_hidden_before_catchup"],
+        f"{job}: metaserver lagging voter saw tail before catch-up",
+    )
+    require(
+        metaserver["lagging_snapshot_restore_missed_tail"],
+        f"{job}: metaserver stale snapshot included post-snapshot tail",
+    )
+    require(
+        metaserver["lagging_catchup_read"] == "meta-after-lag",
+        f"{job}: metaserver lagging catch-up read mismatch",
     )
     require(metaserver["leader_after_transfer"] == 11, f"{job}: metaserver leader transfer mismatch")
     require(
