@@ -403,6 +403,7 @@ AREAS: tuple[ParityArea, ...] = (
                     "operator_status_metrics_and_local_status",
                     "rpc_retry_backpressure_auth_deadline",
                     "log_retention_and_snapshot_trigger",
+                    "apply_snapshot_durability_fence",
                     "operator_control_surfaces",
                 ),
             ),

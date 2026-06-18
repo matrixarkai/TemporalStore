@@ -81,6 +81,8 @@ The Rust code currently has:
   to compact old durable records while preserving latest recovery state
 - installed Raft snapshot payload and snapshot-index floor persisted into WAL-backed data-node records,
   so restart can recover state even after pre-snapshot log entries are trimmed
+- durable apply/snapshot fence persisted in every new WAL-backed node record, validating restored
+  commit index, applied index, installed snapshot floor, and first retained log index before replay
 - leader election rejects stale candidates unless their log is up-to-date with a voting majority
 - deterministic ByteRaft-style snapshot trigger reports for data-node and metaserver Raft when
   applied log bytes since the latest snapshot floor exceed `max_applied_log_bytes`
@@ -89,7 +91,7 @@ The Rust code currently has:
   membership, linearizable and bounded reads, learner promotion, leader transfer, snapshot
   bootstrap, replication lag/catch-up, failover, operator status/local-status/metrics, and
   RPC retry/backpressure/auth/deadline behavior, bounded WAL retention, applied-log-byte snapshot
-  triggers, and operator control routes
+  triggers, durable apply/snapshot fencing, and operator control routes
 - strict shared-store oplog gap rejection
 - partition/heal chaos coverage in the local model
 - tests for the above behavior
@@ -126,6 +128,11 @@ allowed for unit tests, compatibility tests, and local correctness work.
 The Rust production target is Rust-native behavior parity: keep OpenRaft/raft-rs as the production
 path and borrow ByteRaft semantics, safety contracts, metrics, admin surfaces, and tests. Direct
 C++ ByteRaft FFI is not part of the readiness target.
+
+The local WAL now has the applied-index/storage/snapshot atomicity contract represented as a
+durable apply/snapshot fence. It is not the final production rollout by itself; it is the Rust-native
+ByteRaft-derived invariant that the later OpenRaft storage path and partition snapshot installer must
+preserve.
 
 ## Production Runtime Surface
 

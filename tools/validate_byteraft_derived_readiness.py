@@ -262,6 +262,28 @@ AREAS: tuple[ReadinessArea, ...] = (
         ),
     ),
     ReadinessArea(
+        name="apply_snapshot_durability_fence",
+        evidence=(
+            Evidence(
+                "crates/temporalstore-rust/src/raft.rs",
+                (
+                    "RaftApplySnapshotFence",
+                    "apply_snapshot_fence",
+                    "raft_apply_snapshot_fence",
+                    "validate_raft_apply_snapshot_fence",
+                    "ApplySnapshotFence",
+                    "wal_backed_apply_snapshot_fence_survives_snapshot_restart",
+                    "wal_recovery_rejects_inconsistent_apply_snapshot_fence",
+                    "byteraft_apply_snapshot_fence_present",
+                ),
+            ),
+            Evidence(
+                "docs/distributed_raft_readiness.md",
+                ("durable apply/snapshot fence", "applied-index/storage/snapshot atomicity contract"),
+            ),
+        ),
+    ),
+    ReadinessArea(
         name="operator_control_surfaces",
         evidence=(
             Evidence(

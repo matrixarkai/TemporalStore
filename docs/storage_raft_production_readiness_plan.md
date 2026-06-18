@@ -95,6 +95,9 @@ Raft local coverage:
   snapshot bootstrap, lag/catch-up, failover, operator status/local-status/metrics, and operator
   routes, plus RPC retry/backpressure/auth/deadline behavior, bounded WAL retention, and
   applied-log-byte snapshot triggers.
+- WAL-backed node records now carry a durable apply/snapshot fence for commit index, applied index,
+  installed snapshot floor, and first retained log index, giving the OpenRaft path a concrete
+  ByteRaft-style applied-index/storage/snapshot atomicity contract to preserve.
 - Local production Raft runtime wrapper.
 - HTTP Raft transport for proposal/read/admin paths.
 - WAL-backed local recovery.
