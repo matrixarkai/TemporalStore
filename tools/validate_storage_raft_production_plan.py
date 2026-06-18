@@ -36,7 +36,7 @@ REQUIRED_READINESS_SNIPPETS = (
     "local storage production harness combines dump, cache pressure, restart recovery, shared-store replay, and Raft movement",
     "local storage dump/load fault matrix harness rejects checksum mismatch, partial manifests, missing segments, stale manifests, restart-during-install recovery, and corrupt page segments",
     "OpenRaft-backed data-node and metaserver adapter is available behind the openraft-engine feature",
-    "networked OpenRaft deployment path",
+    "ProductionRaftEngineKind::OpenRaft",
     "networked metaserver Raft transport and scheduler loop",
 )
 

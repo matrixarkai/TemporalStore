@@ -12,7 +12,8 @@ The gate runs the current Rust local harnesses one by one, validates their JSON 
 feature-gated OpenRaft adapter tests, and then prints the remaining readiness blockers. Production
 distributed Raft mode is mandatory: local Raft is test-only and cannot be selected as a runtime
 deployment mode. This gate does not claim full production readiness while the readiness gate still
-reports missing networked OpenRaft process integration and external distributed fault validation.
+reports missing durable real-process OpenRaft rollout, atomic snapshot/storage persistence, and
+external distributed fault validation.
 
 ## Current Execution Order
 
@@ -34,8 +35,9 @@ reports missing networked OpenRaft process integration and external distributed 
    - Runs `validate_storage_raft_production_plan.py`.
    - Runs `cargo test -p temporalstore-rust --features openraft-engine openraft_ --lib`.
    - Runs `readiness_gate --service raft_replication`.
-   - Requires the OpenRaft-backed data-node/metaserver adapter path and reports the remaining
-     blocker: networked OpenRaft process rollout is still not complete.
+   - Requires OpenRaft-backed data-node/metaserver adapter evidence and production process startup
+     defaults, then reports the remaining blockers around durable real-process rollout, snapshot
+     atomicity, mTLS, and external chaos.
 
 5. **Raft snapshot/restart/failover harness**
    - Runs `distributed_raft_harness`.
@@ -127,8 +129,8 @@ Raft local coverage:
 
 The readiness gate intentionally still blocks production readiness on:
 
-- Networked OpenRaft deployment path for real data-node processes.
-- Networked OpenRaft deployment path for real metaserver processes.
+- Production OpenRaft durable log-store rollout across real data-node process groups.
+- Production OpenRaft durable log-store rollout across real metaserver process groups.
 - Atomic data-node applied Raft index persistence with storage mutations and partition snapshot
   install, matching the ByteRaft/ByteKV replica-engine recovery contract.
 - Networked metaserver Raft transport and scheduler loop that automatically drives real data-node
@@ -173,6 +175,6 @@ Strict readiness mode:
 TS_REQUIRE_STORAGE_RAFT_READY=1 tools/run_storage_raft_production_readiness.sh
 ```
 
-Strict mode is expected to fail until the networked OpenRaft process rollout and external
-distributed fault blockers are closed. Local-model harness success is validation evidence only; it
-does not satisfy the production Raft readiness gate.
+Strict mode is expected to fail until durable real-process OpenRaft rollout, atomic
+snapshot/storage persistence, and external distributed fault blockers are closed. Local-model harness
+success is validation evidence only; it does not satisfy the production Raft readiness gate.

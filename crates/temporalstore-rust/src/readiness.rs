@@ -176,6 +176,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "majority write checks, follower catch-up, safe reads, promotion, scale up/down"
                     .to_string(),
                 "local WAL recovery and local separate-node replication test".to_string(),
+                "raft_node, raft-enabled server, and metaserver process startup select ProductionRaftEngineKind::OpenRaft by default"
+                    .to_string(),
             ],
             missing: raft.missing,
         },
@@ -312,12 +314,12 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "OpenRaft-backed data-node and metaserver adapter is available behind the openraft-engine feature with durable log state, state-machine apply, snapshot metadata, read-index checks, membership changes, leader transfer, and restart recovery tests"
                     .to_string(),
+                "raft_node, raft-enabled server, and metaserver process startup wire the production runtime options to ProductionRaftEngineKind::OpenRaft"
+                    .to_string(),
                 "ByteRaft-style leader write authority, ReadIndex guards, learner catch-up/promotion checks, and fail-closed stale leader-transfer checks are modeled locally"
                     .to_string(),
             ],
             missing: vec![
-                "networked OpenRaft deployment path: roll out the adapter through real data-node and metaserver processes"
-                    .to_string(),
                 "persist the data-node applied Raft index atomically with storage mutations and partition snapshot install"
                     .to_string(),
                 "networked metaserver Raft transport and scheduler loop that automatically drives /raft/membership/apply across real data-node processes and persists task state"
@@ -659,7 +661,7 @@ fn service_next_action(service: &str, blocker_classes: &[String]) -> &'static st
             "finish network Kafka/Flink runtime failover, lag metrics, and dead-letter export"
         }
         ("data_node", "data_node_distributed_raft") => {
-            "finish networked OpenRaft data-node rollout and distributed fault validation"
+            "finish Raft atomic applied-index storage persistence, metaserver-driven membership, production mTLS, and distributed fault validation"
         }
         ("data_node", "data_node_local_lifecycle") => {
             "finish data-node lifecycle restart barriers, distributed admission, and crash recovery"
@@ -686,7 +688,7 @@ fn service_next_action(service: &str, blocker_classes: &[String]) -> &'static st
             "finish multi-node AWS scale tests, distributed Raft load tests, workload replay, and SLO evidence"
         }
         ("raft_replication", "raft_replication_engine") => {
-            "finish networked OpenRaft process integration, networked meta Raft transport, and external chaos coverage"
+            "finish durable real-process OpenRaft rollout, production mTLS transport, and external chaos coverage"
         }
         _ => "inspect failed capabilities for this service",
     }
@@ -1175,6 +1177,12 @@ mod tests {
         assert!(covered
             .iter()
             .any(|item| item.contains("ByteRaft-style leader write authority")));
+        assert!(covered
+            .iter()
+            .any(|item| item.contains("ProductionRaftEngineKind::OpenRaft")));
+        assert!(!data_raft
+            .iter()
+            .any(|item| item.contains("roll out the adapter")));
 
         let fault_tolerance = report
             .areas

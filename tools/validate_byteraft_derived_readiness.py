@@ -37,6 +37,8 @@ AREAS: tuple[ReadinessArea, ...] = (
                 "crates/temporalstore-rust/src/raft.rs",
                 (
                     "RaftDeploymentMode::ProductionDistributed",
+                    "openraft_data_node_process_startup_present",
+                    "openraft_metaserver_process_startup_present",
                     "local Raft deployment mode is disabled",
                     "local_raft_deployment_mode_is_rejected",
                     "distributed_raft_readiness_reports_remaining_production_blockers",

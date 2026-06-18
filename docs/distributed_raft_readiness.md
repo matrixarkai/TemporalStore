@@ -8,6 +8,8 @@ contracts, but it is not production complete yet.
 The Rust code currently has:
 
 - production data-node Raft runtime options with OpenRaft/raft-rs engine selection
+- `raft_node`, raft-enabled `server`, and `metaserver` process startup construct production runtime
+  options with `ProductionRaftEngineKind::OpenRaft` by default
 - feature-gated OpenRaft data-node and metaserver adapter with durable log state, state-machine
   apply, snapshot metadata, read-index checks, membership changes, leader transfer, and restart
   recovery tests
@@ -113,9 +115,9 @@ The readiness API is:
 temporalstore_rust::distributed_raft_readiness()
 ```
 
-It returns `complete = false` and `production_ready = false` until the OpenRaft adapter is rolled
-out through real networked data-node and metaserver process startup, data-node applied Raft index is
-persisted atomically with storage mutations and partition snapshot install, metaserver owns learner
+It returns `complete = false` and `production_ready = false` until the OpenRaft-backed real-process
+runtime has durable log-store rollout evidence, data-node applied Raft index is persisted atomically
+with storage mutations and partition snapshot install, metaserver owns learner
 add/catch-up/promotion/leader-movement/removal for real data-node Raft groups, production mTLS
 transport exists, and external packet-loss/disk-pressure/process-chaos validation is implemented.
 
@@ -185,8 +187,8 @@ Production deployments should use `ProductionRaftSecurity::mtls`. Local chaos te
 
 ## Required Before Production Ready
 
-- Wire the feature-gated OpenRaft adapter into real networked data-node and metaserver process
-  startup.
+- Complete production OpenRaft durable log-store rollout across real networked data-node and
+  metaserver process groups.
 - Wire data-node Raft snapshots to the full production engine freeze/flush/download/install
   lifecycle.
 - Run external multi-process packet-loss and disk-pressure tests.
@@ -316,7 +318,6 @@ Covered today:
 
 Still missing:
 
-- networked OpenRaft adapter process startup for real data-node and metaserver deployments
 - production OpenRaft durable log-store rollout across real processes beyond the feature-gated
   local adapter tests
 - metaserver scheduler loop that automatically drives `/raft/membership/apply` for each shard and

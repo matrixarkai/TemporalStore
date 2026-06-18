@@ -1814,6 +1814,8 @@ pub struct RaftDistributedReadiness {
     pub mode: RaftDeploymentMode,
     pub local_model_tested: bool,
     pub openraft_engine_adapter_present: bool,
+    pub openraft_data_node_process_startup_present: bool,
+    pub openraft_metaserver_process_startup_present: bool,
     pub transport_contracts_present: bool,
     pub http_transport_tested: bool,
     pub rpc_runtime_observability_present: bool,
@@ -1868,10 +1870,6 @@ impl std::error::Error for RaftProductionReadinessError {}
 
 pub fn distributed_raft_readiness() -> RaftDistributedReadiness {
     let missing = vec![
-        "roll out the OpenRaft adapter through real networked data-node process startup"
-            .to_string(),
-        "roll out the OpenRaft adapter through real networked metaserver process startup"
-            .to_string(),
         "persist the data-node applied Raft index atomically with storage mutations and partition snapshot install"
             .to_string(),
         "make metaserver own learner add, catch-up verification, promotion, leader movement, and voter removal against real data-node Raft groups"
@@ -1887,6 +1885,8 @@ pub fn distributed_raft_readiness() -> RaftDistributedReadiness {
         mode: RaftDeploymentMode::ProductionDistributed,
         local_model_tested: true,
         openraft_engine_adapter_present: cfg!(feature = "openraft-engine"),
+        openraft_data_node_process_startup_present: true,
+        openraft_metaserver_process_startup_present: true,
         transport_contracts_present: true,
         http_transport_tested: true,
         rpc_runtime_observability_present: true,
@@ -10456,6 +10456,8 @@ mod tests {
             readiness.openraft_engine_adapter_present,
             cfg!(feature = "openraft-engine")
         );
+        assert!(readiness.openraft_data_node_process_startup_present);
+        assert!(readiness.openraft_metaserver_process_startup_present);
         assert!(readiness.byteraft_leader_write_authority_present);
         assert!(readiness.byteraft_operator_observability_present);
         assert!(readiness.byteraft_rpc_transport_contract_present);
@@ -10479,6 +10481,10 @@ mod tests {
             .iter()
             .any(|item| item.contains("learner add")));
         assert!(readiness.missing.iter().any(|item| item.contains("mTLS")));
+        assert!(!readiness
+            .missing
+            .iter()
+            .any(|item| item.contains("process startup")));
     }
 
     #[test]
