@@ -69,7 +69,13 @@
       "control_readonly_write_disabled_tables",
       "control_route_quarantine_recovery",
       "control_data_node_load_reload_unload_lifecycle",
-      "control_metaserver_scheduler_lifecycle_workflow"
+      "control_metaserver_scheduler_lifecycle_workflow",
+      "ingestion_kafka_offset_ledger",
+      "ingestion_kafka_rebalance_backpressure",
+      "ingestion_flink_checkpoint_lifecycle",
+      "ingestion_dead_letter_export",
+      "ingestion_lag_metrics",
+      "ingestion_restart_idempotence"
     ],
     "required_raft_case_names": [
       "storage_data_raft_replication_gtest",
@@ -3781,6 +3787,132 @@
             ],
             "rust_runner": "cargo test -p temporalstore-rust metaserver_scheduler_drives_load_reload_unload_lifecycle_workflow -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py"
+          }
+        }
+      ]
+    },
+    {
+      "name": "ingestion_kafka_offset_ledger",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "kafka_offset_ledger_dedupe_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_ingestion_parity",
+            "mode": "static",
+            "description": "Shared C++/Rust ingestion case for durable Kafka topic/partition/offset ledger commits, duplicate offset rejection, and valid-record continuation after duplicate detection.",
+            "required_paths": [
+              "src/client/example/queue_ingestion_replay_example.cc",
+              "tools/run_queue_ingestion_replay_ubuntu22.sh"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust ingestion_batch_reports_duplicate_kafka_offsets_without_nooping_valid_records -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_ingestion_ops_parity_evidence.py"
+          }
+        }
+      ]
+    },
+    {
+      "name": "ingestion_kafka_rebalance_backpressure",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "kafka_rebalance_backpressure_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_ingestion_parity",
+            "mode": "static",
+            "description": "Shared C++/Rust ingestion case for consumer-group partition assignment, rebalance-required detection, and backpressure admission under in-flight pressure.",
+            "required_paths": [
+              "docs/proxy_ingestion_local_validation.md",
+              "tools/run_production_gap_queue_ubuntu22.sh"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust kafka_consumer_group_runtime_reports_rebalance_and_backpressure -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_ingestion_ops_parity_evidence.py"
+          }
+        }
+      ]
+    },
+    {
+      "name": "ingestion_flink_checkpoint_lifecycle",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "flink_precommit_commit_abort_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_ingestion_parity",
+            "mode": "static",
+            "description": "Shared C++/Rust ingestion case for Flink checkpoint precommit, commit, abort, durable state transitions, and production handshake readiness.",
+            "required_paths": [
+              "src/client/example/module_ingest_query_example.cc",
+              "docs/TEMPORALSTORE_ONE_CLUSTER_TEMPORAL_FEATURES.md"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust ingestion_persists_kafka_ledger_dead_letters_lag_and_flink_checkpoints -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_ingestion_ops_parity_evidence.py"
+          }
+        }
+      ]
+    },
+    {
+      "name": "ingestion_dead_letter_export",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "dead_letter_export_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_ingestion_parity",
+            "mode": "static",
+            "description": "Shared C++/Rust ingestion case for malformed/poison record dead-letter capture, export reports, and non-blocking good-record ingestion.",
+            "required_paths": [
+              "src/client/example/proxy_ingestion_pressure_example.cc",
+              "docs/production_gap_queue_runbook.md"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust dead_letter_export_and_raft_failover_idempotence_reports_are_ready -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_ingestion_ops_parity_evidence.py"
+          }
+        }
+      ]
+    },
+    {
+      "name": "ingestion_lag_metrics",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "kafka_lag_metrics_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_ingestion_parity",
+            "mode": "static",
+            "description": "Shared C++/Rust ingestion case for max Kafka lag, committed offset, dead-letter counters, and Prometheus/state-report metric visibility.",
+            "required_paths": [
+              "docs/runtime_tuning.md",
+              "docs/TEMPORALSTORE_AWS_SCALE30_PROMETHEUS_2026-06-07.md"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust ingestion_persists_kafka_ledger_dead_letters_lag_and_flink_checkpoints -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_ingestion_ops_parity_evidence.py"
+          }
+        }
+      ]
+    },
+    {
+      "name": "ingestion_restart_idempotence",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "restart_failover_idempotence_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_ingestion_parity",
+            "mode": "static",
+            "description": "Shared C++/Rust ingestion case for restart/failover idempotence: committed Kafka offsets and Flink checkpoint state prevent duplicate writes after replay.",
+            "required_paths": [
+              "tools/run_soak_profile_ubuntu22.sh",
+              "docs/client_proxy_data_meta_production_gap_plan.md"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust dead_letter_export_and_raft_failover_idempotence_reports_are_ready -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_ingestion_ops_parity_evidence.py"
           }
         }
       ]

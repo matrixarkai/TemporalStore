@@ -29,13 +29,13 @@ Current corpus:
 ```text
 schema_version: 1
 name: temporalstore-unified-cpp-rust-corpus
-cases: 66
-steps: 153
+cases: 72
+steps: 159
 executable behavior cases: 26
 executable behavior steps: 106
 required command kinds: 59
 required response kinds: 19
-C++ existing-test parity surfaces: 105 unique required paths plus 60 Raft path references
+C++ existing-test parity surfaces: 117 unique required paths plus 60 Raft path references
 ```
 
 The shared cases are:
@@ -120,6 +120,14 @@ The shared cases are:
   `control_route_quarantine_recovery`,
   `control_data_node_load_reload_unload_lifecycle`, and
   `control_metaserver_scheduler_lifecycle_workflow`.
+- Current C++ ingestion test unification adds shared queue/Kafka/Flink workflow case names with
+  Rust evidence metadata:
+  `ingestion_kafka_offset_ledger`,
+  `ingestion_kafka_rebalance_backpressure`,
+  `ingestion_flink_checkpoint_lifecycle`,
+  `ingestion_dead_letter_export`,
+  `ingestion_lag_metrics`, and
+  `ingestion_restart_idempotence`.
 
 ## Rust Runner
 

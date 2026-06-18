@@ -118,24 +118,27 @@ Ingestion/ops parity evidence status:
 
 ```text
 python3 tools/validate_ingestion_ops_parity_evidence.py
-ingestion_ops_parity_areas: 4
-rust_evidence_snippets: 48
+ingestion_ops_parity_areas: 10
+corpus_required_cpp_paths: 12
+rust_evidence_snippets: 75
 ```
 
-The four checked areas are Kafka/Flink ingestion durability, ingestion Prometheus/readiness
-signals, production readiness workflow evidence, and scale/fault/chaos validation gates.
+The ten checked areas are Kafka/Flink ingestion durability, ingestion Prometheus/readiness
+signals, production readiness workflow evidence, scale/fault/chaos validation gates, Kafka offset
+ledger, Kafka rebalance/backpressure, Flink checkpoint lifecycle, dead-letter export, lag metrics,
+and restart/failover idempotence.
 
 Shared C++/Rust corpus:
 
 ```text
 compat/unified_temporalstore_cases.json
-cases: 66
-steps: 153
+cases: 72
+steps: 159
 executable behavior cases: 26
 executable behavior steps: 106
-C++ existing-test parity surface cases: 40
-C++ existing-test parity surface steps: 47
-C++ existing-test required paths: 105 unique paths plus 60 Raft path references
+C++ existing-test parity surface cases: 46
+C++ existing-test parity surface steps: 53
+C++ existing-test required paths: 117 unique paths plus 60 Raft path references
 ```
 
 Detailed inventory: `docs/unified_test_case_inventory.md`.
@@ -159,11 +162,12 @@ OpenRaft process-rollout evidence,
 shared control-plane cases for topology-version changes, stale route invalidation, proxy admission,
 readonly/write-disabled policy, route quarantine/recovery, data-node load/reload/unload lifecycle,
 and metaserver scheduler lifecycle,
+shared ingestion cases for Kafka offsets, rebalance/backpressure, Flink checkpoint lifecycle, dead
+letters, lag metrics, and restart/failover idempotence,
 Context, restart reads, missing-key semantics, timestamp bounds, current C++ storage/Raft surface
 gates, and C++ client/proxy/metaserver/data-node control-plane surface gates. Ingestion/ops parity
-is currently enforced as Rust evidence plus local harness gates; the next same-test step is to
-promote Kafka offset, Flink checkpoint, dead-letter, and lag scenarios into executable corpus cases
-for both repos.
+now has shared corpus case names backed by Rust evidence and current C++ queue/proxy ingestion
+surfaces. The next same-test step is native C++ execution of those ingestion workflows.
 
 ## Rust-Specific Tests Remaining
 
@@ -181,7 +185,7 @@ shared product/parity cases versus true language-internal tests. The shared port
 | Other local tests | 24 | readiness, e2e, partition id, external chaos, HTTP, replica replay |
 
 The duplicate-test validator currently reports `rust_attributed_tests=540`,
-`shared_corpus_cases=66`, `shared_corpus_steps=153`, and `cpp_existing_test_surfaces=105`.
+`shared_corpus_cases=72`, `shared_corpus_steps=159`, and `cpp_existing_test_surfaces=117`.
 The Rust-attributed count is a migration backlog, not the desired final state.
 
 Target disposition:
@@ -218,15 +222,19 @@ Target disposition:
    lifecycle now have shared corpus cases. The next step is native C++ execution of those workflows
    instead of static source/harness validation.
 
-5. Add shared API/model cases:
+5. Continue shared ingestion promotion:
+   Kafka offsets, rebalance/backpressure, Flink checkpoints, dead letters, lag metrics, and
+   restart idempotence now have shared corpus cases. The next step is native C++ execution of those
+   workflows instead of static queue/proxy ingestion surface validation.
+
+6. Add shared API/model cases:
    Redis command parity, context event/index/audit workflows, tonic SDK adapters, and C++ wire-model
    round trips.
 
-6. Add shared ingestion/ops cases:
-   Kafka offset idempotency, Flink checkpoint precommit/commit/abort, dead-letter reporting,
-   ingestion lag metrics, readiness blockers, and scale/fault workflow log assertions.
+7. Add shared ops/scale cases:
+   readiness blockers and scale/fault workflow log assertions.
 
-7. Add a guard for new tests:
+8. Add a guard for new tests:
    any new product behavior test should be rejected or called out unless it is backed by a shared
    corpus case. Language-specific tests should name the internal Rust or C++ mechanic they protect.
 

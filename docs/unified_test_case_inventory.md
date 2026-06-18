@@ -11,13 +11,13 @@ compat/unified_temporalstore_cases.json
 Current inventory:
 
 ```text
-total cases: 66
-total steps: 153
+total cases: 72
+total steps: 159
 executable shared behavior cases: 26
 executable shared behavior steps: 106
-C++ existing-test parity surface cases: 40
-C++ existing-test parity surface steps: 47
-C++ required source/test/harness paths: 105 unique paths plus 60 Raft path references
+C++ existing-test parity surface cases: 46
+C++ existing-test parity surface steps: 53
+C++ required source/test/harness paths: 117 unique paths plus 60 Raft path references
 required command kinds: 59
 required response kinds: 19
 ```
@@ -121,6 +121,12 @@ to them.
 | `control_route_quarantine_recovery` | Shared backend quarantine, recovery probing, and degraded preflight workflow. |
 | `control_data_node_load_reload_unload_lifecycle` | Shared data-node load/reload/readonly/unload lifecycle workflow. |
 | `control_metaserver_scheduler_lifecycle_workflow` | Shared metaserver scheduler-issued load/reload/unload token workflow. |
+| `ingestion_kafka_offset_ledger` | Shared Kafka offset ledger, duplicate rejection, and valid-record continuation workflow. |
+| `ingestion_kafka_rebalance_backpressure` | Shared Kafka consumer-group rebalance and backpressure workflow. |
+| `ingestion_flink_checkpoint_lifecycle` | Shared Flink checkpoint precommit/commit/abort workflow. |
+| `ingestion_dead_letter_export` | Shared dead-letter capture/export and non-blocking ingestion workflow. |
+| `ingestion_lag_metrics` | Shared Kafka lag, committed offset, and ingestion metric workflow. |
+| `ingestion_restart_idempotence` | Shared restart/failover idempotence workflow for offsets and checkpoints. |
 
 ## Are There Still Rust-Specific Tests?
 
@@ -128,9 +134,9 @@ Yes. Current Rust-local attributed test count is:
 
 ```text
 Rust attributed tests: 540
-shared corpus cases: 66
-shared corpus steps: 153
-C++ existing-test surfaces: 105
+shared corpus cases: 72
+shared corpus steps: 159
+C++ existing-test surfaces: 117
 ```
 
 The Rust-attributed tests are a migration backlog, not the desired final state. They should be
@@ -168,9 +174,12 @@ Those should follow the same rule:
 3. Move the new control-plane shared cases from static surface validation to native C++ execution:
    topology-version changes, stale route invalidation, proxy admission, readonly/write-disabled
    policy, route quarantine/recovery, data-node lifecycle, and metaserver scheduler lifecycle.
-4. Teach the C++ native runner to execute every executable shared behavior case, not only validate
+4. Move the new ingestion shared cases from static surface validation to native C++ execution:
+   Kafka offsets, rebalance/backpressure, Flink checkpoints, dead letters, lag metrics, and
+   restart idempotence.
+5. Teach the C++ native runner to execute every executable shared behavior case, not only validate
    the corpus shape and context subset.
-5. Add a guard so new product behavior tests must reference a shared corpus case. Rust-specific or
+6. Add a guard so new product behavior tests must reference a shared corpus case. Rust-specific or
    C++-specific tests should state the implementation-only mechanic they protect.
 
 ## Validation Commands
