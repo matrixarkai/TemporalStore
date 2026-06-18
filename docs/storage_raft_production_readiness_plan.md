@@ -104,6 +104,11 @@ Raft local coverage:
 - WAL-backed node records now also carry `RaftStorageApplyFence` for shard id, Raft term,
   committed/applied index, snapshot id, storage epoch, and checksum, so recovery rejects missing,
   corrupt, stale, or ahead-of-storage fence state before replay.
+- OpenRaft durable state now carries the same `RaftStorageApplyFence`, refreshes it after
+  synchronous engine apply and snapshot creation, persists the state through temp-file fsync plus
+  rename, and rejects corrupt fences on restart. This closes the local applied-index/storage/snapshot
+  atomicity contract; real multi-process data-node rollout validation remains the production
+  blocker.
 - Data-node Raft snapshot install now reports freeze, flush, manifest verification, checksum
   verification, install completion, tail replay, and rollback decisions through
   `RaftSnapshotInstallReport`; full production readiness still requires the real process
@@ -145,10 +150,10 @@ The readiness gate intentionally still blocks production readiness on:
   multi-process data-node/metaserver log-store rollout remains blocked until validated across
   production process groups.
 - Raft atomic apply readiness is now explicit in the readiness gate: storage apply fence
-  persistence, WAL fence recovery validation, and snapshot lifecycle reporting are covered. Real
-  storage-mutation and snapshot-install atomic commit integration remains blocked until wired
-  through the data-node process path, matching the ByteRaft/ByteKV replica-engine recovery
-  contract.
+  persistence, WAL fence recovery validation, storage mutation atomic commit, snapshot-install
+  atomic commit, and snapshot lifecycle reporting are covered. Validation through the real
+  multi-process data-node OpenRaft rollout remains blocked, matching the ByteRaft/ByteKV
+  replica-engine recovery contract.
 - Raft metaserver membership readiness is now explicit in the readiness gate: topology membership
   plans, data-Raft apply reports, learner catch-up/promotion, leader transfer, and voter removal
   are covered. Networked scheduler transport, persisted scheduler task state, and real data-node

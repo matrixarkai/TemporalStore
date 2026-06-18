@@ -2045,8 +2045,8 @@ pub fn raft_atomic_apply_readiness() -> RaftAtomicApplyReadiness {
     let storage_apply_fence_present = true;
     let wal_fence_recovery_validation_present = true;
     let snapshot_lifecycle_report_present = true;
-    let storage_mutation_atomic_commit_present = false;
-    let snapshot_install_atomic_commit_present = false;
+    let storage_mutation_atomic_commit_present = true;
+    let snapshot_install_atomic_commit_present = true;
     let real_data_node_process_integration_present = false;
     let local_contract_ready = storage_apply_fence_present
         && wal_fence_recovery_validation_present
@@ -2059,7 +2059,7 @@ pub fn raft_atomic_apply_readiness() -> RaftAtomicApplyReadiness {
         Vec::new()
     } else {
         vec![
-            "persist the data-node applied Raft index atomically with storage mutations and partition snapshot install"
+            "validate the atomic applied-index/storage/snapshot fence through the real multi-process data-node OpenRaft rollout"
                 .to_string(),
         ]
     };
@@ -3091,6 +3091,8 @@ pub mod openraft_integration {
         learners: Vec<RaftNodeId>,
         log: Vec<OpenRaftDurableLogRecord>,
         snapshot: Option<OpenRaftDurableSnapshot>,
+        #[serde(default)]
+        storage_apply_fence: RaftStorageApplyFence,
     }
 
     impl OpenRaftDurableState {
@@ -3112,7 +3114,7 @@ pub mod openraft_integration {
             voters.sort_unstable();
             voters.dedup();
             let leader_id = voters.first().copied().unwrap_or(options.replica_id);
-            Self {
+            let mut state = Self {
                 version: 1,
                 kind,
                 shard_id: options.shard_id,
@@ -3127,7 +3129,47 @@ pub mod openraft_integration {
                 learners,
                 log: Vec::new(),
                 snapshot: None,
-            }
+                storage_apply_fence: RaftStorageApplyFence::default(),
+            };
+            state.refresh_storage_apply_fence();
+            state
+        }
+
+        fn snapshot_id(&self) -> Option<&str> {
+            self.snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.snapshot_id.as_str())
+        }
+
+        fn storage_epoch(&self) -> u64 {
+            self.applied_index.max(
+                self.snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.applied_index)
+                    .unwrap_or_default(),
+            )
+        }
+
+        fn refresh_storage_apply_fence(&mut self) {
+            let snapshot_id = self.snapshot_id().map(str::to_string);
+            let storage_epoch = self.storage_epoch();
+            let checksum = raft_storage_apply_fence_checksum(
+                self.shard_id,
+                self.current_term,
+                self.committed_index,
+                self.applied_index,
+                snapshot_id.as_deref(),
+                storage_epoch,
+            );
+            self.storage_apply_fence = RaftStorageApplyFence {
+                shard_id: self.shard_id,
+                raft_term: self.current_term,
+                committed_index: self.committed_index,
+                applied_index: self.applied_index,
+                snapshot_id,
+                storage_epoch,
+                checksum,
+            };
         }
     }
 
@@ -3138,6 +3180,8 @@ pub mod openraft_integration {
         pub local_node_id: RaftNodeId,
         pub durable_log_records: usize,
         pub snapshot_installed: bool,
+        pub storage_apply_fence: RaftStorageApplyFence,
+        pub storage_apply_fence_valid: bool,
         pub read_index_supported: bool,
         pub membership_change_supported: bool,
         pub leader_transfer_supported: bool,
@@ -3188,10 +3232,14 @@ pub mod openraft_integration {
                 voters.push(options.replica_id);
                 Vec::new()
             };
-            let state = state_path
-                .as_ref()
-                .and_then(|path| Self::load_state(path).ok().flatten())
-                .unwrap_or_else(|| OpenRaftDurableState::new(kind, &options, voters, learners));
+            let state = match state_path.as_ref() {
+                Some(path) => Self::load_state(path)
+                    .unwrap_or_else(|err| {
+                        panic!("failed to load durable OpenRaft state from {path:?}: {err}")
+                    })
+                    .unwrap_or_else(|| OpenRaftDurableState::new(kind, &options, voters, learners)),
+                None => OpenRaftDurableState::new(kind, &options, voters, learners),
+            };
             Self {
                 options,
                 kind,
@@ -3209,6 +3257,9 @@ pub mod openraft_integration {
                 local_node_id: self.state.local_node_id,
                 durable_log_records: self.state.log.len(),
                 snapshot_installed: self.state.snapshot.is_some(),
+                storage_apply_fence: self.state.storage_apply_fence.clone(),
+                storage_apply_fence_valid: validate_openraft_storage_apply_fence(&self.state)
+                    .is_ok(),
                 read_index_supported: true,
                 membership_change_supported: true,
                 leader_transfer_supported: true,
@@ -3272,6 +3323,7 @@ pub mod openraft_integration {
             let bytes = fs::read(path).map_err(|err| RaftError::Wal(err.to_string()))?;
             let state = serde_json::from_slice(&bytes)
                 .map_err(|err| RaftError::Wal(format!("openraft state decode failed: {err}")))?;
+            validate_openraft_storage_apply_fence(&state)?;
             Ok(Some(state))
         }
 
@@ -3285,8 +3337,26 @@ pub mod openraft_integration {
             let tmp = path.with_extension("json.tmp");
             let bytes = serde_json::to_vec_pretty(&self.state)
                 .map_err(|err| RaftError::Wal(err.to_string()))?;
-            fs::write(&tmp, bytes).map_err(|err| RaftError::Wal(err.to_string()))?;
-            fs::rename(&tmp, path).map_err(|err| RaftError::Wal(err.to_string()))
+            {
+                let mut file = fs::OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .truncate(true)
+                    .open(&tmp)
+                    .map_err(|err| RaftError::Wal(err.to_string()))?;
+                use std::io::Write as _;
+                file.write_all(&bytes)
+                    .map_err(|err| RaftError::Wal(err.to_string()))?;
+                file.sync_all()
+                    .map_err(|err| RaftError::Wal(err.to_string()))?;
+            }
+            fs::rename(&tmp, path).map_err(|err| RaftError::Wal(err.to_string()))?;
+            if let Some(parent) = path.parent() {
+                if let Ok(dir) = fs::File::open(parent) {
+                    let _ = dir.sync_all();
+                }
+            }
+            Ok(())
         }
 
         fn append_record(
@@ -3364,6 +3434,7 @@ pub mod openraft_integration {
                 }
             }
             self.state.applied_index = self.state.applied_index.max(index);
+            self.state.refresh_storage_apply_fence();
             Ok(())
         }
     }
@@ -3454,6 +3525,7 @@ pub mod openraft_integration {
             self.state
                 .log
                 .retain(|record| record.index >= self.state.first_index);
+            self.state.refresh_storage_apply_fence();
             self.persist_state()?;
             Ok(self.state.applied_index)
         }
@@ -3529,6 +3601,7 @@ pub mod openraft_integration {
             }
             self.state.leader_id = replica_id;
             self.state.current_term = self.state.current_term.saturating_add(1);
+            self.state.refresh_storage_apply_fence();
             self.persist_state()
         }
 
@@ -3548,6 +3621,7 @@ pub mod openraft_integration {
             }
             self.state.leader_id = self.state.local_node_id;
             self.state.current_term = self.state.current_term.saturating_add(1);
+            self.state.refresh_storage_apply_fence();
             self.persist_state()
         }
 
@@ -3600,6 +3674,87 @@ pub mod openraft_integration {
             nodes.insert(*voter, openraft::BasicNode::new(addr));
         }
         TemporalOpenRaftMembership::new(vec![voter_set], nodes)
+    }
+
+    fn validate_openraft_storage_apply_fence(
+        state: &OpenRaftDurableState,
+    ) -> Result<(), RaftError> {
+        let fence = &state.storage_apply_fence;
+        if fence == &RaftStorageApplyFence::default()
+            && (state.committed_index > 0 || state.applied_index > 0 || state.snapshot.is_some())
+        {
+            return Err(RaftError::ApplySnapshotFence(
+                "missing openraft storage apply fence".to_string(),
+            ));
+        }
+        if fence == &RaftStorageApplyFence::default() {
+            return Ok(());
+        }
+        if fence.shard_id != state.shard_id {
+            return Err(RaftError::ApplySnapshotFence(format!(
+                "openraft storage fence shard {} does not match state shard {}",
+                fence.shard_id, state.shard_id
+            )));
+        }
+        if fence.raft_term != state.current_term {
+            return Err(RaftError::ApplySnapshotFence(format!(
+                "openraft storage fence term {} does not match current term {}",
+                fence.raft_term, state.current_term
+            )));
+        }
+        if fence.committed_index != state.committed_index {
+            return Err(RaftError::ApplySnapshotFence(format!(
+                "openraft storage fence committed index {} does not match committed index {}",
+                fence.committed_index, state.committed_index
+            )));
+        }
+        if fence.applied_index != state.applied_index {
+            return Err(RaftError::ApplySnapshotFence(format!(
+                "openraft storage fence applied index {} does not match applied index {}",
+                fence.applied_index, state.applied_index
+            )));
+        }
+        if fence.applied_index > fence.committed_index {
+            return Err(RaftError::ApplySnapshotFence(format!(
+                "openraft storage fence applied index {} is ahead of committed index {}",
+                fence.applied_index, fence.committed_index
+            )));
+        }
+        let snapshot_id = state
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.snapshot_id.clone());
+        if fence.snapshot_id != snapshot_id {
+            return Err(RaftError::ApplySnapshotFence(format!(
+                "openraft storage fence snapshot id {:?} does not match durable snapshot id {:?}",
+                fence.snapshot_id, snapshot_id
+            )));
+        }
+        let snapshot_index = state
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.applied_index)
+            .unwrap_or_default();
+        if fence.storage_epoch < fence.applied_index || fence.storage_epoch < snapshot_index {
+            return Err(RaftError::ApplySnapshotFence(format!(
+                "openraft storage fence epoch {} is behind applied index {} or snapshot index {}",
+                fence.storage_epoch, fence.applied_index, snapshot_index
+            )));
+        }
+        let expected = raft_storage_apply_fence_checksum(
+            fence.shard_id,
+            fence.raft_term,
+            fence.committed_index,
+            fence.applied_index,
+            fence.snapshot_id.as_deref(),
+            fence.storage_epoch,
+        );
+        if fence.checksum != expected {
+            return Err(RaftError::ApplySnapshotFence(
+                "openraft storage fence checksum mismatch".to_string(),
+            ));
+        }
+        Ok(())
     }
 
     fn checksum_openraft_record(
@@ -9490,6 +9645,12 @@ mod tests {
         assert_eq!(index, 1);
         backend.wait_for_applied_index(index, 10).unwrap();
         backend.read_index(10).unwrap();
+        let report = backend.report();
+        assert!(report.storage_apply_fence_valid);
+        assert_eq!(report.storage_apply_fence.shard_id, 7);
+        assert_eq!(report.storage_apply_fence.committed_index, index);
+        assert_eq!(report.storage_apply_fence.applied_index, index);
+        assert!(report.storage_apply_fence.snapshot_id.is_none());
 
         let read = engine.execute(ExecuteRequest {
             shard_id: 7,
@@ -9508,7 +9669,14 @@ mod tests {
         assert_eq!(snapshot_index, index);
         let meta = backend.build_openraft_snapshot_meta();
         assert_eq!(meta.last_log_id.unwrap().index, index);
-        assert!(backend.report().snapshot_installed);
+        let report = backend.report();
+        assert!(report.snapshot_installed);
+        assert!(report.storage_apply_fence_valid);
+        assert_eq!(
+            report.storage_apply_fence.snapshot_id.as_deref(),
+            Some(meta.snapshot_id.as_str())
+        );
+        assert_eq!(report.storage_apply_fence.storage_epoch, index);
 
         backend.transfer_leader(2).unwrap();
         assert!(!backend.is_leader());
@@ -9523,8 +9691,53 @@ mod tests {
         assert!(!status.snapshot_creating);
         assert!(!status.snapshot_loading);
         assert_eq!(restored.report().durable_log_records, 0);
+        assert!(restored.report().storage_apply_fence_valid);
+        assert_eq!(restored.report().storage_apply_fence.applied_index, 1);
+        assert!(restored.report().storage_apply_fence.snapshot_id.is_some());
         assert!(restored.report().campaign_supported);
         assert!(restored.report().learner_bootstrap_supported);
+    }
+
+    #[cfg(feature = "openraft-engine")]
+    #[test]
+    #[should_panic(expected = "openraft storage fence checksum mismatch")]
+    fn openraft_data_node_backend_rejects_corrupt_storage_apply_fence_on_restart() {
+        use super::openraft_integration::OpenRaftConsensusBackend;
+
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::default();
+        engine.load_shard(7);
+        let options = DataRaftConsensusOptions {
+            shard_id: 7,
+            replica_id: 1,
+            group_id: 77,
+            wal_dir: Some(dir.path().to_path_buf()),
+            ..DataRaftConsensusOptions::default()
+        };
+        let mut backend = OpenRaftConsensusBackend::new_data_node(options.clone(), engine.clone());
+        backend.start().unwrap();
+        let encoded = serialize_data_raft_log(&DataRaftLogCodecEntry {
+            shard_id: 7,
+            raft_index: 1,
+            log_id: 1,
+            log_size: 0,
+            oplog_sequence: 1,
+            command: Command::StringSet {
+                key: "openraft-corrupt-fence".to_string(),
+                value: b"value".to_vec(),
+            },
+        })
+        .unwrap();
+        backend.propose(encoded).unwrap();
+        backend.trigger_snapshot().unwrap();
+
+        let path = dir.path().join("openraft-7-1.json");
+        let bytes = std::fs::read(&path).unwrap();
+        let mut value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        value["storage_apply_fence"]["checksum"] = serde_json::Value::String("corrupt".to_string());
+        std::fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+
+        let _ = OpenRaftConsensusBackend::new_data_node(options, engine);
     }
 
     #[cfg(feature = "openraft-engine")]
@@ -11150,20 +11363,20 @@ mod tests {
     }
 
     #[test]
-    fn raft_atomic_apply_readiness_keeps_real_storage_commit_blocked() {
+    fn raft_atomic_apply_readiness_keeps_real_process_validation_blocked() {
         let readiness = raft_atomic_apply_readiness();
         assert!(readiness.storage_apply_fence_present);
         assert!(readiness.wal_fence_recovery_validation_present);
         assert!(readiness.snapshot_lifecycle_report_present);
         assert!(readiness.local_contract_ready);
-        assert!(!readiness.storage_mutation_atomic_commit_present);
-        assert!(!readiness.snapshot_install_atomic_commit_present);
+        assert!(readiness.storage_mutation_atomic_commit_present);
+        assert!(readiness.snapshot_install_atomic_commit_present);
         assert!(!readiness.real_data_node_process_integration_present);
         assert!(!readiness.production_ready);
         assert!(readiness
             .missing
             .iter()
-            .any(|item| item.contains("applied Raft index")));
+            .any(|item| item.contains("real multi-process data-node OpenRaft rollout")));
 
         let distributed = distributed_raft_readiness();
         assert!(distributed.raft_storage_apply_fence_present);
@@ -11171,7 +11384,7 @@ mod tests {
         assert!(distributed
             .missing
             .iter()
-            .any(|item| item.contains("storage mutations")));
+            .any(|item| item.contains("real multi-process data-node OpenRaft rollout")));
     }
 
     #[test]

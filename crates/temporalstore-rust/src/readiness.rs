@@ -592,7 +592,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "RaftStorageApplyFence is persisted in WAL records and rejects missing, corrupt, stale, or ahead-of-storage recovery state"
                     .to_string(),
-                "Raft atomic apply readiness covers storage apply fence persistence, WAL fence recovery validation, and snapshot lifecycle reporting while keeping real storage-mutation and snapshot-install atomic commit integration fail-closed"
+                "Raft atomic apply readiness covers storage apply fence persistence, WAL fence recovery validation, storage mutation atomic commit, snapshot-install atomic commit, and snapshot lifecycle reporting while keeping real multi-process data-node OpenRaft rollout validation fail-closed"
                     .to_string(),
                 "RaftSnapshotInstallReport exposes freeze, flush, manifest verify, checksum verify, install, tail replay, and rollback status for snapshot installs"
                     .to_string(),
@@ -736,7 +736,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "RaftStorageApplyFence persists shard, term, committed/applied index, snapshot id, storage epoch, and checksum with WAL recovery validation"
                     .to_string(),
-                "Raft atomic apply readiness covers storage apply fence persistence, WAL fence recovery validation, and snapshot lifecycle reporting while keeping real storage-mutation and snapshot-install atomic commit integration fail-closed"
+                "Raft atomic apply readiness covers storage apply fence persistence, WAL fence recovery validation, storage mutation atomic commit, snapshot-install atomic commit, and snapshot lifecycle reporting while keeping real multi-process data-node OpenRaft rollout validation fail-closed"
                     .to_string(),
                 "Raft snapshot lifecycle reports install, tail replay, and rollback decisions for data-node snapshot recovery paths"
                     .to_string(),
@@ -752,7 +752,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
             ],
             missing: vec![
-                "persist the data-node applied Raft index atomically with storage mutations and partition snapshot install"
+                "validate the atomic applied-index/storage/snapshot fence through the real multi-process data-node OpenRaft rollout"
                     .to_string(),
                 "networked metaserver Raft transport and scheduler loop that automatically drives /raft/membership/apply across real data-node processes and persists task state"
                     .to_string(),
@@ -1875,7 +1875,10 @@ mod tests {
         }));
         assert!(covered.iter().any(|item| {
             item.contains("Raft atomic apply readiness")
-                && item.contains("atomic commit integration fail-closed")
+                && item.contains("snapshot-install atomic commit")
+                && item.contains(
+                    "real multi-process data-node OpenRaft rollout validation fail-closed",
+                )
         }));
         assert!(covered.iter().any(|item| {
             item.contains("Raft metaserver membership readiness")
