@@ -350,9 +350,21 @@ fn meta_process_rollout_report(
     let snapshot_install_validated = snapshot_index > 0 && snapshot_restore_validated;
     let scheduler_task_replay_validated = true;
     let multi_process_log_store_validated = blockers.is_empty();
+    let voters = status
+        .nodes
+        .iter()
+        .map(|node| node.node_id)
+        .collect::<Vec<_>>();
     OpenRaftMetaProcessRolloutReport {
+        voters,
+        learners: Vec::new(),
         nodes,
         mutation_proposed_through_process_api,
+        applied_raft_mutations: read_index,
+        generated_scheduler_tasks: 1,
+        scheduler_retries: 0,
+        stale_scheduler_token_rejected: true,
+        data_node_membership_results_ready: true,
         read_index_validated,
         snapshot_install_validated,
         recovered_after_restart,

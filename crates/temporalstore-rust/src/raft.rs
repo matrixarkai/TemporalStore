@@ -592,9 +592,19 @@ pub struct OpenRaftProcessNodeEvidence {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OpenRaftDataNodeProcessRolloutReport {
     pub shard_id: ShardId,
+    #[serde(default)]
+    pub voters: Vec<RaftNodeId>,
+    #[serde(default)]
+    pub learners: Vec<RaftNodeId>,
     pub nodes: Vec<OpenRaftProcessNodeEvidence>,
     pub write_proposed_through_process_api: bool,
+    #[serde(default)]
+    pub leader_transfer_validated: bool,
+    #[serde(default)]
+    pub failover_validated: bool,
     pub recovered_after_restart: bool,
+    #[serde(default)]
+    pub restart_recovery_validated: bool,
     pub snapshot_install_validated: bool,
     pub applied_fence_validated: bool,
     pub multi_process_log_store_validated: bool,
@@ -604,8 +614,22 @@ pub struct OpenRaftDataNodeProcessRolloutReport {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OpenRaftMetaProcessRolloutReport {
+    #[serde(default)]
+    pub voters: Vec<RaftNodeId>,
+    #[serde(default)]
+    pub learners: Vec<RaftNodeId>,
     pub nodes: Vec<OpenRaftProcessNodeEvidence>,
     pub mutation_proposed_through_process_api: bool,
+    #[serde(default)]
+    pub applied_raft_mutations: u64,
+    #[serde(default)]
+    pub generated_scheduler_tasks: u64,
+    #[serde(default)]
+    pub scheduler_retries: u64,
+    #[serde(default)]
+    pub stale_scheduler_token_rejected: bool,
+    #[serde(default)]
+    pub data_node_membership_results_ready: bool,
     pub read_index_validated: bool,
     pub snapshot_install_validated: bool,
     pub recovered_after_restart: bool,

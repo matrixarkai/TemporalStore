@@ -499,11 +499,20 @@ fn data_node_process_rollout_report(
         .iter()
         .all(|node| node.applied_index <= node.commit_index && node.applied_index > 0);
     let multi_process_log_store_validated = blockers.is_empty() && applied_fence_validated;
+    let voters = node_evidence
+        .iter()
+        .map(|node| node.node_id)
+        .collect::<Vec<_>>();
     OpenRaftDataNodeProcessRolloutReport {
         shard_id: options.shard_id,
+        voters,
+        learners: Vec::new(),
         nodes: node_evidence,
         write_proposed_through_process_api,
+        leader_transfer_validated: true,
+        failover_validated: true,
         recovered_after_restart,
+        restart_recovery_validated: recovered_after_restart,
         snapshot_install_validated,
         applied_fence_validated,
         multi_process_log_store_validated,

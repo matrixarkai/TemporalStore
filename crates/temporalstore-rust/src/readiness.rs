@@ -30,6 +30,8 @@ pub struct ProductionReadinessReport {
 pub struct ReadinessCapabilityBlocker {
     pub area: String,
     pub capability: String,
+    #[serde(default)]
+    pub evidence_field: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -43,6 +45,8 @@ pub struct ServiceReadinessSummary {
     #[serde(default)]
     pub next_action: String,
     pub failed_capabilities: Vec<String>,
+    #[serde(default)]
+    pub failed_evidence_fields: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1023,6 +1027,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 .map(|capability| ReadinessCapabilityBlocker {
                     area: area.area.clone(),
                     capability: capability.clone(),
+                    evidence_field: evidence_field_for(&area.area, capability).to_string(),
                 })
                 .collect::<Vec<_>>()
         })
@@ -1073,6 +1078,15 @@ fn service_readiness_summaries(areas: &[ReadinessArea]) -> Vec<ServiceReadinessS
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
+        let failed_evidence_fields = selected
+            .iter()
+            .flat_map(|area| {
+                area.missing
+                    .iter()
+                    .map(|capability| evidence_field_for(&area.area, capability).to_string())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
         let blocker_classes = selected
             .iter()
             .filter(|area| !area.missing.is_empty())
@@ -1091,9 +1105,58 @@ fn service_readiness_summaries(areas: &[ReadinessArea]) -> Vec<ServiceReadinessS
             next_action: service_next_action(service, &blocker_classes).to_string(),
             blocker_classes,
             failed_capabilities,
+            failed_evidence_fields,
         }
     })
     .collect()
+}
+
+fn evidence_field_for(area: &str, capability: &str) -> &'static str {
+    match area {
+        "raft_replication" if capability.contains("data-node process rollout") => {
+            "raft_rollout.openraft_data_node_process_rollout_ready"
+        }
+        "raft_replication" if capability.contains("metaserver process rollout") => {
+            "raft_rollout.openraft_metaserver_process_rollout_ready"
+        }
+        "data_node_distributed_raft" if capability.contains("membership") => {
+            "meta_owned_data_raft_membership.data_node_membership_results_ready"
+        }
+        "metaserver" if capability.contains("networked multi-process metaserver Raft") => {
+            "metaserver_scheduler_report.networked_metaserver_raft_ready"
+        }
+        "metaserver" if capability.contains("scheduler loop") => {
+            "metaserver_scheduler_report.real_process_scheduler_execution_ready"
+        }
+        "metaserver" if capability.contains("durable shard membership") => {
+            "metaserver_scheduler_report.durable_membership_coupling_ready"
+        }
+        "storage_cache" if capability.contains("golden") || capability.contains("corpus") => {
+            "storage_cplusplus_corpus_report.external_corpus_publication_ready"
+        }
+        "storage_cache"
+            if capability.contains("object-store") || capability.contains("ByteStore/S3") =>
+        {
+            "storage_object_store_dependency_matrix.live_backend_dependency_matrix_ready"
+        }
+        "client" => "client_migration_contract.compatibility_result",
+        "proxy" => "proxy_migration_contract.compatibility_result",
+        "scale_testing" if capability.contains("workload") || capability.contains("corpus") => {
+            "scale_slo_report.cplusplus_workload_replay_ready"
+        }
+        "scale_testing" => "scale_slo_report.docker_or_aws_slo_evidence_ready",
+        "feature_modules" if capability.contains("Feature") => {
+            "feature_module_corpus.exact_feature_semantics_ready"
+        }
+        "feature_modules" if capability.contains("Risk") => {
+            "feature_module_corpus.risk_production_semantics_ready"
+        }
+        "context_workflow" if capability.contains("corpus") => {
+            "context_workflow_corpus.openviking_replay_ready"
+        }
+        "context_workflow" => "context_workflow_policy.production_policy_ready",
+        _ => "readiness_evidence.unspecified",
+    }
 }
 
 fn service_blocker_class(area: &str) -> &'static str {
@@ -1393,6 +1456,46 @@ mod tests {
                 .expect("scale testing summary")
                 .ready
         );
+    }
+
+    #[test]
+    fn remaining_blockers_map_to_concrete_evidence_fields() {
+        let readiness = production_readiness_report();
+        assert!(!readiness.failed_capabilities.is_empty());
+        for blocker in &readiness.failed_capabilities {
+            assert!(
+                !blocker.evidence_field.is_empty(),
+                "missing evidence field for {blocker:?}"
+            );
+            assert_ne!(
+                blocker.evidence_field, "readiness_evidence.unspecified",
+                "unspecified evidence field for {blocker:?}"
+            );
+        }
+
+        let raft = readiness.service_gate_report("raft_replication").unwrap();
+        assert!(raft.failed_capabilities.iter().any(|blocker| blocker
+            .evidence_field
+            .contains("openraft_data_node_process_rollout_ready")));
+        assert!(raft.failed_capabilities.iter().any(|blocker| blocker
+            .evidence_field
+            .contains("openraft_metaserver_process_rollout_ready")));
+
+        let storage = readiness.service_gate_report("storage_cache").unwrap();
+        assert!(storage.failed_capabilities.iter().any(|blocker| blocker
+            .evidence_field
+            .contains("live_backend_dependency_matrix_ready")));
+
+        let client = readiness.service_summary("client").unwrap();
+        assert!(client
+            .failed_evidence_fields
+            .iter()
+            .any(|field| field == "client_migration_contract.compatibility_result"));
+        let proxy = readiness.service_summary("proxy").unwrap();
+        assert!(proxy
+            .failed_evidence_fields
+            .iter()
+            .any(|field| field == "proxy_migration_contract.compatibility_result"));
     }
 
     #[test]

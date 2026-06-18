@@ -135,6 +135,10 @@ struct ScaleSloReport {
     memory_observed: bool,
     disk_observed: bool,
     network_observed: bool,
+    cpu_collector: String,
+    memory_collector: String,
+    disk_collector: String,
+    network_collector: String,
     notes: Vec<String>,
 }
 
@@ -708,6 +712,10 @@ fn build_slo_report(
         memory_observed: false,
         disk_observed: false,
         network_observed: false,
+        cpu_collector: "docker_or_aws_cpu_collector_pending".to_string(),
+        memory_collector: "docker_or_aws_memory_collector_pending".to_string(),
+        disk_collector: "docker_or_aws_disk_collector_pending".to_string(),
+        network_collector: "docker_or_aws_network_collector_pending".to_string(),
         notes,
     }
 }
