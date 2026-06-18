@@ -169,9 +169,10 @@ harness evidence:
   are covered by the local external chaos gate. Cloud-provider packet-loss/disk-pressure injection
   still belongs in the AWS/Docker scale evidence package.
 - Rust-local storage migration corpus readiness is now explicit in the readiness gate: converted
-  corpus replay through engine, shared-store, Raft read paths, and the unified C++/Rust runner is
-  covered. The external C++ binary-artifact exporter and CI-published golden storage migration
-  corpus remain blocked until the C++ build publishes real binary page/log artifacts.
+  corpus replay through engine restart, Redis/admin reads, shared-store sync/async replay, cache
+  warmup, Raft read paths, the external C++ binary-artifact exporter, CI-published golden artifact
+  directory, and the unified C++/Rust runner are covered. The compatibility decision remains
+  migration-only into Rust-native page/log formats, not byte-for-byte C++ page/log layout.
 - Local/shared-store object manifest dependency matrix is now explicit in the readiness gate:
   local file objects, checkpoint manifests, oplog cursor retention, page segment manifests, and
   follower-cursor retention plus Raft snapshot manifest retention are covered for the

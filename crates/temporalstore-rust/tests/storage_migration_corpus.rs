@@ -5,8 +5,9 @@ use std::sync::Arc;
 use serde::Deserialize;
 use temporalstore_rust::engine::SlotDumpFollowerReplayCursor;
 use temporalstore_rust::{
-    Command, CommandResponse, ExecuteRequest, RaftCluster, RaftConfig, SharedStoreReplicator,
-    SharedStoreStorageMode, StorageLifecycleRequest, TemporalEngine,
+    execute_redis_command, Command, CommandResponse, ExecuteRequest, RaftCluster, RaftConfig,
+    RespValue, SharedStoreReplicator, SharedStoreStorageMode, StorageLifecycleRequest,
+    TemporalEngine,
 };
 use temporalstore_snapshot::FileObjectStore;
 
@@ -154,6 +155,7 @@ fn verify_engine_dump_load_recovery(case: &StorageMigrationCase) {
         });
     assert_clean_recovery(&engine, case.shard_id, &case.name);
     execute_steps(&engine, case.shard_id, &case.expected_reads, &case.name);
+    verify_redis_admin_replay(&engine, case);
 }
 
 async fn verify_shared_store_replay(case: &StorageMigrationCase, mode: SharedStoreStorageMode) {
@@ -274,6 +276,80 @@ fn execute_steps(
             );
         }
     }
+}
+
+fn verify_redis_admin_replay(engine: &TemporalEngine, case: &StorageMigrationCase) {
+    assert!(
+        !engine.slot_storage_summaries(case.shard_id).is_empty(),
+        "case={} admin slot summaries should be populated",
+        case.name
+    );
+    assert_clean_recovery(engine, case.shard_id, &case.name);
+
+    for step in case.operations.iter().filter(|step| step.storage_mutation) {
+        match &step.command {
+            Command::StringSet { key, value } => {
+                let response = redis(
+                    engine,
+                    case.shard_id,
+                    vec!["GET".as_bytes(), key.as_bytes()],
+                );
+                assert_eq!(
+                    response,
+                    RespValue::Bulk(Some(value.clone())),
+                    "case={} step={} Redis GET mismatch",
+                    case.name,
+                    step.name
+                );
+            }
+            Command::HashMultiSet { key, entries } => {
+                for (field, value) in entries {
+                    let response = redis(
+                        engine,
+                        case.shard_id,
+                        vec!["HGET".as_bytes(), key.as_bytes(), field.as_bytes()],
+                    );
+                    assert_eq!(
+                        response,
+                        RespValue::Bulk(Some(value.clone())),
+                        "case={} step={} Redis HGET mismatch",
+                        case.name,
+                        step.name
+                    );
+                }
+            }
+            Command::SetAdd { key, member } => {
+                let response = redis(
+                    engine,
+                    case.shard_id,
+                    vec!["SISMEMBER".as_bytes(), key.as_bytes(), member.as_slice()],
+                );
+                assert_eq!(
+                    response,
+                    RespValue::Integer(1),
+                    "case={} step={} Redis SISMEMBER mismatch",
+                    case.name,
+                    step.name
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+fn redis(engine: &TemporalEngine, shard_id: u64, args: Vec<&[u8]>) -> RespValue {
+    execute_redis_command(
+        args.into_iter().map(|arg| arg.to_vec()).collect(),
+        shard_id,
+        |command| {
+            let response = engine.execute_durable(ExecuteRequest { shard_id, command });
+            if response.status.ok {
+                Ok(response.response)
+            } else {
+                Err(response.status.message)
+            }
+        },
+    )
 }
 
 fn assert_clean_recovery(engine: &TemporalEngine, shard_id: u64, case_name: &str) {

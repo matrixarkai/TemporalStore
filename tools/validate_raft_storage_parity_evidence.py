@@ -61,8 +61,20 @@ AREAS: tuple[ParityArea, ...] = (
                 "crates/temporalstore-rust/tests/storage_migration_corpus.rs",
                 (
                     "verify_engine_dump_load_recovery",
+                    "verify_redis_admin_replay",
                     "install_slot_dump_manifest",
                     "assert_clean_recovery",
+                ),
+            ),
+            RustEvidence(
+                "tools/export_cpp_storage_migration_artifacts.py",
+                (
+                    "temporalstore-cpp-storage-migration-artifacts",
+                    "objects",
+                    "pages",
+                    "slots",
+                    "index",
+                    "oplog",
                 ),
             ),
             RustEvidence(
@@ -110,7 +122,12 @@ AREAS: tuple[ParityArea, ...] = (
             ),
             RustEvidence(
                 "crates/temporalstore-rust/tests/storage_migration_corpus.rs",
-                ("verify_shared_store_replay", "SharedStoreStorageMode::Sync", "SharedStoreStorageMode::Async"),
+                (
+                    "verify_shared_store_replay",
+                    "SharedStoreStorageMode::Sync",
+                    "SharedStoreStorageMode::Async",
+                    "cache_warmup",
+                ),
             ),
         ),
     ),

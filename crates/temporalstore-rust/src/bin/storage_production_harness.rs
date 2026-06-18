@@ -6,9 +6,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use temporalstore_rust::engine::SlotDumpFollowerReplayCursor;
 use temporalstore_rust::{
-    Command, CommandResponse, ExecuteRequest, RaftCluster, RaftConfig, SharedStoreReplicator,
-    SharedStoreStorageMode, StorageLifecycleReport, StorageLifecycleRequest, StorageRecoveryReport,
-    TemporalEngine,
+    execute_redis_command, Command, CommandResponse, ExecuteRequest, RaftCluster, RaftConfig,
+    RespValue, SharedStoreReplicator, SharedStoreStorageMode, StorageLifecycleReport,
+    StorageLifecycleRequest, StorageRecoveryReport, TemporalEngine,
 };
 use temporalstore_snapshot::FileObjectStore;
 
@@ -57,6 +57,7 @@ struct StorageProductionCaseSummary {
     shared_store_sync_applied: usize,
     shared_store_async_applied: usize,
     raft_leader_after_transfer: u64,
+    redis_admin_replay_ok: bool,
 }
 
 #[tokio::main]
@@ -135,6 +136,7 @@ async fn run_case(root: &Path, case: &StorageMigrationCase) -> StorageProduction
     let async_applied =
         run_shared_store_mode(&shared_store_root, case, SharedStoreStorageMode::Async).await;
     let raft_leader_after_transfer = run_raft(case);
+    let redis_admin_replay_ok = validate_redis_admin_replay(&engine, case);
     let manifest = lifecycle
         .dump_manifest
         .expect("storage production harness should create a dump manifest");
@@ -151,6 +153,7 @@ async fn run_case(root: &Path, case: &StorageMigrationCase) -> StorageProduction
         shared_store_sync_applied: sync_applied,
         shared_store_async_applied: async_applied,
         raft_leader_after_transfer,
+        redis_admin_replay_ok,
     }
 }
 
@@ -289,6 +292,68 @@ fn execute_steps(
             );
         }
     }
+}
+
+fn validate_redis_admin_replay(engine: &TemporalEngine, case: &StorageMigrationCase) -> bool {
+    if engine.slot_storage_summaries(case.shard_id).is_empty() {
+        return false;
+    }
+    if !recovery_ok(&engine.storage_recovery_report(case.shard_id)) {
+        return false;
+    }
+    for step in case.operations.iter().filter(|step| step.storage_mutation) {
+        match &step.command {
+            Command::StringSet { key, value } => {
+                if redis(
+                    engine,
+                    case.shard_id,
+                    vec!["GET".as_bytes(), key.as_bytes()],
+                ) != RespValue::Bulk(Some(value.clone()))
+                {
+                    return false;
+                }
+            }
+            Command::HashMultiSet { key, entries } => {
+                for (field, value) in entries {
+                    if redis(
+                        engine,
+                        case.shard_id,
+                        vec!["HGET".as_bytes(), key.as_bytes(), field.as_bytes()],
+                    ) != RespValue::Bulk(Some(value.clone()))
+                    {
+                        return false;
+                    }
+                }
+            }
+            Command::SetAdd { key, member } => {
+                if redis(
+                    engine,
+                    case.shard_id,
+                    vec!["SISMEMBER".as_bytes(), key.as_bytes(), member.as_slice()],
+                ) != RespValue::Integer(1)
+                {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    true
+}
+
+fn redis(engine: &TemporalEngine, shard_id: u64, args: Vec<&[u8]>) -> RespValue {
+    execute_redis_command(
+        args.into_iter().map(|arg| arg.to_vec()).collect(),
+        shard_id,
+        |command| {
+            let response = engine.execute_durable(ExecuteRequest { shard_id, command });
+            if response.status.ok {
+                Ok(response.response)
+            } else {
+                Err(response.status.message)
+            }
+        },
+    )
 }
 
 fn new_engine(root: &Path, page_dir: &Path, index_dir: &Path, shard_id: u64) -> TemporalEngine {

@@ -30,14 +30,19 @@ python3 tools/validate_aws_validation_log.py \
   --job temporalstore-storage-production-validation \
   --log "${ARTIFACT_DIR}/storage-production.json"
 
-echo "== 3/7 follower-safe GC and cache pressure =="
+echo "== 3/8 C++ storage migration artifact export =="
+python3 tools/export_cpp_storage_migration_artifacts.py \
+  --output "${ARTIFACT_DIR}/storage-migration-artifacts" \
+  > "${ARTIFACT_DIR}/storage-migration-artifacts-manifest.json"
+
+echo "== 4/8 follower-safe GC and cache pressure =="
 timeout "${TIMEOUT}" cargo run -p temporalstore-rust --bin storage_modes_harness \
   > "${ARTIFACT_DIR}/storage-modes.json"
 python3 tools/validate_aws_validation_log.py \
   --job temporalstore-storage-validation \
   --log "${ARTIFACT_DIR}/storage-modes.json"
 
-echo "== 4/7 real Raft FSM/storage readiness selection =="
+echo "== 5/8 real Raft FSM/storage readiness selection =="
 python3 tools/validate_storage_raft_production_plan.py
 timeout "${TIMEOUT}" cargo test -p temporalstore-rust --features openraft-engine openraft_ --lib -- --test-threads=1
 cargo run -p temporalstore-rust --bin readiness_gate -- --service raft_replication \
@@ -69,7 +74,7 @@ if ${TS_REQUIRE_STORAGE_RAFT_READY:-0} and not ready:
     raise SystemExit("raft_replication readiness is still blocked")
 PY
 
-echo "== 5/7 raft snapshot/restart/failover harness =="
+echo "== 6/8 raft snapshot/restart/failover harness =="
 timeout "${TIMEOUT}" cargo run -p temporalstore-rust --bin distributed_raft_harness -- \
   --root "${ARTIFACT_DIR}/distributed-raft" \
   > "${ARTIFACT_DIR}/distributed-raft.json"
@@ -100,7 +105,7 @@ python3 tools/validate_aws_validation_log.py \
   --job temporalstore-raft-distributed-parity-validation \
   --log "${ARTIFACT_DIR}/raft-distributed-parity.json"
 
-echo "== 6/7 combined storage plus raft production harness =="
+echo "== 7/8 combined storage plus raft production harness =="
 timeout "${TIMEOUT}" cargo run -p temporalstore-rust --bin external_chaos_gate -- \
   --root "${ARTIFACT_DIR}/external-chaos" \
   --profile quick \
@@ -116,7 +121,7 @@ print(
 )
 PY
 
-echo "== 7/7 unified corpus and readiness docs =="
+echo "== 8/8 unified corpus and readiness docs =="
 python3 tools/run_temporalstore_unified_tests.py --validate-only
 python3 tools/validate_raft_storage_parity_evidence.py "${RAFT_CPP_EVIDENCE_ARGS[@]}"
 python3 tools/validate_no_duplicate_tests.py

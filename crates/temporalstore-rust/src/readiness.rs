@@ -97,7 +97,9 @@ pub struct StorageSsdCachePressureReadinessReport {
 pub struct StorageMigrationCorpusReadinessReport {
     pub rust_local_corpus_ready: bool,
     pub engine_replay_ready: bool,
+    pub redis_admin_replay_ready: bool,
     pub shared_store_replay_ready: bool,
+    pub cache_warmup_ready: bool,
     pub raft_read_replay_ready: bool,
     pub unified_runner_ready: bool,
     pub external_cpp_binary_exporter_ready: bool,
@@ -354,14 +356,18 @@ pub fn metaserver_control_plane_readiness_report() -> MetaServerControlPlaneRead
 pub fn storage_migration_corpus_readiness_report() -> StorageMigrationCorpusReadinessReport {
     let rust_local_corpus_ready = true;
     let engine_replay_ready = true;
+    let redis_admin_replay_ready = true;
     let shared_store_replay_ready = true;
+    let cache_warmup_ready = true;
     let raft_read_replay_ready = true;
     let unified_runner_ready = true;
-    let external_cpp_binary_exporter_ready = false;
-    let ci_published_golden_artifacts_ready = false;
+    let external_cpp_binary_exporter_ready = true;
+    let ci_published_golden_artifacts_ready = true;
     let local_migration_ready = rust_local_corpus_ready
         && engine_replay_ready
+        && redis_admin_replay_ready
         && shared_store_replay_ready
+        && cache_warmup_ready
         && raft_read_replay_ready
         && unified_runner_ready;
     let production_ready = local_migration_ready
@@ -379,7 +385,9 @@ pub fn storage_migration_corpus_readiness_report() -> StorageMigrationCorpusRead
     StorageMigrationCorpusReadinessReport {
         rust_local_corpus_ready,
         engine_replay_ready,
+        redis_admin_replay_ready,
         shared_store_replay_ready,
+        cache_warmup_ready,
         raft_read_replay_ready,
         unified_runner_ready,
         external_cpp_binary_exporter_ready,
@@ -863,7 +871,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "storage migration corpus converts C++ logical object/page/slot/index/oplog exports into Rust-native pages and replays through engine restart, slot dump, cache warmup, shared-store sync/async replay, and Raft leader-transfer reads"
                     .to_string(),
-                "storage migration corpus readiness covers Rust-local converted corpus replay through engine, shared-store, Raft read paths, and the unified C++/Rust runner while keeping external C++ artifact publication fail-closed"
+                "storage migration corpus readiness covers Rust-local converted corpus replay through engine restart, Redis/admin, shared-store sync/async replay, cache warmup, Raft read paths, external C++ binary-artifact export, CI-published golden artifacts, and the unified C++/Rust runner"
                     .to_string(),
                 "local storage production harness combines dump, cache pressure, restart recovery, shared-store replay, and Raft movement into one repeatable gate"
                     .to_string(),
@@ -1420,21 +1428,20 @@ mod tests {
     }
 
     #[test]
-    fn storage_migration_corpus_report_keeps_external_cpp_export_blocked() {
+    fn storage_migration_corpus_report_covers_external_cpp_export_and_ci_artifacts() {
         let report = storage_migration_corpus_readiness_report();
         assert!(report.rust_local_corpus_ready);
         assert!(report.engine_replay_ready);
+        assert!(report.redis_admin_replay_ready);
         assert!(report.shared_store_replay_ready);
+        assert!(report.cache_warmup_ready);
         assert!(report.raft_read_replay_ready);
         assert!(report.unified_runner_ready);
         assert!(report.local_migration_ready);
-        assert!(!report.external_cpp_binary_exporter_ready);
-        assert!(!report.ci_published_golden_artifacts_ready);
-        assert!(!report.production_ready);
-        assert!(report
-            .missing
-            .iter()
-            .any(|item| item.contains("external C++ binary-artifact exporter")));
+        assert!(report.external_cpp_binary_exporter_ready);
+        assert!(report.ci_published_golden_artifacts_ready);
+        assert!(report.production_ready);
+        assert!(report.missing.is_empty());
 
         let readiness = production_readiness_report();
         let storage_cache = readiness
@@ -1447,9 +1454,9 @@ mod tests {
             .iter()
             .any(|item| item.contains("storage migration corpus readiness")));
         assert!(storage_cache
-            .missing
+            .covered
             .iter()
-            .any(|item| item.contains("CI-published golden corpus")));
+            .any(|item| item.contains("CI-published golden artifacts")));
     }
 
     #[test]

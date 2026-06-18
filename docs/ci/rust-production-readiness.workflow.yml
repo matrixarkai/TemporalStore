@@ -79,6 +79,12 @@ jobs:
       - name: Run storage modes harness
         run: cargo run -p temporalstore-rust --bin storage_modes_harness
 
+      - name: Export C++ storage migration artifacts
+        run: >
+          python3 tools/export_cpp_storage_migration_artifacts.py
+          --output target/readiness/storage-migration-artifacts
+          > target/readiness/storage-migration-artifacts-manifest.json
+
       - name: Run compact scale harness
         run: >
           cargo run -p temporalstore-rust --bin scale_harness --
@@ -107,6 +113,8 @@ jobs:
           path: |
             target/readiness/production_readiness_report.json
             target/readiness/production_readiness_gate.log
+            target/readiness/storage-migration-artifacts-manifest.json
+            target/readiness/storage-migration-artifacts/**
 
   service-readiness:
     runs-on: ubuntu-22.04

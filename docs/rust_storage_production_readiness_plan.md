@@ -115,16 +115,20 @@ current Rust-native deployment target:
   string, hash, set, Feature, Sequence, IPS, Risk, Redis-compatible, and Context model coverage.
 - Rust consumes that corpus into native page envelopes, then validates slot ownership summaries,
   dirty generations, dump manifest checksums, follower-cursor retention planning, cache warmup,
-  recovery integrity, and post-restart logical reads.
+  recovery integrity, Redis/admin reads, and post-restart logical reads.
 - The same corpus replays through sync and async local shared-store oplogs and through Raft
   replication with a leader transfer before reads.
+- `tools/export_cpp_storage_migration_artifacts.py` publishes deterministic object/page/slot/index/
+  oplog artifact JSON plus a manifest for the migration-only C++ corpus path.
+- The tracked CI workflow uploads the generated storage migration artifact directory as the golden
+  corpus evidence for Rust replay.
 - `storage_production_harness` turns the corpus into a local scale/fault gate for dump, cache
   pressure, restart recovery, shared-store replay, and Raft movement.
 - The parity gate now runs the storage production harness and validates the JSON summary.
 - The parity gate now also runs `storage_fault_matrix_harness`, which rejects checksum-mismatched,
   partial, missing-segment, stale, and corrupt-page-segment slot dump manifests before install.
 
-This closes the in-repo Rust migration verifier and local production-harness slice. Storage remains
-not production-ready until an external C++ binary-artifact exporter publishes the golden corpus in
-CI, the restart-during-install fault matrix is complete, long-running SSD cache pressure validation
-passes, and ByteStore/S3 live integration is implemented or explicitly removed from readiness.
+This closes the in-repo Rust migration verifier, external artifact-export contract, CI-published
+golden corpus path, and local production-harness slice for Rust-native storage formats. Storage
+remains not production-ready only for separately tracked live ByteStore/S3 integration and broader
+deployment-scale evidence.
