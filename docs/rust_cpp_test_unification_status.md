@@ -38,8 +38,9 @@ The shared corpus validator also requires every runtime/stress `cpp_data_raft_pa
 declare a Rust runner/validator, and requires the data-node and production Raft cases to point at
 the combined data-node plus metaserver parity gate.
 The corpus coverage block has a dedicated `required_raft_case_names` list for the exact unified
-C++/Rust Raft cases: data-Raft replication, metaserver membership/failover/snapshot, data-node
-scale/failover/snapshot, data-node mixed read/write plus membership, and the production Raft gate.
+C++/Rust Raft cases: data-Raft replication, metaserver membership/failover/snapshot plus
+post-failover replacement/scale-down, data-node scale/failover/snapshot plus post-snapshot
+rescale, data-node mixed read/write plus membership, and the production Raft gate.
 
 When `TS_CPP_REPO` is set, the unified, parity, and storage/Raft gates pass it through to
 `validate_raft_storage_parity_evidence.py --cpp-repo`, so the Raft parity evidence is checked
@@ -50,8 +51,8 @@ Raft/storage parity evidence status:
 ```text
 python3 tools/validate_raft_storage_parity_evidence.py
 raft_storage_parity_areas: 11
-corpus_required_cpp_paths: 49
-rust_evidence_snippets: 113
+corpus_required_cpp_paths: 50
+rust_evidence_snippets: 115
 ```
 
 The eleven checked areas are storage object/page/slot lifecycle, slot dump/load recovery,

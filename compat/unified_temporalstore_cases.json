@@ -2284,6 +2284,25 @@
           }
         },
         {
+          "name": "metaserver_post_failover_replacement_scale_down",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "stress",
+            "description": "Unified C++/Rust control-plane Raft post-failover replacement and follow-up scale-down case.",
+            "required_paths": [
+              "tools/run_metaserver_raft_failover_ubuntu22.sh",
+              "tools/run_metaserver_raft_membership_ubuntu22.sh",
+              "src/metaserver_v2/raft_server.cc",
+              "src/metaserver_v2/scheduler/update_membership_task.cc"
+            ],
+            "runner": "BUILD_TYPE=Release ITERATIONS=1 bash tools/run_metaserver_raft_failover_ubuntu22.sh && BUILD_TYPE=Release ITERATIONS=1 MEMBERSHIP_OPS=200 bash tools/run_metaserver_raft_membership_ubuntu22.sh",
+            "rust_runner": "cargo run -p temporalstore-rust --bin metaserver_raft_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-metaserver-raft-replace-scale-down",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-metaserver-raft-validation --log <metaserver_raft_harness.json>",
+            "timeout_s": 1800
+          }
+        },
+        {
           "name": "metaserver_snapshot_restore",
           "command": {
             "kind": "existing_test",
@@ -2360,6 +2379,25 @@
             "rust_runner": "cargo run -p temporalstore-rust --bin distributed_raft_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-raft-snapshot",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-validation --log <distributed_raft_harness.json>",
             "timeout_s": 1200
+          }
+        },
+        {
+          "name": "data_raft_post_snapshot_rescale",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "stress",
+            "description": "Unified C++/Rust data-node Raft post-snapshot re-scale-down and re-scale-up case.",
+            "required_paths": [
+              "tools/run_data_raft_snapshot_restore_ubuntu22.sh",
+              "tools/run_data_raft_scale_up_down_ubuntu22.sh",
+              "src/partition/storage/data_raft_replication.cc",
+              "src/partition/storage/data_raft_consensus.cc"
+            ],
+            "runner": "BUILD_TYPE=Release RAFT_SNAPSHOT_OPS=200 RAFT_SNAPSHOT_THREADS=2 bash tools/run_data_raft_snapshot_restore_ubuntu22.sh && BUILD_TYPE=Release ITERATIONS=1 OPS=300 bash tools/run_data_raft_scale_up_down_ubuntu22.sh",
+            "rust_runner": "cargo run -p temporalstore-rust --bin distributed_raft_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-raft-post-snapshot-rescale",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-validation --log <distributed_raft_harness.json>",
+            "timeout_s": 1800
           }
         }
       ]

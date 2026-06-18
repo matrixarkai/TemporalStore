@@ -348,6 +348,8 @@ AREAS: tuple[ParityArea, ...] = (
                     '"raft_data_node_scale_failover_snapshot"',
                     '"raft_data_node_mixed_rw_and_membership"',
                     '"raft_production_gate"',
+                    '"metaserver_post_failover_replacement_scale_down"',
+                    '"data_raft_post_snapshot_rescale"',
                     "tools/run_storage_raft_production_readiness.sh && tools/run_raft_distributed_parity.sh",
                     "temporalstore-raft-distributed-parity-validation",
                 ),
