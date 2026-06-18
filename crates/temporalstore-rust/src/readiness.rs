@@ -149,6 +149,25 @@ pub struct DataNodeServiceReadinessReport {
     pub missing: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MetaServerControlPlaneReadinessReport {
+    pub inventory_heartbeat_ready: bool,
+    pub namespace_table_topology_ready: bool,
+    pub local_raft_mutation_path_ready: bool,
+    pub load_aware_placement_ready: bool,
+    pub local_snapshot_ready: bool,
+    pub scheduler_admin_ready: bool,
+    pub scheduler_snapshot_ready: bool,
+    pub preflight_ready: bool,
+    pub networked_metaserver_raft_ready: bool,
+    pub cpp_partition_set_topology_ready: bool,
+    pub real_process_scheduler_loop_ready: bool,
+    pub durable_data_raft_membership_ready: bool,
+    pub local_control_plane_ready: bool,
+    pub production_ready: bool,
+    pub missing: Vec<String>,
+}
+
 pub fn client_routing_readiness_report() -> ClientRoutingReadinessReport {
     let typed_table_client_ready = true;
     let route_refresh_ready = true;
@@ -262,6 +281,63 @@ pub fn data_node_service_readiness_report() -> DataNodeServiceReadinessReport {
         tonic_grpc_streaming_ready,
         distributed_admission_ready,
         local_data_node_ready,
+        production_ready,
+        missing,
+    }
+}
+
+pub fn metaserver_control_plane_readiness_report() -> MetaServerControlPlaneReadinessReport {
+    let inventory_heartbeat_ready = true;
+    let namespace_table_topology_ready = true;
+    let local_raft_mutation_path_ready = true;
+    let load_aware_placement_ready = true;
+    let local_snapshot_ready = true;
+    let scheduler_admin_ready = true;
+    let scheduler_snapshot_ready = true;
+    let preflight_ready = true;
+    let networked_metaserver_raft_ready = false;
+    let cpp_partition_set_topology_ready = false;
+    let real_process_scheduler_loop_ready = false;
+    let durable_data_raft_membership_ready = false;
+    let local_control_plane_ready = inventory_heartbeat_ready
+        && namespace_table_topology_ready
+        && local_raft_mutation_path_ready
+        && load_aware_placement_ready
+        && local_snapshot_ready
+        && scheduler_admin_ready
+        && scheduler_snapshot_ready
+        && preflight_ready;
+    let production_ready = local_control_plane_ready
+        && networked_metaserver_raft_ready
+        && cpp_partition_set_topology_ready
+        && real_process_scheduler_loop_ready
+        && durable_data_raft_membership_ready;
+    let missing = if production_ready {
+        Vec::new()
+    } else {
+        vec![
+            "networked multi-process metaserver Raft".to_string(),
+            "C++ partition-set/member/version topology model".to_string(),
+            "full background scheduler loop executing repair tasks against real data-node processes, cooldowns, and safe mode"
+                .to_string(),
+            "durable shard membership changes coupled to data-node Raft groups".to_string(),
+        ]
+    };
+
+    MetaServerControlPlaneReadinessReport {
+        inventory_heartbeat_ready,
+        namespace_table_topology_ready,
+        local_raft_mutation_path_ready,
+        load_aware_placement_ready,
+        local_snapshot_ready,
+        scheduler_admin_ready,
+        scheduler_snapshot_ready,
+        preflight_ready,
+        networked_metaserver_raft_ready,
+        cpp_partition_set_topology_ready,
+        real_process_scheduler_loop_ready,
+        durable_data_raft_membership_ready,
+        local_control_plane_ready,
         production_ready,
         missing,
     }
@@ -494,6 +570,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
     let client_routing = client_routing_readiness_report();
     let proxy_serving = proxy_serving_readiness_report();
     let data_node_service = data_node_service_readiness_report();
+    let metaserver_control_plane = metaserver_control_plane_readiness_report();
     let storage_cache_dependency_matrix = storage_cache_dependency_matrix_report();
     let storage_ssd_cache_pressure = storage_ssd_cache_pressure_readiness_report();
     let storage_migration_corpus = storage_migration_corpus_readiness_report();
@@ -596,14 +673,10 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "metaserver preflight is exposed for both single-node and Raft-backed metadata runtimes, including MasterService aliases"
                     .to_string(),
-            ],
-            missing: vec![
-                "networked multi-process metaserver Raft".to_string(),
-                "C++ partition-set/member/version topology model".to_string(),
-                "full background scheduler loop executing repair tasks against real data-node processes, cooldowns, and safe mode"
+                "metaserver control-plane readiness covers inventory heartbeat, namespace/table topology, local Raft mutation path, load-aware placement, local snapshots, scheduler admin, scheduler snapshots, and preflight while keeping networked Raft and real-process scheduler execution fail-closed"
                     .to_string(),
-                "durable shard membership changes coupled to data-node Raft groups".to_string(),
             ],
+            missing: metaserver_control_plane.missing,
         },
         ReadinessArea {
             area: "data_node_distributed_raft".to_string(),
@@ -1270,6 +1343,53 @@ mod tests {
             .iter()
             .any(|item| item.contains("data-node service readiness")));
         assert_eq!(dataserver.missing, report.missing);
+    }
+
+    #[test]
+    fn metaserver_control_plane_readiness_splits_local_and_production_surfaces() {
+        let report = metaserver_control_plane_readiness_report();
+        assert!(report.inventory_heartbeat_ready);
+        assert!(report.namespace_table_topology_ready);
+        assert!(report.local_raft_mutation_path_ready);
+        assert!(report.load_aware_placement_ready);
+        assert!(report.local_snapshot_ready);
+        assert!(report.scheduler_admin_ready);
+        assert!(report.scheduler_snapshot_ready);
+        assert!(report.preflight_ready);
+        assert!(report.local_control_plane_ready);
+        assert!(!report.networked_metaserver_raft_ready);
+        assert!(!report.cpp_partition_set_topology_ready);
+        assert!(!report.real_process_scheduler_loop_ready);
+        assert!(!report.durable_data_raft_membership_ready);
+        assert!(!report.production_ready);
+        assert!(report
+            .missing
+            .iter()
+            .any(|item| item.contains("networked multi-process metaserver Raft")));
+        assert!(report
+            .missing
+            .iter()
+            .any(|item| item.contains("C++ partition-set")));
+        assert!(report
+            .missing
+            .iter()
+            .any(|item| item.contains("real data-node processes")));
+        assert!(report
+            .missing
+            .iter()
+            .any(|item| item.contains("data-node Raft groups")));
+
+        let readiness = production_readiness_report();
+        let metaserver = readiness
+            .areas
+            .iter()
+            .find(|area| area.area == "metaserver")
+            .expect("metaserver area must exist");
+        assert!(metaserver
+            .covered
+            .iter()
+            .any(|item| item.contains("metaserver control-plane readiness")));
+        assert_eq!(metaserver.missing, report.missing);
     }
 
     #[test]

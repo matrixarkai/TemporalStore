@@ -118,6 +118,14 @@ AREAS: tuple[ParityArea, ...] = (
                     "metaserver_scheduler_reload_survives_nodeserver_lifecycle_snapshot_restart",
                 ),
             ),
+            RustEvidence(
+                "crates/temporalstore-rust/src/readiness.rs",
+                (
+                    "metaserver_control_plane_readiness_report",
+                    "metaserver control-plane readiness covers inventory heartbeat",
+                    "metaserver_control_plane_readiness_splits_local_and_production_surfaces",
+                ),
+            ),
         ),
     ),
     ParityArea(
