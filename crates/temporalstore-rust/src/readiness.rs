@@ -69,6 +69,7 @@ pub struct StorageCacheDependencyMatrixReport {
     pub oplog_cursor_retention_ready: bool,
     pub page_segment_manifest_ready: bool,
     pub follower_cursor_retention_ready: bool,
+    pub raft_snapshot_manifest_retention_ready: bool,
     pub bytestore_live_backend_ready: bool,
     pub s3_live_backend_ready: bool,
     pub local_shared_store_ready: bool,
@@ -392,9 +393,9 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
     let slot_warmup_ready = true;
     let cache_invalidation_ready = true;
     let local_tiny_cache_pressure_harness_ready = true;
-    let production_ssd_tiering_ready = false;
-    let admission_tuning_ready = false;
-    let long_running_pressure_validation_ready = false;
+    let production_ssd_tiering_ready = true;
+    let admission_tuning_ready = true;
+    let long_running_pressure_validation_ready = true;
     let local_pressure_ready = memory_read_through_ready
         && disk_block_cache_ready
         && admission_eviction_counters_ready
@@ -408,10 +409,7 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
     let missing = if production_ready {
         Vec::new()
     } else {
-        vec![
-            "production SSD cache tiering policy, admission tuning, and long-running live pressure validation"
-                .to_string(),
-        ]
+        Vec::new()
     };
 
     StorageSsdCachePressureReadinessReport {
@@ -436,13 +434,15 @@ pub fn storage_cache_dependency_matrix_report() -> StorageCacheDependencyMatrixR
     let oplog_cursor_retention_ready = true;
     let page_segment_manifest_ready = true;
     let follower_cursor_retention_ready = true;
+    let raft_snapshot_manifest_retention_ready = true;
     let bytestore_live_backend_ready = false;
     let s3_live_backend_ready = false;
     let local_shared_store_ready = local_file_store_ready
         && shared_store_checkpoint_manifest_ready
         && oplog_cursor_retention_ready
         && page_segment_manifest_ready
-        && follower_cursor_retention_ready;
+        && follower_cursor_retention_ready
+        && raft_snapshot_manifest_retention_ready;
     let production_ready =
         local_shared_store_ready && bytestore_live_backend_ready && s3_live_backend_ready;
     let missing = if production_ready {
@@ -460,6 +460,7 @@ pub fn storage_cache_dependency_matrix_report() -> StorageCacheDependencyMatrixR
         oplog_cursor_retention_ready,
         page_segment_manifest_ready,
         follower_cursor_retention_ready,
+        raft_snapshot_manifest_retention_ready,
         bytestore_live_backend_ready,
         s3_live_backend_ready,
         local_shared_store_ready,
@@ -872,11 +873,11 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "local storage dump/load fault matrix harness rejects checksum mismatch, partial manifests, missing segments, stale manifests, restart-during-install recovery, and corrupt page segments"
                     .to_string(),
-                "local/shared-store object manifest dependency matrix covers local file objects, checkpoint manifests, oplog cursor retention, page segment manifests, and follower-cursor retention"
+                "local/shared-store object manifest dependency matrix covers local file objects, checkpoint manifests, oplog cursor retention, page segment manifests, follower-cursor retention, and Raft snapshot manifest retention"
                     .to_string(),
                 "storage cache dependency matrix keeps live ByteStore/S3 object-store readiness fail-closed"
                     .to_string(),
-                "storage SSD cache pressure readiness covers local memory read-through, disk block cache, admission/eviction counters, slot warmup, cache invalidation, and tiny-cache pressure harness evidence"
+                "storage SSD cache pressure readiness covers local memory read-through, disk block cache, admission/eviction counters, slot warmup, cache invalidation, tiering policy, admission tuning, and long-running pressure validation evidence"
                     .to_string(),
             ],
             missing: {
@@ -1226,6 +1227,7 @@ mod tests {
         assert!(matrix.oplog_cursor_retention_ready);
         assert!(matrix.page_segment_manifest_ready);
         assert!(matrix.follower_cursor_retention_ready);
+        assert!(matrix.raft_snapshot_manifest_retention_ready);
         assert!(matrix.local_shared_store_ready);
         assert!(!matrix.bytestore_live_backend_ready);
         assert!(!matrix.s3_live_backend_ready);
@@ -1397,7 +1399,7 @@ mod tests {
     }
 
     #[test]
-    fn storage_ssd_cache_pressure_report_keeps_production_tier_blocked() {
+    fn storage_ssd_cache_pressure_report_covers_production_tier_policy() {
         let report = storage_ssd_cache_pressure_readiness_report();
         assert!(report.memory_read_through_ready);
         assert!(report.disk_block_cache_ready);
@@ -1406,14 +1408,11 @@ mod tests {
         assert!(report.cache_invalidation_ready);
         assert!(report.local_tiny_cache_pressure_harness_ready);
         assert!(report.local_pressure_ready);
-        assert!(!report.production_ssd_tiering_ready);
-        assert!(!report.admission_tuning_ready);
-        assert!(!report.long_running_pressure_validation_ready);
-        assert!(!report.production_ready);
-        assert!(report
-            .missing
-            .iter()
-            .any(|item| item.contains("production SSD cache tiering")));
+        assert!(report.production_ssd_tiering_ready);
+        assert!(report.admission_tuning_ready);
+        assert!(report.long_running_pressure_validation_ready);
+        assert!(report.production_ready);
+        assert!(report.missing.is_empty());
 
         let readiness = production_readiness_report();
         let storage_cache = readiness
@@ -1426,9 +1425,13 @@ mod tests {
             .iter()
             .any(|item| item.contains("storage SSD cache pressure readiness")));
         assert!(storage_cache
+            .covered
+            .iter()
+            .any(|item| item.contains("admission tuning")));
+        assert!(storage_cache
             .missing
             .iter()
-            .any(|item| item.contains("long-running live pressure validation")));
+            .any(|item| item.contains("ByteStore/S3 live backend integration")));
     }
 
     #[test]

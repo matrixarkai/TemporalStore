@@ -146,6 +146,187 @@ pub struct CacheStats {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CacheTier {
+    Memory,
+    Ssd,
+    Reject,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CacheAdmissionReason {
+    HotPage,
+    HotObject,
+    WarmSlot,
+    LargeColdBlock,
+    Oversize,
+    MemoryOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CacheBlockKind {
+    Page,
+    Object,
+    Index,
+    Oplog,
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CacheAdmissionRequest {
+    pub block_kind: CacheBlockKind,
+    pub shard_id: ShardId,
+    #[serde(default)]
+    pub routing_slot: Option<u32>,
+    pub block_bytes: usize,
+    #[serde(default)]
+    pub hotness: u32,
+    #[serde(default)]
+    pub pinned: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CacheTieringPolicy {
+    pub memory_capacity_bytes: usize,
+    pub ssd_capacity_bytes: usize,
+    pub memory_hotness_threshold: u32,
+    pub ssd_admit_hotness_threshold: u32,
+    pub max_memory_block_bytes: usize,
+    pub max_ssd_block_bytes: usize,
+}
+
+impl Default for CacheTieringPolicy {
+    fn default() -> Self {
+        Self {
+            memory_capacity_bytes: 64 * 1024 * 1024,
+            ssd_capacity_bytes: 16 * 1024 * 1024 * 1024,
+            memory_hotness_threshold: 8,
+            ssd_admit_hotness_threshold: 2,
+            max_memory_block_bytes: 1024 * 1024,
+            max_ssd_block_bytes: 16 * 1024 * 1024,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CacheAdmissionDecision {
+    pub tier: CacheTier,
+    pub reason: CacheAdmissionReason,
+    pub admit_memory: bool,
+    pub admit_ssd: bool,
+}
+
+impl CacheTieringPolicy {
+    pub fn decide(&self, request: &CacheAdmissionRequest) -> CacheAdmissionDecision {
+        if request.block_bytes > self.max_ssd_block_bytes
+            || request.block_bytes > self.ssd_capacity_bytes
+        {
+            return CacheAdmissionDecision {
+                tier: CacheTier::Reject,
+                reason: CacheAdmissionReason::Oversize,
+                admit_memory: false,
+                admit_ssd: false,
+            };
+        }
+        if request.pinned
+            || (request.hotness >= self.memory_hotness_threshold
+                && request.block_bytes <= self.max_memory_block_bytes
+                && request.block_bytes <= self.memory_capacity_bytes)
+        {
+            return CacheAdmissionDecision {
+                tier: CacheTier::Memory,
+                reason: if matches!(request.block_kind, CacheBlockKind::Page) {
+                    CacheAdmissionReason::HotPage
+                } else {
+                    CacheAdmissionReason::HotObject
+                },
+                admit_memory: true,
+                admit_ssd: true,
+            };
+        }
+        if request.routing_slot.is_some()
+            && request.hotness >= self.ssd_admit_hotness_threshold
+            && request.block_bytes <= self.max_ssd_block_bytes
+        {
+            return CacheAdmissionDecision {
+                tier: CacheTier::Ssd,
+                reason: CacheAdmissionReason::WarmSlot,
+                admit_memory: false,
+                admit_ssd: true,
+            };
+        }
+        if request.block_bytes > self.max_memory_block_bytes
+            || request.hotness >= self.ssd_admit_hotness_threshold
+        {
+            return CacheAdmissionDecision {
+                tier: CacheTier::Ssd,
+                reason: CacheAdmissionReason::LargeColdBlock,
+                admit_memory: false,
+                admit_ssd: true,
+            };
+        }
+        CacheAdmissionDecision {
+            tier: CacheTier::Memory,
+            reason: CacheAdmissionReason::MemoryOnly,
+            admit_memory: true,
+            admit_ssd: false,
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CachePressureValidationReport {
+    pub iterations: usize,
+    pub memory_admitted: u64,
+    pub ssd_admitted: u64,
+    pub rejected: u64,
+    pub observed_evictions: u64,
+    pub observed_disk_refills: u64,
+    pub passed: bool,
+    pub reasons: Vec<String>,
+}
+
+pub fn validate_cache_pressure_policy(
+    policy: CacheTieringPolicy,
+    requests: &[CacheAdmissionRequest],
+    stats: CacheStats,
+) -> CachePressureValidationReport {
+    let mut report = CachePressureValidationReport {
+        iterations: requests.len(),
+        observed_evictions: stats.memory_evictions,
+        observed_disk_refills: stats.disk_hits,
+        ..CachePressureValidationReport::default()
+    };
+    for request in requests {
+        match policy.decide(request).tier {
+            CacheTier::Memory => report.memory_admitted += 1,
+            CacheTier::Ssd => report.ssd_admitted += 1,
+            CacheTier::Reject => report.rejected += 1,
+        }
+    }
+    if report.memory_admitted == 0 {
+        report.reasons.push("missing_memory_admission".to_string());
+    }
+    if report.ssd_admitted == 0 {
+        report.reasons.push("missing_ssd_admission".to_string());
+    }
+    if report.rejected == 0 {
+        report.reasons.push("missing_rejection_case".to_string());
+    }
+    if stats.memory_evictions == 0 {
+        report
+            .reasons
+            .push("missing_eviction_observation".to_string());
+    }
+    if stats.disk_hits == 0 {
+        report
+            .reasons
+            .push("missing_disk_refill_observation".to_string());
+    }
+    report.passed = report.reasons.is_empty();
+    report
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CacheCompression {
     None,
     Zstd { level: i32 },
@@ -809,6 +990,120 @@ mod tests {
         assert_eq!(cache.get_memory(&key), None);
         assert_eq!(cache.get(&key).unwrap(), Some(b"too-large".to_vec()));
         assert_eq!(cache.stats().refill_failures, 1);
+    }
+
+    #[test]
+    fn ssd_cache_tiering_policy_admits_hot_warm_and_rejects_oversize_blocks() {
+        let policy = CacheTieringPolicy {
+            memory_capacity_bytes: 64,
+            ssd_capacity_bytes: 1024,
+            memory_hotness_threshold: 8,
+            ssd_admit_hotness_threshold: 2,
+            max_memory_block_bytes: 32,
+            max_ssd_block_bytes: 256,
+        };
+        let hot_page = CacheAdmissionRequest {
+            block_kind: CacheBlockKind::Page,
+            shard_id: 1,
+            routing_slot: Some(9),
+            block_bytes: 16,
+            hotness: 10,
+            pinned: false,
+        };
+        let warm_slot = CacheAdmissionRequest {
+            block_kind: CacheBlockKind::Page,
+            shard_id: 1,
+            routing_slot: Some(9),
+            block_bytes: 128,
+            hotness: 3,
+            pinned: false,
+        };
+        let oversize = CacheAdmissionRequest {
+            block_kind: CacheBlockKind::Object,
+            shard_id: 1,
+            routing_slot: None,
+            block_bytes: 512,
+            hotness: 99,
+            pinned: false,
+        };
+
+        let hot = policy.decide(&hot_page);
+        assert_eq!(hot.tier, CacheTier::Memory);
+        assert_eq!(hot.reason, CacheAdmissionReason::HotPage);
+        assert!(hot.admit_memory);
+        assert!(hot.admit_ssd);
+
+        let warm = policy.decide(&warm_slot);
+        assert_eq!(warm.tier, CacheTier::Ssd);
+        assert_eq!(warm.reason, CacheAdmissionReason::WarmSlot);
+        assert!(!warm.admit_memory);
+        assert!(warm.admit_ssd);
+
+        let rejected = policy.decide(&oversize);
+        assert_eq!(rejected.tier, CacheTier::Reject);
+        assert_eq!(rejected.reason, CacheAdmissionReason::Oversize);
+        assert!(!rejected.admit_memory);
+        assert!(!rejected.admit_ssd);
+    }
+
+    #[test]
+    fn cache_pressure_policy_report_requires_admission_eviction_and_refill_evidence() {
+        let policy = CacheTieringPolicy {
+            memory_capacity_bytes: 64,
+            ssd_capacity_bytes: 1024,
+            memory_hotness_threshold: 8,
+            ssd_admit_hotness_threshold: 2,
+            max_memory_block_bytes: 32,
+            max_ssd_block_bytes: 256,
+        };
+        let requests = vec![
+            CacheAdmissionRequest {
+                block_kind: CacheBlockKind::Page,
+                shard_id: 1,
+                routing_slot: Some(1),
+                block_bytes: 8,
+                hotness: 10,
+                pinned: false,
+            },
+            CacheAdmissionRequest {
+                block_kind: CacheBlockKind::Index,
+                shard_id: 1,
+                routing_slot: Some(1),
+                block_bytes: 96,
+                hotness: 2,
+                pinned: false,
+            },
+            CacheAdmissionRequest {
+                block_kind: CacheBlockKind::Oplog,
+                shard_id: 1,
+                routing_slot: None,
+                block_bytes: 512,
+                hotness: 10,
+                pinned: false,
+            },
+        ];
+        let passing = validate_cache_pressure_policy(
+            policy,
+            &requests,
+            CacheStats {
+                memory_evictions: 4,
+                disk_hits: 7,
+                ..CacheStats::default()
+            },
+        );
+        assert!(passing.passed, "{passing:?}");
+        assert_eq!(passing.memory_admitted, 1);
+        assert_eq!(passing.ssd_admitted, 1);
+        assert_eq!(passing.rejected, 1);
+
+        let failing = validate_cache_pressure_policy(policy, &requests[..1], CacheStats::default());
+        assert!(!failing.passed);
+        assert!(failing
+            .reasons
+            .contains(&"missing_ssd_admission".to_string()));
+        assert!(failing
+            .reasons
+            .contains(&"missing_eviction_observation".to_string()));
     }
 
     #[test]

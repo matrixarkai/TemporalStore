@@ -525,6 +525,8 @@ pub struct SlotDumpManifestPrunePlan {
     pub blocked_manifest_ids: Vec<String>,
     #[serde(default)]
     pub follower_blocks: Vec<SlotDumpFollowerRetentionBlock>,
+    #[serde(default)]
+    pub raft_snapshot_blocks: Vec<SlotDumpRaftSnapshotRetentionBlock>,
     pub reasons: Vec<String>,
 }
 
@@ -561,6 +563,16 @@ pub struct SlotDumpFollowerReplayCursor {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlotDumpRaftSnapshotRef {
+    pub snapshot_id: String,
+    pub shard_id: ShardId,
+    pub last_included_index: u64,
+    pub last_included_term: u64,
+    pub oplog_sequence: u64,
+    pub index_log_sequence: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlotDumpFollowerRetentionBlock {
     pub follower_id: String,
     pub manifest_id: String,
@@ -568,6 +580,19 @@ pub struct SlotDumpFollowerRetentionBlock {
     pub manifest_index_log_sequence: u64,
     pub cursor_oplog_sequence: u64,
     pub cursor_index_log_sequence: u64,
+    pub reason: String,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlotDumpRaftSnapshotRetentionBlock {
+    pub snapshot_id: String,
+    pub manifest_id: String,
+    pub manifest_oplog_sequence: u64,
+    pub manifest_index_log_sequence: u64,
+    pub snapshot_oplog_sequence: u64,
+    pub snapshot_index_log_sequence: u64,
+    pub last_included_index: u64,
+    pub last_included_term: u64,
     pub reason: String,
 }
 
@@ -2073,13 +2098,32 @@ impl TemporalEngine {
         shard_id: ShardId,
         follower_cursors: impl IntoIterator<Item = SlotDumpFollowerReplayCursor>,
     ) -> SlotDumpManifestPrunePlan {
+        self.slot_dump_manifest_prune_plan_with_retention_refs(
+            shard_id,
+            follower_cursors,
+            Vec::new(),
+        )
+    }
+
+    pub fn slot_dump_manifest_prune_plan_with_retention_refs(
+        &self,
+        shard_id: ShardId,
+        follower_cursors: impl IntoIterator<Item = SlotDumpFollowerReplayCursor>,
+        raft_snapshot_refs: impl IntoIterator<Item = SlotDumpRaftSnapshotRef>,
+    ) -> SlotDumpManifestPrunePlan {
         let follower_cursors = follower_cursors.into_iter().collect::<Vec<_>>();
-        slot_dump_manifest_prune_plan_at(&self.index_dir, shard_id, &follower_cursors)
-            .unwrap_or_else(|err| SlotDumpManifestPrunePlan {
-                shard_id,
-                reasons: vec![format!("slot_dump_prune_plan_failed:{err}")],
-                ..SlotDumpManifestPrunePlan::default()
-            })
+        let raft_snapshot_refs = raft_snapshot_refs.into_iter().collect::<Vec<_>>();
+        slot_dump_manifest_prune_plan_at(
+            &self.index_dir,
+            shard_id,
+            &follower_cursors,
+            &raft_snapshot_refs,
+        )
+        .unwrap_or_else(|err| SlotDumpManifestPrunePlan {
+            shard_id,
+            reasons: vec![format!("slot_dump_prune_plan_failed:{err}")],
+            ..SlotDumpManifestPrunePlan::default()
+        })
     }
 
     pub fn slot_dump_install_roll_forward_reports(
@@ -2170,8 +2214,24 @@ impl TemporalEngine {
         shard_id: ShardId,
         follower_cursors: impl IntoIterator<Item = SlotDumpFollowerReplayCursor>,
     ) -> SlotDumpManifestPruneReport {
-        let plan =
-            self.slot_dump_manifest_prune_plan_with_follower_cursors(shard_id, follower_cursors);
+        self.apply_slot_dump_manifest_prune_with_retention_refs(
+            shard_id,
+            follower_cursors,
+            Vec::new(),
+        )
+    }
+
+    pub fn apply_slot_dump_manifest_prune_with_retention_refs(
+        &self,
+        shard_id: ShardId,
+        follower_cursors: impl IntoIterator<Item = SlotDumpFollowerReplayCursor>,
+        raft_snapshot_refs: impl IntoIterator<Item = SlotDumpRaftSnapshotRef>,
+    ) -> SlotDumpManifestPruneReport {
+        let plan = self.slot_dump_manifest_prune_plan_with_retention_refs(
+            shard_id,
+            follower_cursors,
+            raft_snapshot_refs,
+        );
         let mut removed_manifest_ids = Vec::new();
         for manifest_id in &plan.prunable_manifest_ids {
             let path = slot_dump_manifest_path(&self.index_dir, shard_id, manifest_id);
@@ -2647,8 +2707,7 @@ impl TemporalEngine {
                         let before = self.slot_dump_install_roll_forward_reports(shard_id);
                         let applied = self.roll_forward_slot_dump_installs(shard_id);
                         let interrupted_after = self.interrupted_slot_dump_installs(shard_id);
-                        restart_install_safe =
-                            before.iter().any(|report| report.can_retry_install);
+                        restart_install_safe = before.iter().any(|report| report.can_retry_install);
                         if !restart_install_safe {
                             restart_blockers.push("roll_forward_not_retryable".to_string());
                         }
@@ -4930,10 +4989,12 @@ fn slot_dump_manifest_prune_plan_at(
     index_dir: &std::path::Path,
     shard_id: ShardId,
     follower_cursors: &[SlotDumpFollowerReplayCursor],
+    raft_snapshot_refs: &[SlotDumpRaftSnapshotRef],
 ) -> Result<SlotDumpManifestPrunePlan, std::io::Error> {
     let manifests = list_slot_dump_manifests_at(index_dir, shard_id)?;
     let mut retained = retained_slot_dump_manifest_ids(&manifests);
     let mut follower_blocks = Vec::new();
+    let mut raft_snapshot_blocks = Vec::new();
     for cursor in follower_cursors
         .iter()
         .filter(|cursor| cursor.shard_id == shard_id)
@@ -4953,6 +5014,30 @@ fn slot_dump_manifest_prune_plan_at(
                 cursor_oplog_sequence: cursor.oplog_sequence,
                 cursor_index_log_sequence: cursor.index_log_sequence,
                 reason: "follower_cursor_anchor".to_string(),
+            });
+        }
+    }
+    for snapshot in raft_snapshot_refs
+        .iter()
+        .filter(|snapshot| snapshot.shard_id == shard_id)
+    {
+        let Some(anchor) = manifests.iter().rev().find(|manifest| {
+            manifest.oplog_sequence <= snapshot.oplog_sequence
+                && manifest.index_log_sequence <= snapshot.index_log_sequence
+        }) else {
+            continue;
+        };
+        if retained.insert(anchor.manifest_id.clone()) {
+            raft_snapshot_blocks.push(SlotDumpRaftSnapshotRetentionBlock {
+                snapshot_id: snapshot.snapshot_id.clone(),
+                manifest_id: anchor.manifest_id.clone(),
+                manifest_oplog_sequence: anchor.oplog_sequence,
+                manifest_index_log_sequence: anchor.index_log_sequence,
+                snapshot_oplog_sequence: snapshot.oplog_sequence,
+                snapshot_index_log_sequence: snapshot.index_log_sequence,
+                last_included_index: snapshot.last_included_index,
+                last_included_term: snapshot.last_included_term,
+                reason: "raft_snapshot_anchor".to_string(),
             });
         }
     }
@@ -5001,6 +5086,9 @@ fn slot_dump_manifest_prune_plan_at(
     if !follower_blocks.is_empty() {
         reasons.push("follower_cursor_blocks_prune".to_string());
     }
+    if !raft_snapshot_blocks.is_empty() {
+        reasons.push("raft_snapshot_blocks_prune".to_string());
+    }
     Ok(SlotDumpManifestPrunePlan {
         shard_id,
         retained_manifest_ids: retained.into_iter().collect(),
@@ -5008,6 +5096,7 @@ fn slot_dump_manifest_prune_plan_at(
         prunable_marker_manifest_ids,
         blocked_manifest_ids,
         follower_blocks,
+        raft_snapshot_blocks,
         reasons,
     })
 }
@@ -15312,6 +15401,89 @@ mod tests {
         );
         assert_eq!(
             caught_up.prunable_manifest_ids,
+            vec![fork.manifest_id.clone()]
+        );
+    }
+
+    #[test]
+    fn slot_dump_manifest_prune_is_blocked_by_raft_snapshot_reference() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "snapshot".to_string(),
+                value: b"v1".to_vec(),
+            },
+        });
+        let parent = engine.create_slot_dump_manifest(1, Vec::new()).unwrap();
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "snapshot".to_string(),
+                value: b"v2".to_vec(),
+            },
+        });
+        let child = engine.create_slot_dump_manifest(1, Vec::new()).unwrap();
+        let mut fork = parent.clone();
+        fork.manifest_id = format!("{}-snapshot-anchor", fork.manifest_id);
+        fork.parent_manifest_id = None;
+        fork.created_unix_ms = parent.created_unix_ms.saturating_add(1);
+        fork.dump_generation_id = slot_dump_generation_id(&fork);
+        fork.checksum = slot_dump_manifest_checksum(&fork).unwrap();
+        engine.persist_slot_dump_manifest(&fork).unwrap();
+
+        let no_snapshot = engine.slot_dump_manifest_prune_plan(1);
+        assert_eq!(
+            no_snapshot.prunable_manifest_ids,
+            vec![fork.manifest_id.clone()]
+        );
+
+        let snapshot_ref = SlotDumpRaftSnapshotRef {
+            snapshot_id: "raft-snapshot-0007".to_string(),
+            shard_id: 1,
+            last_included_index: 7,
+            last_included_term: 2,
+            oplog_sequence: fork.oplog_sequence,
+            index_log_sequence: fork.index_log_sequence,
+        };
+        let blocked = engine.slot_dump_manifest_prune_plan_with_retention_refs(
+            1,
+            Vec::<SlotDumpFollowerReplayCursor>::new(),
+            vec![snapshot_ref.clone()],
+        );
+        assert!(blocked.prunable_manifest_ids.is_empty());
+        assert!(blocked.retained_manifest_ids.contains(&fork.manifest_id));
+        assert_eq!(blocked.raft_snapshot_blocks.len(), 1);
+        assert_eq!(
+            blocked.raft_snapshot_blocks[0].snapshot_id,
+            "raft-snapshot-0007"
+        );
+        assert_eq!(
+            blocked.raft_snapshot_blocks[0].manifest_id,
+            fork.manifest_id
+        );
+        assert!(blocked
+            .reasons
+            .contains(&"raft_snapshot_blocks_prune".to_string()));
+
+        let advanced = engine.slot_dump_manifest_prune_plan_with_retention_refs(
+            1,
+            Vec::<SlotDumpFollowerReplayCursor>::new(),
+            vec![SlotDumpRaftSnapshotRef {
+                oplog_sequence: child.oplog_sequence,
+                index_log_sequence: child.index_log_sequence,
+                ..snapshot_ref
+            }],
+        );
+        assert_eq!(
+            advanced.prunable_manifest_ids,
             vec![fork.manifest_id.clone()]
         );
     }
