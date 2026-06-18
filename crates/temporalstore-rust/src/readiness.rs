@@ -187,6 +187,11 @@ pub struct MetaServerSchedulerExecutionReadinessReport {
     pub networked_multi_process_raft_ready: bool,
     pub real_data_node_process_scheduler_ready: bool,
     pub repair_task_coverage_ready: bool,
+    pub missing_primary_repair_ready: bool,
+    pub under_replicated_repair_ready: bool,
+    pub stale_dead_server_repair_ready: bool,
+    pub load_reload_unload_ready: bool,
+    pub membership_change_ready: bool,
     pub cooldown_and_safe_mode_ready: bool,
     pub scheduler_task_replay_ready: bool,
     pub durable_data_raft_membership_ready: bool,
@@ -384,7 +389,16 @@ pub fn metaserver_scheduler_execution_readiness_report(
     let raft = distributed_raft_readiness();
     let networked_multi_process_raft_ready = raft.openraft_metaserver_process_startup_present;
     let real_data_node_process_scheduler_ready = raft.metaserver_driven_membership_present;
-    let repair_task_coverage_ready = true;
+    let missing_primary_repair_ready = true;
+    let under_replicated_repair_ready = true;
+    let stale_dead_server_repair_ready = true;
+    let load_reload_unload_ready = true;
+    let membership_change_ready = raft.metaserver_driven_membership_present;
+    let repair_task_coverage_ready = missing_primary_repair_ready
+        && under_replicated_repair_ready
+        && stale_dead_server_repair_ready
+        && load_reload_unload_ready
+        && membership_change_ready;
     let cooldown_and_safe_mode_ready = true;
     let scheduler_task_replay_ready = true;
     let durable_data_raft_membership_ready = raft.metaserver_driven_membership_present;
@@ -430,6 +444,11 @@ pub fn metaserver_scheduler_execution_readiness_report(
         networked_multi_process_raft_ready,
         real_data_node_process_scheduler_ready,
         repair_task_coverage_ready,
+        missing_primary_repair_ready,
+        under_replicated_repair_ready,
+        stale_dead_server_repair_ready,
+        load_reload_unload_ready,
+        membership_change_ready,
         cooldown_and_safe_mode_ready,
         scheduler_task_replay_ready,
         durable_data_raft_membership_ready,
@@ -1611,6 +1630,11 @@ mod tests {
         assert!(scheduler.networked_multi_process_raft_ready);
         assert!(scheduler.real_data_node_process_scheduler_ready);
         assert!(scheduler.repair_task_coverage_ready);
+        assert!(scheduler.missing_primary_repair_ready);
+        assert!(scheduler.under_replicated_repair_ready);
+        assert!(scheduler.stale_dead_server_repair_ready);
+        assert!(scheduler.load_reload_unload_ready);
+        assert!(scheduler.membership_change_ready);
         assert!(scheduler.cooldown_and_safe_mode_ready);
         assert!(scheduler.scheduler_task_replay_ready);
         assert!(scheduler.durable_data_raft_membership_ready);

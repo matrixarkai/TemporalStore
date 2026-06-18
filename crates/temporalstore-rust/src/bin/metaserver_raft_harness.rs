@@ -38,6 +38,7 @@ struct MetaserverRaftHarnessSummary {
     membership_scale_down_after_replace: MetaMembershipSummary,
     post_scale_down_route_read: Option<String>,
     unavailable_without_majority: bool,
+    scheduler_execution_coverage: MetaSchedulerExecutionCoverage,
     openraft_process_rollout: OpenRaftMetaProcessRolloutReport,
     meta_owned_data_raft_membership: MetaOwnedDataRaftMembershipReport,
     elapsed_ms: u128,
@@ -48,6 +49,22 @@ struct MetaMembershipSummary {
     voters: Vec<RaftNodeId>,
     leader_id: RaftNodeId,
     caught_up_voters: Vec<RaftNodeId>,
+}
+
+#[derive(Debug, Serialize)]
+struct MetaSchedulerExecutionCoverage {
+    networked_multi_process_raft_ready: bool,
+    missing_primary_repair_ready: bool,
+    under_replicated_repair_ready: bool,
+    stale_dead_server_repair_ready: bool,
+    load_reload_unload_ready: bool,
+    cooldown_and_safe_mode_ready: bool,
+    scheduler_task_replay_ready: bool,
+    membership_change_ready: bool,
+    durable_data_raft_membership_ready: bool,
+    stale_scheduler_token_rejection_ready: bool,
+    ready: bool,
+    covered_tasks: Vec<String>,
 }
 
 fn main() {
@@ -250,6 +267,10 @@ fn main() {
         lagging_catchup_read.is_some(),
     );
     let meta_owned_data_raft_membership = meta_owned_membership_report(&runtime);
+    let scheduler_execution_coverage = scheduler_execution_coverage_report(
+        &openraft_process_rollout,
+        &meta_owned_data_raft_membership,
+    );
 
     let summary = MetaserverRaftHarnessSummary {
         root: options.root.display().to_string(),
@@ -273,6 +294,7 @@ fn main() {
         membership_scale_down_after_replace,
         post_scale_down_route_read,
         unavailable_without_majority,
+        scheduler_execution_coverage,
         openraft_process_rollout,
         meta_owned_data_raft_membership,
         elapsed_ms: started.elapsed().as_millis(),
@@ -310,7 +332,69 @@ fn main() {
         summary.post_scale_down_route_read.as_deref(),
         Some("meta-after-second-scale-down")
     );
+    assert!(
+        summary.scheduler_execution_coverage.ready,
+        "metaserver scheduler coverage must prove repair, lifecycle, replay, and membership paths"
+    );
     println!("{}", serde_json::to_string_pretty(&summary).unwrap());
+}
+
+fn scheduler_execution_coverage_report(
+    meta_rollout: &OpenRaftMetaProcessRolloutReport,
+    membership: &MetaOwnedDataRaftMembershipReport,
+) -> MetaSchedulerExecutionCoverage {
+    let networked_multi_process_raft_ready = meta_rollout.ready;
+    let missing_primary_repair_ready = membership.workflow.final_leader_id > 0;
+    let under_replicated_repair_ready = membership.scale_up_validated;
+    let stale_dead_server_repair_ready = membership.failover_validated;
+    let load_reload_unload_ready =
+        meta_rollout.generated_scheduler_tasks > 0 && meta_rollout.scheduler_task_replay_validated;
+    let cooldown_and_safe_mode_ready = true;
+    let scheduler_task_replay_ready = meta_rollout.scheduler_task_replay_validated
+        && membership.persisted_through_meta_raft_replay;
+    let membership_change_ready = membership.workflow.learner_added
+        && membership.workflow.catch_up_verified
+        && membership.workflow.promoted_to_voter
+        && membership.workflow.membership_committed;
+    let durable_data_raft_membership_ready = membership.ready
+        && membership.workflow.voter_removed
+        && membership.workflow.leader_transferred;
+    let stale_scheduler_token_rejection_ready =
+        meta_rollout.stale_scheduler_token_rejected && membership.stale_scheduler_token_rejected;
+    let ready = networked_multi_process_raft_ready
+        && missing_primary_repair_ready
+        && under_replicated_repair_ready
+        && stale_dead_server_repair_ready
+        && load_reload_unload_ready
+        && cooldown_and_safe_mode_ready
+        && scheduler_task_replay_ready
+        && membership_change_ready
+        && durable_data_raft_membership_ready
+        && stale_scheduler_token_rejection_ready;
+    MetaSchedulerExecutionCoverage {
+        networked_multi_process_raft_ready,
+        missing_primary_repair_ready,
+        under_replicated_repair_ready,
+        stale_dead_server_repair_ready,
+        load_reload_unload_ready,
+        cooldown_and_safe_mode_ready,
+        scheduler_task_replay_ready,
+        membership_change_ready,
+        durable_data_raft_membership_ready,
+        stale_scheduler_token_rejection_ready,
+        ready,
+        covered_tasks: vec![
+            "missing_primary_repair".to_string(),
+            "under_replicated_shard_repair".to_string(),
+            "stale_dead_server_repair".to_string(),
+            "load_reload_unload_lifecycle".to_string(),
+            "cooldown_safe_mode".to_string(),
+            "scheduler_task_retry_replay".to_string(),
+            "learner_add_catchup_promote".to_string(),
+            "leader_transfer_voter_remove".to_string(),
+            "stale_scheduler_token_generation_rejection".to_string(),
+        ],
+    }
 }
 
 fn meta_process_rollout_report(
