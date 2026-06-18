@@ -133,6 +133,11 @@ AREAS: tuple[ReadinessArea, ...] = (
                     "promote_peer",
                     "transfer_leader",
                     "campaign",
+                    "MetaDataRaftMembershipWorkflowReport",
+                    "drive_data_raft_membership_workflow",
+                    "metaserver_owns_data_raft_membership_workflow",
+                    "metaserver_membership_workflow_requires_meta_majority",
+                    "metaserver_membership_workflow_present",
                     "openraft_data_node_backend_bootstraps_learner_and_auto_promotes_peer",
                     "openraft_data_node_backend_persists_log_snapshot_read_index_and_leader_transfer",
                 ),
@@ -140,6 +145,10 @@ AREAS: tuple[ReadinessArea, ...] = (
             Evidence(
                 "crates/temporalstore-rust/src/bin/metaserver_raft_harness.rs",
                 ("transfer_leader(11)", "leader_after_transfer", "leader_after_failover"),
+            ),
+            Evidence(
+                "docs/distributed_raft_readiness.md",
+                ("metaserver-owned data-Raft membership workflow", "voter removal"),
             ),
         ),
     ),

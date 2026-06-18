@@ -108,6 +108,10 @@ Raft local coverage:
   verification, install completion, tail replay, and rollback decisions through
   `RaftSnapshotInstallReport`; full production readiness still requires the real process
   freeze/flush/download/install harness.
+- `ProductionMetaRaftRuntime` now exposes a metaserver-owned data-Raft membership workflow report
+  covering learner add, catch-up verification, promotion, leader transfer, and voter removal; full
+  production readiness still requires the networked scheduler harness against real data-node
+  processes.
 - Data-node Raft log matching is snapshot-floor aware: post-compaction entries continue after the
   installed snapshot index and AppendEntries can match previous terms against either retained log
   entries or the installed snapshot floor.

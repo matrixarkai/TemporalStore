@@ -182,6 +182,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "RaftSnapshotInstallReport exposes freeze, flush, manifest verify, checksum verify, install, tail replay, and rollback status for snapshot installs"
                     .to_string(),
+                "ProductionMetaRaftRuntime can drive a data-Raft membership workflow for learner add, catch-up verification, promotion, leader transfer, and voter removal"
+                    .to_string(),
             ],
             missing: raft.missing,
         },
@@ -323,6 +325,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "RaftStorageApplyFence persists shard, term, committed/applied index, snapshot id, storage epoch, and checksum with WAL recovery validation"
                     .to_string(),
                 "Raft snapshot lifecycle reports install, tail replay, and rollback decisions for data-node snapshot recovery paths"
+                    .to_string(),
+                "metaserver-owned data-Raft membership workflow reports learner add, catch-up verification, promotion, leader transfer, and voter removal"
                     .to_string(),
                 "ByteRaft-style leader write authority, ReadIndex guards, learner catch-up/promotion checks, and fail-closed stale leader-transfer checks are modeled locally"
                     .to_string(),

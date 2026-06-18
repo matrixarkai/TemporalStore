@@ -35,6 +35,8 @@ The Rust code currently has:
   local harness nodes so operators and tests can verify commit-to-apply convergence over HTTP
 - networked `POST /raft/membership/apply` on standalone `raft_node` and raft-enabled `server` for
   safe joint-consensus voter changes
+- metaserver-owned data-Raft membership workflow report for learner add, catch-up verification,
+  promotion, leader transfer, and voter removal
 - catch-up heartbeat helper for recovered live followers
 - safe data-node scale-up that returns only after the new replica is caught up
 - safe data-node scale-down that rejects quorum loss and promotes only a caught-up successor

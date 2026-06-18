@@ -542,6 +542,23 @@ pub struct RaftMembershipChangeReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MetaDataRaftMembershipWorkflowReport {
+    pub shard_id: ShardId,
+    pub learner_id: RaftNodeId,
+    pub removed_voter_id: Option<RaftNodeId>,
+    pub requested_leader_id: Option<RaftNodeId>,
+    pub learner_added: bool,
+    pub catch_up_verified: bool,
+    pub promoted_to_voter: bool,
+    pub membership_committed: bool,
+    pub leader_transferred: bool,
+    pub voter_removed: bool,
+    pub final_leader_id: RaftNodeId,
+    pub final_voters: Vec<RaftNodeId>,
+    pub commit_index: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DataRaftTopologyMembershipPlan {
     pub shard_id: ShardId,
     pub target_voters: Vec<RaftNodeId>,
@@ -1863,6 +1880,7 @@ pub struct RaftDistributedReadiness {
     pub byteraft_metaserver_snapshot_floor_election_present: bool,
     pub durable_apply_index_snapshot_integrated: bool,
     pub learner_catchup_promotion_present: bool,
+    pub metaserver_membership_workflow_present: bool,
     pub metaserver_driven_membership_present: bool,
     pub production_mtls_transport_present: bool,
     pub external_chaos_validation_present: bool,
@@ -1935,6 +1953,7 @@ pub fn distributed_raft_readiness() -> RaftDistributedReadiness {
         byteraft_metaserver_snapshot_floor_election_present: true,
         durable_apply_index_snapshot_integrated: false,
         learner_catchup_promotion_present: true,
+        metaserver_membership_workflow_present: true,
         metaserver_driven_membership_present: false,
         production_mtls_transport_present: false,
         external_chaos_validation_present: false,
@@ -2532,6 +2551,88 @@ impl ProductionMetaRaftRuntime {
         new_voters: impl IntoIterator<Item = RaftNodeId>,
     ) -> Result<RaftMembershipChangeReport, RaftError> {
         self.cluster.apply_membership_change_safely(new_voters)
+    }
+
+    pub fn drive_data_raft_membership_workflow(
+        &self,
+        data_cluster: &RaftCluster,
+        learner_id: RaftNodeId,
+        requested_leader_id: Option<RaftNodeId>,
+        remove_voter_id: Option<RaftNodeId>,
+    ) -> Result<MetaDataRaftMembershipWorkflowReport, RaftError> {
+        self.validate_ready()?;
+        let shard_id = data_cluster.shard_id();
+        let mut learner_added = false;
+        if data_cluster.local_status(learner_id).is_err() {
+            data_cluster.add_node_with_role(learner_id, RaftReplicaRole::Learner)?;
+            learner_added = true;
+        }
+
+        data_cluster.catch_up(learner_id)?;
+        let learner_status = data_cluster.local_status(learner_id)?;
+        let catch_up_verified = learner_status.lag == 0;
+        if !catch_up_verified {
+            return Err(RaftError::ReplicaLagging {
+                replica_id: learner_id,
+                replica_commit_index: learner_status.commit_index,
+                leader_commit_index: data_cluster.status().commit_index,
+            });
+        }
+
+        let mut target_voters = data_cluster.membership().voters;
+        if !target_voters.contains(&learner_id) {
+            target_voters.push(learner_id);
+        }
+        target_voters.sort_unstable();
+        target_voters.dedup();
+        data_cluster.begin_joint_consensus(target_voters)?;
+        data_cluster.promote_learner_to_voter(learner_id)?;
+        if let Err(err) = data_cluster.catch_up_live_followers() {
+            let _ = data_cluster.abort_joint_consensus();
+            return Err(err);
+        }
+        let committed_membership = match data_cluster.commit_joint_consensus() {
+            Ok(membership) => membership,
+            Err(err) => {
+                let _ = data_cluster.abort_joint_consensus();
+                return Err(err);
+            }
+        };
+
+        let mut leader_transferred = false;
+        if let Some(target_leader_id) = requested_leader_id {
+            data_cluster.transfer_leader(target_leader_id)?;
+            leader_transferred = data_cluster.leader_id() == target_leader_id;
+        }
+
+        let mut voter_removed = false;
+        if let Some(remove_voter_id) = remove_voter_id {
+            data_cluster.remove_node_safely(remove_voter_id)?;
+            voter_removed = true;
+        }
+
+        let final_status = data_cluster.status();
+        let final_voters = final_status
+            .nodes
+            .iter()
+            .filter(|node| node.replica_role.participates_in_quorum())
+            .map(|node| node.node_id)
+            .collect::<Vec<_>>();
+        Ok(MetaDataRaftMembershipWorkflowReport {
+            shard_id,
+            learner_id,
+            removed_voter_id: remove_voter_id,
+            requested_leader_id,
+            learner_added,
+            catch_up_verified,
+            promoted_to_voter: true,
+            membership_committed: !committed_membership.voters.is_empty(),
+            leader_transferred,
+            voter_removed,
+            final_leader_id: final_status.leader_id,
+            final_voters,
+            commit_index: final_status.commit_index,
+        })
     }
 
     pub fn trigger_snapshot(&self) -> Result<MetaRaftSnapshot, RaftError> {
@@ -4493,6 +4594,25 @@ impl RaftCluster {
         self.add_node(node_id)?;
         self.catch_up_live_followers()?;
         Ok(self.scale_change_report())
+    }
+
+    pub fn promote_learner_to_voter(&self, node_id: RaftNodeId) -> Result<(), RaftError> {
+        let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+        let node = inner
+            .nodes
+            .get_mut(&node_id)
+            .ok_or(RaftError::NodeNotFound(node_id))?;
+        match node.replica_role {
+            RaftReplicaRole::Learner => {
+                node.replica_role = RaftReplicaRole::Voter;
+                inner.persist_configured_wal()
+            }
+            RaftReplicaRole::Voter => Ok(()),
+            RaftReplicaRole::Witness => Err(RaftError::InvalidConfig(
+                "witness replicas cannot be promoted to voter through learner promotion"
+                    .to_string(),
+            )),
+        }
     }
 
     pub fn remove_node(&self, node_id: RaftNodeId) -> Result<(), RaftError> {
@@ -10709,6 +10829,7 @@ mod tests {
         assert!(readiness.byteraft_compacted_entry_rejection_present);
         assert!(readiness.byteraft_metaserver_snapshot_floor_election_present);
         assert!(readiness.learner_catchup_promotion_present);
+        assert!(readiness.metaserver_membership_workflow_present);
         assert!(!readiness.durable_apply_index_snapshot_integrated);
         assert!(!readiness.metaserver_driven_membership_present);
         assert!(!readiness.production_mtls_transport_present);
@@ -13046,6 +13167,115 @@ mod tests {
             .namespaces
             .iter()
             .any(|namespace| namespace.namespace == "meta-raft-after-failover"));
+    }
+
+    #[test]
+    fn metaserver_owns_data_raft_membership_workflow() {
+        let meta = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+            engine: ProductionRaftEngineKind::OpenRaft,
+            local_node_id: 10,
+            nodes: vec![
+                ProductionRaftNode {
+                    node_id: 10,
+                    addr: "127.0.0.1:19110".to_string(),
+                },
+                ProductionRaftNode {
+                    node_id: 11,
+                    addr: "127.0.0.1:19111".to_string(),
+                },
+                ProductionRaftNode {
+                    node_id: 12,
+                    addr: "127.0.0.1:19112".to_string(),
+                },
+            ],
+            config: RaftConfig::default(),
+            heartbeat_interval_ms: 100,
+            election_tick_ms: 50,
+            failure_detector_interval_ms: 1_000,
+            stale_server_after_ms: 30_000,
+        })
+        .unwrap();
+        let data = RaftCluster::new_single_shard(7, [1, 2, 3]);
+        data.propose(Command::StringSet {
+            key: "membership-workflow".to_string(),
+            value: b"before".to_vec(),
+        })
+        .unwrap();
+
+        let report = meta
+            .drive_data_raft_membership_workflow(&data, 4, Some(4), Some(1))
+            .unwrap();
+        assert_eq!(report.shard_id, 7);
+        assert_eq!(report.learner_id, 4);
+        assert_eq!(report.removed_voter_id, Some(1));
+        assert_eq!(report.requested_leader_id, Some(4));
+        assert!(report.learner_added);
+        assert!(report.catch_up_verified);
+        assert!(report.promoted_to_voter);
+        assert!(report.membership_committed);
+        assert!(report.leader_transferred);
+        assert!(report.voter_removed);
+        assert_eq!(report.final_leader_id, 4);
+        assert_eq!(report.final_voters, vec![2, 3, 4]);
+        assert_eq!(data.membership().voters, vec![2, 3, 4]);
+        assert_eq!(
+            data.local_status(4).unwrap().replica_role,
+            RaftReplicaRole::Voter
+        );
+        assert_eq!(
+            data.read_from_replica(
+                4,
+                Command::StringGet {
+                    key: "membership-workflow".to_string()
+                },
+            ),
+            Ok(CommandResponse::Bytes {
+                value: Some(b"before".to_vec())
+            })
+        );
+    }
+
+    #[test]
+    fn metaserver_membership_workflow_requires_meta_majority() {
+        let meta = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
+            engine: ProductionRaftEngineKind::OpenRaft,
+            local_node_id: 10,
+            nodes: vec![
+                ProductionRaftNode {
+                    node_id: 10,
+                    addr: "127.0.0.1:19210".to_string(),
+                },
+                ProductionRaftNode {
+                    node_id: 11,
+                    addr: "127.0.0.1:19211".to_string(),
+                },
+                ProductionRaftNode {
+                    node_id: 12,
+                    addr: "127.0.0.1:19212".to_string(),
+                },
+            ],
+            config: RaftConfig::default(),
+            heartbeat_interval_ms: 100,
+            election_tick_ms: 50,
+            failure_detector_interval_ms: 1_000,
+            stale_server_after_ms: 30_000,
+        })
+        .unwrap();
+        meta.cluster().set_alive(11, false).unwrap();
+        meta.cluster().set_alive(12, false).unwrap();
+        let data = RaftCluster::new_single_shard(8, [1, 2, 3]);
+
+        let error = meta
+            .drive_data_raft_membership_workflow(&data, 4, Some(4), Some(1))
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            RaftError::NoMajority {
+                live: 1,
+                required: 2
+            }
+        ));
+        assert!(data.local_status(4).is_err());
     }
 
     #[test]
