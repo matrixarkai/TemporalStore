@@ -1809,6 +1809,12 @@ pub struct RaftDistributedReadiness {
     pub rpc_runtime_observability_present: bool,
     pub external_snapshot_refs_present: bool,
     pub timer_election_tested: bool,
+    pub byteraft_leader_write_authority_present: bool,
+    pub durable_apply_index_snapshot_integrated: bool,
+    pub learner_catchup_promotion_present: bool,
+    pub metaserver_driven_membership_present: bool,
+    pub production_mtls_transport_present: bool,
+    pub external_chaos_validation_present: bool,
     pub missing: Vec<String>,
 }
 
@@ -1840,12 +1846,16 @@ impl std::error::Error for RaftProductionReadinessError {}
 
 pub fn distributed_raft_readiness() -> RaftDistributedReadiness {
     let missing = vec![
-        "wire the OpenRaft adapter into real networked data-node and metaserver process startup"
+        "roll out the OpenRaft adapter through real networked data-node and metaserver process startup"
             .to_string(),
-        "run external packet-loss and disk-pressure tests".to_string(),
-        "add production mTLS transport implementation instead of validation-only config"
+        "persist the data-node applied Raft index atomically with storage mutations and partition snapshot install"
+            .to_string(),
+        "make metaserver own learner add, catch-up verification, promotion, leader movement, and voter removal against real data-node Raft groups"
             .to_string(),
         "integrate metaserver shard membership changes with networked Raft groups".to_string(),
+        "add production mTLS transport implementation instead of validation-only config"
+            .to_string(),
+        "run external packet-loss, disk-pressure, and process-chaos tests".to_string(),
     ];
     RaftDistributedReadiness {
         complete: missing.is_empty(),
@@ -1858,6 +1868,12 @@ pub fn distributed_raft_readiness() -> RaftDistributedReadiness {
         rpc_runtime_observability_present: true,
         external_snapshot_refs_present: true,
         timer_election_tested: true,
+        byteraft_leader_write_authority_present: true,
+        durable_apply_index_snapshot_integrated: false,
+        learner_catchup_promotion_present: true,
+        metaserver_driven_membership_present: false,
+        production_mtls_transport_present: false,
+        external_chaos_validation_present: false,
         missing,
     }
 }
@@ -10209,10 +10225,24 @@ mod tests {
         assert!(readiness.transport_contracts_present);
         assert!(readiness.rpc_runtime_observability_present);
         assert!(readiness.external_snapshot_refs_present);
+        assert_eq!(
+            readiness.openraft_engine_adapter_present,
+            cfg!(feature = "openraft-engine")
+        );
+        assert!(readiness.byteraft_leader_write_authority_present);
+        assert!(readiness.learner_catchup_promotion_present);
+        assert!(!readiness.durable_apply_index_snapshot_integrated);
+        assert!(!readiness.metaserver_driven_membership_present);
+        assert!(!readiness.production_mtls_transport_present);
+        assert!(!readiness.external_chaos_validation_present);
         assert!(readiness
             .missing
             .iter()
-            .any(|item| item.contains("OpenRaft") || item.contains("raft-rs")));
+            .any(|item| item.contains("applied Raft index")));
+        assert!(readiness
+            .missing
+            .iter()
+            .any(|item| item.contains("learner add")));
         assert!(readiness.missing.iter().any(|item| item.contains("mTLS")));
     }
 
@@ -10225,7 +10255,7 @@ mod tests {
         assert!(err
             .missing
             .iter()
-            .any(|item| item.contains("OpenRaft") || item.contains("raft-rs")));
+            .any(|item| item.contains("applied Raft index")));
         assert_eq!(require_production_raft_ready().unwrap_err(), err);
     }
 

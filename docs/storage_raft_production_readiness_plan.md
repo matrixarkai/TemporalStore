@@ -106,9 +106,14 @@ Raft local coverage:
 The readiness gate intentionally still blocks production readiness on:
 
 - Networked OpenRaft deployment path for real data-node and metaserver processes.
+- Atomic data-node applied Raft index persistence with storage mutations and partition snapshot
+  install, matching the ByteRaft/ByteKV replica-engine recovery contract.
 - Networked metaserver Raft transport and scheduler loop that automatically drives real data-node
   membership changes.
-- External multi-process packet-loss and disk-pressure tests.
+- Metaserver-owned learner add, catch-up verification, promotion, leader movement, and voter
+  removal for real data-node Raft groups.
+- Production mTLS transport implementation instead of validation-only config.
+- External multi-process packet-loss, disk-pressure, and process-chaos tests.
 - External C++ binary-artifact exporter and CI-published golden storage migration corpus.
 - Live object-store manifest dependency matrix.
 - Production SSD cache tiering policy, admission tuning, and long-running pressure validation.

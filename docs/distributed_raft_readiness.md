@@ -95,9 +95,11 @@ The readiness API is:
 temporalstore_rust::distributed_raft_readiness()
 ```
 
-It returns `complete = false` and `production_ready = false` until networked OpenRaft process
-startup, metaserver-driven data-node membership orchestration, production mTLS transport, and
-external packet-loss/disk-pressure validation are implemented.
+It returns `complete = false` and `production_ready = false` until the OpenRaft adapter is rolled
+out through real networked data-node and metaserver process startup, data-node applied Raft index is
+persisted atomically with storage mutations and partition snapshot install, metaserver owns learner
+add/catch-up/promotion/leader-movement/removal for real data-node Raft groups, production mTLS
+transport exists, and external packet-loss/disk-pressure/process-chaos validation is implemented.
 
 Production callers should use the hard guard:
 

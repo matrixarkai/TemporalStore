@@ -312,13 +312,22 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "OpenRaft-backed data-node and metaserver adapter is available behind the openraft-engine feature with durable log state, state-machine apply, snapshot metadata, read-index checks, membership changes, leader transfer, and restart recovery tests"
                     .to_string(),
+                "ByteRaft-style leader write authority, ReadIndex guards, learner catch-up/promotion checks, and fail-closed stale leader-transfer checks are modeled locally"
+                    .to_string(),
             ],
             missing: vec![
-                "networked OpenRaft deployment path for real data-node and metaserver processes"
+                "networked OpenRaft deployment path: roll out the adapter through real data-node and metaserver processes"
+                    .to_string(),
+                "persist the data-node applied Raft index atomically with storage mutations and partition snapshot install"
                     .to_string(),
                 "networked metaserver Raft transport and scheduler loop that automatically drives /raft/membership/apply across real data-node processes and persists task state"
                     .to_string(),
-                "external multi-process packet-loss and disk-pressure tests".to_string(),
+                "make metaserver own learner add, catch-up verification, promotion, leader movement, and voter removal against real data-node Raft groups"
+                    .to_string(),
+                "production mTLS transport implementation instead of validation-only config"
+                    .to_string(),
+                "external multi-process packet-loss, disk-pressure, and process-chaos tests"
+                    .to_string(),
             ],
         },
         ReadinessArea {
@@ -1139,7 +1148,8 @@ mod tests {
             .expect("data-node raft area must exist");
         assert!(data_raft
             .iter()
-            .any(|item| item.contains("OpenRaft") || item.contains("raft-rs")));
+            .any(|item| item.contains("applied Raft index")));
+        assert!(data_raft.iter().any(|item| item.contains("learner add")));
         assert!(data_raft
             .iter()
             .any(|item| item.contains("packet-loss") || item.contains("disk-pressure")));
@@ -1162,6 +1172,9 @@ mod tests {
         assert!(covered
             .iter()
             .any(|item| item.contains("rolling restart of every voter")));
+        assert!(covered
+            .iter()
+            .any(|item| item.contains("ByteRaft-style leader write authority")));
 
         let fault_tolerance = report
             .areas

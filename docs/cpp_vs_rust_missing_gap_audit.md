@@ -803,18 +803,27 @@ This pass repeated the C++ vs Rust comparison again, focusing on the bigger dist
 7. Shared-store replay safety: `replay_oplog_strict` rejects oplog gaps instead of silently skipping them.
 8. Load-aware metaserver placement: topology replica selection now prefers lower key/memory load normal servers.
 
-The Rust code now has the message/API contracts, local safety behavior, auto-persisting local WAL mode, separate-node runtime wrapper, authenticated RPC runtime construction, timer supervisor, and multi-process chaos plan validation. It is still blocked from production readiness until real OpenRaft/raft-rs FSM/storage integration, actual mTLS transport, real snapshot install, and external process chaos tests exist. This is surfaced by `distributed_raft_readiness()` and documented in `docs/distributed_raft_readiness.md`.
+The Rust code now has the message/API contracts, local safety behavior, auto-persisting local WAL
+mode, separate-node runtime wrapper, authenticated RPC runtime construction, timer supervisor,
+OpenRaft-backed local data-node/metaserver adapter coverage, and multi-process chaos plan
+validation. It is still blocked from production readiness until the OpenRaft adapter is rolled out
+through real networked data-node and metaserver processes, data-node applied Raft index is persisted
+atomically with storage mutations and partition snapshot install, metaserver owns learner
+add/catch-up/promotion/leader-movement/removal against real data-node Raft groups, actual mTLS
+transport exists, and external packet-loss/disk-pressure/process-chaos tests pass. This is surfaced
+by `distributed_raft_readiness()` and documented in `docs/distributed_raft_readiness.md`.
 
 This repeated audit split the old broad readiness bucket into explicit gates for data-node
 distributed Raft, fault tolerance, and scale testing. The Rust code remains test-green for the local
 model, but production readiness is still blocked by:
 
-1. real OpenRaft or raft-rs data-node FSM/storage implementation
-2. production durable Raft log store with segment/sync/truncation policy
-3. networked metaserver-driven shard membership changes for data-node Raft groups
-4. Raft snapshot install connected to `TemporalEngine` freeze/flush/download/install
-5. multi-process chaos that kills and restarts real OS processes under partition, disk-full, and slow-follower conditions
-6. AWS multi-node scale tests with p50/p95/p99, CPU, memory, disk, and network reporting
+1. networked OpenRaft process rollout for real data-node and metaserver deployments
+2. atomic data-node applied Raft index persistence with storage mutations and partition snapshot install
+3. metaserver-owned learner add, catch-up verification, promotion, leader movement, and voter removal
+4. networked metaserver-driven shard membership changes for data-node Raft groups
+5. actual mTLS transport implementation rather than validation-only config
+6. multi-process chaos that kills and restarts real OS processes under partition, disk-full, and slow-follower conditions
+7. AWS multi-node scale tests with p50/p95/p99, CPU, memory, disk, and network reporting
 
 These blockers are now surfaced in `production_readiness_report()` under:
 
