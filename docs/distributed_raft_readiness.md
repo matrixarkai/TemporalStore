@@ -230,6 +230,8 @@ Evidence from the validated outputs:
 
 - Multi-node proposal, post-transfer write, post-scale-down write, and post-scale-up write all
   returned `ok`.
+- Post-snapshot data-node re-scale-down and re-scale-up writes returned `ok`, with reads converged
+  to `after-rescale-down` on voters 1/2/3 and `after-rescale-up` on voters 1/2/3/4.
 - Replica reads returned `replicated-value` on all checked replicas.
 - Secondary restart catch-up returned `v1`, `v3`, and `v4` on nodes 1, 2, and 3.
 - Isolated partition reads were rejected with `leader is not available`; after heal, the follower
@@ -237,6 +239,9 @@ Evidence from the validated outputs:
 - Lagging follower observation saw lag `3`; all catch-up reads returned `v-lag-0`, `v-lag-1`, and
   `v-lag-2`.
 - Leader-crash failover returned `ok`; surviving nodes read `v5`.
+- Metaserver post-failover replacement changed voters to `[10, 12, 13]` and served
+  `meta-after-replace`; the follow-up scale-down changed voters to `[10, 13]` and served
+  `meta-after-second-scale-down`.
 
 ## Repeated Data-Node Raft Check
 
@@ -303,7 +308,8 @@ It runs `distributed_raft_harness`, `raft_secondary_replication_harness`, and
 `metaserver_raft_harness`, then uses `build_raft_distributed_parity_summary.py` to validate a
 combined `raft-distributed-parity.json` report with data-node replica reads, follower-write
 rejection, membership scale down/up, external snapshot restore, secondary restart/partition/lag/
-failover, and metaserver membership/read-index/snapshot/lagging-voter catch-up/failover/no-majority
+failover, post-snapshot re-scale down/up, and metaserver
+membership/read-index/snapshot/lagging-voter catch-up/failover/replacement/scale-down/no-majority
 checks. The full
 `run_storage_raft_production_readiness.sh` gate also builds and validates the same combined summary
 from its already-produced harness artifacts.

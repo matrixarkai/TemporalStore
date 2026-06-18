@@ -6,7 +6,7 @@ use temporalstore_rust::raft::RaftReplicaRole;
 use temporalstore_rust::{
     AddNamespaceRequest, MetaCommand, MetaMutation, ProductionMetaRaftRuntime,
     ProductionMetaRaftRuntimeOptions, ProductionRaftEngineKind, ProductionRaftNode, RaftConfig,
-    RaftNodeId, ShardLocation,
+    RaftMembershipChangeReport, RaftNodeId, ShardLocation,
 };
 
 #[derive(Debug, Clone)]
@@ -32,8 +32,19 @@ struct MetaserverRaftHarnessSummary {
     leader_after_transfer: RaftNodeId,
     leader_after_failover: RaftNodeId,
     namespace_after_failover_visible: bool,
+    membership_replace_after_failover: MetaMembershipSummary,
+    post_replace_route_read: Option<String>,
+    membership_scale_down_after_replace: MetaMembershipSummary,
+    post_scale_down_route_read: Option<String>,
     unavailable_without_majority: bool,
     elapsed_ms: u128,
+}
+
+#[derive(Debug, Serialize)]
+struct MetaMembershipSummary {
+    voters: Vec<RaftNodeId>,
+    leader_id: RaftNodeId,
+    caught_up_voters: Vec<RaftNodeId>,
 }
 
 fn main() {
@@ -176,6 +187,41 @@ fn main() {
         "post-failover namespace must be visible"
     );
 
+    runtime.cluster().set_alive(11, true).unwrap();
+    runtime
+        .add_node(12, RaftReplicaRole::Voter)
+        .expect("metaserver should re-add voter 12 after failover");
+    runtime.cluster().set_alive(12, true).unwrap();
+    let membership_replace_after_failover =
+        meta_membership_summary(runtime.apply_membership([10, 12, 13]).unwrap());
+    runtime
+        .propose(MetaCommand::PutShardLocation(ShardLocation {
+            shard_id: 58,
+            server_addr: "meta-after-replace".to_string(),
+            latest_snapshot: None,
+        }))
+        .expect("write after metaserver voter replacement should commit");
+    let post_replace_route_read = runtime
+        .cluster()
+        .get_shard_location(12, 58)
+        .expect("post-replace route read should not fail")
+        .map(|location| location.server_addr);
+
+    let membership_scale_down_after_replace =
+        meta_membership_summary(runtime.apply_membership([10, 13]).unwrap());
+    runtime
+        .propose(MetaCommand::PutShardLocation(ShardLocation {
+            shard_id: 59,
+            server_addr: "meta-after-second-scale-down".to_string(),
+            latest_snapshot: None,
+        }))
+        .expect("write after metaserver second scale-down should commit");
+    let post_scale_down_route_read = runtime
+        .cluster()
+        .get_shard_location(13, 59)
+        .expect("post-second-scale-down route read should not fail")
+        .map(|location| location.server_addr);
+
     runtime.cluster().set_alive(10, false).unwrap();
     runtime.cluster().set_alive(13, false).unwrap();
     let unavailable_without_majority = runtime
@@ -207,6 +253,10 @@ fn main() {
         leader_after_transfer,
         leader_after_failover,
         namespace_after_failover_visible,
+        membership_replace_after_failover,
+        post_replace_route_read,
+        membership_scale_down_after_replace,
+        post_scale_down_route_read,
         unavailable_without_majority,
         elapsed_ms: started.elapsed().as_millis(),
     };
@@ -227,7 +277,31 @@ fn main() {
         Some("meta-after-lag")
     );
     assert_ne!(summary.leader_after_failover, summary.leader_after_transfer);
+    assert_eq!(
+        summary.membership_replace_after_failover.voters,
+        vec![10, 12, 13]
+    );
+    assert_eq!(
+        summary.post_replace_route_read.as_deref(),
+        Some("meta-after-replace")
+    );
+    assert_eq!(
+        summary.membership_scale_down_after_replace.voters,
+        vec![10, 13]
+    );
+    assert_eq!(
+        summary.post_scale_down_route_read.as_deref(),
+        Some("meta-after-second-scale-down")
+    );
     println!("{}", serde_json::to_string_pretty(&summary).unwrap());
+}
+
+fn meta_membership_summary(report: RaftMembershipChangeReport) -> MetaMembershipSummary {
+    MetaMembershipSummary {
+        voters: report.committed_membership.voters,
+        leader_id: report.leader_id,
+        caught_up_voters: report.caught_up_voters,
+    }
 }
 
 fn parse_options() -> HarnessOptions {

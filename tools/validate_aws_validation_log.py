@@ -254,6 +254,22 @@ def validate_metaserver_raft(job, summary):
         f"{job}: leader did not change after failover",
     )
     require(summary["namespace_after_failover_visible"], f"{job}: post-failover namespace missing")
+    require(
+        summary["membership_replace_after_failover"]["voters"] == [10, 12, 13],
+        f"{job}: post-failover replacement membership mismatch",
+    )
+    require(
+        summary["post_replace_route_read"] == "meta-after-replace",
+        f"{job}: post-replacement route read mismatch",
+    )
+    require(
+        summary["membership_scale_down_after_replace"]["voters"] == [10, 13],
+        f"{job}: second metaserver scale-down membership mismatch",
+    )
+    require(
+        summary["post_scale_down_route_read"] == "meta-after-second-scale-down",
+        f"{job}: post-second-scale-down route read mismatch",
+    )
     require(summary["unavailable_without_majority"], f"{job}: write without majority was not rejected")
 
 
@@ -280,6 +296,24 @@ def validate_raft_distributed_parity(job, summary):
     require(
         data_node["scale_up_voters"] and all(voters == [1, 2, 3, 4] for voters in data_node["scale_up_voters"]),
         f"{job}: scale-up voters mismatch: {data_node['scale_up_voters']}",
+    )
+    require(data_node["post_rescale_down_write_ok"], f"{job}: post-rescale-down write failed")
+    require(data_node["post_rescale_up_write_ok"], f"{job}: post-rescale-up write failed")
+    require(
+        data_node["rescale_down_voters"] and all(voters == [1, 2, 3] for voters in data_node["rescale_down_voters"]),
+        f"{job}: rescale-down voters mismatch: {data_node['rescale_down_voters']}",
+    )
+    require(
+        data_node["rescale_up_voters"] and all(voters == [1, 2, 3, 4] for voters in data_node["rescale_up_voters"]),
+        f"{job}: rescale-up voters mismatch: {data_node['rescale_up_voters']}",
+    )
+    require(
+        set(data_node["rescale_down_read_values"]) == {"after-rescale-down"},
+        f"{job}: rescale-down reads diverged: {data_node['rescale_down_read_values']}",
+    )
+    require(
+        set(data_node["rescale_up_read_values"]) == {"after-rescale-up"},
+        f"{job}: rescale-up reads diverged: {data_node['rescale_up_read_values']}",
     )
     require(
         data_node["external_snapshot_read"] == "from-external-snapshot",
@@ -343,6 +377,22 @@ def validate_raft_distributed_parity(job, summary):
         f"{job}: metaserver leader did not change after failover",
     )
     require(metaserver["namespace_after_failover_visible"], f"{job}: metaserver post-failover state missing")
+    require(
+        metaserver["membership_replace_after_failover_voters"] == [10, 12, 13],
+        f"{job}: metaserver replacement membership mismatch",
+    )
+    require(
+        metaserver["post_replace_route_read"] == "meta-after-replace",
+        f"{job}: metaserver post-replacement route read mismatch",
+    )
+    require(
+        metaserver["membership_scale_down_after_replace_voters"] == [10, 13],
+        f"{job}: metaserver second scale-down membership mismatch",
+    )
+    require(
+        metaserver["post_scale_down_route_read"] == "meta-after-second-scale-down",
+        f"{job}: metaserver second scale-down route read mismatch",
+    )
     require(metaserver["unavailable_without_majority"], f"{job}: metaserver no-majority write committed")
 
 

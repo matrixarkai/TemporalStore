@@ -227,6 +227,8 @@ AREAS: tuple[ParityArea, ...] = (
                     "snapshot_restore_read",
                     "lagging_snapshot_restore_missed_tail",
                     "lagging_catchup_read",
+                    "membership_replace_after_failover",
+                    "membership_scale_down_after_replace",
                 ),
             ),
             RustEvidence(
@@ -287,6 +289,8 @@ AREAS: tuple[ParityArea, ...] = (
                     "transfer_leader",
                     "apply_membership_on_all",
                     "external_snapshot_bootstrap",
+                    "rescale_down_after_snapshot",
+                    "rescale_up_after_snapshot",
                 ),
             ),
             RustEvidence(
@@ -321,6 +325,8 @@ AREAS: tuple[ParityArea, ...] = (
                     "distributed_all_nodes_have_majority",
                     "partition_isolated_read_rejected",
                     "lagging_catchup_read",
+                    "rescale_down_voters",
+                    "membership_replace_after_failover_voters",
                     "namespace_after_failover_visible",
                     "unavailable_without_majority",
                 ),

@@ -50,6 +50,12 @@ struct DistributedRaftSummary {
     external_snapshot_publish: Status,
     external_snapshot_bootstrap: Status,
     external_snapshot_read: ReplicaReadSummary,
+    rescale_down_after_snapshot: Vec<MembershipSummary>,
+    post_rescale_down_write: Status,
+    rescale_down_reads: Vec<ReplicaReadSummary>,
+    rescale_up_after_snapshot: Vec<MembershipSummary>,
+    post_rescale_up_write: Status,
+    rescale_up_reads: Vec<ReplicaReadSummary>,
 }
 
 #[derive(Debug, Serialize)]
@@ -306,6 +312,48 @@ fn main() {
         b"from-external-snapshot",
     );
 
+    let rescale_down_after_snapshot = apply_membership_on_all(&runtimes, &nodes, &[1, 2, 3]);
+    wait_for_distributed_majority(&runtimes, &nodes[..3]);
+    let post_rescale_down_write = propose_key_after_majority(
+        &runtimes,
+        &nodes[..3],
+        &nodes[1],
+        "distributed-rescale-down-key",
+        b"after-rescale-down",
+    );
+    assert!(
+        post_rescale_down_write.ok,
+        "post-rescale-down write failed: {:?}",
+        post_rescale_down_write
+    );
+    wait_for_distributed_majority(&runtimes, &nodes[..3]);
+    let rescale_down_reads = nodes
+        .iter()
+        .take(3)
+        .map(|node| wait_for_key(node, "distributed-rescale-down-key", b"after-rescale-down"))
+        .collect::<Vec<_>>();
+
+    let rescale_up_after_snapshot = apply_membership_on_all(&runtimes, &nodes, &[1, 2, 3, 4]);
+    bootstrap_voter_from_leader_snapshot(&runtimes, 4);
+    wait_for_distributed_majority(&runtimes, &nodes);
+    let post_rescale_up_write = propose_key_after_majority(
+        &runtimes,
+        &nodes,
+        &nodes[1],
+        "distributed-rescale-up-key",
+        b"after-rescale-up",
+    );
+    assert!(
+        post_rescale_up_write.ok,
+        "post-rescale-up write failed: {:?}",
+        post_rescale_up_write
+    );
+    wait_for_distributed_majority(&runtimes, &nodes);
+    let rescale_up_reads = nodes
+        .iter()
+        .map(|node| wait_for_key(node, "distributed-rescale-up-key", b"after-rescale-up"))
+        .collect::<Vec<_>>();
+
     wait_for_distributed_apply_health(&runtimes, &nodes, 0);
 
     let node_summaries = nodes
@@ -351,6 +399,12 @@ fn main() {
             external_snapshot_publish: published.status,
             external_snapshot_bootstrap: bootstrapped.status,
             external_snapshot_read,
+            rescale_down_after_snapshot,
+            post_rescale_down_write,
+            rescale_down_reads,
+            rescale_up_after_snapshot,
+            post_rescale_up_write,
+            rescale_up_reads,
         })
         .expect("summary should serialize")
     );

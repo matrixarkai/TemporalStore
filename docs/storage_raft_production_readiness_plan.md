@@ -94,6 +94,8 @@ Raft local coverage:
 - WAL-backed local recovery.
 - Leader transfer.
 - Membership scale down/up.
+- Post-snapshot data-node re-scale down/up with committed write/read convergence.
+- Metaserver post-failover voter replacement and follow-up scale-down with committed route reads.
 - External snapshot publish/bootstrap/read.
 - Secondary restart catch-up.
 - Partition stale-read rejection and heal.
