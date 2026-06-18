@@ -133,11 +133,15 @@ temporalstore_rust::validate_raft_deployment_mode(
 )
 ```
 
-Production mode is intentionally blocked by `RaftProductionReadinessError`. `LocalModel` remains
-allowed for unit tests, compatibility tests, and local correctness work.
+Production distributed Raft mode is mandatory. `distributed_raft_readiness()` reports
+`RaftDeploymentMode::ProductionDistributed`, and `validate_raft_deployment_mode(LocalModel)` fails
+closed because the local model is test-only. Local Raft fixtures remain available for unit tests,
+compatibility tests, and harness validation, but they are not an accepted runtime or deployment
+mode.
 
 The Rust production target is Rust-native behavior parity: keep OpenRaft/raft-rs as the production
-path and borrow ByteRaft semantics, safety contracts, metrics, admin surfaces, and tests. Direct
+path and borrow ByteRaft semantics, safety contracts, metrics, admin surfaces, and tests. The
+ByteRaft-derived evidence is not a substitute for the production OpenRaft process rollout. Direct
 C++ ByteRaft FFI is not part of the readiness target.
 
 The local WAL now has the applied-index/storage/snapshot atomicity contract represented as a

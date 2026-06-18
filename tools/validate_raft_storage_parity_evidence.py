@@ -393,6 +393,7 @@ AREAS: tuple[ParityArea, ...] = (
             RustEvidence(
                 "tools/validate_byteraft_derived_readiness.py",
                 (
+                    "production_mode_required",
                     "config_and_election_guards",
                     "durable_wal_hard_state_and_membership",
                     "joint_membership_and_safe_scale",

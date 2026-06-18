@@ -31,6 +31,24 @@ class ReadinessArea:
 
 AREAS: tuple[ReadinessArea, ...] = (
     ReadinessArea(
+        name="production_mode_required",
+        evidence=(
+            Evidence(
+                "crates/temporalstore-rust/src/raft.rs",
+                (
+                    "RaftDeploymentMode::ProductionDistributed",
+                    "local Raft deployment mode is disabled",
+                    "local_raft_deployment_mode_is_rejected",
+                    "distributed_raft_readiness_reports_remaining_production_blockers",
+                ),
+            ),
+            Evidence(
+                "docs/distributed_raft_readiness.md",
+                ("Production distributed Raft mode is mandatory", "local model is test-only"),
+            ),
+        ),
+    ),
+    ReadinessArea(
         name="config_and_election_guards",
         evidence=(
             Evidence(

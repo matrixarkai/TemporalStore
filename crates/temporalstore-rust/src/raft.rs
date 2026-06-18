@@ -1839,6 +1839,10 @@ pub struct RaftDistributedReadiness {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RaftDeploymentMode {
+    /// Backward-compatible deserialization variant only.
+    ///
+    /// Runtime validation rejects local Raft deployment; local clusters remain
+    /// internal test fixtures and production must use distributed Raft.
     LocalModel,
     ProductionDistributed,
 }
@@ -1864,7 +1868,9 @@ impl std::error::Error for RaftProductionReadinessError {}
 
 pub fn distributed_raft_readiness() -> RaftDistributedReadiness {
     let missing = vec![
-        "roll out the OpenRaft adapter through real networked data-node and metaserver process startup"
+        "roll out the OpenRaft adapter through real networked data-node process startup"
+            .to_string(),
+        "roll out the OpenRaft adapter through real networked metaserver process startup"
             .to_string(),
         "persist the data-node applied Raft index atomically with storage mutations and partition snapshot install"
             .to_string(),
@@ -1878,7 +1884,7 @@ pub fn distributed_raft_readiness() -> RaftDistributedReadiness {
     RaftDistributedReadiness {
         complete: missing.is_empty(),
         production_ready: false,
-        mode: RaftDeploymentMode::LocalModel,
+        mode: RaftDeploymentMode::ProductionDistributed,
         local_model_tested: true,
         openraft_engine_adapter_present: cfg!(feature = "openraft-engine"),
         transport_contracts_present: true,
@@ -1909,7 +1915,13 @@ pub fn validate_raft_deployment_mode(
 ) -> Result<RaftDistributedReadiness, RaftProductionReadinessError> {
     let readiness = distributed_raft_readiness();
     match mode {
-        RaftDeploymentMode::LocalModel => Ok(readiness),
+        RaftDeploymentMode::LocalModel => Err(RaftProductionReadinessError {
+            mode,
+            message:
+                "local Raft deployment mode is disabled; production distributed Raft is required"
+                    .to_string(),
+            missing: readiness.missing,
+        }),
         RaftDeploymentMode::ProductionDistributed if readiness.production_ready => Ok(readiness),
         RaftDeploymentMode::ProductionDistributed => Err(RaftProductionReadinessError {
             mode,
@@ -3827,6 +3839,10 @@ struct RaftClusterInner {
 }
 
 impl RaftCluster {
+    /// Local single-shard Raft model for unit tests and validation harnesses.
+    ///
+    /// Production runtime/deployment paths must use the distributed production
+    /// Raft runtime and are rejected by readiness if they select this local model.
     pub fn new_single_shard(
         shard_id: ShardId,
         node_ids: impl IntoIterator<Item = RaftNodeId>,
@@ -3835,6 +3851,7 @@ impl RaftCluster {
             .expect("default raft config must be valid")
     }
 
+    /// Local single-shard Raft model with explicit config for tests/harnesses.
     pub fn new_single_shard_with_config(
         shard_id: ShardId,
         node_ids: impl IntoIterator<Item = RaftNodeId>,
@@ -3868,6 +3885,7 @@ impl RaftCluster {
         })
     }
 
+    /// WAL-backed local Raft fixture for durability tests and harnesses only.
     pub fn new_single_shard_with_wal(
         root: impl AsRef<Path>,
         shard_id: ShardId,
@@ -7081,11 +7099,15 @@ struct MetaRaftClusterInner {
 }
 
 impl MetaRaftCluster {
+    /// Local metaserver Raft fixture for unit tests and validation harnesses.
+    ///
+    /// Production metaserver Raft must use the networked production runtime.
     pub fn new(node_ids: impl IntoIterator<Item = RaftNodeId>) -> Self {
         Self::new_with_config(node_ids, RaftConfig::default())
             .expect("default raft config must be valid")
     }
 
+    /// Local metaserver Raft fixture with explicit config for tests/harnesses.
     pub fn new_with_config(
         node_ids: impl IntoIterator<Item = RaftNodeId>,
         config: RaftConfig,
@@ -10425,7 +10447,7 @@ mod tests {
         let readiness = distributed_raft_readiness();
         assert!(!readiness.complete);
         assert!(!readiness.production_ready);
-        assert_eq!(readiness.mode, RaftDeploymentMode::LocalModel);
+        assert_eq!(readiness.mode, RaftDeploymentMode::ProductionDistributed);
         assert!(readiness.local_model_tested);
         assert!(readiness.transport_contracts_present);
         assert!(readiness.rpc_runtime_observability_present);
@@ -10460,8 +10482,20 @@ mod tests {
     }
 
     #[test]
+    fn local_raft_deployment_mode_is_rejected() {
+        let err = validate_raft_deployment_mode(RaftDeploymentMode::LocalModel).unwrap_err();
+        assert_eq!(err.mode, RaftDeploymentMode::LocalModel);
+        assert!(err
+            .message
+            .contains("local Raft deployment mode is disabled"));
+        assert!(err
+            .message
+            .contains("production distributed Raft is required"));
+        assert!(err.missing.iter().any(|item| item.contains("OpenRaft")));
+    }
+
+    #[test]
     fn production_raft_mode_is_blocked_until_real_engine_and_chaos_exist() {
-        assert!(validate_raft_deployment_mode(RaftDeploymentMode::LocalModel).is_ok());
         let err =
             validate_raft_deployment_mode(RaftDeploymentMode::ProductionDistributed).unwrap_err();
         assert_eq!(err.mode, RaftDeploymentMode::ProductionDistributed);

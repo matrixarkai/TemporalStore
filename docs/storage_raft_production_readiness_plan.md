@@ -9,9 +9,10 @@ tools/run_storage_raft_production_readiness.sh
 ```
 
 The gate runs the current Rust local harnesses one by one, validates their JSON output, runs the
-feature-gated OpenRaft adapter tests, and then prints the remaining readiness blockers. It does not
-claim full production readiness while the readiness gate still reports missing networked OpenRaft
-process integration and external distributed fault validation.
+feature-gated OpenRaft adapter tests, and then prints the remaining readiness blockers. Production
+distributed Raft mode is mandatory: local Raft is test-only and cannot be selected as a runtime
+deployment mode. This gate does not claim full production readiness while the readiness gate still
+reports missing networked OpenRaft process integration and external distributed fault validation.
 
 ## Current Execution Order
 
@@ -126,7 +127,8 @@ Raft local coverage:
 
 The readiness gate intentionally still blocks production readiness on:
 
-- Networked OpenRaft deployment path for real data-node and metaserver processes.
+- Networked OpenRaft deployment path for real data-node processes.
+- Networked OpenRaft deployment path for real metaserver processes.
 - Atomic data-node applied Raft index persistence with storage mutations and partition snapshot
   install, matching the ByteRaft/ByteKV replica-engine recovery contract.
 - Networked metaserver Raft transport and scheduler loop that automatically drives real data-node
@@ -172,4 +174,5 @@ TS_REQUIRE_STORAGE_RAFT_READY=1 tools/run_storage_raft_production_readiness.sh
 ```
 
 Strict mode is expected to fail until the networked OpenRaft process rollout and external
-distributed fault blockers are closed.
+distributed fault blockers are closed. Local-model harness success is validation evidence only; it
+does not satisfy the production Raft readiness gate.
