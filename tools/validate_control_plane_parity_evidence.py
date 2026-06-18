@@ -54,6 +54,14 @@ AREAS: tuple[ParityArea, ...] = (
                 "crates/temporalstore-rust/tests/temporalstore_compat.rs",
                 ("production_readiness_service_summary_is_public_api",),
             ),
+            RustEvidence(
+                "crates/temporalstore-rust/src/readiness.rs",
+                (
+                    "client_routing_readiness_report",
+                    "client routing readiness covers typed table client",
+                    "client_and_proxy_readiness_split_local_and_wire_compatibility",
+                ),
+            ),
         ),
     ),
     ParityArea(
@@ -75,6 +83,14 @@ AREAS: tuple[ParityArea, ...] = (
             RustEvidence(
                 "crates/temporalstore-rust/src/proxy.rs",
                 ("proxy_exposes_cpp_parity_readiness_report",),
+            ),
+            RustEvidence(
+                "crates/temporalstore-rust/src/readiness.rs",
+                (
+                    "proxy_serving_readiness_report",
+                    "proxy serving readiness covers HTTP execute routes",
+                    "client_and_proxy_readiness_split_local_and_wire_compatibility",
+                ),
             ),
         ),
     ),

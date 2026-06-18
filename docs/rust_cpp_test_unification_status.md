@@ -83,6 +83,12 @@ rust_evidence_snippets: 32
 
 The four checked areas are client meta-sync/route retry, proxy serving/admission/topology,
 metaserver scheduler repair/snapshot, and data-node lifecycle/server surfaces.
+Client and proxy readiness now also expose typed local-vs-production splits:
+`ClientRoutingReadinessReport` covers typed client routing, route refresh, background meta sync,
+retry classification, and topology preflight while keeping Neptune routing and C++ wire migration
+blocked; `ProxyServingReadinessReport` covers HTTP execute routes, heartbeat/config application,
+topology refresh, admission policy, and Rust-native discovery while keeping tonic streaming and C++
+wire proxy transport blocked.
 
 API/model parity evidence status:
 
