@@ -39,7 +39,7 @@ REQUIRED_READINESS_SNIPPETS = (
     "ProductionRaftEngineKind::OpenRaft",
     "Raft OpenRaft rollout readiness covers adapter presence, data-node/metaserver startup selection, and durable local log state while keeping real multi-process data-node/metaserver log-store rollout fail-closed",
     "RaftStorageApplyFence persists shard, term, committed/applied index, snapshot id, storage epoch, and checksum",
-    "Raft atomic apply readiness covers storage apply fence persistence, WAL fence recovery validation, storage mutation atomic commit, snapshot-install atomic commit, and snapshot lifecycle reporting while keeping real multi-process data-node OpenRaft rollout validation fail-closed",
+    "Raft atomic apply readiness covers storage apply fence persistence, WAL fence recovery validation, production runtime data-node atomic durability reports, storage mutation atomic commit, snapshot-install atomic commit, and snapshot lifecycle reporting",
     "RaftSnapshotInstallReport exposes freeze, flush, manifest verify, checksum verify, install, tail replay, and rollback status",
     "metaserver-owned data-Raft membership workflow reports learner add, catch-up verification, promotion, leader transfer, and voter removal",
     "Raft metaserver membership readiness covers topology membership plans, data-Raft apply reports, learner catch-up/promotion, leader transfer, voter removal, networked scheduler /raft/membership/apply transport, and persisted scheduler task state while keeping real data-node group execution fail-closed",

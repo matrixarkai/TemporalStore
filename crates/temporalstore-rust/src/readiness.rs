@@ -598,7 +598,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "RaftStorageApplyFence is persisted in WAL records and rejects missing, corrupt, stale, or ahead-of-storage recovery state"
                     .to_string(),
-                "Raft atomic apply readiness covers storage apply fence persistence, WAL fence recovery validation, storage mutation atomic commit, snapshot-install atomic commit, and snapshot lifecycle reporting while keeping real multi-process data-node OpenRaft rollout validation fail-closed"
+                "Raft atomic apply readiness covers storage apply fence persistence, WAL fence recovery validation, production runtime data-node atomic durability reports, storage mutation atomic commit, snapshot-install atomic commit, and snapshot lifecycle reporting"
                     .to_string(),
                 "RaftSnapshotInstallReport exposes freeze, flush, manifest verify, checksum verify, install, tail replay, and rollback status for snapshot installs"
                     .to_string(),
@@ -742,7 +742,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "RaftStorageApplyFence persists shard, term, committed/applied index, snapshot id, storage epoch, and checksum with WAL recovery validation"
                     .to_string(),
-                "Raft atomic apply readiness covers storage apply fence persistence, WAL fence recovery validation, storage mutation atomic commit, snapshot-install atomic commit, and snapshot lifecycle reporting while keeping real multi-process data-node OpenRaft rollout validation fail-closed"
+                "Raft atomic apply readiness covers storage apply fence persistence, WAL fence recovery validation, production runtime data-node atomic durability reports, storage mutation atomic commit, snapshot-install atomic commit, and snapshot lifecycle reporting"
                     .to_string(),
                 "Raft snapshot lifecycle reports install, tail replay, and rollback decisions for data-node snapshot recovery paths"
                     .to_string(),
@@ -758,8 +758,6 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
             ],
             missing: vec![
-                "validate the atomic applied-index/storage/snapshot fence through the real multi-process data-node OpenRaft rollout"
-                    .to_string(),
                 "make metaserver own learner add, catch-up verification, promotion, leader movement, and voter removal against real data-node Raft groups"
                     .to_string(),
                 "validate metaserver shard membership changes with networked Raft groups under follower lag, failover, scale up/down, and secondary replication"
@@ -1106,7 +1104,7 @@ fn service_next_action(service: &str, blocker_classes: &[String]) -> &'static st
             "finish network Kafka/Flink runtime failover, lag metrics, and dead-letter export"
         }
         ("data_node", "data_node_distributed_raft") => {
-            "finish Raft atomic applied-index storage persistence and metaserver-driven membership against real data-node Raft groups"
+            "finish metaserver-driven membership against real data-node Raft groups"
         }
         ("data_node", "data_node_local_lifecycle") => {
             "finish data-node lifecycle restart barriers, distributed admission, and crash recovery"
@@ -1650,7 +1648,7 @@ mod tests {
                 ("client", "warning"),
                 ("proxy", "warning"),
                 ("ingestion", "ready"),
-                ("data_node", "critical"),
+                ("data_node", "warning"),
                 ("metaserver", "critical"),
                 ("storage_cache", "critical"),
                 ("feature_modules", "warning"),
@@ -1847,7 +1845,7 @@ mod tests {
         let data_raft = report
             .missing_by_area("data_node_distributed_raft")
             .expect("data-node raft area must exist");
-        assert!(data_raft
+        assert!(!data_raft
             .iter()
             .any(|item| item.contains("atomic applied-index")));
         assert!(data_raft.iter().any(|item| item.contains("learner add")));
@@ -1886,9 +1884,7 @@ mod tests {
         assert!(covered.iter().any(|item| {
             item.contains("Raft atomic apply readiness")
                 && item.contains("snapshot-install atomic commit")
-                && item.contains(
-                    "real multi-process data-node OpenRaft rollout validation fail-closed",
-                )
+                && item.contains("production runtime data-node atomic durability reports")
         }));
         assert!(covered.iter().any(|item| {
             item.contains("Raft metaserver membership readiness")

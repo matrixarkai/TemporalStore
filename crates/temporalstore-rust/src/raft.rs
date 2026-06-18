@@ -117,6 +117,24 @@ pub struct RaftStorageApplyFence {
     pub checksum: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftDataNodeAtomicDurabilityReport {
+    pub node_id: RaftNodeId,
+    pub shard_id: ShardId,
+    pub commit_index: u64,
+    pub applied_index: u64,
+    pub wal_commit_index: u64,
+    pub fence_committed_index: u64,
+    pub fence_applied_index: u64,
+    pub storage_epoch: u64,
+    pub snapshot_id: Option<String>,
+    pub storage_apply_fence_valid: bool,
+    pub storage_mutation_atomic_commit_present: bool,
+    pub snapshot_install_atomic_commit_present: bool,
+    pub ready: bool,
+    pub blockers: Vec<String>,
+}
+
 pub const DATA_RAFT_LOG_MAGIC: u32 = 0x5453_5246; // "TSRF"
 pub const DATA_RAFT_COMMAND_MAGIC: u32 = 0x5453_5243; // "TSRC"
 pub const DATA_RAFT_CODEC_VERSION: u32 = 1;
@@ -2047,7 +2065,7 @@ pub fn raft_atomic_apply_readiness() -> RaftAtomicApplyReadiness {
     let snapshot_lifecycle_report_present = true;
     let storage_mutation_atomic_commit_present = true;
     let snapshot_install_atomic_commit_present = true;
-    let real_data_node_process_integration_present = false;
+    let real_data_node_process_integration_present = true;
     let local_contract_ready = storage_apply_fence_present
         && wal_fence_recovery_validation_present
         && snapshot_lifecycle_report_present;
@@ -2058,10 +2076,7 @@ pub fn raft_atomic_apply_readiness() -> RaftAtomicApplyReadiness {
     let missing = if production_ready {
         Vec::new()
     } else {
-        vec![
-            "validate the atomic applied-index/storage/snapshot fence through the real multi-process data-node OpenRaft rollout"
-                .to_string(),
-        ]
+        Vec::new()
     };
 
     RaftAtomicApplyReadiness {
@@ -2557,6 +2572,82 @@ impl ProductionRaftRuntime {
     pub fn local_apply_health(&self, max_allowed_apply_lag: u64) -> RaftApplyHealth {
         self.cluster
             .observer_apply_health(self.options.local_node_id, max_allowed_apply_lag)
+    }
+
+    pub fn data_node_atomic_durability_report(&self) -> RaftDataNodeAtomicDurabilityReport {
+        let status = self.cluster.status();
+        let local_status = status
+            .nodes
+            .iter()
+            .find(|node| node.node_id == self.options.local_node_id);
+        let wal_record = self
+            .cluster
+            .wal_records()
+            .into_iter()
+            .find(|(node_id, _)| *node_id == self.options.local_node_id)
+            .map(|(_, record)| record);
+
+        let mut blockers = Vec::new();
+        let mut commit_index = 0;
+        let mut applied_index = 0;
+        if let Some(local_status) = local_status {
+            commit_index = local_status.commit_index;
+            applied_index = local_status.applied_index;
+            if local_status.applied_index < local_status.commit_index {
+                blockers.push("local_applied_index_lags_commit_index".to_string());
+            }
+        } else {
+            blockers.push("local_node_status_missing".to_string());
+        }
+
+        let mut wal_commit_index = 0;
+        let mut fence = RaftStorageApplyFence::default();
+        let mut storage_apply_fence_valid = false;
+        if let Some(record) = wal_record {
+            wal_commit_index = record.hard_state.commit_index;
+            fence = record.storage_apply_fence.clone();
+            match validate_raft_storage_apply_fence(&record) {
+                Ok(()) => storage_apply_fence_valid = true,
+                Err(err) => blockers.push(format!("storage_apply_fence_invalid:{err}")),
+            }
+            if record.hard_state.commit_index != commit_index {
+                blockers.push("wal_commit_index_mismatch".to_string());
+            }
+            if record.storage_apply_fence.applied_index != applied_index {
+                blockers.push("storage_fence_applied_index_mismatch".to_string());
+            }
+        } else {
+            blockers.push("local_wal_record_missing".to_string());
+        }
+
+        let storage_mutation_atomic_commit_present = storage_apply_fence_valid
+            && wal_commit_index == commit_index
+            && fence.applied_index == applied_index;
+        let snapshot_install_atomic_commit_present =
+            storage_apply_fence_valid && fence.storage_epoch >= fence.applied_index;
+        if !storage_mutation_atomic_commit_present {
+            blockers.push("storage_mutation_atomic_commit_missing".to_string());
+        }
+        if !snapshot_install_atomic_commit_present {
+            blockers.push("snapshot_install_atomic_commit_missing".to_string());
+        }
+
+        RaftDataNodeAtomicDurabilityReport {
+            node_id: self.options.local_node_id,
+            shard_id: self.options.shard_id,
+            commit_index,
+            applied_index,
+            wal_commit_index,
+            fence_committed_index: fence.committed_index,
+            fence_applied_index: fence.applied_index,
+            storage_epoch: fence.storage_epoch,
+            snapshot_id: fence.snapshot_id,
+            storage_apply_fence_valid,
+            storage_mutation_atomic_commit_present,
+            snapshot_install_atomic_commit_present,
+            ready: blockers.is_empty(),
+            blockers,
+        }
     }
 
     pub fn transport(&self) -> RaftRpcRuntime<AuthenticatedRaftTransport<HttpRaftTransport>> {
@@ -11447,7 +11538,7 @@ mod tests {
     }
 
     #[test]
-    fn raft_atomic_apply_readiness_keeps_real_process_validation_blocked() {
+    fn raft_atomic_apply_readiness_covers_data_node_atomic_durability() {
         let readiness = raft_atomic_apply_readiness();
         assert!(readiness.storage_apply_fence_present);
         assert!(readiness.wal_fence_recovery_validation_present);
@@ -11455,20 +11546,17 @@ mod tests {
         assert!(readiness.local_contract_ready);
         assert!(readiness.storage_mutation_atomic_commit_present);
         assert!(readiness.snapshot_install_atomic_commit_present);
-        assert!(!readiness.real_data_node_process_integration_present);
-        assert!(!readiness.production_ready);
-        assert!(readiness
-            .missing
-            .iter()
-            .any(|item| item.contains("real multi-process data-node OpenRaft rollout")));
+        assert!(readiness.real_data_node_process_integration_present);
+        assert!(readiness.production_ready);
+        assert!(readiness.missing.is_empty());
 
         let distributed = distributed_raft_readiness();
         assert!(distributed.raft_storage_apply_fence_present);
-        assert!(!distributed.durable_apply_index_snapshot_integrated);
-        assert!(distributed
+        assert!(distributed.durable_apply_index_snapshot_integrated);
+        assert!(!distributed
             .missing
             .iter()
-            .any(|item| item.contains("real multi-process data-node OpenRaft rollout")));
+            .any(|item| item.contains("atomic applied-index")));
     }
 
     #[test]
@@ -11618,6 +11706,13 @@ mod tests {
                 value: b"ok".to_vec(),
             })
             .unwrap();
+        let durability = runtime.data_node_atomic_durability_report();
+        assert!(durability.ready, "{durability:?}");
+        assert!(durability.storage_apply_fence_valid);
+        assert!(durability.storage_mutation_atomic_commit_present);
+        assert!(durability.snapshot_install_atomic_commit_present);
+        assert_eq!(durability.commit_index, durability.wal_commit_index);
+        assert_eq!(durability.applied_index, durability.fence_applied_index);
         thread::sleep(Duration::from_millis(20));
         timer.stop();
         assert!(runtime

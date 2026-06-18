@@ -150,10 +150,10 @@ The readiness gate intentionally still blocks production readiness on:
   multi-process data-node/metaserver log-store rollout remains blocked until validated across
   production process groups.
 - Raft atomic apply readiness is now explicit in the readiness gate: storage apply fence
-  persistence, WAL fence recovery validation, storage mutation atomic commit, snapshot-install
-  atomic commit, and snapshot lifecycle reporting are covered. Validation through the real
-  multi-process data-node OpenRaft rollout remains blocked, matching the ByteRaft/ByteKV
-  replica-engine recovery contract.
+  persistence, WAL fence recovery validation, production runtime data-node atomic durability
+  reports, storage mutation atomic commit, snapshot-install atomic commit, and snapshot lifecycle
+  reporting are covered. The remaining OpenRaft rollout blocker is now scoped to real
+  multi-process log-store validation, not applied-index/storage/snapshot atomicity.
 - Raft metaserver membership readiness is now explicit in the readiness gate: topology membership
   plans, data-Raft apply reports, learner catch-up/promotion, leader transfer, and voter removal
   are covered. Networked scheduler `/raft/membership/apply` transport and persisted scheduler task
