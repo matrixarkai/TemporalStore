@@ -95,8 +95,8 @@ local Raft mutation, placement, local snapshots, scheduler admin/snapshot, sched
 Raft persistence, and preflight while keeping networked metaserver Raft, real-process scheduler
 execution, and durable data-Raft membership blocked. `DataNodeServiceReadinessReport` covers
 execute runtime, async jobs, lifecycle admin, shard-affine workers, local admission, and
-crash-recovery reports while keeping tonic/gRPC streaming callbacks and distributed admission
-policy blocked.
+crash-recovery reports, tonic/gRPC streaming callbacks, distributed admission, and multi-process
+load/reload/unload/restart lifecycle validation.
 
 API/model parity evidence status:
 

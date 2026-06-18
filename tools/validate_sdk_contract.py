@@ -22,6 +22,12 @@ REQUIRED_RPCS = [
     "GetClientPreflight",
 ]
 
+REQUIRED_DATA_NODE_RPCS = [
+    "ExecuteStream",
+    "LifecycleCallbacks",
+    "WatchJobStatus",
+]
+
 REQUIRED_MESSAGES = [
     "Status",
     "ExecuteRequest",
@@ -42,6 +48,13 @@ REQUIRED_MESSAGES = [
     "FeaturePoint",
     "SequenceFeatureRow",
     "ContextNode",
+    "DataNodeStreamRequest",
+    "DataNodeStreamEvent",
+    "DataNodeJobControl",
+    "DataNodeLifecycleCallback",
+    "DataNodeLifecycleAck",
+    "DataNodeJobStatusRequest",
+    "DataNodeJobStatusEvent",
 ]
 
 REQUIRED_COMMANDS = [
@@ -91,12 +104,17 @@ def main() -> int:
         fail("schema must use package temporalstore.v1")
     if "service TemporalStoreService" not in proto:
         fail("schema must define TemporalStoreService")
+    if "service DataNodeService" not in proto:
+        fail("schema must define DataNodeService")
 
     for rpc in REQUIRED_RPCS:
         if not re.search(rf"\brpc\s+{rpc}\s*\(", proto):
             fail(f"missing rpc {rpc}")
         if f"`{rpc}`" not in doc:
             fail(f"doc must describe rpc {rpc}")
+    for rpc in REQUIRED_DATA_NODE_RPCS:
+        if not re.search(rf"\brpc\s+{rpc}\s*\(", proto):
+            fail(f"missing data-node rpc {rpc}")
 
     for message in REQUIRED_MESSAGES:
         if not re.search(rf"\bmessage\s+{message}\b", proto):

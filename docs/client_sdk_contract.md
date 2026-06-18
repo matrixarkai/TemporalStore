@@ -23,6 +23,13 @@ The `TemporalStoreService` contract contains five required RPCs:
 - `SyncTopology`: client MetaSyncer refresh API with topology-version and per-call deadline fields.
 - `GetClientPreflight`: client health and route-cache inspection for readiness and degraded mode.
 
+The same schema also defines the Rust-native `DataNodeService` contract for production data-node
+adapters:
+
+- `ExecuteStream`: bidirectional shard-affine execute stream for command and batch requests.
+- `LifecycleCallbacks`: streaming load/reload/unload callback channel with explicit ack status.
+- `WatchJobStatus`: server-streamed async job status updates for lifecycle and execute jobs.
+
 The committed schema is the source of truth for generated tonic/prost bindings. The Rust crate
 generates client and server binding types at build time from `crates/temporalstore-rust/build.rs`
 and exports them through `temporalstore_rust::sdk::v1`. The schema and generation path are

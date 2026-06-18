@@ -230,7 +230,8 @@ backoff up to `TS_REPLICA_REPLAY_MAX_BACKOFF_MS`.
 
 Still missing major data-node internals:
 
-- full async callback API parity with brpc closures
+- brpc closure wire compatibility for existing C++ callers; Rust-native tonic/gRPC streaming
+  callbacks are covered by `DataNodeService`
 - in-flight cancellation after a worker has started executing
 - batch write/read splitting and pin-primary details at server layer
 - binary protobuf-compatible `OpLog`, `IndexLog`, and `PageHeader`
@@ -247,8 +248,8 @@ Still missing major data-node internals:
 - primary-pull `RemotePartitionStream` binary/protobuf parity beyond the current HTTP stream source
 - membership finish callback retry/persistence beyond the current best-effort HTTP callback
 - full heartbeat/load reporting payload parity beyond local `partition_info` stats
-- distributed admission control that shares quota counters across data-node processes
-  `maxmemory_bytes` / QPS admission
+- external deployment wiring for the shared distributed admission snapshots across every
+  production data-node process
 - real readonly replicator loop
 - byteraft data FSM integration
 

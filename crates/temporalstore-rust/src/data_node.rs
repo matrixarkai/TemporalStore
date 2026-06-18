@@ -164,6 +164,68 @@ pub struct DataNodeLifecycleReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DataNodeGrpcStreamingContract {
+    pub service_name: String,
+    pub execute_stream_method: String,
+    pub lifecycle_callback_stream_method: String,
+    pub job_status_stream_method: String,
+    pub bidirectional_streaming: bool,
+    pub callback_ack_required: bool,
+    pub tonic_surface_ready: bool,
+}
+
+impl Default for DataNodeGrpcStreamingContract {
+    fn default() -> Self {
+        Self {
+            service_name: "temporalstore.v1.DataNodeService".to_string(),
+            execute_stream_method: "ExecuteStream".to_string(),
+            lifecycle_callback_stream_method: "LifecycleCallbacks".to_string(),
+            job_status_stream_method: "WatchJobStatus".to_string(),
+            bidirectional_streaming: true,
+            callback_ack_required: true,
+            tonic_surface_ready: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DistributedAdmissionPeerSnapshot {
+    pub node_id: String,
+    pub shard_id: ShardId,
+    pub topology_version: u64,
+    pub window_start_ms: u64,
+    pub read_count: u64,
+    pub write_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DistributedAdmissionDecision {
+    pub shard_id: ShardId,
+    pub status: Status,
+    pub topology_version: u64,
+    pub participating_nodes: usize,
+    pub aggregate_read_count: u64,
+    pub aggregate_write_count: u64,
+    pub read_budget: u64,
+    pub write_budget: u64,
+    pub read_allowed: bool,
+    pub write_allowed: bool,
+    pub reasons: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MultiProcessLifecycleValidationReport {
+    pub node_count: usize,
+    pub load_validated: bool,
+    pub reload_validated: bool,
+    pub unload_validated: bool,
+    pub restart_restore_validated: bool,
+    pub all_nodes_have_persistence: bool,
+    pub passed: bool,
+    pub blockers: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DataNodeLifecycleSnapshot {
     pub format_version: u32,
     #[serde(default)]
@@ -1433,6 +1495,27 @@ impl DataNodeRuntime {
             shards,
             transitions,
         }
+    }
+
+    pub fn grpc_streaming_contract(&self) -> DataNodeGrpcStreamingContract {
+        DataNodeGrpcStreamingContract::default()
+    }
+
+    pub fn distributed_admission_decision(
+        &self,
+        shard_id: ShardId,
+        peer_snapshots: &[DistributedAdmissionPeerSnapshot],
+        read_budget: u64,
+        write_budget: u64,
+        min_topology_version: u64,
+    ) -> DistributedAdmissionDecision {
+        distributed_admission_decision(
+            shard_id,
+            peer_snapshots,
+            read_budget,
+            write_budget,
+            min_topology_version,
+        )
     }
 
     pub fn lifecycle_states(&self) -> Vec<DataNodeShardLifecycleState> {
@@ -2903,6 +2986,122 @@ fn now_ms() -> u64 {
         .unwrap_or_default()
 }
 
+pub fn distributed_admission_decision(
+    shard_id: ShardId,
+    peer_snapshots: &[DistributedAdmissionPeerSnapshot],
+    read_budget: u64,
+    write_budget: u64,
+    min_topology_version: u64,
+) -> DistributedAdmissionDecision {
+    let relevant = peer_snapshots
+        .iter()
+        .filter(|snapshot| snapshot.shard_id == shard_id)
+        .collect::<Vec<_>>();
+    let aggregate_read_count = relevant
+        .iter()
+        .map(|snapshot| snapshot.read_count)
+        .sum::<u64>();
+    let aggregate_write_count = relevant
+        .iter()
+        .map(|snapshot| snapshot.write_count)
+        .sum::<u64>();
+    let topology_version = relevant
+        .iter()
+        .map(|snapshot| snapshot.topology_version)
+        .min()
+        .unwrap_or_default();
+    let mut reasons = Vec::new();
+    if relevant.is_empty() {
+        reasons.push("missing_peer_snapshots".to_string());
+    }
+    if topology_version < min_topology_version {
+        reasons.push("stale_distributed_admission_topology".to_string());
+    }
+    let read_allowed = read_budget == 0 || aggregate_read_count < read_budget;
+    let write_allowed = write_budget == 0 || aggregate_write_count < write_budget;
+    if !read_allowed {
+        reasons.push("distributed_read_budget_exceeded".to_string());
+    }
+    if !write_allowed {
+        reasons.push("distributed_write_budget_exceeded".to_string());
+    }
+    let status = if reasons.is_empty() {
+        Status::ok()
+    } else {
+        Status::error("distributed_admission_rejected", reasons.join(","))
+    };
+    DistributedAdmissionDecision {
+        shard_id,
+        status,
+        topology_version,
+        participating_nodes: relevant.len(),
+        aggregate_read_count,
+        aggregate_write_count,
+        read_budget,
+        write_budget,
+        read_allowed,
+        write_allowed,
+        reasons,
+    }
+}
+
+pub fn validate_multi_process_lifecycle_reports(
+    reports: &[DataNodeLifecycleReport],
+    persistence_reports: &[DataNodeLifecyclePersistenceReport],
+) -> MultiProcessLifecycleValidationReport {
+    let mut operations = BTreeSet::new();
+    let mut restart_restore_validated = false;
+    for report in reports {
+        for transition in &report.transitions {
+            operations.insert((transition.operation.clone(), transition.state.clone()));
+        }
+    }
+    for persistence in persistence_reports {
+        if persistence.enabled
+            && persistence.restore_success_total > 0
+            && persistence
+                .last_restore_status
+                .as_ref()
+                .is_some_and(|status| status.ok)
+        {
+            restart_restore_validated = true;
+        }
+    }
+    let load_validated = operations.contains(&("load".to_string(), "serving".to_string()));
+    let reload_validated = operations.contains(&("reload".to_string(), "readonly".to_string()))
+        || operations.contains(&("reload".to_string(), "serving".to_string()));
+    let unload_validated = operations.contains(&("unload".to_string(), "unloaded".to_string()));
+    let all_nodes_have_persistence = !reports.is_empty()
+        && reports.len() == persistence_reports.len()
+        && persistence_reports.iter().all(|report| report.enabled);
+    let mut blockers = Vec::new();
+    if !load_validated {
+        blockers.push("load_not_validated".to_string());
+    }
+    if !reload_validated {
+        blockers.push("reload_not_validated".to_string());
+    }
+    if !unload_validated {
+        blockers.push("unload_not_validated".to_string());
+    }
+    if !restart_restore_validated {
+        blockers.push("restart_restore_not_validated".to_string());
+    }
+    if !all_nodes_have_persistence {
+        blockers.push("lifecycle_persistence_not_enabled_on_all_nodes".to_string());
+    }
+    MultiProcessLifecycleValidationReport {
+        node_count: reports.len(),
+        load_validated,
+        reload_validated,
+        unload_validated,
+        restart_restore_validated,
+        all_nodes_have_persistence,
+        passed: blockers.is_empty(),
+        blockers,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3055,6 +3254,167 @@ mod tests {
         assert_eq!(unloaded.loaded_shard_count, 0);
         assert_eq!(unloaded.transitions[0].state, "unloaded");
         assert_eq!(unloaded.transitions[0].operation, "unload");
+    }
+
+    #[test]
+    fn data_node_grpc_streaming_contract_exposes_callbacks_and_job_status() {
+        let runtime = DataNodeRuntime::new_without_workers_for_test(TemporalEngine::default(), 4);
+        let contract = runtime.grpc_streaming_contract();
+
+        assert_eq!(contract.service_name, "temporalstore.v1.DataNodeService");
+        assert_eq!(contract.execute_stream_method, "ExecuteStream");
+        assert_eq!(
+            contract.lifecycle_callback_stream_method,
+            "LifecycleCallbacks"
+        );
+        assert_eq!(contract.job_status_stream_method, "WatchJobStatus");
+        assert!(contract.bidirectional_streaming);
+        assert!(contract.callback_ack_required);
+        assert!(contract.tonic_surface_ready);
+    }
+
+    #[test]
+    fn distributed_admission_policy_aggregates_peer_counters() {
+        let runtime = DataNodeRuntime::new_without_workers_for_test(TemporalEngine::default(), 4);
+        let peers = vec![
+            DistributedAdmissionPeerSnapshot {
+                node_id: "node-a".to_string(),
+                shard_id: 7,
+                topology_version: 12,
+                window_start_ms: 1000,
+                read_count: 5,
+                write_count: 3,
+            },
+            DistributedAdmissionPeerSnapshot {
+                node_id: "node-b".to_string(),
+                shard_id: 7,
+                topology_version: 12,
+                window_start_ms: 1000,
+                read_count: 4,
+                write_count: 6,
+            },
+            DistributedAdmissionPeerSnapshot {
+                node_id: "node-c".to_string(),
+                shard_id: 8,
+                topology_version: 12,
+                window_start_ms: 1000,
+                read_count: 100,
+                write_count: 100,
+            },
+        ];
+
+        let allowed = runtime.distributed_admission_decision(7, &peers, 10, 10, 12);
+        assert!(allowed.status.ok, "{allowed:?}");
+        assert_eq!(allowed.participating_nodes, 2);
+        assert_eq!(allowed.aggregate_read_count, 9);
+        assert_eq!(allowed.aggregate_write_count, 9);
+        assert!(allowed.read_allowed);
+        assert!(allowed.write_allowed);
+
+        let rejected = runtime.distributed_admission_decision(7, &peers, 9, 9, 12);
+        assert_eq!(rejected.status.code, "distributed_admission_rejected");
+        assert!(!rejected.read_allowed);
+        assert!(!rejected.write_allowed);
+        assert!(rejected
+            .reasons
+            .contains(&"distributed_read_budget_exceeded".to_string()));
+        assert!(rejected
+            .reasons
+            .contains(&"distributed_write_budget_exceeded".to_string()));
+
+        let stale = runtime.distributed_admission_decision(7, &peers, 10, 10, 13);
+        assert!(stale
+            .reasons
+            .contains(&"stale_distributed_admission_topology".to_string()));
+    }
+
+    #[test]
+    fn multi_process_lifecycle_validation_requires_load_reload_unload_and_restart() {
+        let reports = vec![
+            DataNodeLifecycleReport {
+                loaded_shard_count: 1,
+                serving_count: 1,
+                readonly_count: 0,
+                queued_count: 0,
+                running_count: 0,
+                unloading_count: 0,
+                failed_count: 0,
+                max_load_version: 42,
+                shards: Vec::new(),
+                transitions: vec![
+                    DataNodeShardLifecycleState {
+                        shard_id: 7,
+                        state: "serving".to_string(),
+                        operation: "load".to_string(),
+                        load_version: 42,
+                        updated_at_ms: 1,
+                        last_status: Some(Status::ok()),
+                        scheduler_task_id: Some(1),
+                        scheduler_generation: Some(10),
+                    },
+                    DataNodeShardLifecycleState {
+                        shard_id: 7,
+                        state: "readonly".to_string(),
+                        operation: "reload".to_string(),
+                        load_version: 43,
+                        updated_at_ms: 2,
+                        last_status: Some(Status::ok()),
+                        scheduler_task_id: Some(2),
+                        scheduler_generation: Some(11),
+                    },
+                ],
+            },
+            DataNodeLifecycleReport {
+                loaded_shard_count: 0,
+                serving_count: 0,
+                readonly_count: 0,
+                queued_count: 0,
+                running_count: 0,
+                unloading_count: 0,
+                failed_count: 0,
+                max_load_version: 43,
+                shards: Vec::new(),
+                transitions: vec![DataNodeShardLifecycleState {
+                    shard_id: 7,
+                    state: "unloaded".to_string(),
+                    operation: "unload".to_string(),
+                    load_version: 43,
+                    updated_at_ms: 3,
+                    last_status: Some(Status::ok()),
+                    scheduler_task_id: Some(3),
+                    scheduler_generation: Some(12),
+                }],
+            },
+        ];
+        let persistence = vec![
+            DataNodeLifecyclePersistenceReport {
+                enabled: true,
+                last_restore_status: Some(Status::ok()),
+                restore_success_total: 1,
+                ..DataNodeLifecyclePersistenceReport::default()
+            },
+            DataNodeLifecyclePersistenceReport {
+                enabled: true,
+                last_restore_status: Some(Status::ok()),
+                restore_success_total: 1,
+                ..DataNodeLifecyclePersistenceReport::default()
+            },
+        ];
+
+        let validated = validate_multi_process_lifecycle_reports(&reports, &persistence);
+        assert!(validated.passed, "{validated:?}");
+        assert_eq!(validated.node_count, 2);
+        assert!(validated.load_validated);
+        assert!(validated.reload_validated);
+        assert!(validated.unload_validated);
+        assert!(validated.restart_restore_validated);
+        assert!(validated.all_nodes_have_persistence);
+
+        let missing_restart = validate_multi_process_lifecycle_reports(&reports, &[]);
+        assert!(!missing_restart.passed);
+        assert!(missing_restart
+            .blockers
+            .contains(&"restart_restore_not_validated".to_string()));
     }
 
     #[test]

@@ -13,6 +13,15 @@ service TemporalStoreService {
   rpc GetClientPreflight(ClientPreflightRequest) returns (ClientPreflightResponse);
 }
 
+// DataNodeService is the Rust-native data-node RPC contract. HTTP routes keep
+// serving local tests, while production adapters use this streaming shape for
+// shard-affine execution, async lifecycle callbacks, and job status updates.
+service DataNodeService {
+  rpc ExecuteStream(stream DataNodeStreamRequest) returns (stream DataNodeStreamEvent);
+  rpc LifecycleCallbacks(stream DataNodeLifecycleCallback) returns (stream DataNodeLifecycleAck);
+  rpc WatchJobStatus(DataNodeJobStatusRequest) returns (stream DataNodeJobStatusEvent);
+}
+
 message Status {
   bool ok = 1;
   string code = 2;
@@ -79,6 +88,57 @@ message ClientPreflightResponse {
   uint64 topology_version = 5;
   bool degraded = 6;
   repeated string warnings = 7;
+}
+
+message DataNodeStreamRequest {
+  oneof kind {
+    ExecuteRequest execute = 1;
+    BatchExecuteRequest batch_execute = 2;
+    DataNodeJobControl job_control = 3;
+  }
+}
+
+message DataNodeStreamEvent {
+  Status status = 1;
+  uint64 job_id = 2;
+  ExecuteResponse execute = 3;
+  BatchExecuteResponse batch_execute = 4;
+  string lifecycle_state = 5;
+}
+
+message DataNodeJobControl {
+  uint64 job_id = 1;
+  string action = 2;
+}
+
+message DataNodeLifecycleCallback {
+  uint64 shard_id = 1;
+  string operation = 2;
+  string state = 3;
+  uint64 load_version = 4;
+  uint64 scheduler_task_id = 5;
+  uint64 scheduler_generation = 6;
+  Status status = 7;
+}
+
+message DataNodeLifecycleAck {
+  Status status = 1;
+  uint64 shard_id = 2;
+  string operation = 3;
+  uint64 scheduler_task_id = 4;
+  uint64 scheduler_generation = 5;
+}
+
+message DataNodeJobStatusRequest {
+  uint64 job_id = 1;
+  bool include_finished = 2;
+}
+
+message DataNodeJobStatusEvent {
+  Status status = 1;
+  uint64 job_id = 2;
+  string kind = 3;
+  bool finished = 4;
 }
 
 message TableTopology {

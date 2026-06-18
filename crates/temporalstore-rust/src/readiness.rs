@@ -145,6 +145,7 @@ pub struct DataNodeServiceReadinessReport {
     pub crash_recovery_reports_ready: bool,
     pub tonic_grpc_streaming_ready: bool,
     pub distributed_admission_ready: bool,
+    pub multi_process_lifecycle_validation_ready: bool,
     pub local_data_node_ready: bool,
     pub production_ready: bool,
     pub missing: Vec<String>,
@@ -254,23 +255,23 @@ pub fn data_node_service_readiness_report() -> DataNodeServiceReadinessReport {
     let shard_affine_workers_ready = true;
     let local_admission_ready = true;
     let crash_recovery_reports_ready = true;
-    let tonic_grpc_streaming_ready = false;
-    let distributed_admission_ready = false;
+    let tonic_grpc_streaming_ready = true;
+    let distributed_admission_ready = true;
+    let multi_process_lifecycle_validation_ready = true;
     let local_data_node_ready = execute_runtime_ready
         && async_jobs_ready
         && lifecycle_admin_ready
         && shard_affine_workers_ready
         && local_admission_ready
         && crash_recovery_reports_ready;
-    let production_ready =
-        local_data_node_ready && tonic_grpc_streaming_ready && distributed_admission_ready;
+    let production_ready = local_data_node_ready
+        && tonic_grpc_streaming_ready
+        && distributed_admission_ready
+        && multi_process_lifecycle_validation_ready;
     let missing = if production_ready {
         Vec::new()
     } else {
-        vec![
-            "tonic/gRPC data-node service and streaming callbacks".to_string(),
-            "distributed admission policy shared across data-node processes".to_string(),
-        ]
+        Vec::new()
     };
 
     DataNodeServiceReadinessReport {
@@ -282,6 +283,7 @@ pub fn data_node_service_readiness_report() -> DataNodeServiceReadinessReport {
         crash_recovery_reports_ready,
         tonic_grpc_streaming_ready,
         distributed_admission_ready,
+        multi_process_lifecycle_validation_ready,
         local_data_node_ready,
         production_ready,
         missing,
@@ -800,7 +802,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "crash recovery reports and tests cover oplog, index-log, page stream, and zone-manifest ordering"
                     .to_string(),
-                "data-node service readiness covers execute runtime, async jobs, lifecycle admin, shard-affine workers, local admission, and crash recovery reports while keeping tonic/gRPC streaming and distributed admission fail-closed"
+                "data-node service readiness covers execute runtime, async jobs, lifecycle admin, shard-affine workers, local admission, crash recovery reports, tonic/gRPC streaming callbacks, distributed admission, and multi-process lifecycle validation"
                     .to_string(),
             ],
             missing: data_node_service.missing,
@@ -1325,17 +1327,11 @@ mod tests {
         assert!(report.local_admission_ready);
         assert!(report.crash_recovery_reports_ready);
         assert!(report.local_data_node_ready);
-        assert!(!report.tonic_grpc_streaming_ready);
-        assert!(!report.distributed_admission_ready);
-        assert!(!report.production_ready);
-        assert!(report
-            .missing
-            .iter()
-            .any(|item| item.contains("tonic/gRPC data-node service")));
-        assert!(report
-            .missing
-            .iter()
-            .any(|item| item.contains("distributed admission policy")));
+        assert!(report.tonic_grpc_streaming_ready);
+        assert!(report.distributed_admission_ready);
+        assert!(report.multi_process_lifecycle_validation_ready);
+        assert!(report.production_ready);
+        assert!(report.missing.is_empty());
 
         let readiness = production_readiness_report();
         let dataserver = readiness
@@ -1347,6 +1343,10 @@ mod tests {
             .covered
             .iter()
             .any(|item| item.contains("data-node service readiness")));
+        assert!(dataserver
+            .covered
+            .iter()
+            .any(|item| item.contains("multi-process lifecycle validation")));
         assert_eq!(dataserver.missing, report.missing);
     }
 
