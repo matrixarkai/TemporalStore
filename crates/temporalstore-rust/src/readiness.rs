@@ -134,6 +134,21 @@ pub struct ProxyServingReadinessReport {
     pub missing: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DataNodeServiceReadinessReport {
+    pub execute_runtime_ready: bool,
+    pub async_jobs_ready: bool,
+    pub lifecycle_admin_ready: bool,
+    pub shard_affine_workers_ready: bool,
+    pub local_admission_ready: bool,
+    pub crash_recovery_reports_ready: bool,
+    pub tonic_grpc_streaming_ready: bool,
+    pub distributed_admission_ready: bool,
+    pub local_data_node_ready: bool,
+    pub production_ready: bool,
+    pub missing: Vec<String>,
+}
+
 pub fn client_routing_readiness_report() -> ClientRoutingReadinessReport {
     let typed_table_client_ready = true;
     let route_refresh_ready = true;
@@ -206,6 +221,47 @@ pub fn proxy_serving_readiness_report() -> ProxyServingReadinessReport {
         tonic_proxy_surface_ready,
         cpp_wire_proxy_transport_ready,
         local_proxy_ready,
+        production_ready,
+        missing,
+    }
+}
+
+pub fn data_node_service_readiness_report() -> DataNodeServiceReadinessReport {
+    let execute_runtime_ready = true;
+    let async_jobs_ready = true;
+    let lifecycle_admin_ready = true;
+    let shard_affine_workers_ready = true;
+    let local_admission_ready = true;
+    let crash_recovery_reports_ready = true;
+    let tonic_grpc_streaming_ready = false;
+    let distributed_admission_ready = false;
+    let local_data_node_ready = execute_runtime_ready
+        && async_jobs_ready
+        && lifecycle_admin_ready
+        && shard_affine_workers_ready
+        && local_admission_ready
+        && crash_recovery_reports_ready;
+    let production_ready =
+        local_data_node_ready && tonic_grpc_streaming_ready && distributed_admission_ready;
+    let missing = if production_ready {
+        Vec::new()
+    } else {
+        vec![
+            "tonic/gRPC data-node service and streaming callbacks".to_string(),
+            "distributed admission policy shared across data-node processes".to_string(),
+        ]
+    };
+
+    DataNodeServiceReadinessReport {
+        execute_runtime_ready,
+        async_jobs_ready,
+        lifecycle_admin_ready,
+        shard_affine_workers_ready,
+        local_admission_ready,
+        crash_recovery_reports_ready,
+        tonic_grpc_streaming_ready,
+        distributed_admission_ready,
+        local_data_node_ready,
         production_ready,
         missing,
     }
@@ -437,6 +493,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
     let ingestion = ingestion_readiness_report();
     let client_routing = client_routing_readiness_report();
     let proxy_serving = proxy_serving_readiness_report();
+    let data_node_service = data_node_service_readiness_report();
     let storage_cache_dependency_matrix = storage_cache_dependency_matrix_report();
     let storage_ssd_cache_pressure = storage_ssd_cache_pressure_readiness_report();
     let storage_migration_corpus = storage_migration_corpus_readiness_report();
@@ -666,11 +723,10 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "crash recovery reports and tests cover oplog, index-log, page stream, and zone-manifest ordering"
                     .to_string(),
+                "data-node service readiness covers execute runtime, async jobs, lifecycle admin, shard-affine workers, local admission, and crash recovery reports while keeping tonic/gRPC streaming and distributed admission fail-closed"
+                    .to_string(),
             ],
-            missing: vec![
-                "tonic/gRPC data-node service and streaming callbacks".to_string(),
-                "distributed admission policy shared across data-node processes".to_string(),
-            ],
+            missing: data_node_service.missing,
         },
         ReadinessArea {
             area: "ingestion".to_string(),
@@ -1179,6 +1235,41 @@ mod tests {
             .covered
             .iter()
             .any(|item| item.contains("proxy serving readiness")));
+    }
+
+    #[test]
+    fn data_node_service_readiness_splits_local_and_distributed_surfaces() {
+        let report = data_node_service_readiness_report();
+        assert!(report.execute_runtime_ready);
+        assert!(report.async_jobs_ready);
+        assert!(report.lifecycle_admin_ready);
+        assert!(report.shard_affine_workers_ready);
+        assert!(report.local_admission_ready);
+        assert!(report.crash_recovery_reports_ready);
+        assert!(report.local_data_node_ready);
+        assert!(!report.tonic_grpc_streaming_ready);
+        assert!(!report.distributed_admission_ready);
+        assert!(!report.production_ready);
+        assert!(report
+            .missing
+            .iter()
+            .any(|item| item.contains("tonic/gRPC data-node service")));
+        assert!(report
+            .missing
+            .iter()
+            .any(|item| item.contains("distributed admission policy")));
+
+        let readiness = production_readiness_report();
+        let dataserver = readiness
+            .areas
+            .iter()
+            .find(|area| area.area == "dataserver")
+            .expect("dataserver area must exist");
+        assert!(dataserver
+            .covered
+            .iter()
+            .any(|item| item.contains("data-node service readiness")));
+        assert_eq!(dataserver.missing, report.missing);
     }
 
     #[test]

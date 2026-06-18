@@ -145,6 +145,14 @@ AREAS: tuple[ParityArea, ...] = (
                     "cpp_server_service_lifecycle_snapshot_survives_http_restart_boundary",
                 ),
             ),
+            RustEvidence(
+                "crates/temporalstore-rust/src/readiness.rs",
+                (
+                    "data_node_service_readiness_report",
+                    "data-node service readiness covers execute runtime",
+                    "data_node_service_readiness_splits_local_and_distributed_surfaces",
+                ),
+            ),
         ),
     ),
 )

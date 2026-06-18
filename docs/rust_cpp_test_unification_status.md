@@ -89,6 +89,10 @@ retry classification, and topology preflight while keeping Neptune routing and C
 blocked; `ProxyServingReadinessReport` covers HTTP execute routes, heartbeat/config application,
 topology refresh, admission policy, and Rust-native discovery while keeping tonic streaming and C++
 wire proxy transport blocked.
+Data-node readiness now exposes the same split through `DataNodeServiceReadinessReport`: execute
+runtime, async jobs, lifecycle admin, shard-affine workers, local admission, and crash-recovery
+reports are covered by local parity evidence, while tonic/gRPC streaming callbacks and
+distributed admission policy remain production blockers.
 
 API/model parity evidence status:
 
