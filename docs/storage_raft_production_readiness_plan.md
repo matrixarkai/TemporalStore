@@ -142,8 +142,11 @@ The readiness gate intentionally still blocks production readiness on:
 
 - Production OpenRaft durable log-store rollout across real data-node process groups.
 - Production OpenRaft durable log-store rollout across real metaserver process groups.
-- Atomic data-node applied Raft index persistence with storage mutations and partition snapshot
-  install, matching the ByteRaft/ByteKV replica-engine recovery contract.
+- Raft atomic apply readiness is now explicit in the readiness gate: storage apply fence
+  persistence, WAL fence recovery validation, and snapshot lifecycle reporting are covered. Real
+  storage-mutation and snapshot-install atomic commit integration remains blocked until wired
+  through the data-node process path, matching the ByteRaft/ByteKV replica-engine recovery
+  contract.
 - Networked metaserver Raft transport and scheduler loop that automatically drives real data-node
   membership changes.
 - Metaserver-owned learner add, catch-up verification, promotion, leader movement, and voter

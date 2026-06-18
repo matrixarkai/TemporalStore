@@ -1913,6 +1913,55 @@ pub struct RaftExternalChaosReadiness {
     pub missing: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftAtomicApplyReadiness {
+    pub storage_apply_fence_present: bool,
+    pub wal_fence_recovery_validation_present: bool,
+    pub snapshot_lifecycle_report_present: bool,
+    pub storage_mutation_atomic_commit_present: bool,
+    pub snapshot_install_atomic_commit_present: bool,
+    pub real_data_node_process_integration_present: bool,
+    pub local_contract_ready: bool,
+    pub production_ready: bool,
+    pub missing: Vec<String>,
+}
+
+pub fn raft_atomic_apply_readiness() -> RaftAtomicApplyReadiness {
+    let storage_apply_fence_present = true;
+    let wal_fence_recovery_validation_present = true;
+    let snapshot_lifecycle_report_present = true;
+    let storage_mutation_atomic_commit_present = false;
+    let snapshot_install_atomic_commit_present = false;
+    let real_data_node_process_integration_present = false;
+    let local_contract_ready = storage_apply_fence_present
+        && wal_fence_recovery_validation_present
+        && snapshot_lifecycle_report_present;
+    let production_ready = local_contract_ready
+        && storage_mutation_atomic_commit_present
+        && snapshot_install_atomic_commit_present
+        && real_data_node_process_integration_present;
+    let missing = if production_ready {
+        Vec::new()
+    } else {
+        vec![
+            "persist the data-node applied Raft index atomically with storage mutations and partition snapshot install"
+                .to_string(),
+        ]
+    };
+
+    RaftAtomicApplyReadiness {
+        storage_apply_fence_present,
+        wal_fence_recovery_validation_present,
+        snapshot_lifecycle_report_present,
+        storage_mutation_atomic_commit_present,
+        snapshot_install_atomic_commit_present,
+        real_data_node_process_integration_present,
+        local_contract_ready,
+        production_ready,
+        missing,
+    }
+}
+
 pub fn raft_external_chaos_readiness() -> RaftExternalChaosReadiness {
     let local_os_process_restart_failover_present = true;
     let stale_read_partition_heal_present = true;
@@ -2014,15 +2063,15 @@ impl std::fmt::Display for RaftProductionReadinessError {
 impl std::error::Error for RaftProductionReadinessError {}
 
 pub fn distributed_raft_readiness() -> RaftDistributedReadiness {
+    let atomic_apply = raft_atomic_apply_readiness();
     let transport_security = raft_transport_security_readiness();
     let external_chaos = raft_external_chaos_readiness();
     let mut missing = vec![
-        "persist the data-node applied Raft index atomically with storage mutations and partition snapshot install"
-            .to_string(),
         "make metaserver own learner add, catch-up verification, promotion, leader movement, and voter removal against real data-node Raft groups"
             .to_string(),
         "integrate metaserver shard membership changes with networked Raft groups".to_string(),
     ];
+    missing.extend(atomic_apply.missing.clone());
     missing.extend(transport_security.missing.clone());
     missing.extend(external_chaos.missing.clone());
     RaftDistributedReadiness {
@@ -2048,7 +2097,7 @@ pub fn distributed_raft_readiness() -> RaftDistributedReadiness {
         byteraft_snapshot_tail_catchup_present: true,
         byteraft_compacted_entry_rejection_present: true,
         byteraft_metaserver_snapshot_floor_election_present: true,
-        durable_apply_index_snapshot_integrated: false,
+        durable_apply_index_snapshot_integrated: atomic_apply.production_ready,
         learner_catchup_promotion_present: true,
         metaserver_membership_workflow_present: true,
         metaserver_driven_membership_present: false,
@@ -10944,6 +10993,31 @@ mod tests {
             .missing
             .iter()
             .any(|item| item.contains("process startup")));
+    }
+
+    #[test]
+    fn raft_atomic_apply_readiness_keeps_real_storage_commit_blocked() {
+        let readiness = raft_atomic_apply_readiness();
+        assert!(readiness.storage_apply_fence_present);
+        assert!(readiness.wal_fence_recovery_validation_present);
+        assert!(readiness.snapshot_lifecycle_report_present);
+        assert!(readiness.local_contract_ready);
+        assert!(!readiness.storage_mutation_atomic_commit_present);
+        assert!(!readiness.snapshot_install_atomic_commit_present);
+        assert!(!readiness.real_data_node_process_integration_present);
+        assert!(!readiness.production_ready);
+        assert!(readiness
+            .missing
+            .iter()
+            .any(|item| item.contains("applied Raft index")));
+
+        let distributed = distributed_raft_readiness();
+        assert!(distributed.raft_storage_apply_fence_present);
+        assert!(!distributed.durable_apply_index_snapshot_integrated);
+        assert!(distributed
+            .missing
+            .iter()
+            .any(|item| item.contains("storage mutations")));
     }
 
     #[test]

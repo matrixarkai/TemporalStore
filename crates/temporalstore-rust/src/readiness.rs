@@ -349,6 +349,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "RaftStorageApplyFence is persisted in WAL records and rejects missing, corrupt, stale, or ahead-of-storage recovery state"
                     .to_string(),
+                "Raft atomic apply readiness covers storage apply fence persistence, WAL fence recovery validation, and snapshot lifecycle reporting while keeping real storage-mutation and snapshot-install atomic commit integration fail-closed"
+                    .to_string(),
                 "RaftSnapshotInstallReport exposes freeze, flush, manifest verify, checksum verify, install, tail replay, and rollback status for snapshot installs"
                     .to_string(),
                 "ProductionMetaRaftRuntime can drive a data-Raft membership workflow for learner add, catch-up verification, promotion, leader transfer, and voter removal"
@@ -496,6 +498,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "raft_node, raft-enabled server, and metaserver process startup wire the production runtime options to ProductionRaftEngineKind::OpenRaft"
                     .to_string(),
                 "RaftStorageApplyFence persists shard, term, committed/applied index, snapshot id, storage epoch, and checksum with WAL recovery validation"
+                    .to_string(),
+                "Raft atomic apply readiness covers storage apply fence persistence, WAL fence recovery validation, and snapshot lifecycle reporting while keeping real storage-mutation and snapshot-install atomic commit integration fail-closed"
                     .to_string(),
                 "Raft snapshot lifecycle reports install, tail replay, and rollback decisions for data-node snapshot recovery paths"
                     .to_string(),
@@ -1487,6 +1491,10 @@ mod tests {
         assert!(covered
             .iter()
             .any(|item| item.contains("ProductionRaftEngineKind::OpenRaft")));
+        assert!(covered.iter().any(|item| {
+            item.contains("Raft atomic apply readiness")
+                && item.contains("atomic commit integration fail-closed")
+        }));
         assert!(covered.iter().any(|item| {
             item.contains("Raft transport security readiness")
                 && item.contains("service-process mTLS enforcement fail-closed")

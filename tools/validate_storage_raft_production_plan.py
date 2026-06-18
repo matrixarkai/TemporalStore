@@ -38,6 +38,7 @@ REQUIRED_READINESS_SNIPPETS = (
     "OpenRaft-backed data-node and metaserver adapter is available behind the openraft-engine feature",
     "ProductionRaftEngineKind::OpenRaft",
     "RaftStorageApplyFence persists shard, term, committed/applied index, snapshot id, storage epoch, and checksum",
+    "Raft atomic apply readiness covers storage apply fence persistence, WAL fence recovery validation, and snapshot lifecycle reporting while keeping real storage-mutation and snapshot-install atomic commit integration fail-closed",
     "RaftSnapshotInstallReport exposes freeze, flush, manifest verify, checksum verify, install, tail replay, and rollback status",
     "metaserver-owned data-Raft membership workflow reports learner add, catch-up verification, promotion, leader transfer, and voter removal",
     "Raft transport security readiness covers auth-token validation, mTLS cert/key/CA config validation, authenticated HTTP transport, and plaintext-only local chaos guardrails while keeping service-process mTLS enforcement fail-closed",
