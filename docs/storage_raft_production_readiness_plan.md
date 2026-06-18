@@ -140,8 +140,10 @@ Raft local coverage:
 
 The readiness gate intentionally still blocks production readiness on:
 
-- Production OpenRaft durable log-store rollout across real data-node process groups.
-- Production OpenRaft durable log-store rollout across real metaserver process groups.
+- Raft OpenRaft rollout readiness is now explicit in the readiness gate: adapter presence,
+  data-node/metaserver startup selection, and durable local log state are covered. Real
+  multi-process data-node/metaserver log-store rollout remains blocked until validated across
+  production process groups.
 - Raft atomic apply readiness is now explicit in the readiness gate: storage apply fence
   persistence, WAL fence recovery validation, and snapshot lifecycle reporting are covered. Real
   storage-mutation and snapshot-install atomic commit integration remains blocked until wired

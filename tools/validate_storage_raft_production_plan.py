@@ -37,6 +37,7 @@ REQUIRED_READINESS_SNIPPETS = (
     "local storage dump/load fault matrix harness rejects checksum mismatch, partial manifests, missing segments, stale manifests, restart-during-install recovery, and corrupt page segments",
     "OpenRaft-backed data-node and metaserver adapter is available behind the openraft-engine feature",
     "ProductionRaftEngineKind::OpenRaft",
+    "Raft OpenRaft rollout readiness covers adapter presence, data-node/metaserver startup selection, and durable local log state while keeping real multi-process data-node/metaserver log-store rollout fail-closed",
     "RaftStorageApplyFence persists shard, term, committed/applied index, snapshot id, storage epoch, and checksum",
     "Raft atomic apply readiness covers storage apply fence persistence, WAL fence recovery validation, and snapshot lifecycle reporting while keeping real storage-mutation and snapshot-install atomic commit integration fail-closed",
     "RaftSnapshotInstallReport exposes freeze, flush, manifest verify, checksum verify, install, tail replay, and rollback status",

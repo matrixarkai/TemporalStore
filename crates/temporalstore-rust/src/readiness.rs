@@ -347,6 +347,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "local WAL recovery and local separate-node replication test".to_string(),
                 "raft_node, raft-enabled server, and metaserver process startup select ProductionRaftEngineKind::OpenRaft by default"
                     .to_string(),
+                "Raft OpenRaft rollout readiness covers adapter presence, data-node/metaserver startup selection, and durable local log state while keeping real multi-process data-node/metaserver log-store rollout fail-closed"
+                    .to_string(),
                 "RaftStorageApplyFence is persisted in WAL records and rejects missing, corrupt, stale, or ahead-of-storage recovery state"
                     .to_string(),
                 "Raft atomic apply readiness covers storage apply fence persistence, WAL fence recovery validation, and snapshot lifecycle reporting while keeping real storage-mutation and snapshot-install atomic commit integration fail-closed"
@@ -496,6 +498,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "OpenRaft-backed data-node and metaserver adapter is available behind the openraft-engine feature with durable log state, state-machine apply, snapshot metadata, read-index checks, membership changes, leader transfer, and restart recovery tests"
                     .to_string(),
                 "raft_node, raft-enabled server, and metaserver process startup wire the production runtime options to ProductionRaftEngineKind::OpenRaft"
+                    .to_string(),
+                "Raft OpenRaft rollout readiness covers adapter presence, data-node/metaserver startup selection, and durable local log state while keeping real multi-process data-node/metaserver log-store rollout fail-closed"
                     .to_string(),
                 "RaftStorageApplyFence persists shard, term, committed/applied index, snapshot id, storage epoch, and checksum with WAL recovery validation"
                     .to_string(),
@@ -1493,6 +1497,10 @@ mod tests {
         assert!(covered
             .iter()
             .any(|item| item.contains("ProductionRaftEngineKind::OpenRaft")));
+        assert!(covered.iter().any(|item| {
+            item.contains("Raft OpenRaft rollout readiness")
+                && item.contains("log-store rollout fail-closed")
+        }));
         assert!(covered.iter().any(|item| {
             item.contains("Raft atomic apply readiness")
                 && item.contains("atomic commit integration fail-closed")

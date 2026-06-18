@@ -1941,6 +1941,61 @@ pub struct RaftMetaserverMembershipReadiness {
     pub missing: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftOpenRaftRolloutReadiness {
+    pub adapter_present: bool,
+    pub data_node_process_startup_selects_openraft: bool,
+    pub metaserver_process_startup_selects_openraft: bool,
+    pub durable_log_state_present: bool,
+    pub data_node_real_process_rollout_validated: bool,
+    pub metaserver_real_process_rollout_validated: bool,
+    pub multi_process_log_store_validation_present: bool,
+    pub local_rollout_ready: bool,
+    pub production_ready: bool,
+    pub missing: Vec<String>,
+}
+
+pub fn raft_openraft_rollout_readiness() -> RaftOpenRaftRolloutReadiness {
+    let adapter_present = cfg!(feature = "openraft-engine");
+    let data_node_process_startup_selects_openraft = true;
+    let metaserver_process_startup_selects_openraft = true;
+    let durable_log_state_present = true;
+    let data_node_real_process_rollout_validated = false;
+    let metaserver_real_process_rollout_validated = false;
+    let multi_process_log_store_validation_present = false;
+    let local_rollout_ready = adapter_present
+        && data_node_process_startup_selects_openraft
+        && metaserver_process_startup_selects_openraft
+        && durable_log_state_present;
+    let production_ready = local_rollout_ready
+        && data_node_real_process_rollout_validated
+        && metaserver_real_process_rollout_validated
+        && multi_process_log_store_validation_present;
+    let missing = if production_ready {
+        Vec::new()
+    } else {
+        vec![
+            "complete durable OpenRaft data-node process rollout with real multi-process log-store validation"
+                .to_string(),
+            "complete durable OpenRaft metaserver process rollout with real multi-process log-store validation"
+                .to_string(),
+        ]
+    };
+
+    RaftOpenRaftRolloutReadiness {
+        adapter_present,
+        data_node_process_startup_selects_openraft,
+        metaserver_process_startup_selects_openraft,
+        durable_log_state_present,
+        data_node_real_process_rollout_validated,
+        metaserver_real_process_rollout_validated,
+        multi_process_log_store_validation_present,
+        local_rollout_ready,
+        production_ready,
+        missing,
+    }
+}
+
 pub fn raft_metaserver_membership_readiness() -> RaftMetaserverMembershipReadiness {
     let topology_membership_plan_present = true;
     let data_raft_membership_apply_present = true;
@@ -2123,11 +2178,13 @@ impl std::fmt::Display for RaftProductionReadinessError {
 impl std::error::Error for RaftProductionReadinessError {}
 
 pub fn distributed_raft_readiness() -> RaftDistributedReadiness {
+    let openraft_rollout = raft_openraft_rollout_readiness();
     let metaserver_membership = raft_metaserver_membership_readiness();
     let atomic_apply = raft_atomic_apply_readiness();
     let transport_security = raft_transport_security_readiness();
     let external_chaos = raft_external_chaos_readiness();
     let mut missing = Vec::new();
+    missing.extend(openraft_rollout.missing.clone());
     missing.extend(metaserver_membership.missing.clone());
     missing.extend(atomic_apply.missing.clone());
     missing.extend(transport_security.missing.clone());
@@ -2137,9 +2194,11 @@ pub fn distributed_raft_readiness() -> RaftDistributedReadiness {
         production_ready: false,
         mode: RaftDeploymentMode::ProductionDistributed,
         local_model_tested: true,
-        openraft_engine_adapter_present: cfg!(feature = "openraft-engine"),
-        openraft_data_node_process_startup_present: true,
-        openraft_metaserver_process_startup_present: true,
+        openraft_engine_adapter_present: openraft_rollout.adapter_present,
+        openraft_data_node_process_startup_present: openraft_rollout
+            .data_node_process_startup_selects_openraft,
+        openraft_metaserver_process_startup_present: openraft_rollout
+            .metaserver_process_startup_selects_openraft,
         transport_contracts_present: true,
         http_transport_tested: true,
         rpc_runtime_observability_present: true,
@@ -11051,6 +11110,43 @@ mod tests {
             .missing
             .iter()
             .any(|item| item.contains("process startup")));
+    }
+
+    #[test]
+    fn raft_openraft_rollout_readiness_keeps_real_process_rollout_blocked() {
+        let readiness = raft_openraft_rollout_readiness();
+        assert_eq!(readiness.adapter_present, cfg!(feature = "openraft-engine"));
+        assert!(readiness.data_node_process_startup_selects_openraft);
+        assert!(readiness.metaserver_process_startup_selects_openraft);
+        assert!(readiness.durable_log_state_present);
+        assert_eq!(
+            readiness.local_rollout_ready,
+            cfg!(feature = "openraft-engine")
+        );
+        assert!(!readiness.data_node_real_process_rollout_validated);
+        assert!(!readiness.metaserver_real_process_rollout_validated);
+        assert!(!readiness.multi_process_log_store_validation_present);
+        assert!(!readiness.production_ready);
+        assert!(readiness
+            .missing
+            .iter()
+            .any(|item| item.contains("data-node process rollout")));
+        assert!(readiness
+            .missing
+            .iter()
+            .any(|item| item.contains("metaserver process rollout")));
+
+        let distributed = distributed_raft_readiness();
+        assert_eq!(
+            distributed.openraft_engine_adapter_present,
+            cfg!(feature = "openraft-engine")
+        );
+        assert!(distributed.openraft_data_node_process_startup_present);
+        assert!(distributed.openraft_metaserver_process_startup_present);
+        assert!(distributed
+            .missing
+            .iter()
+            .any(|item| item.contains("OpenRaft data-node process rollout")));
     }
 
     #[test]
