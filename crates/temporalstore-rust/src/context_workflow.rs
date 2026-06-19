@@ -220,6 +220,40 @@ pub struct ContextPipelineBenchmarkQueryReport {
     pub inject_elapsed_ms: u128,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextPipelineBenchmarkSweepProfile {
+    pub profile: String,
+    pub source_count: usize,
+    pub query_count: usize,
+    pub max_events: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextPipelineBenchmarkSweepRequest {
+    pub shard_id: ShardId,
+    pub tenant_hash: u64,
+    #[serde(default = "default_benchmark_sweep_profiles")]
+    pub profiles: Vec<ContextPipelineBenchmarkSweepProfile>,
+    #[serde(default)]
+    pub provider: ContextModelProviderConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextPipelineBenchmarkSweepReport {
+    pub status: Status,
+    pub benchmark_name: String,
+    pub profile_count: usize,
+    pub reports: Vec<ContextPipelineBenchmarkReport>,
+    pub all_profiles_ready: bool,
+    pub min_hit_at_k: f32,
+    pub min_mean_reciprocal_rank: f32,
+    pub min_token_reduction_percent: f32,
+    pub max_retrieve_p95_ms: u128,
+    pub total_sources: usize,
+    pub total_queries: usize,
+    pub evidence: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContextRetrieveRequest {
     pub shard_id: ShardId,
@@ -1060,6 +1094,86 @@ pub fn run_context_pipeline_benchmark(
     }
 }
 
+pub fn run_context_pipeline_benchmark_sweep(
+    engine: &TemporalEngine,
+    request: ContextPipelineBenchmarkSweepRequest,
+) -> ContextPipelineBenchmarkSweepReport {
+    let profiles = if request.profiles.is_empty() {
+        default_benchmark_sweep_profiles()
+    } else {
+        request.profiles.clone()
+    };
+    let mut reports = Vec::with_capacity(profiles.len());
+    for (index, profile) in profiles.into_iter().enumerate() {
+        reports.push(run_context_pipeline_benchmark(
+            engine,
+            ContextPipelineBenchmarkRequest {
+                shard_id: request.shard_id,
+                tenant_hash: request.tenant_hash + index as u64,
+                profile: profile.profile,
+                source_count: profile.source_count,
+                query_count: profile.query_count,
+                max_events: profile.max_events,
+                provider: request.provider.clone(),
+            },
+        ));
+    }
+    let profile_count = reports.len();
+    let all_profiles_ready = reports.iter().all(|report| report.status.ok);
+    let min_hit_at_k = reports
+        .iter()
+        .map(|report| report.hit_at_k)
+        .fold(1.0f32, f32::min);
+    let min_mean_reciprocal_rank = reports
+        .iter()
+        .map(|report| report.mean_reciprocal_rank)
+        .fold(1.0f32, f32::min);
+    let min_token_reduction_percent = reports
+        .iter()
+        .map(|report| report.token_reduction_percent)
+        .fold(100.0f32, f32::min);
+    let max_retrieve_p95_ms = reports
+        .iter()
+        .map(|report| report.retrieve_p95_ms)
+        .max()
+        .unwrap_or_default();
+    let total_sources = reports.iter().map(|report| report.source_count).sum();
+    let total_queries = reports.iter().map(|report| report.query_count).sum();
+    let status = if profile_count > 0
+        && all_profiles_ready
+        && min_hit_at_k >= 1.0
+        && min_mean_reciprocal_rank > 0.0
+        && min_token_reduction_percent > 0.0
+    {
+        Status::ok()
+    } else {
+        Status::error(
+            "context_pipeline_benchmark_sweep_incomplete",
+            format!(
+                "profiles={profile_count} ready={all_profiles_ready} min_hit_at_k={min_hit_at_k:.3} min_mrr={min_mean_reciprocal_rank:.3} min_token_reduction={min_token_reduction_percent:.3}"
+            ),
+        )
+    };
+
+    ContextPipelineBenchmarkSweepReport {
+        status,
+        benchmark_name: "vikingmem_style_context_management_sweep".to_string(),
+        profile_count,
+        reports,
+        all_profiles_ready,
+        min_hit_at_k,
+        min_mean_reciprocal_rank,
+        min_token_reduction_percent,
+        max_retrieve_p95_ms,
+        total_sources,
+        total_queries,
+        evidence: vec![
+            "Benchmark sweep runs multiple deterministic profile sizes through the same Context pipeline".to_string(),
+            "Sweep aggregates readiness, hit@k, MRR, token reduction, latency, total source count, and total query count".to_string(),
+        ],
+    }
+}
+
 fn context_source_kind_name(kind: ContextSourceKind) -> &'static str {
     match kind {
         ContextSourceKind::Document => "document",
@@ -1727,6 +1841,29 @@ fn default_benchmark_query_count() -> usize {
     8
 }
 
+fn default_benchmark_sweep_profiles() -> Vec<ContextPipelineBenchmarkSweepProfile> {
+    vec![
+        ContextPipelineBenchmarkSweepProfile {
+            profile: "vikingmem_sweep_small".to_string(),
+            source_count: 16,
+            query_count: 2,
+            max_events: 6,
+        },
+        ContextPipelineBenchmarkSweepProfile {
+            profile: "vikingmem_sweep_medium".to_string(),
+            source_count: 32,
+            query_count: 4,
+            max_events: 8,
+        },
+        ContextPipelineBenchmarkSweepProfile {
+            profile: "vikingmem_sweep_large".to_string(),
+            source_count: 64,
+            query_count: 6,
+            max_events: 10,
+        },
+    ]
+}
+
 fn default_max_prompt_tokens() -> u32 {
     2048
 }
@@ -2061,6 +2198,42 @@ mod tests {
             benchmark.provider_counts.get("mock-openai-compatible"),
             Some(&12)
         );
+
+        let sweep = run_context_pipeline_benchmark_sweep(
+            &engine,
+            ContextPipelineBenchmarkSweepRequest {
+                shard_id: 1,
+                tenant_hash: 100,
+                profiles: vec![
+                    ContextPipelineBenchmarkSweepProfile {
+                        profile: "unit_sweep_small".to_string(),
+                        source_count: 12,
+                        query_count: 2,
+                        max_events: 4,
+                    },
+                    ContextPipelineBenchmarkSweepProfile {
+                        profile: "unit_sweep_medium".to_string(),
+                        source_count: 12,
+                        query_count: 3,
+                        max_events: 6,
+                    },
+                ],
+                provider: ContextModelProviderConfig::default(),
+            },
+        );
+        assert!(sweep.status.ok, "{:?}", sweep.status);
+        assert_eq!(
+            sweep.benchmark_name,
+            "vikingmem_style_context_management_sweep"
+        );
+        assert_eq!(sweep.profile_count, 2);
+        assert!(sweep.all_profiles_ready);
+        assert_eq!(sweep.total_sources, 24);
+        assert_eq!(sweep.total_queries, 5);
+        assert_eq!(sweep.min_hit_at_k, 1.0);
+        assert!(sweep.min_mean_reciprocal_rank > 0.0);
+        assert!(sweep.min_token_reduction_percent > 0.0);
+        assert_eq!(sweep.reports.len(), 2);
     }
 
     #[test]

@@ -8,11 +8,12 @@ use serde::Serialize;
 use temporalstore_rust::{
     context_pipeline_manage_report, context_pipeline_parity_evidence, extract_context,
     ingest_extract_context, inject_context, retrieve_context, run_context_pipeline_benchmark,
-    Command, CommandResponse, ContextExtractRequest, ContextIngestExtractRequest,
-    ContextInjectRequest, ContextModelProviderConfig, ContextPipelineBenchmarkRequest,
-    ContextPipelineParityEvidence, ContextRetrieveRequest, ContextSourceKind, ContextTier,
-    ExecuteRequest, RaftCluster, RaftConfig, SharedStoreReplicator, SharedStoreStorageMode,
-    TemporalEngine,
+    run_context_pipeline_benchmark_sweep, Command, CommandResponse, ContextExtractRequest,
+    ContextIngestExtractRequest, ContextInjectRequest, ContextModelProviderConfig,
+    ContextPipelineBenchmarkRequest, ContextPipelineBenchmarkSweepProfile,
+    ContextPipelineBenchmarkSweepRequest, ContextPipelineParityEvidence, ContextRetrieveRequest,
+    ContextSourceKind, ContextTier, ExecuteRequest, RaftCluster, RaftConfig, SharedStoreReplicator,
+    SharedStoreStorageMode, TemporalEngine,
 };
 use temporalstore_snapshot::object_store::FileObjectStore;
 
@@ -61,6 +62,14 @@ struct ContextWorkflowHarnessSummary {
     benchmark_per_query_count: usize,
     benchmark_retrieve_p50_ms: u128,
     benchmark_retrieve_p95_ms: u128,
+    benchmark_sweep_ready: bool,
+    benchmark_sweep_profile_count: usize,
+    benchmark_sweep_total_sources: usize,
+    benchmark_sweep_total_queries: usize,
+    benchmark_sweep_min_hit_at_k: f32,
+    benchmark_sweep_min_mean_reciprocal_rank: f32,
+    benchmark_sweep_min_token_reduction_percent: f32,
+    benchmark_sweep_max_retrieve_p95_ms: u128,
     parity_evidence: Vec<String>,
 }
 
@@ -233,6 +242,36 @@ fn main() {
         && benchmark.retrieve_queries_per_sec > 0.0
         && benchmark.inject_queries_per_sec > 0.0
         && benchmark.per_query.len() == benchmark.query_count;
+    let benchmark_sweep = run_context_pipeline_benchmark_sweep(
+        &engine,
+        ContextPipelineBenchmarkSweepRequest {
+            shard_id: 1,
+            tenant_hash: 20260618,
+            profiles: vec![
+                ContextPipelineBenchmarkSweepProfile {
+                    profile: "vikingmem_harness_sweep_small".to_string(),
+                    source_count: 16,
+                    query_count: 2,
+                    max_events: 6,
+                },
+                ContextPipelineBenchmarkSweepProfile {
+                    profile: "vikingmem_harness_sweep_medium".to_string(),
+                    source_count: 32,
+                    query_count: 4,
+                    max_events: 8,
+                },
+            ],
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+    let benchmark_sweep_ready = benchmark_sweep.status.ok
+        && benchmark_sweep.all_profiles_ready
+        && benchmark_sweep.profile_count == 2
+        && benchmark_sweep.total_sources >= 48
+        && benchmark_sweep.total_queries >= 6
+        && benchmark_sweep.min_hit_at_k >= 1.0
+        && benchmark_sweep.min_mean_reciprocal_rank > 0.0
+        && benchmark_sweep.min_token_reduction_percent > 0.0;
     let context_pipeline_ready = parity.pipeline_ready
         && restart_replay_ready
         && shared_store_sync_ready
@@ -242,10 +281,11 @@ fn main() {
         && management_ready
         && ingest_extract_ready
         && retrieve_pipeline_ready
-        && benchmark_ready;
+        && benchmark_ready
+        && benchmark_sweep_ready;
     assert!(
         context_pipeline_ready,
-        "context pipeline readiness failed: parity={} restart={} sync={} async={} raft={} corpus={} management={} ingest_extract={} retrieve={} benchmark={} retrieve_events={} retrieve_blocks={}",
+        "context pipeline readiness failed: parity={} restart={} sync={} async={} raft={} corpus={} management={} ingest_extract={} retrieve={} benchmark={} sweep={} retrieve_events={} retrieve_blocks={}",
         parity.pipeline_ready,
         restart_replay_ready,
         shared_store_sync_ready,
@@ -256,6 +296,7 @@ fn main() {
         ingest_extract_ready,
         retrieve_pipeline_ready,
         benchmark_ready,
+        benchmark_sweep_ready,
         ingest_retrieve.event_count,
         ingest_retrieve.blocks.len()
     );
@@ -310,6 +351,15 @@ fn main() {
             benchmark_per_query_count: benchmark.per_query.len(),
             benchmark_retrieve_p50_ms: benchmark.retrieve_p50_ms,
             benchmark_retrieve_p95_ms: benchmark.retrieve_p95_ms,
+            benchmark_sweep_ready,
+            benchmark_sweep_profile_count: benchmark_sweep.profile_count,
+            benchmark_sweep_total_sources: benchmark_sweep.total_sources,
+            benchmark_sweep_total_queries: benchmark_sweep.total_queries,
+            benchmark_sweep_min_hit_at_k: benchmark_sweep.min_hit_at_k,
+            benchmark_sweep_min_mean_reciprocal_rank: benchmark_sweep.min_mean_reciprocal_rank,
+            benchmark_sweep_min_token_reduction_percent: benchmark_sweep
+                .min_token_reduction_percent,
+            benchmark_sweep_max_retrieve_p95_ms: benchmark_sweep.max_retrieve_p95_ms,
             parity_evidence: parity.evidence,
         })
         .expect("context workflow summary should serialize")

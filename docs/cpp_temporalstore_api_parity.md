@@ -118,7 +118,7 @@ Context:
   retrieval/injection pipeline.
 - Context benchmark parity now includes a local VikingMem-style benchmark report for mixed
   Context sources, hit@k, MRR, recall proxy, token-reduction accounting, throughput, per-query
-  evidence, and retrieval p50/p95 latency.
+  evidence, retrieval p50/p95 latency, and multi-profile sweep aggregation.
 
 IPS:
 

@@ -146,13 +146,17 @@ workload parity or published VikingMem scores. It produces local TemporalStore e
 - ingest, retrieval, and injection throughput counters
 - `benchmark_retrieve_p50_ms` and `benchmark_retrieve_p95_ms`
 - per-query hit rank, reciprocal rank, selected-block count, token count, and latency
+- `benchmark_sweep_*` fields covering multi-profile source/query sweeps, minimum hit@k, minimum
+  MRR, minimum token reduction, total source/query coverage, and maximum p95 retrieval latency
 - mixed source-kind and provider accounting through the ingest/extract summary
 
 The current local workload uses synthetic incidents, tickets, documents, chats, code snippets, and
 user events so it can run without external model credentials while still exercising the same
 management, ingestion/extraction, retrieval, and injection pipeline. Profiles are explicit strings
 so future benchmark runs can separate local synthetic sweeps, paper-inspired regression sweeps, and
-deployment-specific model/provider sweeps without changing the JSON schema.
+deployment-specific model/provider sweeps without changing the JSON schema. The default sweep uses
+small, medium, and large deterministic profiles; the local harness currently runs a smaller
+two-profile sweep to keep validation quick while preserving profile-comparison evidence.
 
 Remaining policy hardening:
 
