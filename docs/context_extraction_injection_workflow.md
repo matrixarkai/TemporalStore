@@ -193,8 +193,11 @@ and `sources`, `messages`, or `conversation` arrays with `body`, `text`, `messag
 fields. When no JSONL path is configured, the harness runs a built-in LOCOMO/LongMemEval_s-style
 fixture so CI and local Docker validation still enforce external-benchmark scoring. Retrieval now
 normalizes punctuation and hyphenation, applies simple plural stemming, expands temporal,
-multi-hop, latest/update, preference, support, and risk/payment aliases, and boosts latest and
-temporal evidence so newer memory updates outrank stale conversational memories.
+multi-hop, latest/update, preference, location/workplace, problem/resolution, support, and
+risk/payment aliases, and boosts latest and temporal evidence so newer memory updates outrank stale
+conversational memories. The built-in external fixture includes direct update questions plus harder
+paraphrases such as "Where does Alice want to work now?" and "Which setting changed most recently
+across the conversation history?" to keep LOCOMO/LongMemEval-style hit-rate regressions visible.
 
 Remaining policy hardening:
 

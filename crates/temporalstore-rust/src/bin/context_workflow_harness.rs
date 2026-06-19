@@ -565,9 +565,10 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
             .iter()
             .position(|block| {
                 let block_text = block.text.to_ascii_lowercase();
+                let block_normalized = normalize_benchmark_text(&block.text);
                 case.expected_terms
                     .iter()
-                    .any(|term| block_text.contains(&term.to_ascii_lowercase()))
+                    .any(|term| benchmark_text_matches(&block_text, &block_normalized, term))
             })
             .map(|rank| rank + 1);
         if let Some(rank) = hit_rank {
@@ -721,6 +722,28 @@ fn parse_context_source_kind(value: &str) -> ContextSourceKind {
     }
 }
 
+fn normalize_benchmark_text(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+}
+
+fn benchmark_text_matches(text_lower: &str, text_normalized: &str, term: &str) -> bool {
+    if text_lower.contains(&term.to_ascii_lowercase()) {
+        return true;
+    }
+    let normalized_term = normalize_benchmark_text(term);
+    let normalized_term = normalized_term.trim();
+    !normalized_term.is_empty() && text_normalized.contains(normalized_term)
+}
+
 fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCase> {
     vec![
         ExternalContextBenchmarkCase {
@@ -742,6 +765,24 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
             ],
         },
         ExternalContextBenchmarkCase {
+            dataset: "locomo_style".to_string(),
+            query_id: "locomo-location-paraphrase".to_string(),
+            query: "Where does Alice want to work now?".to_string(),
+            expected_terms: vec!["downtown location".to_string()],
+            sources: vec![
+                ExternalContextBenchmarkSource {
+                    title: "Stale workplace memory".to_string(),
+                    body: "Earlier memory: Alice wanted to work near the airport office before the later change.".to_string(),
+                    kind: ContextSourceKind::Chat,
+                },
+                ExternalContextBenchmarkSource {
+                    title: "Current workplace memory".to_string(),
+                    body: "Latest update: Alice now wants the downtown location as her office preference after the payment issue was resolved.".to_string(),
+                    kind: ContextSourceKind::Chat,
+                },
+            ],
+        },
+        ExternalContextBenchmarkCase {
             dataset: "longmemeval_s_style".to_string(),
             query_id: "longmem-updated-setting".to_string(),
             query: "Which preference was updated in the recent multi session messages?".to_string(),
@@ -755,6 +796,24 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
                 ExternalContextBenchmarkSource {
                     title: "Recent setting update".to_string(),
                     body: "Support follow-up: the user sent messages across sessions and the helpdesk agent changed the notification setting during the most recent chat.".to_string(),
+                    kind: ContextSourceKind::Ticket,
+                },
+            ],
+        },
+        ExternalContextBenchmarkCase {
+            dataset: "longmemeval_s_style".to_string(),
+            query_id: "longmem-most-recent-change".to_string(),
+            query: "Which setting changed most recently across the conversation history?".to_string(),
+            expected_terms: vec!["notification setting".to_string()],
+            sources: vec![
+                ExternalContextBenchmarkSource {
+                    title: "Earlier account setting".to_string(),
+                    body: "In an old conversation, the user changed a billing frequency setting.".to_string(),
+                    kind: ContextSourceKind::Chat,
+                },
+                ExternalContextBenchmarkSource {
+                    title: "Latest notification setting".to_string(),
+                    body: "Most recent conversation: the support agent changed the notification setting after several messages across sessions.".to_string(),
                     kind: ContextSourceKind::Ticket,
                 },
             ],
