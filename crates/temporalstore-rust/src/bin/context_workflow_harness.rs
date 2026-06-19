@@ -818,6 +818,42 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
                 },
             ],
         },
+        ExternalContextBenchmarkCase {
+            dataset: "locomo_style".to_string(),
+            query_id: "locomo-temporal-after-travel".to_string(),
+            query: "What did Alice decide after the airport trip conversation?".to_string(),
+            expected_terms: vec!["downtown office".to_string()],
+            sources: vec![
+                ExternalContextBenchmarkSource {
+                    title: "Airport trip discussion".to_string(),
+                    body: "Earlier session: Alice discussed an airport trip and said the airport office was convenient for the flight.".to_string(),
+                    kind: ContextSourceKind::Chat,
+                },
+                ExternalContextBenchmarkSource {
+                    title: "After travel decision".to_string(),
+                    body: "After the airport trip conversation, Alice decided to switch her work preference to the downtown office location.".to_string(),
+                    kind: ContextSourceKind::Chat,
+                },
+            ],
+        },
+        ExternalContextBenchmarkCase {
+            dataset: "longmemeval_s_style".to_string(),
+            query_id: "longmem-root-cause-after-outage".to_string(),
+            query: "Why did checkout fail after the backend outage?".to_string(),
+            expected_terms: vec!["database migration".to_string()],
+            sources: vec![
+                ExternalContextBenchmarkSource {
+                    title: "Initial outage alert".to_string(),
+                    body: "Initial incident: checkout failed and support saw payment errors while the backend service was down.".to_string(),
+                    kind: ContextSourceKind::Incident,
+                },
+                ExternalContextBenchmarkSource {
+                    title: "Root cause follow-up".to_string(),
+                    body: "Follow-up analysis: the checkout failure happened because a database migration exhausted the backend connection pool after the outage recovery.".to_string(),
+                    kind: ContextSourceKind::Ticket,
+                },
+            ],
+        },
     ]
 }
 

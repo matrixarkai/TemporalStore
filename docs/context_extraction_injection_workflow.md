@@ -197,7 +197,9 @@ multi-hop, latest/update, preference, location/workplace, problem/resolution, su
 risk/payment aliases, and boosts latest and temporal evidence so newer memory updates outrank stale
 conversational memories. The built-in external fixture includes direct update questions plus harder
 paraphrases such as "Where does Alice want to work now?" and "Which setting changed most recently
-across the conversation history?" to keep LOCOMO/LongMemEval-style hit-rate regressions visible.
+across the conversation history?", plus temporal-after and root-cause questions such as
+"What did Alice decide after the airport trip conversation?" and "Why did checkout fail after the
+backend outage?" to keep LOCOMO/LongMemEval-style hit-rate regressions visible.
 
 Remaining policy hardening:
 
