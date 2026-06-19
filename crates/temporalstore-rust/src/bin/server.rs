@@ -6,8 +6,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use temporalstore_rust::context_workflow::{
-    context_workflow_state_report, default_context_model_providers, extract_context,
-    inject_context, retrieve_context, ContextExtractRequest, ContextInjectRequest,
+    context_pipeline_manage_report, context_workflow_state_report, default_context_model_providers,
+    extract_context, ingest_extract_context, inject_context, retrieve_context,
+    ContextExtractRequest, ContextIngestExtractRequest, ContextInjectRequest,
     ContextModelProviderConfig, ContextRetrieveRequest,
 };
 use temporalstore_rust::data_node::{DataNodeLifecycleSnapshot, DataNodeTopologyValidationReport};
@@ -489,6 +490,12 @@ fn main() {
                     Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
                 }
             }
+            ("POST", "/context/ingest_extract") => {
+                match parse_json::<ContextIngestExtractRequest>(&request.body) {
+                    Ok(req) => json_response(200, &ingest_extract_context(&engine, req)),
+                    Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+                }
+            }
             ("POST", "/context/retrieve") => {
                 match parse_json::<ContextRetrieveRequest>(&request.body) {
                     Ok(req) => json_response(200, &retrieve_context(&engine, req)),
@@ -504,6 +511,7 @@ fn main() {
             ("GET", "/context/workflow/state") => {
                 json_response(200, &context_workflow_state_report())
             }
+            ("GET", "/context/manage") => json_response(200, &context_pipeline_manage_report()),
             ("GET", "/context/model/providers") => {
                 json_response(200, &default_context_model_providers())
             }

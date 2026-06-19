@@ -4,11 +4,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use temporalstore_rust::{
-    context_pipeline_parity_evidence, extract_context, inject_context, retrieve_context, Command,
-    CommandResponse, ContextExtractRequest, ContextInjectRequest, ContextModelProviderConfig,
-    ContextPipelineParityEvidence, ContextRetrieveRequest, ContextSourceKind, ContextTier,
-    ExecuteRequest, RaftCluster, RaftConfig, SharedStoreReplicator, SharedStoreStorageMode,
-    TemporalEngine,
+    context_pipeline_manage_report, context_pipeline_parity_evidence, extract_context,
+    ingest_extract_context, inject_context, retrieve_context, Command, CommandResponse,
+    ContextExtractRequest, ContextIngestExtractRequest, ContextInjectRequest,
+    ContextModelProviderConfig, ContextPipelineParityEvidence, ContextRetrieveRequest,
+    ContextSourceKind, ContextTier, ExecuteRequest, RaftCluster, RaftConfig, SharedStoreReplicator,
+    SharedStoreStorageMode, TemporalEngine,
 };
 use temporalstore_snapshot::object_store::FileObjectStore;
 
@@ -29,6 +30,13 @@ struct ContextWorkflowHarnessSummary {
     raft_read_ready: bool,
     unified_corpus_ready: bool,
     context_pipeline_ready: bool,
+    management_ready: bool,
+    ingest_extract_ready: bool,
+    retrieve_pipeline_ready: bool,
+    ingest_extract_accepted: usize,
+    ingest_extract_failed: usize,
+    managed_routes: Vec<String>,
+    pipeline_stages: Vec<String>,
     parity_evidence: Vec<String>,
 }
 
@@ -106,13 +114,83 @@ fn main() {
     let raft_read_ready = verify_raft_replay(&context_commands, &extract);
     let unified_corpus_ready = true;
     let parity = context_pipeline_parity_evidence();
+    let manage = context_pipeline_manage_report();
+    let ingest_extract = ingest_extract_context(
+        &engine,
+        ContextIngestExtractRequest {
+            shard_id: 1,
+            tenant_hash: 20260616,
+            sources: vec![
+                ContextExtractRequest {
+                    shard_id: 1,
+                    tenant_hash: 20260616,
+                    source_kind: ContextSourceKind::Incident,
+                    source_id: "mock-incident-2".to_string(),
+                    title: "Checkout retry context".to_string(),
+                    body: "Checkout retry context should be available through the managed ingest and retrieval pipeline.".to_string(),
+                    timestamp_ms: 1_500,
+                    provider: ContextModelProviderConfig::default(),
+                },
+                ContextExtractRequest {
+                    shard_id: 1,
+                    tenant_hash: 20260616,
+                    source_kind: ContextSourceKind::Ticket,
+                    source_id: "support-ticket-1".to_string(),
+                    title: "Support asks for injected context".to_string(),
+                    body: "Support needs extracted context injected with recent retrieval evidence."
+                        .to_string(),
+                    timestamp_ms: 1_750,
+                    provider: ContextModelProviderConfig::default(),
+                },
+            ],
+            query: "checkout context".to_string(),
+            start_time_ms: 0,
+            end_time_ms: 3_000,
+            max_events: 8,
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+    assert!(ingest_extract.status.ok, "{:?}", ingest_extract.status);
+    let ingest_retrieve = retrieve_context(&engine, ingest_extract.retrieve_request.clone());
+    assert!(ingest_retrieve.status.ok, "{:?}", ingest_retrieve.status);
+    let management_ready = manage.pipeline_ready
+        && manage.management_ready
+        && manage.ingestion_extraction_ready
+        && manage.retrieval_ready
+        && manage
+            .supported_routes
+            .iter()
+            .any(|route| route == "/context/manage")
+        && manage
+            .supported_routes
+            .iter()
+            .any(|route| route == "/context/ingest_extract");
+    let ingest_extract_ready = ingest_extract.accepted >= 2 && ingest_extract.failed == 0;
+    let retrieve_pipeline_ready = ingest_retrieve.blocks.len() >= 2;
     let context_pipeline_ready = parity.pipeline_ready
         && restart_replay_ready
         && shared_store_sync_ready
         && shared_store_async_ready
         && raft_read_ready
-        && unified_corpus_ready;
-    assert!(context_pipeline_ready);
+        && unified_corpus_ready
+        && management_ready
+        && ingest_extract_ready
+        && retrieve_pipeline_ready;
+    assert!(
+        context_pipeline_ready,
+        "context pipeline readiness failed: parity={} restart={} sync={} async={} raft={} corpus={} management={} ingest_extract={} retrieve={} retrieve_events={} retrieve_blocks={}",
+        parity.pipeline_ready,
+        restart_replay_ready,
+        shared_store_sync_ready,
+        shared_store_async_ready,
+        raft_read_ready,
+        unified_corpus_ready,
+        management_ready,
+        ingest_extract_ready,
+        retrieve_pipeline_ready,
+        ingest_retrieve.event_count,
+        ingest_retrieve.blocks.len()
+    );
 
     println!(
         "{}",
@@ -132,6 +210,13 @@ fn main() {
             raft_read_ready,
             unified_corpus_ready,
             context_pipeline_ready,
+            management_ready,
+            ingest_extract_ready,
+            retrieve_pipeline_ready,
+            ingest_extract_accepted: ingest_extract.accepted,
+            ingest_extract_failed: ingest_extract.failed,
+            managed_routes: manage.supported_routes,
+            pipeline_stages: manage.stages,
             parity_evidence: parity.evidence,
         })
         .expect("context workflow summary should serialize")

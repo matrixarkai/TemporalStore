@@ -209,6 +209,13 @@ def validate_context_workflow(job, summary):
     require(summary["injected_prompt_contains_context"], f"{job}: injected prompt missing context wrapper")
     require(summary["provider_name"], f"{job}: provider name missing")
     require(summary["context_pipeline_ready"], f"{job}: context pipeline parity evidence is not ready")
+    require(summary["management_ready"], f"{job}: context management report is not ready")
+    require(summary["ingest_extract_ready"], f"{job}: context ingest/extract pipeline is not ready")
+    require(summary["retrieve_pipeline_ready"], f"{job}: context retrieval pipeline handoff is not ready")
+    require(summary["ingest_extract_accepted"] > 0, f"{job}: no context ingest/extract sources were accepted")
+    require(summary["ingest_extract_failed"] == 0, f"{job}: context ingest/extract sources failed")
+    require("/context/manage" in summary["managed_routes"], f"{job}: context management route missing")
+    require("/context/ingest_extract" in summary["managed_routes"], f"{job}: context ingest/extract route missing")
     for field in [
         "restart_replay_ready",
         "shared_store_sync_ready",

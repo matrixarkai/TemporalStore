@@ -112,6 +112,39 @@ pub struct ContextExtractReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextIngestExtractRequest {
+    pub shard_id: ShardId,
+    pub tenant_hash: u64,
+    pub sources: Vec<ContextExtractRequest>,
+    #[serde(default)]
+    pub query: String,
+    pub start_time_ms: u64,
+    pub end_time_ms: u64,
+    #[serde(default = "default_retrieve_limit")]
+    pub max_events: usize,
+    #[serde(default)]
+    pub provider: ContextModelProviderConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextIngestExtractReport {
+    pub status: Status,
+    pub accepted: usize,
+    pub failed: usize,
+    pub extracts: Vec<ContextExtractReport>,
+    pub failed_sources: Vec<ContextIngestSourceFailure>,
+    pub node_hashes: Vec<u64>,
+    pub retrieve_request: ContextRetrieveRequest,
+    pub parity: ContextPipelineParityEvidence,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextIngestSourceFailure {
+    pub source_id: String,
+    pub status: Status,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContextRetrieveRequest {
     pub shard_id: ShardId,
     pub tenant_hash: u64,
@@ -181,6 +214,20 @@ pub struct ContextWorkflowStateReport {
     pub policy: ContextWorkflowPolicy,
     pub openviking_comparison: String,
     pub supported_routes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextPipelineManageReport {
+    pub status: Status,
+    pub pipeline_ready: bool,
+    pub management_ready: bool,
+    pub ingestion_extraction_ready: bool,
+    pub retrieval_ready: bool,
+    pub injection_ready: bool,
+    pub provider_count: usize,
+    pub supported_routes: Vec<String>,
+    pub stages: Vec<String>,
+    pub parity: ContextPipelineParityEvidence,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -316,12 +363,39 @@ pub fn context_workflow_state_report() -> ContextWorkflowStateReport {
                 .to_string(),
         supported_routes: vec![
             "/context/extract".to_string(),
+            "/context/ingest_extract".to_string(),
             "/context/retrieve".to_string(),
             "/context/inject".to_string(),
+            "/context/manage".to_string(),
             "/context/workflow/state".to_string(),
             "/context/model/providers".to_string(),
             "/context/model/provider".to_string(),
         ],
+    }
+}
+
+pub fn context_pipeline_manage_report() -> ContextPipelineManageReport {
+    let state = context_workflow_state_report();
+    let parity = context_pipeline_parity_evidence();
+    ContextPipelineManageReport {
+        status: Status::ok(),
+        pipeline_ready: parity.pipeline_ready,
+        management_ready: true,
+        ingestion_extraction_ready: true,
+        retrieval_ready: true,
+        injection_ready: true,
+        provider_count: state.providers.len(),
+        supported_routes: state.supported_routes,
+        stages: vec![
+            "manage".to_string(),
+            "ingest".to_string(),
+            "extract".to_string(),
+            "index".to_string(),
+            "retrieve".to_string(),
+            "inject".to_string(),
+            "audit".to_string(),
+        ],
+        parity,
     }
 }
 
@@ -524,6 +598,85 @@ pub fn extract_context(
         l0,
         l1,
         l2_ref,
+    }
+}
+
+pub fn ingest_extract_context(
+    engine: &TemporalEngine,
+    request: ContextIngestExtractRequest,
+) -> ContextIngestExtractReport {
+    let policy = ContextWorkflowPolicy::default();
+    let mut extracts = Vec::new();
+    let mut failed_sources = Vec::new();
+    let mut node_hashes = Vec::new();
+    let provider = normalize_provider(request.provider.clone());
+
+    for mut source in request.sources {
+        source.shard_id = request.shard_id;
+        source.tenant_hash = request.tenant_hash;
+        if source.provider.provider_name.is_empty() {
+            source.provider = provider.clone();
+        }
+        let policy_report = validate_context_extract_policy(&policy, &source);
+        if !policy_report.status.ok {
+            failed_sources.push(ContextIngestSourceFailure {
+                source_id: source.source_id,
+                status: policy_report.status,
+            });
+            continue;
+        }
+        let source_id = source.source_id.clone();
+        let extract = extract_context(engine, source);
+        if extract.status.ok {
+            node_hashes.push(extract.node.node_hash);
+            extracts.push(extract);
+        } else {
+            failed_sources.push(ContextIngestSourceFailure {
+                source_id,
+                status: extract.status.clone(),
+            });
+        }
+    }
+
+    node_hashes.sort_unstable();
+    node_hashes.dedup();
+    let failed = failed_sources.len();
+    let accepted = extracts.len();
+    let status = if failed == 0 {
+        Status::ok()
+    } else if accepted > 0 {
+        Status::error(
+            "partial_context_ingest_extract_failure",
+            format!("{failed} context sources failed"),
+        )
+    } else {
+        Status::error(
+            "context_ingest_extract_failed",
+            "all context sources failed ingestion/extraction",
+        )
+    };
+    let retrieve_request = ContextRetrieveRequest {
+        shard_id: request.shard_id,
+        tenant_hash: request.tenant_hash,
+        node_hashes: node_hashes.clone(),
+        query: request.query,
+        start_time_ms: request.start_time_ms,
+        end_time_ms: request.end_time_ms,
+        max_events: request.max_events,
+        min_confidence: 0.0,
+        min_importance: 0.0,
+        tiers: default_tiers(),
+    };
+
+    ContextIngestExtractReport {
+        status,
+        accepted,
+        failed,
+        extracts,
+        failed_sources,
+        node_hashes,
+        retrieve_request,
+        parity: context_pipeline_parity_evidence(),
     }
 }
 
@@ -1336,6 +1489,80 @@ mod tests {
         assert!(inject.status.ok);
         assert!(inject.injected_prompt.contains("<context>"));
         assert!(!inject.audit.selected_refs.is_empty());
+    }
+
+    // shared-corpus: context_management_ingest_retrieve_pipeline
+    #[test]
+    fn context_management_ingest_extract_builds_retrieval_pipeline() {
+        let engine = test_engine();
+        let manage = context_pipeline_manage_report();
+        assert!(manage.pipeline_ready);
+        assert!(manage.management_ready);
+        assert!(manage.ingestion_extraction_ready);
+        assert!(manage.retrieval_ready);
+        assert!(manage.injection_ready);
+        assert!(manage
+            .supported_routes
+            .contains(&"/context/ingest_extract".to_string()));
+        assert!(manage
+            .supported_routes
+            .contains(&"/context/manage".to_string()));
+        assert_eq!(
+            manage.stages,
+            vec!["manage", "ingest", "extract", "index", "retrieve", "inject", "audit"]
+        );
+
+        let ingest = ingest_extract_context(
+            &engine,
+            ContextIngestExtractRequest {
+                shard_id: 1,
+                tenant_hash: 77,
+                sources: vec![
+                    ContextExtractRequest {
+                        shard_id: 999,
+                        tenant_hash: 0,
+                        source_kind: ContextSourceKind::Incident,
+                        source_id: "INC-CTX-1".to_string(),
+                        title: "Checkout context incident".to_string(),
+                        body: "Checkout retries failed after proxy route movement.".to_string(),
+                        timestamp_ms: 1_000,
+                        provider: ContextModelProviderConfig::default(),
+                    },
+                    ContextExtractRequest {
+                        shard_id: 999,
+                        tenant_hash: 0,
+                        source_kind: ContextSourceKind::Ticket,
+                        source_id: "TICKET-CTX-1".to_string(),
+                        title: "Support context ticket".to_string(),
+                        body: "Support requested retrieval context for the checkout failure."
+                            .to_string(),
+                        timestamp_ms: 1_500,
+                        provider: ContextModelProviderConfig::default(),
+                    },
+                ],
+                query: "checkout".to_string(),
+                start_time_ms: 0,
+                end_time_ms: 3_000,
+                max_events: 4,
+                provider: ContextModelProviderConfig::default(),
+            },
+        );
+        assert!(ingest.status.ok, "{:?}", ingest.status);
+        assert_eq!(ingest.accepted, 2);
+        assert_eq!(ingest.failed, 0);
+        assert_eq!(ingest.node_hashes.len(), 2);
+        assert_eq!(ingest.retrieve_request.shard_id, 1);
+        assert_eq!(ingest.retrieve_request.tenant_hash, 77);
+        assert_eq!(ingest.retrieve_request.node_hashes, ingest.node_hashes);
+
+        let retrieve = retrieve_context(&engine, ingest.retrieve_request.clone());
+        assert!(retrieve.status.ok, "{:?}", retrieve.status);
+        assert!(retrieve.event_count >= 2);
+        assert!(retrieve
+            .blocks
+            .iter()
+            .any(|block| block.text.to_ascii_lowercase().contains("checkout")));
+        assert!(retrieve.parity.pipeline_ready);
     }
 
     #[test]

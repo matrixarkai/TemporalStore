@@ -112,6 +112,10 @@ Context:
   dirty-summary models, retrieval builds OpenViking-style L0/L1/L2 blocks, injection writes
   `ContextPackAudit`, and the same Context commands are verified through local restart,
   shared-store sync/async replay, Raft replica reads, and unified C++/Rust Context corpus evidence.
+- Context management parity now includes `GET /context/manage` and `POST /context/ingest_extract`:
+  the management report exposes provider/stage/route readiness, while batch ingest/extract accepts
+  multiple C++ Context-style sources and hands a node-hash retrieval request directly to the
+  retrieval/injection pipeline.
 
 IPS:
 

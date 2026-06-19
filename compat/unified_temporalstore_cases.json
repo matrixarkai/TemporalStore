@@ -3916,6 +3916,27 @@
           }
         }
       ]
+    },
+    {
+      "name": "context_management_ingest_retrieve_pipeline",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "context_manage_ingest_extract_retrieve_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_context_pipeline_parity",
+            "mode": "rust_executable_cxx_static",
+            "description": "Shared C++/Rust Context pipeline case for management readiness, batch ingest/extract, retrieval handoff, provider routing, and OpenViking-style Context block construction.",
+            "required_paths": [
+              "docs/context_extraction_injection_workflow.md",
+              "docs/cpp_temporalstore_api_parity.md"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust context_management_ingest_extract_builds_retrieval_pipeline -- --test-threads=1",
+            "rust_validator": "tools/run_context_workflow_local.sh"
+          }
+        }
+      ]
     }
   ]
 }
