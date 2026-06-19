@@ -926,6 +926,42 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
                 },
             ],
         },
+        ExternalContextBenchmarkCase {
+            dataset: "locomo_style".to_string(),
+            query_id: "locomo-cafe-recommendation".to_string(),
+            query: "Who recommended the cafe that Nina booked after the conference?".to_string(),
+            expected_terms: vec!["Omar".to_string()],
+            sources: vec![
+                ExternalContextBenchmarkSource {
+                    title: "Conference dinner plan".to_string(),
+                    body: "Earlier conversation: Nina wanted to book a cafe after the conference but had not chosen one yet.".to_string(),
+                    kind: ContextSourceKind::Chat,
+                },
+                ExternalContextBenchmarkSource {
+                    title: "Cafe recommendation".to_string(),
+                    body: "Later chat: Omar recommended the quiet riverside cafe, and Nina booked it after the conference.".to_string(),
+                    kind: ContextSourceKind::Chat,
+                },
+            ],
+        },
+        ExternalContextBenchmarkCase {
+            dataset: "longmemeval_s_style".to_string(),
+            query_id: "longmem-project-suggestion".to_string(),
+            query: "Which project did Lee pick because Dana suggested it during planning?".to_string(),
+            expected_terms: vec!["observability dashboard".to_string()],
+            sources: vec![
+                ExternalContextBenchmarkSource {
+                    title: "Initial planning thread".to_string(),
+                    body: "Initial planning thread: Lee considered a search cleanup project and had not chosen the final work item.".to_string(),
+                    kind: ContextSourceKind::Document,
+                },
+                ExternalContextBenchmarkSource {
+                    title: "Suggested project".to_string(),
+                    body: "Later planning note: Dana suggested the observability dashboard because the team needed better benchmark traces, so Lee picked that project.".to_string(),
+                    kind: ContextSourceKind::Ticket,
+                },
+            ],
+        },
     ]
 }
 

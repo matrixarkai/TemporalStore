@@ -2100,6 +2100,22 @@ fn context_relevance_score(query: &str, text: &str) -> u32 {
     {
         score = score.saturating_add(85);
     }
+    if context_query_requests_social_link(&base_terms)
+        && context_text_matches_any(
+            &text_lower,
+            &text_normalized,
+            &[
+                "recommended",
+                "suggested",
+                "introduced",
+                "referred",
+                "because",
+                "from",
+            ],
+        )
+    {
+        score = score.saturating_add(80);
+    }
     score
 }
 
@@ -2176,6 +2192,11 @@ fn context_query_synonyms(term: &str) -> &'static [&'static str] {
         "office" | "work" | "workplace" => &["location", "place", "job"],
         "when" | "date" | "time" => &["timeline", "temporal", "session"],
         "who" | "person" | "people" => &["user", "customer", "member"],
+        "friend" | "coworker" | "colleague" | "teammate" => &["person", "contact"],
+        "recommend" | "recommended" | "suggest" | "suggested" => {
+            &["introduced", "referred", "because"]
+        }
+        "introduced" | "referred" => &["recommended", "suggested"],
         "travel" | "trip" | "flight" => &["itinerary", "journey", "airport"],
         "remember" | "recall" | "remind" => &["mentioned", "said", "told", "note"],
         "medication" | "medicine" | "meds" | "prescription" => &["pill", "pharmacy", "doctor"],
@@ -2284,6 +2305,26 @@ fn context_query_requests_contrastive_update(terms: &[String]) -> bool {
                 | "cancel"
                 | "cancelled"
                 | "canceled"
+        )
+    })
+}
+
+fn context_query_requests_social_link(terms: &[String]) -> bool {
+    terms.iter().any(|term| {
+        matches!(
+            term.as_str(),
+            "friend"
+                | "coworker"
+                | "colleague"
+                | "teammate"
+                | "recommend"
+                | "recommended"
+                | "suggest"
+                | "suggested"
+                | "introduced"
+                | "referred"
+                | "because"
+                | "who"
         )
     })
 }
@@ -2750,6 +2791,38 @@ mod tests {
             ) > context_relevance_score(
                 "Who is the backup contact now after Sam moved teams?",
                 stale_backup
+            )
+        );
+
+        let cafe_recommendation = "Later chat: Omar recommended the quiet riverside cafe, and Nina booked it after the conference.";
+        let stale_cafe = "Earlier conversation: Nina wanted to book a cafe after the conference but had not chosen one yet.";
+        assert!(context_query_matches(
+            "Who recommended the cafe that Nina booked after the conference?",
+            cafe_recommendation
+        ));
+        assert!(
+            context_relevance_score(
+                "Who recommended the cafe that Nina booked after the conference?",
+                cafe_recommendation
+            ) > context_relevance_score(
+                "Who recommended the cafe that Nina booked after the conference?",
+                stale_cafe
+            )
+        );
+
+        let project_suggestion = "Later planning note: Dana suggested the observability dashboard because the team needed better benchmark traces, so Lee picked that project.";
+        let stale_project = "Initial planning thread: Lee considered a search cleanup project and had not chosen the final work item.";
+        assert!(context_query_matches(
+            "Which project did Lee pick because Dana suggested it during planning?",
+            project_suggestion
+        ));
+        assert!(
+            context_relevance_score(
+                "Which project did Lee pick because Dana suggested it during planning?",
+                project_suggestion
+            ) > context_relevance_score(
+                "Which project did Lee pick because Dana suggested it during planning?",
+                stale_project
             )
         );
     }
