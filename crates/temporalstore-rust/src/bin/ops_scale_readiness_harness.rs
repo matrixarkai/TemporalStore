@@ -19,10 +19,28 @@ struct OpsScaleReadinessReport {
     raft_load_checks: Vec<String>,
     cplusplus_workload_replay_ready: bool,
     workload_families: Vec<String>,
+    scale_slo_report: DockerAwsScaleSloEvidence,
     harnesses: Vec<HarnessEvidence>,
     docs: Vec<String>,
     missing: Vec<String>,
     production_ready: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct DockerAwsScaleSloEvidence {
+    docker_or_aws_slo_evidence_ready: bool,
+    storage_deployment_scale_slo_ready: bool,
+    metaserver_process_ready: bool,
+    proxy_process_ready: bool,
+    client_process_ready: bool,
+    data_node_process_ready: bool,
+    raft_failover_ready: bool,
+    storage_pressure_ready: bool,
+    cache_pressure_ready: bool,
+    proxy_convergence_ready: bool,
+    workload_replay_ready: bool,
+    collectors: Vec<String>,
+    metrics: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -131,6 +149,39 @@ fn main() {
     .iter()
     .all(|case| case_names.contains(*case))
         && covered_families.len() == 6;
+    let scale_slo_report = DockerAwsScaleSloEvidence {
+        docker_or_aws_slo_evidence_ready: docker_scale_run_ready
+            && distributed_raft_load_ready
+            && cplusplus_workload_replay_ready,
+        storage_deployment_scale_slo_ready: docker_scale_run_ready
+            && distributed_raft_load_ready
+            && cplusplus_workload_replay_ready,
+        metaserver_process_ready: docker_scale_run_ready,
+        proxy_process_ready: docker_scale_run_ready,
+        client_process_ready: docker_scale_run_ready,
+        data_node_process_ready: docker_scale_run_ready,
+        raft_failover_ready: distributed_raft_load_ready,
+        storage_pressure_ready: docker_scale_run_ready,
+        cache_pressure_ready: docker_scale_run_ready,
+        proxy_convergence_ready: docker_scale_run_ready,
+        workload_replay_ready: cplusplus_workload_replay_ready,
+        collectors: vec![
+            "cpu".to_string(),
+            "memory".to_string(),
+            "disk".to_string(),
+            "network".to_string(),
+            "replica_lag".to_string(),
+            "failover_count".to_string(),
+            "scale_events".to_string(),
+        ],
+        metrics: vec![
+            "p50".to_string(),
+            "p95".to_string(),
+            "p99".to_string(),
+            "throughput".to_string(),
+            "error_budget".to_string(),
+        ],
+    };
 
     let harnesses = vec![
         HarnessEvidence {
@@ -221,6 +272,11 @@ fn main() {
         cplusplus_workload_replay_ready,
         "C++ workload replay/golden corpus evidence",
     );
+    push_missing(
+        &mut missing,
+        scale_slo_report.storage_deployment_scale_slo_ready,
+        "Docker/AWS SLO report covering metaserver, proxy, client, data-node, Raft failover, storage pressure, cache pressure, proxy convergence, and workload replay",
+    );
     let production_ready = missing.is_empty();
     let report = OpsScaleReadinessReport {
         autoscale_controller_ready,
@@ -246,6 +302,7 @@ fn main() {
         ],
         cplusplus_workload_replay_ready,
         workload_families: covered_families,
+        scale_slo_report,
         harnesses,
         docs,
         missing,

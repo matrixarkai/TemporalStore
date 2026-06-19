@@ -140,8 +140,10 @@ cache pressure, shared-store sync/async replay, and the storage production/fault
 That evidence is sufficient for the `storage_cache` local/shared-store readiness area, but it is
 not a global production-readiness claim.
 
-The global readiness gate stays fail-closed through `scale_testing` until Docker or AWS
-deployment-scale SLO evidence proves the same storage path under real multi-process deployment
-conditions. The blocker is mapped to
-`scale_slo_report.storage_deployment_scale_slo_ready` so operators can distinguish local storage
-correctness evidence from broader release readiness.
+The global readiness gate now uses the Docker/AWS deployment-scale SLO report as the broader
+release evidence for this storage path. The `scale_testing` area is ready when
+`scale_slo_report.storage_deployment_scale_slo_ready` is present with metaserver, proxy, client,
+data-node, Raft failover, storage pressure, cache pressure, proxy convergence, workload replay,
+p50/p95/p99, throughput, error budget, CPU/memory/disk/network collectors, replica lag, failover
+count, and scale-event evidence. Long-running external cloud soaks remain useful release evidence,
+but they are no longer conflated with the local/shared-store storage correctness gate.

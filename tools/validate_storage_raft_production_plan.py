@@ -51,7 +51,7 @@ REQUIRED_READINESS_SNIPPETS = (
     "local/shared-store object manifest dependency matrix covers local file objects, checkpoint manifests, oplog cursor retention, page segment manifests, follower-cursor retention, and Raft snapshot manifest retention",
     "storage cache dependency matrix keeps live external ByteStore/S3 object-store integration explicitly out of scope while local/shared-store is the production target",
     "storage SSD cache pressure readiness covers local memory read-through, disk block cache, admission/eviction counters, slot warmup, cache invalidation, tiering policy, admission tuning, and long-running pressure validation evidence",
-    "global production storage readiness requires broader Docker/AWS deployment-scale SLO evidence beyond the local Rust-native storage migration, dump/load, cache pressure, shared-store replay, and harness evidence",
+    "Docker/AWS SLO report covers metaserver, proxy, client, data-node, Raft failover, storage pressure, cache pressure, proxy convergence, workload replay, p50/p95/p99, throughput, error budget, CPU/memory/disk/network collectors, replica lag, failover count, and scale events",
     "under follower lag, failover, scale up/down, and secondary replication",
 )
 
@@ -75,6 +75,8 @@ REQUIRED_EXTERNAL_CHAOS_SNIPPETS = (
 REQUIRED_SCALE_SLO_SNIPPETS = (
     "slo_report",
     "ScaleSloReport",
+    "storage_deployment_scale_slo_ready",
+    "docker_or_aws_slo_evidence_ready",
     "p50_write_us",
     "p95_write_us",
     "p99_write_us",

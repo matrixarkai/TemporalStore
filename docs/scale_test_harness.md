@@ -88,6 +88,13 @@ The JSON output includes:
 - `slo_report`: stable local/Docker/AWS SLO surface with write/read p50/p95/p99, throughput,
   error-budget status, replica lag, failovers, scale events, and explicit CPU/memory/disk/network
   collector placeholders
+- `slo_report.storage_deployment_scale_slo_ready`: readiness evidence that the report covers the
+  metaserver, proxy, client, data-node, Raft failover, storage pressure, cache pressure, proxy
+  convergence, and workload replay dimensions required by the production gate
+- `slo_report.{metaserver_process_ready,proxy_process_ready,client_process_ready,data_node_process_ready}`:
+  process-role evidence for Docker/local-process or AWS job runs
+- `slo_report.{raft_failover_ready,storage_pressure_ready,cache_pressure_ready,proxy_convergence_ready,workload_replay_ready}`:
+  fault and workload dimensions consumed by readiness and CI validators
 
 For `storage_async=true` parity with the C++ path, do not read
 `async_storage_enqueue_latency` as durable-storage latency. C++ `Partition::OnExecuteCmdDone`
@@ -176,6 +183,10 @@ evidence gate for ops and scale. It validates:
   secondary reads
 - unified C++/Rust workload replay corpus coverage for Feature, IPS, Risk,
   Redis, Context, and admin APIs
+- a Docker/AWS SLO report contract covering metaserver, proxy, client,
+  data-node, Raft failover, storage pressure, cache pressure, proxy convergence,
+  workload replay, p50/p95/p99, throughput, error budget, CPU/memory/disk/network
+  collectors, replica lag, failover count, and scale events
 
 Fast evidence check:
 

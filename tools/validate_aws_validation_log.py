@@ -71,6 +71,41 @@ def validate_scale(job, summary):
         "cpu_observed" in slo and "memory_observed" in slo and "disk_observed" in slo and "network_observed" in slo,
         f"{job}: SLO resource collector placeholders missing",
     )
+    for field in [
+        "docker_or_aws_slo_evidence_ready",
+        "storage_deployment_scale_slo_ready",
+        "metaserver_process_ready",
+        "proxy_process_ready",
+        "client_process_ready",
+        "data_node_process_ready",
+        "raft_failover_ready",
+        "storage_pressure_ready",
+        "cache_pressure_ready",
+        "proxy_convergence_ready",
+        "workload_replay_ready",
+    ]:
+        require(field in slo, f"{job}: SLO evidence field {field} missing")
+    require(
+        slo["storage_deployment_scale_slo_ready"],
+        f"{job}: storage deployment scale SLO evidence is false",
+    )
+    require(
+        all(
+            slo[field]
+            for field in [
+                "metaserver_process_ready",
+                "proxy_process_ready",
+                "client_process_ready",
+                "data_node_process_ready",
+                "raft_failover_ready",
+                "storage_pressure_ready",
+                "cache_pressure_ready",
+                "proxy_convergence_ready",
+                "workload_replay_ready",
+            ]
+        ),
+        f"{job}: not all SLO process/fault/workload evidence fields are true",
+    )
     require(summary["shared_store"] is not None, f"{job}: shared-store comparison missing")
     shared = summary["shared_store"]
     require(shared["sync_max_lag"] == 0, f"{job}: sync shared-store lag is non-zero")

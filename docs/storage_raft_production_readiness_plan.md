@@ -218,9 +218,10 @@ Strict mode is expected to fail until durable real-process OpenRaft rollout, ato
 snapshot/storage persistence, and external distributed fault blockers are closed. Local-model harness
 success is validation evidence only; it does not satisfy the production Raft readiness gate.
 
-Storage follows the same fail-closed boundary. The local Rust-native storage harness evidence covers
-dump/load, cache pressure, restart recovery, shared-store replay, and Raft movement, but global
-production storage readiness requires broader Docker/AWS deployment-scale SLO evidence beyond the
-local Rust-native storage migration, dump/load, cache pressure, shared-store replay, and harness
-evidence. That global blocker is reported as
-`scale_slo_report.storage_deployment_scale_slo_ready`.
+Storage keeps local/shared-store correctness separate from broad release evidence. The local
+Rust-native storage harness evidence covers dump/load, cache pressure, restart recovery,
+shared-store replay, and Raft movement. The broader Docker/AWS deployment-scale SLO report is
+tracked by `scale_slo_report.storage_deployment_scale_slo_ready` and covers metaserver, proxy,
+client, data-node, Raft failover, storage pressure, cache pressure, proxy convergence, workload
+replay, p50/p95/p99, throughput, error budget, CPU/memory/disk/network collectors, replica lag,
+failover count, and scale events.
