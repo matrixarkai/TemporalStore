@@ -51,6 +51,11 @@ struct ContextWorkflowHarnessSummary {
     provider_names: Vec<String>,
     benchmark_ready: bool,
     benchmark_profile: String,
+    benchmark_workload_signature: u64,
+    benchmark_topic_count: usize,
+    benchmark_min_sources_per_topic: usize,
+    benchmark_max_sources_per_topic: usize,
+    benchmark_source_kind_coverage_count: usize,
     benchmark_source_count: usize,
     benchmark_query_count: usize,
     benchmark_hit_at_k: f32,
@@ -77,6 +82,10 @@ struct ContextWorkflowHarnessSummary {
     benchmark_sweep_profile_count: usize,
     benchmark_sweep_total_sources: usize,
     benchmark_sweep_total_queries: usize,
+    benchmark_sweep_profile_signature_count: usize,
+    benchmark_sweep_min_sources_per_topic: usize,
+    benchmark_sweep_max_sources_per_topic: usize,
+    benchmark_sweep_min_source_kind_coverage_count: usize,
     benchmark_sweep_min_hit_at_k: f32,
     benchmark_sweep_min_mean_reciprocal_rank: f32,
     benchmark_sweep_min_token_reduction_percent: f32,
@@ -255,6 +264,11 @@ fn main() {
         && benchmark.mean_reciprocal_rank > 0.0
         && benchmark.recall_at_k >= 1.0
         && benchmark.token_reduction_percent > 0.0
+        && benchmark.workload_signature != 0
+        && benchmark.topic_count == benchmark.query_count
+        && benchmark.min_sources_per_topic > 0
+        && benchmark.max_sources_per_topic >= benchmark.min_sources_per_topic
+        && benchmark.source_kind_coverage_count >= 3
         && benchmark.ingest_sources_per_sec > 0.0
         && benchmark.retrieve_queries_per_sec > 0.0
         && benchmark.inject_queries_per_sec > 0.0
@@ -294,6 +308,10 @@ fn main() {
         && benchmark_sweep.profile_count == 2
         && benchmark_sweep.total_sources >= 48
         && benchmark_sweep.total_queries >= 6
+        && benchmark_sweep.profile_signatures.len() == benchmark_sweep.profile_count
+        && benchmark_sweep.min_sources_per_topic > 0
+        && benchmark_sweep.max_sources_per_topic >= benchmark_sweep.min_sources_per_topic
+        && benchmark_sweep.min_source_kind_coverage_count >= 3
         && benchmark_sweep.min_hit_at_k >= 1.0
         && benchmark_sweep.min_mean_reciprocal_rank > 0.0
         && benchmark_sweep.min_token_reduction_percent > 0.0
@@ -368,6 +386,11 @@ fn main() {
             provider_names: manage.provider_names,
             benchmark_ready,
             benchmark_profile: benchmark.profile,
+            benchmark_workload_signature: benchmark.workload_signature,
+            benchmark_topic_count: benchmark.topic_count,
+            benchmark_min_sources_per_topic: benchmark.min_sources_per_topic,
+            benchmark_max_sources_per_topic: benchmark.max_sources_per_topic,
+            benchmark_source_kind_coverage_count: benchmark.source_kind_coverage_count,
             benchmark_source_count: benchmark.source_count,
             benchmark_query_count: benchmark.query_count,
             benchmark_hit_at_k: benchmark.hit_at_k,
@@ -394,6 +417,11 @@ fn main() {
             benchmark_sweep_profile_count: benchmark_sweep.profile_count,
             benchmark_sweep_total_sources: benchmark_sweep.total_sources,
             benchmark_sweep_total_queries: benchmark_sweep.total_queries,
+            benchmark_sweep_profile_signature_count: benchmark_sweep.profile_signatures.len(),
+            benchmark_sweep_min_sources_per_topic: benchmark_sweep.min_sources_per_topic,
+            benchmark_sweep_max_sources_per_topic: benchmark_sweep.max_sources_per_topic,
+            benchmark_sweep_min_source_kind_coverage_count: benchmark_sweep
+                .min_source_kind_coverage_count,
             benchmark_sweep_min_hit_at_k: benchmark_sweep.min_hit_at_k,
             benchmark_sweep_min_mean_reciprocal_rank: benchmark_sweep.min_mean_reciprocal_rank,
             benchmark_sweep_min_token_reduction_percent: benchmark_sweep

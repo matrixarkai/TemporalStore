@@ -119,7 +119,8 @@ Context:
 - Context benchmark parity now includes a local VikingMem-style benchmark report for mixed
   Context sources, hit@k, MRR, recall proxy, token-reduction accounting, throughput, per-query
   evidence, retrieval/injection p50/p95 latency, retrieved/selected block and token distribution
-  metrics, explicit threshold gates/violation counts, and multi-profile sweep aggregation.
+  metrics, reproducible workload signatures, topic/source-kind coverage, explicit threshold
+  gates/violation counts, and multi-profile sweep aggregation.
 
 IPS:
 

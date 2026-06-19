@@ -183,6 +183,11 @@ pub struct ContextPipelineBenchmarkReport {
     pub status: Status,
     pub benchmark_name: String,
     pub profile: String,
+    pub workload_signature: u64,
+    pub topic_count: usize,
+    pub min_sources_per_topic: usize,
+    pub max_sources_per_topic: usize,
+    pub source_kind_coverage_count: usize,
     pub source_count: usize,
     pub query_count: usize,
     pub accepted_sources: usize,
@@ -242,6 +247,7 @@ impl Default for ContextPipelineBenchmarkThresholds {
 pub struct ContextPipelineBenchmarkQueryReport {
     pub query_id: String,
     pub expected_topic: String,
+    pub expected_topic_source_count: usize,
     pub retrieved_blocks: usize,
     pub selected_blocks: usize,
     pub selected_tokens: u32,
@@ -285,6 +291,10 @@ pub struct ContextPipelineBenchmarkSweepReport {
     pub max_inject_p95_ms: u128,
     pub total_sources: usize,
     pub total_queries: usize,
+    pub profile_signatures: Vec<u64>,
+    pub min_sources_per_topic: usize,
+    pub max_sources_per_topic: usize,
+    pub min_source_kind_coverage_count: usize,
     pub total_zero_hit_queries: usize,
     pub avg_selected_tokens_per_query: f64,
     pub all_thresholds_passed: bool,
@@ -949,11 +959,14 @@ pub fn run_context_pipeline_benchmark(
     let provider = normalize_provider(request.provider.clone());
     let mut total_source_tokens = 0u32;
     let mut sources = Vec::with_capacity(source_count);
+    let mut topic_source_counts = vec![0usize; query_count];
     for index in 0..source_count {
         let source_kind = benchmark_source_kind(index);
+        let topic_index = index % query_count;
+        topic_source_counts[topic_index] += 1;
         let body = format!(
             "VikingMem-style benchmark context item {index}: checkout incident topic {} includes user preference, service dependency, timeline evidence, retrieval hint, and follow-up action.",
-            index % query_count
+            topic_index
         );
         total_source_tokens = total_source_tokens.saturating_add(estimate_tokens(&body));
         sources.push(ContextExtractRequest {
@@ -979,7 +992,7 @@ pub fn run_context_pipeline_benchmark(
             start_time_ms: 0,
             end_time_ms: 1_000 + source_count as u64 + 1,
             max_events: request.max_events,
-            provider,
+            provider: provider.clone(),
         },
     );
     let ingest_extract_elapsed_ms = ingest_start.elapsed().as_millis();
@@ -997,6 +1010,16 @@ pub fn run_context_pipeline_benchmark(
     let mut reciprocal_rank_sum = 0.0f32;
     let mut hit_count = 0usize;
     let mut per_query = Vec::with_capacity(query_count);
+    let min_sources_per_topic = topic_source_counts
+        .iter()
+        .copied()
+        .min()
+        .unwrap_or_default();
+    let max_sources_per_topic = topic_source_counts
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or_default();
 
     for query_index in 0..query_count {
         let expected_topic = format!("topic {query_index}");
@@ -1067,6 +1090,10 @@ pub fn run_context_pipeline_benchmark(
         per_query.push(ContextPipelineBenchmarkQueryReport {
             query_id,
             expected_topic,
+            expected_topic_source_count: topic_source_counts
+                .get(query_index)
+                .copied()
+                .unwrap_or_default(),
             retrieved_blocks: retrieve.blocks.len(),
             selected_blocks: inject.selected_blocks.len(),
             selected_tokens,
@@ -1131,6 +1158,14 @@ pub fn run_context_pipeline_benchmark(
     ContextPipelineBenchmarkReport {
         status,
         benchmark_name: "vikingmem_style_context_management_local".to_string(),
+        workload_signature: stable_hash64(&format!(
+            "context-benchmark:{profile}:{source_count}:{query_count}:{}:{}",
+            request.max_events, provider.provider_name
+        )),
+        topic_count: query_count,
+        min_sources_per_topic,
+        max_sources_per_topic,
+        source_kind_coverage_count: ingest.summary.source_kind_counts.len(),
         profile,
         source_count,
         query_count,
@@ -1223,6 +1258,25 @@ pub fn run_context_pipeline_benchmark_sweep(
         .unwrap_or_default();
     let total_sources = reports.iter().map(|report| report.source_count).sum();
     let total_queries = reports.iter().map(|report| report.query_count).sum();
+    let profile_signatures = reports
+        .iter()
+        .map(|report| report.workload_signature)
+        .collect::<Vec<_>>();
+    let min_sources_per_topic = reports
+        .iter()
+        .map(|report| report.min_sources_per_topic)
+        .min()
+        .unwrap_or_default();
+    let max_sources_per_topic = reports
+        .iter()
+        .map(|report| report.max_sources_per_topic)
+        .max()
+        .unwrap_or_default();
+    let min_source_kind_coverage_count = reports
+        .iter()
+        .map(|report| report.source_kind_coverage_count)
+        .min()
+        .unwrap_or_default();
     let total_zero_hit_queries = reports.iter().map(|report| report.zero_hit_queries).sum();
     let total_selected_tokens = reports
         .iter()
@@ -1273,6 +1327,10 @@ pub fn run_context_pipeline_benchmark_sweep(
         max_inject_p95_ms,
         total_sources,
         total_queries,
+        profile_signatures,
+        min_sources_per_topic,
+        max_sources_per_topic,
+        min_source_kind_coverage_count,
         total_zero_hit_queries,
         avg_selected_tokens_per_query,
         all_thresholds_passed,
@@ -2370,6 +2428,11 @@ mod tests {
             "vikingmem_style_context_management_local"
         );
         assert_eq!(benchmark.profile, "vikingmem_unit_profile");
+        assert_ne!(benchmark.workload_signature, 0);
+        assert_eq!(benchmark.topic_count, 3);
+        assert_eq!(benchmark.min_sources_per_topic, 4);
+        assert_eq!(benchmark.max_sources_per_topic, 4);
+        assert!(benchmark.source_kind_coverage_count >= 3);
         assert_eq!(benchmark.source_count, 12);
         assert_eq!(benchmark.query_count, 3);
         assert_eq!(benchmark.accepted_sources, 12);
@@ -2385,7 +2448,9 @@ mod tests {
         assert!(benchmark
             .per_query
             .iter()
-            .all(|query| query.hit_rank.is_some() && query.reciprocal_rank > 0.0));
+            .all(|query| query.hit_rank.is_some()
+                && query.reciprocal_rank > 0.0
+                && query.expected_topic_source_count == 4));
         assert!(benchmark.recall_at_k >= 1.0);
         assert!(benchmark.token_reduction_percent > 0.0);
         assert!(benchmark.threshold_passed);
@@ -2429,6 +2494,14 @@ mod tests {
         assert!(sweep.all_profiles_ready);
         assert_eq!(sweep.total_sources, 24);
         assert_eq!(sweep.total_queries, 5);
+        assert_eq!(sweep.profile_signatures.len(), 2);
+        assert!(sweep
+            .profile_signatures
+            .iter()
+            .all(|signature| *signature != 0));
+        assert!(sweep.min_sources_per_topic > 0);
+        assert!(sweep.max_sources_per_topic >= sweep.min_sources_per_topic);
+        assert!(sweep.min_source_kind_coverage_count >= 3);
         assert_eq!(sweep.min_hit_at_k, 1.0);
         assert!(sweep.min_mean_reciprocal_rank > 0.0);
         assert!(sweep.min_token_reduction_percent > 0.0);

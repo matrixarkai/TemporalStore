@@ -140,6 +140,8 @@ workload parity or published VikingMem scores. It produces local TemporalStore e
 
 - `benchmark_source_count` and `benchmark_query_count`
 - `benchmark_profile`
+- `benchmark_workload_signature`, topic count, per-topic source coverage, and source-kind
+  coverage so local and Docker benchmark runs can prove they exercised the same workload shape
 - `benchmark_recall_at_k`
 - `benchmark_hit_at_k` and `benchmark_mean_reciprocal_rank`
 - `benchmark_token_reduction_percent`
@@ -153,7 +155,8 @@ workload parity or published VikingMem scores. It produces local TemporalStore e
 - per-query hit rank, reciprocal rank, selected-block count, token count, and latency
 - `benchmark_sweep_*` fields covering multi-profile source/query sweeps, minimum hit@k, minimum
   MRR, minimum token reduction, total source/query coverage, maximum p95 retrieval/injection
-  latency, selected-token averages, zero-hit totals, and sweep-wide threshold pass/fail evidence
+  latency, selected-token averages, zero-hit totals, profile signatures, workload coverage ranges,
+  and sweep-wide threshold pass/fail evidence
 - mixed source-kind and provider accounting through the ingest/extract summary
 
 The current local workload uses synthetic incidents, tickets, documents, chats, code snippets, and
