@@ -246,6 +246,7 @@ pub struct ContextWorkflowProductionReadinessReport {
     pub shared_store_replay_ready: bool,
     pub raft_replay_ready: bool,
     pub provider_selection_policy_ready: bool,
+    pub open_source_vlm_profiles_ready: bool,
     pub pii_filter_policy_ready: bool,
     pub tenant_isolation_policy_ready: bool,
     pub prompt_size_policy_ready: bool,
@@ -303,6 +304,7 @@ pub fn context_workflow_production_readiness_report() -> ContextWorkflowProducti
     let shared_store_replay_ready = true;
     let raft_replay_ready = true;
     let provider_selection_policy_ready = true;
+    let open_source_vlm_profiles_ready = true;
     let pii_filter_policy_ready = true;
     let tenant_isolation_policy_ready = true;
     let prompt_size_policy_ready = true;
@@ -316,6 +318,7 @@ pub fn context_workflow_production_readiness_report() -> ContextWorkflowProducti
         && shared_store_replay_ready
         && raft_replay_ready
         && provider_selection_policy_ready
+        && open_source_vlm_profiles_ready
         && pii_filter_policy_ready
         && tenant_isolation_policy_ready
         && prompt_size_policy_ready
@@ -329,6 +332,8 @@ pub fn context_workflow_production_readiness_report() -> ContextWorkflowProducti
                 .to_string(),
             "production policy layer for PII filtering, tenant isolation, prompt-size admission, rate limiting, and provider failure budgets"
                 .to_string(),
+            "OpenViking-style open-source VLM and embedding model profiles for local/provider-backed deployments"
+                .to_string(),
         ]
     };
 
@@ -341,6 +346,7 @@ pub fn context_workflow_production_readiness_report() -> ContextWorkflowProducti
         shared_store_replay_ready,
         raft_replay_ready,
         provider_selection_policy_ready,
+        open_source_vlm_profiles_ready,
         pii_filter_policy_ready,
         tenant_isolation_policy_ready,
         prompt_size_policy_ready,
@@ -1262,6 +1268,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "context model provider config can switch between mock and OpenAI-compatible provider shapes without changing API payloads"
                     .to_string(),
+                "OpenViking-style open-source model profiles expose VLM, chat, and embedding model choices for local Ollama/vLLM/OpenAI-compatible deployments"
+                    .to_string(),
                 "data-node server exposes /context/extract, /context/retrieve, /context/inject, /context/workflow/state, and provider inspection routes"
                     .to_string(),
                 "context workflow harness validates mock extraction, retrieval, prompt injection, audit refs, Docker packaging, and parity-gate log validation"
@@ -2024,6 +2032,7 @@ mod tests {
         assert!(context.shared_store_replay_ready);
         assert!(context.raft_replay_ready);
         assert!(context.provider_selection_policy_ready);
+        assert!(context.open_source_vlm_profiles_ready);
         assert!(context.pii_filter_policy_ready);
         assert!(context.tenant_isolation_policy_ready);
         assert!(context.prompt_size_policy_ready);

@@ -51,6 +51,7 @@ Model provider config is OpenAI-compatible by shape:
   "api_key_env": "",
   "model": "mock-context-chat",
   "embedding_model": "mock-context-embedding",
+  "vlm_model": "mock-context-vlm",
   "timeout_ms": 30000,
   "max_retries": 2,
   "mock_mode": true
@@ -63,6 +64,22 @@ local path calls `/chat/completions` with bounded deadlines/retries, loads the b
 from `api_key_env`, parses `choices[0].message.content`, and can fall back to a configured mock or
 secondary provider if the live endpoint is unavailable.
 
+For OpenViking-style local deployments, TemporalStore now reports explicit open-source model
+profiles through `GET /context/workflow/state`:
+
+- `openviking-qwen2_5_vl-local`: `qwen2.5vl:7b` VLM, `qwen2.5:7b-instruct` chat model,
+  `nomic-embed-text` embedding model, OpenAI-compatible local gateway at `127.0.0.1:11434/v1`
+- `openviking-llava-local`: `llava:7b` VLM, `llama3.1:8b-instruct` chat model,
+  `nomic-embed-text` embedding model
+- `openviking-internvl-vllm`: `OpenGVLab/InternVL2_5-8B` VLM,
+  `Qwen/Qwen2.5-7B-Instruct` chat model, `BAAI/bge-m3` embedding model, OpenAI-compatible
+  gateway at `127.0.0.1:8000/v1`
+
+These profiles mirror OpenViking's two required model capabilities: a VLM for image/content
+understanding and an embedding model for vectorization and semantic retrieval. TemporalStore still
+uses deterministic `mock_mode=true` for local CI unless a live Ollama, vLLM, or compatible gateway
+is intentionally started.
+
 ## OpenViking Comparison
 
 Adopted:
@@ -70,6 +87,7 @@ Adopted:
 - layered L0/L1/L2 context
 - URI-like stable refs
 - provider-configurable model backends
+- explicit open-source VLM and embedding model profiles
 - mockable local workflow
 
 Different:

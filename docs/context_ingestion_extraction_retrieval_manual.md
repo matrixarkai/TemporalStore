@@ -266,6 +266,7 @@ export CONTEXT_API_KEY='replace-with-real-key'
     "api_key_env": "CONTEXT_API_KEY",
     "model": "context-chat-model",
     "embedding_model": "context-embedding-model",
+    "vlm_model": "context-vlm-model",
     "timeout_ms": 30000,
     "max_retries": 2,
     "mock_mode": false
@@ -275,6 +276,30 @@ export CONTEXT_API_KEY='replace-with-real-key'
 
 The provider is request-scoped for extraction/injection. Do not put raw credentials in request JSON;
 only set `api_key_env`.
+
+For an OpenViking-style open-source VLM deployment, point the same OpenAI-compatible shape at a
+local gateway such as Ollama or vLLM:
+
+```json
+{
+  "provider": {
+    "provider_name": "openviking-open-source-vlm",
+    "provider_kind": "open_ai_compatible",
+    "base_url": "http://127.0.0.1:11434/v1",
+    "api_key_env": "OPENVIKING_MODEL_API_KEY",
+    "model": "qwen2.5:7b-instruct",
+    "embedding_model": "nomic-embed-text",
+    "vlm_model": "qwen2.5vl:7b",
+    "timeout_ms": 30000,
+    "max_retries": 2,
+    "mock_mode": false
+  }
+}
+```
+
+`GET /context/workflow/state` also reports ready-to-use open-source profiles for
+`qwen2.5vl:7b`, `llava:7b`, and `OpenGVLab/InternVL2_5-8B`. Use `mock_mode=true` with the same
+profile names for deterministic Docker validation when a live VLM server is not running.
 
 ## Run External LOCOMO / LongMemEval-Style Replay
 

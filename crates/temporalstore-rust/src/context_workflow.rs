@@ -58,6 +58,8 @@ pub struct ContextModelProviderConfig {
     pub model: String,
     #[serde(default = "default_embedding_model")]
     pub embedding_model: String,
+    #[serde(default = "default_vlm_model")]
+    pub vlm_model: String,
     #[serde(default = "default_timeout_ms")]
     pub timeout_ms: u64,
     #[serde(default = "default_max_retries")]
@@ -77,6 +79,7 @@ impl Default for ContextModelProviderConfig {
             api_key_env: String::new(),
             model: default_chat_model(),
             embedding_model: default_embedding_model(),
+            vlm_model: default_vlm_model(),
             timeout_ms: default_timeout_ms(),
             max_retries: default_max_retries(),
             fallback_provider: None,
@@ -377,9 +380,23 @@ pub struct ContextInjectReport {
 pub struct ContextWorkflowStateReport {
     pub status: Status,
     pub providers: Vec<ContextModelProviderConfig>,
+    pub openviking_model_profiles: Vec<ContextOpenVikingModelProfile>,
     pub policy: ContextWorkflowPolicy,
     pub openviking_comparison: String,
     pub supported_routes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextOpenVikingModelProfile {
+    pub profile_name: String,
+    pub provider_name: String,
+    pub provider_kind: ContextProviderKind,
+    pub base_url: String,
+    pub chat_model: String,
+    pub vlm_model: String,
+    pub embedding_model: String,
+    pub capabilities: Vec<String>,
+    pub notes: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -522,6 +539,20 @@ pub fn default_context_model_providers() -> Vec<ContextModelProviderConfig> {
             api_key_env: "OPENAI_API_KEY".to_string(),
             model: "local-or-commercial-chat-model".to_string(),
             embedding_model: "local-or-commercial-embedding-model".to_string(),
+            vlm_model: "local-or-commercial-vlm-model".to_string(),
+            timeout_ms: 30_000,
+            max_retries: 2,
+            fallback_provider: Some(Box::new(ContextModelProviderConfig::default())),
+            mock_mode: false,
+        },
+        ContextModelProviderConfig {
+            provider_name: "openviking-open-source-vlm".to_string(),
+            provider_kind: ContextProviderKind::OpenAiCompatible,
+            base_url: "http://127.0.0.1:11434/v1".to_string(),
+            api_key_env: "OPENVIKING_MODEL_API_KEY".to_string(),
+            model: "qwen2.5:7b-instruct".to_string(),
+            embedding_model: "nomic-embed-text".to_string(),
+            vlm_model: "qwen2.5vl:7b".to_string(),
             timeout_ms: 30_000,
             max_retries: 2,
             fallback_provider: Some(Box::new(ContextModelProviderConfig::default())),
@@ -530,10 +561,67 @@ pub fn default_context_model_providers() -> Vec<ContextModelProviderConfig> {
     ]
 }
 
+pub fn openviking_open_source_model_profiles() -> Vec<ContextOpenVikingModelProfile> {
+    vec![
+        ContextOpenVikingModelProfile {
+            profile_name: "openviking-qwen2_5_vl-local".to_string(),
+            provider_name: "openviking-open-source-vlm".to_string(),
+            provider_kind: ContextProviderKind::OpenAiCompatible,
+            base_url: "http://127.0.0.1:11434/v1".to_string(),
+            chat_model: "qwen2.5:7b-instruct".to_string(),
+            vlm_model: "qwen2.5vl:7b".to_string(),
+            embedding_model: "nomic-embed-text".to_string(),
+            capabilities: vec![
+                "vlm_image_content_understanding".to_string(),
+                "chat_context_extraction".to_string(),
+                "embedding_vectorization".to_string(),
+                "semantic_retrieval".to_string(),
+            ],
+            notes: "Recommended local OpenViking-style profile for Ollama or another OpenAI-compatible local gateway."
+                .to_string(),
+        },
+        ContextOpenVikingModelProfile {
+            profile_name: "openviking-llava-local".to_string(),
+            provider_name: "openviking-llava-vlm".to_string(),
+            provider_kind: ContextProviderKind::OpenAiCompatible,
+            base_url: "http://127.0.0.1:11434/v1".to_string(),
+            chat_model: "llama3.1:8b-instruct".to_string(),
+            vlm_model: "llava:7b".to_string(),
+            embedding_model: "nomic-embed-text".to_string(),
+            capabilities: vec![
+                "vlm_image_content_understanding".to_string(),
+                "chat_context_extraction".to_string(),
+                "embedding_vectorization".to_string(),
+                "semantic_retrieval".to_string(),
+            ],
+            notes: "Fallback local profile for LLaVA-compatible OpenAI gateway deployments."
+                .to_string(),
+        },
+        ContextOpenVikingModelProfile {
+            profile_name: "openviking-internvl-vllm".to_string(),
+            provider_name: "openviking-internvl-vlm".to_string(),
+            provider_kind: ContextProviderKind::OpenAiCompatible,
+            base_url: "http://127.0.0.1:8000/v1".to_string(),
+            chat_model: "Qwen/Qwen2.5-7B-Instruct".to_string(),
+            vlm_model: "OpenGVLab/InternVL2_5-8B".to_string(),
+            embedding_model: "BAAI/bge-m3".to_string(),
+            capabilities: vec![
+                "vlm_image_content_understanding".to_string(),
+                "chat_context_extraction".to_string(),
+                "embedding_vectorization".to_string(),
+                "semantic_retrieval".to_string(),
+            ],
+            notes: "OpenViking-style vLLM or OpenAI-compatible gateway profile for GPU deployments."
+                .to_string(),
+        },
+    ]
+}
+
 pub fn context_workflow_state_report() -> ContextWorkflowStateReport {
     ContextWorkflowStateReport {
         status: Status::ok(),
         providers: default_context_model_providers(),
+        openviking_model_profiles: openviking_open_source_model_profiles(),
         policy: ContextWorkflowPolicy::default(),
         openviking_comparison:
             "TemporalStore keeps OpenViking-style L0/L1/L2 hierarchical context, but stores it in ContextNode/Event/Index/Audit models instead of a separate viking:// filesystem."
@@ -1952,6 +2040,9 @@ fn normalize_provider(mut provider: ContextModelProviderConfig) -> ContextModelP
     if provider.embedding_model.is_empty() {
         provider.embedding_model = default_embedding_model();
     }
+    if provider.vlm_model.is_empty() {
+        provider.vlm_model = default_vlm_model();
+    }
     if provider.timeout_ms == 0 {
         provider.timeout_ms = default_timeout_ms();
     }
@@ -2664,6 +2755,10 @@ fn default_chat_model() -> String {
 
 fn default_embedding_model() -> String {
     "mock-context-embedding".to_string()
+}
+
+fn default_vlm_model() -> String {
+    "mock-context-vlm".to_string()
 }
 
 fn default_timeout_ms() -> u64 {
@@ -3444,6 +3539,37 @@ mod tests {
         assert!(report.pii_filtering_applied);
         assert!(report.sanitized_text.contains("[redacted-email]"));
         assert!(report.sanitized_text.contains("[redacted-id]"));
+    }
+
+    // shared-corpus: context_management_ingest_retrieve_pipeline
+    #[test]
+    fn context_workflow_exposes_openviking_open_source_vlm_profiles() {
+        let providers = default_context_model_providers();
+        let openviking_provider = providers
+            .iter()
+            .find(|provider| provider.provider_name == "openviking-open-source-vlm")
+            .expect("OpenViking open-source provider profile should be exposed");
+        assert_eq!(
+            openviking_provider.provider_kind,
+            ContextProviderKind::OpenAiCompatible
+        );
+        assert_eq!(openviking_provider.vlm_model, "qwen2.5vl:7b");
+        assert_eq!(openviking_provider.embedding_model, "nomic-embed-text");
+        assert_eq!(openviking_provider.base_url, "http://127.0.0.1:11434/v1");
+
+        let state = context_workflow_state_report();
+        assert!(state
+            .openviking_model_profiles
+            .iter()
+            .any(|profile| profile.vlm_model == "qwen2.5vl:7b"
+                && profile.embedding_model == "nomic-embed-text"
+                && profile
+                    .capabilities
+                    .contains(&"vlm_image_content_understanding".to_string())));
+        assert!(state
+            .openviking_model_profiles
+            .iter()
+            .any(|profile| profile.vlm_model.contains("InternVL")));
     }
 
     #[test]

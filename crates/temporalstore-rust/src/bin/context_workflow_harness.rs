@@ -8,15 +8,15 @@ use std::fs;
 use serde::Serialize;
 use serde_json::Value;
 use temporalstore_rust::{
-    context_pipeline_manage_report, context_pipeline_parity_evidence, extract_context,
-    ingest_extract_context, inject_context, retrieve_context, run_context_pipeline_benchmark,
-    run_context_pipeline_benchmark_sweep, Command, CommandResponse, ContextExtractRequest,
-    ContextIngestExtractRequest, ContextInjectRequest, ContextModelProviderConfig,
-    ContextPipelineBenchmarkRequest, ContextPipelineBenchmarkSweepProfile,
-    ContextPipelineBenchmarkSweepRequest, ContextPipelineBenchmarkThresholds,
-    ContextPipelineParityEvidence, ContextRetrieveRequest, ContextSourceKind, ContextTier,
-    ExecuteRequest, RaftCluster, RaftConfig, SharedStoreReplicator, SharedStoreStorageMode,
-    TemporalEngine,
+    context_pipeline_manage_report, context_pipeline_parity_evidence,
+    context_workflow_state_report, extract_context, ingest_extract_context, inject_context,
+    retrieve_context, run_context_pipeline_benchmark, run_context_pipeline_benchmark_sweep,
+    Command, CommandResponse, ContextExtractRequest, ContextIngestExtractRequest,
+    ContextInjectRequest, ContextModelProviderConfig, ContextPipelineBenchmarkRequest,
+    ContextPipelineBenchmarkSweepProfile, ContextPipelineBenchmarkSweepRequest,
+    ContextPipelineBenchmarkThresholds, ContextPipelineParityEvidence, ContextRetrieveRequest,
+    ContextSourceKind, ContextTier, ExecuteRequest, RaftCluster, RaftConfig, SharedStoreReplicator,
+    SharedStoreStorageMode, TemporalEngine,
 };
 use temporalstore_snapshot::object_store::FileObjectStore;
 
@@ -51,6 +51,10 @@ struct ContextWorkflowHarnessSummary {
     pipeline_stage_ready_count: usize,
     policy_controls: Vec<String>,
     provider_names: Vec<String>,
+    openviking_model_profile_count: usize,
+    openviking_model_profile_names: Vec<String>,
+    openviking_vlm_models: Vec<String>,
+    openviking_embedding_models: Vec<String>,
     benchmark_ready: bool,
     benchmark_profile: String,
     benchmark_workload_signature: u64,
@@ -223,6 +227,7 @@ fn main() {
     let unified_corpus_ready = true;
     let parity = context_pipeline_parity_evidence();
     let manage = context_pipeline_manage_report();
+    let state = context_workflow_state_report();
     let ingest_extract = ingest_extract_context(
         &engine,
         ContextIngestExtractRequest {
@@ -451,6 +456,22 @@ fn main() {
             pipeline_stages: manage.stages,
             policy_controls: manage.policy_controls,
             provider_names: manage.provider_names,
+            openviking_model_profile_count: state.openviking_model_profiles.len(),
+            openviking_model_profile_names: state
+                .openviking_model_profiles
+                .iter()
+                .map(|profile| profile.profile_name.clone())
+                .collect(),
+            openviking_vlm_models: state
+                .openviking_model_profiles
+                .iter()
+                .map(|profile| profile.vlm_model.clone())
+                .collect(),
+            openviking_embedding_models: state
+                .openviking_model_profiles
+                .iter()
+                .map(|profile| profile.embedding_model.clone())
+                .collect(),
             benchmark_ready,
             benchmark_profile: benchmark.profile,
             benchmark_workload_signature: benchmark.workload_signature,
