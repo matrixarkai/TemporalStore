@@ -75,9 +75,11 @@ C++ execution should progressively cover every executable case.
 
 ## C++ Existing-Test Parity Surface Cases
 
-These are shared corpus gates, but not full native command replay yet. They make the shared corpus
-fail if expected C++ source/test/harness surfaces disappear while Rust parity evidence still refers
-to them.
+These are shared corpus gates, but not full native C++ command replay yet. They make the shared
+corpus fail if expected C++ source/test/harness surfaces disappear while Rust parity evidence still
+refers to them. The seven `control_*` rows are now `rust_executable_cxx_static`: Rust executes the
+named shared case runners through `tools/run_control_plane_shared_cases.py`, while C++ remains a
+static source/harness surface gate until a native C++ control-plane runner is configured.
 
 | Case | Coverage |
 | --- | --- |
@@ -114,13 +116,13 @@ to them.
 | `cpp_proxy_serving_admission_parity_surfaces` | Proxy serving, heartbeat, config, HA calibration, and smoke surfaces. |
 | `cpp_metaserver_scheduler_repair_parity_surfaces` | Metaserver scheduler, repair, placement, heartbeat, and retry surfaces. |
 | `cpp_data_node_lifecycle_server_parity_surfaces` | Data-node lifecycle, heartbeat, server, and metaserver client surfaces. |
-| `control_topology_version_change` | Static surface/evidence gate for the shared client/proxy/meta topology-version change workflow. |
-| `control_stale_route_invalidation` | Static surface/evidence gate for stale route invalidation and one-refresh retry behavior. |
-| `control_proxy_admission_policy` | Static surface/evidence gate for proxy admission, drop-percent, and degraded preflight behavior. |
-| `control_readonly_write_disabled_tables` | Static surface/evidence gate for readonly/write-disabled/not-serving table policy behavior. |
-| `control_route_quarantine_recovery` | Static surface/evidence gate for backend quarantine, recovery probing, and degraded preflight behavior. |
-| `control_data_node_load_reload_unload_lifecycle` | Static surface/evidence gate for data-node load/reload/readonly/unload lifecycle behavior. |
-| `control_metaserver_scheduler_lifecycle_workflow` | Static surface/evidence gate for metaserver scheduler-issued load/reload/unload token behavior. |
+| `control_topology_version_change` | Rust-executable/C++-static gate for the shared client/proxy/meta topology-version change workflow. |
+| `control_stale_route_invalidation` | Rust-executable/C++-static gate for stale route invalidation and one-refresh retry behavior. |
+| `control_proxy_admission_policy` | Rust-executable/C++-static gate for proxy admission, drop-percent, and degraded preflight behavior. |
+| `control_readonly_write_disabled_tables` | Rust-executable/C++-static gate for readonly/write-disabled/not-serving table policy behavior. |
+| `control_route_quarantine_recovery` | Rust-executable/C++-static gate for backend quarantine, recovery probing, and degraded preflight behavior. |
+| `control_data_node_load_reload_unload_lifecycle` | Rust-executable/C++-static gate for data-node load/reload/readonly/unload lifecycle behavior. |
+| `control_metaserver_scheduler_lifecycle_workflow` | Rust-executable/C++-static gate for metaserver scheduler-issued load/reload/unload token behavior. |
 | `ingestion_kafka_offset_ledger` | Static surface/evidence gate for Kafka offset ledger, duplicate rejection, and valid-record continuation behavior. |
 | `ingestion_kafka_rebalance_backpressure` | Static surface/evidence gate for Kafka consumer-group rebalance and backpressure behavior. |
 | `ingestion_flink_checkpoint_lifecycle` | Static surface/evidence gate for Flink checkpoint precommit/commit/abort behavior. |
@@ -182,9 +184,10 @@ Those should follow the same rule:
    the shared runner fully replaces their extra assertions.
 2. Add sibling shared corpora for storage, Raft, control-plane, ingestion, and scale/fault
    scenarios when a single command/response JSON file becomes too large.
-3. Move the new control-plane shared cases from static surface validation to native C++ execution:
-   topology-version changes, stale route invalidation, proxy admission, readonly/write-disabled
-   policy, route quarantine/recovery, data-node lifecycle, and metaserver scheduler lifecycle.
+3. Move the new control-plane shared cases from Rust-executable/C++-static validation to native
+   C++ execution: topology-version changes, stale route invalidation, proxy admission,
+   readonly/write-disabled policy, route quarantine/recovery, data-node lifecycle, and metaserver
+   scheduler lifecycle.
 4. Move the new ingestion shared cases from static surface validation to native C++ execution:
    Kafka offsets, rebalance/backpressure, Flink checkpoints, dead letters, lag metrics, and
    restart idempotence.

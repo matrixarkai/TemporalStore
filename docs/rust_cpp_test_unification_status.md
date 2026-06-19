@@ -164,7 +164,9 @@ cases, explicit metaserver Raft leader/snapshot/restart and membership add/promo
 OpenRaft process-rollout evidence,
 shared control-plane cases for topology-version changes, stale route invalidation, proxy admission,
 readonly/write-disabled policy, route quarantine/recovery, data-node load/reload/unload lifecycle,
-and metaserver scheduler lifecycle,
+and metaserver scheduler lifecycle. Those control-plane cases are Rust-executable through
+`tools/run_control_plane_shared_cases.py` and still C++-static until a native C++ control-plane
+runner is configured,
 shared ingestion cases for Kafka offsets, rebalance/backpressure, Flink checkpoint lifecycle, dead
 letters, lag metrics, and restart/failover idempotence,
 Context, restart reads, missing-key semantics, timestamp bounds, current C++ storage/Raft surface
@@ -258,9 +260,9 @@ Until that exists, the honest status is:
   C++ storage/Raft required surfaces, the shared `raft_production_gate` metadata points at both
   `run_storage_raft_production_readiness.sh` and `run_raft_distributed_parity.sh`, and C++
   client/proxy/metaserver/data-node control-plane required surfaces.
-- The control-plane and ingestion cases in the shared corpus are still `existing_test` static
-  surface/evidence gates on the C++ side, not native C++ workflow execution. Rust has the executable
-  evidence and readiness validators for those gates today.
+- The control-plane cases in the shared corpus are now Rust-executable `existing_test` gates and
+  still static surface/evidence gates on the C++ side. Ingestion cases remain static
+  surface/evidence gates with Rust evidence, not native C++ workflow execution.
 - 540 Rust-attributed tests remain local or partially local. The product-behavior portion should be progressively
   converted into Rust-owned shared corpus cases; only implementation-internal tests should remain
   Rust-specific.

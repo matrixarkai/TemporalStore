@@ -114,6 +114,7 @@ That gate unifies the existing local checks instead of replacing them:
 - unit/API compatibility: `temporalstore_compat`
 - API contract: `validate_sdk_contract.py`
 - shared Rust/C++ corpus: `tools/run_temporalstore_unified_tests.sh`
+- shared control-plane case runners: `tools/run_control_plane_shared_cases.py --rust`
 - Raft/storage evidence: `tools/validate_raft_storage_parity_evidence.py`
 - storage/Raft production order: `tools/validate_storage_raft_production_plan.py`
 - control-plane evidence: `tools/validate_control_plane_parity_evidence.py`
