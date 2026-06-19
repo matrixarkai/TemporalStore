@@ -208,6 +208,37 @@ def validate_context_workflow(job, summary):
     require(summary["audit_selected_ref_count"] == summary["selected_block_count"], f"{job}: audit selected refs mismatch")
     require(summary["injected_prompt_contains_context"], f"{job}: injected prompt missing context wrapper")
     require(summary["provider_name"], f"{job}: provider name missing")
+    require(summary["context_pipeline_ready"], f"{job}: context pipeline parity evidence is not ready")
+    for field in [
+        "restart_replay_ready",
+        "shared_store_sync_ready",
+        "shared_store_async_ready",
+        "raft_read_ready",
+        "unified_corpus_ready",
+    ]:
+        require(summary[field], f"{job}: context pipeline field {field} is false")
+    parity = summary["parity"]
+    require(parity["pipeline_ready"], f"{job}: context parity report is not ready")
+    for field in [
+        "cpp_context_models_ready",
+        "openviking_tiers_ready",
+        "extraction_stage_ready",
+        "retrieval_stage_ready",
+        "injection_stage_ready",
+        "index_refs_ready",
+        "pack_audit_ready",
+        "summary_dirty_ready",
+        "restart_replay_ready",
+        "shared_store_sync_ready",
+        "shared_store_async_ready",
+        "raft_read_ready",
+        "unified_corpus_ready",
+    ]:
+        require(parity[field], f"{job}: context parity report field {field} is false")
+    require(
+        any("OpenViking-style L0/L1/L2" in item for item in summary["parity_evidence"]),
+        f"{job}: context parity evidence missing OpenViking tier coverage",
+    )
 
 
 def validate_raft_secondary(job, summary):

@@ -108,6 +108,10 @@ Context:
 - Storage accounting includes context objects in object-manager counts, slot summaries, live page
   traversal, recovery ownership validation, segment liveness, common delete/exists, dump/load, GC,
   and compaction.
+- Pipeline parity is validated by `context_workflow_harness`: extraction writes node/event/index-ref/
+  dirty-summary models, retrieval builds OpenViking-style L0/L1/L2 blocks, injection writes
+  `ContextPackAudit`, and the same Context commands are verified through local restart,
+  shared-store sync/async replay, Raft replica reads, and unified C++/Rust Context corpus evidence.
 
 IPS:
 

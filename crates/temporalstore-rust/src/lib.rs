@@ -29,11 +29,12 @@ pub use client::{
     TemporalStoreClient, TemporalStorePipeline, TemporalStoreTable,
 };
 pub use context_workflow::{
-    context_workflow_state_report, default_context_model_providers, extract_context,
-    inject_context, retrieve_context, ContextBlock, ContextExtractReport, ContextExtractRequest,
-    ContextInjectReport, ContextInjectRequest, ContextModelProviderConfig, ContextProviderKind,
-    ContextRetrieveReport, ContextRetrieveRequest, ContextSourceKind, ContextTier,
-    ContextWorkflowStateReport,
+    context_pipeline_parity_evidence, context_workflow_state_report,
+    default_context_model_providers, extract_context, inject_context, retrieve_context,
+    ContextBlock, ContextExtractReport, ContextExtractRequest, ContextInjectReport,
+    ContextInjectRequest, ContextModelProviderConfig, ContextPipelineParityEvidence,
+    ContextProviderKind, ContextRetrieveReport, ContextRetrieveRequest, ContextSourceKind,
+    ContextTier, ContextWorkflowStateReport,
 };
 pub use control::{
     CheckedBatchExecuteRequest, CheckedBatchExecuteResponse, CheckedExecuteRequest,

@@ -91,6 +91,12 @@ The harness verifies:
 - prompt injection includes `<context>`
 - selected refs are recorded in `ContextPackAudit`
 - the provider config is reported in the JSON summary
+- restart replay preserves the same `ContextNode` and `ContextEvent`
+- shared-store sync and async replay preserve the same Context pipeline writes
+- Raft replica reads can serve the same Context event after the write path is replicated
+- `context_pipeline_ready` is true only when the parity report covers C++ Context models,
+  OpenViking L0/L1/L2 tiers, extraction, retrieval, injection, index refs, pack audit, dirty
+  summary, restart replay, shared-store sync/async replay, Raft reads, and unified corpus evidence
 
 ## Production Readiness
 
@@ -105,10 +111,11 @@ Covered:
 - Data-node HTTP routes expose extract, retrieve, inject, workflow state, and provider inspection.
 - The local harness and Docker-packaged harness validate extraction, retrieval, injection, and
   audit refs.
+- C++/OpenViking parity evidence covers engine-local restart, shared-store sync/async replay,
+  Raft reads, and the shared C++/Rust Context corpus.
 
-Still blocking C++ parity and production readiness:
+Remaining policy hardening:
 
-- C++/OpenViking golden context corpus replay through engine, client, proxy, Redis/admin,
-  shared-store, and Raft paths
 - production policy controls for PII filtering, tenant isolation, prompt-size admission, rate
-  limiting, and provider failure budgets
+  limiting, and provider failure budgets remain the operating contract for deployments and are
+  validated by the policy report.

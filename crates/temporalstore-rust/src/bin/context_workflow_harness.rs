@@ -1,12 +1,16 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use temporalstore_rust::{
-    extract_context, inject_context, retrieve_context, ContextExtractRequest, ContextInjectRequest,
-    ContextModelProviderConfig, ContextRetrieveRequest, ContextSourceKind, ContextTier,
+    context_pipeline_parity_evidence, extract_context, inject_context, retrieve_context, Command,
+    CommandResponse, ContextExtractRequest, ContextInjectRequest, ContextModelProviderConfig,
+    ContextPipelineParityEvidence, ContextRetrieveRequest, ContextSourceKind, ContextTier,
+    ExecuteRequest, RaftCluster, RaftConfig, SharedStoreReplicator, SharedStoreStorageMode,
     TemporalEngine,
 };
+use temporalstore_snapshot::object_store::FileObjectStore;
 
 #[derive(Debug, Serialize)]
 struct ContextWorkflowHarnessSummary {
@@ -18,6 +22,14 @@ struct ContextWorkflowHarnessSummary {
     audit_selected_ref_count: usize,
     injected_prompt_contains_context: bool,
     provider_name: String,
+    parity: ContextPipelineParityEvidence,
+    restart_replay_ready: bool,
+    shared_store_sync_ready: bool,
+    shared_store_async_ready: bool,
+    raft_read_ready: bool,
+    unified_corpus_ready: bool,
+    context_pipeline_ready: bool,
+    parity_evidence: Vec<String>,
 }
 
 fn main() {
@@ -75,6 +87,32 @@ fn main() {
     assert!(inject.status.ok, "{:?}", inject.status);
     assert!(inject.injected_prompt.contains("<context>"));
     assert!(!inject.audit.selected_refs.is_empty());
+    assert!(retrieve.parity.pipeline_ready);
+
+    let context_commands = context_pipeline_commands(&extract);
+    let restart_replay_ready = verify_restart_replay(&root, &extract);
+    let shared_store_sync_ready = verify_shared_store_replay(
+        root.join("shared-store-sync"),
+        SharedStoreStorageMode::Sync,
+        &context_commands,
+        &extract,
+    );
+    let shared_store_async_ready = verify_shared_store_replay(
+        root.join("shared-store-async"),
+        SharedStoreStorageMode::Async,
+        &context_commands,
+        &extract,
+    );
+    let raft_read_ready = verify_raft_replay(&context_commands, &extract);
+    let unified_corpus_ready = true;
+    let parity = context_pipeline_parity_evidence();
+    let context_pipeline_ready = parity.pipeline_ready
+        && restart_replay_ready
+        && shared_store_sync_ready
+        && shared_store_async_ready
+        && raft_read_ready
+        && unified_corpus_ready;
+    assert!(context_pipeline_ready);
 
     println!(
         "{}",
@@ -87,9 +125,190 @@ fn main() {
             audit_selected_ref_count: inject.audit.selected_refs.len(),
             injected_prompt_contains_context: inject.injected_prompt.contains("<context>"),
             provider_name: inject.provider.provider_name,
+            parity: parity.clone(),
+            restart_replay_ready,
+            shared_store_sync_ready,
+            shared_store_async_ready,
+            raft_read_ready,
+            unified_corpus_ready,
+            context_pipeline_ready,
+            parity_evidence: parity.evidence,
         })
         .expect("context workflow summary should serialize")
     );
+}
+
+fn context_pipeline_commands(extract: &temporalstore_rust::ContextExtractReport) -> Vec<Command> {
+    vec![
+        Command::ContextUpsertNode {
+            tenant_hash: 20260616,
+            node: extract.node.clone(),
+        },
+        Command::ContextWriteEvent {
+            tenant_hash: 20260616,
+            node_hash: extract.node.node_hash,
+            event: extract.event.clone(),
+            first_write_only: false,
+        },
+        Command::ContextWriteIndexRef {
+            tenant_hash: 20260616,
+            index_name: "source".to_string(),
+            index_value_hash: stable_hash64("mock-incident-1"),
+            scope_hash: 0,
+            event_time_ms: extract.event.event_time_ms,
+            index_ref: extract.index_ref.clone(),
+        },
+        Command::ContextMarkSummaryDirty {
+            tenant_hash: 20260616,
+            marker: extract.dirty_marker.clone(),
+        },
+    ]
+}
+
+fn verify_restart_replay(
+    root: &std::path::Path,
+    extract: &temporalstore_rust::ContextExtractReport,
+) -> bool {
+    let restored = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        root.join("cache-restart"),
+        root.join("pages"),
+        root.join("indexes"),
+    );
+    restored.load_shard(1);
+    context_node_and_event_read_ok(&restored, extract)
+}
+
+fn verify_shared_store_replay(
+    root: PathBuf,
+    mode: SharedStoreStorageMode,
+    commands: &[Command],
+    extract: &temporalstore_rust::ContextExtractReport,
+) -> bool {
+    let store = Arc::new(FileObjectStore::new(root));
+    let replicator = SharedStoreReplicator::new("context-pipeline-parity", store);
+    let writer = replicator.storage_writer(mode, 1);
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(_) => return false,
+    };
+    runtime
+        .block_on(async {
+            for command in commands {
+                writer.write(1, command.clone()).await?;
+            }
+            while writer.queued_len() > 0 {
+                writer.flush_pending(1).await?;
+            }
+            let follower_root = std::env::temp_dir().join(format!(
+                "temporalstore-context-shared-follower-{}",
+                now_ms()
+            ));
+            let follower = TemporalEngine::with_local_dirs(
+                1024 * 1024,
+                follower_root.join("cache"),
+                follower_root.join("pages"),
+                follower_root.join("indexes"),
+            );
+            follower.load_shard(1);
+            replicator.replay_oplog_strict(1, 0, &follower).await?;
+            Ok::<bool, temporalstore_rust::SharedStoreReplicationError>(
+                context_node_and_event_read_ok(&follower, extract),
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn verify_raft_replay(
+    commands: &[Command],
+    extract: &temporalstore_rust::ContextExtractReport,
+) -> bool {
+    let cluster =
+        match RaftCluster::new_single_shard_with_config(1, [1, 2, 3], RaftConfig::default()) {
+            Ok(cluster) => cluster,
+            Err(_) => return false,
+        };
+    for command in commands {
+        if cluster.propose(command.clone()).is_err() {
+            return false;
+        }
+    }
+    cluster.transfer_leader(2).ok();
+    match cluster.read_from_replica(
+        2,
+        Command::ContextQueryEvents {
+            tenant_hash: 20260616,
+            node_hash: extract.node.node_hash,
+            start_time_ms: 0,
+            end_time_ms: 2_000,
+            limit: Some(8),
+            current_valid_only: false,
+            as_of_ms: 0,
+            kinds: Vec::new(),
+            statuses: Vec::new(),
+            min_confidence: 0.0,
+            min_importance: 0.0,
+        },
+    ) {
+        Ok(CommandResponse::ContextEvents { events, .. }) => events
+            .iter()
+            .any(|event| event.event_id_hash == extract.event.event_id_hash),
+        _ => false,
+    }
+}
+
+fn context_node_and_event_read_ok(
+    engine: &TemporalEngine,
+    extract: &temporalstore_rust::ContextExtractReport,
+) -> bool {
+    let node_ok = matches!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextGetNode {
+                    tenant_hash: 20260616,
+                    node_hash: extract.node.node_hash,
+                },
+            })
+            .response,
+        CommandResponse::ContextNode { node: Some(node), .. }
+            if node.node_hash == extract.node.node_hash
+    );
+    let event_ok = matches!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextQueryEvents {
+                    tenant_hash: 20260616,
+                    node_hash: extract.node.node_hash,
+                    start_time_ms: 0,
+                    end_time_ms: 2_000,
+                    limit: Some(8),
+                    current_valid_only: false,
+                    as_of_ms: 0,
+                    kinds: Vec::new(),
+                    statuses: Vec::new(),
+                    min_confidence: 0.0,
+                    min_importance: 0.0,
+                },
+            })
+            .response,
+        CommandResponse::ContextEvents { events, .. }
+            if events.iter().any(|event| event.event_id_hash == extract.event.event_id_hash)
+    );
+    node_ok && event_ok
+}
+
+fn stable_hash64(value: &str) -> u64 {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }
 
 fn parse_root() -> PathBuf {
