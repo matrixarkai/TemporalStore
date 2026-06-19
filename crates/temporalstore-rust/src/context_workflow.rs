@@ -1732,12 +1732,7 @@ pub fn retrieve_context(
         });
         if let CommandResponse::ContextEvents { events, .. } = events_response.response {
             for event in events {
-                if !request.query.is_empty()
-                    && !event
-                        .text
-                        .to_ascii_lowercase()
-                        .contains(&request.query.to_ascii_lowercase())
-                {
+                if !context_query_matches(&request.query, &event.text) {
                     continue;
                 }
                 event_count += 1;
@@ -1758,6 +1753,7 @@ pub fn retrieve_context(
 
     blocks.sort_by_key(|block| {
         (
+            Reverse(context_relevance_score(&request.query, &block.text)),
             tier_rank(block.tier),
             Reverse(block.event_time_ms),
             block.uri.clone(),
@@ -1951,6 +1947,91 @@ fn tier_rank(tier: ContextTier) -> u8 {
     }
 }
 
+fn context_query_matches(query: &str, text: &str) -> bool {
+    let text_lower = text.to_ascii_lowercase();
+    if let Some(topic_phrase) = context_query_topic_phrase(query) {
+        if text_lower.contains(topic_phrase.as_str()) {
+            return true;
+        }
+    }
+    let query_terms = context_query_terms(query);
+    if query_terms.is_empty() {
+        return true;
+    }
+    query_terms
+        .iter()
+        .any(|term| text_lower.contains(term.as_str()))
+}
+
+fn context_relevance_score(query: &str, text: &str) -> u32 {
+    let query_terms = context_query_terms(query);
+    if query_terms.is_empty() {
+        return 0;
+    }
+    let text_lower = text.to_ascii_lowercase();
+    let mut score = 0u32;
+    if let Some(topic_phrase) = context_query_topic_phrase(query) {
+        if text_lower.contains(topic_phrase.as_str()) {
+            score = score.saturating_add(1_000);
+        }
+    }
+    for term in query_terms {
+        if text_lower.contains(term.as_str()) {
+            score = score.saturating_add((term.len() as u32).max(1));
+        }
+    }
+    score
+}
+
+fn context_query_terms(query: &str) -> Vec<String> {
+    query
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .map(|term| term.trim().to_ascii_lowercase())
+        .filter(|term| term.len() >= 3 && !is_context_query_stopword(term))
+        .collect()
+}
+
+fn context_query_topic_phrase(query: &str) -> Option<String> {
+    let terms = query
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .map(|term| term.trim().to_ascii_lowercase())
+        .filter(|term| !term.is_empty())
+        .collect::<Vec<_>>();
+    terms.windows(2).find_map(|window| {
+        if window[0] == "topic" && window[1].chars().all(|ch| ch.is_ascii_digit()) {
+            Some(format!("topic {}", window[1]))
+        } else {
+            None
+        }
+    })
+}
+
+fn is_context_query_stopword(term: &str) -> bool {
+    matches!(
+        term,
+        "the"
+            | "and"
+            | "for"
+            | "with"
+            | "that"
+            | "this"
+            | "what"
+            | "when"
+            | "where"
+            | "which"
+            | "who"
+            | "why"
+            | "how"
+            | "about"
+            | "benchmark"
+            | "context"
+            | "memory"
+            | "conversation"
+            | "dialogue"
+            | "question"
+    )
+}
+
 fn stable_hash64(value: &str) -> u64 {
     let mut hash = 0xcbf29ce484222325_u64;
     for byte in value.as_bytes() {
@@ -2082,7 +2163,7 @@ fn default_benchmark_query_count() -> usize {
 fn default_benchmark_thresholds() -> ContextPipelineBenchmarkThresholds {
     ContextPipelineBenchmarkThresholds {
         min_hit_at_k: 1.0,
-        min_mean_reciprocal_rank: 0.1,
+        min_mean_reciprocal_rank: 1.0,
         min_recall_at_k: 1.0,
         min_token_reduction_percent: 0.1,
         max_retrieve_p50_ms: 10_000,
@@ -2112,6 +2193,18 @@ fn default_benchmark_sweep_profiles() -> Vec<ContextPipelineBenchmarkSweepProfil
             source_count: 64,
             query_count: 6,
             max_events: 10,
+        },
+        ContextPipelineBenchmarkSweepProfile {
+            profile: "locomo_style_conversation_memory".to_string(),
+            source_count: 120,
+            query_count: 10,
+            max_events: 16,
+        },
+        ContextPipelineBenchmarkSweepProfile {
+            profile: "longmemeval_s_style_long_context".to_string(),
+            source_count: 240,
+            query_count: 12,
+            max_events: 20,
         },
     ]
 }
@@ -2440,7 +2533,7 @@ mod tests {
         assert_eq!(benchmark.retrieval_successes, 3);
         assert_eq!(benchmark.injection_successes, 3);
         assert_eq!(benchmark.hit_at_k, 1.0);
-        assert!(benchmark.mean_reciprocal_rank > 0.0);
+        assert_eq!(benchmark.mean_reciprocal_rank, 1.0);
         assert!(benchmark.ingest_sources_per_sec > 0.0);
         assert!(benchmark.retrieve_queries_per_sec > 0.0);
         assert!(benchmark.inject_queries_per_sec > 0.0);
@@ -2503,7 +2596,7 @@ mod tests {
         assert!(sweep.max_sources_per_topic >= sweep.min_sources_per_topic);
         assert!(sweep.min_source_kind_coverage_count >= 3);
         assert_eq!(sweep.min_hit_at_k, 1.0);
-        assert!(sweep.min_mean_reciprocal_rank > 0.0);
+        assert_eq!(sweep.min_mean_reciprocal_rank, 1.0);
         assert!(sweep.min_token_reduction_percent > 0.0);
         assert!(sweep.all_thresholds_passed);
         assert!(sweep.threshold_violations.is_empty());

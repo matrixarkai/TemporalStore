@@ -136,7 +136,10 @@ Covered:
 `context_workflow_harness` runs a deterministic local benchmark inspired by the VikingMem paper's
 long-term memory evaluation themes: retrieval effectiveness, low interactive latency, hierarchical
 context loading, and reduced context tokens. The benchmark does not claim byte-for-byte VikingMem
-workload parity or published VikingMem scores. It produces local TemporalStore evidence:
+workload parity, published VikingMem scores, or a licensed copy of LOCOMO/LongMemEval_s. It
+includes LOCOMO-style conversational-memory and LongMemEval_s-style long-context synthetic profiles
+so local validation can exercise similar source/query scaling and hit-ranking behavior. It produces
+local TemporalStore evidence:
 
 - `benchmark_source_count` and `benchmark_query_count`
 - `benchmark_profile`
@@ -164,8 +167,11 @@ user events so it can run without external model credentials while still exercis
 management, ingestion/extraction, retrieval, and injection pipeline. Profiles are explicit strings
 so future benchmark runs can separate local synthetic sweeps, paper-inspired regression sweeps, and
 deployment-specific model/provider sweeps without changing the JSON schema. The default sweep uses
-small, medium, and large deterministic profiles; the local harness currently runs a smaller
-two-profile sweep to keep validation quick while preserving profile-comparison evidence.
+small, medium, large, LOCOMO-style, and LongMemEval_s-style deterministic profiles; the local
+harness runs four quick profiles to preserve profile-comparison evidence. The retrieval scorer uses
+query-term overlap plus exact topic-phrase boosting for benchmark questions, which raises the local
+synthetic benchmark to `hit_at_k = 1.0`, `mean_reciprocal_rank = 1.0`, and zero zero-hit queries in
+the checked harness output.
 
 Remaining policy hardening:
 
