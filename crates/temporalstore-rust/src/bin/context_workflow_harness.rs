@@ -105,6 +105,9 @@ struct ContextWorkflowHarnessSummary {
     external_benchmark_case_count: usize,
     external_benchmark_hit_at_k: f32,
     external_benchmark_mean_reciprocal_rank: f32,
+    external_benchmark_answer_term_coverage: f32,
+    external_benchmark_missing_expected_terms: usize,
+    external_benchmark_all_expected_terms_matched: bool,
     external_benchmark_zero_hit_queries: usize,
     external_benchmark_category_count: usize,
     external_benchmark_category_breakdown: BTreeMap<String, ExternalContextBenchmarkCategoryReport>,
@@ -123,6 +126,9 @@ struct ExternalContextBenchmarkReport {
     case_count: usize,
     hit_at_k: f32,
     mean_reciprocal_rank: f32,
+    answer_term_coverage: f32,
+    missing_expected_terms: usize,
+    all_expected_terms_matched: bool,
     zero_hit_queries: usize,
     category_breakdown: BTreeMap<String, ExternalContextBenchmarkCategoryReport>,
     all_categories_passed: bool,
@@ -137,6 +143,8 @@ struct ExternalContextBenchmarkCategoryReport {
     case_count: usize,
     hit_at_k: f32,
     mean_reciprocal_rank: f32,
+    answer_term_coverage: f32,
+    missing_expected_terms: usize,
     zero_hit_queries: usize,
 }
 
@@ -502,6 +510,10 @@ fn main() {
             external_benchmark_case_count: external_benchmark.case_count,
             external_benchmark_hit_at_k: external_benchmark.hit_at_k,
             external_benchmark_mean_reciprocal_rank: external_benchmark.mean_reciprocal_rank,
+            external_benchmark_answer_term_coverage: external_benchmark.answer_term_coverage,
+            external_benchmark_missing_expected_terms: external_benchmark.missing_expected_terms,
+            external_benchmark_all_expected_terms_matched: external_benchmark
+                .all_expected_terms_matched,
             external_benchmark_zero_hit_queries: external_benchmark.zero_hit_queries,
             external_benchmark_category_count: external_benchmark.category_breakdown.len(),
             external_benchmark_category_breakdown: external_benchmark.category_breakdown,
@@ -540,6 +552,9 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
             case_count: 0,
             hit_at_k: 0.0,
             mean_reciprocal_rank: 0.0,
+            answer_term_coverage: 0.0,
+            missing_expected_terms: 0,
+            all_expected_terms_matched: false,
             zero_hit_queries: 0,
             category_breakdown: BTreeMap::new(),
             all_categories_passed: false,
@@ -556,11 +571,19 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
     let mut category_counts = BTreeMap::<String, usize>::new();
     let mut category_hits = BTreeMap::<String, usize>::new();
     let mut category_reciprocal_rank_sums = BTreeMap::<String, f32>::new();
+    let mut total_expected_terms = 0usize;
+    let mut matched_expected_terms = 0usize;
+    let mut category_expected_terms = BTreeMap::<String, usize>::new();
+    let mut category_matched_expected_terms = BTreeMap::<String, usize>::new();
     for (index, case) in cases.iter().enumerate() {
         *dataset_counts.entry(case.dataset.clone()).or_insert(0usize) += 1;
         *category_counts
             .entry(case.category.clone())
             .or_insert(0usize) += 1;
+        *category_expected_terms
+            .entry(case.category.clone())
+            .or_insert(0usize) += case.expected_terms.len();
+        total_expected_terms += case.expected_terms.len();
         let tenant_hash = 20260701 + index as u64;
         let sources = case
             .sources
@@ -619,6 +642,11 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
                     .any(|term| benchmark_text_matches(&block_text, &block_normalized, term))
             })
             .map(|rank| rank + 1);
+        let matched_terms = count_matched_expected_terms(&retrieve.blocks, &case.expected_terms);
+        matched_expected_terms += matched_terms;
+        *category_matched_expected_terms
+            .entry(case.category.clone())
+            .or_insert(0usize) += matched_terms;
         if let Some(rank) = hit_rank {
             hit_count += 1;
             let reciprocal_rank = 1.0 / rank as f32;
@@ -632,6 +660,13 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
     let case_count = cases.len();
     let hit_at_k = hit_count as f32 / case_count as f32;
     let mean_reciprocal_rank = reciprocal_rank_sum / case_count as f32;
+    let answer_term_coverage = if total_expected_terms == 0 {
+        0.0
+    } else {
+        matched_expected_terms as f32 / total_expected_terms as f32
+    };
+    let missing_expected_terms = total_expected_terms.saturating_sub(matched_expected_terms);
+    let all_expected_terms_matched = total_expected_terms > 0 && missing_expected_terms == 0;
     let category_breakdown = category_counts
         .into_iter()
         .map(|(category, category_case_count)| {
@@ -640,12 +675,28 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
                 .get(&category)
                 .copied()
                 .unwrap_or_default();
+            let category_expected_term_count = category_expected_terms
+                .get(&category)
+                .copied()
+                .unwrap_or_default();
+            let category_matched_term_count = category_matched_expected_terms
+                .get(&category)
+                .copied()
+                .unwrap_or_default();
+            let category_missing_terms =
+                category_expected_term_count.saturating_sub(category_matched_term_count);
             (
                 category,
                 ExternalContextBenchmarkCategoryReport {
                     case_count: category_case_count,
                     hit_at_k: category_hit_count as f32 / category_case_count as f32,
                     mean_reciprocal_rank: category_reciprocal_rank_sum / category_case_count as f32,
+                    answer_term_coverage: if category_expected_term_count == 0 {
+                        0.0
+                    } else {
+                        category_matched_term_count as f32 / category_expected_term_count as f32
+                    },
+                    missing_expected_terms: category_missing_terms,
                     zero_hit_queries: category_case_count.saturating_sub(category_hit_count),
                 },
             )
@@ -663,16 +714,27 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
         .values()
         .map(|category| category.zero_hit_queries)
         .sum::<usize>();
+    let category_missing_expected_terms = category_breakdown
+        .values()
+        .map(|category| category.missing_expected_terms)
+        .sum::<usize>();
     let all_categories_passed = !category_breakdown.is_empty()
         && min_category_hit_at_k >= 1.0
         && min_category_mean_reciprocal_rank >= 1.0
-        && category_zero_hit_queries == 0;
+        && category_zero_hit_queries == 0
+        && category_missing_expected_terms == 0;
     ExternalContextBenchmarkReport {
-        ready: hit_count == case_count && mean_reciprocal_rank >= 1.0 && all_categories_passed,
+        ready: hit_count == case_count
+            && mean_reciprocal_rank >= 1.0
+            && all_expected_terms_matched
+            && all_categories_passed,
         dataset: dataset_counts.keys().cloned().collect::<Vec<_>>().join("+"),
         case_count,
         hit_at_k,
         mean_reciprocal_rank,
+        answer_term_coverage,
+        missing_expected_terms,
+        all_expected_terms_matched,
         zero_hit_queries: case_count.saturating_sub(hit_count),
         category_breakdown,
         all_categories_passed,
@@ -869,6 +931,22 @@ fn benchmark_text_matches(text_lower: &str, text_normalized: &str, term: &str) -
     !normalized_term.is_empty() && text_normalized.contains(normalized_term)
 }
 
+fn count_matched_expected_terms(
+    blocks: &[temporalstore_rust::ContextBlock],
+    terms: &[String],
+) -> usize {
+    terms
+        .iter()
+        .filter(|term| {
+            blocks.iter().any(|block| {
+                let block_text = block.text.to_ascii_lowercase();
+                let block_normalized = normalize_benchmark_text(&block.text);
+                benchmark_text_matches(&block_text, &block_normalized, term)
+            })
+        })
+        .count()
+}
+
 fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCase> {
     vec![
         ExternalContextBenchmarkCase {
@@ -971,7 +1049,10 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
             query_id: "longmem-root-cause-after-outage".to_string(),
             category: infer_external_benchmark_category("longmem-root-cause-after-outage"),
             query: "Why did checkout fail after the backend outage?".to_string(),
-            expected_terms: vec!["database migration".to_string()],
+            expected_terms: vec![
+                "database migration".to_string(),
+                "backend connection pool".to_string(),
+            ],
             sources: vec![
                 ExternalContextBenchmarkSource {
                     title: "Initial outage alert".to_string(),
@@ -1085,7 +1166,10 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
             query_id: "longmem-project-suggestion".to_string(),
             category: infer_external_benchmark_category("longmem-project-suggestion"),
             query: "Which project did Lee pick because Dana suggested it during planning?".to_string(),
-            expected_terms: vec!["observability dashboard".to_string()],
+            expected_terms: vec![
+                "observability dashboard".to_string(),
+                "Dana suggested".to_string(),
+            ],
             sources: vec![
                 ExternalContextBenchmarkSource {
                     title: "Initial planning thread".to_string(),
@@ -1142,7 +1226,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
             query_id: "locomo-guest-count-update".to_string(),
             category: infer_external_benchmark_category("locomo-guest-count-update"),
             query: "How many guests did Sofia confirm after the dinner update?".to_string(),
-            expected_terms: vec!["7 guests".to_string()],
+            expected_terms: vec!["7 guests".to_string(), "two neighbors".to_string()],
             sources: vec![
                 ExternalContextBenchmarkSource {
                     title: "Old dinner count".to_string(),

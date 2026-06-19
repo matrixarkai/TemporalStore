@@ -169,14 +169,19 @@ local TemporalStore evidence:
   p95 retrieval/injection latency, selected-token averages and maximums, zero-hit totals, profile
   signatures, workload coverage ranges, and sweep-wide threshold pass/fail evidence
 - `external_benchmark_*` fields covering optional LOCOMO/LongMemEval-style JSONL replay, including
-  dataset name, case count, hit@k, MRR, zero-hit queries, and source path
+  dataset name, case count, hit@k, MRR, answer-term coverage, missing expected terms, zero-hit
+  queries, and source path
 - `external_benchmark_category_count` and `external_benchmark_category_breakdown` fields covering
-  per-reasoning-type case count, hit@k, MRR, and zero-hit queries for single-hop, multi-hop
-  reasoning, temporal, memory update, quantity, social-link, and entity-alias style cases
+  per-reasoning-type case count, hit@k, MRR, answer-term coverage, missing expected terms, and
+  zero-hit queries for single-hop, multi-hop reasoning, temporal, memory update, quantity,
+  social-link, and entity-alias style cases
 - `external_benchmark_all_categories_passed`, `external_benchmark_min_category_hit_at_k`,
   `external_benchmark_min_category_mean_reciprocal_rank`, and
   `external_benchmark_category_zero_hit_queries` so external benchmark readiness fails if any
   reasoning bucket misses, even when aggregate hit@k remains high
+- `external_benchmark_all_expected_terms_matched`, `external_benchmark_answer_term_coverage`, and
+  `external_benchmark_missing_expected_terms` so multi-part LOCOMO/LongMemEval answers fail unless
+  every expected evidence term is covered by retrieved context
 - mixed source-kind and provider accounting through the ingest/extract summary
 
 The current local workload uses synthetic incidents, tickets, documents, chats, code snippets, and
