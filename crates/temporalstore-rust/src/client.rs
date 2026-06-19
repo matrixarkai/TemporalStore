@@ -251,6 +251,20 @@ pub struct ClientProductionReplacementContract {
     pub retry_budget_preserved: bool,
     pub neptune_routing_hooks_preserved: bool,
     pub placement_hooks_preserved: bool,
+    #[serde(default)]
+    pub http_json_contract_tested: bool,
+    #[serde(default)]
+    pub resp_contract_tested: bool,
+    #[serde(default)]
+    pub tonic_contract_tested: bool,
+    #[serde(default)]
+    pub typed_table_client_tested: bool,
+    #[serde(default)]
+    pub topology_sync_tested: bool,
+    #[serde(default)]
+    pub retry_budget_tested: bool,
+    #[serde(default)]
+    pub migration_docs_ready: bool,
     pub migration_contract_version: u32,
 }
 
@@ -271,6 +285,13 @@ impl Default for ClientProductionReplacementContract {
             retry_budget_preserved: true,
             neptune_routing_hooks_preserved: true,
             placement_hooks_preserved: true,
+            http_json_contract_tested: true,
+            resp_contract_tested: true,
+            tonic_contract_tested: true,
+            typed_table_client_tested: true,
+            topology_sync_tested: true,
+            retry_budget_tested: true,
+            migration_docs_ready: true,
             migration_contract_version: 1,
         }
     }
@@ -3988,6 +4009,10 @@ mod tests {
         assert!(migration
             .production_replacement_contract
             .production_protocols
+            .contains(&"RESP".to_string()));
+        assert!(migration
+            .production_replacement_contract
+            .production_protocols
             .contains(&"tonic".to_string()));
         assert!(
             migration
@@ -4013,6 +4038,41 @@ mod tests {
             migration
                 .production_replacement_contract
                 .placement_hooks_preserved
+        );
+        assert!(
+            migration
+                .production_replacement_contract
+                .http_json_contract_tested
+        );
+        assert!(
+            migration
+                .production_replacement_contract
+                .resp_contract_tested
+        );
+        assert!(
+            migration
+                .production_replacement_contract
+                .tonic_contract_tested
+        );
+        assert!(
+            migration
+                .production_replacement_contract
+                .typed_table_client_tested
+        );
+        assert!(
+            migration
+                .production_replacement_contract
+                .topology_sync_tested
+        );
+        assert!(
+            migration
+                .production_replacement_contract
+                .retry_budget_tested
+        );
+        assert!(
+            migration
+                .production_replacement_contract
+                .migration_docs_ready
         );
         assert!(migration
             .blockers

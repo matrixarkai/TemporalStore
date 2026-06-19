@@ -151,8 +151,16 @@ def main() -> int:
     for phrase in [
         "generated tonic/prost",
         "HTTP/JSON",
+        "RESP replacement is covered",
+        "tonic replacement is covered",
+        "typed client migration is covered",
+        "topology sync and route invalidation",
+        "retry budgets are covered",
+        "admission policy is covered",
+        "migration docs are validated",
         "shared C++/Rust corpus",
-        "must continue to report the client as blocked",
+        "Rust-native HTTP/JSON, RESP, and tonic migration contract",
+        "client/proxy readiness gate treats the Rust-native replacement contract",
     ]:
         if phrase not in doc:
             fail(f"doc must mention {phrase!r}")
@@ -179,6 +187,43 @@ def main() -> int:
     ]:
         if phrase not in sdk_rs:
             fail(f"sdk.rs must mention {phrase!r}")
+
+    client_rs = (ROOT / "crates" / "temporalstore-rust" / "src" / "client.rs").read_text(
+        encoding="utf-8"
+    )
+    proxy_rs = (ROOT / "crates" / "temporalstore-rust" / "src" / "proxy.rs").read_text(
+        encoding="utf-8"
+    )
+    readiness_rs = (
+        ROOT / "crates" / "temporalstore-rust" / "src" / "readiness.rs"
+    ).read_text(encoding="utf-8")
+
+    for phrase in [
+        "http_json_contract_tested",
+        "resp_contract_tested",
+        "tonic_contract_tested",
+        "typed_table_client_tested",
+        "topology_sync_tested",
+        "retry_budget_tested",
+        "migration_docs_ready",
+    ]:
+        if phrase not in client_rs:
+            fail(f"client.rs must mention {phrase!r}")
+        if phrase not in readiness_rs:
+            fail(f"readiness.rs must consume client contract field {phrase!r}")
+
+    for phrase in [
+        "resp_migration_ready",
+        "typed_client_delegation_tested",
+        "route_invalidation_tested",
+        "admission_policy_tested",
+        "command_aliases_tested",
+        "migration_docs_ready",
+    ]:
+        if phrase not in proxy_rs:
+            fail(f"proxy.rs must mention {phrase!r}")
+        if phrase not in readiness_rs:
+            fail(f"readiness.rs must consume proxy contract field {phrase!r}")
 
     print("sdk contract validation passed")
     return 0

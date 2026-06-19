@@ -113,6 +113,10 @@ pass. The tracked replacement contract is:
 - tonic/prost for the versioned `temporalstore.v1` client SDK contract.
 - Existing typed table client behavior, background topology sync, retry budgets, Neptune routing
   hooks, and deployment placement hooks must remain intact during caller migration.
+- The replacement contract is fully test-backed: HTTP/JSON aliases, RESP command migration,
+  generated tonic adapters, typed table client calls, topology sync, retry budgets, stale route
+  invalidation, route quarantine, admission policy, proxy command aliases, and migration docs are
+  all represented in runtime reports, readiness tests, or `tools/validate_sdk_contract.py`.
 
 This is a parity decision, not an accidental gap. The readiness gate marks the decision and
 Rust-native migration contract as ready, while keeping C++ wire migration readiness fail-closed.

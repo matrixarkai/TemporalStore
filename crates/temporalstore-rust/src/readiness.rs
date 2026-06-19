@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+use crate::client::ClientProductionReplacementContract;
 use crate::ingestion::ingestion_readiness_report;
+use crate::proxy::ProxyCppMigrationContract;
 use crate::raft::distributed_raft_readiness;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -350,6 +352,7 @@ pub fn context_workflow_production_readiness_report() -> ContextWorkflowProducti
 }
 
 pub fn client_routing_readiness_report() -> ClientRoutingReadinessReport {
+    let replacement_contract = ClientProductionReplacementContract::default();
     let typed_table_client_ready = true;
     let route_refresh_ready = true;
     let meta_sync_ready = true;
@@ -358,10 +361,10 @@ pub fn client_routing_readiness_report() -> ClientRoutingReadinessReport {
     let neptune_routing_ready = true;
     let deployment_placement_hooks_ready = true;
     let wire_compatibility_decision_tracked = true;
-    let rust_native_migration_contract_ready = true;
-    let rust_native_http_json_ready = true;
-    let rust_native_resp_ready = true;
-    let rust_native_tonic_ready = true;
+    let rust_native_migration_contract_ready = replacement_contract.migration_docs_ready;
+    let rust_native_http_json_ready = replacement_contract.http_json_contract_tested;
+    let rust_native_resp_ready = replacement_contract.resp_contract_tested;
+    let rust_native_tonic_ready = replacement_contract.tonic_contract_tested;
     let legacy_cplusplus_wire_out_of_scope = true;
     let cpp_wire_migration_ready = false;
     let compatibility_result_ready = wire_compatibility_decision_tracked
@@ -378,6 +381,9 @@ pub fn client_routing_readiness_report() -> ClientRoutingReadinessReport {
         && topology_preflight_ready
         && neptune_routing_ready
         && deployment_placement_hooks_ready
+        && replacement_contract.typed_table_client_tested
+        && replacement_contract.topology_sync_tested
+        && replacement_contract.retry_budget_tested
         && compatibility_result_ready;
     let production_ready = local_client_ready;
     let missing = if production_ready {
@@ -409,6 +415,7 @@ pub fn client_routing_readiness_report() -> ClientRoutingReadinessReport {
 }
 
 pub fn proxy_serving_readiness_report() -> ProxyServingReadinessReport {
+    let migration_contract = ProxyCppMigrationContract::default();
     let http_execute_routes_ready = true;
     let heartbeat_config_ready = true;
     let topology_refresh_ready = true;
@@ -416,13 +423,14 @@ pub fn proxy_serving_readiness_report() -> ProxyServingReadinessReport {
     let service_discovery_ready = true;
     let tonic_proxy_surface_ready = true;
     let wire_compatibility_decision_tracked = true;
-    let rust_native_proxy_migration_contract_ready = true;
-    let rust_native_http_json_ready = true;
-    let rust_native_resp_ready = true;
-    let rust_native_tonic_ready = tonic_proxy_surface_ready;
-    let proxy_command_aliases_ready = true;
+    let rust_native_proxy_migration_contract_ready = migration_contract.migration_docs_ready;
+    let rust_native_http_json_ready = migration_contract.http_json_aliases_ready;
+    let rust_native_resp_ready = migration_contract.resp_migration_ready;
+    let rust_native_tonic_ready =
+        tonic_proxy_surface_ready && migration_contract.tonic_streaming_ready;
+    let proxy_command_aliases_ready = migration_contract.command_aliases_tested;
     let route_invalidation_ready = topology_refresh_ready;
-    let route_quarantine_ready = true;
+    let route_quarantine_ready = migration_contract.backend_quarantine_preserved;
     let legacy_cplusplus_wire_out_of_scope = true;
     let cpp_wire_proxy_transport_ready = false;
     let compatibility_result_ready = wire_compatibility_decision_tracked
@@ -432,7 +440,10 @@ pub fn proxy_serving_readiness_report() -> ProxyServingReadinessReport {
         && rust_native_tonic_ready
         && proxy_command_aliases_ready
         && route_invalidation_ready
+        && migration_contract.route_invalidation_tested
         && route_quarantine_ready
+        && migration_contract.admission_policy_tested
+        && migration_contract.typed_client_delegation_tested
         && legacy_cplusplus_wire_out_of_scope
         && !cpp_wire_proxy_transport_ready;
     let local_proxy_ready = http_execute_routes_ready
@@ -983,7 +994,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "Rust-native service discovery replacement for consul via proxy auto-register, heartbeat TTL, admin inspection, and Prometheus stale/registered metrics"
                     .to_string(),
-                "proxy serving readiness covers HTTP execute routes, heartbeat/config application, topology-version invalidation, admission policy, route quarantine, Rust-native service discovery, tonic streaming/callback shape, and the tracked HTTP/JSON plus tonic migration contract while keeping legacy C++ wire proxy transport out of scope"
+                "proxy serving readiness covers HTTP execute routes, heartbeat/config application, topology-version invalidation, admission policy, route quarantine, Rust-native service discovery, RESP migration, tonic streaming/callback shape, and the tracked HTTP/JSON, RESP, and tonic migration contract while keeping legacy C++ wire proxy transport out of scope"
                     .to_string(),
             ],
             missing: proxy_serving.missing,
@@ -1638,6 +1649,15 @@ mod tests {
 
     #[test]
     fn client_and_proxy_readiness_split_local_and_wire_compatibility() {
+        let client_contract = ClientProductionReplacementContract::default();
+        assert!(client_contract.http_json_contract_tested);
+        assert!(client_contract.resp_contract_tested);
+        assert!(client_contract.tonic_contract_tested);
+        assert!(client_contract.typed_table_client_tested);
+        assert!(client_contract.topology_sync_tested);
+        assert!(client_contract.retry_budget_tested);
+        assert!(client_contract.migration_docs_ready);
+
         let client = client_routing_readiness_report();
         assert!(client.typed_table_client_ready);
         assert!(client.route_refresh_ready);
@@ -1657,6 +1677,16 @@ mod tests {
         assert!(!client.cpp_wire_migration_ready);
         assert!(client.production_ready);
         assert!(client.missing.is_empty());
+
+        let proxy_contract = ProxyCppMigrationContract::default();
+        assert!(proxy_contract.http_json_aliases_ready);
+        assert!(proxy_contract.resp_migration_ready);
+        assert!(proxy_contract.tonic_streaming_ready);
+        assert!(proxy_contract.typed_client_delegation_tested);
+        assert!(proxy_contract.route_invalidation_tested);
+        assert!(proxy_contract.admission_policy_tested);
+        assert!(proxy_contract.command_aliases_tested);
+        assert!(proxy_contract.migration_docs_ready);
 
         let proxy = proxy_serving_readiness_report();
         assert!(proxy.http_execute_routes_ready);

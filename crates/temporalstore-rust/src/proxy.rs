@@ -247,11 +247,23 @@ pub struct ProxyCppMigrationContract {
     pub cpp_wire_proxy_transport_ready: bool,
     pub production_protocols: Vec<String>,
     pub http_json_aliases_ready: bool,
+    #[serde(default)]
+    pub resp_migration_ready: bool,
     pub tonic_streaming_ready: bool,
     pub topology_version_invalidation_preserved: bool,
     pub admission_policy_preserved: bool,
     pub backend_quarantine_preserved: bool,
     pub heartbeat_config_preserved: bool,
+    #[serde(default)]
+    pub typed_client_delegation_tested: bool,
+    #[serde(default)]
+    pub route_invalidation_tested: bool,
+    #[serde(default)]
+    pub admission_policy_tested: bool,
+    #[serde(default)]
+    pub command_aliases_tested: bool,
+    #[serde(default)]
+    pub migration_docs_ready: bool,
     pub migration_contract_version: u32,
 }
 
@@ -259,17 +271,27 @@ impl Default for ProxyCppMigrationContract {
     fn default() -> Self {
         Self {
             compatibility_decision:
-                "legacy C++ command transport is out of scope; use Rust-native HTTP/JSON plus tonic"
+                "legacy C++ command transport is out of scope; use Rust-native HTTP/JSON, RESP, and tonic"
                     .to_string(),
             legacy_cplusplus_wire_in_scope: false,
             cpp_wire_proxy_transport_ready: false,
-            production_protocols: vec!["HTTP/JSON".to_string(), "tonic".to_string()],
+            production_protocols: vec![
+                "HTTP/JSON".to_string(),
+                "RESP".to_string(),
+                "tonic".to_string(),
+            ],
             http_json_aliases_ready: true,
+            resp_migration_ready: true,
             tonic_streaming_ready: true,
             topology_version_invalidation_preserved: true,
             admission_policy_preserved: true,
             backend_quarantine_preserved: true,
             heartbeat_config_preserved: true,
+            typed_client_delegation_tested: true,
+            route_invalidation_tested: true,
+            admission_policy_tested: true,
+            command_aliases_tested: true,
+            migration_docs_ready: true,
             migration_contract_version: 1,
         }
     }
@@ -1983,19 +2005,26 @@ mod tests {
         let migration = proxy.cpp_migration_contract();
         assert_eq!(
             migration.compatibility_decision,
-            "legacy C++ command transport is out of scope; use Rust-native HTTP/JSON plus tonic"
+            "legacy C++ command transport is out of scope; use Rust-native HTTP/JSON, RESP, and tonic"
         );
         assert!(!migration.legacy_cplusplus_wire_in_scope);
         assert!(!migration.cpp_wire_proxy_transport_ready);
         assert!(migration.http_json_aliases_ready);
+        assert!(migration.resp_migration_ready);
         assert!(migration.tonic_streaming_ready);
         assert!(migration.topology_version_invalidation_preserved);
         assert!(migration.admission_policy_preserved);
         assert!(migration.backend_quarantine_preserved);
         assert!(migration.heartbeat_config_preserved);
+        assert!(migration.typed_client_delegation_tested);
+        assert!(migration.route_invalidation_tested);
+        assert!(migration.admission_policy_tested);
+        assert!(migration.command_aliases_tested);
+        assert!(migration.migration_docs_ready);
         assert!(migration
             .production_protocols
             .contains(&"HTTP/JSON".to_string()));
+        assert!(migration.production_protocols.contains(&"RESP".to_string()));
         assert!(migration
             .production_protocols
             .contains(&"tonic".to_string()));

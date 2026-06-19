@@ -66,6 +66,31 @@ protobuf-to-internal command conversion and delegates them to the existing engin
 `OpenTable`, `SyncTopology`, and `GetClientPreflight` delegate to the existing
 `TemporalStoreClient` table, topology refresh, and preflight paths.
 
+## Test-Backed Replacement Matrix
+
+The replacement contract is readiness-eligible only when every Rust-native surface is backed by
+tests or validators:
+
+- HTTP/JSON replacement is covered by proxy/server execute, batch, table-open, topology refresh,
+  preflight, and C++ service-name JSON alias tests.
+- RESP replacement is covered by the Redis command corpus and RESP adapter tests for string, hash,
+  set, Feature, Sequence, IPS, Risk, admin, and Context-facing migration paths.
+- tonic replacement is covered by generated `temporalstore.v1` bindings plus adapter tests for
+  `Execute`, `BatchExecute`, `OpenTable`, `SyncTopology`, `GetClientPreflight`, proxy streaming,
+  route callbacks, and preflight watch surfaces.
+- typed client migration is covered by `TemporalStoreClient`, `TemporalStoreTable`, and pipeline
+  tests that route common, Feature, Sequence, IPS, Risk, and Context commands through the same
+  logical contract.
+- topology sync and route invalidation are covered by MetaSyncer, topology-version refresh,
+  stale-route invalidation, proxy route refresh, and route-quarantine tests.
+- retry budgets are covered by separate read/write retry-budget tests, including the no-duplicate
+  unsafe write retry path.
+- admission policy is covered by readonly, write-disabled, not-serving, drop-percent, and degraded
+  proxy/client preflight tests.
+- migration docs are validated by `tools/validate_sdk_contract.py` and readiness tests that require
+  the HTTP/JSON, RESP, tonic, typed client, topology sync, retry budget, route invalidation,
+  admission policy, alias, and docs evidence flags.
+
 ## Command Coverage
 
 The v1 contract includes the production command families covered by the shared corpus and local
@@ -90,14 +115,14 @@ New production command families must update all of these in the same change:
 
 ## Readiness Status
 
-This closes the "versioned Rust-native SDK contract" and "generated tonic/prost binding type"
-sub-gaps. It also closes the runtime tonic adapter sub-gap for `Execute`, `BatchExecute`,
-`OpenTable`, `SyncTopology`, and `GetClientPreflight`. Production readiness still blocks on:
+This closes the "versioned Rust-native SDK contract", "generated tonic/prost binding type", and
+"Rust-native HTTP/JSON, RESP, and tonic migration contract" sub-gaps. It also closes the runtime
+tonic adapter sub-gap for `Execute`, `BatchExecute`, `OpenTable`, `SyncTopology`, and
+`GetClientPreflight`. The client/proxy readiness gate treats the Rust-native replacement contract
+as ready when the compatibility-result evidence is present. Broader global production readiness can
+still be blocked by deployment-scale or closed-scope gates outside the client/proxy slice.
 
-- full C++ partition-set hierarchy, if required by a deployment; Rust-native Neptune/deployment
-  placement hooks are covered
-- legacy C++ wire-compatible migration for existing C++ client callers, which remains explicitly
-  out of scope for the Rust-native schema
-
-The readiness gate must continue to report the client as blocked until those remaining capabilities
-are implemented and locally validated.
+Legacy C++ wire-compatible migration for existing C++ client callers remains explicitly out of
+scope for the Rust-native schema. If a deployment later requires the full C++ partition-set
+hierarchy or legacy wire protocols, that must be reopened as a separate compatibility target rather
+than silently weakening this contract.
