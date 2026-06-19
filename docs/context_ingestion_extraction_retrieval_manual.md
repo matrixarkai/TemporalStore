@@ -302,6 +302,26 @@ local gateway such as Ollama or vLLM:
 `Vision-CAIR/MiniGPT-4` profile. Use `mock_mode=true` with the same profile names for deterministic
 Docker validation when a live VLM server is not running.
 
+To match the open-source model setup used by the C++/MatrixArk LOCOMO path in the "LLM Specific
+TemporalStore Use Cases" thread, use `matrixark-cpp-oss-context`:
+
+```json
+{
+  "provider": {
+    "provider_name": "matrixark-cpp-oss-context",
+    "provider_kind": "open_ai_compatible",
+    "base_url": "http://127.0.0.1:8000/v1",
+    "api_key_env": "MATRIXARK_MODEL_API_KEY",
+    "model": "google/flan-t5-small",
+    "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+    "vlm_model": "none",
+    "timeout_ms": 30000,
+    "max_retries": 2,
+    "mock_mode": false
+  }
+}
+```
+
 For an open-source GPT-4-style VLM profile:
 
 ```json

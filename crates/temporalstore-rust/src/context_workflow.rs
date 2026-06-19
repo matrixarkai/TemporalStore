@@ -559,6 +559,19 @@ pub fn default_context_model_providers() -> Vec<ContextModelProviderConfig> {
             mock_mode: false,
         },
         ContextModelProviderConfig {
+            provider_name: "matrixark-cpp-oss-context".to_string(),
+            provider_kind: ContextProviderKind::OpenAiCompatible,
+            base_url: "http://127.0.0.1:8000/v1".to_string(),
+            api_key_env: "MATRIXARK_MODEL_API_KEY".to_string(),
+            model: "google/flan-t5-small".to_string(),
+            embedding_model: "sentence-transformers/all-MiniLM-L6-v2".to_string(),
+            vlm_model: "none".to_string(),
+            timeout_ms: 30_000,
+            max_retries: 2,
+            fallback_provider: Some(Box::new(ContextModelProviderConfig::default())),
+            mock_mode: false,
+        },
+        ContextModelProviderConfig {
             provider_name: "openviking-open-source-gpt-vlm".to_string(),
             provider_kind: ContextProviderKind::OpenAiCompatible,
             base_url: "http://127.0.0.1:8000/v1".to_string(),
@@ -625,6 +638,24 @@ pub fn openviking_open_source_model_profiles() -> Vec<ContextOpenVikingModelProf
                 "semantic_retrieval".to_string(),
             ],
             notes: "OpenViking-style vLLM or OpenAI-compatible gateway profile for GPU deployments."
+                .to_string(),
+        },
+        ContextOpenVikingModelProfile {
+            profile_name: "matrixark-cpp-oss-context".to_string(),
+            provider_name: "matrixark-cpp-oss-context".to_string(),
+            provider_kind: ContextProviderKind::OpenAiCompatible,
+            base_url: "http://127.0.0.1:8000/v1".to_string(),
+            chat_model: "google/flan-t5-small".to_string(),
+            vlm_model: "none".to_string(),
+            embedding_model: "sentence-transformers/all-MiniLM-L6-v2".to_string(),
+            capabilities: vec![
+                "cpp_path_oss_model_parity".to_string(),
+                "chat_context_extraction".to_string(),
+                "embedding_vectorization".to_string(),
+                "semantic_retrieval".to_string(),
+                "locomo_context_benchmark".to_string(),
+            ],
+            notes: "Matches the MatrixArk/C++ path OSS benchmark setup from the LLM Specific TemporalStore Use Cases thread: transformers extraction with google/flan-t5-small and sentence-transformers/all-MiniLM-L6-v2 embeddings."
                 .to_string(),
         },
         ContextOpenVikingModelProfile {
@@ -3587,6 +3618,15 @@ mod tests {
         assert_eq!(openviking_provider.vlm_model, "qwen2.5vl:7b");
         assert_eq!(openviking_provider.embedding_model, "nomic-embed-text");
         assert_eq!(openviking_provider.base_url, "http://127.0.0.1:11434/v1");
+        let matrixark_cpp_provider = providers
+            .iter()
+            .find(|provider| provider.provider_name == "matrixark-cpp-oss-context")
+            .expect("MatrixArk C++ path OSS provider profile should be exposed");
+        assert_eq!(matrixark_cpp_provider.model, "google/flan-t5-small");
+        assert_eq!(
+            matrixark_cpp_provider.embedding_model,
+            "sentence-transformers/all-MiniLM-L6-v2"
+        );
 
         let state = context_workflow_state_report();
         assert!(state
@@ -3601,6 +3641,14 @@ mod tests {
             .openviking_model_profiles
             .iter()
             .any(|profile| profile.vlm_model.contains("InternVL")));
+        assert!(state.openviking_model_profiles.iter().any(|profile| {
+            profile.profile_name == "matrixark-cpp-oss-context"
+                && profile.chat_model == "google/flan-t5-small"
+                && profile.embedding_model == "sentence-transformers/all-MiniLM-L6-v2"
+                && profile
+                    .capabilities
+                    .contains(&"cpp_path_oss_model_parity".to_string())
+        }));
         assert!(state.openviking_model_profiles.iter().any(|profile| {
             profile.profile_name == "openviking-minigpt4-gpt-style-vlm"
                 && profile.vlm_model == "Vision-CAIR/MiniGPT-4"

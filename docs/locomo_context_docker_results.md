@@ -10,7 +10,10 @@ inside the Docker image built from the current `rust-main` source.
 The harness uses the built-in LOCOMO/LongMemEval-style fixture because a licensed full LOCOMO export
 was not present in the workspace. It also uses the deterministic `mock-openai-compatible` provider
 path. The Docker image exposes the OpenViking-style open-source model profiles, including
-`Vision-CAIR/MiniGPT-4`, but this run did not start a live Ollama/vLLM/MiniGPT-4 model server.
+the `matrixark-cpp-oss-context` profile that matches the C++/MatrixArk LOCOMO path
+(`google/flan-t5-small` extraction plus `sentence-transformers/all-MiniLM-L6-v2` embeddings) and
+the `Vision-CAIR/MiniGPT-4` VLM profile. This run did not start a live Ollama/vLLM/MiniGPT-4 model
+server.
 
 ## Docker Image
 
@@ -26,7 +29,7 @@ python3 tools/validate_aws_validation_log.py \
 Fresh image ID:
 
 ```text
-temporalstore-rust-context:locomo-current -> 81670a6a9ae8
+temporalstore-rust-context:locomo-current -> 743d0f2f4b54
 ```
 
 Validation:
@@ -37,13 +40,14 @@ context-workflow-validation: JSON validation passed
 
 ## Model Profiles Present In The Image
 
-The current Docker run reported four OpenViking-style model profiles:
+The current Docker run reported these OpenViking-style model profiles:
 
 | Profile | VLM | Embedding |
 | --- | --- | --- |
 | `openviking-qwen2_5_vl-local` | `qwen2.5vl:7b` | `nomic-embed-text` |
 | `openviking-llava-local` | `llava:7b` | `nomic-embed-text` |
 | `openviking-internvl-vllm` | `OpenGVLab/InternVL2_5-8B` | `BAAI/bge-m3` |
+| `matrixark-cpp-oss-context` | `none` | `sentence-transformers/all-MiniLM-L6-v2` |
 | `openviking-minigpt4-gpt-style-vlm` | `Vision-CAIR/MiniGPT-4` | `BAAI/bge-m3` |
 
 ## LOCOMO/LongMemEval-Style Fixture Score
@@ -76,7 +80,7 @@ and entity aliases.
 | Main MRR | 1.0 |
 | Evidence retention@K | 1.0 |
 | Token reduction | 83.67876% |
-| Retrieval p50 | 8 ms |
+| Retrieval p50 | 9 ms |
 | Retrieval p95 | 10 ms |
 | Sweep profiles | 4 |
 | Sweep total sources | 204 |
