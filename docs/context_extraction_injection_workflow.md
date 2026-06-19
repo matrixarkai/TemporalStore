@@ -74,6 +74,9 @@ profiles through `GET /context/workflow/state`:
 - `openviking-internvl-vllm`: `OpenGVLab/InternVL2_5-8B` VLM,
   `Qwen/Qwen2.5-7B-Instruct` chat model, `BAAI/bge-m3` embedding model, OpenAI-compatible
   gateway at `127.0.0.1:8000/v1`
+- `openviking-minigpt4-gpt-style-vlm`: `Vision-CAIR/MiniGPT-4` as the open-source GPT-4-style VLM,
+  `lmsys/vicuna-7b-v1.5` chat model, `BAAI/bge-m3` embedding model, OpenAI-compatible gateway at
+  `127.0.0.1:8000/v1`
 
 These profiles mirror OpenViking's two required model capabilities: a VLM for image/content
 understanding and an embedding model for vectorization and semantic retrieval. TemporalStore still

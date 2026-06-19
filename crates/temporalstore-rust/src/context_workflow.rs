@@ -558,6 +558,19 @@ pub fn default_context_model_providers() -> Vec<ContextModelProviderConfig> {
             fallback_provider: Some(Box::new(ContextModelProviderConfig::default())),
             mock_mode: false,
         },
+        ContextModelProviderConfig {
+            provider_name: "openviking-open-source-gpt-vlm".to_string(),
+            provider_kind: ContextProviderKind::OpenAiCompatible,
+            base_url: "http://127.0.0.1:8000/v1".to_string(),
+            api_key_env: "OPENVIKING_MODEL_API_KEY".to_string(),
+            model: "lmsys/vicuna-7b-v1.5".to_string(),
+            embedding_model: "BAAI/bge-m3".to_string(),
+            vlm_model: "Vision-CAIR/MiniGPT-4".to_string(),
+            timeout_ms: 30_000,
+            max_retries: 2,
+            fallback_provider: Some(Box::new(ContextModelProviderConfig::default())),
+            mock_mode: false,
+        },
     ]
 }
 
@@ -612,6 +625,24 @@ pub fn openviking_open_source_model_profiles() -> Vec<ContextOpenVikingModelProf
                 "semantic_retrieval".to_string(),
             ],
             notes: "OpenViking-style vLLM or OpenAI-compatible gateway profile for GPU deployments."
+                .to_string(),
+        },
+        ContextOpenVikingModelProfile {
+            profile_name: "openviking-minigpt4-gpt-style-vlm".to_string(),
+            provider_name: "openviking-open-source-gpt-vlm".to_string(),
+            provider_kind: ContextProviderKind::OpenAiCompatible,
+            base_url: "http://127.0.0.1:8000/v1".to_string(),
+            chat_model: "lmsys/vicuna-7b-v1.5".to_string(),
+            vlm_model: "Vision-CAIR/MiniGPT-4".to_string(),
+            embedding_model: "BAAI/bge-m3".to_string(),
+            capabilities: vec![
+                "gpt_style_vlm_reasoning".to_string(),
+                "vlm_image_content_understanding".to_string(),
+                "chat_context_extraction".to_string(),
+                "embedding_vectorization".to_string(),
+                "semantic_retrieval".to_string(),
+            ],
+            notes: "Open-source GPT-4-style VLM profile inspired by MiniGPT-4; serve through an OpenAI-compatible gateway for OpenViking-style image/content understanding."
                 .to_string(),
         },
     ]
@@ -3570,6 +3601,13 @@ mod tests {
             .openviking_model_profiles
             .iter()
             .any(|profile| profile.vlm_model.contains("InternVL")));
+        assert!(state.openviking_model_profiles.iter().any(|profile| {
+            profile.profile_name == "openviking-minigpt4-gpt-style-vlm"
+                && profile.vlm_model == "Vision-CAIR/MiniGPT-4"
+                && profile
+                    .capabilities
+                    .contains(&"gpt_style_vlm_reasoning".to_string())
+        }));
     }
 
     #[test]

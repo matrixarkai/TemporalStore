@@ -298,8 +298,28 @@ local gateway such as Ollama or vLLM:
 ```
 
 `GET /context/workflow/state` also reports ready-to-use open-source profiles for
-`qwen2.5vl:7b`, `llava:7b`, and `OpenGVLab/InternVL2_5-8B`. Use `mock_mode=true` with the same
-profile names for deterministic Docker validation when a live VLM server is not running.
+`qwen2.5vl:7b`, `llava:7b`, `OpenGVLab/InternVL2_5-8B`, and the GPT-style
+`Vision-CAIR/MiniGPT-4` profile. Use `mock_mode=true` with the same profile names for deterministic
+Docker validation when a live VLM server is not running.
+
+For an open-source GPT-4-style VLM profile:
+
+```json
+{
+  "provider": {
+    "provider_name": "openviking-open-source-gpt-vlm",
+    "provider_kind": "open_ai_compatible",
+    "base_url": "http://127.0.0.1:8000/v1",
+    "api_key_env": "OPENVIKING_MODEL_API_KEY",
+    "model": "lmsys/vicuna-7b-v1.5",
+    "embedding_model": "BAAI/bge-m3",
+    "vlm_model": "Vision-CAIR/MiniGPT-4",
+    "timeout_ms": 30000,
+    "max_retries": 2,
+    "mock_mode": false
+  }
+}
+```
 
 ## Run External LOCOMO / LongMemEval-Style Replay
 
