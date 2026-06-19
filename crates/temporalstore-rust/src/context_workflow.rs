@@ -2134,6 +2134,16 @@ fn context_relevance_score(query: &str, text: &str) -> u32 {
     {
         score = score.saturating_add(80);
     }
+    if context_query_requests_quantity_detail(&base_terms)
+        && (text_lower.chars().any(|ch| ch.is_ascii_digit())
+            || context_text_matches_any(
+                &text_lower,
+                &text_normalized,
+                &["count", "total", "number", "score", "amount", "quantity"],
+            ))
+    {
+        score = score.saturating_add(80);
+    }
     score
 }
 
@@ -2205,6 +2215,8 @@ fn context_query_synonyms(term: &str) -> &'static [&'static str] {
         }
         "appointment" | "meeting" | "deadline" => &["schedule", "calendar", "date", "time"],
         "tomorrow" | "tonight" | "morning" | "afternoon" | "evening" => &["time", "date"],
+        "many" | "count" | "number" | "quantity" => &["total", "amount"],
+        "total" | "amount" => &["count", "number", "quantity"],
         "multi" | "hop" | "reasoning" => &["related", "connection", "because"],
         "why" | "because" | "reason" => &["cause", "root", "explain", "problem"],
         "cause" | "root" => &["because", "reason", "incident", "problem"],
@@ -2369,6 +2381,23 @@ fn context_query_requests_schedule_detail(terms: &[String]) -> bool {
                 | "calendar"
                 | "tomorrow"
                 | "tonight"
+        )
+    })
+}
+
+fn context_query_requests_quantity_detail(terms: &[String]) -> bool {
+    terms.iter().any(|term| {
+        matches!(
+            term.as_str(),
+            "many"
+                | "count"
+                | "number"
+                | "quantity"
+                | "total"
+                | "amount"
+                | "score"
+                | "percent"
+                | "percentage"
         )
     })
 }
@@ -2901,6 +2930,42 @@ mod tests {
             ) > context_relevance_score(
                 "What is the new report deadline after the calendar update?",
                 stale_deadline
+            )
+        );
+
+        let updated_guest_count =
+            "Final RSVP update: Sofia confirmed 7 guests for dinner after two neighbors joined.";
+        let stale_guest_count =
+            "Earlier dinner plan: Sofia expected 4 guests before the final RSVP update.";
+        assert!(context_query_matches(
+            "How many guests did Sofia confirm after the dinner update?",
+            updated_guest_count
+        ));
+        assert!(
+            context_relevance_score(
+                "How many guests did Sofia confirm after the dinner update?",
+                updated_guest_count
+            ) > context_relevance_score(
+                "How many guests did Sofia confirm after the dinner update?",
+                stale_guest_count
+            )
+        );
+
+        let updated_risk_score =
+            "Latest fraud review: the checkout risk score was updated to 87 after the payment incident escalated.";
+        let stale_risk_score =
+            "Earlier fraud review: the checkout risk score was 42 before the payment incident escalated.";
+        assert!(context_query_matches(
+            "What risk score was recorded after the latest fraud review?",
+            updated_risk_score
+        ));
+        assert!(
+            context_relevance_score(
+                "What risk score was recorded after the latest fraud review?",
+                updated_risk_score
+            ) > context_relevance_score(
+                "What risk score was recorded after the latest fraud review?",
+                stale_risk_score
             )
         );
     }

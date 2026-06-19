@@ -201,7 +201,9 @@ overlapping entities do not win against current facts, and social-link cues such
 suggested, introduced, and referred so multi-hop relationship evidence wins over generic planning
 context. Schedule/detail cues such as rescheduled, appointment, deadline, calendar, date, and time
 are boosted so stale calendar details do not outrank current dates. The built-in external fixture
-includes direct update questions plus harder
+also boosts quantity cues such as how many, count, number, total, amount, and score so current
+numeric facts outrank stale values. The built-in external fixture includes direct update questions
+plus harder
 paraphrases such as "Where does Alice want to work now?" and "Which setting changed most recently
 across the conversation history?", plus temporal-after and root-cause questions such as
 "What did Alice decide after the airport trip conversation?" and "Why did checkout fail after the
@@ -213,7 +215,9 @@ teams?", and social-link questions such as "Who recommended the cafe that Nina b
 conference?" and "Which project did Lee pick because Dana suggested it during planning?" to keep
 LOCOMO/LongMemEval-style hit-rate regressions visible. Schedule-detail cases such as "When is
 Maya's dentist appointment after it was rescheduled?" and "What is the new report deadline after the
-calendar update?" cover date/time updates.
+calendar update?" cover date/time updates. Quantity cases such as "How many guests did Sofia confirm
+after the dinner update?" and "What risk score was recorded after the latest fraud review?" cover
+numeric memory updates.
 
 Remaining policy hardening:
 

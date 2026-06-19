@@ -998,6 +998,42 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
                 },
             ],
         },
+        ExternalContextBenchmarkCase {
+            dataset: "locomo_style".to_string(),
+            query_id: "locomo-guest-count-update".to_string(),
+            query: "How many guests did Sofia confirm after the dinner update?".to_string(),
+            expected_terms: vec!["7 guests".to_string()],
+            sources: vec![
+                ExternalContextBenchmarkSource {
+                    title: "Old dinner count".to_string(),
+                    body: "Earlier dinner plan: Sofia expected 4 guests before the final RSVP update.".to_string(),
+                    kind: ContextSourceKind::Chat,
+                },
+                ExternalContextBenchmarkSource {
+                    title: "Final dinner count".to_string(),
+                    body: "Final RSVP update: Sofia confirmed 7 guests for dinner after two neighbors joined.".to_string(),
+                    kind: ContextSourceKind::UserEvent,
+                },
+            ],
+        },
+        ExternalContextBenchmarkCase {
+            dataset: "longmemeval_s_style".to_string(),
+            query_id: "longmem-risk-score-update".to_string(),
+            query: "What risk score was recorded after the latest fraud review?".to_string(),
+            expected_terms: vec!["87".to_string()],
+            sources: vec![
+                ExternalContextBenchmarkSource {
+                    title: "Old risk score".to_string(),
+                    body: "Earlier fraud review: the checkout risk score was 42 before the payment incident escalated.".to_string(),
+                    kind: ContextSourceKind::Incident,
+                },
+                ExternalContextBenchmarkSource {
+                    title: "Updated risk score".to_string(),
+                    body: "Latest fraud review: the checkout risk score was updated to 87 after the payment incident escalated.".to_string(),
+                    kind: ContextSourceKind::Incident,
+                },
+            ],
+        },
     ]
 }
 
