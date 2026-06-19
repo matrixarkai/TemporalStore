@@ -139,14 +139,20 @@ context loading, and reduced context tokens. The benchmark does not claim byte-f
 workload parity or published VikingMem scores. It produces local TemporalStore evidence:
 
 - `benchmark_source_count` and `benchmark_query_count`
+- `benchmark_profile`
 - `benchmark_recall_at_k`
+- `benchmark_hit_at_k` and `benchmark_mean_reciprocal_rank`
 - `benchmark_token_reduction_percent`
+- ingest, retrieval, and injection throughput counters
 - `benchmark_retrieve_p50_ms` and `benchmark_retrieve_p95_ms`
+- per-query hit rank, reciprocal rank, selected-block count, token count, and latency
 - mixed source-kind and provider accounting through the ingest/extract summary
 
 The current local workload uses synthetic incidents, tickets, documents, chats, code snippets, and
 user events so it can run without external model credentials while still exercising the same
-management, ingestion/extraction, retrieval, and injection pipeline.
+management, ingestion/extraction, retrieval, and injection pipeline. Profiles are explicit strings
+so future benchmark runs can separate local synthetic sweeps, paper-inspired regression sweeps, and
+deployment-specific model/provider sweeps without changing the JSON schema.
 
 Remaining policy hardening:
 

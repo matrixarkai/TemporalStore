@@ -164,6 +164,8 @@ pub struct ContextIngestSourceFailure {
 pub struct ContextPipelineBenchmarkRequest {
     pub shard_id: ShardId,
     pub tenant_hash: u64,
+    #[serde(default = "default_benchmark_profile")]
+    pub profile: String,
     #[serde(default = "default_benchmark_source_count")]
     pub source_count: usize,
     #[serde(default = "default_benchmark_query_count")]
@@ -178,12 +180,15 @@ pub struct ContextPipelineBenchmarkRequest {
 pub struct ContextPipelineBenchmarkReport {
     pub status: Status,
     pub benchmark_name: String,
+    pub profile: String,
     pub source_count: usize,
     pub query_count: usize,
     pub accepted_sources: usize,
     pub failed_sources: usize,
     pub retrieval_successes: usize,
     pub injection_successes: usize,
+    pub hit_at_k: f32,
+    pub mean_reciprocal_rank: f32,
     pub total_source_tokens: u32,
     pub selected_context_tokens: u32,
     pub token_reduction_percent: f32,
@@ -191,11 +196,28 @@ pub struct ContextPipelineBenchmarkReport {
     pub ingest_extract_elapsed_ms: u128,
     pub retrieve_total_elapsed_ms: u128,
     pub inject_total_elapsed_ms: u128,
+    pub ingest_sources_per_sec: f64,
+    pub retrieve_queries_per_sec: f64,
+    pub inject_queries_per_sec: f64,
     pub retrieve_p50_ms: u128,
     pub retrieve_p95_ms: u128,
+    pub per_query: Vec<ContextPipelineBenchmarkQueryReport>,
     pub source_kind_counts: BTreeMap<String, usize>,
     pub provider_counts: BTreeMap<String, usize>,
     pub evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextPipelineBenchmarkQueryReport {
+    pub query_id: String,
+    pub expected_topic: String,
+    pub retrieved_blocks: usize,
+    pub selected_blocks: usize,
+    pub selected_tokens: u32,
+    pub hit_rank: Option<usize>,
+    pub reciprocal_rank: f32,
+    pub retrieve_elapsed_ms: u128,
+    pub inject_elapsed_ms: u128,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -847,6 +869,11 @@ pub fn run_context_pipeline_benchmark(
 ) -> ContextPipelineBenchmarkReport {
     let source_count = request.source_count.clamp(1, 10_000);
     let query_count = request.query_count.clamp(1, 1_000);
+    let profile = if request.profile.trim().is_empty() {
+        default_benchmark_profile()
+    } else {
+        request.profile.clone()
+    };
     let provider = normalize_provider(request.provider.clone());
     let mut total_source_tokens = 0u32;
     let mut sources = Vec::with_capacity(source_count);
@@ -891,13 +918,18 @@ pub fn run_context_pipeline_benchmark(
     let mut selected_context_tokens = 0u32;
     let mut retrieve_total_elapsed_ms = 0u128;
     let mut inject_total_elapsed_ms = 0u128;
+    let mut reciprocal_rank_sum = 0.0f32;
+    let mut hit_count = 0usize;
+    let mut per_query = Vec::with_capacity(query_count);
 
     for query_index in 0..query_count {
+        let expected_topic = format!("topic {query_index}");
+        let query_id = format!("bench-query-{query_index}");
         let retrieve_request = ContextRetrieveRequest {
             shard_id: request.shard_id,
             tenant_hash: request.tenant_hash,
             node_hashes: ingest.node_hashes.clone(),
-            query: format!("checkout benchmark topic {query_index}"),
+            query: format!("checkout benchmark {expected_topic}"),
             start_time_ms: 0,
             end_time_ms: 1_000 + source_count as u64 + 1,
             max_events: request.max_events,
@@ -913,6 +945,21 @@ pub fn run_context_pipeline_benchmark(
         if retrieve.status.ok && !retrieve.blocks.is_empty() {
             retrieval_successes += 1;
         }
+        let hit_rank = retrieve
+            .blocks
+            .iter()
+            .position(|block| {
+                block
+                    .text
+                    .to_ascii_lowercase()
+                    .contains(expected_topic.as_str())
+            })
+            .map(|index| index + 1);
+        let reciprocal_rank = hit_rank.map(|rank| 1.0 / rank as f32).unwrap_or(0.0);
+        if hit_rank.is_some() {
+            hit_count += 1;
+        }
+        reciprocal_rank_sum += reciprocal_rank;
 
         let inject_start = Instant::now();
         let inject = inject_context(
@@ -921,23 +968,33 @@ pub fn run_context_pipeline_benchmark(
                 retrieve: retrieve_request,
                 prompt: format!("Answer benchmark query {query_index}."),
                 session_hash: 42_000 + query_index as u64,
-                query_id: format!("bench-query-{query_index}"),
+                query_id: query_id.clone(),
                 max_prompt_tokens: 256,
                 provider: ContextModelProviderConfig::default(),
             },
         );
         let inject_elapsed = inject_start.elapsed().as_millis();
         inject_total_elapsed_ms += inject_elapsed;
+        let selected_tokens = inject
+            .selected_blocks
+            .iter()
+            .map(|block| block.estimated_tokens)
+            .sum::<u32>();
         if inject.status.ok {
             injection_successes += 1;
-            selected_context_tokens = selected_context_tokens.saturating_add(
-                inject
-                    .selected_blocks
-                    .iter()
-                    .map(|block| block.estimated_tokens)
-                    .sum::<u32>(),
-            );
+            selected_context_tokens = selected_context_tokens.saturating_add(selected_tokens);
         }
+        per_query.push(ContextPipelineBenchmarkQueryReport {
+            query_id,
+            expected_topic,
+            retrieved_blocks: retrieve.blocks.len(),
+            selected_blocks: inject.selected_blocks.len(),
+            selected_tokens,
+            hit_rank,
+            reciprocal_rank,
+            retrieve_elapsed_ms: retrieve_elapsed,
+            inject_elapsed_ms: inject_elapsed,
+        });
     }
 
     retrieve_latencies.sort_unstable();
@@ -947,9 +1004,12 @@ pub fn run_context_pipeline_benchmark(
     let token_reduction_percent =
         token_reduction_percent(full_context_query_tokens, selected_context_tokens);
     let recall_at_k = retrieval_successes as f32 / query_count as f32;
+    let hit_at_k = hit_count as f32 / query_count as f32;
+    let mean_reciprocal_rank = reciprocal_rank_sum / query_count as f32;
     let status = if ingest.status.ok
         && retrieval_successes == query_count
         && injection_successes == query_count
+        && hit_count == query_count
     {
         Status::ok()
     } else {
@@ -969,12 +1029,15 @@ pub fn run_context_pipeline_benchmark(
     ContextPipelineBenchmarkReport {
         status,
         benchmark_name: "vikingmem_style_context_management_local".to_string(),
+        profile,
         source_count,
         query_count,
         accepted_sources: ingest.accepted,
         failed_sources: ingest.failed,
         retrieval_successes,
         injection_successes,
+        hit_at_k,
+        mean_reciprocal_rank,
         total_source_tokens: full_context_query_tokens,
         selected_context_tokens,
         token_reduction_percent,
@@ -982,12 +1045,16 @@ pub fn run_context_pipeline_benchmark(
         ingest_extract_elapsed_ms,
         retrieve_total_elapsed_ms,
         inject_total_elapsed_ms,
+        ingest_sources_per_sec: rate_per_sec(source_count, ingest_extract_elapsed_ms),
+        retrieve_queries_per_sec: rate_per_sec(query_count, retrieve_total_elapsed_ms),
+        inject_queries_per_sec: rate_per_sec(query_count, inject_total_elapsed_ms),
         retrieve_p50_ms,
         retrieve_p95_ms,
+        per_query,
         source_kind_counts: ingest.summary.source_kind_counts,
         provider_counts: ingest.summary.provider_counts,
         evidence: vec![
-            "VikingMem-style local benchmark covers extraction, hierarchical retrieval, injection, latency, recall proxy, and token reduction".to_string(),
+            "VikingMem-style local benchmark covers extraction, hierarchical retrieval, injection, latency, hit@k, MRR, throughput, recall proxy, and token reduction".to_string(),
             "Synthetic workload uses mixed Context source kinds and deterministic local providers".to_string(),
         ],
     }
@@ -1029,6 +1096,13 @@ fn token_reduction_percent(full_tokens: u32, selected_tokens: u32) -> f32 {
     }
     let saved = full_tokens.saturating_sub(selected_tokens);
     (saved as f32 * 100.0) / full_tokens as f32
+}
+
+fn rate_per_sec(count: usize, elapsed_ms: u128) -> f64 {
+    if elapsed_ms == 0 {
+        return count as f64;
+    }
+    (count as f64 * 1000.0) / elapsed_ms as f64
 }
 
 #[derive(Debug, Clone)]
@@ -1641,6 +1715,10 @@ fn default_retrieve_limit() -> usize {
     16
 }
 
+fn default_benchmark_profile() -> String {
+    "vikingmem_local_synthetic".to_string()
+}
+
 fn default_benchmark_source_count() -> usize {
     64
 }
@@ -1947,6 +2025,7 @@ mod tests {
             ContextPipelineBenchmarkRequest {
                 shard_id: 1,
                 tenant_hash: 88,
+                profile: "vikingmem_unit_profile".to_string(),
                 source_count: 12,
                 query_count: 3,
                 max_events: 6,
@@ -1958,12 +2037,23 @@ mod tests {
             benchmark.benchmark_name,
             "vikingmem_style_context_management_local"
         );
+        assert_eq!(benchmark.profile, "vikingmem_unit_profile");
         assert_eq!(benchmark.source_count, 12);
         assert_eq!(benchmark.query_count, 3);
         assert_eq!(benchmark.accepted_sources, 12);
         assert_eq!(benchmark.failed_sources, 0);
         assert_eq!(benchmark.retrieval_successes, 3);
         assert_eq!(benchmark.injection_successes, 3);
+        assert_eq!(benchmark.hit_at_k, 1.0);
+        assert!(benchmark.mean_reciprocal_rank > 0.0);
+        assert!(benchmark.ingest_sources_per_sec > 0.0);
+        assert!(benchmark.retrieve_queries_per_sec > 0.0);
+        assert!(benchmark.inject_queries_per_sec > 0.0);
+        assert_eq!(benchmark.per_query.len(), 3);
+        assert!(benchmark
+            .per_query
+            .iter()
+            .all(|query| query.hit_rank.is_some() && query.reciprocal_rank > 0.0));
         assert!(benchmark.recall_at_k >= 1.0);
         assert!(benchmark.token_reduction_percent > 0.0);
         assert!(benchmark.source_kind_counts.len() >= 3);

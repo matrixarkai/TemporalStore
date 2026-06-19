@@ -48,10 +48,17 @@ struct ContextWorkflowHarnessSummary {
     policy_controls: Vec<String>,
     provider_names: Vec<String>,
     benchmark_ready: bool,
+    benchmark_profile: String,
     benchmark_source_count: usize,
     benchmark_query_count: usize,
+    benchmark_hit_at_k: f32,
+    benchmark_mean_reciprocal_rank: f32,
     benchmark_recall_at_k: f32,
     benchmark_token_reduction_percent: f32,
+    benchmark_ingest_sources_per_sec: f64,
+    benchmark_retrieve_queries_per_sec: f64,
+    benchmark_inject_queries_per_sec: f64,
+    benchmark_per_query_count: usize,
     benchmark_retrieve_p50_ms: u128,
     benchmark_retrieve_p95_ms: u128,
     parity_evidence: Vec<String>,
@@ -208,6 +215,7 @@ fn main() {
         ContextPipelineBenchmarkRequest {
             shard_id: 1,
             tenant_hash: 20260617,
+            profile: "vikingmem_harness_profile".to_string(),
             source_count: 48,
             query_count: 6,
             max_events: 8,
@@ -217,8 +225,14 @@ fn main() {
     let benchmark_ready = benchmark.status.ok
         && benchmark.retrieval_successes == benchmark.query_count
         && benchmark.injection_successes == benchmark.query_count
+        && benchmark.hit_at_k >= 1.0
+        && benchmark.mean_reciprocal_rank > 0.0
         && benchmark.recall_at_k >= 1.0
-        && benchmark.token_reduction_percent > 0.0;
+        && benchmark.token_reduction_percent > 0.0
+        && benchmark.ingest_sources_per_sec > 0.0
+        && benchmark.retrieve_queries_per_sec > 0.0
+        && benchmark.inject_queries_per_sec > 0.0
+        && benchmark.per_query.len() == benchmark.query_count;
     let context_pipeline_ready = parity.pipeline_ready
         && restart_replay_ready
         && shared_store_sync_ready
@@ -283,10 +297,17 @@ fn main() {
             policy_controls: manage.policy_controls,
             provider_names: manage.provider_names,
             benchmark_ready,
+            benchmark_profile: benchmark.profile,
             benchmark_source_count: benchmark.source_count,
             benchmark_query_count: benchmark.query_count,
+            benchmark_hit_at_k: benchmark.hit_at_k,
+            benchmark_mean_reciprocal_rank: benchmark.mean_reciprocal_rank,
             benchmark_recall_at_k: benchmark.recall_at_k,
             benchmark_token_reduction_percent: benchmark.token_reduction_percent,
+            benchmark_ingest_sources_per_sec: benchmark.ingest_sources_per_sec,
+            benchmark_retrieve_queries_per_sec: benchmark.retrieve_queries_per_sec,
+            benchmark_inject_queries_per_sec: benchmark.inject_queries_per_sec,
+            benchmark_per_query_count: benchmark.per_query.len(),
             benchmark_retrieve_p50_ms: benchmark.retrieve_p50_ms,
             benchmark_retrieve_p95_ms: benchmark.retrieve_p95_ms,
             parity_evidence: parity.evidence,
