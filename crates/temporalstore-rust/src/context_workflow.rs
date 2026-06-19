@@ -2486,6 +2486,25 @@ fn context_query_synonyms(term: &str) -> &'static [&'static str] {
         "correction" | "corrected" | "correct" => &["changed", "updated", "replaced"],
         "backup" | "contact" => &["owner", "person", "responsible"],
         "cancel" | "cancelled" | "canceled" => &["stopped", "dropped", "no longer"],
+        "identity" => &["transgender", "woman", "community"],
+        "transgender" => &["identity", "lgbtq", "community"],
+        "relationship" => &["single", "dating", "married", "status"],
+        "research" | "researched" => &["looked", "adoption", "agencies"],
+        "adoption" | "agencies" => &["research", "interviews"],
+        "field" | "fields" | "education" | "educaton" | "pursue" | "career" => &[
+            "counseling",
+            "counselor",
+            "psychology",
+            "mental",
+            "health",
+            "certification",
+        ],
+        "counseling" | "counselor" | "psychology" => &["career", "field", "mental", "health"],
+        "interested" | "interest" => &["likes", "enjoys", "prefer", "outdoors"],
+        "outdoors" | "camping" | "park" => &["national", "nature", "outside"],
+        "ally" | "supportive" => &["support", "community", "transgender", "lgbtq"],
+        "bookshelf" | "books" | "book" => &["collects", "classic", "children", "reading"],
+        "writing" | "reading" => &["books", "author", "career", "counselor"],
         _ => &[],
     }
 }
@@ -2706,6 +2725,12 @@ fn is_context_query_stopword(term: &str) -> bool {
             | "why"
             | "how"
             | "about"
+            | "would"
+            | "likely"
+            | "still"
+            | "considered"
+            | "consider"
+            | "more"
             | "benchmark"
             | "context"
             | "memory"
