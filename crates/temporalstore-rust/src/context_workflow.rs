@@ -2083,6 +2083,23 @@ fn context_relevance_score(query: &str, text: &str) -> u32 {
     {
         score = score.saturating_add(70);
     }
+    if context_query_requests_contrastive_update(&base_terms)
+        && context_text_matches_any(
+            &text_lower,
+            &text_normalized,
+            &[
+                "switched",
+                "switch",
+                "moved",
+                "became",
+                "instead",
+                "no longer",
+                "changed from",
+            ],
+        )
+    {
+        score = score.saturating_add(85);
+    }
     score
 }
 
@@ -2139,7 +2156,9 @@ fn context_query_synonyms(term: &str) -> &'static [&'static str] {
         "want" | "wants" | "wanted" => &["prefer", "preference", "choice"],
         "prefer" | "preferred" => &["want", "preference", "choice"],
         "update" | "updated" | "updates" => &["changed", "change", "modify", "replaced"],
-        "changed" | "change" | "modify" | "replaced" => &["update", "updated"],
+        "changed" | "change" | "modify" | "replaced" => &["update", "updated", "switched"],
+        "switch" | "switched" | "switching" => &["changed", "moved", "replaced"],
+        "moved" | "move" => &["switched", "changed", "relocated"],
         "session" | "sessions" => &["dialogue", "conversation", "visit"],
         "conversation" | "dialogue" | "chat" => &["session", "message"],
         "message" | "messages" => &["conversation", "dialogue", "session"],
@@ -2165,6 +2184,8 @@ fn context_query_synonyms(term: &str) -> &'static [&'static str] {
         "gift" | "present" => &["birthday", "surprise", "preference"],
         "allergy" | "allergic" | "avoid" => &["restriction", "food", "without"],
         "correction" | "corrected" | "correct" => &["changed", "updated", "replaced"],
+        "backup" | "contact" => &["owner", "person", "responsible"],
+        "cancel" | "cancelled" | "canceled" => &["stopped", "dropped", "no longer"],
         _ => &[],
     }
 }
@@ -2243,6 +2264,26 @@ fn context_query_requests_reminder(terms: &[String]) -> bool {
         matches!(
             term.as_str(),
             "remember" | "recall" | "remind" | "reminder" | "said" | "told"
+        )
+    })
+}
+
+fn context_query_requests_contrastive_update(terms: &[String]) -> bool {
+    terms.iter().any(|term| {
+        matches!(
+            term.as_str(),
+            "switch"
+                | "switched"
+                | "switching"
+                | "changed"
+                | "change"
+                | "moved"
+                | "move"
+                | "became"
+                | "instead"
+                | "cancel"
+                | "cancelled"
+                | "canceled"
         )
     })
 }
@@ -2675,6 +2716,40 @@ mod tests {
             ) > context_relevance_score(
                 "Which medication did Morgan say to remember before the doctor appointment?",
                 stale_clinic_memory
+            )
+        );
+
+        let hobby_switch = "Later update: Priya cancelled guitar lessons and switched to a pottery class instead for the spring session.";
+        let stale_hobby = "Earlier conversation: Priya planned guitar lessons and had not picked a replacement hobby yet.";
+        assert!(context_query_matches(
+            "Which hobby did Priya switch to after cancelling guitar lessons?",
+            hobby_switch
+        ));
+        assert!(
+            context_relevance_score(
+                "Which hobby did Priya switch to after cancelling guitar lessons?",
+                hobby_switch
+            ) > context_relevance_score(
+                "Which hobby did Priya switch to after cancelling guitar lessons?",
+                stale_hobby
+            )
+        );
+
+        let current_backup =
+            "Most recent staffing update: Sam moved teams, so Riley became the backup contact for payment escalation now.";
+        let stale_backup =
+            "Old support note: Sam was the backup contact for payment escalation before the team move.";
+        assert!(context_query_matches(
+            "Who is the backup contact now after Sam moved teams?",
+            current_backup
+        ));
+        assert!(
+            context_relevance_score(
+                "Who is the backup contact now after Sam moved teams?",
+                current_backup
+            ) > context_relevance_score(
+                "Who is the backup contact now after Sam moved teams?",
+                stale_backup
             )
         );
     }

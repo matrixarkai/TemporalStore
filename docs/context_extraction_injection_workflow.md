@@ -195,15 +195,18 @@ fixture so CI and local Docker validation still enforce external-benchmark scori
 normalizes punctuation and hyphenation, applies simple plural stemming, expands temporal,
 multi-hop, latest/update, preference, location/workplace, problem/resolution, support, and
 risk/payment aliases, and boosts latest, temporal, correction, and reminder evidence so newer
-memory updates and remembered facts outrank stale conversational memories. The built-in external
-fixture includes direct update questions plus harder
+memory updates and remembered facts outrank stale conversational memories. It also boosts
+contrastive updates such as switched, moved, became, cancelled, and instead so stale memories with
+overlapping entities do not win against current facts. The built-in external fixture includes direct
+update questions plus harder
 paraphrases such as "Where does Alice want to work now?" and "Which setting changed most recently
 across the conversation history?", plus temporal-after and root-cause questions such as
 "What did Alice decide after the airport trip conversation?" and "Why did checkout fail after the
 backend outage?", corrected preference questions such as "What snack should Jordan avoid now after
 the correction?", and medication-reminder questions such as "Which medication did Morgan say to
-remember before the doctor appointment?" to keep LOCOMO/LongMemEval-style hit-rate regressions
-visible.
+remember before the doctor appointment?", plus contrastive-update questions such as "Which hobby did
+Priya switch to after cancelling guitar lessons?" and "Who is the backup contact now after Sam moved
+teams?" to keep LOCOMO/LongMemEval-style hit-rate regressions visible.
 
 Remaining policy hardening:
 

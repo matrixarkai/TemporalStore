@@ -890,6 +890,42 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
                 },
             ],
         },
+        ExternalContextBenchmarkCase {
+            dataset: "locomo_style".to_string(),
+            query_id: "locomo-hobby-switch".to_string(),
+            query: "Which hobby did Priya switch to after cancelling guitar lessons?".to_string(),
+            expected_terms: vec!["pottery class".to_string()],
+            sources: vec![
+                ExternalContextBenchmarkSource {
+                    title: "Old hobby plan".to_string(),
+                    body: "Earlier conversation: Priya planned guitar lessons and had not picked a replacement hobby yet.".to_string(),
+                    kind: ContextSourceKind::Chat,
+                },
+                ExternalContextBenchmarkSource {
+                    title: "Hobby switch".to_string(),
+                    body: "Later update: Priya cancelled guitar lessons and switched to a pottery class instead for the spring session.".to_string(),
+                    kind: ContextSourceKind::UserEvent,
+                },
+            ],
+        },
+        ExternalContextBenchmarkCase {
+            dataset: "longmemeval_s_style".to_string(),
+            query_id: "longmem-backup-contact-change".to_string(),
+            query: "Who is the backup contact now after Sam moved teams?".to_string(),
+            expected_terms: vec!["Riley".to_string()],
+            sources: vec![
+                ExternalContextBenchmarkSource {
+                    title: "Old escalation owner".to_string(),
+                    body: "Old support note: Sam was the backup contact for payment escalation before the team move.".to_string(),
+                    kind: ContextSourceKind::Ticket,
+                },
+                ExternalContextBenchmarkSource {
+                    title: "Current escalation owner".to_string(),
+                    body: "Most recent staffing update: Sam moved teams, so Riley became the backup contact for payment escalation now.".to_string(),
+                    kind: ContextSourceKind::Ticket,
+                },
+            ],
+        },
     ]
 }
 
