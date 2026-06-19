@@ -235,6 +235,13 @@ def validate_context_workflow(job, summary):
     require(summary["benchmark_inject_queries_per_sec"] > 0.0, f"{job}: context benchmark inject throughput missing")
     require(summary["benchmark_per_query_count"] == summary["benchmark_query_count"], f"{job}: context benchmark per-query report count mismatch")
     require(summary["benchmark_retrieve_p95_ms"] >= summary["benchmark_retrieve_p50_ms"], f"{job}: context benchmark latency percentiles invalid")
+    require(summary["benchmark_threshold_passed"], f"{job}: context benchmark thresholds failed")
+    require(summary["benchmark_threshold_violation_count"] == 0, f"{job}: context benchmark threshold violations present")
+    thresholds = summary["benchmark_thresholds"]
+    require(thresholds["min_hit_at_k"] >= 1.0, f"{job}: context benchmark hit@k threshold too low")
+    require(thresholds["min_recall_at_k"] >= 1.0, f"{job}: context benchmark recall threshold too low")
+    require(thresholds["min_token_reduction_percent"] > 0.0, f"{job}: context benchmark token threshold missing")
+    require(thresholds["max_retrieve_p95_ms"] >= thresholds["max_retrieve_p50_ms"], f"{job}: context benchmark threshold latency percentiles invalid")
     require(summary["benchmark_sweep_ready"], f"{job}: context benchmark sweep is not ready")
     require(summary["benchmark_sweep_profile_count"] >= 2, f"{job}: context benchmark sweep profile count too small")
     require(summary["benchmark_sweep_total_sources"] >= summary["benchmark_source_count"], f"{job}: context benchmark sweep source coverage too small")
@@ -243,6 +250,8 @@ def validate_context_workflow(job, summary):
     require(summary["benchmark_sweep_min_mean_reciprocal_rank"] > 0.0, f"{job}: context benchmark sweep MRR missing")
     require(summary["benchmark_sweep_min_token_reduction_percent"] > 0.0, f"{job}: context benchmark sweep token reduction missing")
     require(summary["benchmark_sweep_max_retrieve_p95_ms"] >= 0, f"{job}: context benchmark sweep latency coverage invalid")
+    require(summary["benchmark_sweep_all_thresholds_passed"], f"{job}: context benchmark sweep thresholds failed")
+    require(summary["benchmark_sweep_threshold_violation_count"] == 0, f"{job}: context benchmark sweep threshold violations present")
     require("/context/manage" in summary["managed_routes"], f"{job}: context management route missing")
     require("/context/ingest_extract" in summary["managed_routes"], f"{job}: context ingest/extract route missing")
     for field in [

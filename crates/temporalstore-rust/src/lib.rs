@@ -38,10 +38,10 @@ pub use context_workflow::{
     ContextInjectRequest, ContextModelProviderConfig, ContextPipelineBenchmarkQueryReport,
     ContextPipelineBenchmarkReport, ContextPipelineBenchmarkRequest,
     ContextPipelineBenchmarkSweepProfile, ContextPipelineBenchmarkSweepReport,
-    ContextPipelineBenchmarkSweepRequest, ContextPipelineManageReport,
-    ContextPipelineParityEvidence, ContextPipelineStageReport, ContextProviderKind,
-    ContextRetrieveReport, ContextRetrieveRequest, ContextSourceKind, ContextTier,
-    ContextWorkflowStateReport,
+    ContextPipelineBenchmarkSweepRequest, ContextPipelineBenchmarkThresholds,
+    ContextPipelineManageReport, ContextPipelineParityEvidence, ContextPipelineStageReport,
+    ContextProviderKind, ContextRetrieveReport, ContextRetrieveRequest, ContextSourceKind,
+    ContextTier, ContextWorkflowStateReport,
 };
 pub use control::{
     CheckedBatchExecuteRequest, CheckedBatchExecuteResponse, CheckedExecuteRequest,

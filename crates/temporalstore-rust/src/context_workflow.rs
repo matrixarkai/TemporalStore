@@ -160,7 +160,7 @@ pub struct ContextIngestSourceFailure {
     pub status: Status,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContextPipelineBenchmarkRequest {
     pub shard_id: ShardId,
     pub tenant_hash: u64,
@@ -174,6 +174,8 @@ pub struct ContextPipelineBenchmarkRequest {
     pub max_events: usize,
     #[serde(default)]
     pub provider: ContextModelProviderConfig,
+    #[serde(default = "default_benchmark_thresholds")]
+    pub thresholds: ContextPipelineBenchmarkThresholds,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -201,10 +203,32 @@ pub struct ContextPipelineBenchmarkReport {
     pub inject_queries_per_sec: f64,
     pub retrieve_p50_ms: u128,
     pub retrieve_p95_ms: u128,
+    pub thresholds: ContextPipelineBenchmarkThresholds,
+    pub threshold_passed: bool,
+    pub threshold_violations: Vec<String>,
     pub per_query: Vec<ContextPipelineBenchmarkQueryReport>,
     pub source_kind_counts: BTreeMap<String, usize>,
     pub provider_counts: BTreeMap<String, usize>,
     pub evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextPipelineBenchmarkThresholds {
+    pub min_hit_at_k: f32,
+    pub min_mean_reciprocal_rank: f32,
+    pub min_recall_at_k: f32,
+    pub min_token_reduction_percent: f32,
+    pub max_retrieve_p50_ms: u128,
+    pub max_retrieve_p95_ms: u128,
+    pub min_ingest_sources_per_sec: f64,
+    pub min_retrieve_queries_per_sec: f64,
+    pub min_inject_queries_per_sec: f64,
+}
+
+impl Default for ContextPipelineBenchmarkThresholds {
+    fn default() -> Self {
+        default_benchmark_thresholds()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -236,6 +260,8 @@ pub struct ContextPipelineBenchmarkSweepRequest {
     pub profiles: Vec<ContextPipelineBenchmarkSweepProfile>,
     #[serde(default)]
     pub provider: ContextModelProviderConfig,
+    #[serde(default = "default_benchmark_thresholds")]
+    pub thresholds: ContextPipelineBenchmarkThresholds,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -251,6 +277,8 @@ pub struct ContextPipelineBenchmarkSweepReport {
     pub max_retrieve_p95_ms: u128,
     pub total_sources: usize,
     pub total_queries: usize,
+    pub all_thresholds_passed: bool,
+    pub threshold_violations: Vec<String>,
     pub evidence: Vec<String>,
 }
 
@@ -1040,22 +1068,37 @@ pub fn run_context_pipeline_benchmark(
     let recall_at_k = retrieval_successes as f32 / query_count as f32;
     let hit_at_k = hit_count as f32 / query_count as f32;
     let mean_reciprocal_rank = reciprocal_rank_sum / query_count as f32;
+    let threshold_violations = benchmark_threshold_violations(
+        &request.thresholds,
+        hit_at_k,
+        mean_reciprocal_rank,
+        recall_at_k,
+        token_reduction_percent,
+        retrieve_p50_ms,
+        retrieve_p95_ms,
+        rate_per_sec(source_count, ingest_extract_elapsed_ms),
+        rate_per_sec(query_count, retrieve_total_elapsed_ms),
+        rate_per_sec(query_count, inject_total_elapsed_ms),
+    );
+    let threshold_passed = threshold_violations.is_empty();
     let status = if ingest.status.ok
         && retrieval_successes == query_count
         && injection_successes == query_count
         && hit_count == query_count
+        && threshold_passed
     {
         Status::ok()
     } else {
         Status::error(
             "context_pipeline_benchmark_incomplete",
             format!(
-                "accepted={} failed={} retrieval_successes={} injection_successes={} queries={}",
+                "accepted={} failed={} retrieval_successes={} injection_successes={} queries={} threshold_violations={:?}",
                 ingest.accepted,
                 ingest.failed,
                 retrieval_successes,
                 injection_successes,
-                query_count
+                query_count,
+                threshold_violations
             ),
         )
     };
@@ -1084,6 +1127,9 @@ pub fn run_context_pipeline_benchmark(
         inject_queries_per_sec: rate_per_sec(query_count, inject_total_elapsed_ms),
         retrieve_p50_ms,
         retrieve_p95_ms,
+        thresholds: request.thresholds,
+        threshold_passed,
+        threshold_violations,
         per_query,
         source_kind_counts: ingest.summary.source_kind_counts,
         provider_counts: ingest.summary.provider_counts,
@@ -1115,6 +1161,7 @@ pub fn run_context_pipeline_benchmark_sweep(
                 query_count: profile.query_count,
                 max_events: profile.max_events,
                 provider: request.provider.clone(),
+                thresholds: request.thresholds.clone(),
             },
         ));
     }
@@ -1139,8 +1186,19 @@ pub fn run_context_pipeline_benchmark_sweep(
         .unwrap_or_default();
     let total_sources = reports.iter().map(|report| report.source_count).sum();
     let total_queries = reports.iter().map(|report| report.query_count).sum();
+    let all_thresholds_passed = reports.iter().all(|report| report.threshold_passed);
+    let threshold_violations = reports
+        .iter()
+        .flat_map(|report| {
+            report
+                .threshold_violations
+                .iter()
+                .map(|violation| format!("{}:{violation}", report.profile))
+        })
+        .collect::<Vec<_>>();
     let status = if profile_count > 0
         && all_profiles_ready
+        && all_thresholds_passed
         && min_hit_at_k >= 1.0
         && min_mean_reciprocal_rank > 0.0
         && min_token_reduction_percent > 0.0
@@ -1167,11 +1225,83 @@ pub fn run_context_pipeline_benchmark_sweep(
         max_retrieve_p95_ms,
         total_sources,
         total_queries,
+        all_thresholds_passed,
+        threshold_violations,
         evidence: vec![
             "Benchmark sweep runs multiple deterministic profile sizes through the same Context pipeline".to_string(),
-            "Sweep aggregates readiness, hit@k, MRR, token reduction, latency, total source count, and total query count".to_string(),
+            "Sweep aggregates readiness, threshold gates, hit@k, MRR, token reduction, latency, total source count, and total query count".to_string(),
         ],
     }
+}
+
+fn benchmark_threshold_violations(
+    thresholds: &ContextPipelineBenchmarkThresholds,
+    hit_at_k: f32,
+    mean_reciprocal_rank: f32,
+    recall_at_k: f32,
+    token_reduction_percent: f32,
+    retrieve_p50_ms: u128,
+    retrieve_p95_ms: u128,
+    ingest_sources_per_sec: f64,
+    retrieve_queries_per_sec: f64,
+    inject_queries_per_sec: f64,
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    if hit_at_k < thresholds.min_hit_at_k {
+        violations.push(format!(
+            "hit_at_k {hit_at_k:.3} below {:.3}",
+            thresholds.min_hit_at_k
+        ));
+    }
+    if mean_reciprocal_rank < thresholds.min_mean_reciprocal_rank {
+        violations.push(format!(
+            "mean_reciprocal_rank {mean_reciprocal_rank:.3} below {:.3}",
+            thresholds.min_mean_reciprocal_rank
+        ));
+    }
+    if recall_at_k < thresholds.min_recall_at_k {
+        violations.push(format!(
+            "recall_at_k {recall_at_k:.3} below {:.3}",
+            thresholds.min_recall_at_k
+        ));
+    }
+    if token_reduction_percent < thresholds.min_token_reduction_percent {
+        violations.push(format!(
+            "token_reduction_percent {token_reduction_percent:.3} below {:.3}",
+            thresholds.min_token_reduction_percent
+        ));
+    }
+    if retrieve_p50_ms > thresholds.max_retrieve_p50_ms {
+        violations.push(format!(
+            "retrieve_p50_ms {retrieve_p50_ms} above {}",
+            thresholds.max_retrieve_p50_ms
+        ));
+    }
+    if retrieve_p95_ms > thresholds.max_retrieve_p95_ms {
+        violations.push(format!(
+            "retrieve_p95_ms {retrieve_p95_ms} above {}",
+            thresholds.max_retrieve_p95_ms
+        ));
+    }
+    if ingest_sources_per_sec < thresholds.min_ingest_sources_per_sec {
+        violations.push(format!(
+            "ingest_sources_per_sec {ingest_sources_per_sec:.3} below {:.3}",
+            thresholds.min_ingest_sources_per_sec
+        ));
+    }
+    if retrieve_queries_per_sec < thresholds.min_retrieve_queries_per_sec {
+        violations.push(format!(
+            "retrieve_queries_per_sec {retrieve_queries_per_sec:.3} below {:.3}",
+            thresholds.min_retrieve_queries_per_sec
+        ));
+    }
+    if inject_queries_per_sec < thresholds.min_inject_queries_per_sec {
+        violations.push(format!(
+            "inject_queries_per_sec {inject_queries_per_sec:.3} below {:.3}",
+            thresholds.min_inject_queries_per_sec
+        ));
+    }
+    violations
 }
 
 fn context_source_kind_name(kind: ContextSourceKind) -> &'static str {
@@ -1841,6 +1971,20 @@ fn default_benchmark_query_count() -> usize {
     8
 }
 
+fn default_benchmark_thresholds() -> ContextPipelineBenchmarkThresholds {
+    ContextPipelineBenchmarkThresholds {
+        min_hit_at_k: 1.0,
+        min_mean_reciprocal_rank: 0.1,
+        min_recall_at_k: 1.0,
+        min_token_reduction_percent: 0.1,
+        max_retrieve_p50_ms: 10_000,
+        max_retrieve_p95_ms: 10_000,
+        min_ingest_sources_per_sec: 1.0,
+        min_retrieve_queries_per_sec: 1.0,
+        min_inject_queries_per_sec: 1.0,
+    }
+}
+
 fn default_benchmark_sweep_profiles() -> Vec<ContextPipelineBenchmarkSweepProfile> {
     vec![
         ContextPipelineBenchmarkSweepProfile {
@@ -2167,6 +2311,7 @@ mod tests {
                 query_count: 3,
                 max_events: 6,
                 provider: ContextModelProviderConfig::default(),
+                thresholds: ContextPipelineBenchmarkThresholds::default(),
             },
         );
         assert!(benchmark.status.ok, "{:?}", benchmark.status);
@@ -2193,6 +2338,9 @@ mod tests {
             .all(|query| query.hit_rank.is_some() && query.reciprocal_rank > 0.0));
         assert!(benchmark.recall_at_k >= 1.0);
         assert!(benchmark.token_reduction_percent > 0.0);
+        assert!(benchmark.threshold_passed);
+        assert!(benchmark.threshold_violations.is_empty());
+        assert_eq!(benchmark.thresholds.min_hit_at_k, 1.0);
         assert!(benchmark.source_kind_counts.len() >= 3);
         assert_eq!(
             benchmark.provider_counts.get("mock-openai-compatible"),
@@ -2219,6 +2367,7 @@ mod tests {
                     },
                 ],
                 provider: ContextModelProviderConfig::default(),
+                thresholds: ContextPipelineBenchmarkThresholds::default(),
             },
         );
         assert!(sweep.status.ok, "{:?}", sweep.status);
@@ -2233,6 +2382,8 @@ mod tests {
         assert_eq!(sweep.min_hit_at_k, 1.0);
         assert!(sweep.min_mean_reciprocal_rank > 0.0);
         assert!(sweep.min_token_reduction_percent > 0.0);
+        assert!(sweep.all_thresholds_passed);
+        assert!(sweep.threshold_violations.is_empty());
         assert_eq!(sweep.reports.len(), 2);
     }
 

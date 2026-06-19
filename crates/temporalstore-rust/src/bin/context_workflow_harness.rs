@@ -11,9 +11,10 @@ use temporalstore_rust::{
     run_context_pipeline_benchmark_sweep, Command, CommandResponse, ContextExtractRequest,
     ContextIngestExtractRequest, ContextInjectRequest, ContextModelProviderConfig,
     ContextPipelineBenchmarkRequest, ContextPipelineBenchmarkSweepProfile,
-    ContextPipelineBenchmarkSweepRequest, ContextPipelineParityEvidence, ContextRetrieveRequest,
-    ContextSourceKind, ContextTier, ExecuteRequest, RaftCluster, RaftConfig, SharedStoreReplicator,
-    SharedStoreStorageMode, TemporalEngine,
+    ContextPipelineBenchmarkSweepRequest, ContextPipelineBenchmarkThresholds,
+    ContextPipelineParityEvidence, ContextRetrieveRequest, ContextSourceKind, ContextTier,
+    ExecuteRequest, RaftCluster, RaftConfig, SharedStoreReplicator, SharedStoreStorageMode,
+    TemporalEngine,
 };
 use temporalstore_snapshot::object_store::FileObjectStore;
 
@@ -62,6 +63,9 @@ struct ContextWorkflowHarnessSummary {
     benchmark_per_query_count: usize,
     benchmark_retrieve_p50_ms: u128,
     benchmark_retrieve_p95_ms: u128,
+    benchmark_threshold_passed: bool,
+    benchmark_threshold_violation_count: usize,
+    benchmark_thresholds: ContextPipelineBenchmarkThresholds,
     benchmark_sweep_ready: bool,
     benchmark_sweep_profile_count: usize,
     benchmark_sweep_total_sources: usize,
@@ -70,6 +74,8 @@ struct ContextWorkflowHarnessSummary {
     benchmark_sweep_min_mean_reciprocal_rank: f32,
     benchmark_sweep_min_token_reduction_percent: f32,
     benchmark_sweep_max_retrieve_p95_ms: u128,
+    benchmark_sweep_all_thresholds_passed: bool,
+    benchmark_sweep_threshold_violation_count: usize,
     parity_evidence: Vec<String>,
 }
 
@@ -229,6 +235,7 @@ fn main() {
             query_count: 6,
             max_events: 8,
             provider: ContextModelProviderConfig::default(),
+            thresholds: ContextPipelineBenchmarkThresholds::default(),
         },
     );
     let benchmark_ready = benchmark.status.ok
@@ -241,6 +248,8 @@ fn main() {
         && benchmark.ingest_sources_per_sec > 0.0
         && benchmark.retrieve_queries_per_sec > 0.0
         && benchmark.inject_queries_per_sec > 0.0
+        && benchmark.threshold_passed
+        && benchmark.threshold_violations.is_empty()
         && benchmark.per_query.len() == benchmark.query_count;
     let benchmark_sweep = run_context_pipeline_benchmark_sweep(
         &engine,
@@ -262,6 +271,7 @@ fn main() {
                 },
             ],
             provider: ContextModelProviderConfig::default(),
+            thresholds: ContextPipelineBenchmarkThresholds::default(),
         },
     );
     let benchmark_sweep_ready = benchmark_sweep.status.ok
@@ -271,7 +281,9 @@ fn main() {
         && benchmark_sweep.total_queries >= 6
         && benchmark_sweep.min_hit_at_k >= 1.0
         && benchmark_sweep.min_mean_reciprocal_rank > 0.0
-        && benchmark_sweep.min_token_reduction_percent > 0.0;
+        && benchmark_sweep.min_token_reduction_percent > 0.0
+        && benchmark_sweep.all_thresholds_passed
+        && benchmark_sweep.threshold_violations.is_empty();
     let context_pipeline_ready = parity.pipeline_ready
         && restart_replay_ready
         && shared_store_sync_ready
@@ -351,6 +363,9 @@ fn main() {
             benchmark_per_query_count: benchmark.per_query.len(),
             benchmark_retrieve_p50_ms: benchmark.retrieve_p50_ms,
             benchmark_retrieve_p95_ms: benchmark.retrieve_p95_ms,
+            benchmark_threshold_passed: benchmark.threshold_passed,
+            benchmark_threshold_violation_count: benchmark.threshold_violations.len(),
+            benchmark_thresholds: benchmark.thresholds,
             benchmark_sweep_ready,
             benchmark_sweep_profile_count: benchmark_sweep.profile_count,
             benchmark_sweep_total_sources: benchmark_sweep.total_sources,
@@ -360,6 +375,8 @@ fn main() {
             benchmark_sweep_min_token_reduction_percent: benchmark_sweep
                 .min_token_reduction_percent,
             benchmark_sweep_max_retrieve_p95_ms: benchmark_sweep.max_retrieve_p95_ms,
+            benchmark_sweep_all_thresholds_passed: benchmark_sweep.all_thresholds_passed,
+            benchmark_sweep_threshold_violation_count: benchmark_sweep.threshold_violations.len(),
             parity_evidence: parity.evidence,
         })
         .expect("context workflow summary should serialize")

@@ -145,9 +145,12 @@ workload parity or published VikingMem scores. It produces local TemporalStore e
 - `benchmark_token_reduction_percent`
 - ingest, retrieval, and injection throughput counters
 - `benchmark_retrieve_p50_ms` and `benchmark_retrieve_p95_ms`
+- `benchmark_thresholds`, `benchmark_threshold_passed`, and threshold violation counts for
+  explicit regression gates on hit@k, MRR, recall proxy, token reduction, latency, and throughput
 - per-query hit rank, reciprocal rank, selected-block count, token count, and latency
 - `benchmark_sweep_*` fields covering multi-profile source/query sweeps, minimum hit@k, minimum
-  MRR, minimum token reduction, total source/query coverage, and maximum p95 retrieval latency
+  MRR, minimum token reduction, total source/query coverage, maximum p95 retrieval latency, and
+  sweep-wide threshold pass/fail evidence
 - mixed source-kind and provider accounting through the ingest/extract summary
 
 The current local workload uses synthetic incidents, tickets, documents, chats, code snippets, and
