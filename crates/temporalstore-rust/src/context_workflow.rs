@@ -964,10 +964,7 @@ pub fn run_context_pipeline_benchmark(
         let source_kind = benchmark_source_kind(index);
         let topic_index = index % query_count;
         topic_source_counts[topic_index] += 1;
-        let body = format!(
-            "VikingMem-style benchmark context item {index}: checkout incident topic {} includes user preference, service dependency, timeline evidence, retrieval hint, and follow-up action.",
-            topic_index
-        );
+        let body = benchmark_context_body(index, topic_index, topic_source_counts[topic_index]);
         total_source_tokens = total_source_tokens.saturating_add(estimate_tokens(&body));
         sources.push(ContextExtractRequest {
             shard_id: request.shard_id,
@@ -1028,7 +1025,7 @@ pub fn run_context_pipeline_benchmark(
             shard_id: request.shard_id,
             tenant_hash: request.tenant_hash,
             node_hashes: ingest.node_hashes.clone(),
-            query: format!("checkout benchmark {expected_topic}"),
+            query: benchmark_query_for_topic(query_index),
             start_time_ms: 0,
             end_time_ms: 1_000 + source_count as u64 + 1,
             max_events: request.max_events,
@@ -1431,6 +1428,38 @@ fn benchmark_source_kind(index: usize) -> ContextSourceKind {
         3 => ContextSourceKind::Chat,
         4 => ContextSourceKind::Code,
         _ => ContextSourceKind::UserEvent,
+    }
+}
+
+fn benchmark_context_body(index: usize, topic_index: usize, topic_sequence: usize) -> String {
+    let is_latest_update = topic_sequence > 1;
+    let update_marker = if is_latest_update {
+        "latest memory update"
+    } else {
+        "earlier memory"
+    };
+    let detail = match (topic_index % 4, is_latest_update) {
+        (0, true) => "checkout payment risk score changed after a fraud review, with the current status captured for later QA",
+        (0, false) => "checkout payment risk score baseline from the original fraud review remains available as historical context",
+        (1, true) => "backend service dependency outage created a current temporal incident timeline and recovery sequence",
+        (1, false) => "backend service dependency health snapshot captured the initial incident history before recovery",
+        (2, true) => "customer preference was updated during a later conversation session and replaced the stale setting",
+        (2, false) => "customer preference captured the original conversation setting before any later change",
+        (_, true) => "support ticket follow-up recorded the agent action, user ask, and open helpdesk state",
+        (_, false) => "support ticket captured the first user ask before the agent follow-up action",
+    };
+    format!(
+        "VikingMem-style benchmark context item {index}: {update_marker} for topic {topic_index}; {detail}; retrieval hint and follow-up action are preserved."
+    )
+}
+
+fn benchmark_query_for_topic(topic_index: usize) -> String {
+    let topic_phrase = format!("topic {topic_index}");
+    match topic_index % 4 {
+        0 => format!("latest payment fraud status {topic_phrase}"),
+        1 => format!("recent service outage timeline {topic_phrase}"),
+        2 => format!("customer preference update conversation {topic_phrase}"),
+        _ => format!("support ticket follow up {topic_phrase}"),
     }
 }
 
@@ -2037,7 +2066,11 @@ fn context_query_synonyms(term: &str) -> &'static [&'static str] {
         "risk" => &["fraud", "score", "safety"],
         "fraud" => &["risk", "score", "safety"],
         "score" => &["risk", "fraud", "safety"],
-        "failed" | "failure" => &["error", "incident", "outage"],
+        "latest" | "recent" | "current" => &["updated", "update", "status"],
+        "status" | "state" => &["current", "latest", "condition"],
+        "failed" | "failure" | "outage" => &["error", "incident", "down"],
+        "dependency" | "backend" => &["service", "system"],
+        "ticket" | "followup" => &["support", "agent", "helpdesk"],
         "support" => &["ticket", "agent", "helpdesk"],
         "preference" | "preferences" => &["likes", "setting", "choice"],
         "update" | "updated" | "updates" => &["changed", "change", "modify"],
@@ -2409,6 +2442,20 @@ mod tests {
                 > context_relevance_score("service timeline outage", distractor)
         );
         assert!(context_relevance_score("payment fraud score", relevant) >= 100);
+
+        let updated_memory = benchmark_context_body(7, 2, 4);
+        let stale_memory = benchmark_context_body(1, 2, 1);
+        assert!(context_query_matches(
+            "latest customer preference update topic 2",
+            &updated_memory
+        ));
+        assert!(
+            context_relevance_score("latest customer preference update topic 2", &updated_memory)
+                > context_relevance_score(
+                    "latest customer preference update topic 2",
+                    &stale_memory
+                )
+        );
     }
 
     #[test]

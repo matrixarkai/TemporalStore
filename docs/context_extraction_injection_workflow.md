@@ -169,10 +169,13 @@ so future benchmark runs can separate local synthetic sweeps, paper-inspired reg
 deployment-specific model/provider sweeps without changing the JSON schema. The default sweep uses
 small, medium, large, LOCOMO-style, and LongMemEval_s-style deterministic profiles; the local
 harness runs four quick profiles to preserve profile-comparison evidence. The retrieval scorer uses
-query-term overlap, compact QA synonym expansion, adjacent phrase boosts, and exact topic-phrase
-boosting for benchmark questions. This keeps non-verbatim conversational-memory questions such as
-payment/fraud wording aligned with checkout/risk memories and raises the local synthetic benchmark
-to `hit_at_k = 1.0`, `mean_reciprocal_rank = 1.0`, and zero zero-hit queries in the checked harness
+query-term overlap, compact QA synonym expansion, adjacent phrase boosts, exact topic-phrase
+boosting, and latest/update wording for benchmark questions. Synthetic sources now include older
+baseline memories and later memory updates, while queries rotate through payment-risk,
+service-outage, preference-update, and support-follow-up paraphrases. This keeps non-verbatim
+conversational-memory questions such as payment/fraud wording aligned with checkout/risk memories
+and validates stale/latest memory ranking at `hit_at_k = 1.0`, `mean_reciprocal_rank = 1.0`, and
+zero zero-hit queries in the checked harness.
 output.
 
 Remaining policy hardening:
