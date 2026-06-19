@@ -1,10 +1,12 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use std::collections::BTreeMap;
+use std::fs;
 
 use serde::Serialize;
+use serde_json::Value;
 use temporalstore_rust::{
     context_pipeline_manage_report, context_pipeline_parity_evidence, extract_context,
     ingest_extract_context, inject_context, retrieve_context, run_context_pipeline_benchmark,
@@ -95,7 +97,25 @@ struct ContextWorkflowHarnessSummary {
     benchmark_sweep_avg_selected_tokens_per_query: f64,
     benchmark_sweep_all_thresholds_passed: bool,
     benchmark_sweep_threshold_violation_count: usize,
+    external_benchmark_ready: bool,
+    external_benchmark_dataset: String,
+    external_benchmark_case_count: usize,
+    external_benchmark_hit_at_k: f32,
+    external_benchmark_mean_reciprocal_rank: f32,
+    external_benchmark_zero_hit_queries: usize,
+    external_benchmark_source: String,
     parity_evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ExternalContextBenchmarkReport {
+    ready: bool,
+    dataset: String,
+    case_count: usize,
+    hit_at_k: f32,
+    mean_reciprocal_rank: f32,
+    zero_hit_queries: usize,
+    source: String,
 }
 
 fn main() {
@@ -331,6 +351,7 @@ fn main() {
         && benchmark_sweep.avg_selected_tokens_per_query > 0.0
         && benchmark_sweep.all_thresholds_passed
         && benchmark_sweep.threshold_violations.is_empty();
+    let external_benchmark = run_external_context_benchmark(&engine);
     let context_pipeline_ready = parity.pipeline_ready
         && restart_replay_ready
         && shared_store_sync_ready
@@ -341,10 +362,11 @@ fn main() {
         && ingest_extract_ready
         && retrieve_pipeline_ready
         && benchmark_ready
-        && benchmark_sweep_ready;
+        && benchmark_sweep_ready
+        && external_benchmark.ready;
     assert!(
         context_pipeline_ready,
-        "context pipeline readiness failed: parity={} restart={} sync={} async={} raft={} corpus={} management={} ingest_extract={} retrieve={} benchmark={} sweep={} retrieve_events={} retrieve_blocks={}",
+        "context pipeline readiness failed: parity={} restart={} sync={} async={} raft={} corpus={} management={} ingest_extract={} retrieve={} benchmark={} sweep={} external_benchmark={} retrieve_events={} retrieve_blocks={}",
         parity.pipeline_ready,
         restart_replay_ready,
         shared_store_sync_ready,
@@ -356,6 +378,7 @@ fn main() {
         retrieve_pipeline_ready,
         benchmark_ready,
         benchmark_sweep_ready,
+        external_benchmark.ready,
         ingest_retrieve.event_count,
         ingest_retrieve.blocks.len()
     );
@@ -445,10 +468,298 @@ fn main() {
                 .avg_selected_tokens_per_query,
             benchmark_sweep_all_thresholds_passed: benchmark_sweep.all_thresholds_passed,
             benchmark_sweep_threshold_violation_count: benchmark_sweep.threshold_violations.len(),
+            external_benchmark_ready: external_benchmark.ready,
+            external_benchmark_dataset: external_benchmark.dataset,
+            external_benchmark_case_count: external_benchmark.case_count,
+            external_benchmark_hit_at_k: external_benchmark.hit_at_k,
+            external_benchmark_mean_reciprocal_rank: external_benchmark.mean_reciprocal_rank,
+            external_benchmark_zero_hit_queries: external_benchmark.zero_hit_queries,
+            external_benchmark_source: external_benchmark.source,
             parity_evidence: parity.evidence,
         })
         .expect("context workflow summary should serialize")
     );
+}
+
+fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBenchmarkReport {
+    let configured_path = std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_JSONL").ok();
+    let (source, cases) = match configured_path {
+        Some(path) if !path.trim().is_empty() => {
+            let path = PathBuf::from(path);
+            (
+                path.display().to_string(),
+                parse_external_context_benchmark_cases(&path),
+            )
+        }
+        _ => (
+            "built-in-locomo-longmemeval-fixture".to_string(),
+            builtin_external_context_benchmark_cases(),
+        ),
+    };
+    if cases.is_empty() {
+        return ExternalContextBenchmarkReport {
+            ready: false,
+            dataset: "empty".to_string(),
+            case_count: 0,
+            hit_at_k: 0.0,
+            mean_reciprocal_rank: 0.0,
+            zero_hit_queries: 0,
+            source,
+        };
+    }
+
+    let mut hit_count = 0usize;
+    let mut reciprocal_rank_sum = 0.0f32;
+    let mut dataset_counts = BTreeMap::new();
+    for (index, case) in cases.iter().enumerate() {
+        *dataset_counts.entry(case.dataset.clone()).or_insert(0usize) += 1;
+        let tenant_hash = 20260701 + index as u64;
+        let sources = case
+            .sources
+            .iter()
+            .enumerate()
+            .map(|(source_index, source)| ContextExtractRequest {
+                shard_id: 1,
+                tenant_hash,
+                source_kind: source.kind,
+                source_id: format!("{}-{}-{source_index}", case.dataset, case.query_id),
+                title: source.title.clone(),
+                body: source.body.clone(),
+                timestamp_ms: 1_000 + source_index as u64,
+                provider: ContextModelProviderConfig::default(),
+            })
+            .collect::<Vec<_>>();
+        let ingest = ingest_extract_context(
+            engine,
+            ContextIngestExtractRequest {
+                shard_id: 1,
+                tenant_hash,
+                sources,
+                query: case.query.clone(),
+                start_time_ms: 0,
+                end_time_ms: 10_000,
+                max_events: 32,
+                provider: ContextModelProviderConfig::default(),
+            },
+        );
+        if !ingest.status.ok {
+            continue;
+        }
+        let retrieve = retrieve_context(
+            engine,
+            ContextRetrieveRequest {
+                shard_id: 1,
+                tenant_hash,
+                node_hashes: ingest.node_hashes.clone(),
+                query: case.query.clone(),
+                start_time_ms: 0,
+                end_time_ms: 10_000,
+                max_events: 32,
+                min_confidence: 0.0,
+                min_importance: 0.0,
+                tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
+            },
+        );
+        let hit_rank = retrieve
+            .blocks
+            .iter()
+            .position(|block| {
+                let block_text = block.text.to_ascii_lowercase();
+                case.expected_terms
+                    .iter()
+                    .any(|term| block_text.contains(&term.to_ascii_lowercase()))
+            })
+            .map(|rank| rank + 1);
+        if let Some(rank) = hit_rank {
+            hit_count += 1;
+            reciprocal_rank_sum += 1.0 / rank as f32;
+        }
+    }
+    let case_count = cases.len();
+    let hit_at_k = hit_count as f32 / case_count as f32;
+    let mean_reciprocal_rank = reciprocal_rank_sum / case_count as f32;
+    ExternalContextBenchmarkReport {
+        ready: hit_count == case_count && mean_reciprocal_rank >= 1.0,
+        dataset: dataset_counts.keys().cloned().collect::<Vec<_>>().join("+"),
+        case_count,
+        hit_at_k,
+        mean_reciprocal_rank,
+        zero_hit_queries: case_count.saturating_sub(hit_count),
+        source,
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ExternalContextBenchmarkCase {
+    dataset: String,
+    query_id: String,
+    query: String,
+    expected_terms: Vec<String>,
+    sources: Vec<ExternalContextBenchmarkSource>,
+}
+
+#[derive(Debug, Clone)]
+struct ExternalContextBenchmarkSource {
+    title: String,
+    body: String,
+    kind: ContextSourceKind,
+}
+
+fn parse_external_context_benchmark_cases(path: &Path) -> Vec<ExternalContextBenchmarkCase> {
+    let Ok(content) = fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    content
+        .lines()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            let trimmed = line.trim().trim_start_matches('\u{feff}');
+            if trimmed.is_empty() {
+                return None;
+            }
+            let value: Value = serde_json::from_str(trimmed).ok()?;
+            external_case_from_value(index, &value)
+        })
+        .collect()
+}
+
+fn external_case_from_value(index: usize, value: &Value) -> Option<ExternalContextBenchmarkCase> {
+    let dataset = value
+        .get("dataset")
+        .and_then(Value::as_str)
+        .unwrap_or("external_context_benchmark")
+        .to_string();
+    let query_id = value
+        .get("query_id")
+        .or_else(|| value.get("question_id"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("external-query-{index}"));
+    let query = value
+        .get("query")
+        .or_else(|| value.get("question"))
+        .and_then(Value::as_str)?
+        .to_string();
+    let expected_terms = value
+        .get("expected_terms")
+        .or_else(|| value.get("answer_terms"))
+        .or_else(|| value.get("answers"))
+        .and_then(Value::as_array)
+        .map(|terms| {
+            terms
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .filter(|terms| !terms.is_empty())
+        .unwrap_or_else(|| {
+            value
+                .get("answer")
+                .and_then(Value::as_str)
+                .map(|answer| vec![answer.to_string()])
+                .unwrap_or_default()
+        });
+    let sources = external_sources_from_value(value);
+    if expected_terms.is_empty() || sources.is_empty() {
+        None
+    } else {
+        Some(ExternalContextBenchmarkCase {
+            dataset,
+            query_id,
+            query,
+            expected_terms,
+            sources,
+        })
+    }
+}
+
+fn external_sources_from_value(value: &Value) -> Vec<ExternalContextBenchmarkSource> {
+    let source_values = value
+        .get("sources")
+        .or_else(|| value.get("messages"))
+        .or_else(|| value.get("conversation"))
+        .and_then(Value::as_array);
+    let Some(source_values) = source_values else {
+        return Vec::new();
+    };
+    source_values
+        .iter()
+        .enumerate()
+        .filter_map(|(index, source)| {
+            let body = source
+                .get("body")
+                .or_else(|| source.get("text"))
+                .or_else(|| source.get("message"))
+                .or_else(|| source.get("content"))
+                .and_then(Value::as_str)?
+                .to_string();
+            let title = source
+                .get("title")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("External benchmark source {index}"));
+            let kind = source
+                .get("source_kind")
+                .or_else(|| source.get("kind"))
+                .and_then(Value::as_str)
+                .map(parse_context_source_kind)
+                .unwrap_or(ContextSourceKind::Chat);
+            Some(ExternalContextBenchmarkSource { title, body, kind })
+        })
+        .collect()
+}
+
+fn parse_context_source_kind(value: &str) -> ContextSourceKind {
+    match value.to_ascii_lowercase().as_str() {
+        "document" => ContextSourceKind::Document,
+        "ticket" => ContextSourceKind::Ticket,
+        "code" => ContextSourceKind::Code,
+        "incident" => ContextSourceKind::Incident,
+        "user_event" | "user-event" | "event" => ContextSourceKind::UserEvent,
+        _ => ContextSourceKind::Chat,
+    }
+}
+
+fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCase> {
+    vec![
+        ExternalContextBenchmarkCase {
+            dataset: "locomo_style".to_string(),
+            query_id: "locomo-current-preference".to_string(),
+            query: "What is Alice's current office choice after the payment problem?".to_string(),
+            expected_terms: vec!["downtown".to_string()],
+            sources: vec![
+                ExternalContextBenchmarkSource {
+                    title: "Earlier preference".to_string(),
+                    body: "Earlier memory: Alice preferred the airport office before the later change.".to_string(),
+                    kind: ContextSourceKind::Chat,
+                },
+                ExternalContextBenchmarkSource {
+                    title: "Latest preference update".to_string(),
+                    body: "During the latest conversation, Alice replaced her office preference with the downtown location after the billing issue was resolved.".to_string(),
+                    kind: ContextSourceKind::Chat,
+                },
+            ],
+        },
+        ExternalContextBenchmarkCase {
+            dataset: "longmemeval_s_style".to_string(),
+            query_id: "longmem-updated-setting".to_string(),
+            query: "Which preference was updated in the recent multi session messages?".to_string(),
+            expected_terms: vec!["notification".to_string()],
+            sources: vec![
+                ExternalContextBenchmarkSource {
+                    title: "Old setting".to_string(),
+                    body: "The user originally discussed billing alerts in an older session.".to_string(),
+                    kind: ContextSourceKind::Chat,
+                },
+                ExternalContextBenchmarkSource {
+                    title: "Recent setting update".to_string(),
+                    body: "Support follow-up: the user sent messages across sessions and the helpdesk agent changed the notification setting during the most recent chat.".to_string(),
+                    kind: ContextSourceKind::Ticket,
+                },
+            ],
+        },
+    ]
 }
 
 fn context_pipeline_commands(extract: &temporalstore_rust::ContextExtractReport) -> Vec<Command> {

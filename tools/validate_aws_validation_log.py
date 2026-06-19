@@ -270,6 +270,12 @@ def validate_context_workflow(job, summary):
     require(summary["benchmark_sweep_avg_selected_tokens_per_query"] > 0.0, f"{job}: context benchmark sweep selected token average missing")
     require(summary["benchmark_sweep_all_thresholds_passed"], f"{job}: context benchmark sweep thresholds failed")
     require(summary["benchmark_sweep_threshold_violation_count"] == 0, f"{job}: context benchmark sweep threshold violations present")
+    require(summary["external_benchmark_ready"], f"{job}: external LOCOMO/LongMemEval-style benchmark is not ready")
+    require(summary["external_benchmark_case_count"] > 0, f"{job}: external context benchmark has no cases")
+    require(summary["external_benchmark_hit_at_k"] >= 1.0, f"{job}: external context benchmark hit@k regressed")
+    require(summary["external_benchmark_mean_reciprocal_rank"] >= 1.0, f"{job}: external context benchmark MRR regressed")
+    require(summary["external_benchmark_zero_hit_queries"] == 0, f"{job}: external context benchmark has zero-hit queries")
+    require(summary["external_benchmark_source"], f"{job}: external context benchmark source missing")
     require("/context/manage" in summary["managed_routes"], f"{job}: context management route missing")
     require("/context/ingest_extract" in summary["managed_routes"], f"{job}: context ingest/extract route missing")
     for field in [

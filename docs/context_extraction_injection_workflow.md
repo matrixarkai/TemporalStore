@@ -160,6 +160,8 @@ local TemporalStore evidence:
   MRR, minimum token reduction, total source/query coverage, maximum p95 retrieval/injection
   latency, selected-token averages, zero-hit totals, profile signatures, workload coverage ranges,
   and sweep-wide threshold pass/fail evidence
+- `external_benchmark_*` fields covering optional LOCOMO/LongMemEval-style JSONL replay, including
+  dataset name, case count, hit@k, MRR, zero-hit queries, and source path
 - mixed source-kind and provider accounting through the ingest/extract summary
 
 The current local workload uses synthetic incidents, tickets, documents, chats, code snippets, and
@@ -177,6 +179,22 @@ conversational-memory questions such as payment/fraud wording aligned with check
 and validates stale/latest memory ranking at `hit_at_k = 1.0`, `mean_reciprocal_rank = 1.0`, and
 zero zero-hit queries in the checked harness.
 output.
+
+Real benchmark exports can be supplied without recompiling by setting
+`TEMPORALSTORE_CONTEXT_BENCHMARK_JSONL` before running `context_workflow_harness`. Each JSONL record
+is one QA case and accepts this shape:
+
+```json
+{"dataset":"locomo","query_id":"q1","query":"What is Alice's current office choice after the payment problem?","answer_terms":["downtown"],"messages":[{"kind":"chat","title":"Earlier preference","text":"Alice preferred the airport office before the later change."},{"kind":"chat","title":"Latest update","text":"Alice replaced her office preference with the downtown location after the billing issue was resolved."}]}
+```
+
+The parser also accepts `question` for `query`, `answers` or `expected_terms` for `answer_terms`,
+and `sources`, `messages`, or `conversation` arrays with `body`, `text`, `message`, or `content`
+fields. When no JSONL path is configured, the harness runs a built-in LOCOMO/LongMemEval_s-style
+fixture so CI and local Docker validation still enforce external-benchmark scoring. Retrieval now
+normalizes punctuation and hyphenation, applies simple plural stemming, expands temporal,
+multi-hop, latest/update, preference, support, and risk/payment aliases, and boosts latest and
+temporal evidence so newer memory updates outrank stale conversational memories.
 
 Remaining policy hardening:
 

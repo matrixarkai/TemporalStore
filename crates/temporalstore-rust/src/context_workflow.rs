@@ -1978,8 +1978,9 @@ fn tier_rank(tier: ContextTier) -> u8 {
 
 fn context_query_matches(query: &str, text: &str) -> bool {
     let text_lower = text.to_ascii_lowercase();
+    let text_normalized = context_normalize_for_match(text);
     if let Some(topic_phrase) = context_query_topic_phrase(query) {
-        if text_lower.contains(topic_phrase.as_str()) {
+        if context_text_matches_term(&text_lower, &text_normalized, topic_phrase.as_str()) {
             return true;
         }
     }
@@ -1987,9 +1988,15 @@ fn context_query_matches(query: &str, text: &str) -> bool {
     if query_groups.is_empty() {
         return true;
     }
-    query_groups
+    let matched_groups = query_groups
         .iter()
-        .any(|group| group.iter().any(|term| text_lower.contains(term.as_str())))
+        .filter(|group| {
+            group
+                .iter()
+                .any(|term| context_text_matches_term(&text_lower, &text_normalized, term))
+        })
+        .count();
+    matched_groups > 0
 }
 
 fn context_relevance_score(query: &str, text: &str) -> u32 {
@@ -1999,9 +2006,10 @@ fn context_relevance_score(query: &str, text: &str) -> u32 {
         return 0;
     }
     let text_lower = text.to_ascii_lowercase();
+    let text_normalized = context_normalize_for_match(text);
     let mut score = 0u32;
     if let Some(topic_phrase) = context_query_topic_phrase(query) {
-        if text_lower.contains(topic_phrase.as_str()) {
+        if context_text_matches_term(&text_lower, &text_normalized, topic_phrase.as_str()) {
             score = score.saturating_add(1_000);
         }
     }
@@ -2009,7 +2017,7 @@ fn context_relevance_score(query: &str, text: &str) -> u32 {
     for group in &query_groups {
         let best_match = group
             .iter()
-            .filter(|term| text_lower.contains(term.as_str()))
+            .filter(|term| context_text_matches_term(&text_lower, &text_normalized, term))
             .map(|term| term.len() as u32)
             .max()
             .unwrap_or_default();
@@ -2020,11 +2028,35 @@ fn context_relevance_score(query: &str, text: &str) -> u32 {
     }
     if matched_groups == query_groups.len() as u32 {
         score = score.saturating_add(100);
+    } else if matched_groups > 1 {
+        score = score.saturating_add(matched_groups.saturating_mul(12));
     }
     for phrase in context_query_adjacent_phrases(&base_terms) {
-        if text_lower.contains(phrase.as_str()) {
+        if context_text_matches_term(&text_lower, &text_normalized, phrase.as_str()) {
             score = score.saturating_add(50);
         }
+    }
+    if context_query_requests_latest(&base_terms)
+        && context_text_matches_any(
+            &text_lower,
+            &text_normalized,
+            &[
+                "latest", "recent", "current", "updated", "changed", "replaced",
+            ],
+        )
+    {
+        score = score.saturating_add(75);
+    }
+    if context_query_requests_temporal_reasoning(&base_terms)
+        && context_text_matches_any(
+            &text_lower,
+            &text_normalized,
+            &[
+                "timeline", "temporal", "history", "sequence", "before", "after", "during",
+            ],
+        )
+    {
+        score = score.saturating_add(50);
     }
     score
 }
@@ -2042,6 +2074,9 @@ fn context_query_term_groups(query: &str) -> Vec<Vec<String>> {
         .into_iter()
         .map(|term| {
             let mut group = vec![term.clone()];
+            if let Some(stem) = context_query_stem(term.as_str()) {
+                group.push(stem);
+            }
             for synonym in context_query_synonyms(term.as_str()) {
                 group.push(synonym.to_string());
             }
@@ -2063,23 +2098,94 @@ fn context_query_synonyms(term: &str) -> &'static [&'static str] {
     match term {
         "checkout" => &["payment", "purchase", "order"],
         "payment" => &["checkout", "purchase", "billing"],
+        "billing" | "purchase" | "order" => &["checkout", "payment"],
         "risk" => &["fraud", "score", "safety"],
         "fraud" => &["risk", "score", "safety"],
         "score" => &["risk", "fraud", "safety"],
-        "latest" | "recent" | "current" => &["updated", "update", "status"],
+        "latest" | "recent" | "current" | "now" => &["updated", "update", "status"],
         "status" | "state" => &["current", "latest", "condition"],
         "failed" | "failure" | "outage" => &["error", "incident", "down"],
         "dependency" | "backend" => &["service", "system"],
-        "ticket" | "followup" => &["support", "agent", "helpdesk"],
-        "support" => &["ticket", "agent", "helpdesk"],
+        "ticket" | "followup" | "follow" => &["support", "agent", "helpdesk"],
+        "support" | "agent" | "helpdesk" => &["ticket", "followup"],
         "preference" | "preferences" => &["likes", "setting", "choice"],
-        "update" | "updated" | "updates" => &["changed", "change", "modify"],
+        "setting" | "choice" | "likes" => &["preference"],
+        "update" | "updated" | "updates" => &["changed", "change", "modify", "replaced"],
+        "changed" | "change" | "modify" | "replaced" => &["update", "updated"],
         "session" | "sessions" => &["dialogue", "conversation", "visit"],
+        "conversation" | "dialogue" | "chat" => &["session", "message"],
+        "message" | "messages" => &["conversation", "dialogue", "session"],
         "user" | "customer" => &["person", "account", "member"],
         "service" => &["dependency", "backend", "system"],
-        "timeline" => &["temporal", "history", "sequence"],
+        "timeline" | "temporal" | "history" | "sequence" => &["before", "after", "during"],
+        "before" | "after" | "during" => &["timeline", "temporal", "sequence"],
+        "multi" | "hop" | "reasoning" => &["related", "connection", "because"],
+        "why" | "because" | "reason" => &["cause", "root", "explain"],
+        "where" | "location" => &["place", "city", "office"],
+        "when" | "date" | "time" => &["timeline", "temporal", "session"],
+        "who" | "person" | "people" => &["user", "customer", "member"],
         _ => &[],
     }
+}
+
+fn context_query_stem(term: &str) -> Option<String> {
+    if term.len() > 4 && term.ends_with("ies") {
+        Some(format!("{}y", &term[..term.len() - 3]))
+    } else if term.len() > 4 && term.ends_with("es") {
+        Some(term[..term.len() - 2].to_string())
+    } else if term.len() > 3 && term.ends_with('s') {
+        Some(term[..term.len() - 1].to_string())
+    } else {
+        None
+    }
+}
+
+fn context_normalize_for_match(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+}
+
+fn context_text_matches_term(text_lower: &str, text_normalized: &str, term: &str) -> bool {
+    if text_lower.contains(term) {
+        return true;
+    }
+    let normalized_term = context_normalize_for_match(term);
+    if normalized_term.trim().is_empty() {
+        return false;
+    }
+    text_normalized.contains(normalized_term.trim())
+}
+
+fn context_text_matches_any(text_lower: &str, text_normalized: &str, terms: &[&str]) -> bool {
+    terms
+        .iter()
+        .any(|term| context_text_matches_term(text_lower, text_normalized, term))
+}
+
+fn context_query_requests_latest(terms: &[String]) -> bool {
+    terms.iter().any(|term| {
+        matches!(
+            term.as_str(),
+            "latest" | "recent" | "current" | "now" | "updated" | "update" | "status"
+        )
+    })
+}
+
+fn context_query_requests_temporal_reasoning(terms: &[String]) -> bool {
+    terms.iter().any(|term| {
+        matches!(
+            term.as_str(),
+            "before" | "after" | "during" | "timeline" | "temporal" | "history" | "when"
+        )
+    })
 }
 
 fn context_query_topic_phrase(query: &str) -> Option<String> {
@@ -2456,6 +2562,28 @@ mod tests {
                     &stale_memory
                 )
         );
+
+        let locomo_memory = "During the latest conversation, Alice replaced her office preference with the downtown location after the billing issue was resolved.";
+        let locomo_stale = "Earlier conversation memory: Alice preferred the airport office before the later change.";
+        assert!(context_query_matches(
+            "What is Alice's current office choice after the payment problem?",
+            locomo_memory
+        ));
+        assert!(
+            context_relevance_score(
+                "What is Alice's current office choice after the payment problem?",
+                locomo_memory
+            ) > context_relevance_score(
+                "What is Alice's current office choice after the payment problem?",
+                locomo_stale
+            )
+        );
+
+        let longmem_memory = "Support follow-up: the user sent messages across sessions and the helpdesk agent changed the notification setting during the most recent chat.";
+        assert!(context_query_matches(
+            "Which preference was updated in the recent multi session messages?",
+            longmem_memory
+        ));
     }
 
     #[test]
