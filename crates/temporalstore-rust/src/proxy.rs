@@ -1943,9 +1943,14 @@ mod tests {
             });
             assert_eq!(code, 200);
             let report = parse_json::<ProductionReadinessReport>(&body).unwrap();
-            assert!(report.production_ready);
-            assert!(report.cpp_parity_ready);
-            assert_eq!(report.missing_count(), 0);
+            assert!(!report.production_ready);
+            assert!(!report.cpp_parity_ready);
+            assert_eq!(report.missing_count(), 1);
+            assert!(report
+                .missing_by_area("scale_testing")
+                .expect("scale testing area must exist")
+                .iter()
+                .any(|item| item.contains("global production storage readiness")));
         }
     }
 
@@ -2049,7 +2054,7 @@ mod tests {
             "temporalstore_proxy_service_registry_events_total{kind=\"heartbeat_failure\"} 0"
         ));
         assert!(metrics.contains("# TYPE temporalstore_production_readiness_ready gauge"));
-        assert!(metrics.contains("temporalstore_production_readiness_ready 1"));
+        assert!(metrics.contains("temporalstore_production_readiness_ready 0"));
         let readiness = crate::production_readiness_report();
         assert!(metrics.contains(&format!(
             "temporalstore_production_readiness_blockers {}",
@@ -2064,6 +2069,15 @@ mod tests {
             "temporalstore_production_readiness_blockers{{area=\"storage_cache\"}} {}",
             storage_cache.missing.len()
         )));
+        let scale_testing = readiness
+            .areas
+            .iter()
+            .find(|area| area.area == "scale_testing")
+            .unwrap();
+        assert!(metrics.contains(&format!(
+            "temporalstore_production_readiness_blockers{{area=\"scale_testing\"}} {}",
+            scale_testing.missing.len()
+        )));
         let data_node = readiness.service_summary("data_node").unwrap();
         assert!(metrics.contains(&format!(
             "temporalstore_production_readiness_service_ready{{service=\"data_node\"}} {}",
@@ -2077,6 +2091,15 @@ mod tests {
         assert!(metrics.contains(&format!(
             "temporalstore_production_readiness_service_blockers{{service=\"client\"}} {}",
             client.blocker_count
+        )));
+        let scale_testing_service = readiness.service_summary("scale_testing").unwrap();
+        assert!(metrics.contains(&format!(
+            "temporalstore_production_readiness_service_ready{{service=\"scale_testing\"}} {}",
+            u64::from(scale_testing_service.ready)
+        )));
+        assert!(metrics.contains(&format!(
+            "temporalstore_production_readiness_service_blockers{{service=\"scale_testing\"}} {}",
+            scale_testing_service.blocker_count
         )));
     }
 

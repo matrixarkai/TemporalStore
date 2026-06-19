@@ -132,3 +132,16 @@ This closes the in-repo Rust migration verifier, external artifact-export contra
 golden corpus path, and local production-harness slice for Rust-native storage formats. It does not
 claim global storage production readiness; live ByteStore/S3 integration and broader
 deployment-scale evidence remain separately tracked blockers.
+
+## Global Readiness Boundary
+
+The local Rust-native storage target has evidence for migration replay, slot dump/load,
+cache pressure, shared-store sync/async replay, and the storage production/fault harnesses.
+That evidence is sufficient for the `storage_cache` local/shared-store readiness area, but it is
+not a global production-readiness claim.
+
+The global readiness gate stays fail-closed through `scale_testing` until Docker or AWS
+deployment-scale SLO evidence proves the same storage path under real multi-process deployment
+conditions. The blocker is mapped to
+`scale_slo_report.storage_deployment_scale_slo_ready` so operators can distinguish local storage
+correctness evidence from broader release readiness.

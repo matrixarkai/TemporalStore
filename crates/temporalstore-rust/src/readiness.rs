@@ -1288,7 +1288,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
         },
         ReadinessArea {
             area: "scale_testing".to_string(),
-            ready: true,
+            ready: false,
             covered: vec![
                 "local in-process scale_harness exercises writes, sampled replica reads, failover, and scale events"
                     .to_string(),
@@ -1303,7 +1303,10 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "unified C++/Rust workload corpus covers Feature, IPS, Risk, Redis, Context, and admin API replay evidence"
                     .to_string(),
             ],
-            missing: Vec::new(),
+            missing: vec![
+                "global production storage readiness requires broader Docker/AWS deployment-scale SLO evidence beyond the local Rust-native storage migration, dump/load, cache pressure, shared-store replay, and harness evidence"
+                    .to_string(),
+            ],
         },
     ];
     let production_ready = areas.iter().all(|area| area.ready);
@@ -1440,6 +1443,9 @@ fn evidence_field_for(area: &str, capability: &str) -> &'static str {
         "scale_testing" if capability.contains("workload") || capability.contains("corpus") => {
             "scale_slo_report.cplusplus_workload_replay_ready"
         }
+        "scale_testing" if capability.contains("global production storage readiness") => {
+            "scale_slo_report.storage_deployment_scale_slo_ready"
+        }
         "scale_testing" => "scale_slo_report.docker_or_aws_slo_evidence_ready",
         "feature_modules" if capability.contains("Feature") => {
             "feature_module_corpus.exact_feature_semantics_ready"
@@ -1513,7 +1519,7 @@ fn service_next_action(service: &str, blocker_classes: &[String]) -> &'static st
             "ready"
         }
         ("scale_testing", "scale_testing_evidence") => {
-            "ready"
+            "run Docker/AWS multi-node SLO validation before claiming global production storage readiness"
         }
         ("raft_replication", "raft_replication_engine") => {
             "finish durable real-process OpenRaft rollout, production mTLS transport, and external chaos coverage"
@@ -1557,10 +1563,12 @@ mod tests {
     #[test]
     fn production_readiness_report_lists_blockers_for_all_major_services() {
         let report = production_readiness_report();
-        assert!(report.production_ready);
-        assert!(report.cpp_parity_ready);
+        assert!(!report.production_ready);
+        assert!(!report.cpp_parity_ready);
         assert_eq!(report.blocker_count, report.missing_count());
         assert_eq!(report.blocker_count, report.failed_capabilities.len());
+        assert_eq!(report.blocker_count, 1);
+        assert_eq!(report.failed_areas, vec!["scale_testing".to_string()]);
         assert!(!report.failed_areas.contains(&"storage_cache".to_string()));
         assert!(!report
             .failed_capabilities
@@ -1586,7 +1594,11 @@ mod tests {
             let missing = report.missing_by_area(area).expect("area must exist");
             assert!(missing.is_empty(), "{area} should be ready");
         }
-        assert_eq!(report.missing_count(), 0);
+        let scale_missing = report
+            .missing_by_area("scale_testing")
+            .expect("scale testing area must exist");
+        assert_eq!(scale_missing.len(), 1);
+        assert!(scale_missing[0].contains("global production storage readiness"));
     }
 
     #[test]
@@ -1725,8 +1737,9 @@ mod tests {
             .iter()
             .find(|area| area.area == "scale_testing")
             .expect("scale testing area must exist");
-        assert!(scale_testing.ready);
-        assert!(scale_testing.missing.is_empty());
+        assert!(!scale_testing.ready);
+        assert_eq!(scale_testing.missing.len(), 1);
+        assert!(scale_testing.missing[0].contains("global production storage readiness"));
         assert!(scale_testing
             .covered
             .iter()
@@ -1747,7 +1760,7 @@ mod tests {
                 .ready
         );
         assert!(
-            readiness
+            !readiness
                 .service_summary("scale_testing")
                 .expect("scale testing summary")
                 .ready
@@ -1757,7 +1770,7 @@ mod tests {
     #[test]
     fn remaining_blockers_map_to_concrete_evidence_fields() {
         let readiness = production_readiness_report();
-        assert!(readiness.failed_capabilities.is_empty());
+        assert_eq!(readiness.failed_capabilities.len(), 1);
         for blocker in &readiness.failed_capabilities {
             assert!(
                 !blocker.evidence_field.is_empty(),
@@ -2056,7 +2069,7 @@ mod tests {
             let summary = report
                 .service_summary(service)
                 .expect("service summary must exist");
-            let expected_ready = true;
+            let expected_ready = service != "scale_testing";
             assert_eq!(summary.ready, expected_ready, "{service} readiness drifted");
             assert_eq!(summary.blocker_count, summary.failed_capabilities.len());
             if expected_ready {
@@ -2118,7 +2131,7 @@ mod tests {
             .iter()
             .map(|summary| summary.service.as_str())
             .collect::<Vec<_>>();
-        assert!(blocked_services.is_empty());
+        assert_eq!(blocked_services, vec!["scale_testing"]);
         assert_eq!(
             report.known_services(),
             vec![
@@ -2179,7 +2192,6 @@ mod tests {
                 "context_workflow",
                 "fault_tolerance",
                 "deployment_ops",
-                "scale_testing",
                 "raft_replication"
             ]
         );
@@ -2200,11 +2212,16 @@ mod tests {
                 "context_workflow",
                 "fault_tolerance",
                 "deployment_ops",
-                "scale_testing",
                 "raft_replication"
             ]
         );
-        assert!(report.next_blocked_service().is_none());
+        assert_eq!(
+            report
+                .next_blocked_service()
+                .expect("scale testing should be the only blocked service")
+                .service,
+            "scale_testing"
+        );
         assert_eq!(
             service_gates
                 .iter()
@@ -2221,7 +2238,7 @@ mod tests {
                 ("context_workflow", "ready"),
                 ("fault_tolerance", "ready"),
                 ("deployment_ops", "ready"),
-                ("scale_testing", "ready"),
+                ("scale_testing", "warning"),
                 ("raft_replication", "ready")
             ]
         );
@@ -2300,7 +2317,7 @@ mod tests {
             .service_summary("scale_testing")
             .expect("scale testing summary")
             .next_action
-            .contains("ready"));
+            .contains("Docker/AWS multi-node SLO"));
         assert!(report
             .service_summary("raft_replication")
             .expect("raft replication summary")
@@ -2367,7 +2384,7 @@ mod tests {
                 .service_summary("scale_testing")
                 .expect("scale testing summary")
                 .blocker_classes,
-            Vec::<String>::new()
+            vec!["scale_testing_evidence".to_string()]
         );
         assert_eq!(
             report
@@ -2494,7 +2511,8 @@ mod tests {
         let scale = report
             .missing_by_area("scale_testing")
             .expect("scale testing area must exist");
-        assert!(scale.is_empty());
+        assert_eq!(scale.len(), 1);
+        assert!(scale[0].contains("global production storage readiness"));
         assert!(!scale.iter().any(|item| item.contains("p50/p95/p99")));
         assert!(report
             .areas
@@ -2504,6 +2522,12 @@ mod tests {
             .covered
             .iter()
             .any(|item| item.contains("scale_harness emits a stable SLO report")));
+        assert!(report
+            .exact_failed_capabilities()
+            .iter()
+            .any(|blocker| blocker.area == "scale_testing"
+                && blocker.evidence_field
+                    == "scale_slo_report.storage_deployment_scale_slo_ready"));
         assert!(!report
             .exact_failed_capabilities()
             .iter()

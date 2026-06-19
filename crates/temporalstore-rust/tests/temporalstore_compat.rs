@@ -63,7 +63,9 @@ fn production_readiness_service_summary_is_public_api() {
             "missing service gate {order}/{service}/{owner}"
         );
     }
-    assert!(gates.iter().all(|gate| gate.gate_status == "ready"));
+    assert!(gates
+        .iter()
+        .all(|gate| gate.gate_status == "ready" || gate.service == "scale_testing"));
     assert_eq!(
         gates
             .iter()
@@ -80,11 +82,17 @@ fn production_readiness_service_summary_is_public_api() {
             ("context_workflow", "ready"),
             ("fault_tolerance", "ready"),
             ("deployment_ops", "ready"),
-            ("scale_testing", "ready"),
+            ("scale_testing", "warning"),
             ("raft_replication", "ready")
         ]
     );
-    assert!(report.next_blocked_service().is_none());
+    assert_eq!(
+        report
+            .next_blocked_service()
+            .expect("scale testing should be the only blocked service")
+            .service,
+        "scale_testing"
+    );
     let data_node: ServiceReadinessSummary = report
         .service_summary("data_node")
         .expect("data node service summary should be exported")
@@ -124,6 +132,17 @@ fn production_readiness_service_summary_is_public_api() {
     assert!(gate.primary_blocker.is_none());
     assert!(gate.failed_capabilities.is_empty());
     assert_eq!(gate.failed_capabilities.len(), data_node.blocker_count);
+
+    let scale_gate = report
+        .service_gate_report("scale_testing")
+        .expect("scale testing service gate report should be exported");
+    assert!(!scale_gate.ready);
+    assert_eq!(scale_gate.gate_status, "blocked");
+    assert_eq!(scale_gate.blocker_count, 1);
+    assert_eq!(
+        scale_gate.failed_capabilities[0].evidence_field,
+        "scale_slo_report.storage_deployment_scale_slo_ready"
+    );
 }
 
 // shared-corpus: common_lifecycle_delete_ttl, common_restart_persistence
