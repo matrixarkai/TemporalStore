@@ -2058,6 +2058,31 @@ fn context_relevance_score(query: &str, text: &str) -> u32 {
     {
         score = score.saturating_add(50);
     }
+    if context_query_requests_correction(&base_terms)
+        && context_text_matches_any(
+            &text_lower,
+            &text_normalized,
+            &[
+                "correction",
+                "corrected",
+                "no longer",
+                "instead",
+                "replaced",
+                "now",
+            ],
+        )
+    {
+        score = score.saturating_add(90);
+    }
+    if context_query_requests_reminder(&base_terms)
+        && context_text_matches_any(
+            &text_lower,
+            &text_normalized,
+            &["remember", "reminder", "mentioned", "said", "told", "note"],
+        )
+    {
+        score = score.saturating_add(70);
+    }
     score
 }
 
@@ -2200,6 +2225,24 @@ fn context_query_requests_temporal_reasoning(terms: &[String]) -> bool {
         matches!(
             term.as_str(),
             "before" | "after" | "during" | "timeline" | "temporal" | "history" | "when"
+        )
+    })
+}
+
+fn context_query_requests_correction(terms: &[String]) -> bool {
+    terms.iter().any(|term| {
+        matches!(
+            term.as_str(),
+            "correction" | "corrected" | "correct" | "changed" | "updated" | "now" | "avoid"
+        )
+    })
+}
+
+fn context_query_requests_reminder(terms: &[String]) -> bool {
+    terms.iter().any(|term| {
+        matches!(
+            term.as_str(),
+            "remember" | "recall" | "remind" | "reminder" | "said" | "told"
         )
     })
 }
@@ -2600,6 +2643,40 @@ mod tests {
             "Which preference was updated in the recent multi session messages?",
             longmem_memory
         ));
+
+        let corrected_memory = "Latest correction: Jordan no longer avoids almonds; Jordan should avoid peanuts now because of a new food restriction.";
+        let stale_food_memory =
+            "Earlier chat: Jordan said almonds were the only snack to avoid and peanuts were fine.";
+        assert!(context_query_matches(
+            "What snack should Jordan avoid now after the correction?",
+            corrected_memory
+        ));
+        assert!(
+            context_relevance_score(
+                "What snack should Jordan avoid now after the correction?",
+                corrected_memory
+            ) > context_relevance_score(
+                "What snack should Jordan avoid now after the correction?",
+                stale_food_memory
+            )
+        );
+
+        let medication_memory = "In the later session Morgan said to remember lisinopril, the blood pressure medication, before the doctor appointment.";
+        let stale_clinic_memory =
+            "A previous clinic message mentioned bringing an insurance card to the physician visit.";
+        assert!(context_query_matches(
+            "Which medication did Morgan say to remember before the doctor appointment?",
+            medication_memory
+        ));
+        assert!(
+            context_relevance_score(
+                "Which medication did Morgan say to remember before the doctor appointment?",
+                medication_memory
+            ) > context_relevance_score(
+                "Which medication did Morgan say to remember before the doctor appointment?",
+                stale_clinic_memory
+            )
+        );
     }
 
     #[test]

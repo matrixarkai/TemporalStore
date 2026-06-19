@@ -194,8 +194,9 @@ fields. When no JSONL path is configured, the harness runs a built-in LOCOMO/Lon
 fixture so CI and local Docker validation still enforce external-benchmark scoring. Retrieval now
 normalizes punctuation and hyphenation, applies simple plural stemming, expands temporal,
 multi-hop, latest/update, preference, location/workplace, problem/resolution, support, and
-risk/payment aliases, and boosts latest and temporal evidence so newer memory updates outrank stale
-conversational memories. The built-in external fixture includes direct update questions plus harder
+risk/payment aliases, and boosts latest, temporal, correction, and reminder evidence so newer
+memory updates and remembered facts outrank stale conversational memories. The built-in external
+fixture includes direct update questions plus harder
 paraphrases such as "Where does Alice want to work now?" and "Which setting changed most recently
 across the conversation history?", plus temporal-after and root-cause questions such as
 "What did Alice decide after the airport trip conversation?" and "Why did checkout fail after the
