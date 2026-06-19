@@ -67,6 +67,9 @@ def build_summary(artifact_dir: Path) -> dict:
             "membership_scale_down_after_replace_voters": metaserver["membership_scale_down_after_replace"]["voters"],
             "post_scale_down_route_read": metaserver["post_scale_down_route_read"],
             "unavailable_without_majority": metaserver["unavailable_without_majority"],
+            "scheduler_execution_coverage": metaserver["scheduler_execution_coverage"],
+            "openraft_process_rollout": metaserver["openraft_process_rollout"],
+            "meta_owned_data_raft_membership": metaserver["meta_owned_data_raft_membership"],
         },
     }
 

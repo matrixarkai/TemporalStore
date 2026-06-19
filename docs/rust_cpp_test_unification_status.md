@@ -74,6 +74,12 @@ compaction/GC delayed destroy, shared-store sync/async replication and cursor-sa
 command/log/WAL codec, Raft snapshot/membership scale, data-node Raft consensus contract, Raft
 metaserver distributed fault contract, Raft failover secondary replication, exact C++ Raft case
 names, local scale/fault readiness gates, and ByteRaft-derived readiness contracts.
+`tools/run_raft_shared_cases.py` now adds a focused shared-case bridge for the Raft rows: it
+validates C++ required paths and Rust process/harness runners, and its Rust combined mode runs
+`tools/run_raft_distributed_parity.sh` once to produce data-node plus metaserver evidence.
+The combined parity summary exposes metaserver scheduler execution coverage, OpenRaft metaserver
+process rollout, and metaserver-owned data-Raft membership as first-class fields. This is still
+local multi-process evidence, not AWS/external SLO proof.
 
 Control-plane parity evidence status:
 

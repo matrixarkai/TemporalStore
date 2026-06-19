@@ -110,7 +110,7 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `raft_metaserver_leader_snapshot_restart` | Metaserver leader/failover, snapshot install, and restart recovery as an explicit shared harness case. |
 | `raft_metaserver_membership_add_promote_remove` | Metaserver learner add, catch-up, promote, leader transfer, and voter remove as an explicit shared harness case. |
 | `raft_openraft_process_rollout_evidence` | Production-readiness evidence case requiring LocalModel rejection and OpenRaft process-rollout/log-store evidence. |
-| `raft_production_gate` | Exact C++ Raft production gate case, paired with the Rust storage/Raft production-readiness local gate and the combined data-node plus metaserver Raft distributed parity gate. |
+| `raft_production_gate` | Exact C++ Raft production gate case, paired with the Rust storage/Raft production-readiness local gate and the combined data-node plus metaserver Raft distributed parity gate. `tools/run_raft_shared_cases.py` validates these shared Raft cases and can run the combined Rust parity gate once. |
 | `cpp_redis_live_storage_smoke_parity_surfaces` | Redis live storage smoke surfaces. |
 | `cpp_local_docker_replication_matrix_parity_surfaces` | Local Docker replication matrix surfaces. |
 | `cpp_client_meta_sync_route_parity_surfaces` | Client meta-sync, route, pipeline, and request surfaces. |

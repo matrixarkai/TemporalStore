@@ -187,6 +187,14 @@ The production runtime surface is:
   rejection, and caught-up-candidate grant, rolling-restarts every voter from its WAL, verifies
   post-restart replication, kills the original leader, triggers surviving-node failover, and
   verifies post-failover reads
+- `run_raft_shared_cases.py` validates every shared C++/Rust Raft corpus case has Rust process or
+  harness evidence and C++ required paths. Its Rust combined mode runs the data-node plus metaserver
+  parity gate once instead of treating individual corpus rows as production proof by name alone.
+- The combined Raft parity summary now promotes metaserver scheduler execution coverage,
+  OpenRaft metaserver process rollout, and metaserver-owned data-Raft membership into first-class
+  evidence fields. Validation requires learner add, catch-up verification, promotion, leader
+  transfer, voter removal, follower-lag/failover/scale-up/scale-down/secondary-replication flags,
+  stale scheduler token rejection, and persisted metaserver Raft replay evidence.
 
 Production deployments should use `ProductionRaftSecurity::mtls`. Local chaos tests can use
 `ProductionRaftSecurity::plaintext_for_local_chaos` only when

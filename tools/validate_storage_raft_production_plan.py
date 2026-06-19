@@ -49,7 +49,7 @@ REQUIRED_READINESS_SNIPPETS = (
     "Raft external chaos readiness covers local OS-process restart/failover, stale-read partition heal, lagging follower catch-up, networked membership/snapshot, storage replay, external packet-loss, disk-pressure, and process-chaos gates",
     "storage migration corpus readiness covers Rust-local converted corpus replay through engine restart, Redis/admin, shared-store sync/async replay, cache warmup, Raft read paths, external C++ binary-artifact export, CI-published golden artifacts, and the unified C++/Rust runner",
     "local/shared-store object manifest dependency matrix covers local file objects, checkpoint manifests, oplog cursor retention, page segment manifests, follower-cursor retention, and Raft snapshot manifest retention",
-    "storage cache dependency matrix keeps live ByteStore/S3 object-store readiness fail-closed",
+    "storage cache dependency matrix keeps live external ByteStore/S3 object-store integration explicitly out of scope while local/shared-store is the production target",
     "storage SSD cache pressure readiness covers local memory read-through, disk block cache, admission/eviction counters, slot warmup, cache invalidation, tiering policy, admission tuning, and long-running pressure validation evidence",
     "under follower lag, failover, scale up/down, and secondary replication",
 )

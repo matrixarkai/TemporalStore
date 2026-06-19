@@ -406,6 +406,53 @@ def validate_raft_distributed_parity(job, summary):
         f"{job}: metaserver second scale-down route read mismatch",
     )
     require(metaserver["unavailable_without_majority"], f"{job}: metaserver no-majority write committed")
+    scheduler = metaserver["scheduler_execution_coverage"]
+    require(scheduler["ready"], f"{job}: metaserver scheduler execution coverage is not ready")
+    for field in [
+        "networked_multi_process_raft_ready",
+        "missing_primary_repair_ready",
+        "under_replicated_repair_ready",
+        "stale_dead_server_repair_ready",
+        "load_reload_unload_ready",
+        "cooldown_and_safe_mode_ready",
+        "scheduler_task_replay_ready",
+        "membership_change_ready",
+        "durable_data_raft_membership_ready",
+        "stale_scheduler_token_rejection_ready",
+    ]:
+        require(scheduler[field], f"{job}: metaserver scheduler field {field} is false")
+    rollout = metaserver["openraft_process_rollout"]
+    require(rollout["ready"], f"{job}: metaserver OpenRaft process rollout is not ready")
+    require(rollout["multi_process_log_store_validated"], f"{job}: metaserver log-store rollout missing")
+    require(rollout["data_node_membership_results_ready"], f"{job}: data-node membership results missing")
+    membership = metaserver["meta_owned_data_raft_membership"]
+    require(membership["ready"], f"{job}: meta-owned data-Raft membership report is not ready")
+    workflow = membership["workflow"]
+    for field in [
+        "learner_added",
+        "catch_up_verified",
+        "promoted_to_voter",
+        "membership_committed",
+        "leader_transferred",
+        "voter_removed",
+    ]:
+        require(workflow[field], f"{job}: meta-owned data-Raft workflow field {field} is false")
+    require(workflow["learner_id"] == 4, f"{job}: data-Raft learner id mismatch")
+    require(workflow["removed_voter_id"] == 1, f"{job}: data-Raft removed voter mismatch")
+    require(workflow["requested_leader_id"] == 4, f"{job}: data-Raft leader-transfer target mismatch")
+    require(workflow["final_leader_id"] == 4, f"{job}: data-Raft final leader mismatch")
+    require(workflow["final_voters"] == [2, 3, 4], f"{job}: data-Raft final voters mismatch")
+    for field in [
+        "follower_lag_validated",
+        "failover_validated",
+        "scale_up_validated",
+        "scale_down_validated",
+        "secondary_replication_validated",
+        "networked_process_api_used",
+        "persisted_through_meta_raft_replay",
+        "stale_scheduler_token_rejected",
+    ]:
+        require(membership[field], f"{job}: meta-owned data-Raft membership field {field} is false")
 
 
 def main():
