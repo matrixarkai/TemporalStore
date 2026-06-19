@@ -1954,19 +1954,19 @@ fn context_query_matches(query: &str, text: &str) -> bool {
             return true;
         }
     }
-    let query_terms = context_query_terms_expanded(query);
-    if query_terms.is_empty() {
+    let query_groups = context_query_term_groups(query);
+    if query_groups.is_empty() {
         return true;
     }
-    query_terms
+    query_groups
         .iter()
-        .any(|term| text_lower.contains(term.as_str()))
+        .any(|group| group.iter().any(|term| text_lower.contains(term.as_str())))
 }
 
 fn context_relevance_score(query: &str, text: &str) -> u32 {
     let base_terms = context_query_terms(query);
-    let query_terms = context_query_terms_expanded(query);
-    if query_terms.is_empty() {
+    let query_groups = context_query_term_groups(query);
+    if query_groups.is_empty() {
         return 0;
     }
     let text_lower = text.to_ascii_lowercase();
@@ -1976,14 +1976,20 @@ fn context_relevance_score(query: &str, text: &str) -> u32 {
             score = score.saturating_add(1_000);
         }
     }
-    let mut matched = 0u32;
-    for term in &query_terms {
-        if text_lower.contains(term.as_str()) {
-            matched += 1;
-            score = score.saturating_add((term.len() as u32).max(1));
+    let mut matched_groups = 0u32;
+    for group in &query_groups {
+        let best_match = group
+            .iter()
+            .filter(|term| text_lower.contains(term.as_str()))
+            .map(|term| term.len() as u32)
+            .max()
+            .unwrap_or_default();
+        if best_match > 0 {
+            matched_groups += 1;
+            score = score.saturating_add(best_match.max(1));
         }
     }
-    if matched == query_terms.len() as u32 {
+    if matched_groups == query_groups.len() as u32 {
         score = score.saturating_add(100);
     }
     for phrase in context_query_adjacent_phrases(&base_terms) {
@@ -2002,17 +2008,19 @@ fn context_query_terms(query: &str) -> Vec<String> {
         .collect()
 }
 
-fn context_query_terms_expanded(query: &str) -> Vec<String> {
-    let mut terms = context_query_terms(query);
-    let mut expanded = terms.clone();
-    for term in terms.drain(..) {
-        for synonym in context_query_synonyms(term.as_str()) {
-            expanded.push(synonym.to_string());
-        }
-    }
-    expanded.sort();
-    expanded.dedup();
-    expanded
+fn context_query_term_groups(query: &str) -> Vec<Vec<String>> {
+    context_query_terms(query)
+        .into_iter()
+        .map(|term| {
+            let mut group = vec![term.clone()];
+            for synonym in context_query_synonyms(term.as_str()) {
+                group.push(synonym.to_string());
+            }
+            group.sort();
+            group.dedup();
+            group
+        })
+        .collect()
 }
 
 fn context_query_adjacent_phrases(terms: &[String]) -> Vec<String> {
@@ -2027,6 +2035,8 @@ fn context_query_synonyms(term: &str) -> &'static [&'static str] {
         "checkout" => &["payment", "purchase", "order"],
         "payment" => &["checkout", "purchase", "billing"],
         "risk" => &["fraud", "score", "safety"],
+        "fraud" => &["risk", "score", "safety"],
+        "score" => &["risk", "fraud", "safety"],
         "failed" | "failure" => &["error", "incident", "outage"],
         "support" => &["ticket", "agent", "helpdesk"],
         "preference" | "preferences" => &["likes", "setting", "choice"],
@@ -2398,6 +2408,7 @@ mod tests {
             context_relevance_score("service timeline outage", relevant)
                 > context_relevance_score("service timeline outage", distractor)
         );
+        assert!(context_relevance_score("payment fraud score", relevant) >= 100);
     }
 
     #[test]
