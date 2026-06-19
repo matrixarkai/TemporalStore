@@ -1034,6 +1034,42 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
                 },
             ],
         },
+        ExternalContextBenchmarkCase {
+            dataset: "locomo_style".to_string(),
+            query_id: "locomo-roommate-alias".to_string(),
+            query: "What is Emma's roommate's name after the move?".to_string(),
+            expected_terms: vec!["Lena".to_string()],
+            sources: vec![
+                ExternalContextBenchmarkSource {
+                    title: "Old roommate memory".to_string(),
+                    body: "Earlier chat: Emma's roommate was called Nora before Emma moved apartments.".to_string(),
+                    kind: ContextSourceKind::Chat,
+                },
+                ExternalContextBenchmarkSource {
+                    title: "New roommate memory".to_string(),
+                    body: "After the move, Emma said her new roommate is named Lena and they share the corner apartment.".to_string(),
+                    kind: ContextSourceKind::Chat,
+                },
+            ],
+        },
+        ExternalContextBenchmarkCase {
+            dataset: "longmemeval_s_style".to_string(),
+            query_id: "longmem-pet-name-alias".to_string(),
+            query: "What is the dog's name in the latest pet update?".to_string(),
+            expected_terms: vec!["Miso".to_string()],
+            sources: vec![
+                ExternalContextBenchmarkSource {
+                    title: "Old pet note".to_string(),
+                    body: "Old profile note: the family dog was called Pepper in a previous home.".to_string(),
+                    kind: ContextSourceKind::Document,
+                },
+                ExternalContextBenchmarkSource {
+                    title: "Latest pet note".to_string(),
+                    body: "Latest pet update: the newly adopted dog is named Miso and needs evening walks.".to_string(),
+                    kind: ContextSourceKind::UserEvent,
+                },
+            ],
+        },
     ]
 }
 

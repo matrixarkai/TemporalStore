@@ -200,10 +200,10 @@ contrastive updates such as switched, moved, became, cancelled, and instead so s
 overlapping entities do not win against current facts, and social-link cues such as recommended,
 suggested, introduced, and referred so multi-hop relationship evidence wins over generic planning
 context. Schedule/detail cues such as rescheduled, appointment, deadline, calendar, date, and time
-are boosted so stale calendar details do not outrank current dates. The built-in external fixture
-also boosts quantity cues such as how many, count, number, total, amount, and score so current
-numeric facts outrank stale values. The built-in external fixture includes direct update questions
-plus harder
+are boosted so stale calendar details do not outrank current dates. Quantity cues such as how many,
+count, number, total, amount, and score are boosted so current numeric facts outrank stale values.
+Alias cues such as roommate, manager, named, called, pet, dog, and cat help role/name memories beat
+stale aliases. The built-in external fixture includes direct update questions plus harder
 paraphrases such as "Where does Alice want to work now?" and "Which setting changed most recently
 across the conversation history?", plus temporal-after and root-cause questions such as
 "What did Alice decide after the airport trip conversation?" and "Why did checkout fail after the
@@ -217,7 +217,8 @@ LOCOMO/LongMemEval-style hit-rate regressions visible. Schedule-detail cases suc
 Maya's dentist appointment after it was rescheduled?" and "What is the new report deadline after the
 calendar update?" cover date/time updates. Quantity cases such as "How many guests did Sofia confirm
 after the dinner update?" and "What risk score was recorded after the latest fraud review?" cover
-numeric memory updates.
+numeric memory updates. Alias cases such as "What is Emma's roommate's name after the move?" and
+"What is the dog's name in the latest pet update?" cover entity-disambiguation updates.
 
 Remaining policy hardening:
 

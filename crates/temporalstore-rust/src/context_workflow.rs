@@ -2058,6 +2058,32 @@ fn context_relevance_score(query: &str, text: &str) -> u32 {
     {
         score = score.saturating_add(50);
     }
+    if context_query_requests_after(&base_terms) {
+        if context_text_matches_any(
+            &text_lower,
+            &text_normalized,
+            &[
+                "after", "later", "latest", "new", "current", "update", "moved to",
+            ],
+        ) {
+            score = score.saturating_add(65);
+        }
+        if context_text_matches_any(&text_lower, &text_normalized, &["before", "earlier", "old"]) {
+            score = score.saturating_sub(25);
+        }
+    }
+    if context_query_requests_before(&base_terms) {
+        if context_text_matches_any(&text_lower, &text_normalized, &["before", "earlier", "old"]) {
+            score = score.saturating_add(65);
+        }
+        if context_text_matches_any(
+            &text_lower,
+            &text_normalized,
+            &["after", "later", "latest", "new", "current"],
+        ) {
+            score = score.saturating_sub(25);
+        }
+    }
     if context_query_requests_correction(&base_terms)
         && context_text_matches_any(
             &text_lower,
@@ -2144,6 +2170,17 @@ fn context_relevance_score(query: &str, text: &str) -> u32 {
     {
         score = score.saturating_add(80);
     }
+    if context_query_requests_alias_detail(&base_terms)
+        && context_text_matches_any(
+            &text_lower,
+            &text_normalized,
+            &[
+                "roommate", "manager", "owner", "named", "called", "pet", "dog", "cat",
+            ],
+        )
+    {
+        score = score.saturating_add(75);
+    }
     score
 }
 
@@ -2227,6 +2264,10 @@ fn context_query_synonyms(term: &str) -> &'static [&'static str] {
         "office" | "work" | "workplace" => &["location", "place", "job"],
         "when" | "date" | "time" => &["timeline", "temporal", "session"],
         "who" | "person" | "people" => &["user", "customer", "member"],
+        "roommate" | "housemate" => &["person", "friend", "contact"],
+        "manager" | "supervisor" | "lead" => &["owner", "responsible", "contact"],
+        "name" | "named" | "called" => &["alias", "known"],
+        "pet" | "dog" | "cat" => &["animal", "name"],
         "friend" | "coworker" | "colleague" | "teammate" => &["person", "contact"],
         "recommend" | "recommended" | "suggest" | "suggested" => {
             &["introduced", "referred", "because"]
@@ -2304,6 +2345,14 @@ fn context_query_requests_temporal_reasoning(terms: &[String]) -> bool {
             "before" | "after" | "during" | "timeline" | "temporal" | "history" | "when"
         )
     })
+}
+
+fn context_query_requests_after(terms: &[String]) -> bool {
+    terms.iter().any(|term| term == "after")
+}
+
+fn context_query_requests_before(terms: &[String]) -> bool {
+    terms.iter().any(|term| term == "before")
 }
 
 fn context_query_requests_correction(terms: &[String]) -> bool {
@@ -2398,6 +2447,26 @@ fn context_query_requests_quantity_detail(terms: &[String]) -> bool {
                 | "score"
                 | "percent"
                 | "percentage"
+        )
+    })
+}
+
+fn context_query_requests_alias_detail(terms: &[String]) -> bool {
+    terms.iter().any(|term| {
+        matches!(
+            term.as_str(),
+            "roommate"
+                | "housemate"
+                | "manager"
+                | "supervisor"
+                | "lead"
+                | "owner"
+                | "name"
+                | "named"
+                | "called"
+                | "pet"
+                | "dog"
+                | "cat"
         )
     })
 }
@@ -2967,6 +3036,39 @@ mod tests {
                 "What risk score was recorded after the latest fraud review?",
                 stale_risk_score
             )
+        );
+
+        let new_roommate =
+            "After the move, Emma said her new roommate is named Lena and they share the corner apartment.";
+        let old_roommate =
+            "Earlier chat: Emma's roommate was called Nora before Emma moved apartments.";
+        assert!(context_query_matches(
+            "What is Emma's roommate's name after the move?",
+            new_roommate
+        ));
+        assert!(
+            context_relevance_score(
+                "What is Emma's roommate's name after the move?",
+                new_roommate
+            ) > context_relevance_score(
+                "What is Emma's roommate's name after the move?",
+                old_roommate
+            )
+        );
+
+        let new_pet =
+            "Latest pet update: the newly adopted dog is named Miso and needs evening walks.";
+        let old_pet = "Old profile note: the family dog was called Pepper in a previous home.";
+        assert!(context_query_matches(
+            "What is the dog's name in the latest pet update?",
+            new_pet
+        ));
+        assert!(
+            context_relevance_score("What is the dog's name in the latest pet update?", new_pet)
+                > context_relevance_score(
+                    "What is the dog's name in the latest pet update?",
+                    old_pet
+                )
         );
     }
 
