@@ -122,7 +122,8 @@ Context:
   metrics, reproducible workload signatures, topic/source-kind coverage, explicit threshold
   gates/violation counts, LOCOMO/LongMemEval_s-style synthetic sweep profiles, and multi-profile
   sweep aggregation. The local deterministic benchmark now requires `hit_at_k = 1.0` and
-  `mean_reciprocal_rank = 1.0` so query-topic hit ranking cannot silently regress.
+  `mean_reciprocal_rank = 1.0`; query-term, synonym, phrase, and topic ranking keep QA-style hit
+  ranking from silently regressing.
 
 IPS:
 

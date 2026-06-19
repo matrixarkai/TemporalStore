@@ -75,7 +75,8 @@
       "ingestion_flink_checkpoint_lifecycle",
       "ingestion_dead_letter_export",
       "ingestion_lag_metrics",
-      "ingestion_restart_idempotence"
+      "ingestion_restart_idempotence",
+      "context_retrieval_qa_synonym_ranking"
     ],
     "required_raft_case_names": [
       "storage_data_raft_replication_gtest",
@@ -3933,6 +3934,27 @@
               "docs/cpp_temporalstore_api_parity.md"
             ],
             "rust_runner": "cargo test -p temporalstore-rust context_management_ingest_extract_builds_retrieval_pipeline -- --test-threads=1",
+            "rust_validator": "tools/run_context_workflow_local.sh"
+          }
+        }
+      ]
+    },
+    {
+      "name": "context_retrieval_qa_synonym_ranking",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "context_qa_synonym_relevance_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_context_pipeline_parity",
+            "mode": "rust_executable_cxx_static",
+            "description": "Shared C++/Rust Context retrieval case for QA-style synonym and adjacent-phrase ranking, covering payment/fraud wording against checkout/risk memories.",
+            "required_paths": [
+              "src/extension/context/interface.proto",
+              "src/model/context_model.h"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust context_relevance_ranks_qa_synonyms_and_phrases -- --test-threads=1",
             "rust_validator": "tools/run_context_workflow_local.sh"
           }
         }

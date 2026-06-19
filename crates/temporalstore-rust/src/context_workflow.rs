@@ -1954,7 +1954,7 @@ fn context_query_matches(query: &str, text: &str) -> bool {
             return true;
         }
     }
-    let query_terms = context_query_terms(query);
+    let query_terms = context_query_terms_expanded(query);
     if query_terms.is_empty() {
         return true;
     }
@@ -1964,7 +1964,8 @@ fn context_query_matches(query: &str, text: &str) -> bool {
 }
 
 fn context_relevance_score(query: &str, text: &str) -> u32 {
-    let query_terms = context_query_terms(query);
+    let base_terms = context_query_terms(query);
+    let query_terms = context_query_terms_expanded(query);
     if query_terms.is_empty() {
         return 0;
     }
@@ -1975,9 +1976,19 @@ fn context_relevance_score(query: &str, text: &str) -> u32 {
             score = score.saturating_add(1_000);
         }
     }
-    for term in query_terms {
+    let mut matched = 0u32;
+    for term in &query_terms {
         if text_lower.contains(term.as_str()) {
+            matched += 1;
             score = score.saturating_add((term.len() as u32).max(1));
+        }
+    }
+    if matched == query_terms.len() as u32 {
+        score = score.saturating_add(100);
+    }
+    for phrase in context_query_adjacent_phrases(&base_terms) {
+        if text_lower.contains(phrase.as_str()) {
+            score = score.saturating_add(50);
         }
     }
     score
@@ -1989,6 +2000,43 @@ fn context_query_terms(query: &str) -> Vec<String> {
         .map(|term| term.trim().to_ascii_lowercase())
         .filter(|term| term.len() >= 3 && !is_context_query_stopword(term))
         .collect()
+}
+
+fn context_query_terms_expanded(query: &str) -> Vec<String> {
+    let mut terms = context_query_terms(query);
+    let mut expanded = terms.clone();
+    for term in terms.drain(..) {
+        for synonym in context_query_synonyms(term.as_str()) {
+            expanded.push(synonym.to_string());
+        }
+    }
+    expanded.sort();
+    expanded.dedup();
+    expanded
+}
+
+fn context_query_adjacent_phrases(terms: &[String]) -> Vec<String> {
+    terms
+        .windows(2)
+        .map(|window| format!("{} {}", window[0], window[1]))
+        .collect()
+}
+
+fn context_query_synonyms(term: &str) -> &'static [&'static str] {
+    match term {
+        "checkout" => &["payment", "purchase", "order"],
+        "payment" => &["checkout", "purchase", "billing"],
+        "risk" => &["fraud", "score", "safety"],
+        "failed" | "failure" => &["error", "incident", "outage"],
+        "support" => &["ticket", "agent", "helpdesk"],
+        "preference" | "preferences" => &["likes", "setting", "choice"],
+        "update" | "updated" | "updates" => &["changed", "change", "modify"],
+        "session" | "sessions" => &["dialogue", "conversation", "visit"],
+        "user" | "customer" => &["person", "account", "member"],
+        "service" => &["dependency", "backend", "system"],
+        "timeline" => &["temporal", "history", "sequence"],
+        _ => &[],
+    }
 }
 
 fn context_query_topic_phrase(query: &str) -> Option<String> {
@@ -2332,6 +2380,24 @@ mod tests {
         );
         engine.load_shard(1);
         engine
+    }
+
+    // shared-corpus: context_retrieval_qa_synonym_ranking
+    #[test]
+    fn context_relevance_ranks_qa_synonyms_and_phrases() {
+        let relevant =
+            "Checkout incident: payment safety score spiked after a backend dependency outage.";
+        let distractor = "Support ticket: user asked for help updating a notification preference.";
+
+        assert!(context_query_matches("payment fraud score", relevant));
+        assert!(
+            context_relevance_score("payment fraud score", relevant)
+                > context_relevance_score("payment fraud score", distractor)
+        );
+        assert!(
+            context_relevance_score("service timeline outage", relevant)
+                > context_relevance_score("service timeline outage", distractor)
+        );
     }
 
     #[test]
