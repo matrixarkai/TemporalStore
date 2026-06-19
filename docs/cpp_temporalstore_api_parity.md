@@ -116,6 +116,8 @@ Context:
   the management report exposes provider/stage/route readiness, while batch ingest/extract accepts
   multiple C++ Context-style sources and hands a node-hash retrieval request directly to the
   retrieval/injection pipeline.
+- Context benchmark parity now includes a local VikingMem-style benchmark report for mixed
+  Context sources, recall proxy, token-reduction accounting, and retrieval p50/p95 latency.
 
 IPS:
 

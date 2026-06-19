@@ -2,14 +2,17 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use std::collections::BTreeMap;
+
 use serde::Serialize;
 use temporalstore_rust::{
     context_pipeline_manage_report, context_pipeline_parity_evidence, extract_context,
-    ingest_extract_context, inject_context, retrieve_context, Command, CommandResponse,
-    ContextExtractRequest, ContextIngestExtractRequest, ContextInjectRequest,
-    ContextModelProviderConfig, ContextPipelineParityEvidence, ContextRetrieveRequest,
-    ContextSourceKind, ContextTier, ExecuteRequest, RaftCluster, RaftConfig, SharedStoreReplicator,
-    SharedStoreStorageMode, TemporalEngine,
+    ingest_extract_context, inject_context, retrieve_context, run_context_pipeline_benchmark,
+    Command, CommandResponse, ContextExtractRequest, ContextIngestExtractRequest,
+    ContextInjectRequest, ContextModelProviderConfig, ContextPipelineBenchmarkRequest,
+    ContextPipelineParityEvidence, ContextRetrieveRequest, ContextSourceKind, ContextTier,
+    ExecuteRequest, RaftCluster, RaftConfig, SharedStoreReplicator, SharedStoreStorageMode,
+    TemporalEngine,
 };
 use temporalstore_snapshot::object_store::FileObjectStore;
 
@@ -35,8 +38,22 @@ struct ContextWorkflowHarnessSummary {
     retrieve_pipeline_ready: bool,
     ingest_extract_accepted: usize,
     ingest_extract_failed: usize,
+    ingest_extract_source_count: usize,
+    ingest_extract_unique_nodes: usize,
+    ingest_extract_source_kind_counts: BTreeMap<String, usize>,
+    ingest_extract_provider_counts: BTreeMap<String, usize>,
     managed_routes: Vec<String>,
     pipeline_stages: Vec<String>,
+    pipeline_stage_ready_count: usize,
+    policy_controls: Vec<String>,
+    provider_names: Vec<String>,
+    benchmark_ready: bool,
+    benchmark_source_count: usize,
+    benchmark_query_count: usize,
+    benchmark_recall_at_k: f32,
+    benchmark_token_reduction_percent: f32,
+    benchmark_retrieve_p50_ms: u128,
+    benchmark_retrieve_p95_ms: u128,
     parity_evidence: Vec<String>,
 }
 
@@ -157,6 +174,8 @@ fn main() {
         && manage.management_ready
         && manage.ingestion_extraction_ready
         && manage.retrieval_ready
+        && manage.stage_reports.len() == manage.stages.len()
+        && manage.stage_reports.iter().all(|stage| stage.ready)
         && manage
             .supported_routes
             .iter()
@@ -165,8 +184,41 @@ fn main() {
             .supported_routes
             .iter()
             .any(|route| route == "/context/ingest_extract");
-    let ingest_extract_ready = ingest_extract.accepted >= 2 && ingest_extract.failed == 0;
+    let ingest_extract_ready = ingest_extract.accepted >= 2
+        && ingest_extract.failed == 0
+        && ingest_extract.summary.source_count == 2
+        && ingest_extract.summary.unique_node_count == ingest_extract.node_hashes.len()
+        && ingest_extract
+            .summary
+            .source_kind_counts
+            .get("incident")
+            .copied()
+            .unwrap_or_default()
+            == 1
+        && ingest_extract
+            .summary
+            .source_kind_counts
+            .get("ticket")
+            .copied()
+            .unwrap_or_default()
+            == 1;
     let retrieve_pipeline_ready = ingest_retrieve.blocks.len() >= 2;
+    let benchmark = run_context_pipeline_benchmark(
+        &engine,
+        ContextPipelineBenchmarkRequest {
+            shard_id: 1,
+            tenant_hash: 20260617,
+            source_count: 48,
+            query_count: 6,
+            max_events: 8,
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+    let benchmark_ready = benchmark.status.ok
+        && benchmark.retrieval_successes == benchmark.query_count
+        && benchmark.injection_successes == benchmark.query_count
+        && benchmark.recall_at_k >= 1.0
+        && benchmark.token_reduction_percent > 0.0;
     let context_pipeline_ready = parity.pipeline_ready
         && restart_replay_ready
         && shared_store_sync_ready
@@ -175,10 +227,11 @@ fn main() {
         && unified_corpus_ready
         && management_ready
         && ingest_extract_ready
-        && retrieve_pipeline_ready;
+        && retrieve_pipeline_ready
+        && benchmark_ready;
     assert!(
         context_pipeline_ready,
-        "context pipeline readiness failed: parity={} restart={} sync={} async={} raft={} corpus={} management={} ingest_extract={} retrieve={} retrieve_events={} retrieve_blocks={}",
+        "context pipeline readiness failed: parity={} restart={} sync={} async={} raft={} corpus={} management={} ingest_extract={} retrieve={} benchmark={} retrieve_events={} retrieve_blocks={}",
         parity.pipeline_ready,
         restart_replay_ready,
         shared_store_sync_ready,
@@ -188,6 +241,7 @@ fn main() {
         management_ready,
         ingest_extract_ready,
         retrieve_pipeline_ready,
+        benchmark_ready,
         ingest_retrieve.event_count,
         ingest_retrieve.blocks.len()
     );
@@ -215,8 +269,26 @@ fn main() {
             retrieve_pipeline_ready,
             ingest_extract_accepted: ingest_extract.accepted,
             ingest_extract_failed: ingest_extract.failed,
+            ingest_extract_source_count: ingest_extract.summary.source_count,
+            ingest_extract_unique_nodes: ingest_extract.summary.unique_node_count,
+            ingest_extract_source_kind_counts: ingest_extract.summary.source_kind_counts,
+            ingest_extract_provider_counts: ingest_extract.summary.provider_counts,
             managed_routes: manage.supported_routes,
+            pipeline_stage_ready_count: manage
+                .stage_reports
+                .iter()
+                .filter(|stage| stage.ready)
+                .count(),
             pipeline_stages: manage.stages,
+            policy_controls: manage.policy_controls,
+            provider_names: manage.provider_names,
+            benchmark_ready,
+            benchmark_source_count: benchmark.source_count,
+            benchmark_query_count: benchmark.query_count,
+            benchmark_recall_at_k: benchmark.recall_at_k,
+            benchmark_token_reduction_percent: benchmark.token_reduction_percent,
+            benchmark_retrieve_p50_ms: benchmark.retrieve_p50_ms,
+            benchmark_retrieve_p95_ms: benchmark.retrieve_p95_ms,
             parity_evidence: parity.evidence,
         })
         .expect("context workflow summary should serialize")

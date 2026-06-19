@@ -10,9 +10,12 @@ TemporalStore keeps Context data in its existing `ContextNode`, `ContextEvent`, 
 The workflow is:
 
 1. `manage`: report supported routes, provider count, pipeline stages, and C++/OpenViking parity
-   evidence before admitting a deployment as context-ready.
+   evidence before admitting a deployment as context-ready. The management report now includes
+   per-stage readiness, provider names, and policy controls so operators can see which part of the
+   pipeline owns a failure.
 2. `ingest/extract`: batch sources are accepted under one shard/tenant, normalized to the selected
-   provider, and converted into retrieval-ready node hashes.
+   provider, summarized by source kind/provider/time window, and converted into retrieval-ready
+   node hashes.
 3. `extract`: deterministic mock extraction creates a node, event, source index ref, and dirty
    marker from mocked data such as incidents, tickets, documents, chats, code snippets, or user
    events.
@@ -94,7 +97,12 @@ The harness verifies:
 
 - mocked extraction succeeds
 - the management report advertises manage, ingest, extract, index, retrieve, inject, and audit
-- batch ingest/extract accepts multiple sources and emits a retrieval request
+- the management report exposes per-stage readiness, provider names, and policy controls
+- batch ingest/extract accepts multiple sources, reports source-kind/provider accounting, and emits
+  a retrieval request
+- a VikingMem-style local benchmark runs mixed synthetic Context sources through extraction,
+  hierarchical retrieval, injection, recall proxy, token-reduction accounting, and retrieval p50/p95
+  latency reporting
 - Context blocks are retrieved
 - prompt injection includes `<context>`
 - selected refs are recorded in `ContextPackAudit`
@@ -122,6 +130,23 @@ Covered:
   injection, and audit refs.
 - C++/OpenViking parity evidence covers engine-local restart, shared-store sync/async replay,
   Raft reads, and the shared C++/Rust Context corpus.
+
+## VikingMem-Style Benchmark
+
+`context_workflow_harness` runs a deterministic local benchmark inspired by the VikingMem paper's
+long-term memory evaluation themes: retrieval effectiveness, low interactive latency, hierarchical
+context loading, and reduced context tokens. The benchmark does not claim byte-for-byte VikingMem
+workload parity or published VikingMem scores. It produces local TemporalStore evidence:
+
+- `benchmark_source_count` and `benchmark_query_count`
+- `benchmark_recall_at_k`
+- `benchmark_token_reduction_percent`
+- `benchmark_retrieve_p50_ms` and `benchmark_retrieve_p95_ms`
+- mixed source-kind and provider accounting through the ingest/extract summary
+
+The current local workload uses synthetic incidents, tickets, documents, chats, code snippets, and
+user events so it can run without external model credentials while still exercising the same
+management, ingestion/extraction, retrieval, and injection pipeline.
 
 Remaining policy hardening:
 

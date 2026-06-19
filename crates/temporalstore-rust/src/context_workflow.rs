@@ -1,4 +1,6 @@
 use std::cmp::Reverse;
+use std::collections::BTreeMap;
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -131,6 +133,7 @@ pub struct ContextIngestExtractReport {
     pub status: Status,
     pub accepted: usize,
     pub failed: usize,
+    pub summary: ContextIngestExtractSummary,
     pub extracts: Vec<ContextExtractReport>,
     pub failed_sources: Vec<ContextIngestSourceFailure>,
     pub node_hashes: Vec<u64>,
@@ -138,10 +141,61 @@ pub struct ContextIngestExtractReport {
     pub parity: ContextPipelineParityEvidence,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextIngestExtractSummary {
+    pub source_count: usize,
+    pub accepted: usize,
+    pub failed: usize,
+    pub unique_node_count: usize,
+    pub retrieval_node_count: usize,
+    pub source_kind_counts: BTreeMap<String, usize>,
+    pub provider_counts: BTreeMap<String, usize>,
+    pub start_time_ms: u64,
+    pub end_time_ms: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContextIngestSourceFailure {
     pub source_id: String,
     pub status: Status,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextPipelineBenchmarkRequest {
+    pub shard_id: ShardId,
+    pub tenant_hash: u64,
+    #[serde(default = "default_benchmark_source_count")]
+    pub source_count: usize,
+    #[serde(default = "default_benchmark_query_count")]
+    pub query_count: usize,
+    #[serde(default = "default_retrieve_limit")]
+    pub max_events: usize,
+    #[serde(default)]
+    pub provider: ContextModelProviderConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextPipelineBenchmarkReport {
+    pub status: Status,
+    pub benchmark_name: String,
+    pub source_count: usize,
+    pub query_count: usize,
+    pub accepted_sources: usize,
+    pub failed_sources: usize,
+    pub retrieval_successes: usize,
+    pub injection_successes: usize,
+    pub total_source_tokens: u32,
+    pub selected_context_tokens: u32,
+    pub token_reduction_percent: f32,
+    pub recall_at_k: f32,
+    pub ingest_extract_elapsed_ms: u128,
+    pub retrieve_total_elapsed_ms: u128,
+    pub inject_total_elapsed_ms: u128,
+    pub retrieve_p50_ms: u128,
+    pub retrieve_p95_ms: u128,
+    pub source_kind_counts: BTreeMap<String, usize>,
+    pub provider_counts: BTreeMap<String, usize>,
+    pub evidence: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -227,7 +281,18 @@ pub struct ContextPipelineManageReport {
     pub provider_count: usize,
     pub supported_routes: Vec<String>,
     pub stages: Vec<String>,
+    pub stage_reports: Vec<ContextPipelineStageReport>,
+    pub provider_names: Vec<String>,
+    pub policy_controls: Vec<String>,
     pub parity: ContextPipelineParityEvidence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextPipelineStageReport {
+    pub stage: String,
+    pub ready: bool,
+    pub route: Option<String>,
+    pub evidence: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -377,6 +442,76 @@ pub fn context_workflow_state_report() -> ContextWorkflowStateReport {
 pub fn context_pipeline_manage_report() -> ContextPipelineManageReport {
     let state = context_workflow_state_report();
     let parity = context_pipeline_parity_evidence();
+    let stages = vec![
+        "manage".to_string(),
+        "ingest".to_string(),
+        "extract".to_string(),
+        "index".to_string(),
+        "retrieve".to_string(),
+        "inject".to_string(),
+        "audit".to_string(),
+    ];
+    let stage_reports = vec![
+        ContextPipelineStageReport {
+            stage: "manage".to_string(),
+            ready: parity.pipeline_ready,
+            route: Some("/context/manage".to_string()),
+            evidence: vec![
+                "reports supported routes, providers, policy controls, and stage readiness"
+                    .to_string(),
+            ],
+        },
+        ContextPipelineStageReport {
+            stage: "ingest".to_string(),
+            ready: parity.extraction_stage_ready,
+            route: Some("/context/ingest_extract".to_string()),
+            evidence: vec![
+                "accepts multiple Context sources under one shard/tenant batch".to_string(),
+            ],
+        },
+        ContextPipelineStageReport {
+            stage: "extract".to_string(),
+            ready: parity.extraction_stage_ready,
+            route: Some("/context/extract".to_string()),
+            evidence: vec![
+                "normalizes provider policy and writes ContextNode/Event/IndexRef/DirtyMarker"
+                    .to_string(),
+            ],
+        },
+        ContextPipelineStageReport {
+            stage: "index".to_string(),
+            ready: parity.index_refs_ready,
+            route: None,
+            evidence: vec!["source index refs and dirty summary markers are persisted".to_string()],
+        },
+        ContextPipelineStageReport {
+            stage: "retrieve".to_string(),
+            ready: parity.retrieval_stage_ready,
+            route: Some("/context/retrieve".to_string()),
+            evidence: vec![
+                "retrieval builds L0/L1/L2 blocks from node hashes and time windows".to_string(),
+            ],
+        },
+        ContextPipelineStageReport {
+            stage: "inject".to_string(),
+            ready: parity.injection_stage_ready,
+            route: Some("/context/inject".to_string()),
+            evidence: vec![
+                "prompt injection enforces token budget and records selected refs".to_string(),
+            ],
+        },
+        ContextPipelineStageReport {
+            stage: "audit".to_string(),
+            ready: parity.pack_audit_ready && parity.summary_dirty_ready,
+            route: None,
+            evidence: vec!["ContextPackAudit and summary dirty markers are persisted".to_string()],
+        },
+    ];
+    let provider_names = state
+        .providers
+        .iter()
+        .map(|provider| provider.provider_name.clone())
+        .collect();
     ContextPipelineManageReport {
         status: Status::ok(),
         pipeline_ready: parity.pipeline_ready,
@@ -386,14 +521,17 @@ pub fn context_pipeline_manage_report() -> ContextPipelineManageReport {
         injection_ready: true,
         provider_count: state.providers.len(),
         supported_routes: state.supported_routes,
-        stages: vec![
-            "manage".to_string(),
-            "ingest".to_string(),
-            "extract".to_string(),
-            "index".to_string(),
-            "retrieve".to_string(),
-            "inject".to_string(),
-            "audit".to_string(),
+        stages,
+        stage_reports,
+        provider_names,
+        policy_controls: vec![
+            "provider allow-list".to_string(),
+            "model allow-list".to_string(),
+            "PII filtering".to_string(),
+            "tenant isolation".to_string(),
+            "prompt token budget".to_string(),
+            "rate limit".to_string(),
+            "provider failure budget".to_string(),
         ],
         parity,
     }
@@ -609,7 +747,12 @@ pub fn ingest_extract_context(
     let mut extracts = Vec::new();
     let mut failed_sources = Vec::new();
     let mut node_hashes = Vec::new();
+    let mut source_kind_counts = BTreeMap::new();
+    let mut provider_counts = BTreeMap::new();
     let provider = normalize_provider(request.provider.clone());
+    let source_count = request.sources.len();
+    let start_time_ms = request.start_time_ms;
+    let end_time_ms = request.end_time_ms;
 
     for mut source in request.sources {
         source.shard_id = request.shard_id;
@@ -617,6 +760,12 @@ pub fn ingest_extract_context(
         if source.provider.provider_name.is_empty() {
             source.provider = provider.clone();
         }
+        *source_kind_counts
+            .entry(context_source_kind_name(source.source_kind).to_string())
+            .or_insert(0) += 1;
+        *provider_counts
+            .entry(source.provider.provider_name.clone())
+            .or_insert(0) += 1;
         let policy_report = validate_context_extract_policy(&policy, &source);
         if !policy_report.status.ok {
             failed_sources.push(ContextIngestSourceFailure {
@@ -667,17 +816,219 @@ pub fn ingest_extract_context(
         min_importance: 0.0,
         tiers: default_tiers(),
     };
+    let summary = ContextIngestExtractSummary {
+        source_count,
+        accepted,
+        failed,
+        unique_node_count: node_hashes.len(),
+        retrieval_node_count: retrieve_request.node_hashes.len(),
+        source_kind_counts,
+        provider_counts,
+        start_time_ms,
+        end_time_ms,
+    };
 
     ContextIngestExtractReport {
         status,
         accepted,
         failed,
+        summary,
         extracts,
         failed_sources,
         node_hashes,
         retrieve_request,
         parity: context_pipeline_parity_evidence(),
     }
+}
+
+pub fn run_context_pipeline_benchmark(
+    engine: &TemporalEngine,
+    request: ContextPipelineBenchmarkRequest,
+) -> ContextPipelineBenchmarkReport {
+    let source_count = request.source_count.clamp(1, 10_000);
+    let query_count = request.query_count.clamp(1, 1_000);
+    let provider = normalize_provider(request.provider.clone());
+    let mut total_source_tokens = 0u32;
+    let mut sources = Vec::with_capacity(source_count);
+    for index in 0..source_count {
+        let source_kind = benchmark_source_kind(index);
+        let body = format!(
+            "VikingMem-style benchmark context item {index}: checkout incident topic {} includes user preference, service dependency, timeline evidence, retrieval hint, and follow-up action.",
+            index % query_count
+        );
+        total_source_tokens = total_source_tokens.saturating_add(estimate_tokens(&body));
+        sources.push(ContextExtractRequest {
+            shard_id: request.shard_id,
+            tenant_hash: request.tenant_hash,
+            source_kind,
+            source_id: format!("bench-context-{index}"),
+            title: format!("Benchmark context item {index}"),
+            body,
+            timestamp_ms: 1_000 + index as u64,
+            provider: provider.clone(),
+        });
+    }
+
+    let ingest_start = Instant::now();
+    let ingest = ingest_extract_context(
+        engine,
+        ContextIngestExtractRequest {
+            shard_id: request.shard_id,
+            tenant_hash: request.tenant_hash,
+            sources,
+            query: "checkout benchmark".to_string(),
+            start_time_ms: 0,
+            end_time_ms: 1_000 + source_count as u64 + 1,
+            max_events: request.max_events,
+            provider,
+        },
+    );
+    let ingest_extract_elapsed_ms = ingest_start.elapsed().as_millis();
+
+    let mut retrieve_latencies = Vec::with_capacity(query_count);
+    let mut retrieval_successes = 0usize;
+    let mut injection_successes = 0usize;
+    let mut selected_context_tokens = 0u32;
+    let mut retrieve_total_elapsed_ms = 0u128;
+    let mut inject_total_elapsed_ms = 0u128;
+
+    for query_index in 0..query_count {
+        let retrieve_request = ContextRetrieveRequest {
+            shard_id: request.shard_id,
+            tenant_hash: request.tenant_hash,
+            node_hashes: ingest.node_hashes.clone(),
+            query: format!("checkout benchmark topic {query_index}"),
+            start_time_ms: 0,
+            end_time_ms: 1_000 + source_count as u64 + 1,
+            max_events: request.max_events,
+            min_confidence: 0.0,
+            min_importance: 0.0,
+            tiers: default_tiers(),
+        };
+        let retrieve_start = Instant::now();
+        let retrieve = retrieve_context(engine, retrieve_request.clone());
+        let retrieve_elapsed = retrieve_start.elapsed().as_millis();
+        retrieve_latencies.push(retrieve_elapsed);
+        retrieve_total_elapsed_ms += retrieve_elapsed;
+        if retrieve.status.ok && !retrieve.blocks.is_empty() {
+            retrieval_successes += 1;
+        }
+
+        let inject_start = Instant::now();
+        let inject = inject_context(
+            engine,
+            ContextInjectRequest {
+                retrieve: retrieve_request,
+                prompt: format!("Answer benchmark query {query_index}."),
+                session_hash: 42_000 + query_index as u64,
+                query_id: format!("bench-query-{query_index}"),
+                max_prompt_tokens: 256,
+                provider: ContextModelProviderConfig::default(),
+            },
+        );
+        let inject_elapsed = inject_start.elapsed().as_millis();
+        inject_total_elapsed_ms += inject_elapsed;
+        if inject.status.ok {
+            injection_successes += 1;
+            selected_context_tokens = selected_context_tokens.saturating_add(
+                inject
+                    .selected_blocks
+                    .iter()
+                    .map(|block| block.estimated_tokens)
+                    .sum::<u32>(),
+            );
+        }
+    }
+
+    retrieve_latencies.sort_unstable();
+    let retrieve_p50_ms = percentile_latency(&retrieve_latencies, 50);
+    let retrieve_p95_ms = percentile_latency(&retrieve_latencies, 95);
+    let full_context_query_tokens = total_source_tokens.saturating_mul(query_count as u32);
+    let token_reduction_percent =
+        token_reduction_percent(full_context_query_tokens, selected_context_tokens);
+    let recall_at_k = retrieval_successes as f32 / query_count as f32;
+    let status = if ingest.status.ok
+        && retrieval_successes == query_count
+        && injection_successes == query_count
+    {
+        Status::ok()
+    } else {
+        Status::error(
+            "context_pipeline_benchmark_incomplete",
+            format!(
+                "accepted={} failed={} retrieval_successes={} injection_successes={} queries={}",
+                ingest.accepted,
+                ingest.failed,
+                retrieval_successes,
+                injection_successes,
+                query_count
+            ),
+        )
+    };
+
+    ContextPipelineBenchmarkReport {
+        status,
+        benchmark_name: "vikingmem_style_context_management_local".to_string(),
+        source_count,
+        query_count,
+        accepted_sources: ingest.accepted,
+        failed_sources: ingest.failed,
+        retrieval_successes,
+        injection_successes,
+        total_source_tokens: full_context_query_tokens,
+        selected_context_tokens,
+        token_reduction_percent,
+        recall_at_k,
+        ingest_extract_elapsed_ms,
+        retrieve_total_elapsed_ms,
+        inject_total_elapsed_ms,
+        retrieve_p50_ms,
+        retrieve_p95_ms,
+        source_kind_counts: ingest.summary.source_kind_counts,
+        provider_counts: ingest.summary.provider_counts,
+        evidence: vec![
+            "VikingMem-style local benchmark covers extraction, hierarchical retrieval, injection, latency, recall proxy, and token reduction".to_string(),
+            "Synthetic workload uses mixed Context source kinds and deterministic local providers".to_string(),
+        ],
+    }
+}
+
+fn context_source_kind_name(kind: ContextSourceKind) -> &'static str {
+    match kind {
+        ContextSourceKind::Document => "document",
+        ContextSourceKind::Chat => "chat",
+        ContextSourceKind::Ticket => "ticket",
+        ContextSourceKind::Code => "code",
+        ContextSourceKind::Incident => "incident",
+        ContextSourceKind::UserEvent => "user_event",
+    }
+}
+
+fn benchmark_source_kind(index: usize) -> ContextSourceKind {
+    match index % 6 {
+        0 => ContextSourceKind::Incident,
+        1 => ContextSourceKind::Ticket,
+        2 => ContextSourceKind::Document,
+        3 => ContextSourceKind::Chat,
+        4 => ContextSourceKind::Code,
+        _ => ContextSourceKind::UserEvent,
+    }
+}
+
+fn percentile_latency(sorted_latencies: &[u128], percentile: usize) -> u128 {
+    if sorted_latencies.is_empty() {
+        return 0;
+    }
+    let rank = ((sorted_latencies.len() - 1) * percentile.min(100)) / 100;
+    sorted_latencies[rank]
+}
+
+fn token_reduction_percent(full_tokens: u32, selected_tokens: u32) -> f32 {
+    if full_tokens == 0 {
+        return 0.0;
+    }
+    let saved = full_tokens.saturating_sub(selected_tokens);
+    (saved as f32 * 100.0) / full_tokens as f32
 }
 
 #[derive(Debug, Clone)]
@@ -1290,6 +1641,14 @@ fn default_retrieve_limit() -> usize {
     16
 }
 
+fn default_benchmark_source_count() -> usize {
+    64
+}
+
+fn default_benchmark_query_count() -> usize {
+    8
+}
+
 fn default_max_prompt_tokens() -> u32 {
     2048
 }
@@ -1511,6 +1870,14 @@ mod tests {
             manage.stages,
             vec!["manage", "ingest", "extract", "index", "retrieve", "inject", "audit"]
         );
+        assert_eq!(manage.stage_reports.len(), manage.stages.len());
+        assert!(manage.stage_reports.iter().all(|stage| stage.ready));
+        assert!(manage
+            .provider_names
+            .contains(&"mock-openai-compatible".to_string()));
+        assert!(manage
+            .policy_controls
+            .contains(&"tenant isolation".to_string()));
 
         let ingest = ingest_extract_context(
             &engine,
@@ -1554,6 +1921,17 @@ mod tests {
         assert_eq!(ingest.retrieve_request.shard_id, 1);
         assert_eq!(ingest.retrieve_request.tenant_hash, 77);
         assert_eq!(ingest.retrieve_request.node_hashes, ingest.node_hashes);
+        assert_eq!(ingest.summary.source_count, 2);
+        assert_eq!(ingest.summary.accepted, 2);
+        assert_eq!(ingest.summary.failed, 0);
+        assert_eq!(ingest.summary.unique_node_count, 2);
+        assert_eq!(ingest.summary.retrieval_node_count, 2);
+        assert_eq!(ingest.summary.source_kind_counts.get("incident"), Some(&1));
+        assert_eq!(ingest.summary.source_kind_counts.get("ticket"), Some(&1));
+        assert_eq!(
+            ingest.summary.provider_counts.get("mock-openai-compatible"),
+            Some(&2)
+        );
 
         let retrieve = retrieve_context(&engine, ingest.retrieve_request.clone());
         assert!(retrieve.status.ok, "{:?}", retrieve.status);
@@ -1563,6 +1941,36 @@ mod tests {
             .iter()
             .any(|block| block.text.to_ascii_lowercase().contains("checkout")));
         assert!(retrieve.parity.pipeline_ready);
+
+        let benchmark = run_context_pipeline_benchmark(
+            &engine,
+            ContextPipelineBenchmarkRequest {
+                shard_id: 1,
+                tenant_hash: 88,
+                source_count: 12,
+                query_count: 3,
+                max_events: 6,
+                provider: ContextModelProviderConfig::default(),
+            },
+        );
+        assert!(benchmark.status.ok, "{:?}", benchmark.status);
+        assert_eq!(
+            benchmark.benchmark_name,
+            "vikingmem_style_context_management_local"
+        );
+        assert_eq!(benchmark.source_count, 12);
+        assert_eq!(benchmark.query_count, 3);
+        assert_eq!(benchmark.accepted_sources, 12);
+        assert_eq!(benchmark.failed_sources, 0);
+        assert_eq!(benchmark.retrieval_successes, 3);
+        assert_eq!(benchmark.injection_successes, 3);
+        assert!(benchmark.recall_at_k >= 1.0);
+        assert!(benchmark.token_reduction_percent > 0.0);
+        assert!(benchmark.source_kind_counts.len() >= 3);
+        assert_eq!(
+            benchmark.provider_counts.get("mock-openai-compatible"),
+            Some(&12)
+        );
     }
 
     #[test]
