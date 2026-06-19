@@ -80,6 +80,10 @@ Different:
 
 ## Local Testing
 
+For a copy-paste operator runbook covering HTTP server startup, `/context/ingest_extract`,
+`/context/extract`, `/context/retrieve`, and `/context/inject`, see
+[`context_ingestion_extraction_retrieval_manual.md`](context_ingestion_extraction_retrieval_manual.md).
+
 Run the local harness:
 
 ```bash
