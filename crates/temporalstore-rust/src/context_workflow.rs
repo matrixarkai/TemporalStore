@@ -2116,6 +2116,24 @@ fn context_relevance_score(query: &str, text: &str) -> u32 {
     {
         score = score.saturating_add(80);
     }
+    if context_query_requests_schedule_detail(&base_terms)
+        && context_text_matches_any(
+            &text_lower,
+            &text_normalized,
+            &[
+                "rescheduled",
+                "scheduled",
+                "moved to",
+                "appointment",
+                "deadline",
+                "calendar",
+                "at ",
+                "on ",
+            ],
+        )
+    {
+        score = score.saturating_add(80);
+    }
     score
 }
 
@@ -2182,6 +2200,11 @@ fn context_query_synonyms(term: &str) -> &'static [&'static str] {
         "service" => &["dependency", "backend", "system"],
         "timeline" | "temporal" | "history" | "sequence" => &["before", "after", "during"],
         "before" | "after" | "during" => &["timeline", "temporal", "sequence"],
+        "schedule" | "scheduled" | "reschedule" | "rescheduled" => {
+            &["calendar", "appointment", "time", "date"]
+        }
+        "appointment" | "meeting" | "deadline" => &["schedule", "calendar", "date", "time"],
+        "tomorrow" | "tonight" | "morning" | "afternoon" | "evening" => &["time", "date"],
         "multi" | "hop" | "reasoning" => &["related", "connection", "because"],
         "why" | "because" | "reason" => &["cause", "root", "explain", "problem"],
         "cause" | "root" => &["because", "reason", "incident", "problem"],
@@ -2200,7 +2223,7 @@ fn context_query_synonyms(term: &str) -> &'static [&'static str] {
         "travel" | "trip" | "flight" => &["itinerary", "journey", "airport"],
         "remember" | "recall" | "remind" => &["mentioned", "said", "told", "note"],
         "medication" | "medicine" | "meds" | "prescription" => &["pill", "pharmacy", "doctor"],
-        "doctor" | "physician" | "appointment" | "clinic" => &["visit", "medical", "medication"],
+        "doctor" | "physician" | "clinic" => &["visit", "medical", "medication"],
         "snack" | "meal" => &["food", "preference"],
         "gift" | "present" => &["birthday", "surprise", "preference"],
         "allergy" | "allergic" | "avoid" => &["restriction", "food", "without"],
@@ -2325,6 +2348,27 @@ fn context_query_requests_social_link(terms: &[String]) -> bool {
                 | "referred"
                 | "because"
                 | "who"
+        )
+    })
+}
+
+fn context_query_requests_schedule_detail(terms: &[String]) -> bool {
+    terms.iter().any(|term| {
+        matches!(
+            term.as_str(),
+            "when"
+                | "date"
+                | "time"
+                | "schedule"
+                | "scheduled"
+                | "reschedule"
+                | "rescheduled"
+                | "appointment"
+                | "meeting"
+                | "deadline"
+                | "calendar"
+                | "tomorrow"
+                | "tonight"
         )
     })
 }
@@ -2823,6 +2867,40 @@ mod tests {
             ) > context_relevance_score(
                 "Which project did Lee pick because Dana suggested it during planning?",
                 stale_project
+            )
+        );
+
+        let rescheduled_appointment = "Latest calendar update: Maya rescheduled the dentist appointment to Thursday at 3pm after the clinic called.";
+        let stale_appointment =
+            "Earlier memory: Maya had a dentist appointment scheduled for Tuesday morning.";
+        assert!(context_query_matches(
+            "When is Maya's dentist appointment after it was rescheduled?",
+            rescheduled_appointment
+        ));
+        assert!(
+            context_relevance_score(
+                "When is Maya's dentist appointment after it was rescheduled?",
+                rescheduled_appointment
+            ) > context_relevance_score(
+                "When is Maya's dentist appointment after it was rescheduled?",
+                stale_appointment
+            )
+        );
+
+        let updated_deadline = "Calendar update: the report deadline moved to June 24 so the benchmark review could finish first.";
+        let stale_deadline =
+            "Old planning note: the report deadline was June 17 before the later schedule change.";
+        assert!(context_query_matches(
+            "What is the new report deadline after the calendar update?",
+            updated_deadline
+        ));
+        assert!(
+            context_relevance_score(
+                "What is the new report deadline after the calendar update?",
+                updated_deadline
+            ) > context_relevance_score(
+                "What is the new report deadline after the calendar update?",
+                stale_deadline
             )
         );
     }

@@ -962,6 +962,42 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
                 },
             ],
         },
+        ExternalContextBenchmarkCase {
+            dataset: "locomo_style".to_string(),
+            query_id: "locomo-appointment-reschedule".to_string(),
+            query: "When is Maya's dentist appointment after it was rescheduled?".to_string(),
+            expected_terms: vec!["Thursday at 3pm".to_string()],
+            sources: vec![
+                ExternalContextBenchmarkSource {
+                    title: "Original dentist appointment".to_string(),
+                    body: "Earlier memory: Maya had a dentist appointment scheduled for Tuesday morning.".to_string(),
+                    kind: ContextSourceKind::Chat,
+                },
+                ExternalContextBenchmarkSource {
+                    title: "Rescheduled dentist appointment".to_string(),
+                    body: "Latest calendar update: Maya rescheduled the dentist appointment to Thursday at 3pm after the clinic called.".to_string(),
+                    kind: ContextSourceKind::UserEvent,
+                },
+            ],
+        },
+        ExternalContextBenchmarkCase {
+            dataset: "longmemeval_s_style".to_string(),
+            query_id: "longmem-deadline-date-update".to_string(),
+            query: "What is the new report deadline after the calendar update?".to_string(),
+            expected_terms: vec!["June 24".to_string()],
+            sources: vec![
+                ExternalContextBenchmarkSource {
+                    title: "Old report date".to_string(),
+                    body: "Old planning note: the report deadline was June 17 before the later schedule change.".to_string(),
+                    kind: ContextSourceKind::Document,
+                },
+                ExternalContextBenchmarkSource {
+                    title: "New report date".to_string(),
+                    body: "Calendar update: the report deadline moved to June 24 so the benchmark review could finish first.".to_string(),
+                    kind: ContextSourceKind::Ticket,
+                },
+            ],
+        },
     ]
 }
 

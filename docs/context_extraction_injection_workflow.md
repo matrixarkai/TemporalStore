@@ -199,7 +199,9 @@ memory updates and remembered facts outrank stale conversational memories. It al
 contrastive updates such as switched, moved, became, cancelled, and instead so stale memories with
 overlapping entities do not win against current facts, and social-link cues such as recommended,
 suggested, introduced, and referred so multi-hop relationship evidence wins over generic planning
-context. The built-in external fixture includes direct update questions plus harder
+context. Schedule/detail cues such as rescheduled, appointment, deadline, calendar, date, and time
+are boosted so stale calendar details do not outrank current dates. The built-in external fixture
+includes direct update questions plus harder
 paraphrases such as "Where does Alice want to work now?" and "Which setting changed most recently
 across the conversation history?", plus temporal-after and root-cause questions such as
 "What did Alice decide after the airport trip conversation?" and "Why did checkout fail after the
@@ -209,7 +211,9 @@ remember before the doctor appointment?", plus contrastive-update questions such
 Priya switch to after cancelling guitar lessons?" and "Who is the backup contact now after Sam moved
 teams?", and social-link questions such as "Who recommended the cafe that Nina booked after the
 conference?" and "Which project did Lee pick because Dana suggested it during planning?" to keep
-LOCOMO/LongMemEval-style hit-rate regressions visible.
+LOCOMO/LongMemEval-style hit-rate regressions visible. Schedule-detail cases such as "When is
+Maya's dentist appointment after it was rescheduled?" and "What is the new report deadline after the
+calendar update?" cover date/time updates.
 
 Remaining policy hardening:
 
