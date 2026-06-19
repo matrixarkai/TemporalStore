@@ -200,6 +200,7 @@ pub struct ContextPipelineBenchmarkReport {
     pub selected_context_tokens: u32,
     pub token_reduction_percent: f32,
     pub recall_at_k: f32,
+    pub evidence_retention_at_k: f32,
     pub ingest_extract_elapsed_ms: u128,
     pub retrieve_total_elapsed_ms: u128,
     pub inject_total_elapsed_ms: u128,
@@ -229,7 +230,11 @@ pub struct ContextPipelineBenchmarkThresholds {
     pub min_hit_at_k: f32,
     pub min_mean_reciprocal_rank: f32,
     pub min_recall_at_k: f32,
+    #[serde(default = "default_min_evidence_retention_at_k")]
+    pub min_evidence_retention_at_k: f32,
     pub min_token_reduction_percent: f32,
+    #[serde(default = "default_max_benchmark_selected_tokens_per_query")]
+    pub max_selected_tokens_per_query: u32,
     pub max_retrieve_p50_ms: u128,
     pub max_retrieve_p95_ms: u128,
     pub min_ingest_sources_per_sec: f64,
@@ -251,6 +256,7 @@ pub struct ContextPipelineBenchmarkQueryReport {
     pub retrieved_blocks: usize,
     pub selected_blocks: usize,
     pub selected_tokens: u32,
+    pub evidence_retained: bool,
     pub hit_rank: Option<usize>,
     pub reciprocal_rank: f32,
     pub retrieve_elapsed_ms: u128,
@@ -286,6 +292,7 @@ pub struct ContextPipelineBenchmarkSweepReport {
     pub all_profiles_ready: bool,
     pub min_hit_at_k: f32,
     pub min_mean_reciprocal_rank: f32,
+    pub min_evidence_retention_at_k: f32,
     pub min_token_reduction_percent: f32,
     pub max_retrieve_p95_ms: u128,
     pub max_inject_p95_ms: u128,
@@ -297,6 +304,7 @@ pub struct ContextPipelineBenchmarkSweepReport {
     pub min_source_kind_coverage_count: usize,
     pub total_zero_hit_queries: usize,
     pub avg_selected_tokens_per_query: f64,
+    pub max_selected_tokens_per_query: u32,
     pub all_thresholds_passed: bool,
     pub threshold_violations: Vec<String>,
     pub evidence: Vec<String>,
@@ -1006,6 +1014,7 @@ pub fn run_context_pipeline_benchmark(
     let mut inject_total_elapsed_ms = 0u128;
     let mut reciprocal_rank_sum = 0.0f32;
     let mut hit_count = 0usize;
+    let mut retained_evidence_count = 0usize;
     let mut per_query = Vec::with_capacity(query_count);
     let min_sources_per_topic = topic_source_counts
         .iter()
@@ -1084,6 +1093,15 @@ pub fn run_context_pipeline_benchmark(
             injection_successes += 1;
             selected_context_tokens = selected_context_tokens.saturating_add(selected_tokens);
         }
+        let evidence_retained = inject.selected_blocks.iter().any(|block| {
+            block
+                .text
+                .to_ascii_lowercase()
+                .contains(expected_topic.as_str())
+        });
+        if evidence_retained {
+            retained_evidence_count += 1;
+        }
         per_query.push(ContextPipelineBenchmarkQueryReport {
             query_id,
             expected_topic,
@@ -1094,6 +1112,7 @@ pub fn run_context_pipeline_benchmark(
             retrieved_blocks: retrieve.blocks.len(),
             selected_blocks: inject.selected_blocks.len(),
             selected_tokens,
+            evidence_retained,
             hit_rank,
             reciprocal_rank,
             retrieve_elapsed_ms: retrieve_elapsed,
@@ -1113,6 +1132,7 @@ pub fn run_context_pipeline_benchmark(
     let recall_at_k = retrieval_successes as f32 / query_count as f32;
     let hit_at_k = hit_count as f32 / query_count as f32;
     let mean_reciprocal_rank = reciprocal_rank_sum / query_count as f32;
+    let evidence_retention_at_k = retained_evidence_count as f32 / query_count as f32;
     let zero_hit_queries = query_count.saturating_sub(hit_count);
     let avg_retrieved_blocks_per_query = total_retrieved_blocks as f64 / query_count as f64;
     let avg_selected_blocks_per_query = total_selected_blocks as f64 / query_count as f64;
@@ -1122,7 +1142,9 @@ pub fn run_context_pipeline_benchmark(
         hit_at_k,
         mean_reciprocal_rank,
         recall_at_k,
+        evidence_retention_at_k,
         token_reduction_percent,
+        max_selected_tokens_per_query,
         retrieve_p50_ms,
         retrieve_p95_ms,
         rate_per_sec(source_count, ingest_extract_elapsed_ms),
@@ -1134,6 +1156,7 @@ pub fn run_context_pipeline_benchmark(
         && retrieval_successes == query_count
         && injection_successes == query_count
         && hit_count == query_count
+        && retained_evidence_count == query_count
         && threshold_passed
     {
         Status::ok()
@@ -1176,6 +1199,7 @@ pub fn run_context_pipeline_benchmark(
         selected_context_tokens,
         token_reduction_percent,
         recall_at_k,
+        evidence_retention_at_k,
         ingest_extract_elapsed_ms,
         retrieve_total_elapsed_ms,
         inject_total_elapsed_ms,
@@ -1198,7 +1222,7 @@ pub fn run_context_pipeline_benchmark(
         source_kind_counts: ingest.summary.source_kind_counts,
         provider_counts: ingest.summary.provider_counts,
         evidence: vec![
-            "VikingMem-style local benchmark covers extraction, hierarchical retrieval, injection, latency, hit@k, MRR, throughput, recall proxy, and token reduction".to_string(),
+            "VikingMem-style local benchmark covers extraction, hierarchical retrieval, budgeted injection, latency, hit@k, MRR, throughput, recall proxy, evidence retention, and token reduction".to_string(),
             "Synthetic workload uses mixed Context source kinds and deterministic local providers".to_string(),
         ],
     }
@@ -1238,6 +1262,10 @@ pub fn run_context_pipeline_benchmark_sweep(
     let min_mean_reciprocal_rank = reports
         .iter()
         .map(|report| report.mean_reciprocal_rank)
+        .fold(1.0f32, f32::min);
+    let min_evidence_retention_at_k = reports
+        .iter()
+        .map(|report| report.evidence_retention_at_k)
         .fold(1.0f32, f32::min);
     let min_token_reduction_percent = reports
         .iter()
@@ -1279,6 +1307,11 @@ pub fn run_context_pipeline_benchmark_sweep(
         .iter()
         .map(|report| report.selected_context_tokens as u64)
         .sum::<u64>();
+    let max_selected_tokens_per_query = reports
+        .iter()
+        .map(|report| report.max_selected_tokens_per_query)
+        .max()
+        .unwrap_or_default();
     let avg_selected_tokens_per_query = if total_queries == 0 {
         0.0
     } else {
@@ -1299,6 +1332,7 @@ pub fn run_context_pipeline_benchmark_sweep(
         && all_thresholds_passed
         && min_hit_at_k >= 1.0
         && min_mean_reciprocal_rank > 0.0
+        && min_evidence_retention_at_k >= 1.0
         && min_token_reduction_percent > 0.0
     {
         Status::ok()
@@ -1306,7 +1340,7 @@ pub fn run_context_pipeline_benchmark_sweep(
         Status::error(
             "context_pipeline_benchmark_sweep_incomplete",
             format!(
-                "profiles={profile_count} ready={all_profiles_ready} min_hit_at_k={min_hit_at_k:.3} min_mrr={min_mean_reciprocal_rank:.3} min_token_reduction={min_token_reduction_percent:.3}"
+                "profiles={profile_count} ready={all_profiles_ready} min_hit_at_k={min_hit_at_k:.3} min_mrr={min_mean_reciprocal_rank:.3} min_evidence_retention={min_evidence_retention_at_k:.3} min_token_reduction={min_token_reduction_percent:.3}"
             ),
         )
     };
@@ -1319,6 +1353,7 @@ pub fn run_context_pipeline_benchmark_sweep(
         all_profiles_ready,
         min_hit_at_k,
         min_mean_reciprocal_rank,
+        min_evidence_retention_at_k,
         min_token_reduction_percent,
         max_retrieve_p95_ms,
         max_inject_p95_ms,
@@ -1330,11 +1365,12 @@ pub fn run_context_pipeline_benchmark_sweep(
         min_source_kind_coverage_count,
         total_zero_hit_queries,
         avg_selected_tokens_per_query,
+        max_selected_tokens_per_query,
         all_thresholds_passed,
         threshold_violations,
         evidence: vec![
             "Benchmark sweep runs multiple deterministic profile sizes through the same Context pipeline".to_string(),
-            "Sweep aggregates readiness, threshold gates, hit@k, MRR, token reduction, latency, total source count, and total query count".to_string(),
+            "Sweep aggregates readiness, threshold gates, hit@k, MRR, evidence retention, token budget, token reduction, latency, total source count, and total query count".to_string(),
         ],
     }
 }
@@ -1344,7 +1380,9 @@ fn benchmark_threshold_violations(
     hit_at_k: f32,
     mean_reciprocal_rank: f32,
     recall_at_k: f32,
+    evidence_retention_at_k: f32,
     token_reduction_percent: f32,
+    max_selected_tokens_per_query: u32,
     retrieve_p50_ms: u128,
     retrieve_p95_ms: u128,
     ingest_sources_per_sec: f64,
@@ -1370,10 +1408,22 @@ fn benchmark_threshold_violations(
             thresholds.min_recall_at_k
         ));
     }
+    if evidence_retention_at_k < thresholds.min_evidence_retention_at_k {
+        violations.push(format!(
+            "evidence_retention_at_k {evidence_retention_at_k:.3} below {:.3}",
+            thresholds.min_evidence_retention_at_k
+        ));
+    }
     if token_reduction_percent < thresholds.min_token_reduction_percent {
         violations.push(format!(
             "token_reduction_percent {token_reduction_percent:.3} below {:.3}",
             thresholds.min_token_reduction_percent
+        ));
+    }
+    if max_selected_tokens_per_query > thresholds.max_selected_tokens_per_query {
+        violations.push(format!(
+            "max_selected_tokens_per_query {max_selected_tokens_per_query} above {}",
+            thresholds.max_selected_tokens_per_query
         ));
     }
     if retrieve_p50_ms > thresholds.max_retrieve_p50_ms {
@@ -2645,13 +2695,23 @@ fn default_benchmark_thresholds() -> ContextPipelineBenchmarkThresholds {
         min_hit_at_k: 1.0,
         min_mean_reciprocal_rank: 1.0,
         min_recall_at_k: 1.0,
+        min_evidence_retention_at_k: 1.0,
         min_token_reduction_percent: 0.1,
+        max_selected_tokens_per_query: 256,
         max_retrieve_p50_ms: 10_000,
         max_retrieve_p95_ms: 10_000,
         min_ingest_sources_per_sec: 1.0,
         min_retrieve_queries_per_sec: 1.0,
         min_inject_queries_per_sec: 1.0,
     }
+}
+
+fn default_min_evidence_retention_at_k() -> f32 {
+    1.0
+}
+
+fn default_max_benchmark_selected_tokens_per_query() -> u32 {
+    256
 }
 
 fn default_benchmark_sweep_profiles() -> Vec<ContextPipelineBenchmarkSweepProfile> {
@@ -3272,6 +3332,7 @@ mod tests {
         assert_eq!(benchmark.injection_successes, 3);
         assert_eq!(benchmark.hit_at_k, 1.0);
         assert_eq!(benchmark.mean_reciprocal_rank, 1.0);
+        assert_eq!(benchmark.evidence_retention_at_k, 1.0);
         assert!(benchmark.ingest_sources_per_sec > 0.0);
         assert!(benchmark.retrieve_queries_per_sec > 0.0);
         assert!(benchmark.inject_queries_per_sec > 0.0);
@@ -3281,12 +3342,16 @@ mod tests {
             .iter()
             .all(|query| query.hit_rank.is_some()
                 && query.reciprocal_rank > 0.0
+                && query.evidence_retained
                 && query.expected_topic_source_count == 4));
         assert!(benchmark.recall_at_k >= 1.0);
         assert!(benchmark.token_reduction_percent > 0.0);
+        assert!(benchmark.max_selected_tokens_per_query <= 256);
         assert!(benchmark.threshold_passed);
         assert!(benchmark.threshold_violations.is_empty());
         assert_eq!(benchmark.thresholds.min_hit_at_k, 1.0);
+        assert_eq!(benchmark.thresholds.min_evidence_retention_at_k, 1.0);
+        assert_eq!(benchmark.thresholds.max_selected_tokens_per_query, 256);
         assert!(benchmark.source_kind_counts.len() >= 3);
         assert_eq!(
             benchmark.provider_counts.get("mock-openai-compatible"),
@@ -3335,7 +3400,9 @@ mod tests {
         assert!(sweep.min_source_kind_coverage_count >= 3);
         assert_eq!(sweep.min_hit_at_k, 1.0);
         assert_eq!(sweep.min_mean_reciprocal_rank, 1.0);
+        assert_eq!(sweep.min_evidence_retention_at_k, 1.0);
         assert!(sweep.min_token_reduction_percent > 0.0);
+        assert!(sweep.max_selected_tokens_per_query <= 256);
         assert!(sweep.all_thresholds_passed);
         assert!(sweep.threshold_violations.is_empty());
         assert_eq!(sweep.reports.len(), 2);

@@ -157,13 +157,17 @@ local TemporalStore evidence:
   `benchmark_inject_p95_ms`
 - average retrieved blocks, selected blocks, selected tokens, max selected tokens, and zero-hit
   query counts
+- `benchmark_evidence_retention_at_k` and per-query `evidence_retained` evidence proving the
+  expected answer/topic survives budgeted context injection, not only retrieval
 - `benchmark_thresholds`, `benchmark_threshold_passed`, and threshold violation counts for
-  explicit regression gates on hit@k, MRR, recall proxy, token reduction, latency, and throughput
-- per-query hit rank, reciprocal rank, selected-block count, token count, and latency
+  explicit regression gates on hit@k, MRR, recall proxy, evidence retention, selected-token budget,
+  token reduction, latency, and throughput
+- per-query hit rank, reciprocal rank, evidence retention, selected-block count, token count, and
+  latency
 - `benchmark_sweep_*` fields covering multi-profile source/query sweeps, minimum hit@k, minimum
-  MRR, minimum token reduction, total source/query coverage, maximum p95 retrieval/injection
-  latency, selected-token averages, zero-hit totals, profile signatures, workload coverage ranges,
-  and sweep-wide threshold pass/fail evidence
+  MRR, minimum evidence retention, minimum token reduction, total source/query coverage, maximum
+  p95 retrieval/injection latency, selected-token averages and maximums, zero-hit totals, profile
+  signatures, workload coverage ranges, and sweep-wide threshold pass/fail evidence
 - `external_benchmark_*` fields covering optional LOCOMO/LongMemEval-style JSONL replay, including
   dataset name, case count, hit@k, MRR, zero-hit queries, and source path
 - `external_benchmark_category_count` and `external_benchmark_category_breakdown` fields covering
@@ -187,9 +191,8 @@ boosting, and latest/update wording for benchmark questions. Synthetic sources n
 baseline memories and later memory updates, while queries rotate through payment-risk,
 service-outage, preference-update, and support-follow-up paraphrases. This keeps non-verbatim
 conversational-memory questions such as payment/fraud wording aligned with checkout/risk memories
-and validates stale/latest memory ranking at `hit_at_k = 1.0`, `mean_reciprocal_rank = 1.0`, and
-zero zero-hit queries in the checked harness.
-output.
+and validates stale/latest memory ranking at `hit_at_k = 1.0`, `mean_reciprocal_rank = 1.0`,
+`evidence_retention_at_k = 1.0`, and zero zero-hit queries in the checked harness output.
 
 Real benchmark exports can be supplied without recompiling by setting
 `TEMPORALSTORE_CONTEXT_BENCHMARK_JSONL` before running `context_workflow_harness`. Each JSONL record

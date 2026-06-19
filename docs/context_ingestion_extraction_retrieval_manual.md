@@ -293,6 +293,9 @@ Each JSONL record can use `query` or `question`, `answer_terms` or `expected_ter
 `category`, `reasoning_type`, or `question_type`, and `sources`, `messages`, or `conversation`
 arrays. Category labels are reported in `external_benchmark_category_breakdown`, and the harness
 fails `external_benchmark_ready` unless every category has hit@k 1.0, MRR 1.0, and zero misses.
+For the built-in VikingMem-style sweep, `benchmark_evidence_retention_at_k` and
+`benchmark_sweep_min_evidence_retention_at_k` must also stay at 1.0, which means each expected
+answer/topic remains in the selected injected context within the configured prompt-token budget.
 
 ```json
 {"dataset":"locomo","query_id":"q1","category":"memory_update","query":"Where does Alice want to work now?","answer_terms":["downtown location"],"messages":[{"kind":"chat","title":"Old memory","text":"Alice wanted the airport office before the later update."},{"kind":"chat","title":"Latest memory","text":"Alice now wants the downtown location as her office preference."}]}

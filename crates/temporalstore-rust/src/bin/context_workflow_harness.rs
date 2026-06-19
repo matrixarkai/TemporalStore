@@ -63,6 +63,7 @@ struct ContextWorkflowHarnessSummary {
     benchmark_hit_at_k: f32,
     benchmark_mean_reciprocal_rank: f32,
     benchmark_recall_at_k: f32,
+    benchmark_evidence_retention_at_k: f32,
     benchmark_token_reduction_percent: f32,
     benchmark_ingest_sources_per_sec: f64,
     benchmark_retrieve_queries_per_sec: f64,
@@ -90,11 +91,13 @@ struct ContextWorkflowHarnessSummary {
     benchmark_sweep_min_source_kind_coverage_count: usize,
     benchmark_sweep_min_hit_at_k: f32,
     benchmark_sweep_min_mean_reciprocal_rank: f32,
+    benchmark_sweep_min_evidence_retention_at_k: f32,
     benchmark_sweep_min_token_reduction_percent: f32,
     benchmark_sweep_max_retrieve_p95_ms: u128,
     benchmark_sweep_max_inject_p95_ms: u128,
     benchmark_sweep_total_zero_hit_queries: usize,
     benchmark_sweep_avg_selected_tokens_per_query: f64,
+    benchmark_sweep_max_selected_tokens_per_query: u32,
     benchmark_sweep_all_thresholds_passed: bool,
     benchmark_sweep_threshold_violation_count: usize,
     external_benchmark_ready: bool,
@@ -302,6 +305,7 @@ fn main() {
         && benchmark.hit_at_k >= 1.0
         && benchmark.mean_reciprocal_rank >= 1.0
         && benchmark.recall_at_k >= 1.0
+        && benchmark.evidence_retention_at_k >= 1.0
         && benchmark.token_reduction_percent > 0.0
         && benchmark.workload_signature != 0
         && benchmark.topic_count == benchmark.query_count
@@ -365,6 +369,7 @@ fn main() {
         && benchmark_sweep.min_source_kind_coverage_count >= 3
         && benchmark_sweep.min_hit_at_k >= 1.0
         && benchmark_sweep.min_mean_reciprocal_rank >= 1.0
+        && benchmark_sweep.min_evidence_retention_at_k >= 1.0
         && benchmark_sweep.min_token_reduction_percent > 0.0
         && benchmark_sweep.total_zero_hit_queries == 0
         && benchmark_sweep.avg_selected_tokens_per_query > 0.0
@@ -450,6 +455,7 @@ fn main() {
             benchmark_hit_at_k: benchmark.hit_at_k,
             benchmark_mean_reciprocal_rank: benchmark.mean_reciprocal_rank,
             benchmark_recall_at_k: benchmark.recall_at_k,
+            benchmark_evidence_retention_at_k: benchmark.evidence_retention_at_k,
             benchmark_token_reduction_percent: benchmark.token_reduction_percent,
             benchmark_ingest_sources_per_sec: benchmark.ingest_sources_per_sec,
             benchmark_retrieve_queries_per_sec: benchmark.retrieve_queries_per_sec,
@@ -478,6 +484,8 @@ fn main() {
                 .min_source_kind_coverage_count,
             benchmark_sweep_min_hit_at_k: benchmark_sweep.min_hit_at_k,
             benchmark_sweep_min_mean_reciprocal_rank: benchmark_sweep.min_mean_reciprocal_rank,
+            benchmark_sweep_min_evidence_retention_at_k: benchmark_sweep
+                .min_evidence_retention_at_k,
             benchmark_sweep_min_token_reduction_percent: benchmark_sweep
                 .min_token_reduction_percent,
             benchmark_sweep_max_retrieve_p95_ms: benchmark_sweep.max_retrieve_p95_ms,
@@ -485,6 +493,8 @@ fn main() {
             benchmark_sweep_total_zero_hit_queries: benchmark_sweep.total_zero_hit_queries,
             benchmark_sweep_avg_selected_tokens_per_query: benchmark_sweep
                 .avg_selected_tokens_per_query,
+            benchmark_sweep_max_selected_tokens_per_query: benchmark_sweep
+                .max_selected_tokens_per_query,
             benchmark_sweep_all_thresholds_passed: benchmark_sweep.all_thresholds_passed,
             benchmark_sweep_threshold_violation_count: benchmark_sweep.threshold_violations.len(),
             external_benchmark_ready: external_benchmark.ready,
