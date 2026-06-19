@@ -2,10 +2,13 @@ FROM rust:1.87-bookworm AS builder
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
+COPY proto ./proto
 RUN cargo build --workspace --release
 
 FROM debian:bookworm-slim
 RUN useradd --system --uid 10001 --create-home temporalstore
+RUN mkdir -p /var/lib/temporalstore \
+    && chown temporalstore:temporalstore /var/lib/temporalstore
 COPY --from=builder /src/target/release/metaserver /usr/local/bin/metaserver
 COPY --from=builder /src/target/release/server /usr/local/bin/server
 COPY --from=builder /src/target/release/proxy /usr/local/bin/proxy
