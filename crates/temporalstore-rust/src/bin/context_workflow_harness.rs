@@ -105,6 +105,10 @@ struct ContextWorkflowHarnessSummary {
     external_benchmark_zero_hit_queries: usize,
     external_benchmark_category_count: usize,
     external_benchmark_category_breakdown: BTreeMap<String, ExternalContextBenchmarkCategoryReport>,
+    external_benchmark_all_categories_passed: bool,
+    external_benchmark_min_category_hit_at_k: f32,
+    external_benchmark_min_category_mean_reciprocal_rank: f32,
+    external_benchmark_category_zero_hit_queries: usize,
     external_benchmark_source: String,
     parity_evidence: Vec<String>,
 }
@@ -118,6 +122,10 @@ struct ExternalContextBenchmarkReport {
     mean_reciprocal_rank: f32,
     zero_hit_queries: usize,
     category_breakdown: BTreeMap<String, ExternalContextBenchmarkCategoryReport>,
+    all_categories_passed: bool,
+    min_category_hit_at_k: f32,
+    min_category_mean_reciprocal_rank: f32,
+    category_zero_hit_queries: usize,
     source: String,
 }
 
@@ -487,6 +495,12 @@ fn main() {
             external_benchmark_zero_hit_queries: external_benchmark.zero_hit_queries,
             external_benchmark_category_count: external_benchmark.category_breakdown.len(),
             external_benchmark_category_breakdown: external_benchmark.category_breakdown,
+            external_benchmark_all_categories_passed: external_benchmark.all_categories_passed,
+            external_benchmark_min_category_hit_at_k: external_benchmark.min_category_hit_at_k,
+            external_benchmark_min_category_mean_reciprocal_rank: external_benchmark
+                .min_category_mean_reciprocal_rank,
+            external_benchmark_category_zero_hit_queries: external_benchmark
+                .category_zero_hit_queries,
             external_benchmark_source: external_benchmark.source,
             parity_evidence: parity.evidence,
         })
@@ -518,6 +532,10 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
             mean_reciprocal_rank: 0.0,
             zero_hit_queries: 0,
             category_breakdown: BTreeMap::new(),
+            all_categories_passed: false,
+            min_category_hit_at_k: 0.0,
+            min_category_mean_reciprocal_rank: 0.0,
+            category_zero_hit_queries: 0,
             source,
         };
     }
@@ -623,14 +641,34 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
             )
         })
         .collect::<BTreeMap<_, _>>();
+    let min_category_hit_at_k = category_breakdown
+        .values()
+        .map(|category| category.hit_at_k)
+        .fold(1.0f32, f32::min);
+    let min_category_mean_reciprocal_rank = category_breakdown
+        .values()
+        .map(|category| category.mean_reciprocal_rank)
+        .fold(1.0f32, f32::min);
+    let category_zero_hit_queries = category_breakdown
+        .values()
+        .map(|category| category.zero_hit_queries)
+        .sum::<usize>();
+    let all_categories_passed = !category_breakdown.is_empty()
+        && min_category_hit_at_k >= 1.0
+        && min_category_mean_reciprocal_rank >= 1.0
+        && category_zero_hit_queries == 0;
     ExternalContextBenchmarkReport {
-        ready: hit_count == case_count && mean_reciprocal_rank >= 1.0,
+        ready: hit_count == case_count && mean_reciprocal_rank >= 1.0 && all_categories_passed,
         dataset: dataset_counts.keys().cloned().collect::<Vec<_>>().join("+"),
         case_count,
         hit_at_k,
         mean_reciprocal_rank,
         zero_hit_queries: case_count.saturating_sub(hit_count),
         category_breakdown,
+        all_categories_passed,
+        min_category_hit_at_k,
+        min_category_mean_reciprocal_rank,
+        category_zero_hit_queries,
         source,
     }
 }

@@ -169,6 +169,10 @@ local TemporalStore evidence:
 - `external_benchmark_category_count` and `external_benchmark_category_breakdown` fields covering
   per-reasoning-type case count, hit@k, MRR, and zero-hit queries for single-hop, multi-hop
   reasoning, temporal, memory update, quantity, social-link, and entity-alias style cases
+- `external_benchmark_all_categories_passed`, `external_benchmark_min_category_hit_at_k`,
+  `external_benchmark_min_category_mean_reciprocal_rank`, and
+  `external_benchmark_category_zero_hit_queries` so external benchmark readiness fails if any
+  reasoning bucket misses, even when aggregate hit@k remains high
 - mixed source-kind and provider accounting through the ingest/extract summary
 
 The current local workload uses synthetic incidents, tickets, documents, chats, code snippets, and
