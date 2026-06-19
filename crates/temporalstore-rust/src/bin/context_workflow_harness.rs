@@ -103,6 +103,8 @@ struct ContextWorkflowHarnessSummary {
     external_benchmark_hit_at_k: f32,
     external_benchmark_mean_reciprocal_rank: f32,
     external_benchmark_zero_hit_queries: usize,
+    external_benchmark_category_count: usize,
+    external_benchmark_category_breakdown: BTreeMap<String, ExternalContextBenchmarkCategoryReport>,
     external_benchmark_source: String,
     parity_evidence: Vec<String>,
 }
@@ -115,7 +117,16 @@ struct ExternalContextBenchmarkReport {
     hit_at_k: f32,
     mean_reciprocal_rank: f32,
     zero_hit_queries: usize,
+    category_breakdown: BTreeMap<String, ExternalContextBenchmarkCategoryReport>,
     source: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ExternalContextBenchmarkCategoryReport {
+    case_count: usize,
+    hit_at_k: f32,
+    mean_reciprocal_rank: f32,
+    zero_hit_queries: usize,
 }
 
 fn main() {
@@ -474,6 +485,8 @@ fn main() {
             external_benchmark_hit_at_k: external_benchmark.hit_at_k,
             external_benchmark_mean_reciprocal_rank: external_benchmark.mean_reciprocal_rank,
             external_benchmark_zero_hit_queries: external_benchmark.zero_hit_queries,
+            external_benchmark_category_count: external_benchmark.category_breakdown.len(),
+            external_benchmark_category_breakdown: external_benchmark.category_breakdown,
             external_benchmark_source: external_benchmark.source,
             parity_evidence: parity.evidence,
         })
@@ -504,6 +517,7 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
             hit_at_k: 0.0,
             mean_reciprocal_rank: 0.0,
             zero_hit_queries: 0,
+            category_breakdown: BTreeMap::new(),
             source,
         };
     }
@@ -511,8 +525,14 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
     let mut hit_count = 0usize;
     let mut reciprocal_rank_sum = 0.0f32;
     let mut dataset_counts = BTreeMap::new();
+    let mut category_counts = BTreeMap::<String, usize>::new();
+    let mut category_hits = BTreeMap::<String, usize>::new();
+    let mut category_reciprocal_rank_sums = BTreeMap::<String, f32>::new();
     for (index, case) in cases.iter().enumerate() {
         *dataset_counts.entry(case.dataset.clone()).or_insert(0usize) += 1;
+        *category_counts
+            .entry(case.category.clone())
+            .or_insert(0usize) += 1;
         let tenant_hash = 20260701 + index as u64;
         let sources = case
             .sources
@@ -573,12 +593,36 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
             .map(|rank| rank + 1);
         if let Some(rank) = hit_rank {
             hit_count += 1;
-            reciprocal_rank_sum += 1.0 / rank as f32;
+            let reciprocal_rank = 1.0 / rank as f32;
+            reciprocal_rank_sum += reciprocal_rank;
+            *category_hits.entry(case.category.clone()).or_insert(0usize) += 1;
+            *category_reciprocal_rank_sums
+                .entry(case.category.clone())
+                .or_insert(0.0) += reciprocal_rank;
         }
     }
     let case_count = cases.len();
     let hit_at_k = hit_count as f32 / case_count as f32;
     let mean_reciprocal_rank = reciprocal_rank_sum / case_count as f32;
+    let category_breakdown = category_counts
+        .into_iter()
+        .map(|(category, category_case_count)| {
+            let category_hit_count = category_hits.get(&category).copied().unwrap_or_default();
+            let category_reciprocal_rank_sum = category_reciprocal_rank_sums
+                .get(&category)
+                .copied()
+                .unwrap_or_default();
+            (
+                category,
+                ExternalContextBenchmarkCategoryReport {
+                    case_count: category_case_count,
+                    hit_at_k: category_hit_count as f32 / category_case_count as f32,
+                    mean_reciprocal_rank: category_reciprocal_rank_sum / category_case_count as f32,
+                    zero_hit_queries: category_case_count.saturating_sub(category_hit_count),
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     ExternalContextBenchmarkReport {
         ready: hit_count == case_count && mean_reciprocal_rank >= 1.0,
         dataset: dataset_counts.keys().cloned().collect::<Vec<_>>().join("+"),
@@ -586,6 +630,7 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
         hit_at_k,
         mean_reciprocal_rank,
         zero_hit_queries: case_count.saturating_sub(hit_count),
+        category_breakdown,
         source,
     }
 }
@@ -594,6 +639,7 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
 struct ExternalContextBenchmarkCase {
     dataset: String,
     query_id: String,
+    category: String,
     query: String,
     expected_terms: Vec<String>,
     sources: Vec<ExternalContextBenchmarkSource>,
@@ -641,6 +687,13 @@ fn external_case_from_value(index: usize, value: &Value) -> Option<ExternalConte
         .or_else(|| value.get("question"))
         .and_then(Value::as_str)?
         .to_string();
+    let category = value
+        .get("category")
+        .or_else(|| value.get("reasoning_type"))
+        .or_else(|| value.get("question_type"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| infer_external_benchmark_category(query_id.as_str()));
     let expected_terms = value
         .get("expected_terms")
         .or_else(|| value.get("answer_terms"))
@@ -668,10 +721,34 @@ fn external_case_from_value(index: usize, value: &Value) -> Option<ExternalConte
         Some(ExternalContextBenchmarkCase {
             dataset,
             query_id,
+            category,
             query,
             expected_terms,
             sources,
         })
+    }
+}
+
+fn infer_external_benchmark_category(query_id: &str) -> String {
+    let lower = query_id.to_ascii_lowercase();
+    if lower.contains("count") || lower.contains("score") {
+        "quantity".to_string()
+    } else if lower.contains("alias") || lower.contains("name") {
+        "entity_alias".to_string()
+    } else if lower.contains("recommend") || lower.contains("contact") {
+        "social_link".to_string()
+    } else if lower.contains("temporal") || lower.contains("after") || lower.contains("date") {
+        "temporal".to_string()
+    } else if lower.contains("root") || lower.contains("cause") || lower.contains("suggest") {
+        "multi_hop_reasoning".to_string()
+    } else if lower.contains("correct")
+        || lower.contains("switch")
+        || lower.contains("change")
+        || lower.contains("update")
+    {
+        "memory_update".to_string()
+    } else {
+        "single_hop".to_string()
     }
 }
 
@@ -749,6 +826,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
         ExternalContextBenchmarkCase {
             dataset: "locomo_style".to_string(),
             query_id: "locomo-current-preference".to_string(),
+            category: infer_external_benchmark_category("locomo-current-preference"),
             query: "What is Alice's current office choice after the payment problem?".to_string(),
             expected_terms: vec!["downtown".to_string()],
             sources: vec![
@@ -767,6 +845,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
         ExternalContextBenchmarkCase {
             dataset: "locomo_style".to_string(),
             query_id: "locomo-location-paraphrase".to_string(),
+            category: infer_external_benchmark_category("locomo-location-paraphrase"),
             query: "Where does Alice want to work now?".to_string(),
             expected_terms: vec!["downtown location".to_string()],
             sources: vec![
@@ -785,6 +864,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
         ExternalContextBenchmarkCase {
             dataset: "longmemeval_s_style".to_string(),
             query_id: "longmem-updated-setting".to_string(),
+            category: infer_external_benchmark_category("longmem-updated-setting"),
             query: "Which preference was updated in the recent multi session messages?".to_string(),
             expected_terms: vec!["notification".to_string()],
             sources: vec![
@@ -803,6 +883,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
         ExternalContextBenchmarkCase {
             dataset: "longmemeval_s_style".to_string(),
             query_id: "longmem-most-recent-change".to_string(),
+            category: infer_external_benchmark_category("longmem-most-recent-change"),
             query: "Which setting changed most recently across the conversation history?".to_string(),
             expected_terms: vec!["notification setting".to_string()],
             sources: vec![
@@ -821,6 +902,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
         ExternalContextBenchmarkCase {
             dataset: "locomo_style".to_string(),
             query_id: "locomo-temporal-after-travel".to_string(),
+            category: infer_external_benchmark_category("locomo-temporal-after-travel"),
             query: "What did Alice decide after the airport trip conversation?".to_string(),
             expected_terms: vec!["downtown office".to_string()],
             sources: vec![
@@ -839,6 +921,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
         ExternalContextBenchmarkCase {
             dataset: "longmemeval_s_style".to_string(),
             query_id: "longmem-root-cause-after-outage".to_string(),
+            category: infer_external_benchmark_category("longmem-root-cause-after-outage"),
             query: "Why did checkout fail after the backend outage?".to_string(),
             expected_terms: vec!["database migration".to_string()],
             sources: vec![
@@ -857,6 +940,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
         ExternalContextBenchmarkCase {
             dataset: "locomo_style".to_string(),
             query_id: "locomo-corrected-food-restriction".to_string(),
+            category: infer_external_benchmark_category("locomo-corrected-food-restriction"),
             query: "What snack should Jordan avoid now after the correction?".to_string(),
             expected_terms: vec!["peanuts".to_string()],
             sources: vec![
@@ -875,6 +959,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
         ExternalContextBenchmarkCase {
             dataset: "longmemeval_s_style".to_string(),
             query_id: "longmem-medication-reminder".to_string(),
+            category: infer_external_benchmark_category("longmem-medication-reminder"),
             query: "Which medication did Morgan say to remember before the doctor appointment?".to_string(),
             expected_terms: vec!["lisinopril".to_string()],
             sources: vec![
@@ -893,6 +978,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
         ExternalContextBenchmarkCase {
             dataset: "locomo_style".to_string(),
             query_id: "locomo-hobby-switch".to_string(),
+            category: infer_external_benchmark_category("locomo-hobby-switch"),
             query: "Which hobby did Priya switch to after cancelling guitar lessons?".to_string(),
             expected_terms: vec!["pottery class".to_string()],
             sources: vec![
@@ -911,6 +997,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
         ExternalContextBenchmarkCase {
             dataset: "longmemeval_s_style".to_string(),
             query_id: "longmem-backup-contact-change".to_string(),
+            category: infer_external_benchmark_category("longmem-backup-contact-change"),
             query: "Who is the backup contact now after Sam moved teams?".to_string(),
             expected_terms: vec!["Riley".to_string()],
             sources: vec![
@@ -929,6 +1016,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
         ExternalContextBenchmarkCase {
             dataset: "locomo_style".to_string(),
             query_id: "locomo-cafe-recommendation".to_string(),
+            category: infer_external_benchmark_category("locomo-cafe-recommendation"),
             query: "Who recommended the cafe that Nina booked after the conference?".to_string(),
             expected_terms: vec!["Omar".to_string()],
             sources: vec![
@@ -947,6 +1035,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
         ExternalContextBenchmarkCase {
             dataset: "longmemeval_s_style".to_string(),
             query_id: "longmem-project-suggestion".to_string(),
+            category: infer_external_benchmark_category("longmem-project-suggestion"),
             query: "Which project did Lee pick because Dana suggested it during planning?".to_string(),
             expected_terms: vec!["observability dashboard".to_string()],
             sources: vec![
@@ -965,6 +1054,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
         ExternalContextBenchmarkCase {
             dataset: "locomo_style".to_string(),
             query_id: "locomo-appointment-reschedule".to_string(),
+            category: infer_external_benchmark_category("locomo-appointment-reschedule"),
             query: "When is Maya's dentist appointment after it was rescheduled?".to_string(),
             expected_terms: vec!["Thursday at 3pm".to_string()],
             sources: vec![
@@ -983,6 +1073,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
         ExternalContextBenchmarkCase {
             dataset: "longmemeval_s_style".to_string(),
             query_id: "longmem-deadline-date-update".to_string(),
+            category: infer_external_benchmark_category("longmem-deadline-date-update"),
             query: "What is the new report deadline after the calendar update?".to_string(),
             expected_terms: vec!["June 24".to_string()],
             sources: vec![
@@ -1001,6 +1092,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
         ExternalContextBenchmarkCase {
             dataset: "locomo_style".to_string(),
             query_id: "locomo-guest-count-update".to_string(),
+            category: infer_external_benchmark_category("locomo-guest-count-update"),
             query: "How many guests did Sofia confirm after the dinner update?".to_string(),
             expected_terms: vec!["7 guests".to_string()],
             sources: vec![
@@ -1019,6 +1111,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
         ExternalContextBenchmarkCase {
             dataset: "longmemeval_s_style".to_string(),
             query_id: "longmem-risk-score-update".to_string(),
+            category: infer_external_benchmark_category("longmem-risk-score-update"),
             query: "What risk score was recorded after the latest fraud review?".to_string(),
             expected_terms: vec!["87".to_string()],
             sources: vec![
@@ -1037,6 +1130,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
         ExternalContextBenchmarkCase {
             dataset: "locomo_style".to_string(),
             query_id: "locomo-roommate-alias".to_string(),
+            category: infer_external_benchmark_category("locomo-roommate-alias"),
             query: "What is Emma's roommate's name after the move?".to_string(),
             expected_terms: vec!["Lena".to_string()],
             sources: vec![
@@ -1055,6 +1149,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
         ExternalContextBenchmarkCase {
             dataset: "longmemeval_s_style".to_string(),
             query_id: "longmem-pet-name-alias".to_string(),
+            category: infer_external_benchmark_category("longmem-pet-name-alias"),
             query: "What is the dog's name in the latest pet update?".to_string(),
             expected_terms: vec!["Miso".to_string()],
             sources: vec![

@@ -289,11 +289,12 @@ python3 tools/validate_aws_validation_log.py \
   --log /tmp/context-workflow-validation.log
 ```
 
-Each JSONL record can use `query` or `question`, `answer_terms` or `expected_terms`, and `sources`,
-`messages`, or `conversation` arrays:
+Each JSONL record can use `query` or `question`, `answer_terms` or `expected_terms`, optional
+`category`, `reasoning_type`, or `question_type`, and `sources`, `messages`, or `conversation`
+arrays. Category labels are reported in `external_benchmark_category_breakdown`.
 
 ```json
-{"dataset":"locomo","query_id":"q1","query":"Where does Alice want to work now?","answer_terms":["downtown location"],"messages":[{"kind":"chat","title":"Old memory","text":"Alice wanted the airport office before the later update."},{"kind":"chat","title":"Latest memory","text":"Alice now wants the downtown location as her office preference."}]}
+{"dataset":"locomo","query_id":"q1","category":"memory_update","query":"Where does Alice want to work now?","answer_terms":["downtown location"],"messages":[{"kind":"chat","title":"Old memory","text":"Alice wanted the airport office before the later update."},{"kind":"chat","title":"Latest memory","text":"Alice now wants the downtown location as her office preference."}]}
 ```
 
 ## Troubleshooting
@@ -307,4 +308,3 @@ Each JSONL record can use `query` or `question`, `answer_terms` or `expected_ter
   `/chat/completions` compatibility.
 - Server cannot register with metaserver: for this local context-only manual, the server can still
   serve context routes if it is listening on `TS_SERVER_BIND_ADDR`.
-

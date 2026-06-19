@@ -166,6 +166,9 @@ local TemporalStore evidence:
   and sweep-wide threshold pass/fail evidence
 - `external_benchmark_*` fields covering optional LOCOMO/LongMemEval-style JSONL replay, including
   dataset name, case count, hit@k, MRR, zero-hit queries, and source path
+- `external_benchmark_category_count` and `external_benchmark_category_breakdown` fields covering
+  per-reasoning-type case count, hit@k, MRR, and zero-hit queries for single-hop, multi-hop
+  reasoning, temporal, memory update, quantity, social-link, and entity-alias style cases
 - mixed source-kind and provider accounting through the ingest/extract summary
 
 The current local workload uses synthetic incidents, tickets, documents, chats, code snippets, and
@@ -189,12 +192,13 @@ Real benchmark exports can be supplied without recompiling by setting
 is one QA case and accepts this shape:
 
 ```json
-{"dataset":"locomo","query_id":"q1","query":"What is Alice's current office choice after the payment problem?","answer_terms":["downtown"],"messages":[{"kind":"chat","title":"Earlier preference","text":"Alice preferred the airport office before the later change."},{"kind":"chat","title":"Latest update","text":"Alice replaced her office preference with the downtown location after the billing issue was resolved."}]}
+{"dataset":"locomo","query_id":"q1","category":"memory_update","query":"What is Alice's current office choice after the payment problem?","answer_terms":["downtown"],"messages":[{"kind":"chat","title":"Earlier preference","text":"Alice preferred the airport office before the later change."},{"kind":"chat","title":"Latest update","text":"Alice replaced her office preference with the downtown location after the billing issue was resolved."}]}
 ```
 
 The parser also accepts `question` for `query`, `answers` or `expected_terms` for `answer_terms`,
-and `sources`, `messages`, or `conversation` arrays with `body`, `text`, `message`, or `content`
-fields. When no JSONL path is configured, the harness runs a built-in LOCOMO/LongMemEval_s-style
+`category`, `reasoning_type`, or `question_type` for per-category reporting, and `sources`,
+`messages`, or `conversation` arrays with `body`, `text`, `message`, or `content` fields. When no
+JSONL path is configured, the harness runs a built-in LOCOMO/LongMemEval_s-style
 fixture so CI and local Docker validation still enforce external-benchmark scoring. Retrieval now
 normalizes punctuation and hyphenation, applies simple plural stemming, expands temporal,
 multi-hop, latest/update, preference, location/workplace, problem/resolution, support, and
