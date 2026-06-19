@@ -854,6 +854,42 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
                 },
             ],
         },
+        ExternalContextBenchmarkCase {
+            dataset: "locomo_style".to_string(),
+            query_id: "locomo-corrected-food-restriction".to_string(),
+            query: "What snack should Jordan avoid now after the correction?".to_string(),
+            expected_terms: vec!["peanuts".to_string()],
+            sources: vec![
+                ExternalContextBenchmarkSource {
+                    title: "Older snack preference".to_string(),
+                    body: "Earlier chat: Jordan said almonds were the only snack to avoid and peanuts were fine for the picnic.".to_string(),
+                    kind: ContextSourceKind::Chat,
+                },
+                ExternalContextBenchmarkSource {
+                    title: "Corrected food restriction".to_string(),
+                    body: "Latest correction: Jordan no longer avoids almonds; Jordan should avoid peanuts now because of a new food restriction.".to_string(),
+                    kind: ContextSourceKind::UserEvent,
+                },
+            ],
+        },
+        ExternalContextBenchmarkCase {
+            dataset: "longmemeval_s_style".to_string(),
+            query_id: "longmem-medication-reminder".to_string(),
+            query: "Which medication did Morgan say to remember before the doctor appointment?".to_string(),
+            expected_terms: vec!["lisinopril".to_string()],
+            sources: vec![
+                ExternalContextBenchmarkSource {
+                    title: "Older clinic message".to_string(),
+                    body: "A previous clinic message only mentioned bringing an insurance card to the physician visit.".to_string(),
+                    kind: ContextSourceKind::Chat,
+                },
+                ExternalContextBenchmarkSource {
+                    title: "Medication reminder".to_string(),
+                    body: "In the later session Morgan said to remember lisinopril, the blood pressure medication, before the doctor appointment.".to_string(),
+                    kind: ContextSourceKind::Chat,
+                },
+            ],
+        },
     ]
 }
 

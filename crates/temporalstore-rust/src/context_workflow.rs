@@ -2133,8 +2133,13 @@ fn context_query_synonyms(term: &str) -> &'static [&'static str] {
         "when" | "date" | "time" => &["timeline", "temporal", "session"],
         "who" | "person" | "people" => &["user", "customer", "member"],
         "travel" | "trip" | "flight" => &["itinerary", "journey", "airport"],
+        "remember" | "recall" | "remind" => &["mentioned", "said", "told", "note"],
+        "medication" | "medicine" | "meds" | "prescription" => &["pill", "pharmacy", "doctor"],
+        "doctor" | "physician" | "appointment" | "clinic" => &["visit", "medical", "medication"],
+        "snack" | "meal" => &["food", "preference"],
         "gift" | "present" => &["birthday", "surprise", "preference"],
-        "allergy" | "allergic" => &["avoid", "food", "restriction"],
+        "allergy" | "allergic" | "avoid" => &["restriction", "food", "without"],
+        "correction" | "corrected" | "correct" => &["changed", "updated", "replaced"],
         _ => &[],
     }
 }

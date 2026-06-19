@@ -199,7 +199,10 @@ conversational memories. The built-in external fixture includes direct update qu
 paraphrases such as "Where does Alice want to work now?" and "Which setting changed most recently
 across the conversation history?", plus temporal-after and root-cause questions such as
 "What did Alice decide after the airport trip conversation?" and "Why did checkout fail after the
-backend outage?" to keep LOCOMO/LongMemEval-style hit-rate regressions visible.
+backend outage?", corrected preference questions such as "What snack should Jordan avoid now after
+the correction?", and medication-reminder questions such as "Which medication did Morgan say to
+remember before the doctor appointment?" to keep LOCOMO/LongMemEval-style hit-rate regressions
+visible.
 
 Remaining policy hardening:
 
