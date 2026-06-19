@@ -203,6 +203,13 @@ pub struct ContextPipelineBenchmarkReport {
     pub inject_queries_per_sec: f64,
     pub retrieve_p50_ms: u128,
     pub retrieve_p95_ms: u128,
+    pub inject_p50_ms: u128,
+    pub inject_p95_ms: u128,
+    pub avg_retrieved_blocks_per_query: f64,
+    pub avg_selected_blocks_per_query: f64,
+    pub avg_selected_tokens_per_query: f64,
+    pub max_selected_tokens_per_query: u32,
+    pub zero_hit_queries: usize,
     pub thresholds: ContextPipelineBenchmarkThresholds,
     pub threshold_passed: bool,
     pub threshold_violations: Vec<String>,
@@ -275,8 +282,11 @@ pub struct ContextPipelineBenchmarkSweepReport {
     pub min_mean_reciprocal_rank: f32,
     pub min_token_reduction_percent: f32,
     pub max_retrieve_p95_ms: u128,
+    pub max_inject_p95_ms: u128,
     pub total_sources: usize,
     pub total_queries: usize,
+    pub total_zero_hit_queries: usize,
+    pub avg_selected_tokens_per_query: f64,
     pub all_thresholds_passed: bool,
     pub threshold_violations: Vec<String>,
     pub evidence: Vec<String>,
@@ -975,9 +985,13 @@ pub fn run_context_pipeline_benchmark(
     let ingest_extract_elapsed_ms = ingest_start.elapsed().as_millis();
 
     let mut retrieve_latencies = Vec::with_capacity(query_count);
+    let mut inject_latencies = Vec::with_capacity(query_count);
     let mut retrieval_successes = 0usize;
     let mut injection_successes = 0usize;
     let mut selected_context_tokens = 0u32;
+    let mut max_selected_tokens_per_query = 0u32;
+    let mut total_retrieved_blocks = 0usize;
+    let mut total_selected_blocks = 0usize;
     let mut retrieve_total_elapsed_ms = 0u128;
     let mut inject_total_elapsed_ms = 0u128;
     let mut reciprocal_rank_sum = 0.0f32;
@@ -1036,12 +1050,16 @@ pub fn run_context_pipeline_benchmark(
             },
         );
         let inject_elapsed = inject_start.elapsed().as_millis();
+        inject_latencies.push(inject_elapsed);
         inject_total_elapsed_ms += inject_elapsed;
         let selected_tokens = inject
             .selected_blocks
             .iter()
             .map(|block| block.estimated_tokens)
             .sum::<u32>();
+        max_selected_tokens_per_query = max_selected_tokens_per_query.max(selected_tokens);
+        total_retrieved_blocks += retrieve.blocks.len();
+        total_selected_blocks += inject.selected_blocks.len();
         if inject.status.ok {
             injection_successes += 1;
             selected_context_tokens = selected_context_tokens.saturating_add(selected_tokens);
@@ -1060,14 +1078,21 @@ pub fn run_context_pipeline_benchmark(
     }
 
     retrieve_latencies.sort_unstable();
+    inject_latencies.sort_unstable();
     let retrieve_p50_ms = percentile_latency(&retrieve_latencies, 50);
     let retrieve_p95_ms = percentile_latency(&retrieve_latencies, 95);
+    let inject_p50_ms = percentile_latency(&inject_latencies, 50);
+    let inject_p95_ms = percentile_latency(&inject_latencies, 95);
     let full_context_query_tokens = total_source_tokens.saturating_mul(query_count as u32);
     let token_reduction_percent =
         token_reduction_percent(full_context_query_tokens, selected_context_tokens);
     let recall_at_k = retrieval_successes as f32 / query_count as f32;
     let hit_at_k = hit_count as f32 / query_count as f32;
     let mean_reciprocal_rank = reciprocal_rank_sum / query_count as f32;
+    let zero_hit_queries = query_count.saturating_sub(hit_count);
+    let avg_retrieved_blocks_per_query = total_retrieved_blocks as f64 / query_count as f64;
+    let avg_selected_blocks_per_query = total_selected_blocks as f64 / query_count as f64;
+    let avg_selected_tokens_per_query = selected_context_tokens as f64 / query_count as f64;
     let threshold_violations = benchmark_threshold_violations(
         &request.thresholds,
         hit_at_k,
@@ -1127,6 +1152,13 @@ pub fn run_context_pipeline_benchmark(
         inject_queries_per_sec: rate_per_sec(query_count, inject_total_elapsed_ms),
         retrieve_p50_ms,
         retrieve_p95_ms,
+        inject_p50_ms,
+        inject_p95_ms,
+        avg_retrieved_blocks_per_query,
+        avg_selected_blocks_per_query,
+        avg_selected_tokens_per_query,
+        max_selected_tokens_per_query,
+        zero_hit_queries,
         thresholds: request.thresholds,
         threshold_passed,
         threshold_violations,
@@ -1184,8 +1216,23 @@ pub fn run_context_pipeline_benchmark_sweep(
         .map(|report| report.retrieve_p95_ms)
         .max()
         .unwrap_or_default();
+    let max_inject_p95_ms = reports
+        .iter()
+        .map(|report| report.inject_p95_ms)
+        .max()
+        .unwrap_or_default();
     let total_sources = reports.iter().map(|report| report.source_count).sum();
     let total_queries = reports.iter().map(|report| report.query_count).sum();
+    let total_zero_hit_queries = reports.iter().map(|report| report.zero_hit_queries).sum();
+    let total_selected_tokens = reports
+        .iter()
+        .map(|report| report.selected_context_tokens as u64)
+        .sum::<u64>();
+    let avg_selected_tokens_per_query = if total_queries == 0 {
+        0.0
+    } else {
+        total_selected_tokens as f64 / total_queries as f64
+    };
     let all_thresholds_passed = reports.iter().all(|report| report.threshold_passed);
     let threshold_violations = reports
         .iter()
@@ -1223,8 +1270,11 @@ pub fn run_context_pipeline_benchmark_sweep(
         min_mean_reciprocal_rank,
         min_token_reduction_percent,
         max_retrieve_p95_ms,
+        max_inject_p95_ms,
         total_sources,
         total_queries,
+        total_zero_hit_queries,
+        avg_selected_tokens_per_query,
         all_thresholds_passed,
         threshold_violations,
         evidence: vec![

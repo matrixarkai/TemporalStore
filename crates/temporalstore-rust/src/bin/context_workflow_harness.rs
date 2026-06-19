@@ -63,6 +63,13 @@ struct ContextWorkflowHarnessSummary {
     benchmark_per_query_count: usize,
     benchmark_retrieve_p50_ms: u128,
     benchmark_retrieve_p95_ms: u128,
+    benchmark_inject_p50_ms: u128,
+    benchmark_inject_p95_ms: u128,
+    benchmark_avg_retrieved_blocks_per_query: f64,
+    benchmark_avg_selected_blocks_per_query: f64,
+    benchmark_avg_selected_tokens_per_query: f64,
+    benchmark_max_selected_tokens_per_query: u32,
+    benchmark_zero_hit_queries: usize,
     benchmark_threshold_passed: bool,
     benchmark_threshold_violation_count: usize,
     benchmark_thresholds: ContextPipelineBenchmarkThresholds,
@@ -74,6 +81,9 @@ struct ContextWorkflowHarnessSummary {
     benchmark_sweep_min_mean_reciprocal_rank: f32,
     benchmark_sweep_min_token_reduction_percent: f32,
     benchmark_sweep_max_retrieve_p95_ms: u128,
+    benchmark_sweep_max_inject_p95_ms: u128,
+    benchmark_sweep_total_zero_hit_queries: usize,
+    benchmark_sweep_avg_selected_tokens_per_query: f64,
     benchmark_sweep_all_thresholds_passed: bool,
     benchmark_sweep_threshold_violation_count: usize,
     parity_evidence: Vec<String>,
@@ -248,6 +258,11 @@ fn main() {
         && benchmark.ingest_sources_per_sec > 0.0
         && benchmark.retrieve_queries_per_sec > 0.0
         && benchmark.inject_queries_per_sec > 0.0
+        && benchmark.avg_retrieved_blocks_per_query > 0.0
+        && benchmark.avg_selected_blocks_per_query > 0.0
+        && benchmark.avg_selected_tokens_per_query > 0.0
+        && benchmark.max_selected_tokens_per_query > 0
+        && benchmark.zero_hit_queries == 0
         && benchmark.threshold_passed
         && benchmark.threshold_violations.is_empty()
         && benchmark.per_query.len() == benchmark.query_count;
@@ -282,6 +297,8 @@ fn main() {
         && benchmark_sweep.min_hit_at_k >= 1.0
         && benchmark_sweep.min_mean_reciprocal_rank > 0.0
         && benchmark_sweep.min_token_reduction_percent > 0.0
+        && benchmark_sweep.total_zero_hit_queries == 0
+        && benchmark_sweep.avg_selected_tokens_per_query > 0.0
         && benchmark_sweep.all_thresholds_passed
         && benchmark_sweep.threshold_violations.is_empty();
     let context_pipeline_ready = parity.pipeline_ready
@@ -363,6 +380,13 @@ fn main() {
             benchmark_per_query_count: benchmark.per_query.len(),
             benchmark_retrieve_p50_ms: benchmark.retrieve_p50_ms,
             benchmark_retrieve_p95_ms: benchmark.retrieve_p95_ms,
+            benchmark_inject_p50_ms: benchmark.inject_p50_ms,
+            benchmark_inject_p95_ms: benchmark.inject_p95_ms,
+            benchmark_avg_retrieved_blocks_per_query: benchmark.avg_retrieved_blocks_per_query,
+            benchmark_avg_selected_blocks_per_query: benchmark.avg_selected_blocks_per_query,
+            benchmark_avg_selected_tokens_per_query: benchmark.avg_selected_tokens_per_query,
+            benchmark_max_selected_tokens_per_query: benchmark.max_selected_tokens_per_query,
+            benchmark_zero_hit_queries: benchmark.zero_hit_queries,
             benchmark_threshold_passed: benchmark.threshold_passed,
             benchmark_threshold_violation_count: benchmark.threshold_violations.len(),
             benchmark_thresholds: benchmark.thresholds,
@@ -375,6 +399,10 @@ fn main() {
             benchmark_sweep_min_token_reduction_percent: benchmark_sweep
                 .min_token_reduction_percent,
             benchmark_sweep_max_retrieve_p95_ms: benchmark_sweep.max_retrieve_p95_ms,
+            benchmark_sweep_max_inject_p95_ms: benchmark_sweep.max_inject_p95_ms,
+            benchmark_sweep_total_zero_hit_queries: benchmark_sweep.total_zero_hit_queries,
+            benchmark_sweep_avg_selected_tokens_per_query: benchmark_sweep
+                .avg_selected_tokens_per_query,
             benchmark_sweep_all_thresholds_passed: benchmark_sweep.all_thresholds_passed,
             benchmark_sweep_threshold_violation_count: benchmark_sweep.threshold_violations.len(),
             parity_evidence: parity.evidence,
