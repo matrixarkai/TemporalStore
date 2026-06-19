@@ -12,6 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CORPUS = ROOT / "compat" / "unified_temporalstore_cases.json"
 INGESTION_SUITE = "cpp_ingestion_parity"
+RUST_EXECUTABLE_MODE = "rust_executable_cxx_static"
 
 
 @dataclass(frozen=True)
@@ -287,6 +288,17 @@ def validate_corpus_area(area: IngestionOpsArea, cases: dict[str, dict], require
             raise SystemExit(
                 f"{area.name}: {area.corpus_case}/{step.get('name')} suite "
                 f"{command.get('suite')!r} != {INGESTION_SUITE!r}"
+            )
+        if command.get("mode") != RUST_EXECUTABLE_MODE:
+            raise SystemExit(
+                f"{area.name}: {area.corpus_case}/{step.get('name')} mode "
+                f"{command.get('mode')!r} != {RUST_EXECUTABLE_MODE!r}"
+            )
+        if not command.get("rust_runner"):
+            raise SystemExit(f"{area.name}: {area.corpus_case}/{step.get('name')} has no rust_runner")
+        if command.get("rust_validator") != "python3 tools/validate_ingestion_ops_parity_evidence.py":
+            raise SystemExit(
+                f"{area.name}: {area.corpus_case}/{step.get('name')} has wrong rust_validator"
             )
         required_paths = command.get("required_paths") or []
         if not required_paths:

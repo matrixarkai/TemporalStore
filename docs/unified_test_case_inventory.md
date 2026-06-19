@@ -77,9 +77,10 @@ C++ execution should progressively cover every executable case.
 
 These are shared corpus gates, but not full native C++ command replay yet. They make the shared
 corpus fail if expected C++ source/test/harness surfaces disappear while Rust parity evidence still
-refers to them. The seven `control_*` rows are now `rust_executable_cxx_static`: Rust executes the
-named shared case runners through `tools/run_control_plane_shared_cases.py`, while C++ remains a
-static source/harness surface gate until a native C++ control-plane runner is configured.
+refers to them. The seven `control_*` rows and six `ingestion_*` rows are now
+`rust_executable_cxx_static`: Rust executes the named shared case runners through
+`tools/run_control_plane_shared_cases.py` and `tools/run_ingestion_shared_cases.py`, while C++
+remains a static source/harness surface gate until native C++ workflow runners are configured.
 
 | Case | Coverage |
 | --- | --- |
@@ -123,12 +124,12 @@ static source/harness surface gate until a native C++ control-plane runner is co
 | `control_route_quarantine_recovery` | Rust-executable/C++-static gate for backend quarantine, recovery probing, and degraded preflight behavior. |
 | `control_data_node_load_reload_unload_lifecycle` | Rust-executable/C++-static gate for data-node load/reload/readonly/unload lifecycle behavior. |
 | `control_metaserver_scheduler_lifecycle_workflow` | Rust-executable/C++-static gate for metaserver scheduler-issued load/reload/unload token behavior. |
-| `ingestion_kafka_offset_ledger` | Static surface/evidence gate for Kafka offset ledger, duplicate rejection, and valid-record continuation behavior. |
-| `ingestion_kafka_rebalance_backpressure` | Static surface/evidence gate for Kafka consumer-group rebalance and backpressure behavior. |
-| `ingestion_flink_checkpoint_lifecycle` | Static surface/evidence gate for Flink checkpoint precommit/commit/abort behavior. |
-| `ingestion_dead_letter_export` | Static surface/evidence gate for dead-letter capture/export and non-blocking ingestion behavior. |
-| `ingestion_lag_metrics` | Static surface/evidence gate for Kafka lag, committed offset, and ingestion metric behavior. |
-| `ingestion_restart_idempotence` | Static surface/evidence gate for restart/failover idempotence behavior for offsets and checkpoints. |
+| `ingestion_kafka_offset_ledger` | Rust-executable/C++-static gate for Kafka offset ledger, duplicate rejection, and valid-record continuation behavior. |
+| `ingestion_kafka_rebalance_backpressure` | Rust-executable/C++-static gate for Kafka consumer-group rebalance and backpressure behavior. |
+| `ingestion_flink_checkpoint_lifecycle` | Rust-executable/C++-static gate for Flink checkpoint precommit/commit/abort behavior. |
+| `ingestion_dead_letter_export` | Rust-executable/C++-static gate for dead-letter capture/export and non-blocking ingestion behavior. |
+| `ingestion_lag_metrics` | Rust-executable/C++-static gate for Kafka lag, committed offset, and ingestion metric behavior. |
+| `ingestion_restart_idempotence` | Rust-executable/C++-static gate for restart/failover idempotence behavior for offsets and checkpoints. |
 
 ## Are There Still Rust-Specific Tests?
 
@@ -188,9 +189,9 @@ Those should follow the same rule:
    C++ execution: topology-version changes, stale route invalidation, proxy admission,
    readonly/write-disabled policy, route quarantine/recovery, data-node lifecycle, and metaserver
    scheduler lifecycle.
-4. Move the new ingestion shared cases from static surface validation to native C++ execution:
-   Kafka offsets, rebalance/backpressure, Flink checkpoints, dead letters, lag metrics, and
-   restart idempotence.
+4. Move the new ingestion shared cases from Rust-executable/C++-static validation to native C++
+   execution: Kafka offsets, rebalance/backpressure, Flink checkpoints, dead letters, lag metrics,
+   and restart idempotence.
 5. Teach the C++ native runner to execute every executable shared behavior case, not only validate
    the corpus shape and context subset.
 6. Keep the new Rust product-test guard enabled:

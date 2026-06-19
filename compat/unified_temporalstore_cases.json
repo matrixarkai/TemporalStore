@@ -3800,7 +3800,7 @@
           "command": {
             "kind": "existing_test",
             "suite": "cpp_ingestion_parity",
-            "mode": "static",
+            "mode": "rust_executable_cxx_static",
             "description": "Shared C++/Rust ingestion case for durable Kafka topic/partition/offset ledger commits, duplicate offset rejection, and valid-record continuation after duplicate detection.",
             "required_paths": [
               "src/client/example/queue_ingestion_replay_example.cc",
@@ -3821,7 +3821,7 @@
           "command": {
             "kind": "existing_test",
             "suite": "cpp_ingestion_parity",
-            "mode": "static",
+            "mode": "rust_executable_cxx_static",
             "description": "Shared C++/Rust ingestion case for consumer-group partition assignment, rebalance-required detection, and backpressure admission under in-flight pressure.",
             "required_paths": [
               "docs/proxy_ingestion_local_validation.md",
@@ -3842,7 +3842,7 @@
           "command": {
             "kind": "existing_test",
             "suite": "cpp_ingestion_parity",
-            "mode": "static",
+            "mode": "rust_executable_cxx_static",
             "description": "Shared C++/Rust ingestion case for Flink checkpoint precommit, commit, abort, durable state transitions, and production handshake readiness.",
             "required_paths": [
               "src/client/example/module_ingest_query_example.cc",
@@ -3863,7 +3863,7 @@
           "command": {
             "kind": "existing_test",
             "suite": "cpp_ingestion_parity",
-            "mode": "static",
+            "mode": "rust_executable_cxx_static",
             "description": "Shared C++/Rust ingestion case for malformed/poison record dead-letter capture, export reports, and non-blocking good-record ingestion.",
             "required_paths": [
               "src/client/example/proxy_ingestion_pressure_example.cc",
@@ -3884,7 +3884,7 @@
           "command": {
             "kind": "existing_test",
             "suite": "cpp_ingestion_parity",
-            "mode": "static",
+            "mode": "rust_executable_cxx_static",
             "description": "Shared C++/Rust ingestion case for max Kafka lag, committed offset, dead-letter counters, and Prometheus/state-report metric visibility.",
             "required_paths": [
               "docs/runtime_tuning.md",
@@ -3905,7 +3905,7 @@
           "command": {
             "kind": "existing_test",
             "suite": "cpp_ingestion_parity",
-            "mode": "static",
+            "mode": "rust_executable_cxx_static",
             "description": "Shared C++/Rust ingestion case for restart/failover idempotence: committed Kafka offsets and Flink checkpoint state prevent duplicate writes after replay.",
             "required_paths": [
               "tools/run_soak_profile_ubuntu22.sh",
