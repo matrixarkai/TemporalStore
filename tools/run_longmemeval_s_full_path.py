@@ -26,6 +26,14 @@ def main() -> int:
     parser.add_argument("--misses", default="/tmp/temporalstore_longmemeval_s_full_path_misses.jsonl")
     parser.add_argument("--min-hit-rate", type=float, default=0.90)
     parser.add_argument("--max-events", type=int, default=256)
+    parser.add_argument("--reader-mode", choices=("deterministic", "open-source", "auto"), default="deterministic")
+    parser.add_argument("--reader-provider-name", default="matrixark-cpp-oss-context")
+    parser.add_argument("--reader-model", default="google/flan-t5-small")
+    parser.add_argument("--reader-base-url", default="")
+    parser.add_argument("--reader-api-key-env", default="TEMPORALSTORE_READER_API_KEY")
+    parser.add_argument("--reader-timeout-seconds", type=float, default=20.0)
+    parser.add_argument("--reader-max-context-chars", type=int, default=12000)
+    parser.add_argument("--reader-no-fallback", action="store_true")
     args = parser.parse_args()
 
     repo = Path(__file__).resolve().parents[1]
@@ -49,7 +57,23 @@ def main() -> int:
         str(args.min_hit_rate),
         "--max-events",
         str(args.max_events),
+        "--reader-mode",
+        args.reader_mode,
+        "--reader-provider-name",
+        args.reader_provider_name,
+        "--reader-model",
+        args.reader_model,
+        "--reader-api-key-env",
+        args.reader_api_key_env,
+        "--reader-timeout-seconds",
+        str(args.reader_timeout_seconds),
+        "--reader-max-context-chars",
+        str(args.reader_max_context_chars),
     ]
+    if args.reader_base_url:
+        command.extend(["--reader-base-url", args.reader_base_url])
+    if args.reader_no_fallback:
+        command.append("--reader-no-fallback")
     run(command, cwd=repo)
 
     report_path = Path(args.report)
@@ -67,8 +91,19 @@ def main() -> int:
         "min_hit_rate": args.min_hit_rate,
         "mean_reciprocal_rank": float(report.get("mean_reciprocal_rank") or 0.0),
         "answer_term_coverage": float(report.get("answer_term_coverage") or 0.0),
+        "reader_hit_rate": float(report.get("reader_hit_rate") or report.get("deterministic_reader_hit_rate") or 0.0),
+        "reader_answer_coverage": float(
+            report.get("reader_answer_coverage") or report.get("deterministic_reader_answer_coverage") or 0.0
+        ),
         "deterministic_reader_hit_rate": float(report.get("deterministic_reader_hit_rate") or 0.0),
         "deterministic_reader_answer_coverage": float(report.get("deterministic_reader_answer_coverage") or 0.0),
+        "reader_mode_requested": report.get("reader_mode_requested"),
+        "reader_mode_effective": report.get("reader_mode_effective"),
+        "reader_provider_name": report.get("reader_provider_name"),
+        "reader_model": report.get("reader_model"),
+        "reader_open_source_calls": int(report.get("reader_open_source_calls") or 0),
+        "reader_fallback_count": int(report.get("reader_fallback_count") or 0),
+        "reader_error_count": int(report.get("reader_error_count") or 0),
         "zero_hit_queries": int(report.get("zero_hit_queries") or 0),
         "reader_zero_hit_queries": int(report.get("reader_zero_hit_queries") or 0),
         "category_breakdown": report.get("category_breakdown") or {},

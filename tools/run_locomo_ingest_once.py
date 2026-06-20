@@ -15,7 +15,11 @@ import calendar
 import json
 import re
 import sys
+import os
+import urllib.error
+import urllib.request
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -68,12 +72,52 @@ def main() -> int:
     parser.add_argument("--min-hit-rate", type=float, default=0.90)
     parser.add_argument("--max-events", type=int, default=128)
     parser.add_argument(
+        "--reader-mode",
+        choices=("deterministic", "open-source", "auto"),
+        default="deterministic",
+        help=(
+            "Answer reader path. deterministic is offline; open-source calls a local OpenAI-compatible "
+            "reader endpoint; auto calls the endpoint when configured and otherwise falls back."
+        ),
+    )
+    parser.add_argument("--reader-provider-name", default="matrixark-cpp-oss-context")
+    parser.add_argument("--reader-model", default="google/flan-t5-small")
+    parser.add_argument(
+        "--reader-base-url",
+        default=os.environ.get("TEMPORALSTORE_READER_BASE_URL", ""),
+        help="OpenAI-compatible local reader base URL, for example http://127.0.0.1:8000/v1.",
+    )
+    parser.add_argument(
+        "--reader-api-key-env",
+        default="TEMPORALSTORE_READER_API_KEY",
+        help="Environment variable containing the local reader API key if the gateway requires one.",
+    )
+    parser.add_argument("--reader-timeout-seconds", type=float, default=20.0)
+    parser.add_argument("--reader-max-context-chars", type=int, default=12000)
+    parser.add_argument(
+        "--reader-no-fallback",
+        action="store_true",
+        help="Fail explicit open-source reader calls instead of falling back to deterministic extraction.",
+    )
+    parser.add_argument(
         "--evidence-window",
         type=int,
         default=None,
         help="Optional diagnostic window. Omit to score each query against the full conversation bundle.",
     )
     args = parser.parse_args()
+    reader = BenchmarkReader(
+        ReaderConfig(
+            mode=args.reader_mode,
+            provider_name=args.reader_provider_name,
+            model=args.reader_model,
+            base_url=args.reader_base_url,
+            api_key_env=args.reader_api_key_env,
+            timeout_seconds=args.reader_timeout_seconds,
+            max_context_chars=args.reader_max_context_chars,
+            allow_fallback=not args.reader_no_fallback,
+        )
+    )
 
     records = load_records(Path(args.input))
     total = 0
@@ -124,7 +168,7 @@ def main() -> int:
             rank = first_hit_rank(blocks, answers, refs)
             matched_terms = count_matched_terms(blocks, answers)
             matched_ref_count = count_matched_refs(blocks, refs)
-            reader_answer = extractive_reader_answer(question, blocks)
+            reader_answer = reader.answer(question, blocks)
             reader_hit = any(text_matches(reader_answer, answer) for answer in answers)
             reader_matched_terms = sum(1 for answer in answers if text_matches(reader_answer, answer))
             case_category = normalize_category(
@@ -181,10 +225,20 @@ def main() -> int:
         "mean_reciprocal_rank": reciprocal_rank_sum / total if total else 0.0,
         "answer_term_coverage": matched_answer_terms / total_answer_terms if total_answer_terms else 0.0,
         "evidence_ref_coverage": matched_refs / total_refs if total_refs else 0.0,
+        "reader_hit_rate": reader_hit_count / total if total else 0.0,
+        "reader_answer_coverage": reader_answer_coverage_count / total_answer_terms if total_answer_terms else 0.0,
         "deterministic_reader_hit_rate": reader_hit_count / total if total else 0.0,
         "deterministic_reader_answer_coverage": (
             reader_answer_coverage_count / total_answer_terms if total_answer_terms else 0.0
         ),
+        "reader_mode_requested": reader.config.mode,
+        "reader_mode_effective": reader.effective_mode(),
+        "reader_provider_name": reader.config.provider_name,
+        "reader_model": reader.config.model,
+        "reader_open_source_calls": reader.open_source_calls,
+        "reader_fallback_count": reader.fallback_count,
+        "reader_error_count": reader.error_count,
+        "reader_last_error": reader.last_error,
         "zero_hit_queries": total - hit_count,
         "reader_zero_hit_queries": total - reader_hit_count,
         "missing_expected_terms": total_answer_terms - matched_answer_terms,
@@ -211,6 +265,16 @@ def main() -> int:
                     if category_reader[name]["terms"]
                     else 0.0
                 ),
+                "reader_hit_rate": (
+                    category_reader[name]["hits"] / category_reader[name]["case_count"]
+                    if category_reader[name]["case_count"]
+                    else 0.0
+                ),
+                "reader_answer_coverage": (
+                    category_reader[name]["matched_terms"] / category_reader[name]["terms"]
+                    if category_reader[name]["terms"]
+                    else 0.0
+                ),
             }
             for name, row in sorted(category.items())
         },
@@ -222,6 +286,116 @@ def main() -> int:
             handle.write(json.dumps(miss, ensure_ascii=False) + "\n")
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0 if report["passed"] else 1
+
+
+@dataclass
+class ReaderConfig:
+    mode: str
+    provider_name: str
+    model: str
+    base_url: str
+    api_key_env: str
+    timeout_seconds: float
+    max_context_chars: int
+    allow_fallback: bool
+
+
+class BenchmarkReader:
+    def __init__(self, config: ReaderConfig) -> None:
+        self.config = config
+        self.open_source_calls = 0
+        self.fallback_count = 0
+        self.error_count = 0
+        self.last_error = ""
+
+    def answer(self, question: str, blocks: list[dict[str, str]]) -> str:
+        if self.config.mode == "deterministic":
+            return extractive_reader_answer(question, blocks)
+        if self.config.mode == "auto" and not self.config.base_url:
+            self.fallback_count += 1
+            return extractive_reader_answer(question, blocks)
+        try:
+            return self.open_source_answer(question, blocks)
+        except Exception as exc:  # noqa: BLE001 - benchmark hooks must report local gateway failures.
+            self.error_count += 1
+            self.last_error = str(exc)[:300]
+            if self.config.allow_fallback or self.config.mode == "auto":
+                self.fallback_count += 1
+                return extractive_reader_answer(question, blocks)
+            raise
+
+    def effective_mode(self) -> str:
+        if self.open_source_calls and self.fallback_count:
+            return "open-source+deterministic-fallback"
+        if self.open_source_calls:
+            return "open-source"
+        if self.fallback_count and self.config.mode != "deterministic":
+            return "deterministic-fallback"
+        return "deterministic"
+
+    def open_source_answer(self, question: str, blocks: list[dict[str, str]]) -> str:
+        if not self.config.base_url:
+            raise ValueError("open-source reader requires --reader-base-url or TEMPORALSTORE_READER_BASE_URL")
+        endpoint = self.config.base_url.rstrip("/")
+        if not endpoint.endswith("/chat/completions"):
+            endpoint = f"{endpoint}/chat/completions"
+        context = evidence_bundle([block.get("body", "") for block in blocks])
+        context = context[: max(512, self.config.max_context_chars)]
+        payload = {
+            "model": self.config.model,
+            "temperature": 0,
+            "max_tokens": 160,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an extractive long-memory benchmark reader. Answer only from the supplied "
+                        "context. Prefer short spans, names, dates, yes/no, or comma-separated lists. If the "
+                        "context is insufficient, say not enough context."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"Question: {question}\n\nContext:\n{context}\n\nAnswer:",
+                },
+            ],
+        }
+        request = urllib.request.Request(
+            endpoint,
+            data=json.dumps(payload).encode("utf-8"),
+            headers=self.reader_headers(),
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.config.timeout_seconds) as response:
+                body = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:300]
+            raise RuntimeError(f"reader endpoint HTTP {exc.code}: {detail}") from exc
+        self.open_source_calls += 1
+        return parse_openai_compatible_answer(body)
+
+    def reader_headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        api_key = os.environ.get(self.config.api_key_env, "")
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        return headers
+
+
+def parse_openai_compatible_answer(body: dict[str, Any]) -> str:
+    choices = body.get("choices")
+    if isinstance(choices, list) and choices:
+        first = choices[0]
+        if isinstance(first, dict):
+            message = first.get("message")
+            if isinstance(message, dict) and str(message.get("content") or "").strip():
+                return str(message.get("content")).strip()
+            if str(first.get("text") or "").strip():
+                return str(first.get("text")).strip()
+    if str(body.get("output_text") or "").strip():
+        return str(body.get("output_text")).strip()
+    raise ValueError("reader endpoint response did not contain an answer")
 
 
 def load_records(path: Path) -> list[Any]:

@@ -29,6 +29,14 @@ def main() -> int:
     parser.add_argument("--misses", default="/tmp/temporalstore_locomo_ingest_once_misses.jsonl")
     parser.add_argument("--min-hit-rate", type=float, default=0.90)
     parser.add_argument("--max-events", type=int, default=128)
+    parser.add_argument("--reader-mode", choices=("deterministic", "open-source", "auto"), default="deterministic")
+    parser.add_argument("--reader-provider-name", default="matrixark-cpp-oss-context")
+    parser.add_argument("--reader-model", default="google/flan-t5-small")
+    parser.add_argument("--reader-base-url", default="")
+    parser.add_argument("--reader-api-key-env", default="TEMPORALSTORE_READER_API_KEY")
+    parser.add_argument("--reader-timeout-seconds", type=float, default=20.0)
+    parser.add_argument("--reader-max-context-chars", type=int, default=12000)
+    parser.add_argument("--reader-no-fallback", action="store_true")
     parser.add_argument(
         "--evidence-window",
         type=int,
@@ -56,7 +64,23 @@ def main() -> int:
         str(args.min_hit_rate),
         "--max-events",
         str(args.max_events),
+        "--reader-mode",
+        args.reader_mode,
+        "--reader-provider-name",
+        args.reader_provider_name,
+        "--reader-model",
+        args.reader_model,
+        "--reader-api-key-env",
+        args.reader_api_key_env,
+        "--reader-timeout-seconds",
+        str(args.reader_timeout_seconds),
+        "--reader-max-context-chars",
+        str(args.reader_max_context_chars),
     ]
+    if args.reader_base_url:
+        command.extend(["--reader-base-url", args.reader_base_url])
+    if args.reader_no_fallback:
+        command.append("--reader-no-fallback")
     if args.evidence_window is not None:
         command.extend(["--evidence-window", str(args.evidence_window)])
     run(command, cwd=repo)
@@ -66,8 +90,10 @@ def main() -> int:
     hit_rate = float(report.get("hit_rate") or 0.0)
     answer_coverage = float(report.get("answer_term_coverage") or 0.0)
     evidence_coverage = float(report.get("evidence_ref_coverage") or 0.0)
-    reader_hit_rate = float(report.get("deterministic_reader_hit_rate") or 0.0)
-    reader_answer_coverage = float(report.get("deterministic_reader_answer_coverage") or 0.0)
+    reader_hit_rate = float(report.get("reader_hit_rate") or report.get("deterministic_reader_hit_rate") or 0.0)
+    reader_answer_coverage = float(
+        report.get("reader_answer_coverage") or report.get("deterministic_reader_answer_coverage") or 0.0
+    )
     case_count = int(report.get("case_count") or 0)
     print(
         json.dumps(
@@ -82,6 +108,15 @@ def main() -> int:
                 "answer_term_coverage": answer_coverage,
                 "deterministic_reader_hit_rate": reader_hit_rate,
                 "deterministic_reader_answer_coverage": reader_answer_coverage,
+                "reader_hit_rate": reader_hit_rate,
+                "reader_answer_coverage": reader_answer_coverage,
+                "reader_mode_requested": report.get("reader_mode_requested"),
+                "reader_mode_effective": report.get("reader_mode_effective"),
+                "reader_provider_name": report.get("reader_provider_name"),
+                "reader_model": report.get("reader_model"),
+                "reader_open_source_calls": report.get("reader_open_source_calls"),
+                "reader_fallback_count": report.get("reader_fallback_count"),
+                "reader_error_count": report.get("reader_error_count"),
                 "answer_reader_gap_visible": answer_coverage < args.min_hit_rate,
                 "report": str(report_path),
                 "misses": args.misses,

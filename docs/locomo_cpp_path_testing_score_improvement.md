@@ -62,6 +62,17 @@ python3 tools/run_longmemeval_s_full_path.py \
   --max-events 256
 ```
 
+The same open-source reader hook is available for LongMemEval_s:
+
+```bash
+TEMPORALSTORE_READER_BASE_URL=http://127.0.0.1:8000/v1 \
+python3 tools/run_longmemeval_s_full_path.py \
+  --input /tmp/longmemeval_s.json \
+  --min-hit-rate 0.90 \
+  --reader-mode open-source \
+  --reader-model google/flan-t5-small
+```
+
 The converter path remains available for engine-backed external JSONL replay:
 
 ```bash
@@ -105,6 +116,27 @@ The wrapper uses the conversation-load-once/query-many runner, fails if the comp
 so deterministic/LLM reader accuracy is not confused with retrieval hit rate.
 It also reports the local deterministic extractive reader hit rate.
 
+To match the open-source reader/model path from the MatrixArk/C++ and OpenViking-style setup, point
+the same runner at a local OpenAI-compatible gateway. The default model name is
+`google/flan-t5-small`, matching the C++ benchmark thread's OSS reader profile, but any local
+OpenAI-compatible endpoint can be supplied:
+
+```bash
+export TEMPORALSTORE_READER_BASE_URL=http://127.0.0.1:8000/v1
+python3 tools/run_locomo_90_hit_rate.py \
+  --input /tmp/locomo10.json \
+  --min-hit-rate 0.90 \
+  --reader-mode open-source \
+  --reader-provider-name matrixark-cpp-oss-context \
+  --reader-model google/flan-t5-small
+```
+
+Use `--reader-mode auto` for local development: it calls the open-source gateway when
+`TEMPORALSTORE_READER_BASE_URL` or `--reader-base-url` is configured, otherwise it falls back to the
+deterministic extractive reader. Reports include `reader_mode_requested`, `reader_mode_effective`,
+`reader_provider_name`, `reader_model`, `reader_open_source_calls`, `reader_fallback_count`, and
+`reader_error_count` so benchmark output shows whether the OSS reader actually ran.
+
 ## Rust Improvements In This Pass
 
 - Added LOCOMO JSON -> TemporalStore context JSONL conversion.
@@ -117,6 +149,9 @@ It also reports the local deterministic extractive reader hit rate.
   date synthesis, list/profile/inference shortcuts, and an evidence-bundle fallback.
 - Added `tools/run_longmemeval_s_full_path.py`, which runs LongMemEval_s through the same
   conversation-load-once/query-many scorer and emits dataset-specific full-path readiness evidence.
+- Added OpenViking/MatrixArk-style open-source reader hooks for LOCOMO and LongMemEval_s gates:
+  deterministic fallback by default, `open-source` for local OpenAI-compatible readers, `auto` for
+  opportunistic local gateway use, and report fields proving which reader path executed.
 - Added external-only benchmark mode.
 - Reused ingested source sets by digest so LOCOMO runs mirror MatrixArk's ingest-once/query-many
   shape instead of re-ingesting the same conversation per question.
@@ -241,6 +276,18 @@ python3 tools/run_longmemeval_s_full_path.py \
 | Answer-term coverage | 1.0 |
 | Deterministic-reader hit | 1.0 |
 
+Open-source reader hook smoke used `--reader-mode auto` without a live gateway, proving the report
+falls back deterministically and records the fallback:
+
+| Field | Result |
+| --- | --- |
+| `reader_mode_requested` | `auto` |
+| `reader_mode_effective` | `deterministic-fallback` |
+| `reader_provider_name` | `matrixark-cpp-oss-context` |
+| `reader_model` | `google/flan-t5-small` |
+| `reader_fallback_count` | `4` |
+| `reader_error_count` | `0` |
+
 Category breakdown for the 154-case pass:
 
 | Category | Cases | Hit@K | MRR | Missing terms | Zero-hit queries |
@@ -258,7 +305,9 @@ measured slice, but it is still not equivalent to the MatrixArk/C++-path reader:
 
 - Rust now has a local deterministic reader hypothesis per question in the ingest-once runner, but
   deeper reader-answer accuracy still trails retrieval/context hit and needs continued reader logic
-  or OSS/LLM reader integration for higher answer-generation accuracy.
+  plus live OSS/LLM reader runs for higher answer-generation accuracy. The benchmark hooks are now
+  in place; the remaining gap is running the mounted full datasets against a live local
+  OpenAI-compatible `google/flan-t5-small` or equivalent OpenViking reader endpoint.
 - Category 1 and category 3 still need stronger inference over selected evidence.
 - The full 1,986-question run is supported by the converter. Full-conversation engine-backed
   retrieval is still too slow for quick local iteration because retrieval is repeated per question.
