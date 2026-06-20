@@ -4019,7 +4019,8 @@
             "required_paths": [
               "tools/fixtures/longmemeval_s_full_path_fixture.json",
               "tools/run_longmemeval_s_full_path.py",
-              "tools/benchmark_threshold_policy.py"
+              "tools/benchmark_threshold_policy.py",
+              "tools/compare_context_benchmark_reports.py"
             ],
             "description": "Shared C++/Rust fixture benchmark gate for LOCOMO-style and LongMemEval_s-style context-memory reports. This validates benchmark wiring and report shape only; it cannot satisfy full-dataset production evidence.",
             "threshold_profiles": [
@@ -4102,7 +4103,8 @@
             "required_paths": [
               "tools/run_locomo_90_hit_rate.py",
               "tools/run_context_benchmarks_docker_open_model.sh",
-              "docker-compose.context-benchmarks.yml"
+              "docker-compose.context-benchmarks.yml",
+              "compat/cpp_context_benchmark_report_adapter.h"
             ],
             "description": "Shared C++/Rust full-dataset benchmark gate for LOCOMO, LongMemEval_s, and live OSS-reader reports. Production evidence requires real mounted artifacts and passing threshold profiles.",
             "threshold_profiles": [

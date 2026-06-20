@@ -35,7 +35,7 @@ executable behavior cases: 26
 executable behavior steps: 106
 required command kinds: 59
 required response kinds: 19
-C++ existing-test parity surfaces: 127 unique required paths plus 60 Raft path references
+C++ existing-test parity surfaces: 129 unique required paths plus 60 Raft path references
 ```
 
 The shared cases are:
@@ -192,6 +192,19 @@ bash tools/run_context_benchmarks_docker_open_model.sh
 
 C++ should emit the same JSON shape from its native MatrixArk/VikingMem benchmark path and wire the
 result into the same corpus case names.
+
+The installable C++ adapter template is
+`compat/cpp_context_benchmark_report_adapter.h`, and the adapter workflow is documented in
+[cpp_context_benchmark_report_adapter.md](cpp_context_benchmark_report_adapter.md). Cross-repo
+benchmark output comparison uses:
+
+```bash
+python3 tools/compare_context_benchmark_reports.py \
+  --rust-report /tmp/rust_locomo_report.json \
+  --cpp-report /tmp/cpp_locomo_report.json \
+  --case-name context_benchmark_full_dataset_gates \
+  --dataset locomo
+```
 
 ## Rust Runner
 

@@ -17,7 +17,7 @@ executable shared behavior cases: 26
 executable shared behavior steps: 106
 C++ existing-test parity surface cases: 50
 C++ existing-test parity surface steps: 57
-C++ required source/test/harness paths: 127 unique paths plus 60 Raft path references
+C++ required source/test/harness paths: 129 unique paths plus 60 Raft path references
 required command kinds: 59
 required response kinds: 19
 ```
@@ -183,6 +183,10 @@ Rust emits these fields through `tools/run_locomo_90_hit_rate.py`,
 `tools/run_context_benchmarks_docker_open_model.sh`. C++ should emit the same
 `matrixark_vikingmem_context_benchmark_report_v1` JSON report shape and archive one manifest plus
 one report JSON and misses JSONL per executed dataset.
+
+C++ can use `compat/cpp_context_benchmark_report_adapter.h` as the native emitter template. Rust and
+C++ benchmark outputs are compared with `tools/compare_context_benchmark_reports.py`, which validates
+the shared report contract and compares summary plus per-query rows by `query_id`.
 
 ## Are There Still Rust-Specific Tests?
 
