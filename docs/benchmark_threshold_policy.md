@@ -18,6 +18,8 @@ Benchmark result docs must stay strict:
 - Production parity or production-ready benchmark claims require all three pieces of evidence in
   the same result doc: real dataset artifact, real reader execution, and passing threshold output
   with zero threshold violations.
+- Paper-comparable archives must include dataset hash, model/provider, reader mode, prompt,
+  thresholds, p50/p95 latencies, token reduction, and category breakdown.
 - Missing artifacts, skipped datasets, Docker/model pull failures, fallback readers, and fixture
   gates must be recorded as blocked, skipped, or fixture-only evidence.
 

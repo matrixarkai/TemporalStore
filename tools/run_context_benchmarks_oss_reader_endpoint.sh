@@ -64,6 +64,11 @@ if [[ -f "${LOC_INPUT}" ]]; then
     --reader-no-fallback \
     --report "${ARCHIVE_DIR}/locomo_report.json" \
     --misses "${ARCHIVE_DIR}/locomo_misses.jsonl"
+  python3 "${ROOT}/tools/archive_context_benchmark_report.py" \
+    --report "${ARCHIVE_DIR}/locomo_report.json" \
+    --input "${LOC_INPUT}" \
+    --output "${ARCHIVE_DIR}/locomo_paper_comparable_report.json" \
+    --claim-level "live_oss_reader_paper_comparable"
   locomo_status="passed"
 fi
 
@@ -79,6 +84,11 @@ if [[ -f "${LONGMEM_INPUT}" ]]; then
     --require-open-source-reader \
     --report "${ARCHIVE_DIR}/longmemeval_s_report.json" \
     --misses "${ARCHIVE_DIR}/longmemeval_s_misses.jsonl"
+  python3 "${ROOT}/tools/archive_context_benchmark_report.py" \
+    --report "${ARCHIVE_DIR}/longmemeval_s_report.json" \
+    --input "${LONGMEM_INPUT}" \
+    --output "${ARCHIVE_DIR}/longmemeval_s_paper_comparable_report.json" \
+    --claim-level "live_oss_reader_paper_comparable"
   longmem_status="passed"
 fi
 

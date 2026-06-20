@@ -60,8 +60,8 @@ This runner is fail-closed: it exits non-zero when the endpoint is missing, no
 dataset artifact is present, the reader falls back to deterministic mode, or the
 benchmark thresholds fail. It writes an archive under
 `benchmark_reports/oss_reader_endpoint_<timestamp>/` with `manifest.json`,
-`locomo_report.json`, and `longmemeval_s_report.json` when the corresponding
-datasets are present.
+raw reports, misses JSONL files, and `*_paper_comparable_report.json` summaries when
+the corresponding datasets are present and pass.
 
 To use a local registry mirror or a pre-pulled compatible image:
 
@@ -81,8 +81,17 @@ The runner writes:
 
 - `manifest.json`
 - `locomo_report.json` and `locomo_misses.jsonl` when LOCOMO is present
+- `locomo_paper_comparable_report.json` when LOCOMO passes
 - `longmemeval_s_report.json` and `longmemeval_s_misses.jsonl` when LongMemEval_s is present
+- `longmemeval_s_paper_comparable_report.json` when LongMemEval_s passes
 - `docker_start.log` or `model_pull.log` when infrastructure setup fails before scoring
+
+The `*_paper_comparable_report.json` files use
+`matrixark_vikingmem_paper_comparable_report_v1` and include the dataset SHA-256,
+input bytes, model/provider, reader mode, exact reader prompt templates, thresholds,
+p50/p95 latencies, token reduction, quality-gate state, and category breakdown. These
+are the files to archive when comparing Rust runs with VikingMem/OpenViking or C++
+benchmark outputs.
 
 If Docker Hub, the local registry, or the model registry is unreachable, the
 script exits non-zero and still writes a manifest with `phase` set to
@@ -93,7 +102,7 @@ script exits non-zero and still writes a manifest with `phase` set to
 LOCOMO uses the `oss_reader_full` threshold profile:
 
 - at least 1542 cases
-- retrieval hit rate at least 0.90
+- retrieval hit rate at least 0.94
 - reader hit rate at least 0.58
 - token reduction at least 80%
 - retrieval p95 at most 250 ms

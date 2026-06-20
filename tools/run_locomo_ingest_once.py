@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import calendar
+import hashlib
 import json
 import math
 import re
@@ -97,6 +98,13 @@ SYNONYMS = {
     "intolerant": {"intolerance"},
     "intolerance": {"intolerant"},
 }
+
+OSS_READER_SYSTEM_PROMPT = (
+    "You are an extractive long-memory benchmark reader. Answer only from the supplied "
+    "context. Prefer short spans, names, dates, yes/no, or comma-separated lists. If the "
+    "context is insufficient, say not enough context."
+)
+OSS_READER_USER_PROMPT_TEMPLATE = "Question: {question}\n\nContext:\n{context}\n\nAnswer:"
 
 
 def main() -> int:
@@ -378,6 +386,8 @@ def main() -> int:
         "dataset": args.dataset_name or dominant_dataset_name(dataset_counts),
         "dataset_record_counts": dict(sorted(dataset_counts.items())),
         "input": str(args.input),
+        "input_sha256": sha256_file(Path(args.input)),
+        "input_bytes": Path(args.input).stat().st_size if Path(args.input).exists() else 0,
         "case_count": total,
         "conversation_count": conversations_loaded,
         "source_count": source_count,
@@ -396,6 +406,9 @@ def main() -> int:
         "reader_mode_effective": reader.effective_mode(),
         "reader_provider_name": reader.config.provider_name,
         "reader_model": reader.config.model,
+        "reader_prompt_system": OSS_READER_SYSTEM_PROMPT,
+        "reader_prompt_user_template": OSS_READER_USER_PROMPT_TEMPLATE,
+        "reader_max_context_chars": reader.config.max_context_chars,
         "reader_open_source_calls": reader.open_source_calls,
         "reader_fallback_count": reader.fallback_count,
         "reader_error_count": reader.error_count,
@@ -473,6 +486,14 @@ def percentile(values: list[float], pct: float) -> float:
     if lower == upper:
         return ordered[int(rank)]
     return ordered[lower] + (ordered[upper] - ordered[lower]) * (rank - lower)
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def benchmark_threshold_violations(
@@ -577,15 +598,11 @@ class BenchmarkReader:
             "messages": [
                 {
                     "role": "system",
-                    "content": (
-                        "You are an extractive long-memory benchmark reader. Answer only from the supplied "
-                        "context. Prefer short spans, names, dates, yes/no, or comma-separated lists. If the "
-                        "context is insufficient, say not enough context."
-                    ),
+                    "content": OSS_READER_SYSTEM_PROMPT,
                 },
                 {
                     "role": "user",
-                    "content": f"Question: {question}\n\nContext:\n{context}\n\nAnswer:",
+                    "content": OSS_READER_USER_PROMPT_TEMPLATE.format(question=question, context=context),
                 },
             ],
         }

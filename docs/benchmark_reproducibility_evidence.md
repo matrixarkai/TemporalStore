@@ -72,6 +72,11 @@ No live OSS-reader score is claimed from this pass. A VikingMem/OpenViking parit
 reachable OpenAI-compatible endpoint serving the same model profile and a report with
 `reader_open_source_calls > 0`, no deterministic fallback, and zero threshold violations.
 
+Successful live-reader runs now archive `*_paper_comparable_report.json` beside the raw benchmark
+report. That compact archive uses `matrixark_vikingmem_paper_comparable_report_v1` and carries the
+dataset hash, model/provider, reader mode, prompt templates, thresholds, p50/p95 latency, token
+reduction, quality-gate result, and category breakdown required for C++/OpenViking comparison.
+
 ## LOCOMO Full Dataset
 
 Status: `ready`

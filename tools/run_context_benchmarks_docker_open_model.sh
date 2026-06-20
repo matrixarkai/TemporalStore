@@ -83,6 +83,12 @@ if run_runner test -f "${LOC_INPUT}"; then
       --reader-no-fallback \
       --report /bench-output/"$(basename "${ARCHIVE_DIR}")"/locomo_report.json \
       --misses /bench-output/"$(basename "${ARCHIVE_DIR}")"/locomo_misses.jsonl
+  run_runner \
+    python3 tools/archive_context_benchmark_report.py \
+      --report /bench-output/"$(basename "${ARCHIVE_DIR}")"/locomo_report.json \
+      --input "${LOC_INPUT}" \
+      --output /bench-output/"$(basename "${ARCHIVE_DIR}")"/locomo_paper_comparable_report.json \
+      --claim-level live_oss_reader_paper_comparable
   locomo_status="passed"
 else
   echo "Skipping LOCOMO: ${LOC_INPUT} is not present in benchmark-runner."
@@ -101,6 +107,12 @@ if run_runner test -f "${LONGMEM_INPUT}"; then
       --require-open-source-reader \
       --report /bench-output/"$(basename "${ARCHIVE_DIR}")"/longmemeval_s_report.json \
       --misses /bench-output/"$(basename "${ARCHIVE_DIR}")"/longmemeval_s_misses.jsonl
+  run_runner \
+    python3 tools/archive_context_benchmark_report.py \
+      --report /bench-output/"$(basename "${ARCHIVE_DIR}")"/longmemeval_s_report.json \
+      --input "${LONGMEM_INPUT}" \
+      --output /bench-output/"$(basename "${ARCHIVE_DIR}")"/longmemeval_s_paper_comparable_report.json \
+      --claim-level live_oss_reader_paper_comparable
   longmem_status="passed"
 else
   echo "Skipping LongMemEval_s: ${LONGMEM_INPUT} is not present in benchmark-runner."
