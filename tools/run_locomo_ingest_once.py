@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Run LOCOMO as conversation-load-once/query-many benchmark.
+"""Run LOCOMO/LongMemEval_s as conversation-load-once/query-many benchmark.
 
 The generic context harness accepts JSONL cases and is useful for CI smoke tests,
-but LOCOMO has many questions per conversation. This runner mirrors the benchmark
-shape used by the C++/MatrixArk path: build the source bundle once per
-conversation, then stream every question against that shared bundle.
+but LOCOMO and LongMemEval_s have many questions per conversation. This runner
+mirrors the benchmark shape used by the C++/MatrixArk path: build the source
+bundle once per conversation, then stream every question against that shared
+bundle.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from convert_locomo_to_context_jsonl import (  # noqa: E402
     clean_id,
+    infer_dataset_name,
     locomo_evidence_window_sources,
     normalize_answers,
     normalize_category,
@@ -54,10 +56,15 @@ SYNONYMS = {
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run LOCOMO conversation-load-once/query-many benchmark.")
-    parser.add_argument("--input", default="/tmp/locomo10.json", help="LOCOMO JSON export path.")
+    parser = argparse.ArgumentParser(description="Run LOCOMO/LongMemEval_s conversation-load-once/query-many benchmark.")
+    parser.add_argument("--input", default="/tmp/locomo10.json", help="LOCOMO or LongMemEval_s JSON export path.")
     parser.add_argument("--output", default="/tmp/temporalstore_locomo_ingest_once_result.json")
     parser.add_argument("--misses", default="/tmp/temporalstore_locomo_ingest_once_misses.jsonl")
+    parser.add_argument(
+        "--dataset-name",
+        default=None,
+        help="Override report dataset name. Defaults to locomo or longmemeval_s by input shape.",
+    )
     parser.add_argument("--min-hit-rate", type=float, default=0.90)
     parser.add_argument("--max-events", type=int, default=128)
     parser.add_argument(
@@ -83,10 +90,13 @@ def main() -> int:
     misses: list[dict[str, Any]] = []
     conversations_loaded = 0
     source_count = 0
+    dataset_counts: defaultdict[str, int] = defaultdict(int)
 
     for record_index, record in enumerate(records):
         if not isinstance(record, dict):
             continue
+        record_dataset = args.dataset_name or infer_dataset_name(record)
+        dataset_counts[record_dataset] += 1
         conversation_id = clean_id(
             record.get("sample_id")
             or record.get("conversation_id")
@@ -118,7 +128,7 @@ def main() -> int:
             reader_hit = any(text_matches(reader_answer, answer) for answer in answers)
             reader_matched_terms = sum(1 for answer in answers if text_matches(reader_answer, answer))
             case_category = normalize_category(
-                qa.get("category") or qa.get("question_type") or qa.get("reasoning_type")
+                qa.get("category") or qa.get("question_type") or qa.get("reasoning_type") or qa.get("ability")
             )
 
             total += 1
@@ -160,6 +170,9 @@ def main() -> int:
 
     report = {
         "mode": "conversation_load_once_query_many",
+        "benchmark_family": "vikingmem_long_memory",
+        "dataset": args.dataset_name or dominant_dataset_name(dataset_counts),
+        "dataset_record_counts": dict(sorted(dataset_counts.items())),
         "input": str(args.input),
         "case_count": total,
         "conversation_count": conversations_loaded,
@@ -221,6 +234,12 @@ def load_records(path: Path) -> list[Any]:
                 return data[key]
         return [data]
     return []
+
+
+def dominant_dataset_name(dataset_counts: dict[str, int]) -> str:
+    if not dataset_counts:
+        return "unknown"
+    return sorted(dataset_counts.items(), key=lambda row: (-row[1], row[0]))[0][0]
 
 
 def rank_sources(question: str, sources: list[dict[str, str]], max_events: int) -> list[dict[str, str]]:

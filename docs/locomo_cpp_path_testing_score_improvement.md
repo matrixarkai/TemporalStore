@@ -51,20 +51,23 @@ harness report non-perfect benchmark scores without failing the process; strict 
 unchanged for the built-in CI fixture.
 
 For LongMemEval_s-shaped records, the same converter auto-detects `haystack_sessions` and flattens
-the timestamped multi-session history into TemporalStore chat sources:
+the timestamped multi-session history into TemporalStore chat sources. The full-path scorer uses the
+same ingest-once/query-many path as LOCOMO, so each LongMemEval_s conversation is loaded once and
+all questions are streamed against that shared long-context source bundle:
+
+```bash
+python3 tools/run_longmemeval_s_full_path.py \
+  --input /tmp/longmemeval_s.json \
+  --min-hit-rate 0.90 \
+  --max-events 256
+```
+
+The converter path remains available for engine-backed external JSONL replay:
 
 ```bash
 python3 tools/convert_locomo_to_context_jsonl.py /tmp/longmemeval_s.json \
   /tmp/temporalstore_longmemeval_s.jsonl \
   --dataset-name longmemeval_s
-
-TEMPORALSTORE_CONTEXT_BENCHMARK_EXTERNAL_ONLY=1 \
-TEMPORALSTORE_CONTEXT_BENCHMARK_JSONL=/tmp/temporalstore_longmemeval_s.jsonl \
-TEMPORALSTORE_CONTEXT_BENCHMARK_REPORT_ONLY=1 \
-TEMPORALSTORE_CONTEXT_BENCHMARK_MAX_EVENTS=128 \
-TEMPORALSTORE_CONTEXT_BENCHMARK_DIRECT_SOURCE_SCORING=1 \
-target/debug/context_workflow_harness \
-  > /tmp/temporalstore_longmemeval_s_result.json
 ```
 
 For a VikingMem-style retrieval/context-hit diagnostic, preserve LOCOMO evidence IDs and score
@@ -112,6 +115,8 @@ It also reports the local deterministic extractive reader hit rate.
   harness ingestion path.
 - Added a deterministic extractive reader path to the ingest-once runner with LOCOMO-style relative
   date synthesis, list/profile/inference shortcuts, and an evidence-bundle fallback.
+- Added `tools/run_longmemeval_s_full_path.py`, which runs LongMemEval_s through the same
+  conversation-load-once/query-many scorer and emits dataset-specific full-path readiness evidence.
 - Added external-only benchmark mode.
 - Reused ingested source sets by digest so LOCOMO runs mirror MatrixArk's ingest-once/query-many
   shape instead of re-ingesting the same conversation per question.
@@ -211,16 +216,30 @@ Small engine-backed smoke over the first 10 evidence-window cases:
 | MRR | 0.83125 |
 | Answer-term coverage | 0.70 |
 
-LongMemEval_s converter smoke used a synthetic timestamped two-session fixture because the full
-LongMemEval_s file was not present locally during this pass:
+LongMemEval_s full-path scoring used a committed synthetic multi-record fixture because the full
+LongMemEval_s file was not present locally during this pass. The command exercises the real
+LongMemEval_s input shape, multiple sessions per record, both `questions` and `qa` fields, memory
+updates, temporal questions, deterministic reader output, and the same ingest-once/query-many
+scoring path used for the full dataset:
+
+```bash
+python3 tools/run_longmemeval_s_full_path.py \
+  --input tools/fixtures/longmemeval_s_full_path_fixture.json \
+  --min-hit-rate 1.0 \
+  --report /tmp/temporalstore_longmemeval_fixture_result.json \
+  --misses /tmp/temporalstore_longmemeval_fixture_misses.jsonl
+```
 
 | Metric | Result |
 | --- | ---: |
-| Cases | 1 |
+| Cases | 4 |
+| Conversations | 2 |
+| Sources | 12 |
 | Retrieval/context Hit@K | 1.0 |
 | Evidence-ref coverage | 0.0 |
-| MRR | 1.0 |
+| MRR | 0.8333333333 |
 | Answer-term coverage | 1.0 |
+| Deterministic-reader hit | 1.0 |
 
 Category breakdown for the 154-case pass:
 
@@ -247,5 +266,6 @@ measured slice, but it is still not equivalent to the MatrixArk/C++-path reader:
   is a dedicated LOCOMO benchmark binary that ingests each conversation once, streams all questions,
   emits per-question miss reports, and optionally runs the same `google/flan-t5-small` reader used
   in the MatrixArk/C++ path.
-- Full LongMemEval_s scoring still needs the real dataset artifact and the same ingest-once/query-many
-  benchmark runner; the converter and smoke path are in place.
+- Full LongMemEval_s scoring now has the same ingest-once/query-many runner as LOCOMO. The only
+  remaining local blocker is the real LongMemEval_s dataset artifact; when present, run
+  `tools/run_longmemeval_s_full_path.py --input /tmp/longmemeval_s.json --min-hit-rate 0.90`.
