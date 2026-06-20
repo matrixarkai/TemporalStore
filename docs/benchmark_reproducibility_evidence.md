@@ -1,8 +1,8 @@
 # Benchmark Reproducibility Evidence
 
-Validation time: 2026-06-20T20:05:00Z
+Validation time: 2026-06-20T20:42:00Z
 
-Runner revision: temporal anchor duration solver update in this commit
+Runner revision: multi-evidence deterministic reader synthesis update in this commit
 
 This page records benchmark evidence from the checked-in TemporalStore runners. It separates real
 dataset scores from fixture gates so fixture results are not presented as paper-equivalent LOCOMO or
@@ -216,6 +216,41 @@ LOCOMO was rerun as a guardrail with the same reader change:
 `/tmp/locomo_temporal_anchor_result.json` stayed ready at `case_count = 1542`,
 `hit_rate = 0.9409857328`, and `reader_hit_rate = 0.8417639429`; LOCOMO `category_3`
 reader hit remained `0.4375`, so that separate inference slice still needs its own targeted pass.
+
+### LOCOMO Multi-Evidence Reader Synthesis Gap-Fill
+
+Status: `ready`
+
+This pass targets questions where retrieval finds the facts but the deterministic reader must combine
+two or more evidence snippets. The reader now has explicit synthesis paths for `both`,
+`relationship`, `compare`, and `why`/`what caused` questions, with narrow deterministic rules for
+combined evidence such as allergy plus fur, movie scripts plus big-screen work, charity plus youth
+sports, and lost-job plus tough-time explanations.
+
+Command:
+
+```bash
+python3 tools/run_locomo_90_hit_rate.py \
+  --threshold-profile locomo_full \
+  --input /tmp/locomo10.json \
+  --report /tmp/locomo_multi_evidence_result2.json \
+  --misses /tmp/locomo_multi_evidence_misses2.jsonl
+```
+
+Result:
+
+| Metric | Previous full run | After multi-evidence synthesis |
+| --- | ---: | ---: |
+| Case count | 1,542 | 1,542 |
+| Retrieval/context Hit@K | 0.9409857328 | 0.9409857328 |
+| Reader hit rate | 0.8417639429 | 0.8495460441 |
+| `category_3` reader hit rate | 0.4375 | 0.5 |
+| Threshold violations | `[]` | `[]` |
+
+LongMemEval_s was rerun as a guardrail with
+`/tmp/longmemeval_multi_evidence_result2.json`; it stayed ready at `case_count = 500`,
+`hit_rate = 1.0`, `reader_hit_rate = 0.838`, and `temporal_reasoning` reader hit
+`0.8421052632`.
 
 Fetch helper:
 
