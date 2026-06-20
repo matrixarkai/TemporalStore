@@ -30,7 +30,8 @@ The latest MatrixArk/C++-path reference result in `/tmp/matrixark_locomo_after_r
 | Prompt tokens avg | 3,771.06 |
 | Retrieval p50 / p95 | 159 ms / 217 ms |
 
-Rust now has a converter so the same LOCOMO export can be fed to the TemporalStore context harness:
+Rust now has a converter so the same LOCOMO and LongMemEval_s-style exports can be fed to the
+TemporalStore context harness:
 
 ```bash
 python3 tools/convert_locomo_to_context_jsonl.py /tmp/locomo10.json /tmp/temporalstore_locomo_conv1_199.jsonl \
@@ -48,6 +49,23 @@ target/debug/context_workflow_harness \
 runs only the external LOCOMO export. `TEMPORALSTORE_CONTEXT_BENCHMARK_REPORT_ONLY=1` lets the
 harness report non-perfect benchmark scores without failing the process; strict readiness remains
 unchanged for the built-in CI fixture.
+
+For LongMemEval_s-shaped records, the same converter auto-detects `haystack_sessions` and flattens
+the timestamped multi-session history into TemporalStore chat sources:
+
+```bash
+python3 tools/convert_locomo_to_context_jsonl.py /tmp/longmemeval_s.json \
+  /tmp/temporalstore_longmemeval_s.jsonl \
+  --dataset-name longmemeval_s
+
+TEMPORALSTORE_CONTEXT_BENCHMARK_EXTERNAL_ONLY=1 \
+TEMPORALSTORE_CONTEXT_BENCHMARK_JSONL=/tmp/temporalstore_longmemeval_s.jsonl \
+TEMPORALSTORE_CONTEXT_BENCHMARK_REPORT_ONLY=1 \
+TEMPORALSTORE_CONTEXT_BENCHMARK_MAX_EVENTS=128 \
+TEMPORALSTORE_CONTEXT_BENCHMARK_DIRECT_SOURCE_SCORING=1 \
+target/debug/context_workflow_harness \
+  > /tmp/temporalstore_longmemeval_s_result.json
+```
 
 For a VikingMem-style retrieval/context-hit diagnostic, preserve LOCOMO evidence IDs and score
 against evidence windows:
@@ -76,6 +94,7 @@ retrieval remains supported by omitting `--evidence-window` and
 ## Rust Improvements In This Pass
 
 - Added LOCOMO JSON -> TemporalStore context JSONL conversion.
+- Added LongMemEval_s `haystack_sessions` -> TemporalStore context JSONL conversion.
 - Added external-only benchmark mode.
 - Reused ingested source sets by digest so LOCOMO runs mirror MatrixArk's ingest-once/query-many
   shape instead of re-ingesting the same conversation per question.
@@ -135,6 +154,17 @@ Small engine-backed smoke over the first 10 evidence-window cases:
 | MRR | 0.83125 |
 | Answer-term coverage | 0.70 |
 
+LongMemEval_s converter smoke used a synthetic timestamped two-session fixture because the full
+LongMemEval_s file was not present locally during this pass:
+
+| Metric | Result |
+| --- | ---: |
+| Cases | 1 |
+| Retrieval/context Hit@K | 1.0 |
+| Evidence-ref coverage | 0.0 |
+| MRR | 1.0 |
+| Answer-term coverage | 1.0 |
+
 Category breakdown for the 154-case pass:
 
 | Category | Cases | Hit@K | MRR | Missing terms | Zero-hit queries |
@@ -159,3 +189,5 @@ measured slice, but it is still not equivalent to the MatrixArk/C++-path reader:
   is a dedicated LOCOMO benchmark binary that ingests each conversation once, streams all questions,
   emits per-question miss reports, and optionally runs the same `google/flan-t5-small` reader used
   in the MatrixArk/C++ path.
+- Full LongMemEval_s scoring still needs the real dataset artifact and the same ingest-once/query-many
+  benchmark runner; the converter and smoke path are in place.

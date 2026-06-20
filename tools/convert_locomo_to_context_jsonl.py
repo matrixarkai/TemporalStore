@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Convert LOCOMO-style JSON exports to TemporalStore context benchmark JSONL."""
+"""Convert VikingMem benchmark JSON exports to TemporalStore context JSONL.
+
+Supported input shapes:
+- LOCOMO records with ``conversation.session_N`` and ``qa``.
+- LongMemEval_s records with ``haystack_sessions`` and ``questions``/``qa``.
+"""
 
 from __future__ import annotations
 
@@ -13,10 +18,15 @@ from typing import Any
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Convert LOCOMO JSON into context_workflow_harness JSONL cases."
+        description="Convert LOCOMO or LongMemEval_s JSON into context_workflow_harness JSONL cases."
     )
-    parser.add_argument("input", help="LOCOMO JSON path")
+    parser.add_argument("input", help="LOCOMO or LongMemEval_s JSON path")
     parser.add_argument("output", help="Output JSONL path")
+    parser.add_argument(
+        "--dataset-name",
+        default=None,
+        help="Override output dataset name. Defaults to locomo or longmemeval_s by input shape.",
+    )
     parser.add_argument("--max-questions", type=int, default=None)
     parser.add_argument("--max-conversations", type=int, default=None)
     parser.add_argument(
@@ -50,11 +60,15 @@ def main() -> None:
             conversation_id = clean_id(
                 record.get("sample_id")
                 or record.get("conversation_id")
+                or record.get("question_id")
+                or record.get("sample_idx")
                 or record.get("id")
                 or f"conversation_{record_index + 1}"
             )
-            sources = locomo_sources(record, conversation_id)
-            for question_index, qa in enumerate(record.get("qa") or record.get("questions") or []):
+            dataset_name = args.dataset_name or infer_dataset_name(record)
+            sources = record_sources(record, conversation_id)
+            questions = normalize_questions(record.get("qa") or record.get("questions") or record.get("qas"))
+            for question_index, qa in enumerate(questions):
                 if args.max_questions is not None and written >= args.max_questions:
                     break
                 question = str(qa.get("question") or "").strip()
@@ -66,13 +80,18 @@ def main() -> None:
                 evidence_refs = normalize_evidence_refs(qa.get("evidence"))
                 case_sources = (
                     locomo_evidence_window_sources(sources, evidence_refs, args.evidence_window)
-                    if args.evidence_window is not None
+                    if args.evidence_window is not None and evidence_refs
                     else sources
                 )
                 case = {
-                    "dataset": "locomo",
+                    "dataset": dataset_name,
                     "query_id": f"{conversation_id}-q{question_index + 1}",
-                    "category": normalize_category(qa.get("category")),
+                    "category": normalize_category(
+                        qa.get("category")
+                        or qa.get("question_type")
+                        or qa.get("reasoning_type")
+                        or qa.get("ability")
+                    ),
                     "question": question,
                     "answer_terms": answer_terms,
                     "expected_source_refs": evidence_refs,
@@ -83,6 +102,26 @@ def main() -> None:
         if args.max_questions is not None and written >= args.max_questions:
             pass
     print(f"wrote {written} cases to {out}")
+
+
+def infer_dataset_name(record: dict[str, Any]) -> str:
+    if isinstance(record.get("haystack_sessions"), list):
+        return "longmemeval_s"
+    return "locomo"
+
+
+def normalize_questions(raw: Any) -> list[dict[str, Any]]:
+    if isinstance(raw, list):
+        return [item for item in raw if isinstance(item, dict)]
+    if isinstance(raw, dict):
+        return [raw]
+    return []
+
+
+def record_sources(record: dict[str, Any], conversation_id: str) -> list[dict[str, str]]:
+    if isinstance(record.get("haystack_sessions"), list):
+        return longmemeval_sources(record, conversation_id)
+    return locomo_sources(record, conversation_id)
 
 
 def locomo_sources(record: dict[str, Any], conversation_id: str) -> list[dict[str, str]]:
@@ -123,6 +162,38 @@ def locomo_sources(record: dict[str, Any], conversation_id: str) -> list[dict[st
         sources.extend(locomo_observation_sources(record, conversation_id, session_id, session_key, session_date))
         sources.extend(locomo_event_sources(record, conversation_id, session_id, session_key, session_date))
     return sources
+
+
+def longmemeval_sources(record: dict[str, Any], conversation_id: str) -> list[dict[str, str]]:
+    sessions = record.get("haystack_sessions")
+    if not isinstance(sessions, list):
+        return []
+    session_ids = record.get("haystack_session_ids")
+    dates = record.get("haystack_dates")
+    sources: list[dict[str, str]] = []
+    for session_index, session in enumerate(sessions):
+        session_id = clean_id(
+            list_value(session_ids, session_index) or f"session_{session_index + 1}"
+        )
+        session_date = session_date_text(list_value(dates, session_index))
+        messages = session if isinstance(session, list) else [session]
+        for turn_index, message in enumerate(messages):
+            body = message_text(message)
+            if body:
+                sources.append(
+                    {
+                        "kind": "chat",
+                        "title": f"{conversation_id} {session_id} turn {turn_index + 1}",
+                        "body": f"{session_date}. {body}" if session_date else body,
+                    }
+                )
+    return sources
+
+
+def list_value(raw: Any, index: int) -> Any:
+    if isinstance(raw, list) and index < len(raw):
+        return raw[index]
+    return None
 
 
 def locomo_observation_sources(
