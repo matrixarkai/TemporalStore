@@ -133,6 +133,17 @@ To record the real LongMemEval_s evidence, mount the artifact and rerun the comm
 `--threshold-profile longmemeval_full`. Override `--min-case-count` only if the mounted export has a
 documented scored-question count higher than the profile floor.
 
+Fetch helper:
+
+```bash
+python3 tools/fetch_longmemeval_s.py --output /tmp/longmemeval_s.json
+```
+
+The helper downloads the official LongMemEval_s artifact from Hugging Face when network access is
+available, validates that the JSON contains LongMemEval-shaped records, and atomically installs it
+at the benchmark runner's default path. If network access is blocked, it fails closed with a JSON
+error and leaves any existing artifact untouched.
+
 ## LOCOMO Reader Gap-Fill Validation
 
 Status: `accuracy-improved-threshold-blocked`

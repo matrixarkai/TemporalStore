@@ -4182,6 +4182,7 @@
             "archive_contract": "archive directory contains manifest.json plus one report JSON and misses JSONL per executed dataset; skipped real artifacts are explicit status values, not passing scores.",
             "required_paths": [
               "tools/run_locomo_90_hit_rate.py",
+              "tools/fetch_longmemeval_s.py",
               "tools/run_context_benchmarks_docker_open_model.sh",
               "docker-compose.context-benchmarks.yml",
               "compat/cpp_context_benchmark_report_adapter.h",

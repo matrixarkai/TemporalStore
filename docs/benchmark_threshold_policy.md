@@ -74,6 +74,7 @@ python3 tools/run_longmemeval_s_full_path.py \
 LongMemEval_s production gate, once the real artifact is mounted:
 
 ```bash
+python3 tools/fetch_longmemeval_s.py --output /tmp/longmemeval_s.json
 python3 tools/run_longmemeval_s_full_path.py \
   --threshold-profile longmemeval_full \
   --input /tmp/longmemeval_s.json \

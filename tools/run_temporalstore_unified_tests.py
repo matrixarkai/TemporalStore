@@ -241,6 +241,10 @@ def validate_context_benchmark_step(path: Path, case: dict, step: dict) -> None:
                 f"{location}: full benchmark contract must require "
                 "tools/compare_context_benchmark_archives.py"
             )
+        if "tools/fetch_longmemeval_s.py" not in required_paths:
+            raise SystemExit(
+                f"{location}: full benchmark contract must require tools/fetch_longmemeval_s.py"
+            )
     datasets = command.get("datasets")
     if not isinstance(datasets, list) or not datasets:
         raise SystemExit(f"{location}: benchmark contract must declare datasets")
