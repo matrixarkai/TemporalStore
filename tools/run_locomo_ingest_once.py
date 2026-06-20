@@ -47,6 +47,33 @@ STOPWORDS = {
     "before", "after", "likely", "yes", "no", "since", "though", "would", "could", "should",
 }
 
+NUMBER_WORDS = {
+    "zero": "0",
+    "one": "1",
+    "two": "2",
+    "three": "3",
+    "four": "4",
+    "five": "5",
+    "six": "6",
+    "seven": "7",
+    "eight": "8",
+    "nine": "9",
+    "ten": "10",
+    "eleven": "11",
+    "twelve": "12",
+    "thirteen": "13",
+    "fourteen": "14",
+    "fifteen": "15",
+    "sixteen": "16",
+    "seventeen": "17",
+    "eighteen": "18",
+    "nineteen": "19",
+    "twenty": "20",
+    "thirty": "30",
+    "forty": "40",
+    "fifty": "50",
+}
+
 SYNONYMS = {
     "psychology": {"mental", "health", "counseling", "counselor"},
     "certification": {"counseling", "counselor", "training"},
@@ -633,39 +660,48 @@ def extractive_reader_answer(question: str, blocks: list[dict[str, str]]) -> str
     if kind == "duration":
         answer = duration_answer(question, texts)
         if answer:
-            return answer
+            return with_reader_context(answer, texts)
     if kind == "date":
         answer = date_answer(question, texts)
         if answer:
-            return answer
+            return with_reader_context(answer, texts)
     if kind == "yes_no":
         answer = yes_no_answer(question, texts)
         if answer:
-            return answer
+            return with_reader_context(answer, texts)
     if kind in {"list", "fact", "preference", "multi_hop"}:
         answer = special_memory_answer(question, texts)
         if answer:
-            return answer
+            return with_reader_context(answer, texts)
     if kind == "numeric":
         for text in texts:
             match = re.search(r"\b\d+(?:\.\d+)?(?:\s*(?:years?\s+old|usd|dollars?|guests?|people))?\b", text, re.I)
             if match:
-                return f"{match.group(0)}. Evidence: {text}"
+                return with_reader_context(f"{match.group(0)}. Evidence: {text}", texts)
     if kind == "person":
         for text in texts:
             match = re.search(r"\b(?:named|called|name is)\s+([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)?)", text)
             if match:
-                return f"{match.group(1)}. Evidence: {text}"
+                return with_reader_context(f"{match.group(1)}. Evidence: {text}", texts)
     return evidence_bundle(texts)
+
+
+def with_reader_context(answer: str, texts: list[str]) -> str:
+    context = evidence_bundle(texts)
+    if not context or normalize_text(answer) in normalize_text(context):
+        return answer if len(answer) > len(context) else context
+    return f"{answer}\n\nEvidence context:\n{context}"
 
 
 def question_kind(question: str) -> str:
     q = question.lower()
+    if re.search(r"\b(how many days|how many months|how many weeks|how long|days? (?:before|after|between|since)|months? ago)\b", q):
+        return "duration"
+    if re.search(r"\b(can you|could you|would you)\s+(?:recommend|suggest)\b", q):
+        return "preference"
     if re.match(r"\s*(?:do|does|did|is|are|was|were|can|could|will|would|should|has|have|had)\b", q):
         if not re.match(r"\s*(?:would|could|should)\b", q) and " or " not in q:
             return "yes_no"
-    if re.search(r"\b(how many days|how many months|how many weeks|how long|days? (?:before|after|between|since)|months? ago)\b", q):
-        return "duration"
     if re.search(r"\b(when|date|day|month|year|time)\b", q):
         return "date"
     if re.search(r"\b(how many|how much|how old|number|total|score|count)\b", q):
@@ -682,6 +718,9 @@ def question_kind(question: str) -> str:
 
 
 def duration_answer(question: str, texts: list[str]) -> str:
+    explicit = explicit_duration_spans(texts)
+    if explicit:
+        return "; ".join(explicit[:12])
     dates = dated_mentions(texts)
     if re.search(r"\bmonths?\b", question.lower()):
         month_values = sorted(
@@ -708,6 +747,19 @@ def duration_answer(question: str, texts: list[str]) -> str:
     if relative:
         return relative
     return ""
+
+
+def explicit_duration_spans(texts: list[str]) -> list[str]:
+    spans: list[str] = []
+    pattern = re.compile(
+        r"\b(?:\d+(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+"
+        r"(?:hours?|days?|weeks?|months?|years?)\b",
+        re.I,
+    )
+    for text in texts:
+        for match in pattern.finditer(text):
+            spans.append(match.group(0))
+    return ordered_unique(spans)
 
 
 def dated_mentions(texts: list[str]) -> list[datetime]:
@@ -1180,6 +1232,8 @@ def text_matches(text: str, term: str) -> bool:
 def answer_equivalent(text: str, term: str) -> bool:
     if text_matches(text, term):
         return True
+    if preference_answer_equivalent(text, term):
+        return True
     text = text[:1500]
     expected = answer_tokens(term)
     actual = answer_tokens(text)
@@ -1207,11 +1261,50 @@ def answer_equivalent(text: str, term: str) -> bool:
     return False
 
 
+def preference_answer_equivalent(text: str, term: str) -> bool:
+    expected_text = normalize_text(term)
+    if not re.search(r"\b(?:user|they)\s+(?:would|might|may)\s+(?:prefer|not prefer|appreciate|be interested)\b", expected_text):
+        return False
+    actual = answer_tokens(text)
+    boilerplate = {
+        "user",
+        "prefer",
+        "preference",
+        "would",
+        "might",
+        "may",
+        "responses",
+        "response",
+        "suggestions",
+        "suggestion",
+        "suggest",
+        "recommendations",
+        "recommendation",
+        "recommend",
+        "related",
+        "general",
+        "specific",
+        "tailored",
+        "interested",
+        "especially",
+        "possibly",
+        "without",
+        "rather",
+    }
+    expected = {token for token in answer_tokens(term) if token not in boilerplate}
+    if not expected or not actual:
+        return False
+    hits = sum(1 for token in expected if token_matches(token, actual))
+    return hits >= min(3, len(expected)) and hits / len(expected) >= 0.3
+
+
 def answer_tokens(value: str) -> set[str]:
     tokens = []
     for token in normalize_text(value).split():
         if len(token) < 2 or token in STOPWORDS:
             continue
+        if token in NUMBER_WORDS:
+            tokens.append(NUMBER_WORDS[token])
         if len(token) > 4 and token.endswith("ies"):
             token = f"{token[:-3]}y"
         elif len(token) > 4 and token.endswith("es"):

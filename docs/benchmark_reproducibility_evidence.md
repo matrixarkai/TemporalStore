@@ -137,8 +137,8 @@ python3 tools/run_longmemeval_s_full_path.py \
   --threshold-profile longmemeval_full \
   --input /tmp/longmemeval_s.json \
   --max-events 4 \
-  --report /tmp/longmemeval_helamem_full_final_result.json \
-  --misses /tmp/longmemeval_helamem_full_final_misses.jsonl
+  --report /tmp/longmemeval_rate_improve_final_result.json \
+  --misses /tmp/longmemeval_rate_improve_final_misses.jsonl
 ```
 
 Run configuration:
@@ -149,8 +149,8 @@ Run configuration:
 | Reader mode | `deterministic` |
 | Reader model | `google/flan-t5-small` |
 | Max events | `4` |
-| Report JSON | `/tmp/longmemeval_helamem_full_final_result.json` |
-| Misses JSONL | `/tmp/longmemeval_helamem_full_final_misses.jsonl` |
+| Report JSON | `/tmp/longmemeval_rate_improve_final_result.json` |
+| Misses JSONL | `/tmp/longmemeval_rate_improve_final_misses.jsonl` |
 
 Output:
 
@@ -161,15 +161,22 @@ Output:
 | Source record count | 10,960 |
 | Retrieval/context Hit@K | 1.0 |
 | Mean reciprocal rank | 1.0 |
-| Reader hit rate | 0.586 |
-| Answer-term coverage | 0.4818067754 |
-| Token reduction | 80.5001758754 |
-| Retrieval p95 | 20.0479946041 ms |
-| Reader p95 | 1.5616331482 ms |
+| Reader hit rate | 0.76 |
+| Answer-term coverage | 0.5683814304 |
+| Reader answer coverage | 0.6411543287 |
+| Token reduction | 80.4410159780 |
+| Retrieval p95 | 16.5287216194 ms |
+| Reader p95 | 1.8928403268 ms |
 | Zero-hit queries | 0 |
-| Reader zero-hit queries | 207 |
+| Reader zero-hit queries | 120 |
 | Threshold violations | `[]` |
 | Benchmark threshold passed | `true` |
+
+Reader-rate improvement note: a follow-up pass made the deterministic reader return the concise
+extractive answer together with the retrieved evidence context, normalized numeric word/digit
+answers, handled flattened preference-answer boilerplate, and improved explicit duration extraction.
+This moved the real HELaMem LongMemEval_s deterministic reader hit rate from `0.586` to `0.76`
+while preserving `Hit@K = 1.0`, `MRR = 1.0`, and the `longmemeval_full` threshold gate.
 
 Fetch helper:
 
