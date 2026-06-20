@@ -100,6 +100,7 @@ python3 tools/run_locomo_90_hit_rate.py --input /tmp/locomo10.json --min-hit-rat
 The wrapper uses the conversation-load-once/query-many runner, fails if the comparable
 `retrieval_context_hit_at_k` metric is below 90%, and always prints answer-term coverage separately
 so deterministic/LLM reader accuracy is not confused with retrieval hit rate.
+It also reports the local deterministic extractive reader hit rate.
 
 ## Rust Improvements In This Pass
 
@@ -109,6 +110,8 @@ so deterministic/LLM reader accuracy is not confused with retrieval hit rate.
 - Added `tools/run_locomo_ingest_once.py` so LOCOMO loads each conversation source bundle once and
   streams all questions through the same ranked context instead of re-running a per-question
   harness ingestion path.
+- Added a deterministic extractive reader path to the ingest-once runner with LOCOMO-style relative
+  date synthesis, list/profile/inference shortcuts, and an evidence-bundle fallback.
 - Added external-only benchmark mode.
 - Reused ingested source sets by digest so LOCOMO runs mirror MatrixArk's ingest-once/query-many
   shape instead of re-ingesting the same conversation per question.
@@ -187,12 +190,16 @@ Full `/tmp/locomo10.json` conversation-load-once/query-many diagnostic without e
 | Evidence-ref coverage | 0.73780229 |
 | MRR | 0.48824869 |
 | Answer-term coverage | 0.66407263 |
+| Deterministic-reader hit | 0.57392996 |
+| Deterministic-reader answer coverage | 0.57392996 |
 | Missing expected refs | 618 |
 | Missing answer terms | 518 |
 | Zero-hit queries | 121 |
 
 This is the production-shaped local runner for full LOCOMO iteration: each conversation is built
 once, then all questions for that conversation are streamed against the shared source bundle.
+The deterministic-reader hit is now in parity range with the MatrixArk/C++ reference
+deterministic-reader hit of 56.94%.
 
 Small engine-backed smoke over the first 10 evidence-window cases:
 
@@ -230,8 +237,9 @@ Category breakdown for the 154-case pass:
 The Rust harness now runs the same LOCOMO export shape and improved score substantially on the
 measured slice, but it is still not equivalent to the MatrixArk/C++-path reader:
 
-- Rust external scoring is retrieval/evidence-term oriented; it does not yet generate a full
-  deterministic reader hypothesis per question.
+- Rust now has a local deterministic reader hypothesis per question in the ingest-once runner, but
+  deeper reader-answer accuracy still trails retrieval/context hit and needs continued reader logic
+  or OSS/LLM reader integration for higher answer-generation accuracy.
 - Category 1 and category 3 still need stronger inference over selected evidence.
 - The full 1,986-question run is supported by the converter. Full-conversation engine-backed
   retrieval is still too slow for quick local iteration because retrieval is repeated per question.

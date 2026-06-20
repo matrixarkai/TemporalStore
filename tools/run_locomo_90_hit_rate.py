@@ -66,6 +66,8 @@ def main() -> int:
     hit_rate = float(report.get("hit_rate") or 0.0)
     answer_coverage = float(report.get("answer_term_coverage") or 0.0)
     evidence_coverage = float(report.get("evidence_ref_coverage") or 0.0)
+    reader_hit_rate = float(report.get("deterministic_reader_hit_rate") or 0.0)
+    reader_answer_coverage = float(report.get("deterministic_reader_answer_coverage") or 0.0)
     case_count = int(report.get("case_count") or 0)
     print(
         json.dumps(
@@ -78,6 +80,8 @@ def main() -> int:
                 "passed": hit_rate >= args.min_hit_rate,
                 "evidence_ref_coverage": evidence_coverage,
                 "answer_term_coverage": answer_coverage,
+                "deterministic_reader_hit_rate": reader_hit_rate,
+                "deterministic_reader_answer_coverage": reader_answer_coverage,
                 "answer_reader_gap_visible": answer_coverage < args.min_hit_rate,
                 "report": str(report_path),
                 "misses": args.misses,
