@@ -147,3 +147,15 @@ Manifest phase:
 
 No LOCOMO or LongMemEval_s open-model score is claimed from this validation because
 the reader image could not be pulled in the local environment.
+
+Follow-up validation on 2026-06-20 retried:
+
+```bash
+docker pull ollama/ollama:0.3.14
+```
+
+The pull still failed with a Docker Hub manifest request timeout. The local
+`temporalstore-context-oss:local` image was inspected and does not expose an
+OpenAI-compatible model server; it is a repo/context fixture image. Therefore the
+live OSS-reader benchmark gap remains open until an Ollama/vLLM/OpenAI-compatible
+reader image or endpoint is reachable locally.

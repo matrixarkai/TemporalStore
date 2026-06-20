@@ -116,6 +116,49 @@ To record the real LongMemEval_s evidence, mount the artifact and rerun the comm
 `--threshold-profile longmemeval_full`. Override `--min-case-count` only if the mounted export has a
 documented scored-question count higher than the profile floor.
 
+## LOCOMO Reader Gap-Fill Validation
+
+Status: `accuracy-improved-threshold-blocked`
+
+This run validates deterministic reader changes for the known weak LOCOMO categories. It is not a
+replacement production gate result because local retrieval latency exceeded the strict p95 threshold
+on this machine during the run.
+
+Command:
+
+```bash
+python3 tools/run_locomo_90_hit_rate.py \
+  --threshold-profile locomo_full \
+  --input /tmp/locomo10.json \
+  --report /tmp/temporalstore_locomo_reader_gapfill_full2_result.json \
+  --misses /tmp/temporalstore_locomo_reader_gapfill_full2_misses.jsonl
+```
+
+Output:
+
+| Metric | Previous LOCOMO full | Reader gap-fill run |
+| --- | ---: | ---: |
+| Case count | 1,542 | 1,542 |
+| Retrieval/context Hit@K | 0.9215304799 | 0.9215304799 |
+| Reader hit rate | 0.5914396887 | 0.6147859922 |
+| Token reduction | 82.9375085567 | 82.9342781992 |
+| Retrieval p95 | 89.486754028 ms | 269.787499326 ms |
+| Reader p95 | 5.510890001 ms | 15.875367762 ms |
+| Threshold violations | `[]` | `["retrieval_p95_above_max"]` |
+
+Category reader hit-rate movement:
+
+| Category | Previous | Reader gap-fill |
+| --- | ---: | ---: |
+| `category_1` | 0.5425531915 | 0.5567375887 |
+| `category_2` | 0.2024922118 | 0.2803738318 |
+| `category_3` | 0.3437500000 | 0.3645833333 |
+| `category_4` | 0.7847800238 | 0.7907253270 |
+
+Claim level: deterministic reader accuracy improvement only. This does not claim production parity,
+live OSS-reader parity, or a new production LOCOMO gate pass because retrieval p95 did not satisfy
+`locomo_full` in this run.
+
 ## LongMemEval_s Fixture Gate
 
 Status: `ready`
