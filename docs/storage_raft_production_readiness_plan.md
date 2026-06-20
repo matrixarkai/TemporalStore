@@ -183,6 +183,29 @@ harness evidence:
   admission tuning, and long-running pressure validation evidence are covered.
 - ByteStore/S3 live backend integration tied to follower cursors and Raft snapshots.
 
+The local gate now writes one combined proof envelope:
+
+```text
+<artifact-dir>/storage-raft-production-proof.json
+```
+
+The proof format is `temporalstore_storage_raft_production_proof_v1` and combines:
+
+- `storage-fault-matrix.json` for corrupt, missing, stale, and partial dump/load faults
+- `storage-production.json` for C++ migration corpus replay through restart, Redis/admin,
+  shared-store sync/async, cache warmup, and Raft read paths
+- `storage-modes.json` for local file/shared-store and local WAL restore evidence
+- `raft-distributed-parity.json` for data-node plus metaserver OpenRaft rollout evidence,
+  membership, snapshots, failover, follower lag, and secondary reads
+- `external-chaos.json` for local packet-loss/disk-pressure/process-chaos slice evidence
+- `raft-readiness.json` for remaining global production blockers
+
+`local_production_ready_slice=true` means the local/shared-store storage plus Raft plus cache
+pressure proof passed in one artifact set. `global_production_ready` remains false until the
+broader deployment evidence is present, including Docker/AWS multi-service SLO evidence and any
+explicitly scoped live external object-store integration. Storage compatibility remains
+behavioral/migration-based into Rust-native page/log formats, not byte-for-byte C++ layout.
+
 ## Local Commands
 
 Fast static validation:
@@ -190,6 +213,7 @@ Fast static validation:
 ```bash
 python3 tools/validate_storage_raft_production_plan.py
 python3 tools/validate_raft_storage_parity_evidence.py
+python3 tools/build_storage_raft_production_proof.py --artifact-dir <artifact-dir>
 ```
 
 Full local storage/Raft production-readiness gate:

@@ -14,7 +14,7 @@ if [[ -n "${TS_CPP_REPO:-}" ]]; then
   RAFT_CPP_EVIDENCE_ARGS+=(--cpp-repo "${TS_CPP_REPO}")
 fi
 
-echo "== 1/7 storage recovery/fault matrix hardening =="
+echo "== 1/8 storage recovery/fault matrix hardening =="
 timeout "${TIMEOUT}" cargo run -p temporalstore-rust --bin storage_fault_matrix_harness -- \
   --root "${ARTIFACT_DIR}/storage-fault-matrix" \
   > "${ARTIFACT_DIR}/storage-fault-matrix.json"
@@ -22,7 +22,7 @@ python3 tools/validate_aws_validation_log.py \
   --job temporalstore-storage-fault-matrix-validation \
   --log "${ARTIFACT_DIR}/storage-fault-matrix.json"
 
-echo "== 2/7 slot dump/load atomicity and manifest rejection =="
+echo "== 2/8 slot dump/load atomicity and manifest rejection =="
 timeout "${TIMEOUT}" cargo run -p temporalstore-rust --bin storage_production_harness -- \
   --root "${ARTIFACT_DIR}/storage-production" \
   > "${ARTIFACT_DIR}/storage-production.json"
@@ -120,6 +120,10 @@ print(
     f"scenarios={report['scenario_count']} passed={report['passed_count']}"
 )
 PY
+
+python3 tools/build_storage_raft_production_proof.py \
+  --artifact-dir "${ARTIFACT_DIR}" \
+  --output "${ARTIFACT_DIR}/storage-raft-production-proof.json"
 
 echo "== 8/8 unified corpus and readiness docs =="
 python3 tools/run_temporalstore_unified_tests.py --validate-only
