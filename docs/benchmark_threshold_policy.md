@@ -68,3 +68,6 @@ Explicit threshold flags override profile defaults. Use overrides only when the
 artifact contract changes, and record the reason in the reproducibility evidence
 doc with the command, input hash, case count, model mode, reader mode, thresholds,
 and report path.
+
+The Docker/open-model runner for `oss_reader_full` is documented in
+[context_benchmarks_docker_open_model.md](context_benchmarks_docker_open_model.md).

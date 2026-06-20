@@ -13,3 +13,4 @@ bytestorelab-master/
 *.png
 crates/*/shard-*.index.json
 __pycache__/
+benchmark_reports/

@@ -1,0 +1,32 @@
+services:
+  open-reader:
+    image: "${TEMPORALSTORE_READER_IMAGE:-ollama/ollama:0.3.14}"
+    ports:
+      - "${TEMPORALSTORE_READER_PORT:-11434}:11434"
+    volumes:
+      - temporalstore-ollama:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  benchmark-runner:
+    image: python:3.11-slim
+    working_dir: /workspace
+    environment:
+      TEMPORALSTORE_READER_BASE_URL: "http://open-reader:11434/v1"
+      TEMPORALSTORE_READER_MODEL: "${TEMPORALSTORE_READER_MODEL:-qwen2.5:0.5b}"
+    volumes:
+      - .:/workspace:ro
+      - "${TEMPORALSTORE_BENCHMARK_INPUT_DIR:-/tmp}:/bench-input:ro"
+      - "${TEMPORALSTORE_BENCHMARK_REPORT_DIR:-./benchmark_reports}:/bench-output"
+    depends_on:
+      open-reader:
+        condition: service_healthy
+    profiles:
+      - runner
+    command: ["python3", "--version"]
+
+volumes:
+  temporalstore-ollama:

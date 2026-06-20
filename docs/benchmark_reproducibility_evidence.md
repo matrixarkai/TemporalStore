@@ -10,6 +10,8 @@ LongMemEval_s scores.
 
 Threshold policy is defined in [benchmark_threshold_policy.md](benchmark_threshold_policy.md).
 Fixture gates and full-dataset production gates intentionally use different profiles.
+The packaged Docker/open-model path is documented in
+[context_benchmarks_docker_open_model.md](context_benchmarks_docker_open_model.md).
 
 ## LOCOMO Full Dataset
 
