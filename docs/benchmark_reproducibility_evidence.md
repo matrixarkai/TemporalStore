@@ -1,8 +1,8 @@
 # Benchmark Reproducibility Evidence
 
-Validation time: 2026-06-20T23:25:00Z
+Validation time: 2026-06-20T21:38:18Z
 
-Runner revision: query-aware compact evidence diversity update in this commit
+Runner revision: exact OSS reader endpoint runner update in this commit
 
 This page records benchmark evidence from the checked-in TemporalStore runners. It separates real
 dataset scores from fixture gates so fixture results are not presented as paper-equivalent LOCOMO or
@@ -17,6 +17,60 @@ Claim level: LOCOMO deterministic full-dataset gate evidence plus LongMemEval_s 
 full-dataset gate evidence from a real LongMemEval_s artifact. This page does not claim production
 parity for the live OSS reader path because open-source reader calls have not passed the
 full-dataset thresholds in this evidence set.
+
+## C++/OpenViking OSS Reader Gap
+
+Status: `blocked_missing_reader_endpoint`
+
+The exact C++/MatrixArk/OpenViking reader path is now packaged as a fail-closed endpoint runner:
+
+```bash
+TEMPORALSTORE_READER_BASE_URL=http://127.0.0.1:8000/v1 \
+TEMPORALSTORE_READER_PROVIDER_NAME=matrixark-cpp-oss-context \
+TEMPORALSTORE_READER_MODEL=google/flan-t5-small \
+TEMPORALSTORE_LOCOMO_INPUT=/tmp/locomo10.json \
+TEMPORALSTORE_LONGMEMEVAL_INPUT=/tmp/longmemeval_s.json \
+bash tools/run_context_benchmarks_oss_reader_endpoint.sh
+```
+
+Local validation on 2026-06-20 found both real dataset artifacts mounted:
+
+| Artifact | Path | Present |
+| --- | --- | --- |
+| LOCOMO | `/tmp/locomo10.json` | yes |
+| LongMemEval_s | `/tmp/longmemeval_s.json` | yes |
+
+The usual local OpenAI-compatible endpoint probes were not reachable:
+
+| Endpoint | Probe result |
+| --- | --- |
+| `http://127.0.0.1:8000/v1/models` | connection refused |
+| `http://127.0.0.1:11434/v1/models` | connection refused |
+| `http://127.0.0.1:8080/v1/models` | connection refused |
+
+Fail-closed runner validation:
+
+```bash
+TEMPORALSTORE_BENCHMARK_REPORT_DIR=/tmp/temporalstore_oss_reader_endpoint_validation \
+bash tools/run_context_benchmarks_oss_reader_endpoint.sh
+```
+
+Manifest:
+
+```json
+{
+  "phase": "missing_reader_base_url",
+  "reader_provider_name": "matrixark-cpp-oss-context",
+  "reader_model": "google/flan-t5-small",
+  "locomo_status": "not_run",
+  "longmemeval_status": "not_run",
+  "claim_level": "live_oss_reader_required"
+}
+```
+
+No live OSS-reader score is claimed from this pass. A VikingMem/OpenViking parity score requires a
+reachable OpenAI-compatible endpoint serving the same model profile and a report with
+`reader_open_source_calls > 0`, no deterministic fallback, and zero threshold violations.
 
 ## LOCOMO Full Dataset
 

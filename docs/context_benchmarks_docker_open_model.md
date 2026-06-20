@@ -40,6 +40,29 @@ TEMPORALSTORE_READER_MODEL=llama3.2:1b \
 bash tools/run_context_benchmarks_docker_open_model.sh
 ```
 
+## Exact C++/OpenViking OSS Reader Endpoint
+
+The Docker/Ollama path above is useful when the chosen model is available in
+Ollama. The C++/MatrixArk/OpenViking benchmark path uses the
+`matrixark-cpp-oss-context` profile with `google/flan-t5-small`. Run that exact
+reader/model through an already-started OpenAI-compatible endpoint with:
+
+```bash
+TEMPORALSTORE_READER_BASE_URL=http://127.0.0.1:8000/v1 \
+TEMPORALSTORE_READER_PROVIDER_NAME=matrixark-cpp-oss-context \
+TEMPORALSTORE_READER_MODEL=google/flan-t5-small \
+TEMPORALSTORE_LOCOMO_INPUT=/tmp/locomo10.json \
+TEMPORALSTORE_LONGMEMEVAL_INPUT=/tmp/longmemeval_s.json \
+bash tools/run_context_benchmarks_oss_reader_endpoint.sh
+```
+
+This runner is fail-closed: it exits non-zero when the endpoint is missing, no
+dataset artifact is present, the reader falls back to deterministic mode, or the
+benchmark thresholds fail. It writes an archive under
+`benchmark_reports/oss_reader_endpoint_<timestamp>/` with `manifest.json`,
+`locomo_report.json`, and `longmemeval_s_report.json` when the corresponding
+datasets are present.
+
 To use a local registry mirror or a pre-pulled compatible image:
 
 ```bash
