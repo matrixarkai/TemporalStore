@@ -22,6 +22,8 @@ REQUIRED_SCRIPT_SNIPPETS = (
     "raft_secondary_replication_harness",
     "build_raft_distributed_parity_summary.py",
     "raft-distributed-parity-validation",
+    "run_cpp_raft_cases_on_rust.py",
+    "cpp-raft-cases-on-rust.json",
     "build_storage_raft_production_proof.py",
     "storage-raft-production-proof.json",
     "external_chaos_gate",
@@ -65,6 +67,8 @@ REQUIRED_DOC_SNIPPETS = (
     "Raft snapshot/restart/failover harness",
     "Combined storage+Raft production harness",
     "storage-raft-production-proof.json",
+    "cpp-raft-cases-on-rust.json",
+    "C++ Raft scenario comparison",
     "Update unified C++/Rust corpus and readiness docs",
     "scale_slo_report.storage_deployment_scale_slo_ready",
 )

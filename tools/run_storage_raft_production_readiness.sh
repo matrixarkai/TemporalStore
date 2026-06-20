@@ -105,6 +105,12 @@ python3 tools/validate_aws_validation_log.py \
   --job temporalstore-raft-distributed-parity-validation \
   --log "${ARTIFACT_DIR}/raft-distributed-parity.json"
 
+python3 tools/run_cpp_raft_cases_on_rust.py \
+  --validate-only \
+  --artifact-dir "${ARTIFACT_DIR}" \
+  "${RAFT_CPP_EVIDENCE_ARGS[@]}"
+test -s "${ARTIFACT_DIR}/cpp-raft-cases-on-rust.json"
+
 echo "== 7/8 combined storage plus raft production harness =="
 timeout "${TIMEOUT}" cargo run -p temporalstore-rust --bin external_chaos_gate -- \
   --root "${ARTIFACT_DIR}/external-chaos" \

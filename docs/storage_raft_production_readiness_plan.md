@@ -44,6 +44,9 @@ external distributed fault validation.
 - Runs `metaserver_raft_harness`.
 - Runs `raft_secondary_replication_harness`.
 - Builds and validates `raft-distributed-parity.json` from those three harness outputs.
+- Builds `cpp-raft-cases-on-rust.json` from the unified C++ Raft corpus so the final proof compares
+  Rust harness evidence against the C++ scenario names for leader election, failover, snapshot
+  install/restart, membership add/promote/remove, follower lag, and secondary reads.
 - Validates proposal, follower write rejection, leader transfer, data-node and metaserver
      membership change, metaserver snapshot restore plus lagging-voter tail catch-up, external
      snapshot bootstrap/read, secondary restart catch-up, partition heal, follower lag/catch-up,
@@ -197,6 +200,8 @@ The proof format is `temporalstore_storage_raft_production_proof_v1` and combine
 - `storage-modes.json` for local file/shared-store and local WAL restore evidence
 - `raft-distributed-parity.json` for data-node plus metaserver OpenRaft rollout evidence,
   membership, snapshots, failover, follower lag, and secondary reads
+- `cpp-raft-cases-on-rust.json` for C++ Raft scenario comparison against the Rust data-node and
+  metaserver harness evidence
 - `external-chaos.json` for local packet-loss/disk-pressure/process-chaos slice evidence
 - `raft-readiness.json` for remaining global production blockers
 
@@ -205,6 +210,16 @@ pressure proof passed in one artifact set. `global_production_ready` remains fal
 broader deployment evidence is present, including Docker/AWS multi-service SLO evidence and any
 explicitly scoped live external object-store integration. Storage compatibility remains
 behavioral/migration-based into Rust-native page/log formats, not byte-for-byte C++ layout.
+
+The proof contains two parity-focused subreports:
+
+- `evidence.cpp_raft_scenario_comparison` requires shared C++ Raft cases for election, failover,
+  snapshot, membership, follower lag, and secondary reads, then maps each scenario to concrete Rust
+  OpenRaft harness fields. Local Raft fixtures are marked test-only through
+  `evidence.local_raft_fixture_policy`; they cannot satisfy production readiness.
+- `evidence.unified_storage_recovery_dump_load_cache_gc` ties storage recovery, dump/load,
+  cache-pressure/refill, follower-safe GC/shared-store replay, and C++ migration-corpus evidence
+  into the same readiness envelope.
 
 ## Local Commands
 
