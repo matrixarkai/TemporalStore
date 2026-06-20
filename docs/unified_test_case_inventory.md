@@ -11,13 +11,13 @@ compat/unified_temporalstore_cases.json
 Current inventory:
 
 ```text
-total cases: 77
-total steps: 164
+total cases: 79
+total steps: 166
 executable shared behavior cases: 26
 executable shared behavior steps: 106
 C++ existing-test parity surface cases: 50
 C++ existing-test parity surface steps: 57
-C++ required source/test/harness paths: 131 unique paths plus 60 Raft path references
+C++ required source/test/harness paths: 133 unique paths plus 60 Raft path references
 required command kinds: 59
 required response kinds: 19
 ```
@@ -133,6 +133,8 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `context_management_ingest_retrieve_pipeline` | Rust-executable/C++-static gate for Context management, ingest/extract, retrieval handoff, provider routing, and OpenViking-style block construction. |
 | `context_retrieval_qa_synonym_ranking` | Rust-executable/C++-static gate for Context QA retrieval synonym and adjacent-phrase ranking. |
 | `context_openviking_reasoning_vlm_parity` | Rust-executable/C++-static gate for OpenViking/VikingMem-style multi-hop, temporal, update, stale-memory, open-domain, and VLM context evidence. |
+| `context_openviking_blocks_provider_switches` | Rust-executable/C++-static gate for OpenViking-style context blocks and open-source text/VLM provider switching. |
+| `context_injection_prompt_pack_ordering` | Rust-executable/C++-static gate for prompt-pack ordering and selected-ref audit ordering. |
 | `context_benchmark_fixture_gates` | Shared C++/Rust benchmark contract for LOCOMO-style and LongMemEval_s fixture gates using MatrixArk/VikingMem report fields. |
 | `context_benchmark_full_dataset_gates` | Shared C++/Rust benchmark contract for LOCOMO, LongMemEval_s, and Docker/open-model full-dataset gates with explicit threshold profiles and archive reports. |
 
@@ -194,11 +196,11 @@ the shared report contract and compares summary plus per-query rows by `query_id
 Yes. Current Rust-local attributed test count is:
 
 ```text
-Rust attributed tests: 543
-shared-corpus marked Rust tests: 14
-shared corpus cases: 77
-shared corpus steps: 164
-C++ existing-test surfaces: 127
+Rust attributed tests: 546
+shared-corpus marked Rust tests: 17
+shared corpus cases: 79
+shared corpus steps: 166
+C++ existing-test surfaces: 133
 ```
 
 The detailed reduction split and new-test guard live in

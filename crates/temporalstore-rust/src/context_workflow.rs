@@ -3796,6 +3796,179 @@ mod tests {
         assert!(!state.vlm_benchmark_proven);
     }
 
+    // shared-corpus: context_openviking_blocks_provider_switches
+    #[test]
+    fn context_openviking_blocks_and_provider_model_switches_are_reported() {
+        let engine = test_engine();
+        let open_source_text_provider = ContextModelProviderConfig {
+            provider_name: "matrixark-cpp-oss-context".to_string(),
+            provider_kind: ContextProviderKind::OpenAiCompatible,
+            base_url: "http://127.0.0.1:8000/v1".to_string(),
+            model: "google/flan-t5-small".to_string(),
+            embedding_model: "sentence-transformers/all-MiniLM-L6-v2".to_string(),
+            vlm_model: "none".to_string(),
+            mock_mode: true,
+            ..ContextModelProviderConfig::default()
+        };
+        let openviking_vlm_provider = ContextModelProviderConfig {
+            provider_name: "openviking-minigpt4-gpt-style-vlm".to_string(),
+            provider_kind: ContextProviderKind::OpenAiCompatible,
+            base_url: "http://127.0.0.1:8000/v1".to_string(),
+            model: "lmsys/vicuna-7b-v1.5".to_string(),
+            embedding_model: "BAAI/bge-m3".to_string(),
+            vlm_model: "Vision-CAIR/MiniGPT-4".to_string(),
+            mock_mode: true,
+            ..ContextModelProviderConfig::default()
+        };
+        let ingest = ingest_extract_context(
+            &engine,
+            ContextIngestExtractRequest {
+                shard_id: 1,
+                tenant_hash: 20260620,
+                sources: vec![
+                    ContextExtractRequest {
+                        shard_id: 0,
+                        tenant_hash: 0,
+                        source_kind: ContextSourceKind::Chat,
+                        source_id: "open-text-memory".to_string(),
+                        title: "Text memory".to_string(),
+                        body: "Open-source text reader memory: Dana suggested the observability dashboard for Lee.".to_string(),
+                        timestamp_ms: 1_000,
+                        provider: open_source_text_provider.clone(),
+                    },
+                    ContextExtractRequest {
+                        shard_id: 0,
+                        tenant_hash: 0,
+                        source_kind: ContextSourceKind::Document,
+                        source_id: "vlm-receipt-memory".to_string(),
+                        title: "Receipt image memory".to_string(),
+                        body: "OpenViking VLM memory: receipt image shows Northstar Cafe total $18.40.".to_string(),
+                        timestamp_ms: 2_000,
+                        provider: openviking_vlm_provider.clone(),
+                    },
+                ],
+                query: "Which project did Dana suggest and what receipt total did the VLM see?"
+                    .to_string(),
+                start_time_ms: 0,
+                end_time_ms: 3_000,
+                max_events: 8,
+                provider: ContextModelProviderConfig::default(),
+            },
+        );
+        assert!(ingest.status.ok, "{:?}", ingest.status);
+        assert_eq!(ingest.accepted, 2);
+        assert_eq!(
+            ingest
+                .summary
+                .provider_counts
+                .get("matrixark-cpp-oss-context"),
+            Some(&1)
+        );
+        assert_eq!(
+            ingest
+                .summary
+                .provider_counts
+                .get("openviking-minigpt4-gpt-style-vlm"),
+            Some(&1)
+        );
+        assert!(ingest
+            .extracts
+            .iter()
+            .any(|extract| extract.provider.model == "google/flan-t5-small"
+                && extract.provider.embedding_model == "sentence-transformers/all-MiniLM-L6-v2"));
+        assert!(ingest.extracts.iter().any(|extract| {
+            extract.provider.vlm_model == "Vision-CAIR/MiniGPT-4"
+                && extract.provider.embedding_model == "BAAI/bge-m3"
+        }));
+
+        let retrieve = retrieve_context(&engine, ingest.retrieve_request);
+        assert!(retrieve.status.ok, "{:?}", retrieve.status);
+        assert!(retrieve.blocks.iter().any(|block| {
+            block.tier == ContextTier::L2 && block.text.contains("observability dashboard")
+        }));
+        assert!(retrieve.blocks.iter().any(|block| {
+            block.tier == ContextTier::L2 && block.text.contains("Northstar Cafe")
+        }));
+    }
+
+    // shared-corpus: context_injection_prompt_pack_ordering
+    #[test]
+    fn context_injection_prompt_pack_preserves_retrieved_evidence_ordering() {
+        let engine = test_engine();
+        let stale = extract_context(
+            &engine,
+            ContextExtractRequest {
+                shard_id: 1,
+                tenant_hash: 20260621,
+                source_kind: ContextSourceKind::Chat,
+                source_id: "pet-stale".to_string(),
+                title: "Old pet note".to_string(),
+                body: "Old profile note: the family dog was called Pepper in a previous home."
+                    .to_string(),
+                timestamp_ms: 1_000,
+                provider: ContextModelProviderConfig::default(),
+            },
+        );
+        let current = extract_context(
+            &engine,
+            ContextExtractRequest {
+                shard_id: 1,
+                tenant_hash: 20260621,
+                source_kind: ContextSourceKind::UserEvent,
+                source_id: "pet-current".to_string(),
+                title: "Latest pet note".to_string(),
+                body: "Latest pet update: the newly adopted dog is named Miso and needs evening walks."
+                    .to_string(),
+                timestamp_ms: 2_000,
+                provider: ContextModelProviderConfig::default(),
+            },
+        );
+        assert!(stale.status.ok);
+        assert!(current.status.ok);
+        let retrieve = ContextRetrieveRequest {
+            shard_id: 1,
+            tenant_hash: 20260621,
+            node_hashes: vec![stale.node.node_hash, current.node.node_hash],
+            query: "What is the dog's name in the latest pet update?".to_string(),
+            start_time_ms: 0,
+            end_time_ms: 3_000,
+            max_events: 8,
+            min_confidence: 0.0,
+            min_importance: 0.0,
+            tiers: vec![ContextTier::L2],
+        };
+        let retrieved = retrieve_context(&engine, retrieve.clone());
+        assert!(retrieved.status.ok, "{:?}", retrieved.status);
+        assert!(retrieved.blocks.len() >= 2);
+        assert!(retrieved.blocks[0].text.contains("Miso"));
+        assert!(retrieved.blocks[1].text.contains("Pepper"));
+
+        let inject = inject_context(
+            &engine,
+            ContextInjectRequest {
+                retrieve,
+                prompt: "Answer from current memory only.".to_string(),
+                session_hash: 99,
+                query_id: "pet-current-pack".to_string(),
+                max_prompt_tokens: 128,
+                provider: ContextModelProviderConfig::default(),
+            },
+        );
+        assert!(inject.status.ok, "{:?}", inject.status);
+        assert!(inject.injected_prompt.contains("<context>"));
+        let miso_pos = inject
+            .injected_prompt
+            .find("Miso")
+            .expect("current evidence should be injected");
+        let pepper_pos = inject
+            .injected_prompt
+            .find("Pepper")
+            .expect("stale evidence should still be available after current evidence");
+        assert!(miso_pos < pepper_pos);
+        assert_eq!(inject.audit.selected_refs[0].event_time_ms, 2_000);
+        assert_eq!(inject.audit.selected_refs[1].event_time_ms, 1_000);
+    }
+
     // shared-corpus: context_openviking_reasoning_vlm_parity
     #[test]
     fn context_openviking_reasoning_vlm_cases_cover_required_gaps() {

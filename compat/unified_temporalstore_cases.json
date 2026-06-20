@@ -78,6 +78,8 @@
       "ingestion_restart_idempotence",
       "context_retrieval_qa_synonym_ranking",
       "context_openviking_reasoning_vlm_parity",
+      "context_openviking_blocks_provider_switches",
+      "context_injection_prompt_pack_ordering",
       "context_benchmark_fixture_gates",
       "context_benchmark_full_dataset_gates"
     ],
@@ -3993,6 +3995,46 @@
       ]
     },
     {
+      "name": "context_openviking_blocks_provider_switches",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "context_openviking_blocks_provider_switches_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_context_pipeline_parity",
+            "mode": "rust_executable_cxx_static",
+            "description": "Shared C++/Rust Context case for OpenViking-style L2 context blocks, open-source text reader profile switching, VLM provider switching, and provider/model accounting in ingest/extract summaries.",
+            "required_paths": [
+              "docs/context_provider_model_switch_contract.md"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust context_openviking_blocks_and_provider_model_switches_are_reported --lib -- --test-threads=1",
+            "rust_validator": "tools/run_context_workflow_local.sh"
+          }
+        }
+      ]
+    },
+    {
+      "name": "context_injection_prompt_pack_ordering",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "context_injection_prompt_pack_ordering_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_context_pipeline_parity",
+            "mode": "rust_executable_cxx_static",
+            "description": "Shared C++/Rust Context case for retrieved evidence ordering and prompt-pack injection: current/high-relevance evidence must appear before stale conflicting evidence and audit selected refs must preserve that order.",
+            "required_paths": [
+              "docs/context_injection_prompt_pack_contract.md"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust context_injection_prompt_pack_preserves_retrieved_evidence_ordering --lib -- --test-threads=1",
+            "rust_validator": "tools/run_context_workflow_local.sh"
+          }
+        }
+      ]
+    },
+    {
       "name": "context_benchmark_fixture_gates",
       "shard_id": 1,
       "steps": [
@@ -4020,6 +4062,10 @@
                 "benchmark_threshold_violations",
                 "benchmark_thresholds",
                 "benchmark_per_query_count",
+                "category_breakdown",
+                "weak_category_count",
+                "weak_categories",
+                "weak_category_policy",
                 "case_count",
                 "hit_rate",
                 "reader_hit_rate",
@@ -4104,6 +4150,10 @@
                 "benchmark_threshold_violations",
                 "benchmark_thresholds",
                 "benchmark_per_query_count",
+                "category_breakdown",
+                "weak_category_count",
+                "weak_categories",
+                "weak_category_policy",
                 "case_count",
                 "hit_rate",
                 "reader_hit_rate",

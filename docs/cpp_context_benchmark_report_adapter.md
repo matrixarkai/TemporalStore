@@ -46,6 +46,9 @@ The header is a single-file C++17 adapter template using `nlohmann::json`. It de
 | `reader_model` | Reader model identifier. |
 | `benchmark_thresholds` | The selected shared threshold profile values. |
 | `benchmark_threshold_violations` | Exact threshold failure strings. |
+| `category_breakdown` | Per reasoning-category case count, Hit@K, MRR, reader hit rate, answer coverage, and zero-hit count. |
+| `weak_categories` | Categories below the shared threshold policy, each with explicit reasons. |
+| `weak_category_policy` | The category-level threshold values used to classify weak categories. |
 | `benchmark_per_query` | One row per scored query, keyed by `query_id`. |
 
 Each `benchmark_per_query` row must include:
@@ -94,6 +97,7 @@ The comparator checks:
 
 - all required report fields from the shared corpus
 - threshold object keys and values
+- per-category Hit@K, MRR, reader fields, answer coverage, and weak-category diagnostics
 - summary fields: Hit@K, recall, MRR, token reduction, reader hit rate, threshold violations
 - per-query `query_id` coverage
 - per-query hit, reader-hit, rank, category, token counts, and token reduction

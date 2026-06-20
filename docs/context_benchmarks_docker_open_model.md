@@ -160,6 +160,15 @@ OpenAI-compatible model server; it is a repo/context fixture image. Therefore th
 live OSS-reader benchmark gap remains open until an Ollama/vLLM/OpenAI-compatible
 reader image or endpoint is reachable locally.
 
+Follow-up validation retried the text-reader image pull:
+
+```bash
+timeout 90 docker pull ollama/ollama:0.3.14
+```
+
+It still failed while resolving `docker.io/ollama/ollama:0.3.14` with a registry request timeout.
+No live text-reader score is claimed from this attempt.
+
 The Context workflow state and harness outputs now carry separate proof fields:
 `open_model_provider_packaged=true`, `open_model_local_run_proven=false`,
 `vlm_provider_configured=true`, and `vlm_benchmark_proven=false` for this evidence set. This keeps

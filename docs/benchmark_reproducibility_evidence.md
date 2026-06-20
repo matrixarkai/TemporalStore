@@ -85,6 +85,23 @@ Output:
 | Retrieval p50 / p95 | 71.491033479 ms / 89.486754028 ms |
 | Reader p50 / p95 | 0.654528034 ms / 5.510890001 ms |
 
+Follow-up context gap-fill validation regenerated the report with per-category weak-slice fields:
+
+```bash
+python3 tools/run_locomo_90_hit_rate.py \
+  --threshold-profile locomo_full \
+  --input /tmp/locomo10.json \
+  --report /tmp/temporalstore_locomo_context_gapfix_result.json \
+  --misses /tmp/temporalstore_locomo_context_gapfix_misses.jsonl
+```
+
+The regenerated report adds `category_breakdown`, `weak_category_count`, `weak_categories`, and
+`weak_category_policy`. In that run, the overall LOCOMO gate still passed at
+`benchmark_hit_at_k = 0.9215304798962386`, with `weak_category_count = 5`. The weakest retrieval
+slice was `category_3` at `hit_rate = 0.78125`; reader hit-rate was also below the policy threshold
+for categories 1, 2, 3, and 5. This is diagnostic evidence for the next reader/retrieval quality
+pass, not a new paper-score claim.
+
 ## LongMemEval_s Full Dataset
 
 Status: `blocked`

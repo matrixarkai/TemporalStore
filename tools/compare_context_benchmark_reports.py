@@ -79,6 +79,7 @@ def main() -> int:
 
     compare_summary(rust, cpp, args.numeric_tolerance, args.latency_ratio_tolerance, failures)
     compare_thresholds(rust, cpp, args.numeric_tolerance, failures)
+    compare_category_breakdown(rust, cpp, args.numeric_tolerance, failures)
     compare_per_query(rust, cpp, args.numeric_tolerance, failures)
 
     result = {
@@ -209,6 +210,49 @@ def compare_thresholds(
                 tolerance,
                 failures,
             )
+
+
+def compare_category_breakdown(
+    rust: dict[str, Any],
+    cpp: dict[str, Any],
+    tolerance: float,
+    failures: list[str],
+) -> None:
+    rust_categories = rust.get("category_breakdown")
+    cpp_categories = cpp.get("category_breakdown")
+    if not isinstance(rust_categories, dict) or not isinstance(cpp_categories, dict):
+        failures.append("category_breakdown must be objects in both reports")
+        return
+    if set(rust_categories) != set(cpp_categories):
+        failures.append(
+            f"category_breakdown keys differ: rust={sorted(rust_categories)} cpp={sorted(cpp_categories)}"
+        )
+        return
+    for category in sorted(rust_categories):
+        rust_row = rust_categories[category]
+        cpp_row = cpp_categories[category]
+        if not isinstance(rust_row, dict) or not isinstance(cpp_row, dict):
+            failures.append(f"category_breakdown.{category} must be objects in both reports")
+            continue
+        for field in (
+            "case_count",
+            "hit_rate",
+            "mean_reciprocal_rank",
+            "answer_term_coverage",
+            "zero_hit_queries",
+            "reader_hit_rate",
+            "reader_answer_coverage",
+        ):
+            compare_number(
+                f"category_breakdown.{category}.{field}",
+                rust_row.get(field),
+                cpp_row.get(field),
+                tolerance,
+                failures,
+            )
+    compare_number("weak_category_count", rust.get("weak_category_count"), cpp.get("weak_category_count"), tolerance, failures)
+    compare_equal("weak_categories", rust.get("weak_categories"), cpp.get("weak_categories"), failures)
+    compare_equal("weak_category_policy", rust.get("weak_category_policy"), cpp.get("weak_category_policy"), failures)
 
 
 def compare_per_query(

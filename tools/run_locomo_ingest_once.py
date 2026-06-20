@@ -297,6 +297,50 @@ def main() -> int:
         thresholds=thresholds,
     )
 
+    category_breakdown = {
+        name: {
+            "case_count": row["case_count"],
+            "hit_rate": row["hits"] / row["case_count"] if row["case_count"] else 0.0,
+            "mean_reciprocal_rank": row["rr"] / row["case_count"] if row["case_count"] else 0.0,
+            "answer_term_coverage": row["matched_terms"] / row["terms"] if row["terms"] else 0.0,
+            "zero_hit_queries": row["case_count"] - row["hits"],
+            "deterministic_reader_hit_rate": (
+                category_reader[name]["hits"] / category_reader[name]["case_count"]
+                if category_reader[name]["case_count"]
+                else 0.0
+            ),
+            "deterministic_reader_answer_coverage": (
+                category_reader[name]["matched_terms"] / category_reader[name]["terms"]
+                if category_reader[name]["terms"]
+                else 0.0
+            ),
+            "reader_hit_rate": (
+                category_reader[name]["hits"] / category_reader[name]["case_count"]
+                if category_reader[name]["case_count"]
+                else 0.0
+            ),
+            "reader_answer_coverage": (
+                category_reader[name]["matched_terms"] / category_reader[name]["terms"]
+                if category_reader[name]["terms"]
+                else 0.0
+            ),
+        }
+        for name, row in sorted(category.items())
+    }
+    weak_categories = [
+        {
+            "category": name,
+            "case_count": row["case_count"],
+            "hit_rate": row["hit_rate"],
+            "reader_hit_rate": row["reader_hit_rate"],
+            "answer_term_coverage": row["answer_term_coverage"],
+            "zero_hit_queries": row["zero_hit_queries"],
+            "reasons": weak_category_reasons(row, thresholds),
+        }
+        for name, row in sorted(category_breakdown.items())
+        if weak_category_reasons(row, thresholds)
+    ]
+
     report = {
         "mode": "conversation_load_once_query_many",
         "benchmark_family": "vikingmem_long_memory",
@@ -352,35 +396,13 @@ def main() -> int:
         "max_events": args.max_events,
         "evidence_window": args.evidence_window,
         "misses": args.misses,
-        "category_breakdown": {
-            name: {
-                "case_count": row["case_count"],
-                "hit_rate": row["hits"] / row["case_count"] if row["case_count"] else 0.0,
-                "mean_reciprocal_rank": row["rr"] / row["case_count"] if row["case_count"] else 0.0,
-                "answer_term_coverage": row["matched_terms"] / row["terms"] if row["terms"] else 0.0,
-                "zero_hit_queries": row["case_count"] - row["hits"],
-                "deterministic_reader_hit_rate": (
-                    category_reader[name]["hits"] / category_reader[name]["case_count"]
-                    if category_reader[name]["case_count"]
-                    else 0.0
-                ),
-                "deterministic_reader_answer_coverage": (
-                    category_reader[name]["matched_terms"] / category_reader[name]["terms"]
-                    if category_reader[name]["terms"]
-                    else 0.0
-                ),
-                "reader_hit_rate": (
-                    category_reader[name]["hits"] / category_reader[name]["case_count"]
-                    if category_reader[name]["case_count"]
-                    else 0.0
-                ),
-                "reader_answer_coverage": (
-                    category_reader[name]["matched_terms"] / category_reader[name]["terms"]
-                    if category_reader[name]["terms"]
-                    else 0.0
-                ),
-            }
-            for name, row in sorted(category.items())
+        "category_breakdown": category_breakdown,
+        "weak_category_count": len(weak_categories),
+        "weak_categories": weak_categories,
+        "weak_category_policy": {
+            "min_hit_at_k": thresholds["min_hit_at_k"],
+            "min_reader_hit_rate": thresholds["min_reader_hit_rate"],
+            "min_answer_term_coverage": thresholds["min_reader_hit_rate"],
         },
     }
 
@@ -448,6 +470,19 @@ def benchmark_threshold_violations(
     if thresholds["require_open_source_reader"] and open_source_calls <= 0:
         violations.append("open_source_reader_not_used")
     return violations
+
+
+def weak_category_reasons(row: dict[str, Any], thresholds: dict[str, float]) -> list[str]:
+    reasons = []
+    if row["hit_rate"] < thresholds["min_hit_at_k"]:
+        reasons.append("category_hit_at_k_below_min")
+    if row["reader_hit_rate"] < thresholds["min_reader_hit_rate"]:
+        reasons.append("category_reader_hit_rate_below_min")
+    if row["answer_term_coverage"] < thresholds["min_reader_hit_rate"]:
+        reasons.append("category_answer_term_coverage_below_min")
+    if row["zero_hit_queries"] > 0:
+        reasons.append("category_has_zero_hit_queries")
+    return reasons
 
 
 @dataclass

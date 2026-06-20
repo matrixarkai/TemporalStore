@@ -93,6 +93,10 @@ struct ContextBenchmarkReport {
   int64_t benchmark_threshold_violation_count = 0;
   std::vector<std::string> benchmark_threshold_violations;
   ContextBenchmarkThresholds benchmark_thresholds;
+  nlohmann::json category_breakdown = nlohmann::json::object();
+  int64_t weak_category_count = 0;
+  nlohmann::json weak_categories = nlohmann::json::array();
+  nlohmann::json weak_category_policy = nlohmann::json::object();
   std::vector<ContextBenchmarkPerQueryRow> benchmark_per_query;
 };
 
@@ -170,6 +174,10 @@ inline nlohmann::json ToJson(const ContextBenchmarkReport& report) {
       {"benchmark_threshold_violation_count", report.benchmark_threshold_violation_count},
       {"benchmark_threshold_violations", report.benchmark_threshold_violations},
       {"benchmark_thresholds", ToJson(report.benchmark_thresholds)},
+      {"category_breakdown", report.category_breakdown},
+      {"weak_category_count", report.weak_category_count},
+      {"weak_categories", report.weak_categories},
+      {"weak_category_policy", report.weak_category_policy},
       {"benchmark_per_query_count", report.benchmark_per_query_count},
       {"benchmark_per_query", std::move(rows)},
       {"benchmark_retrieval_p50_ms", report.benchmark_retrieval_p50_ms},
@@ -199,6 +207,10 @@ inline void ValidateReportContract(const nlohmann::json& report) {
       "benchmark_threshold_violation_count",
       "benchmark_threshold_violations",
       "benchmark_thresholds",
+      "category_breakdown",
+      "weak_category_count",
+      "weak_categories",
+      "weak_category_policy",
       "benchmark_per_query_count",
       "case_count",
       "hit_rate",
