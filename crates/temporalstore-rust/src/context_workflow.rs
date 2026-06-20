@@ -381,6 +381,12 @@ pub struct ContextWorkflowStateReport {
     pub status: Status,
     pub providers: Vec<ContextModelProviderConfig>,
     pub openviking_model_profiles: Vec<ContextOpenVikingModelProfile>,
+    pub openviking_parity_cases: Vec<ContextOpenVikingParityCase>,
+    pub openviking_parity_categories: Vec<String>,
+    pub open_model_provider_packaged: bool,
+    pub open_model_local_run_proven: bool,
+    pub vlm_provider_configured: bool,
+    pub vlm_benchmark_proven: bool,
     pub policy: ContextWorkflowPolicy,
     pub openviking_comparison: String,
     pub supported_routes: Vec<String>,
@@ -397,6 +403,19 @@ pub struct ContextOpenVikingModelProfile {
     pub embedding_model: String,
     pub capabilities: Vec<String>,
     pub notes: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextOpenVikingParityCase {
+    pub case_name: String,
+    pub category: String,
+    pub query: String,
+    pub positive_memory: String,
+    pub stale_memory: String,
+    pub expected_terms: Vec<String>,
+    pub expected_model_profile: String,
+    pub uses_vlm: bool,
+    pub benchmark_proven: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -679,11 +698,101 @@ pub fn openviking_open_source_model_profiles() -> Vec<ContextOpenVikingModelProf
     ]
 }
 
+pub fn openviking_context_parity_cases() -> Vec<ContextOpenVikingParityCase> {
+    vec![
+        ContextOpenVikingParityCase {
+            case_name: "locomo_multi_hop_project_selection".to_string(),
+            category: "multi_hop_reasoning".to_string(),
+            query: "Which project did Lee pick because Dana suggested it during planning?"
+                .to_string(),
+            positive_memory: "Later planning note: Dana suggested the observability dashboard because the team needed better benchmark traces, so Lee picked that project.".to_string(),
+            stale_memory: "Initial planning thread: Lee considered a search cleanup project and had not chosen the final work item.".to_string(),
+            expected_terms: vec!["Dana".to_string(), "observability dashboard".to_string()],
+            expected_model_profile: "matrixark-cpp-oss-context".to_string(),
+            uses_vlm: false,
+            benchmark_proven: true,
+        },
+        ContextOpenVikingParityCase {
+            case_name: "locomo_temporal_reschedule".to_string(),
+            category: "temporal".to_string(),
+            query: "When is Maya's dentist appointment after it was rescheduled?".to_string(),
+            positive_memory: "Latest calendar update: Maya rescheduled the dentist appointment to Thursday at 3pm after the clinic called.".to_string(),
+            stale_memory: "Earlier memory: Maya had a dentist appointment scheduled for Tuesday morning.".to_string(),
+            expected_terms: vec!["Thursday".to_string(), "3pm".to_string()],
+            expected_model_profile: "matrixark-cpp-oss-context".to_string(),
+            uses_vlm: false,
+            benchmark_proven: true,
+        },
+        ContextOpenVikingParityCase {
+            case_name: "longmem_memory_update_risk_score".to_string(),
+            category: "memory_update".to_string(),
+            query: "What risk score was recorded after the latest fraud review?".to_string(),
+            positive_memory: "Latest fraud review: the checkout risk score was updated to 87 after the payment incident escalated.".to_string(),
+            stale_memory: "Earlier fraud review: the checkout risk score was 42 before the payment incident escalated.".to_string(),
+            expected_terms: vec!["87".to_string()],
+            expected_model_profile: "matrixark-cpp-oss-context".to_string(),
+            uses_vlm: false,
+            benchmark_proven: true,
+        },
+        ContextOpenVikingParityCase {
+            case_name: "locomo_stale_memory_current_pet".to_string(),
+            category: "stale_memory".to_string(),
+            query: "What is the dog's name in the latest pet update?".to_string(),
+            positive_memory: "Latest pet update: the newly adopted dog is named Miso and needs evening walks.".to_string(),
+            stale_memory: "Old profile note: the family dog was called Pepper in a previous home.".to_string(),
+            expected_terms: vec!["Miso".to_string()],
+            expected_model_profile: "matrixark-cpp-oss-context".to_string(),
+            uses_vlm: false,
+            benchmark_proven: true,
+        },
+        ContextOpenVikingParityCase {
+            case_name: "locomo_open_domain_cafe_recommendation".to_string(),
+            category: "open_domain_retrieval".to_string(),
+            query: "Who recommended the cafe that Nina booked after the conference?".to_string(),
+            positive_memory: "Later chat: Omar recommended the quiet riverside cafe, and Nina booked it after the conference.".to_string(),
+            stale_memory: "Earlier conversation: Nina wanted to book a cafe after the conference but had not chosen one yet.".to_string(),
+            expected_terms: vec!["Omar".to_string(), "riverside cafe".to_string()],
+            expected_model_profile: "matrixark-cpp-oss-context".to_string(),
+            uses_vlm: false,
+            benchmark_proven: true,
+        },
+        ContextOpenVikingParityCase {
+            case_name: "openviking_vlm_receipt_context".to_string(),
+            category: "vlm_image_content_understanding".to_string(),
+            query: "What merchant and total should be remembered from the receipt image?"
+                .to_string(),
+            positive_memory: "VLM extraction note: the receipt image shows merchant Northstar Cafe and total $18.40 for the lunch order.".to_string(),
+            stale_memory: "Older image note: a different receipt showed merchant Harbor Books and total $42.00.".to_string(),
+            expected_terms: vec!["Northstar Cafe".to_string(), "$18.40".to_string()],
+            expected_model_profile: "openviking-minigpt4-gpt-style-vlm".to_string(),
+            uses_vlm: true,
+            benchmark_proven: false,
+        },
+    ]
+}
+
 pub fn context_workflow_state_report() -> ContextWorkflowStateReport {
+    let openviking_parity_cases = openviking_context_parity_cases();
+    let mut openviking_parity_categories = openviking_parity_cases
+        .iter()
+        .map(|case| case.category.clone())
+        .collect::<Vec<_>>();
+    openviking_parity_categories.sort();
+    openviking_parity_categories.dedup();
+    let openviking_model_profiles = openviking_open_source_model_profiles();
+    let vlm_provider_configured = openviking_model_profiles
+        .iter()
+        .any(|profile| profile.vlm_model != "none");
     ContextWorkflowStateReport {
         status: Status::ok(),
         providers: default_context_model_providers(),
-        openviking_model_profiles: openviking_open_source_model_profiles(),
+        openviking_model_profiles,
+        openviking_parity_cases,
+        openviking_parity_categories,
+        open_model_provider_packaged: true,
+        open_model_local_run_proven: false,
+        vlm_provider_configured,
+        vlm_benchmark_proven: false,
         policy: ContextWorkflowPolicy::default(),
         openviking_comparison:
             "TemporalStore keeps OpenViking-style L0/L1/L2 hierarchical context, but stores it in ContextNode/Event/Index/Audit models instead of a separate viking:// filesystem."
@@ -3681,6 +3790,64 @@ mod tests {
                     .capabilities
                     .contains(&"gpt_style_vlm_reasoning".to_string())
         }));
+        assert!(state.open_model_provider_packaged);
+        assert!(!state.open_model_local_run_proven);
+        assert!(state.vlm_provider_configured);
+        assert!(!state.vlm_benchmark_proven);
+    }
+
+    // shared-corpus: context_openviking_reasoning_vlm_parity
+    #[test]
+    fn context_openviking_reasoning_vlm_cases_cover_required_gaps() {
+        let state = context_workflow_state_report();
+        for required_category in [
+            "multi_hop_reasoning",
+            "temporal",
+            "memory_update",
+            "stale_memory",
+            "open_domain_retrieval",
+            "vlm_image_content_understanding",
+        ] {
+            assert!(
+                state
+                    .openviking_parity_categories
+                    .contains(&required_category.to_string()),
+                "missing OpenViking parity category {required_category}"
+            );
+        }
+        assert_eq!(state.openviking_parity_cases.len(), 6);
+        assert!(state
+            .openviking_parity_cases
+            .iter()
+            .any(|case| case.uses_vlm && !case.benchmark_proven));
+        assert!(state
+            .openviking_parity_cases
+            .iter()
+            .filter(|case| !case.uses_vlm)
+            .all(|case| case.benchmark_proven));
+
+        for case in state.openviking_parity_cases {
+            assert!(
+                context_query_matches(&case.query, &case.positive_memory),
+                "{} did not match its positive memory",
+                case.case_name
+            );
+            assert!(
+                context_relevance_score(&case.query, &case.positive_memory)
+                    > context_relevance_score(&case.query, &case.stale_memory),
+                "{} did not outrank stale memory",
+                case.case_name
+            );
+            for term in case.expected_terms {
+                let text_lower = case.positive_memory.to_ascii_lowercase();
+                let text_normalized = context_normalize_for_match(&case.positive_memory);
+                assert!(
+                    context_text_matches_term(&text_lower, &text_normalized, &term),
+                    "{} positive memory did not expose expected term {term}",
+                    case.case_name
+                );
+            }
+        }
     }
 
     #[test]

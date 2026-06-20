@@ -77,6 +77,7 @@
       "ingestion_lag_metrics",
       "ingestion_restart_idempotence",
       "context_retrieval_qa_synonym_ranking",
+      "context_openviking_reasoning_vlm_parity",
       "context_benchmark_fixture_gates",
       "context_benchmark_full_dataset_gates"
     ],
@@ -3957,6 +3958,35 @@
               "src/model/context_model.h"
             ],
             "rust_runner": "cargo test -p temporalstore-rust context_relevance_ranks_qa_synonyms_and_phrases -- --test-threads=1",
+            "rust_validator": "tools/run_context_workflow_local.sh"
+          }
+        }
+      ]
+    },
+    {
+      "name": "context_openviking_reasoning_vlm_parity",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "context_openviking_reasoning_vlm_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_context_pipeline_parity",
+            "mode": "rust_executable_cxx_static",
+            "description": "Shared C++/Rust Context pipeline case for OpenViking/VikingMem-style multi-hop, temporal, update, stale-memory, open-domain, and VLM context evidence. Live OSS and VLM benchmark proof must be explicit and cannot be inferred from configuration.",
+            "required_categories": [
+              "multi_hop_reasoning",
+              "temporal",
+              "memory_update",
+              "stale_memory",
+              "open_domain_retrieval",
+              "vlm_image_content_understanding"
+            ],
+            "required_paths": [
+              "docs/context_openviking_parity_cases.md",
+              "docs/context_benchmarks_docker_open_model.md"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust context_openviking_reasoning_vlm_cases_cover_required_gaps -- --test-threads=1",
             "rust_validator": "tools/run_context_workflow_local.sh"
           }
         }

@@ -29,13 +29,13 @@ Current corpus:
 ```text
 schema_version: 1
 name: temporalstore-unified-cpp-rust-corpus
-cases: 76
-steps: 163
+cases: 77
+steps: 164
 executable behavior cases: 26
 executable behavior steps: 106
 required command kinds: 59
 required response kinds: 19
-C++ existing-test parity surfaces: 129 unique required paths plus 60 Raft path references
+C++ existing-test parity surfaces: 131 unique required paths plus 60 Raft path references
 ```
 
 The shared cases are:
@@ -132,6 +132,7 @@ The shared cases are:
   benchmark report contracts:
   `context_management_ingest_retrieve_pipeline`,
   `context_retrieval_qa_synonym_ranking`,
+  `context_openviking_reasoning_vlm_parity`,
   `context_benchmark_fixture_gates`, and
   `context_benchmark_full_dataset_gates`.
 

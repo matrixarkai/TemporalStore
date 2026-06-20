@@ -159,3 +159,9 @@ The pull still failed with a Docker Hub manifest request timeout. The local
 OpenAI-compatible model server; it is a repo/context fixture image. Therefore the
 live OSS-reader benchmark gap remains open until an Ollama/vLLM/OpenAI-compatible
 reader image or endpoint is reachable locally.
+
+The Context workflow state and harness outputs now carry separate proof fields:
+`open_model_provider_packaged=true`, `open_model_local_run_proven=false`,
+`vlm_provider_configured=true`, and `vlm_benchmark_proven=false` for this evidence set. This keeps
+OpenViking-style provider configuration distinct from a successful local OSS reader or VLM
+benchmark run.

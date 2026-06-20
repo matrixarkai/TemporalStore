@@ -11,13 +11,13 @@ compat/unified_temporalstore_cases.json
 Current inventory:
 
 ```text
-total cases: 76
-total steps: 163
+total cases: 77
+total steps: 164
 executable shared behavior cases: 26
 executable shared behavior steps: 106
 C++ existing-test parity surface cases: 50
 C++ existing-test parity surface steps: 57
-C++ required source/test/harness paths: 129 unique paths plus 60 Raft path references
+C++ required source/test/harness paths: 131 unique paths plus 60 Raft path references
 required command kinds: 59
 required response kinds: 19
 ```
@@ -132,6 +132,7 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `ingestion_restart_idempotence` | Rust-executable/C++-static gate for restart/failover idempotence behavior for offsets and checkpoints. |
 | `context_management_ingest_retrieve_pipeline` | Rust-executable/C++-static gate for Context management, ingest/extract, retrieval handoff, provider routing, and OpenViking-style block construction. |
 | `context_retrieval_qa_synonym_ranking` | Rust-executable/C++-static gate for Context QA retrieval synonym and adjacent-phrase ranking. |
+| `context_openviking_reasoning_vlm_parity` | Rust-executable/C++-static gate for OpenViking/VikingMem-style multi-hop, temporal, update, stale-memory, open-domain, and VLM context evidence. |
 | `context_benchmark_fixture_gates` | Shared C++/Rust benchmark contract for LOCOMO-style and LongMemEval_s fixture gates using MatrixArk/VikingMem report fields. |
 | `context_benchmark_full_dataset_gates` | Shared C++/Rust benchmark contract for LOCOMO, LongMemEval_s, and Docker/open-model full-dataset gates with explicit threshold profiles and archive reports. |
 
@@ -195,8 +196,8 @@ Yes. Current Rust-local attributed test count is:
 ```text
 Rust attributed tests: 543
 shared-corpus marked Rust tests: 14
-shared corpus cases: 76
-shared corpus steps: 163
+shared corpus cases: 77
+shared corpus steps: 164
 C++ existing-test surfaces: 127
 ```
 

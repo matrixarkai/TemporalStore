@@ -85,6 +85,10 @@ These profiles mirror OpenViking's two required model capabilities: a VLM for im
 understanding and an embedding model for vectorization and semantic retrieval. TemporalStore still
 uses deterministic `mock_mode=true` for local CI unless a live Ollama, vLLM, or compatible gateway
 is intentionally started.
+The state and harness reports expose `open_model_provider_packaged`,
+`open_model_local_run_proven`, `vlm_provider_configured`, and `vlm_benchmark_proven`. Packaged and
+configured fields can be true from checked-in provider profiles; proven fields stay false until a
+real local model endpoint or VLM benchmark run passes and archives its report.
 
 ## OpenViking Comparison
 
@@ -263,6 +267,14 @@ calendar update?" cover date/time updates. Quantity cases such as "How many gues
 after the dinner update?" and "What risk score was recorded after the latest fraud review?" cover
 numeric memory updates. Alias cases such as "What is Emma's roommate's name after the move?" and
 "What is the dog's name in the latest pet update?" cover entity-disambiguation updates.
+
+The shared C++/Rust corpus also has a dedicated `context_openviking_reasoning_vlm_parity` case.
+Rust executes `context_openviking_reasoning_vlm_cases_cover_required_gaps`, which requires explicit
+coverage for multi-hop reasoning, temporal reasoning, memory updates, stale-memory replacement,
+open-domain retrieval, and VLM image/content understanding. The VLM case is currently a
+configuration and retrieval-shape proof, not a passed VLM benchmark; it remains marked
+`benchmark_proven = false` until the Docker/open-model path completes a real OpenAI-compatible
+local model run and archives the resulting report.
 
 Remaining policy hardening:
 

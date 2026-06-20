@@ -58,6 +58,12 @@ struct ContextWorkflowHarnessSummary {
     openviking_model_profile_names: Vec<String>,
     openviking_vlm_models: Vec<String>,
     openviking_embedding_models: Vec<String>,
+    openviking_parity_case_count: usize,
+    openviking_parity_categories: Vec<String>,
+    open_model_provider_packaged: bool,
+    open_model_local_run_proven: bool,
+    vlm_provider_configured: bool,
+    vlm_benchmark_proven: bool,
     benchmark_ready: bool,
     benchmark_profile: String,
     benchmark_workload_signature: u64,
@@ -185,6 +191,12 @@ struct ExternalOnlyContextBenchmarkSummary {
     openviking_model_profile_names: Vec<String>,
     openviking_vlm_models: Vec<String>,
     openviking_embedding_models: Vec<String>,
+    openviking_parity_case_count: usize,
+    openviking_parity_categories: Vec<String>,
+    open_model_provider_packaged: bool,
+    open_model_local_run_proven: bool,
+    vlm_provider_configured: bool,
+    vlm_benchmark_proven: bool,
 }
 
 fn main() {
@@ -249,6 +261,12 @@ fn main() {
                     .iter()
                     .map(|profile| profile.embedding_model.clone())
                     .collect(),
+                openviking_parity_case_count: state.openviking_parity_cases.len(),
+                openviking_parity_categories: state.openviking_parity_categories,
+                open_model_provider_packaged: state.open_model_provider_packaged,
+                open_model_local_run_proven: state.open_model_local_run_proven,
+                vlm_provider_configured: state.vlm_provider_configured,
+                vlm_benchmark_proven: state.vlm_benchmark_proven,
             })
             .expect("external context benchmark summary should serialize")
         );
@@ -569,6 +587,12 @@ fn main() {
                 .iter()
                 .map(|profile| profile.embedding_model.clone())
                 .collect(),
+            openviking_parity_case_count: state.openviking_parity_cases.len(),
+            openviking_parity_categories: state.openviking_parity_categories,
+            open_model_provider_packaged: state.open_model_provider_packaged,
+            open_model_local_run_proven: state.open_model_local_run_proven,
+            vlm_provider_configured: state.vlm_provider_configured,
+            vlm_benchmark_proven: state.vlm_benchmark_proven,
             benchmark_ready,
             benchmark_profile: benchmark.profile,
             benchmark_workload_signature: benchmark.workload_signature,
