@@ -14,6 +14,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from benchmark_threshold_policy import add_threshold_policy_args, resolve_threshold_policy
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run LongMemEval_s full-path retrieval/reader scoring.")
@@ -24,12 +26,7 @@ def main() -> int:
         help="Harness JSON report path.",
     )
     parser.add_argument("--misses", default="/tmp/temporalstore_longmemeval_s_full_path_misses.jsonl")
-    parser.add_argument("--min-hit-rate", type=float, default=0.90)
-    parser.add_argument("--min-case-count", type=int, default=1)
-    parser.add_argument("--min-reader-hit-rate", type=float, default=0.0)
-    parser.add_argument("--min-token-reduction-percent", type=float, default=0.0)
-    parser.add_argument("--max-retrieval-p95-ms", type=float, default=1000.0)
-    parser.add_argument("--max-reader-p95-ms", type=float, default=30000.0)
+    add_threshold_policy_args(parser)
     parser.add_argument("--max-events", type=int, default=256)
     parser.add_argument("--reader-mode", choices=("deterministic", "open-source", "auto"), default="deterministic")
     parser.add_argument("--reader-provider-name", default="matrixark-cpp-oss-context")
@@ -39,8 +36,8 @@ def main() -> int:
     parser.add_argument("--reader-timeout-seconds", type=float, default=20.0)
     parser.add_argument("--reader-max-context-chars", type=int, default=12000)
     parser.add_argument("--reader-no-fallback", action="store_true")
-    parser.add_argument("--require-open-source-reader", action="store_true")
     args = parser.parse_args()
+    thresholds = resolve_threshold_policy(args)
 
     repo = Path(__file__).resolve().parents[1]
     input_path = Path(args.input)
@@ -60,17 +57,17 @@ def main() -> int:
         "--dataset-name",
         "longmemeval_s",
         "--min-hit-rate",
-        str(args.min_hit_rate),
+        str(thresholds["min_hit_rate"]),
         "--min-case-count",
-        str(args.min_case_count),
+        str(thresholds["min_case_count"]),
         "--min-reader-hit-rate",
-        str(args.min_reader_hit_rate),
+        str(thresholds["min_reader_hit_rate"]),
         "--min-token-reduction-percent",
-        str(args.min_token_reduction_percent),
+        str(thresholds["min_token_reduction_percent"]),
         "--max-retrieval-p95-ms",
-        str(args.max_retrieval_p95_ms),
+        str(thresholds["max_retrieval_p95_ms"]),
         "--max-reader-p95-ms",
-        str(args.max_reader_p95_ms),
+        str(thresholds["max_reader_p95_ms"]),
         "--max-events",
         str(args.max_events),
         "--reader-mode",
@@ -90,7 +87,7 @@ def main() -> int:
         command.extend(["--reader-base-url", args.reader_base_url])
     if args.reader_no_fallback:
         command.append("--reader-no-fallback")
-    if args.require_open_source_reader:
+    if thresholds["require_open_source_reader"]:
         command.append("--require-open-source-reader")
     run(command, cwd=repo)
 
@@ -99,15 +96,16 @@ def main() -> int:
     case_count = int(report.get("case_count") or 0)
     hit_rate = float(report.get("hit_rate") or 0.0)
     output = {
-        "longmemeval_s_full_path_ready": hit_rate >= args.min_hit_rate,
+        "longmemeval_s_full_path_ready": hit_rate >= thresholds["min_hit_rate"],
         "dataset": report.get("dataset"),
         "mode": report.get("mode"),
+        "threshold_profile": args.threshold_profile,
         "case_count": case_count,
-        "min_case_count": args.min_case_count,
+        "min_case_count": thresholds["min_case_count"],
         "conversation_count": int(report.get("conversation_count") or 0),
         "source_count": int(report.get("source_count") or 0),
         "hit_rate": hit_rate,
-        "min_hit_rate": args.min_hit_rate,
+        "min_hit_rate": thresholds["min_hit_rate"],
         "mean_reciprocal_rank": float(report.get("mean_reciprocal_rank") or 0.0),
         "answer_term_coverage": float(report.get("answer_term_coverage") or 0.0),
         "reader_hit_rate": float(report.get("reader_hit_rate") or report.get("deterministic_reader_hit_rate") or 0.0),

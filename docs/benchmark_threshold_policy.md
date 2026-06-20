@@ -1,0 +1,70 @@
+# Context Benchmark Threshold Policy
+
+This policy separates smoke-fixture gates from full-dataset production gates.
+Fixture gates prove that ingestion, extraction, retrieval, reader scoring, and
+report emission are wired correctly. Full-dataset gates are the only thresholds
+that can support production readiness claims.
+
+## Profiles
+
+| Profile | Intended use | Min cases | Min retrieval hit | Min reader hit | Min token reduction | Retrieval p95 | Reader p95 | OSS reader |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `fixture` | Checked-in fixtures and CI smoke runs | 4 | 1.00 | 1.00 | 0% | 1000 ms | 30000 ms | No |
+| `locomo_full` | Real LOCOMO 10-conversation benchmark artifact | 1542 | 0.90 | 0.58 | 80% | 250 ms | 50 ms | No |
+| `longmemeval_full` | Real LongMemEval_s mounted artifact | 500 | 0.90 | 0.58 | 80% | 2000 ms | 200 ms | No |
+| `oss_reader_full` | Full LOCOMO with a live local OpenAI-compatible OSS reader | 1542 | 0.90 | 0.58 | 80% | 250 ms | 30000 ms | Yes |
+
+## Rationale
+
+- `fixture` keeps CI deterministic and fast. It intentionally does not require
+  token reduction because small fixture conversations can fit entirely inside the
+  retrieval window.
+- `locomo_full` is based on the current real LOCOMO artifact with 1542 scored
+  cases. The 0.90 retrieval threshold matches the VikingMem parity target, while
+  0.58 reader hit rate preserves the current deterministic reader improvement as
+  a hard floor instead of silently accepting reader regressions.
+- `longmemeval_full` stays separate because the real artifact is much larger and
+  has different latency characteristics. The committed fixture must not be used
+  to satisfy this gate.
+- `oss_reader_full` requires at least one successful local open-source reader
+  call. Its reader p95 budget is wider because a local model gateway is expected
+  to be slower than the deterministic extractor.
+
+## Commands
+
+LOCOMO production gate:
+
+```bash
+python3 tools/run_locomo_90_hit_rate.py \
+  --threshold-profile locomo_full \
+  --input /tmp/locomo10.json \
+  --report /tmp/temporalstore_locomo_threshold_policy_result.json \
+  --misses /tmp/temporalstore_locomo_threshold_policy_misses.jsonl
+```
+
+LongMemEval_s fixture smoke gate:
+
+```bash
+python3 tools/run_longmemeval_s_full_path.py \
+  --threshold-profile fixture \
+  --input tools/fixtures/longmemeval_s_full_path_fixture.json \
+  --reader-mode auto \
+  --report /tmp/temporalstore_longmemeval_fixture_threshold_policy_result.json \
+  --misses /tmp/temporalstore_longmemeval_fixture_threshold_policy_misses.jsonl
+```
+
+LongMemEval_s production gate, once the real artifact is mounted:
+
+```bash
+python3 tools/run_longmemeval_s_full_path.py \
+  --threshold-profile longmemeval_full \
+  --input /tmp/longmemeval_s.json \
+  --reader-mode deterministic \
+  --report /tmp/temporalstore_longmemeval_full_threshold_policy_result.json \
+  --misses /tmp/temporalstore_longmemeval_full_threshold_policy_misses.jsonl
+```
+
+Explicit threshold flags override profile defaults. Use overrides only when the
+artifact contract changes, and record the reason in the reproducibility evidence
+doc with the command, input hash, case count, model mode, reader mode, thresholds,
+and report path.

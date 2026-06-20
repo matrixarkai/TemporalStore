@@ -17,6 +17,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from benchmark_threshold_policy import add_threshold_policy_args, resolve_threshold_policy
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run LOCOMO 90%+ retrieval/context hit-rate gate.")
@@ -27,12 +29,7 @@ def main() -> int:
         help="Harness JSON report path.",
     )
     parser.add_argument("--misses", default="/tmp/temporalstore_locomo_ingest_once_misses.jsonl")
-    parser.add_argument("--min-hit-rate", type=float, default=0.90)
-    parser.add_argument("--min-case-count", type=int, default=1)
-    parser.add_argument("--min-reader-hit-rate", type=float, default=0.0)
-    parser.add_argument("--min-token-reduction-percent", type=float, default=0.0)
-    parser.add_argument("--max-retrieval-p95-ms", type=float, default=1000.0)
-    parser.add_argument("--max-reader-p95-ms", type=float, default=30000.0)
+    add_threshold_policy_args(parser)
     parser.add_argument("--max-events", type=int, default=128)
     parser.add_argument("--reader-mode", choices=("deterministic", "open-source", "auto"), default="deterministic")
     parser.add_argument("--reader-provider-name", default="matrixark-cpp-oss-context")
@@ -42,7 +39,6 @@ def main() -> int:
     parser.add_argument("--reader-timeout-seconds", type=float, default=20.0)
     parser.add_argument("--reader-max-context-chars", type=int, default=12000)
     parser.add_argument("--reader-no-fallback", action="store_true")
-    parser.add_argument("--require-open-source-reader", action="store_true")
     parser.add_argument(
         "--evidence-window",
         type=int,
@@ -50,6 +46,7 @@ def main() -> int:
         help="Optional diagnostic evidence window. Omit for full conversation-load-once scoring.",
     )
     args = parser.parse_args()
+    thresholds = resolve_threshold_policy(args)
 
     repo = Path(__file__).resolve().parents[1]
     input_path = Path(args.input)
@@ -67,17 +64,17 @@ def main() -> int:
         "--misses",
         args.misses,
         "--min-hit-rate",
-        str(args.min_hit_rate),
+        str(thresholds["min_hit_rate"]),
         "--min-case-count",
-        str(args.min_case_count),
+        str(thresholds["min_case_count"]),
         "--min-reader-hit-rate",
-        str(args.min_reader_hit_rate),
+        str(thresholds["min_reader_hit_rate"]),
         "--min-token-reduction-percent",
-        str(args.min_token_reduction_percent),
+        str(thresholds["min_token_reduction_percent"]),
         "--max-retrieval-p95-ms",
-        str(args.max_retrieval_p95_ms),
+        str(thresholds["max_retrieval_p95_ms"]),
         "--max-reader-p95-ms",
-        str(args.max_reader_p95_ms),
+        str(thresholds["max_reader_p95_ms"]),
         "--max-events",
         str(args.max_events),
         "--reader-mode",
@@ -97,7 +94,7 @@ def main() -> int:
         command.extend(["--reader-base-url", args.reader_base_url])
     if args.reader_no_fallback:
         command.append("--reader-no-fallback")
-    if args.require_open_source_reader:
+    if thresholds["require_open_source_reader"]:
         command.append("--require-open-source-reader")
     if args.evidence_window is not None:
         command.extend(["--evidence-window", str(args.evidence_window)])
@@ -118,11 +115,12 @@ def main() -> int:
             {
                 "locomo_comparable_metric": "retrieval_context_hit_at_k",
                 "mode": report.get("mode"),
+                "threshold_profile": args.threshold_profile,
                 "case_count": case_count,
-                "min_case_count": args.min_case_count,
+                "min_case_count": thresholds["min_case_count"],
                 "hit_rate": hit_rate,
-                "min_hit_rate": args.min_hit_rate,
-                "passed": hit_rate >= args.min_hit_rate,
+                "min_hit_rate": thresholds["min_hit_rate"],
+                "passed": hit_rate >= thresholds["min_hit_rate"],
                 "evidence_ref_coverage": evidence_coverage,
                 "answer_term_coverage": answer_coverage,
                 "deterministic_reader_hit_rate": reader_hit_rate,
@@ -153,7 +151,7 @@ def main() -> int:
                 "benchmark_threshold_violation_count": report.get("benchmark_threshold_violation_count"),
                 "benchmark_threshold_violations": report.get("benchmark_threshold_violations"),
                 "benchmark_thresholds": report.get("benchmark_thresholds"),
-                "answer_reader_gap_visible": answer_coverage < args.min_hit_rate,
+                "answer_reader_gap_visible": answer_coverage < thresholds["min_hit_rate"],
                 "report": str(report_path),
                 "misses": args.misses,
             },
@@ -161,7 +159,7 @@ def main() -> int:
             sort_keys=True,
         )
     )
-    return 0 if hit_rate >= args.min_hit_rate else 1
+    return 0 if hit_rate >= thresholds["min_hit_rate"] else 1
 
 
 def run(

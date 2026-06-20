@@ -1,12 +1,15 @@
 # Benchmark Reproducibility Evidence
 
-Validation time: 2026-06-20T05:53:06Z
+Validation time: 2026-06-20T06:36:00Z
 
-Runner revision: `84f77ef`
+Runner revision: threshold-policy update in this commit
 
 This page records benchmark evidence from the checked-in TemporalStore runners. It separates real
 dataset scores from fixture gates so fixture results are not presented as paper-equivalent LOCOMO or
 LongMemEval_s scores.
+
+Threshold policy is defined in [benchmark_threshold_policy.md](benchmark_threshold_policy.md).
+Fixture gates and full-dataset production gates intentionally use different profiles.
 
 ## LOCOMO Full Dataset
 
@@ -24,11 +27,10 @@ Command:
 
 ```bash
 python3 tools/run_locomo_90_hit_rate.py \
+  --threshold-profile locomo_full \
   --input /tmp/locomo10.json \
-  --min-case-count 1542 \
-  --min-hit-rate 0.90 \
-  --report /tmp/temporalstore_locomo_reader_improved2_result.json \
-  --misses /tmp/temporalstore_locomo_reader_improved2_misses.jsonl
+  --report /tmp/temporalstore_locomo_threshold_policy_result.json \
+  --misses /tmp/temporalstore_locomo_threshold_policy_misses.jsonl
 ```
 
 Run configuration:
@@ -41,19 +43,20 @@ Run configuration:
 | Reader mode effective | `deterministic` |
 | Reader model | `google/flan-t5-small` |
 | Max events | `128` |
-| Report JSON | `/tmp/temporalstore_locomo_reader_improved2_result.json` |
-| Misses JSONL | `/tmp/temporalstore_locomo_reader_improved2_misses.jsonl` |
+| Report JSON | `/tmp/temporalstore_locomo_threshold_policy_result.json` |
+| Misses JSONL | `/tmp/temporalstore_locomo_threshold_policy_misses.jsonl` |
 
 Thresholds:
 
 | Threshold | Value |
 | --- | ---: |
+| `threshold_profile` | `locomo_full` |
 | `min_case_count` | 1542 |
 | `min_hit_at_k` | 0.90 |
-| `min_reader_hit_rate` | 0.0 |
-| `min_token_reduction_percent` | 0.0 |
-| `max_retrieval_p95_ms` | 1000.0 |
-| `max_reader_p95_ms` | 30000.0 |
+| `min_reader_hit_rate` | 0.58 |
+| `min_token_reduction_percent` | 80.0 |
+| `max_retrieval_p95_ms` | 250.0 |
+| `max_reader_p95_ms` | 50.0 |
 | `require_open_source_reader` | `false` |
 
 Output:
@@ -73,8 +76,8 @@ Output:
 | Threshold violations | `[]` |
 | Per-query rows | 1,542 |
 | Token reduction | 82.9375085567 |
-| Retrieval p50 / p95 | 72.555758001 ms / 93.420915731 ms |
-| Reader p50 / p95 | 0.680133002 ms / 5.866982782 ms |
+| Retrieval p50 / p95 | 71.491033479 ms / 89.486754028 ms |
+| Reader p50 / p95 | 0.654528034 ms / 5.510890001 ms |
 
 ## LongMemEval_s Full Dataset
 
@@ -87,9 +90,8 @@ Attempted command:
 
 ```bash
 python3 tools/run_longmemeval_s_full_path.py \
+  --threshold-profile longmemeval_full \
   --input /tmp/longmemeval_s.json \
-  --min-case-count 1 \
-  --min-hit-rate 0.90 \
   --report /tmp/temporalstore_longmemeval_real_repro_result.json \
   --misses /tmp/temporalstore_longmemeval_real_repro_misses.jsonl
 ```
@@ -105,7 +107,8 @@ Blocked output:
 | Report JSON | unavailable because the runner exits before scoring |
 
 To record the real LongMemEval_s evidence, mount the artifact and rerun the command with
-`--min-case-count` set to the expected scored-question count for that export.
+`--threshold-profile longmemeval_full`. Override `--min-case-count` only if the mounted export has a
+documented scored-question count higher than the profile floor.
 
 ## LongMemEval_s Fixture Gate
 
@@ -124,12 +127,11 @@ Command:
 
 ```bash
 python3 tools/run_longmemeval_s_full_path.py \
+  --threshold-profile fixture \
   --input tools/fixtures/longmemeval_s_full_path_fixture.json \
-  --min-case-count 4 \
-  --min-hit-rate 1.0 \
   --reader-mode auto \
-  --report /tmp/temporalstore_longmemeval_fixture_current_result.json \
-  --misses /tmp/temporalstore_longmemeval_fixture_current_misses.jsonl
+  --report /tmp/temporalstore_longmemeval_fixture_threshold_policy_result.json \
+  --misses /tmp/temporalstore_longmemeval_fixture_threshold_policy_misses.jsonl
 ```
 
 Run configuration:
@@ -141,16 +143,17 @@ Run configuration:
 | Reader mode requested | `auto` |
 | Reader mode effective | `deterministic-fallback` |
 | Reader model | `google/flan-t5-small` |
-| Report JSON | `/tmp/temporalstore_longmemeval_fixture_current_result.json` |
-| Misses JSONL | `/tmp/temporalstore_longmemeval_fixture_current_misses.jsonl` |
+| Report JSON | `/tmp/temporalstore_longmemeval_fixture_threshold_policy_result.json` |
+| Misses JSONL | `/tmp/temporalstore_longmemeval_fixture_threshold_policy_misses.jsonl` |
 
 Thresholds:
 
 | Threshold | Value |
 | --- | ---: |
+| `threshold_profile` | `fixture` |
 | `min_case_count` | 4 |
 | `min_hit_at_k` | 1.0 |
-| `min_reader_hit_rate` | 0.0 |
+| `min_reader_hit_rate` | 1.0 |
 | `min_token_reduction_percent` | 0.0 |
 | `max_retrieval_p95_ms` | 1000.0 |
 | `max_reader_p95_ms` | 30000.0 |
@@ -169,8 +172,8 @@ Output:
 | Threshold violations | `[]` |
 | Per-query rows | 4 |
 | Token reduction | 0.0 |
-| Retrieval p50 / p95 | 0.306498492 ms / 0.332475768 ms |
-| Reader p50 / p95 | 0.158256502 ms / 0.629811781 ms |
+| Retrieval p50 / p95 | 0.322518987 ms / 0.365485722 ms |
+| Reader p50 / p95 | 0.185855024 ms / 0.714177469 ms |
 
 Fixture token reduction is `0.0` because the tiny fixture fits under `--max-events`; it is not a
 compression or prompt-budget result.
