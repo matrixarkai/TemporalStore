@@ -139,10 +139,22 @@ Fetch helper:
 python3 tools/fetch_longmemeval_s.py --output /tmp/longmemeval_s.json
 ```
 
-The helper downloads the official LongMemEval_s artifact from Hugging Face when network access is
-available, validates that the JSON contains LongMemEval-shaped records, and atomically installs it
-at the benchmark runner's default path. If network access is blocked, it fails closed with a JSON
-error and leaves any existing artifact untouched.
+The helper downloads the official cleaned LongMemEval_s artifact from Hugging Face
+(`xiaowu0162/longmemeval-cleaned/longmemeval_s_cleaned.json`) when network access is available,
+validates that the JSON contains LongMemEval-shaped records, and atomically installs it at the
+benchmark runner's default path. Before downloading, it also looks for validated local artifacts in
+common mount locations such as `/mnt/c/tmp/longmemeval_s.json` and accepts explicit paths:
+
+```bash
+python3 tools/fetch_longmemeval_s.py \
+  --candidate-path /data/benchmarks/longmemeval_s.json \
+  --output /tmp/longmemeval_s.json
+```
+
+If network access is blocked, it fails closed with a JSON error and leaves any existing artifact
+untouched. If a trusted local/corporate proxy replaces TLS certificates, the operator may rerun with
+`--allow-insecure-tls`; the JSON report records `tls_verification = disabled` so that evidence docs
+can distinguish that run from a normal verified HTTPS download.
 
 ## LOCOMO Reader Gap-Fill Validation
 
@@ -317,6 +329,36 @@ Real full-dataset validation remains blocked:
 missing LongMemEval_s input: /tmp/longmemeval_s.json
 real_longmemeval_exit=2
 ```
+
+Follow-up validation on 2026-06-20 fixed the fetch helper defaults to prefer the current official
+cleaned artifact and verified local-candidate install behavior:
+
+```bash
+python3 tools/fetch_longmemeval_s.py \
+  --output /tmp/longmemeval_candidate_copy.json \
+  --candidate-path tools/fixtures/longmemeval_s_full_path_fixture.json \
+  --min-records 2
+```
+
+The candidate path was copied only after validation and reported
+`status = copied_from_candidate`, `record_count = 2`, and
+`sha256 = 1032b635bf8cd592f4442df1ed65b981eef0274c99c5fb2b4028c5698a9b3588`.
+The real cleaned Hugging Face artifact did not complete locally before the command timeout, and no
+validated `/tmp/longmemeval_s.json` was installed.
+
+The LongMemEval fixture gate was rerun after the fetcher fix:
+
+```bash
+python3 tools/run_longmemeval_s_full_path.py \
+  --threshold-profile fixture \
+  --input tools/fixtures/longmemeval_s_full_path_fixture.json \
+  --report /tmp/longmemeval_fixture_rerun.json \
+  --misses /tmp/longmemeval_fixture_rerun_misses.jsonl
+```
+
+Rerun result: `case_count = 4`, `benchmark_hit_at_k = 1.0`,
+`reader_hit_rate = 1.0`, `benchmark_mean_reciprocal_rank = 1.0`,
+`benchmark_threshold_passed = true`, and `benchmark_threshold_violations = []`.
 
 Claim level: fixture ranking improvement only. This is not a real LongMemEval_s benchmark score and
 does not claim production parity.
