@@ -25,6 +25,7 @@ def main() -> int:
     )
     parser.add_argument("--misses", default="/tmp/temporalstore_longmemeval_s_full_path_misses.jsonl")
     parser.add_argument("--min-hit-rate", type=float, default=0.90)
+    parser.add_argument("--min-case-count", type=int, default=1)
     parser.add_argument("--min-reader-hit-rate", type=float, default=0.0)
     parser.add_argument("--min-token-reduction-percent", type=float, default=0.0)
     parser.add_argument("--max-retrieval-p95-ms", type=float, default=1000.0)
@@ -38,6 +39,7 @@ def main() -> int:
     parser.add_argument("--reader-timeout-seconds", type=float, default=20.0)
     parser.add_argument("--reader-max-context-chars", type=int, default=12000)
     parser.add_argument("--reader-no-fallback", action="store_true")
+    parser.add_argument("--require-open-source-reader", action="store_true")
     args = parser.parse_args()
 
     repo = Path(__file__).resolve().parents[1]
@@ -59,6 +61,8 @@ def main() -> int:
         "longmemeval_s",
         "--min-hit-rate",
         str(args.min_hit_rate),
+        "--min-case-count",
+        str(args.min_case_count),
         "--min-reader-hit-rate",
         str(args.min_reader_hit_rate),
         "--min-token-reduction-percent",
@@ -86,6 +90,8 @@ def main() -> int:
         command.extend(["--reader-base-url", args.reader_base_url])
     if args.reader_no_fallback:
         command.append("--reader-no-fallback")
+    if args.require_open_source_reader:
+        command.append("--require-open-source-reader")
     run(command, cwd=repo)
 
     report_path = Path(args.report)
@@ -97,6 +103,7 @@ def main() -> int:
         "dataset": report.get("dataset"),
         "mode": report.get("mode"),
         "case_count": case_count,
+        "min_case_count": args.min_case_count,
         "conversation_count": int(report.get("conversation_count") or 0),
         "source_count": int(report.get("source_count") or 0),
         "hit_rate": hit_rate,

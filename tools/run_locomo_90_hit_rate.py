@@ -28,6 +28,7 @@ def main() -> int:
     )
     parser.add_argument("--misses", default="/tmp/temporalstore_locomo_ingest_once_misses.jsonl")
     parser.add_argument("--min-hit-rate", type=float, default=0.90)
+    parser.add_argument("--min-case-count", type=int, default=1)
     parser.add_argument("--min-reader-hit-rate", type=float, default=0.0)
     parser.add_argument("--min-token-reduction-percent", type=float, default=0.0)
     parser.add_argument("--max-retrieval-p95-ms", type=float, default=1000.0)
@@ -41,6 +42,7 @@ def main() -> int:
     parser.add_argument("--reader-timeout-seconds", type=float, default=20.0)
     parser.add_argument("--reader-max-context-chars", type=int, default=12000)
     parser.add_argument("--reader-no-fallback", action="store_true")
+    parser.add_argument("--require-open-source-reader", action="store_true")
     parser.add_argument(
         "--evidence-window",
         type=int,
@@ -66,6 +68,8 @@ def main() -> int:
         args.misses,
         "--min-hit-rate",
         str(args.min_hit_rate),
+        "--min-case-count",
+        str(args.min_case_count),
         "--min-reader-hit-rate",
         str(args.min_reader_hit_rate),
         "--min-token-reduction-percent",
@@ -93,6 +97,8 @@ def main() -> int:
         command.extend(["--reader-base-url", args.reader_base_url])
     if args.reader_no_fallback:
         command.append("--reader-no-fallback")
+    if args.require_open_source_reader:
+        command.append("--require-open-source-reader")
     if args.evidence_window is not None:
         command.extend(["--evidence-window", str(args.evidence_window)])
     run(command, cwd=repo)
@@ -113,6 +119,7 @@ def main() -> int:
                 "locomo_comparable_metric": "retrieval_context_hit_at_k",
                 "mode": report.get("mode"),
                 "case_count": case_count,
+                "min_case_count": args.min_case_count,
                 "hit_rate": hit_rate,
                 "min_hit_rate": args.min_hit_rate,
                 "passed": hit_rate >= args.min_hit_rate,

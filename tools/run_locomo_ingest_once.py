@@ -72,6 +72,7 @@ def main() -> int:
         help="Override report dataset name. Defaults to locomo or longmemeval_s by input shape.",
     )
     parser.add_argument("--min-hit-rate", type=float, default=0.90)
+    parser.add_argument("--min-case-count", type=int, default=1)
     parser.add_argument("--min-reader-hit-rate", type=float, default=0.0)
     parser.add_argument("--min-token-reduction-percent", type=float, default=0.0)
     parser.add_argument("--max-retrieval-p95-ms", type=float, default=1000.0)
@@ -104,6 +105,11 @@ def main() -> int:
         "--reader-no-fallback",
         action="store_true",
         help="Fail explicit open-source reader calls instead of falling back to deterministic extraction.",
+    )
+    parser.add_argument(
+        "--require-open-source-reader",
+        action="store_true",
+        help="Fail the benchmark quality gate unless at least one local OpenAI-compatible reader call succeeds.",
     )
     parser.add_argument(
         "--evidence-window",
@@ -265,18 +271,22 @@ def main() -> int:
     evidence_coverage = matched_refs / total_refs if total_refs else 0.0
     total_token_reduction = token_reduction_percent(total_source_tokens, total_retrieved_tokens)
     thresholds = {
+        "min_case_count": args.min_case_count,
         "min_hit_at_k": args.min_hit_rate,
         "min_reader_hit_rate": args.min_reader_hit_rate,
         "min_token_reduction_percent": args.min_token_reduction_percent,
         "max_retrieval_p95_ms": args.max_retrieval_p95_ms,
         "max_reader_p95_ms": args.max_reader_p95_ms,
+        "require_open_source_reader": args.require_open_source_reader,
     }
     threshold_violations = benchmark_threshold_violations(
+        case_count=total,
         hit_rate=hit_rate,
         reader_hit_rate=reader_hit_rate,
         token_reduction=total_token_reduction,
         retrieval_p95=percentile(retrieval_latencies_ms, 95),
         reader_p95=percentile(reader_latencies_ms, 95),
+        open_source_calls=reader.open_source_calls,
         thresholds=thresholds,
     )
 
@@ -406,14 +416,18 @@ def percentile(values: list[float], pct: float) -> float:
 
 def benchmark_threshold_violations(
     *,
+    case_count: int,
     hit_rate: float,
     reader_hit_rate: float,
     token_reduction: float,
     retrieval_p95: float,
     reader_p95: float,
+    open_source_calls: int,
     thresholds: dict[str, float],
 ) -> list[str]:
     violations = []
+    if case_count < int(thresholds["min_case_count"]):
+        violations.append("case_count_below_min")
     if hit_rate < thresholds["min_hit_at_k"]:
         violations.append("hit_at_k_below_min")
     if reader_hit_rate < thresholds["min_reader_hit_rate"]:
@@ -424,6 +438,8 @@ def benchmark_threshold_violations(
         violations.append("retrieval_p95_above_max")
     if reader_p95 > thresholds["max_reader_p95_ms"]:
         violations.append("reader_p95_above_max")
+    if thresholds["require_open_source_reader"] and open_source_calls <= 0:
+        violations.append("open_source_reader_not_used")
     return violations
 
 

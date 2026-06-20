@@ -148,6 +148,52 @@ be compared with the Rust context harness summaries:
 - `benchmark_thresholds`, `benchmark_threshold_passed`, `benchmark_threshold_violations`, and
   `benchmark_quality_ready`
 
+## Reproducible Gates
+
+The committed LongMemEval_s fixture is the CI/local reproducibility gate. It does not claim a paper
+score; it proves the full-path runner, report schema, reader fallback accounting, and threshold
+logic stay executable:
+
+```bash
+python3 tools/run_longmemeval_s_full_path.py \
+  --input tools/fixtures/longmemeval_s_full_path_fixture.json \
+  --min-case-count 4 \
+  --min-hit-rate 1.0 \
+  --reader-mode auto \
+  --report /tmp/temporalstore_longmemeval_fixture_result.json \
+  --misses /tmp/temporalstore_longmemeval_fixture_misses.jsonl
+```
+
+Full LOCOMO local scoring should declare the expected answerable-case count so a partial artifact
+cannot accidentally pass as the full run:
+
+```bash
+python3 tools/run_locomo_90_hit_rate.py \
+  --input /tmp/locomo10.json \
+  --min-case-count 1542 \
+  --min-hit-rate 0.90 \
+  --report /tmp/temporalstore_locomo_full_result.json \
+  --misses /tmp/temporalstore_locomo_full_misses.jsonl
+```
+
+Live open-source reader claims must require an actual model call. This gate fails with
+`open_source_reader_not_used` if the gateway is absent or `--reader-mode auto` falls back:
+
+```bash
+TEMPORALSTORE_READER_BASE_URL=http://127.0.0.1:8000/v1 \
+python3 tools/run_locomo_90_hit_rate.py \
+  --input /tmp/locomo10.json \
+  --min-case-count 1542 \
+  --min-hit-rate 0.90 \
+  --reader-mode open-source \
+  --reader-model google/flan-t5-small \
+  --require-open-source-reader
+```
+
+For a real LongMemEval_s artifact, set `--min-case-count` to the expected number of scored
+questions for that export. The fixture command above intentionally uses `4`; full-dataset docs
+should not reuse that threshold.
+
 ## Rust Improvements In This Pass
 
 - Added LOCOMO JSON -> TemporalStore context JSONL conversion.
@@ -292,6 +338,9 @@ python3 tools/run_longmemeval_s_full_path.py \
 | Benchmark quality ready | `true` |
 | Benchmark per-query rows | 4 |
 | Benchmark token reduction | 0.0 |
+
+The fixture token reduction is `0.0` because all 12 tiny fixture sources fit under `--max-events`.
+This is expected for the reproducibility gate and must not be presented as a compression result.
 
 Open-source reader hook smoke used `--reader-mode auto` without a live gateway, proving the report
 falls back deterministically and records the fallback:
