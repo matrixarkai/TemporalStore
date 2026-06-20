@@ -2,6 +2,10 @@
 
 Run date: 2026-06-19
 
+Canonical checked-in reproducibility evidence for real LOCOMO, blocked real LongMemEval_s, and the
+LongMemEval_s fixture gate is in
+[`benchmark_reproducibility_evidence.md`](benchmark_reproducibility_evidence.md).
+
 ## What Was Matched From The Other Thread
 
 The "LLM Specific TemporalStore Use Cases" thread ran MatrixArk/C++-path LOCOMO testing with:
