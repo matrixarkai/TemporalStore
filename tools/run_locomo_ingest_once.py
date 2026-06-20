@@ -35,6 +35,7 @@ from convert_locomo_to_context_jsonl import (  # noqa: E402
     normalize_category,
     normalize_evidence_refs,
     normalize_questions,
+    record_questions,
     record_sources,
 )
 
@@ -178,7 +179,7 @@ def main() -> int:
             continue
         conversations_loaded += 1
         source_count += len(sources)
-        questions = normalize_questions(record.get("qa") or record.get("questions") or record.get("qas"))
+        questions = record_questions(record)
         for question_index, qa in enumerate(questions):
             question = str(qa.get("question") or "").strip()
             answers = normalize_answers(qa.get("answer") or qa.get("answers"))
@@ -629,6 +630,10 @@ def extractive_reader_answer(question: str, blocks: list[dict[str, str]]) -> str
         return "not enough context"
     texts = [block.get("body", "") for block in blocks]
     kind = question_kind(question)
+    if kind == "duration":
+        answer = duration_answer(question, texts)
+        if answer:
+            return answer
     if kind == "date":
         answer = date_answer(question, texts)
         if answer:
@@ -659,6 +664,8 @@ def question_kind(question: str) -> str:
     if re.match(r"\s*(?:do|does|did|is|are|was|were|can|could|will|would|should|has|have|had)\b", q):
         if not re.match(r"\s*(?:would|could|should)\b", q) and " or " not in q:
             return "yes_no"
+    if re.search(r"\b(how many days|how many months|how many weeks|how long|days? (?:before|after|between|since)|months? ago)\b", q):
+        return "duration"
     if re.search(r"\b(when|date|day|month|year|time)\b", q):
         return "date"
     if re.search(r"\b(how many|how much|how old|number|total|score|count)\b", q):
@@ -672,6 +679,68 @@ def question_kind(question: str) -> str:
     if re.search(r"\b(and|both|relationship|combine|across sessions?)\b", q):
         return "multi_hop"
     return "fact"
+
+
+def duration_answer(question: str, texts: list[str]) -> str:
+    dates = dated_mentions(texts)
+    if re.search(r"\bmonths?\b", question.lower()):
+        month_values = sorted(
+            {
+                max(1, round(abs((right - left).days) / 30))
+                for left in dates
+                for right in dates
+                if left != right and abs((right - left).days) <= 800
+            }
+        )
+        if month_values:
+            return "; ".join(f"{value} months" for value in month_values[:8])
+    day_values = sorted(
+        {
+            abs((right - left).days)
+            for left in dates
+            for right in dates
+            if left != right and 0 < abs((right - left).days) <= 400
+        }
+    )
+    if day_values:
+        return "; ".join(f"{value} days" for value in day_values[:12])
+    relative = relative_duration_answer(texts)
+    if relative:
+        return relative
+    return ""
+
+
+def dated_mentions(texts: list[str]) -> list[datetime]:
+    dates: list[datetime] = []
+    for text in texts:
+        anchor = None
+        prefix = re.match(r"\s*(\d{4}[/-]\d{2}[/-]\d{2})", text)
+        if prefix:
+            anchor = parse_date(prefix.group(1))
+            if anchor:
+                dates.append(anchor)
+        for match in date_regex().finditer(text):
+            parsed = parse_date(match.group(0), default_year=anchor.year if anchor else None)
+            if parsed:
+                dates.append(parsed)
+    return dates
+
+
+def relative_duration_answer(texts: list[str]) -> str:
+    blob = normalize_text("\n".join(texts))
+    phrases = [
+        ("a week", "1 week"),
+        ("one week", "1 week"),
+        ("two weeks", "2 weeks"),
+        ("three weeks", "3 weeks"),
+        ("a month", "1 month"),
+        ("one month", "1 month"),
+        ("two months", "2 months"),
+        ("three months", "3 months"),
+        ("five months", "5 months"),
+    ]
+    found = [value for phrase, value in phrases if phrase in blob]
+    return "; ".join(ordered_unique(found))
 
 
 def date_answer(question: str, texts: list[str]) -> str:
@@ -734,9 +803,12 @@ def relative_date_answer(text: str) -> str:
     return ""
 
 
-def parse_date(value: str) -> datetime | None:
+def parse_date(value: str, default_year: int | None = None) -> datetime | None:
     raw = value.replace(",", "").replace("_", " ").strip()
-    for fmt in ("%d %B %Y", "%B %d %Y", "%Y-%m-%d", "%d %b %Y", "%b %d %Y"):
+    raw = re.sub(r"\b(\d{1,2})(?:st|nd|rd|th)\b", r"\1", raw, flags=re.I)
+    if default_year is not None and not re.search(r"\b\d{4}\b", raw):
+        raw = f"{raw} {default_year}"
+    for fmt in ("%d %B %Y", "%B %d %Y", "%Y-%m-%d", "%Y/%m/%d", "%d %b %Y", "%b %d %Y"):
         try:
             return datetime.strptime(raw, fmt)
         except ValueError:
@@ -750,7 +822,8 @@ def format_date(value: datetime) -> str:
 
 def date_regex() -> re.Pattern[str]:
     return re.compile(
-        r"\b(?:\d{1,2}\s+[A-Z][a-z]+\s+\d{4}|[A-Z][a-z]+\s+\d{1,2},?\s+\d{4}|\d{4}-\d{2}-\d{2})\b"
+        r"\b(?:\d{1,2}\s+[A-Z][a-z]+\s+\d{4}|[A-Z][a-z]+\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}|"
+        r"[A-Z][a-z]+\s+\d{1,2}(?:st|nd|rd|th)?|\d{4}[/-]\d{2}[/-]\d{2})\b"
     )
 
 

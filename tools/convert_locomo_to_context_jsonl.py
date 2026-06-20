@@ -67,7 +67,7 @@ def main() -> None:
             )
             dataset_name = args.dataset_name or infer_dataset_name(record)
             sources = record_sources(record, conversation_id)
-            questions = normalize_questions(record.get("qa") or record.get("questions") or record.get("qas"))
+            questions = record_questions(record)
             for question_index, qa in enumerate(questions):
                 if args.max_questions is not None and written >= args.max_questions:
                     break
@@ -115,6 +115,26 @@ def normalize_questions(raw: Any) -> list[dict[str, Any]]:
         return [item for item in raw if isinstance(item, dict)]
     if isinstance(raw, dict):
         return [raw]
+    return []
+
+
+def record_questions(record: dict[str, Any]) -> list[dict[str, Any]]:
+    questions = normalize_questions(record.get("qa") or record.get("questions") or record.get("qas"))
+    if questions:
+        return questions
+    if str(record.get("question") or "").strip() and (record.get("answer") is not None or record.get("answers") is not None):
+        return [
+            {
+                "question": record.get("question"),
+                "answer": record.get("answer"),
+                "answers": record.get("answers"),
+                "category": record.get("category") or record.get("question_type"),
+                "question_type": record.get("question_type"),
+                "reasoning_type": record.get("reasoning_type"),
+                "ability": record.get("ability"),
+                "evidence": record.get("evidence") or record.get("answer_session_ids"),
+            }
+        ]
     return []
 
 
@@ -318,9 +338,36 @@ def normalize_answers(raw: Any) -> list[str]:
     if raw is None:
         return []
     if isinstance(raw, list):
-        return [str(item).strip() for item in raw if str(item).strip()]
+        answers: list[str] = []
+        for item in raw:
+            answers.extend(answer_variants(str(item)))
+        return ordered_unique(answers)
     text = str(raw).strip()
-    return [text] if text else []
+    return ordered_unique(answer_variants(text))
+
+
+def answer_variants(text: str) -> list[str]:
+    text = text.strip()
+    if not text:
+        return []
+    variants = [text]
+    for part in re.split(r"\.\s+", text):
+        compact = re.sub(r"\([^)]*\)", "", part).strip(" .;")
+        compact = re.sub(r"\b(?:is also acceptable|also acceptable|acceptable)\b", "", compact, flags=re.I).strip(" .;")
+        if compact:
+            variants.append(compact)
+    return variants
+
+
+def ordered_unique(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        key = value.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(value)
+    return out
 
 
 def normalize_evidence_refs(raw: Any) -> list[str]:

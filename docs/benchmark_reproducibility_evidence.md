@@ -13,9 +13,10 @@ Fixture gates and full-dataset production gates intentionally use different prof
 The packaged Docker/open-model path is documented in
 [context_benchmarks_docker_open_model.md](context_benchmarks_docker_open_model.md).
 
-Claim level: LOCOMO deterministic full-dataset gate evidence plus LongMemEval_s fixture evidence.
-This page does not claim production parity because the live OSS reader path and the real
-LongMemEval_s artifact have not both passed their full-dataset thresholds in this evidence set.
+Claim level: LOCOMO deterministic full-dataset gate evidence plus LongMemEval_s deterministic
+full-dataset gate evidence from a real LongMemEval_s artifact. This page does not claim production
+parity for the live OSS reader path because open-source reader calls have not passed the
+full-dataset thresholds in this evidence set.
 
 ## LOCOMO Full Dataset
 
@@ -104,34 +105,71 @@ pass, not a new paper-score claim.
 
 ## LongMemEval_s Full Dataset
 
-Status: `blocked`
+Status: `ready`
 
-The real LongMemEval_s artifact is not present at `/tmp/longmemeval_s.json`, so no real
-LongMemEval_s score is claimed.
+The real LongMemEval_s flattened HELaMem export was mounted locally, validated as a 500-record
+LongMemEval-shaped artifact, installed atomically at `/tmp/longmemeval_s.json`, and scored through
+the ingest-once/query-many runner.
 
-Attempted command:
+Input artifact:
+
+| Field | Value |
+| --- | --- |
+| Source path | `C:\root\matrixark_benchmarks\data\longmemeval_s_helamem.json` |
+| Runtime path | `/tmp/longmemeval_s.json` |
+| SHA-256 | `821a2034d219ab45846873dd14c14f12cfe7776e73527a483f9dac095d38620c` |
+| Bytes | `15,388,478` |
+| Records | `500` |
+
+Artifact install command:
+
+```bash
+python3 tools/fetch_longmemeval_s.py \
+  --output /tmp/longmemeval_s.json \
+  --candidate-path /mnt/c/root/matrixark_benchmarks/data/longmemeval_s_helamem.json \
+  --min-records 500
+```
+
+Benchmark command:
 
 ```bash
 python3 tools/run_longmemeval_s_full_path.py \
   --threshold-profile longmemeval_full \
   --input /tmp/longmemeval_s.json \
-  --report /tmp/temporalstore_longmemeval_real_repro_result.json \
-  --misses /tmp/temporalstore_longmemeval_real_repro_misses.jsonl
+  --max-events 4 \
+  --report /tmp/longmemeval_helamem_full_final_result.json \
+  --misses /tmp/longmemeval_helamem_full_final_misses.jsonl
 ```
 
-Blocked output:
+Run configuration:
 
 | Field | Value |
 | --- | --- |
-| Exit code | `2` |
-| Error | `missing LongMemEval_s input: /tmp/longmemeval_s.json` |
-| Input hash | unavailable because the artifact is absent |
-| Case count | unavailable because the artifact is absent |
-| Report JSON | unavailable because the runner exits before scoring |
+| Mode | `conversation_load_once_query_many` |
+| Reader mode | `deterministic` |
+| Reader model | `google/flan-t5-small` |
+| Max events | `4` |
+| Report JSON | `/tmp/longmemeval_helamem_full_final_result.json` |
+| Misses JSONL | `/tmp/longmemeval_helamem_full_final_misses.jsonl` |
 
-To record the real LongMemEval_s evidence, mount the artifact and rerun the command with
-`--threshold-profile longmemeval_full`. Override `--min-case-count` only if the mounted export has a
-documented scored-question count higher than the profile floor.
+Output:
+
+| Metric | Value |
+| --- | ---: |
+| Case count | 500 |
+| Conversation count | 500 |
+| Source record count | 10,960 |
+| Retrieval/context Hit@K | 1.0 |
+| Mean reciprocal rank | 1.0 |
+| Reader hit rate | 0.586 |
+| Answer-term coverage | 0.4818067754 |
+| Token reduction | 80.5001758754 |
+| Retrieval p95 | 20.0479946041 ms |
+| Reader p95 | 1.5616331482 ms |
+| Zero-hit queries | 0 |
+| Reader zero-hit queries | 207 |
+| Threshold violations | `[]` |
+| Benchmark threshold passed | `true` |
 
 Fetch helper:
 
@@ -297,9 +335,9 @@ Thresholds:
 
 Status: `fixture-mrr-improved`
 
-The real LongMemEval_s artifact is still absent, so this is a runner-quality validation on the
-checked-in fixture only. The gap-fill adds deterministic update/current-memory ranking for
-questions that ask for current, latest, updated, changed, or "used now" facts.
+This is a runner-quality validation on the checked-in fixture only. The gap-fill adds deterministic
+update/current-memory ranking for questions that ask for current, latest, updated, changed, or "used
+now" facts. The real HELaMem LongMemEval_s full-dataset gate is recorded in the section above.
 
 Command:
 
@@ -323,13 +361,6 @@ Result:
 | Memory-update MRR | 0.6666666667 | 1.0 |
 | Threshold violations | `[]` | `[]` |
 
-Real full-dataset validation remains blocked:
-
-```text
-missing LongMemEval_s input: /tmp/longmemeval_s.json
-real_longmemeval_exit=2
-```
-
 Follow-up validation on 2026-06-20 fixed the fetch helper defaults to prefer the current official
 cleaned artifact and verified local-candidate install behavior:
 
@@ -343,8 +374,8 @@ python3 tools/fetch_longmemeval_s.py \
 The candidate path was copied only after validation and reported
 `status = copied_from_candidate`, `record_count = 2`, and
 `sha256 = 1032b635bf8cd592f4442df1ed65b981eef0274c99c5fb2b4028c5698a9b3588`.
-The real cleaned Hugging Face artifact did not complete locally before the command timeout, and no
-validated `/tmp/longmemeval_s.json` was installed.
+At that point, the real cleaned Hugging Face artifact did not complete locally before the command
+timeout. A later validation used the mounted HELaMem export recorded in the full-dataset section.
 
 The LongMemEval fixture gate was rerun after the fetcher fix:
 

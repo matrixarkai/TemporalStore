@@ -236,7 +236,11 @@ def is_longmemeval_record(record: Any) -> bool:
     if not isinstance(record, dict):
         return False
     has_history = isinstance(record.get("haystack_sessions"), list) or isinstance(record.get("conversation"), dict)
-    has_questions = isinstance(record.get("questions"), list) or isinstance(record.get("qa"), list)
+    has_questions = (
+        isinstance(record.get("questions"), list)
+        or isinstance(record.get("qa"), list)
+        or (str(record.get("question") or "").strip() and record.get("answer") is not None)
+    )
     return has_history and has_questions
 
 
