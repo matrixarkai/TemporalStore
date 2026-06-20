@@ -1,8 +1,8 @@
 # Benchmark Reproducibility Evidence
 
-Validation time: 2026-06-20T21:38:18Z
+Validation time: 2026-06-20T21:51:35Z
 
-Runner revision: exact OSS reader endpoint runner update in this commit
+Runner revision: next implementation order full-gate rerun in this commit
 
 This page records benchmark evidence from the checked-in TemporalStore runners. It separates real
 dataset scores from fixture gates so fixture results are not presented as paper-equivalent LOCOMO or
@@ -76,6 +76,116 @@ Successful live-reader runs now archive `*_paper_comparable_report.json` beside 
 report. That compact archive uses `matrixark_vikingmem_paper_comparable_report_v1` and carries the
 dataset hash, model/provider, reader mode, prompt templates, thresholds, p50/p95 latency, token
 reduction, quality-gate result, and category breakdown required for C++/OpenViking comparison.
+
+## Next Implementation Order Rerun
+
+Status: `deterministic_full_gates_ready_oss_reader_blocked`
+
+The requested implementation order has been executed in the checked-in runner:
+
+| Step | Status | Evidence |
+| --- | --- | --- |
+| LongMemEval aggregation reader | implemented | money totals/differences, counts, average/min/max, and named-list aggregation paths are active in the deterministic reader |
+| LOCOMO Category 3 temporal reader | implemented | temporal anchors, before/after, first/last, relative-date, and duration paths are active in the deterministic reader |
+| Query-aware compact evidence diversity | implemented | aggregation and multi-evidence questions keep lexical evidence and add bounded source/session-diverse evidence |
+| Insufficient-info detector | implemented | missing-anchor and not-enough-information answers are emitted before aggregation/temporal synthesis |
+| LOCOMO full gate | passed | `/tmp/temporalstore_next_order_locomo_result.json` |
+| LongMemEval_s full gate | passed | `/tmp/temporalstore_next_order_longmemeval_result.json` |
+| Live OSS-reader path | blocked | no local OpenAI-compatible endpoint was reachable |
+| Paper-comparable archives | generated | `/tmp/temporalstore_next_order_locomo_paper_comparable.json`, `/tmp/temporalstore_next_order_longmemeval_paper_comparable.json` |
+
+LOCOMO deterministic full gate command:
+
+```bash
+python3 tools/run_locomo_90_hit_rate.py \
+  --threshold-profile locomo_full \
+  --input /tmp/locomo10.json \
+  --report /tmp/temporalstore_next_order_locomo_result.json \
+  --misses /tmp/temporalstore_next_order_locomo_misses.jsonl
+```
+
+LOCOMO result:
+
+| Metric | Value |
+| --- | ---: |
+| Case count | 1,542 |
+| Reader mode | deterministic |
+| Open-source reader calls | 0 |
+| Hit@K | 0.9409857328 |
+| Reader hit rate | 0.8488975357 |
+| Token reduction | 83.9726870326 |
+| Retrieval p95 | 122.9576381156 ms |
+| Reader p95 | 12.6117436797 ms |
+| Threshold violations | `[]` |
+| Category 3 Hit@K | 0.8020833333 |
+| Category 3 reader hit rate | 0.5 |
+
+LongMemEval_s deterministic full gate command:
+
+```bash
+python3 tools/run_longmemeval_s_full_path.py \
+  --threshold-profile longmemeval_full \
+  --input /tmp/longmemeval_s.json \
+  --reader-mode deterministic \
+  --report /tmp/temporalstore_next_order_longmemeval_result.json \
+  --misses /tmp/temporalstore_next_order_longmemeval_misses.jsonl
+```
+
+LongMemEval_s result:
+
+| Metric | Value |
+| --- | ---: |
+| Case count | 500 |
+| Reader mode | deterministic |
+| Open-source reader calls | 0 |
+| Hit@K | 1.0 |
+| Reader hit rate | 0.858 |
+| Token reduction | 81.3294973655 |
+| Retrieval p95 | 43.4940596751 ms |
+| Reader p95 | 9.5232393127 ms |
+| Threshold violations | `[]` |
+| Multi-session reader hit rate | 0.6766917293 |
+| Temporal-reasoning reader hit rate | 0.8571428571 |
+
+Paper-comparable archive commands:
+
+```bash
+python3 tools/archive_context_benchmark_report.py \
+  --report /tmp/temporalstore_next_order_locomo_result.json \
+  --input /tmp/locomo10.json \
+  --output /tmp/temporalstore_next_order_locomo_paper_comparable.json
+
+python3 tools/archive_context_benchmark_report.py \
+  --report /tmp/temporalstore_next_order_longmemeval_result.json \
+  --input /tmp/longmemeval_s.json \
+  --output /tmp/temporalstore_next_order_longmemeval_paper_comparable.json
+```
+
+OSS-reader probe:
+
+| Endpoint | Probe result |
+| --- | --- |
+| `http://127.0.0.1:8000/v1/models` | connection refused |
+| `http://127.0.0.1:11434/v1/models` | connection refused |
+| `http://127.0.0.1:8080/v1/models` | connection refused |
+
+Fail-closed OSS runner status:
+
+```json
+{
+  "phase": "missing_reader_base_url",
+  "reader_provider_name": "matrixark-cpp-oss-context",
+  "reader_model": "google/flan-t5-small",
+  "locomo_status": "not_run",
+  "longmemeval_status": "not_run",
+  "claim_level": "live_oss_reader_required"
+}
+```
+
+Claim label: these are deterministic full-dataset gate passes plus paper-comparable archive files.
+They are not live OSS-reader or paper-score parity claims until a reachable
+`matrixark-cpp-oss-context` OpenAI-compatible endpoint runs with `reader_open_source_calls > 0`,
+no fallback, and zero threshold violations.
 
 ## LOCOMO Full Dataset
 
