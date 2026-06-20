@@ -91,10 +91,21 @@ retrieval/context-hit metric, not to answer-generation accuracy. Full-conversati
 retrieval remains supported by omitting `--evidence-window` and
 `TEMPORALSTORE_CONTEXT_BENCHMARK_DIRECT_SOURCE_SCORING`.
 
+The repeatable 90%+ gate is wrapped as:
+
+```bash
+python3 tools/run_locomo_90_hit_rate.py --input /tmp/locomo10.json --min-hit-rate 0.90
+```
+
+The wrapper fails if the comparable `retrieval_context_hit_at_k` metric is below 90% and always
+prints answer-term coverage separately so deterministic/LLM reader accuracy is not confused with
+retrieval hit rate.
+
 ## Rust Improvements In This Pass
 
 - Added LOCOMO JSON -> TemporalStore context JSONL conversion.
 - Added LongMemEval_s `haystack_sessions` -> TemporalStore context JSONL conversion.
+- Added a repeatable `tools/run_locomo_90_hit_rate.py` gate for the LOCOMO 90%+ comparable metric.
 - Added external-only benchmark mode.
 - Reused ingested source sets by digest so LOCOMO runs mirror MatrixArk's ingest-once/query-many
   shape instead of re-ingesting the same conversation per question.
