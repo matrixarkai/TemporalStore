@@ -97,15 +97,18 @@ The repeatable 90%+ gate is wrapped as:
 python3 tools/run_locomo_90_hit_rate.py --input /tmp/locomo10.json --min-hit-rate 0.90
 ```
 
-The wrapper fails if the comparable `retrieval_context_hit_at_k` metric is below 90% and always
-prints answer-term coverage separately so deterministic/LLM reader accuracy is not confused with
-retrieval hit rate.
+The wrapper uses the conversation-load-once/query-many runner, fails if the comparable
+`retrieval_context_hit_at_k` metric is below 90%, and always prints answer-term coverage separately
+so deterministic/LLM reader accuracy is not confused with retrieval hit rate.
 
 ## Rust Improvements In This Pass
 
 - Added LOCOMO JSON -> TemporalStore context JSONL conversion.
 - Added LongMemEval_s `haystack_sessions` -> TemporalStore context JSONL conversion.
 - Added a repeatable `tools/run_locomo_90_hit_rate.py` gate for the LOCOMO 90%+ comparable metric.
+- Added `tools/run_locomo_ingest_once.py` so LOCOMO loads each conversation source bundle once and
+  streams all questions through the same ranked context instead of re-running a per-question
+  harness ingestion path.
 - Added external-only benchmark mode.
 - Reused ingested source sets by digest so LOCOMO runs mirror MatrixArk's ingest-once/query-many
   shape instead of re-ingesting the same conversation per question.
@@ -171,6 +174,25 @@ Full `/tmp/locomo10.json` LOCOMO evidence-window diagnostic after adding evidenc
 This is the closest Rust-side counterpart to the MatrixArk/C++ path's retrieval/context-hit metric
 for the same answerable count. It exceeds the 90% target and the recorded MatrixArk/C++ retrieval
 context hit of 96.02%, while answer-term and deterministic-reader accuracy remain separate gaps.
+
+Full `/tmp/locomo10.json` conversation-load-once/query-many diagnostic without evidence windows:
+
+| Metric | Result |
+| --- | ---: |
+| Answerable cases | 1,542 |
+| Conversations loaded | 10 |
+| Source records loaded | 9,363 |
+| Max retained events/query | 128 |
+| Retrieval/context Hit@K | 0.92153048 |
+| Evidence-ref coverage | 0.73780229 |
+| MRR | 0.48824869 |
+| Answer-term coverage | 0.66407263 |
+| Missing expected refs | 618 |
+| Missing answer terms | 518 |
+| Zero-hit queries | 121 |
+
+This is the production-shaped local runner for full LOCOMO iteration: each conversation is built
+once, then all questions for that conversation are streamed against the shared source bundle.
 
 Small engine-backed smoke over the first 10 evidence-window cases:
 
