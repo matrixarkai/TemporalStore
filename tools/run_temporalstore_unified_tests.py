@@ -234,6 +234,13 @@ def validate_context_benchmark_step(path: Path, case: dict, step: dict) -> None:
     for field_name in ("rust_runner", "cpp_runner_contract", "archive_contract"):
         if not isinstance(command.get(field_name), str) or not command[field_name]:
             raise SystemExit(f"{location}: benchmark contract must declare {field_name}")
+    required_paths = command.get("required_paths")
+    if case["name"] == "context_benchmark_full_dataset_gates":
+        if not isinstance(required_paths, list) or "tools/compare_context_benchmark_archives.py" not in required_paths:
+            raise SystemExit(
+                f"{location}: full benchmark contract must require "
+                "tools/compare_context_benchmark_archives.py"
+            )
     datasets = command.get("datasets")
     if not isinstance(datasets, list) or not datasets:
         raise SystemExit(f"{location}: benchmark contract must declare datasets")

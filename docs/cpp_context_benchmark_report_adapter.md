@@ -93,6 +93,21 @@ python3 tools/compare_context_benchmark_reports.py \
   --dataset locomo
 ```
 
+Compare complete Docker/open-model archive directories with:
+
+```bash
+python3 tools/compare_context_benchmark_archives.py \
+  --rust-archive /tmp/rust_context_benchmark_archive \
+  --cpp-archive /tmp/cpp_context_benchmark_archive \
+  --case-name context_benchmark_full_dataset_gates \
+  --datasets locomo longmemeval_s
+```
+
+Use `--require-executed` only for a real full-dataset evidence pass. Without it, the archive
+comparator accepts explicit skipped/not-run statuses on both sides, which keeps missing LOCOMO,
+LongMemEval_s, or live OSS-reader artifacts honest instead of turning fixture or skipped runs into
+production evidence.
+
 The comparator checks:
 
 - all required report fields from the shared corpus
@@ -102,6 +117,14 @@ The comparator checks:
 - per-query `query_id` coverage
 - per-query hit, reader-hit, rank, category, token counts, and token reduction
 - latency fields are present, non-negative, and within a configurable ratio
+
+The archive comparator checks:
+
+- `manifest.json` exists in both archives
+- reader model and optional reader endpoint metadata match
+- each requested dataset has matching C++/Rust execution status
+- skipped real datasets remain explicit unless `--require-executed` is set
+- passed datasets contain report JSON files and pass the per-report comparator
 
 Use `--numeric-tolerance` for floating-point drift and `--latency-ratio-tolerance` for expected
 runtime differences between C++ and Rust environments.

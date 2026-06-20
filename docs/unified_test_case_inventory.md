@@ -190,6 +190,11 @@ one report JSON and misses JSONL per executed dataset.
 C++ can use `compat/cpp_context_benchmark_report_adapter.h` as the native emitter template. Rust and
 C++ benchmark outputs are compared with `tools/compare_context_benchmark_reports.py`, which validates
 the shared report contract and compares summary plus per-query rows by `query_id`.
+Full Docker/open-model benchmark archives are compared with
+`tools/compare_context_benchmark_archives.py`, which validates both `manifest.json` files, matches
+dataset execution statuses, delegates passed report pairs to the per-report comparator, and treats
+skipped real LOCOMO/LongMemEval_s artifacts as explicit blockers unless the caller intentionally
+allows skipped evidence.
 
 ## Are There Still Rust-Specific Tests?
 
