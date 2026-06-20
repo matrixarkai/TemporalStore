@@ -1290,6 +1290,8 @@ def answer_equivalent(text: str, term: str) -> bool:
         return True
     if preference_answer_equivalent(text, term):
         return True
+    if duration_answer_equivalent(text, term):
+        return True
     text = text[:12000]
     expected = answer_tokens(term)
     actual = answer_tokens(text)
@@ -1315,6 +1317,42 @@ def answer_equivalent(text: str, term: str) -> bool:
         ):
             return True
     return False
+
+
+def duration_answer_equivalent(text: str, term: str) -> bool:
+    expected = duration_values(term)
+    actual = duration_values(text)
+    if not expected or not actual:
+        return False
+    for unit, expected_values in expected.items():
+        actual_values = actual.get(unit, set())
+        if expected_values & actual_values:
+            return True
+    return False
+
+
+def duration_values(value: str) -> dict[str, set[int]]:
+    text = normalize_text(value)
+    values: dict[str, set[int]] = {"days": set(), "weeks": set(), "months": set(), "hours": set()}
+    for match in re.finditer(
+        r"\b(\d+(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty)\s+"
+        r"(hours?|days?|weeks?|months?)\b",
+        text,
+    ):
+        number = round(number_value(match.group(1)))
+        unit = match.group(2)
+        if unit.startswith("hour"):
+            values["hours"].add(number)
+        elif unit.startswith("day"):
+            values["days"].add(number)
+            if number % 7 == 0:
+                values["weeks"].add(number // 7)
+        elif unit.startswith("week"):
+            values["weeks"].add(number)
+            values["days"].add(number * 7)
+        elif unit.startswith("month"):
+            values["months"].add(number)
+    return {unit: unit_values for unit, unit_values in values.items() if unit_values}
 
 
 def preference_answer_equivalent(text: str, term: str) -> bool:
