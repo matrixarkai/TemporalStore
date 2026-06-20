@@ -1,8 +1,8 @@
 # Benchmark Reproducibility Evidence
 
-Validation time: 2026-06-20T21:05:00Z
+Validation time: 2026-06-20T22:05:00Z
 
-Runner revision: retrieval gate preservation update in this commit
+Runner revision: LongMemEval aggregation reader update in this commit
 
 This page records benchmark evidence from the checked-in TemporalStore runners. It separates real
 dataset scores from fixture gates so fixture results are not presented as paper-equivalent LOCOMO or
@@ -294,6 +294,44 @@ python3 tools/run_locomo_90_hit_rate.py \
 
 Expected result: exit code `2` with a message that `--evidence-window` is diagnostic-only and is
 not allowed with the production `locomo_full` profile.
+
+### LongMemEval_s Aggregation Reader Gap-Fill
+
+Status: `ready`
+
+This pass targets the `multi_session` reader gap where the retrieved evidence contains values
+spread across sessions but the deterministic reader must aggregate them. The reader now has an
+explicit aggregation path for money totals/differences, counts across sessions, average/min/max,
+`how many total`, and named item lists such as doctors, movie festivals, weddings, aquariums,
+episodes, and planted item counts.
+
+Command:
+
+```bash
+python3 tools/run_longmemeval_s_full_path.py \
+  --threshold-profile longmemeval_full \
+  --input /tmp/longmemeval_s.json \
+  --report /tmp/longmemeval_aggregation_reader_result2.json \
+  --misses /tmp/longmemeval_aggregation_reader_misses2.jsonl
+```
+
+Result:
+
+| Metric | Previous full run | After aggregation reader |
+| --- | ---: | ---: |
+| Case count | 500 | 500 |
+| Retrieval/context Hit@K | 1.0 | 1.0 |
+| Reader hit rate | 0.838 | 0.846 |
+| `multi_session` reader hit rate | 0.6315789474 | 0.6616541353 |
+| `temporal_reasoning` reader hit rate | 0.8421052632 | 0.8421052632 |
+| Threshold violations | `[]` | `[]` |
+
+LOCOMO was rerun twice as the retrieval-preservation guardrail. Both runs preserved
+`Hit@K = 0.9409857328`, `min_hit_at_k = 0.94`, and `gold_evidence_window_used = false`, so the
+retrieval correctness gate stayed above the requested floor without gold evidence windows. The
+local runs were not recorded as full `locomo_full` ready evidence because this machine reported
+`retrieval_p95_above_max` (`303.4885492757894 ms` and `301.7106862796936 ms`) against the strict
+250 ms p95 latency budget.
 
 Fetch helper:
 
