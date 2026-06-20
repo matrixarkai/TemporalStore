@@ -144,6 +144,23 @@ First-conversation LOCOMO evidence-window diagnostic after adding evidence-ref s
 | Missing answer terms | 60 |
 | Zero-hit queries | 1 |
 
+Full `/tmp/locomo10.json` LOCOMO evidence-window diagnostic after adding evidence-ref scoring:
+
+| Metric | Result |
+| --- | ---: |
+| Answerable cases | 1,542 |
+| Retrieval/context Hit@K | 0.99675745 |
+| Evidence-ref coverage | 0.98727196 |
+| MRR | 0.70516527 |
+| Answer-term coverage | 0.63942933 |
+| Missing expected refs | 30 |
+| Missing answer terms | 556 |
+| Zero-hit queries | 5 |
+
+This is the closest Rust-side counterpart to the MatrixArk/C++ path's retrieval/context-hit metric
+for the same answerable count. It exceeds the 90% target and the recorded MatrixArk/C++ retrieval
+context hit of 96.02%, while answer-term and deterministic-reader accuracy remain separate gaps.
+
 Small engine-backed smoke over the first 10 evidence-window cases:
 
 | Metric | Result |
