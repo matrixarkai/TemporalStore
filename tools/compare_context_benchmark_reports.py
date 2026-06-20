@@ -80,18 +80,26 @@ def main() -> int:
     compare_summary(rust, cpp, args.numeric_tolerance, args.latency_ratio_tolerance, failures)
     compare_thresholds(rust, cpp, args.numeric_tolerance, failures)
     compare_category_breakdown(rust, cpp, args.numeric_tolerance, failures)
-    compare_per_query(rust, cpp, args.numeric_tolerance, failures)
+    per_query_compare = compare_per_query(rust, cpp, args.numeric_tolerance, failures)
 
     result = {
+        "schema": "matrixark_vikingmem_context_benchmark_report_compare_v2",
         "ready": not failures,
         "rust_report": str(args.rust_report),
         "cpp_report": str(args.cpp_report),
         "case_name": contract["case_name"],
-        "format": contract["format"],
+        "report_contract_format": contract["format"],
         "rust_case_count": rust.get("case_count"),
         "cpp_case_count": cpp.get("case_count"),
         "rust_per_query_count": len(rust.get("benchmark_per_query") or []),
         "cpp_per_query_count": len(cpp.get("benchmark_per_query") or []),
+        "per_query_compare": per_query_compare,
+        "rust_only_miss_count": per_query_compare["retrieval_misses"]["rust_only_count"],
+        "cpp_only_miss_count": per_query_compare["retrieval_misses"]["cpp_only_count"],
+        "shared_hard_miss_count": per_query_compare["retrieval_misses"]["shared_hard_count"],
+        "reader_rust_only_miss_count": per_query_compare["reader_misses"]["rust_only_count"],
+        "reader_cpp_only_miss_count": per_query_compare["reader_misses"]["cpp_only_count"],
+        "reader_shared_hard_miss_count": per_query_compare["reader_misses"]["shared_hard_count"],
         "failure_count": len(failures),
         "failures": failures,
     }
@@ -260,30 +268,113 @@ def compare_per_query(
     cpp: dict[str, Any],
     tolerance: float,
     failures: list[str],
-) -> None:
+) -> dict[str, Any]:
     rust_rows = rows_by_query_id("rust", rust.get("benchmark_per_query"), failures)
     cpp_rows = rows_by_query_id("cpp", cpp.get("benchmark_per_query"), failures)
+    result: dict[str, Any] = {
+        "common_query_count": 0,
+        "missing_in_cpp": [],
+        "missing_in_rust": [],
+        "field_mismatch_count": 0,
+        "field_mismatches": [],
+        "retrieval_misses": empty_miss_partition(),
+        "reader_misses": empty_miss_partition(),
+    }
     if not rust_rows or not cpp_rows:
-        return
+        return result
     missing_in_cpp = sorted(set(rust_rows) - set(cpp_rows))
     missing_in_rust = sorted(set(cpp_rows) - set(rust_rows))
+    result["missing_in_cpp"] = missing_in_cpp
+    result["missing_in_rust"] = missing_in_rust
     if missing_in_cpp:
         failures.append(f"cpp missing query_ids: {missing_in_cpp[:20]}")
     if missing_in_rust:
         failures.append(f"rust missing query_ids: {missing_in_rust[:20]}")
-    for query_id in sorted(set(rust_rows) & set(cpp_rows)):
+    common_query_ids = sorted(set(rust_rows) & set(cpp_rows))
+    result["common_query_count"] = len(common_query_ids)
+    result["retrieval_misses"] = classify_misses(common_query_ids, rust_rows, cpp_rows, field="hit")
+    result["reader_misses"] = classify_misses(common_query_ids, rust_rows, cpp_rows, field="reader_hit")
+    for query_id in common_query_ids:
         rust_row = rust_rows[query_id]
         cpp_row = cpp_rows[query_id]
         for field in PER_QUERY_EXACT_FIELDS:
-            compare_equal(f"query[{query_id}].{field}", rust_row.get(field), cpp_row.get(field), failures)
+            compare_equal_tracking(
+                f"query[{query_id}].{field}",
+                rust_row.get(field),
+                cpp_row.get(field),
+                failures,
+                result["field_mismatches"],
+            )
         for field in PER_QUERY_NUMERIC_FIELDS:
-            compare_number(
+            compare_number_tracking(
                 f"query[{query_id}].{field}",
                 rust_row.get(field),
                 cpp_row.get(field),
                 tolerance,
                 failures,
+                result["field_mismatches"],
             )
+    result["field_mismatch_count"] = len(result["field_mismatches"])
+    return result
+
+
+def empty_miss_partition() -> dict[str, Any]:
+    return {
+        "rust_only_count": 0,
+        "cpp_only_count": 0,
+        "shared_hard_count": 0,
+        "rust_only": [],
+        "cpp_only": [],
+        "shared_hard": [],
+    }
+
+
+def classify_misses(
+    query_ids: list[str],
+    rust_rows: dict[str, dict[str, Any]],
+    cpp_rows: dict[str, dict[str, Any]],
+    *,
+    field: str,
+) -> dict[str, Any]:
+    rust_only = []
+    cpp_only = []
+    shared_hard = []
+    for query_id in query_ids:
+        rust_hit = bool(rust_rows[query_id].get(field))
+        cpp_hit = bool(cpp_rows[query_id].get(field))
+        if not rust_hit and cpp_hit:
+            rust_only.append(query_summary(query_id, rust_rows[query_id], cpp_rows[query_id], field))
+        elif rust_hit and not cpp_hit:
+            cpp_only.append(query_summary(query_id, rust_rows[query_id], cpp_rows[query_id], field))
+        elif not rust_hit and not cpp_hit:
+            shared_hard.append(query_summary(query_id, rust_rows[query_id], cpp_rows[query_id], field))
+    return {
+        "rust_only_count": len(rust_only),
+        "cpp_only_count": len(cpp_only),
+        "shared_hard_count": len(shared_hard),
+        "rust_only": rust_only,
+        "cpp_only": cpp_only,
+        "shared_hard": shared_hard,
+    }
+
+
+def query_summary(
+    query_id: str,
+    rust_row: dict[str, Any],
+    cpp_row: dict[str, Any],
+    field: str,
+) -> dict[str, Any]:
+    return {
+        "query_id": query_id,
+        "category": rust_row.get("category") or cpp_row.get("category"),
+        "field": field,
+        "rust_hit": bool(rust_row.get(field)),
+        "cpp_hit": bool(cpp_row.get(field)),
+        "rust_rank": rust_row.get("rank"),
+        "cpp_rank": cpp_row.get("rank"),
+        "rust_retrieved_blocks": rust_row.get("retrieved_blocks"),
+        "cpp_retrieved_blocks": cpp_row.get("retrieved_blocks"),
+    }
 
 
 def rows_by_query_id(label: str, rows: Any, failures: list[str]) -> dict[str, dict[str, Any]]:
@@ -308,6 +399,19 @@ def compare_equal(field: str, rust_value: Any, cpp_value: Any, failures: list[st
         failures.append(f"{field}: rust={rust_value!r} cpp={cpp_value!r}")
 
 
+def compare_equal_tracking(
+    field: str,
+    rust_value: Any,
+    cpp_value: Any,
+    failures: list[str],
+    mismatches: list[dict[str, Any]],
+) -> None:
+    before = len(failures)
+    compare_equal(field, rust_value, cpp_value, failures)
+    if len(failures) != before:
+        mismatches.append({"field": field, "rust": rust_value, "cpp": cpp_value})
+
+
 def compare_number(field: str, rust_value: Any, cpp_value: Any, tolerance: float, failures: list[str]) -> None:
     try:
         rust_number = float(rust_value)
@@ -320,6 +424,20 @@ def compare_number(field: str, rust_value: Any, cpp_value: Any, tolerance: float
         return
     if abs(rust_number - cpp_number) > tolerance:
         failures.append(f"{field}: rust={rust_number} cpp={cpp_number} tolerance={tolerance}")
+
+
+def compare_number_tracking(
+    field: str,
+    rust_value: Any,
+    cpp_value: Any,
+    tolerance: float,
+    failures: list[str],
+    mismatches: list[dict[str, Any]],
+) -> None:
+    before = len(failures)
+    compare_number(field, rust_value, cpp_value, tolerance, failures)
+    if len(failures) != before:
+        mismatches.append({"field": field, "rust": rust_value, "cpp": cpp_value})
 
 
 def compare_latency(field: str, rust_value: Any, cpp_value: Any, ratio: float, failures: list[str]) -> None:

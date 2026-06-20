@@ -76,6 +76,7 @@ Both repos should archive benchmark outputs as:
   manifest.json
   <dataset>_report.json
   <dataset>_misses.jsonl
+  <dataset>_paper_comparable_report.json
 ```
 
 Missing real datasets must be reported as skipped or blocked in `manifest.json`, never as a passing
@@ -130,6 +131,17 @@ The comparator checks:
 - per-query hit, reader-hit, rank, category, token counts, and token reduction
 - latency fields are present, non-negative, and within a configurable ratio
 
+The report comparator also emits a case-by-case miss taxonomy:
+
+- `rust_only`: C++ hit the query but Rust missed it.
+- `cpp_only`: Rust hit the query but C++ missed it.
+- `shared_hard`: both Rust and C++ missed the same query.
+
+The same taxonomy is emitted for `reader_hit` as `reader_rust_only`,
+`reader_cpp_only`, and `reader_shared_hard`. Shared-hard misses are tracked as benchmark
+quality gaps, while Rust-only and C++-only misses are parity deltas because the two systems
+disagree on the same query.
+
 The archive comparator checks:
 
 - `manifest.json` exists in both archives
@@ -137,6 +149,7 @@ The archive comparator checks:
 - each requested dataset has matching C++/Rust execution status
 - skipped real datasets remain explicit unless `--require-executed` is set
 - passed datasets contain report JSON files and pass the per-report comparator
+- archive-level miss totals across all compared datasets
 
 Use `--numeric-tolerance` for floating-point drift and `--latency-ratio-tolerance` for expected
 runtime differences between C++ and Rust environments.

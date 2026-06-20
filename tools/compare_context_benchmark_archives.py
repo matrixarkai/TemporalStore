@@ -57,6 +57,14 @@ def main() -> int:
     failures: list[str] = []
     truth_blockers: list[str] = []
     dataset_results = []
+    miss_totals = {
+        "rust_only": 0,
+        "cpp_only": 0,
+        "shared_hard": 0,
+        "reader_rust_only": 0,
+        "reader_cpp_only": 0,
+        "reader_shared_hard": 0,
+    }
     require_executed = args.require_executed or args.truth_mode == "production"
 
     compare_manifest_field("reader_model", rust_manifest, cpp_manifest, failures)
@@ -92,6 +100,12 @@ def main() -> int:
                 )
                 result["ready"] = compare_result["ready"]
                 result["report_compare"] = compare_result
+                miss_totals["rust_only"] += int(compare_result.get("rust_only_miss_count") or 0)
+                miss_totals["cpp_only"] += int(compare_result.get("cpp_only_miss_count") or 0)
+                miss_totals["shared_hard"] += int(compare_result.get("shared_hard_miss_count") or 0)
+                miss_totals["reader_rust_only"] += int(compare_result.get("reader_rust_only_miss_count") or 0)
+                miss_totals["reader_cpp_only"] += int(compare_result.get("reader_cpp_only_miss_count") or 0)
+                miss_totals["reader_shared_hard"] += int(compare_result.get("reader_shared_hard_miss_count") or 0)
                 failures.extend(f"{dataset}: {item}" for item in compare_result["failures"])
                 if not compare_result["ready"]:
                     truth_blockers.append(f"{dataset}: report comparison failed")
@@ -128,6 +142,7 @@ def main() -> int:
         "case_name": args.case_name,
         "dataset_count": len(dataset_results),
         "executed_dataset_count": executed_dataset_count,
+        "miss_totals": miss_totals,
         "failure_count": len(failures),
         "failures": failures,
         "datasets": dataset_results,
