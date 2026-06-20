@@ -25,6 +25,10 @@ def main() -> int:
     )
     parser.add_argument("--misses", default="/tmp/temporalstore_longmemeval_s_full_path_misses.jsonl")
     parser.add_argument("--min-hit-rate", type=float, default=0.90)
+    parser.add_argument("--min-reader-hit-rate", type=float, default=0.0)
+    parser.add_argument("--min-token-reduction-percent", type=float, default=0.0)
+    parser.add_argument("--max-retrieval-p95-ms", type=float, default=1000.0)
+    parser.add_argument("--max-reader-p95-ms", type=float, default=30000.0)
     parser.add_argument("--max-events", type=int, default=256)
     parser.add_argument("--reader-mode", choices=("deterministic", "open-source", "auto"), default="deterministic")
     parser.add_argument("--reader-provider-name", default="matrixark-cpp-oss-context")
@@ -55,6 +59,14 @@ def main() -> int:
         "longmemeval_s",
         "--min-hit-rate",
         str(args.min_hit_rate),
+        "--min-reader-hit-rate",
+        str(args.min_reader_hit_rate),
+        "--min-token-reduction-percent",
+        str(args.min_token_reduction_percent),
+        "--max-retrieval-p95-ms",
+        str(args.max_retrieval_p95_ms),
+        "--max-reader-p95-ms",
+        str(args.max_reader_p95_ms),
         "--max-events",
         str(args.max_events),
         "--reader-mode",
@@ -106,6 +118,23 @@ def main() -> int:
         "reader_error_count": int(report.get("reader_error_count") or 0),
         "zero_hit_queries": int(report.get("zero_hit_queries") or 0),
         "reader_zero_hit_queries": int(report.get("reader_zero_hit_queries") or 0),
+        "benchmark_quality_ready": bool(report.get("benchmark_quality_ready")),
+        "benchmark_hit_at_k": float(report.get("benchmark_hit_at_k") or 0.0),
+        "benchmark_recall_at_k": float(report.get("benchmark_recall_at_k") or 0.0),
+        "benchmark_mean_reciprocal_rank": float(report.get("benchmark_mean_reciprocal_rank") or 0.0),
+        "benchmark_token_reduction_percent": float(report.get("benchmark_token_reduction_percent") or 0.0),
+        "benchmark_retrieval_p50_ms": float(report.get("benchmark_retrieval_p50_ms") or 0.0),
+        "benchmark_retrieval_p95_ms": float(report.get("benchmark_retrieval_p95_ms") or 0.0),
+        "benchmark_reader_p50_ms": float(report.get("benchmark_reader_p50_ms") or 0.0),
+        "benchmark_reader_p95_ms": float(report.get("benchmark_reader_p95_ms") or 0.0),
+        "benchmark_avg_source_tokens_per_query": float(report.get("benchmark_avg_source_tokens_per_query") or 0.0),
+        "benchmark_avg_retrieved_tokens_per_query": float(report.get("benchmark_avg_retrieved_tokens_per_query") or 0.0),
+        "benchmark_avg_retrieved_blocks_per_query": float(report.get("benchmark_avg_retrieved_blocks_per_query") or 0.0),
+        "benchmark_per_query_count": int(report.get("benchmark_per_query_count") or 0),
+        "benchmark_threshold_passed": bool(report.get("benchmark_threshold_passed")),
+        "benchmark_threshold_violation_count": int(report.get("benchmark_threshold_violation_count") or 0),
+        "benchmark_threshold_violations": report.get("benchmark_threshold_violations") or [],
+        "benchmark_thresholds": report.get("benchmark_thresholds") or {},
         "category_breakdown": report.get("category_breakdown") or {},
         "report": str(report_path),
         "misses": args.misses,

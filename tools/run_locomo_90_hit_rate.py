@@ -28,6 +28,10 @@ def main() -> int:
     )
     parser.add_argument("--misses", default="/tmp/temporalstore_locomo_ingest_once_misses.jsonl")
     parser.add_argument("--min-hit-rate", type=float, default=0.90)
+    parser.add_argument("--min-reader-hit-rate", type=float, default=0.0)
+    parser.add_argument("--min-token-reduction-percent", type=float, default=0.0)
+    parser.add_argument("--max-retrieval-p95-ms", type=float, default=1000.0)
+    parser.add_argument("--max-reader-p95-ms", type=float, default=30000.0)
     parser.add_argument("--max-events", type=int, default=128)
     parser.add_argument("--reader-mode", choices=("deterministic", "open-source", "auto"), default="deterministic")
     parser.add_argument("--reader-provider-name", default="matrixark-cpp-oss-context")
@@ -62,6 +66,14 @@ def main() -> int:
         args.misses,
         "--min-hit-rate",
         str(args.min_hit_rate),
+        "--min-reader-hit-rate",
+        str(args.min_reader_hit_rate),
+        "--min-token-reduction-percent",
+        str(args.min_token_reduction_percent),
+        "--max-retrieval-p95-ms",
+        str(args.max_retrieval_p95_ms),
+        "--max-reader-p95-ms",
+        str(args.max_reader_p95_ms),
         "--max-events",
         str(args.max_events),
         "--reader-mode",
@@ -117,6 +129,23 @@ def main() -> int:
                 "reader_open_source_calls": report.get("reader_open_source_calls"),
                 "reader_fallback_count": report.get("reader_fallback_count"),
                 "reader_error_count": report.get("reader_error_count"),
+                "benchmark_quality_ready": report.get("benchmark_quality_ready"),
+                "benchmark_hit_at_k": report.get("benchmark_hit_at_k"),
+                "benchmark_recall_at_k": report.get("benchmark_recall_at_k"),
+                "benchmark_mean_reciprocal_rank": report.get("benchmark_mean_reciprocal_rank"),
+                "benchmark_token_reduction_percent": report.get("benchmark_token_reduction_percent"),
+                "benchmark_retrieval_p50_ms": report.get("benchmark_retrieval_p50_ms"),
+                "benchmark_retrieval_p95_ms": report.get("benchmark_retrieval_p95_ms"),
+                "benchmark_reader_p50_ms": report.get("benchmark_reader_p50_ms"),
+                "benchmark_reader_p95_ms": report.get("benchmark_reader_p95_ms"),
+                "benchmark_avg_source_tokens_per_query": report.get("benchmark_avg_source_tokens_per_query"),
+                "benchmark_avg_retrieved_tokens_per_query": report.get("benchmark_avg_retrieved_tokens_per_query"),
+                "benchmark_avg_retrieved_blocks_per_query": report.get("benchmark_avg_retrieved_blocks_per_query"),
+                "benchmark_per_query_count": report.get("benchmark_per_query_count"),
+                "benchmark_threshold_passed": report.get("benchmark_threshold_passed"),
+                "benchmark_threshold_violation_count": report.get("benchmark_threshold_violation_count"),
+                "benchmark_threshold_violations": report.get("benchmark_threshold_violations"),
+                "benchmark_thresholds": report.get("benchmark_thresholds"),
                 "answer_reader_gap_visible": answer_coverage < args.min_hit_rate,
                 "report": str(report_path),
                 "misses": args.misses,

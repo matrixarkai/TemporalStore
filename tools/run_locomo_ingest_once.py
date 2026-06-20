@@ -13,9 +13,11 @@ from __future__ import annotations
 import argparse
 import calendar
 import json
+import math
 import re
 import sys
 import os
+import time
 import urllib.error
 import urllib.request
 from collections import defaultdict
@@ -70,6 +72,10 @@ def main() -> int:
         help="Override report dataset name. Defaults to locomo or longmemeval_s by input shape.",
     )
     parser.add_argument("--min-hit-rate", type=float, default=0.90)
+    parser.add_argument("--min-reader-hit-rate", type=float, default=0.0)
+    parser.add_argument("--min-token-reduction-percent", type=float, default=0.0)
+    parser.add_argument("--max-retrieval-p95-ms", type=float, default=1000.0)
+    parser.add_argument("--max-reader-p95-ms", type=float, default=30000.0)
     parser.add_argument("--max-events", type=int, default=128)
     parser.add_argument(
         "--reader-mode",
@@ -132,6 +138,13 @@ def main() -> int:
     category = defaultdict(lambda: {"case_count": 0, "hits": 0, "rr": 0.0, "terms": 0, "matched_terms": 0})
     category_reader = defaultdict(lambda: {"case_count": 0, "hits": 0, "matched_terms": 0, "terms": 0})
     misses: list[dict[str, Any]] = []
+    per_query: list[dict[str, Any]] = []
+    retrieval_latencies_ms: list[float] = []
+    reader_latencies_ms: list[float] = []
+    total_source_tokens = 0
+    total_retrieved_tokens = 0
+    max_retrieved_tokens = 0
+    total_retrieved_blocks = 0
     conversations_loaded = 0
     source_count = 0
     dataset_counts: defaultdict[str, int] = defaultdict(int)
@@ -164,18 +177,31 @@ def main() -> int:
                 if args.evidence_window is not None and refs
                 else sources
             )
+            source_tokens = sum(estimated_tokens(source.get("body", "")) for source in query_sources)
+            retrieval_started = time.perf_counter()
             blocks = rank_sources(question, query_sources, args.max_events)
+            retrieval_ms = elapsed_ms(retrieval_started)
+            reader_started = time.perf_counter()
+            reader_answer = reader.answer(question, blocks)
+            reader_ms = elapsed_ms(reader_started)
             rank = first_hit_rank(blocks, answers, refs)
             matched_terms = count_matched_terms(blocks, answers)
             matched_ref_count = count_matched_refs(blocks, refs)
-            reader_answer = reader.answer(question, blocks)
             reader_hit = any(text_matches(reader_answer, answer) for answer in answers)
             reader_matched_terms = sum(1 for answer in answers if text_matches(reader_answer, answer))
             case_category = normalize_category(
                 qa.get("category") or qa.get("question_type") or qa.get("reasoning_type") or qa.get("ability")
             )
+            retrieved_tokens = sum(estimated_tokens(block.get("body", "")) for block in blocks)
+            query_id = f"{conversation_id}-q{question_index + 1}"
 
             total += 1
+            total_source_tokens += source_tokens
+            total_retrieved_tokens += retrieved_tokens
+            max_retrieved_tokens = max(max_retrieved_tokens, retrieved_tokens)
+            total_retrieved_blocks += len(blocks)
+            retrieval_latencies_ms.append(retrieval_ms)
+            reader_latencies_ms.append(reader_ms)
             total_answer_terms += len(answers)
             matched_answer_terms += matched_terms
             total_refs += len(refs)
@@ -201,7 +227,7 @@ def main() -> int:
             else:
                 misses.append(
                     {
-                        "query_id": f"{conversation_id}-q{question_index + 1}",
+                        "query_id": query_id,
                         "category": case_category,
                         "question": question,
                         "answer_terms": answers,
@@ -211,6 +237,48 @@ def main() -> int:
                         "top_sources": [block["title"] for block in blocks[:5]],
                     }
                 )
+            per_query.append(
+                {
+                    "query_id": query_id,
+                    "category": case_category,
+                    "hit": rank is not None,
+                    "rank": rank,
+                    "reader_hit": reader_hit,
+                    "matched_answer_terms": reader_matched_terms,
+                    "answer_terms": len(answers),
+                    "matched_retrieval_answer_terms": matched_terms,
+                    "expected_source_refs": len(refs),
+                    "matched_source_refs": matched_ref_count,
+                    "retrieved_blocks": len(blocks),
+                    "source_tokens": source_tokens,
+                    "retrieved_tokens": retrieved_tokens,
+                    "token_reduction_percent": token_reduction_percent(source_tokens, retrieved_tokens),
+                    "retrieval_ms": retrieval_ms,
+                    "reader_ms": reader_ms,
+                }
+            )
+
+    hit_rate = hit_count / total if total else 0.0
+    reader_hit_rate = reader_hit_count / total if total else 0.0
+    answer_coverage = matched_answer_terms / total_answer_terms if total_answer_terms else 0.0
+    reader_answer_coverage = reader_answer_coverage_count / total_answer_terms if total_answer_terms else 0.0
+    evidence_coverage = matched_refs / total_refs if total_refs else 0.0
+    total_token_reduction = token_reduction_percent(total_source_tokens, total_retrieved_tokens)
+    thresholds = {
+        "min_hit_at_k": args.min_hit_rate,
+        "min_reader_hit_rate": args.min_reader_hit_rate,
+        "min_token_reduction_percent": args.min_token_reduction_percent,
+        "max_retrieval_p95_ms": args.max_retrieval_p95_ms,
+        "max_reader_p95_ms": args.max_reader_p95_ms,
+    }
+    threshold_violations = benchmark_threshold_violations(
+        hit_rate=hit_rate,
+        reader_hit_rate=reader_hit_rate,
+        token_reduction=total_token_reduction,
+        retrieval_p95=percentile(retrieval_latencies_ms, 95),
+        reader_p95=percentile(reader_latencies_ms, 95),
+        thresholds=thresholds,
+    )
 
     report = {
         "mode": "conversation_load_once_query_many",
@@ -221,16 +289,17 @@ def main() -> int:
         "case_count": total,
         "conversation_count": conversations_loaded,
         "source_count": source_count,
-        "hit_rate": hit_count / total if total else 0.0,
+        "hit_rate": hit_rate,
+        "benchmark_hit_at_k": hit_rate,
+        "benchmark_recall_at_k": hit_rate,
         "mean_reciprocal_rank": reciprocal_rank_sum / total if total else 0.0,
-        "answer_term_coverage": matched_answer_terms / total_answer_terms if total_answer_terms else 0.0,
-        "evidence_ref_coverage": matched_refs / total_refs if total_refs else 0.0,
-        "reader_hit_rate": reader_hit_count / total if total else 0.0,
-        "reader_answer_coverage": reader_answer_coverage_count / total_answer_terms if total_answer_terms else 0.0,
-        "deterministic_reader_hit_rate": reader_hit_count / total if total else 0.0,
-        "deterministic_reader_answer_coverage": (
-            reader_answer_coverage_count / total_answer_terms if total_answer_terms else 0.0
-        ),
+        "benchmark_mean_reciprocal_rank": reciprocal_rank_sum / total if total else 0.0,
+        "answer_term_coverage": answer_coverage,
+        "evidence_ref_coverage": evidence_coverage,
+        "reader_hit_rate": reader_hit_rate,
+        "reader_answer_coverage": reader_answer_coverage,
+        "deterministic_reader_hit_rate": reader_hit_rate,
+        "deterministic_reader_answer_coverage": reader_answer_coverage,
         "reader_mode_requested": reader.config.mode,
         "reader_mode_effective": reader.effective_mode(),
         "reader_provider_name": reader.config.provider_name,
@@ -244,7 +313,25 @@ def main() -> int:
         "missing_expected_terms": total_answer_terms - matched_answer_terms,
         "missing_expected_refs": total_refs - matched_refs,
         "min_hit_rate": args.min_hit_rate,
-        "passed": (hit_count / total if total else 0.0) >= args.min_hit_rate,
+        "passed": hit_rate >= args.min_hit_rate and not threshold_violations,
+        "benchmark_quality_ready": not threshold_violations,
+        "benchmark_threshold_passed": not threshold_violations,
+        "benchmark_threshold_violation_count": len(threshold_violations),
+        "benchmark_threshold_violations": threshold_violations,
+        "benchmark_thresholds": thresholds,
+        "benchmark_per_query_count": len(per_query),
+        "benchmark_per_query": per_query,
+        "benchmark_retrieval_p50_ms": percentile(retrieval_latencies_ms, 50),
+        "benchmark_retrieval_p95_ms": percentile(retrieval_latencies_ms, 95),
+        "benchmark_reader_p50_ms": percentile(reader_latencies_ms, 50),
+        "benchmark_reader_p95_ms": percentile(reader_latencies_ms, 95),
+        "benchmark_avg_retrieved_blocks_per_query": total_retrieved_blocks / total if total else 0.0,
+        "benchmark_avg_source_tokens_per_query": total_source_tokens / total if total else 0.0,
+        "benchmark_avg_retrieved_tokens_per_query": total_retrieved_tokens / total if total else 0.0,
+        "benchmark_max_retrieved_tokens_per_query": max_retrieved_tokens,
+        "benchmark_token_reduction_percent": total_token_reduction,
+        "benchmark_total_source_tokens": total_source_tokens,
+        "benchmark_total_retrieved_tokens": total_retrieved_tokens,
         "max_events": args.max_events,
         "evidence_window": args.evidence_window,
         "misses": args.misses,
@@ -286,6 +373,58 @@ def main() -> int:
             handle.write(json.dumps(miss, ensure_ascii=False) + "\n")
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0 if report["passed"] else 1
+
+
+def elapsed_ms(started: float) -> float:
+    return (time.perf_counter() - started) * 1000.0
+
+
+def estimated_tokens(text: str) -> int:
+    # Deterministic local proxy used for benchmark shape validation.
+    return max(1, math.ceil(len(str(text).split()) * 1.15)) if str(text).strip() else 0
+
+
+def token_reduction_percent(source_tokens: int, retrieved_tokens: int) -> float:
+    if source_tokens <= 0:
+        return 0.0
+    return max(0.0, (source_tokens - retrieved_tokens) * 100.0 / source_tokens)
+
+
+def percentile(values: list[float], pct: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+    rank = (len(ordered) - 1) * pct / 100.0
+    lower = math.floor(rank)
+    upper = math.ceil(rank)
+    if lower == upper:
+        return ordered[int(rank)]
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * (rank - lower)
+
+
+def benchmark_threshold_violations(
+    *,
+    hit_rate: float,
+    reader_hit_rate: float,
+    token_reduction: float,
+    retrieval_p95: float,
+    reader_p95: float,
+    thresholds: dict[str, float],
+) -> list[str]:
+    violations = []
+    if hit_rate < thresholds["min_hit_at_k"]:
+        violations.append("hit_at_k_below_min")
+    if reader_hit_rate < thresholds["min_reader_hit_rate"]:
+        violations.append("reader_hit_rate_below_min")
+    if token_reduction < thresholds["min_token_reduction_percent"]:
+        violations.append("token_reduction_below_min")
+    if retrieval_p95 > thresholds["max_retrieval_p95_ms"]:
+        violations.append("retrieval_p95_above_max")
+    if reader_p95 > thresholds["max_reader_p95_ms"]:
+        violations.append("reader_p95_above_max")
+    return violations
 
 
 @dataclass

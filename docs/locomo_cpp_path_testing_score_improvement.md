@@ -137,6 +137,17 @@ deterministic extractive reader. Reports include `reader_mode_requested`, `reade
 `reader_provider_name`, `reader_model`, `reader_open_source_calls`, `reader_fallback_count`, and
 `reader_error_count` so benchmark output shows whether the OSS reader actually ran.
 
+The scorer also emits VikingMem-style benchmark quality fields so LOCOMO and LongMemEval_s runs can
+be compared with the Rust context harness summaries:
+
+- `benchmark_hit_at_k`, `benchmark_recall_at_k`, and `benchmark_mean_reciprocal_rank`
+- `benchmark_token_reduction_percent`, source/retrieved token totals, and average retrieved blocks
+- `benchmark_retrieval_p50_ms`, `benchmark_retrieval_p95_ms`, `benchmark_reader_p50_ms`, and
+  `benchmark_reader_p95_ms`
+- `benchmark_per_query_count` plus `benchmark_per_query` rows for query-level hit/rank/token/latency
+- `benchmark_thresholds`, `benchmark_threshold_passed`, `benchmark_threshold_violations`, and
+  `benchmark_quality_ready`
+
 ## Rust Improvements In This Pass
 
 - Added LOCOMO JSON -> TemporalStore context JSONL conversion.
@@ -152,6 +163,9 @@ deterministic extractive reader. Reports include `reader_mode_requested`, `reade
 - Added OpenViking/MatrixArk-style open-source reader hooks for LOCOMO and LongMemEval_s gates:
   deterministic fallback by default, `open-source` for local OpenAI-compatible readers, `auto` for
   opportunistic local gateway use, and report fields proving which reader path executed.
+- Added VikingMem-style benchmark quality metrics to the full-dataset scorer: token reduction,
+  retrieval/reader latency percentiles, per-query quality rows, and explicit threshold pass/fail
+  evidence.
 - Added external-only benchmark mode.
 - Reused ingested source sets by digest so LOCOMO runs mirror MatrixArk's ingest-once/query-many
   shape instead of re-ingesting the same conversation per question.
@@ -275,6 +289,9 @@ python3 tools/run_longmemeval_s_full_path.py \
 | MRR | 0.8333333333 |
 | Answer-term coverage | 1.0 |
 | Deterministic-reader hit | 1.0 |
+| Benchmark quality ready | `true` |
+| Benchmark per-query rows | 4 |
+| Benchmark token reduction | 0.0 |
 
 Open-source reader hook smoke used `--reader-mode auto` without a live gateway, proving the report
 falls back deterministically and records the fallback:
