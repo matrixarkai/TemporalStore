@@ -62,6 +62,7 @@ LOCOMO production gate:
 python3 tools/run_locomo_90_hit_rate.py \
   --threshold-profile locomo_full \
   --input /tmp/locomo10.json \
+  --require-rust-temporalstore \
   --report /tmp/temporalstore_locomo_threshold_policy_result.json \
   --misses /tmp/temporalstore_locomo_threshold_policy_misses.jsonl
 ```
@@ -85,9 +86,17 @@ python3 tools/run_longmemeval_s_full_path.py \
   --threshold-profile longmemeval_full \
   --input /tmp/longmemeval_s.json \
   --reader-mode deterministic \
+  --require-rust-temporalstore \
   --report /tmp/temporalstore_longmemeval_full_threshold_policy_result.json \
   --misses /tmp/temporalstore_longmemeval_full_threshold_policy_misses.jsonl
 ```
+
+`--require-rust-temporalstore` converts benchmark cases to the Rust context JSONL contract and runs
+`context_workflow_harness` through a real `TemporalEngine` before the deterministic Python
+reader/scorer emits the final benchmark report. Use
+`--rust-temporalstore-max-cases 0 --rust-temporalstore-source-limit 0` only when a full Rust
+backend replay is intentionally requested; the default bounded proof keeps local full-dataset
+scoring practical while preventing Python-only benchmark evidence.
 
 Explicit threshold flags override profile defaults. Use overrides only when the
 artifact contract changes, and record the reason in the reproducibility evidence

@@ -56,6 +56,30 @@ def main() -> int:
             "reader_fallback_count": int(report.get("reader_fallback_count") or 0),
             "reader_error_count": int(report.get("reader_error_count") or 0),
         },
+        "rust_temporalstore_backend": {
+            "required": bool(report.get("rust_temporalstore_backend_required")),
+            "ready": bool(report.get("rust_temporalstore_backend_ready")),
+            "strict_external_ready": bool(
+                (report.get("rust_temporalstore_backend_report") or {}).get(
+                    "rust_temporalstore_strict_external_ready"
+                )
+            )
+            if isinstance(report.get("rust_temporalstore_backend_report"), dict)
+            else False,
+            "report_path": (report.get("rust_temporalstore_backend_report") or {}).get("report_path")
+            if isinstance(report.get("rust_temporalstore_backend_report"), dict)
+            else "",
+            "converted_jsonl": (report.get("rust_temporalstore_backend_report") or {}).get("converted_jsonl")
+            if isinstance(report.get("rust_temporalstore_backend_report"), dict)
+            else "",
+            "case_count": (
+                (report.get("rust_temporalstore_backend_report") or {})
+                .get("harness", {})
+                .get("external_benchmark_case_count")
+                if isinstance(report.get("rust_temporalstore_backend_report"), dict)
+                else 0
+            ),
+        },
         "prompt": {
             "system": report.get("reader_prompt_system") or "",
             "user_template": report.get("reader_prompt_user_template") or "",

@@ -18,6 +18,8 @@ import math
 import re
 import sys
 import os
+import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -163,7 +165,41 @@ def main() -> int:
         default=None,
         help="Optional diagnostic window. Omit to score each query against the full conversation bundle.",
     )
+    parser.add_argument(
+        "--require-rust-temporalstore",
+        action="store_true",
+        help="Run the Rust TemporalStore context harness against converted benchmark cases before scoring.",
+    )
+    parser.add_argument(
+        "--rust-temporalstore-max-cases",
+        type=int,
+        default=4,
+        help="Maximum converted cases for the Rust TemporalStore backend proof. Use 0 for all cases.",
+    )
+    parser.add_argument(
+        "--rust-temporalstore-timeout-seconds",
+        type=float,
+        default=180.0,
+        help="Timeout for the Rust TemporalStore context harness backend proof.",
+    )
+    parser.add_argument(
+        "--rust-temporalstore-source-limit",
+        type=int,
+        default=64,
+        help="Maximum ranked sources per converted Rust TemporalStore proof case. Use 0 for all sources.",
+    )
+    parser.add_argument(
+        "--rust-temporalstore-jsonl",
+        default="",
+        help="Optional path for converted Rust TemporalStore context JSONL.",
+    )
+    parser.add_argument(
+        "--rust-temporalstore-report",
+        default="",
+        help="Optional path for the Rust TemporalStore harness JSON report.",
+    )
     args = parser.parse_args()
+    rust_backend_report = run_rust_temporalstore_backend(args) if args.require_rust_temporalstore else None
     reader = BenchmarkReader(
         ReaderConfig(
             mode=args.reader_mode,
@@ -388,6 +424,11 @@ def main() -> int:
         "input": str(args.input),
         "input_sha256": sha256_file(Path(args.input)),
         "input_bytes": Path(args.input).stat().st_size if Path(args.input).exists() else 0,
+        "rust_temporalstore_backend_required": args.require_rust_temporalstore,
+        "rust_temporalstore_backend_ready": bool(
+            rust_backend_report and rust_backend_report.get("rust_temporalstore_backend_ready")
+        ),
+        "rust_temporalstore_backend_report": rust_backend_report or {},
         "case_count": total,
         "conversation_count": conversations_loaded,
         "source_count": source_count,
@@ -457,6 +498,132 @@ def main() -> int:
             handle.write(json.dumps(miss, ensure_ascii=False) + "\n")
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0 if report["passed"] else 1
+
+
+def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
+    repo = Path(__file__).resolve().parents[1]
+    input_path = Path(args.input)
+    max_cases = max(0, int(args.rust_temporalstore_max_cases))
+    jsonl_path = (
+        Path(args.rust_temporalstore_jsonl)
+        if args.rust_temporalstore_jsonl
+        else Path(tempfile.gettempdir()) / f"temporalstore-rust-context-{input_path.stem}-{os.getpid()}.jsonl"
+    )
+    report_path = (
+        Path(args.rust_temporalstore_report)
+        if args.rust_temporalstore_report
+        else Path(tempfile.gettempdir()) / f"temporalstore-rust-context-{input_path.stem}-{os.getpid()}.json"
+    )
+    convert_command = [
+        sys.executable,
+        str(repo / "tools" / "convert_locomo_to_context_jsonl.py"),
+        str(input_path),
+        str(jsonl_path),
+    ]
+    if args.dataset_name:
+        convert_command.extend(["--dataset-name", args.dataset_name])
+    if max_cases:
+        convert_command.extend(["--max-questions", str(max_cases)])
+    converted = subprocess.run(convert_command, cwd=repo, text=True, capture_output=True, check=False)
+    if converted.returncode != 0:
+        raise RuntimeError(
+            "Rust TemporalStore benchmark conversion failed: "
+            f"{converted.stderr.strip() or converted.stdout.strip()}"
+        )
+    if int(args.rust_temporalstore_source_limit) > 0:
+        limit_rust_temporalstore_sources(jsonl_path, int(args.rust_temporalstore_source_limit), args.max_events)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "TEMPORALSTORE_CONTEXT_BENCHMARK_EXTERNAL_ONLY": "1",
+            "TEMPORALSTORE_CONTEXT_BENCHMARK_REPORT_ONLY": "1",
+            "TEMPORALSTORE_CONTEXT_BENCHMARK_JSONL": str(jsonl_path),
+            "TEMPORALSTORE_CONTEXT_BENCHMARK_MAX_EVENTS": str(args.max_events),
+            "CARGO_TARGET_DIR": env.get("CARGO_TARGET_DIR", "/tmp/temporalstore-context-benchmark-target"),
+        }
+    )
+    command = ["cargo", "run", "-p", "temporalstore-rust", "--bin", "context_workflow_harness"]
+    started = time.perf_counter()
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=repo,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=args.rust_temporalstore_timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            "Rust TemporalStore benchmark harness timed out after "
+            f"{args.rust_temporalstore_timeout_seconds}s; stdout={exc.stdout!r} stderr={exc.stderr!r}"
+        ) from exc
+    elapsed = elapsed_ms(started)
+    report: dict[str, Any] = {
+        "rust_temporalstore_backend_ready": False,
+        "command": command,
+        "converted_jsonl": str(jsonl_path),
+        "converted_stdout": converted.stdout.strip()[-1000:],
+        "report_path": str(report_path),
+        "returncode": completed.returncode,
+        "elapsed_ms": elapsed,
+        "stdout_tail": completed.stdout[-2000:],
+        "stderr_tail": completed.stderr[-2000:],
+    }
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "Rust TemporalStore benchmark harness failed: "
+            f"{completed.stderr.strip()[-1000:] or completed.stdout.strip()[-1000:]}"
+        )
+    harness = parse_last_json_object(completed.stdout)
+    report["harness"] = harness
+    rust_case_count = int(harness.get("external_benchmark_case_count") or 0)
+    rust_hit_at_k = float(harness.get("external_benchmark_hit_at_k") or 0.0)
+    report["rust_temporalstore_backend_ready"] = (
+        rust_case_count > 0
+        and rust_hit_at_k > 0.0
+        and str(harness.get("external_benchmark_source") or "") == str(jsonl_path)
+    )
+    report["rust_temporalstore_strict_external_ready"] = bool(harness.get("external_benchmark_ready"))
+    report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if not report["rust_temporalstore_backend_ready"]:
+        raise RuntimeError(f"Rust TemporalStore backend did not report ready; see {report_path}")
+    return report
+
+
+def limit_rust_temporalstore_sources(path: Path, source_limit: int, max_events: int) -> None:
+    limited = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        case = json.loads(line)
+        sources = case.get("sources")
+        query = str(case.get("query") or case.get("question") or "")
+        if isinstance(sources, list) and len(sources) > source_limit:
+            ranked = rank_sources(query, [source for source in sources if isinstance(source, dict)], max(max_events, source_limit))
+            case["sources"] = ranked[:source_limit]
+            case["rust_temporalstore_source_limit_applied"] = source_limit
+        limited.append(case)
+    path.write_text(
+        "".join(json.dumps(case, ensure_ascii=False) + "\n" for case in limited),
+        encoding="utf-8",
+    )
+
+
+def parse_last_json_object(text: str) -> dict[str, Any]:
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            value, end = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict) and not text[index + end :].strip():
+            return value
+    raise RuntimeError("Rust TemporalStore harness did not emit a JSON object")
 
 
 def elapsed_ms(started: float) -> float:

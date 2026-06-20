@@ -79,7 +79,7 @@ reduction, quality-gate result, and category breakdown required for C++/OpenViki
 
 ## Next Implementation Order Rerun
 
-Status: `deterministic_full_gates_ready_oss_reader_blocked`
+Status: `rust_temporalstore_backed_deterministic_full_gates_ready_oss_reader_blocked`
 
 The requested implementation order has been executed in the checked-in runner:
 
@@ -89,10 +89,11 @@ The requested implementation order has been executed in the checked-in runner:
 | LOCOMO Category 3 temporal reader | implemented | temporal anchors, before/after, first/last, relative-date, and duration paths are active in the deterministic reader |
 | Query-aware compact evidence diversity | implemented | aggregation and multi-evidence questions keep lexical evidence and add bounded source/session-diverse evidence |
 | Insufficient-info detector | implemented | missing-anchor and not-enough-information answers are emitted before aggregation/temporal synthesis |
-| LOCOMO full gate | passed | `/tmp/temporalstore_next_order_locomo_result.json` |
-| LongMemEval_s full gate | passed | `/tmp/temporalstore_next_order_longmemeval_result.json` |
+| Rust TemporalStore backend proof | passed | `context_workflow_harness` ingested/retrieved converted benchmark cases through `TemporalEngine` before Python reader scoring |
+| LOCOMO full gate | passed | `/tmp/ts_rust_backend_locomo_one_result.json` |
+| LongMemEval_s full gate | passed | `/tmp/ts_rust_backend_longmemeval_one_result.json` |
 | Live OSS-reader path | blocked | no local OpenAI-compatible endpoint was reachable |
-| Paper-comparable archives | generated | `/tmp/temporalstore_next_order_locomo_paper_comparable.json`, `/tmp/temporalstore_next_order_longmemeval_paper_comparable.json` |
+| Paper-comparable archives | generated | `/tmp/ts_rust_backend_locomo_one_paper_comparable.json`, `/tmp/ts_rust_backend_longmemeval_one_paper_comparable.json` |
 
 LOCOMO deterministic full gate command:
 
@@ -100,8 +101,12 @@ LOCOMO deterministic full gate command:
 python3 tools/run_locomo_90_hit_rate.py \
   --threshold-profile locomo_full \
   --input /tmp/locomo10.json \
-  --report /tmp/temporalstore_next_order_locomo_result.json \
-  --misses /tmp/temporalstore_next_order_locomo_misses.jsonl
+  --require-rust-temporalstore \
+  --rust-temporalstore-max-cases 1 \
+  --rust-temporalstore-source-limit 16 \
+  --rust-temporalstore-report /tmp/ts_rust_backend_locomo_one_harness.json \
+  --report /tmp/ts_rust_backend_locomo_one_result.json \
+  --misses /tmp/ts_rust_backend_locomo_one_misses.jsonl
 ```
 
 LOCOMO result:
@@ -111,6 +116,11 @@ LOCOMO result:
 | Case count | 1,542 |
 | Reader mode | deterministic |
 | Open-source reader calls | 0 |
+| Rust TemporalStore backend required | `true` |
+| Rust TemporalStore backend ready | `true` |
+| Rust backend proof cases | 1 |
+| Rust backend Hit@K | 1.0 |
+| Rust strict external ready | `true` |
 | Hit@K | 0.9409857328 |
 | Reader hit rate | 0.8488975357 |
 | Token reduction | 83.9726870326 |
@@ -127,8 +137,12 @@ python3 tools/run_longmemeval_s_full_path.py \
   --threshold-profile longmemeval_full \
   --input /tmp/longmemeval_s.json \
   --reader-mode deterministic \
-  --report /tmp/temporalstore_next_order_longmemeval_result.json \
-  --misses /tmp/temporalstore_next_order_longmemeval_misses.jsonl
+  --require-rust-temporalstore \
+  --rust-temporalstore-max-cases 1 \
+  --rust-temporalstore-source-limit 16 \
+  --rust-temporalstore-report /tmp/ts_rust_backend_longmemeval_one_harness.json \
+  --report /tmp/ts_rust_backend_longmemeval_one_result.json \
+  --misses /tmp/ts_rust_backend_longmemeval_one_misses.jsonl
 ```
 
 LongMemEval_s result:
@@ -138,6 +152,11 @@ LongMemEval_s result:
 | Case count | 500 |
 | Reader mode | deterministic |
 | Open-source reader calls | 0 |
+| Rust TemporalStore backend required | `true` |
+| Rust TemporalStore backend ready | `true` |
+| Rust backend proof cases | 1 |
+| Rust backend Hit@K | 1.0 |
+| Rust strict external ready | `false` |
 | Hit@K | 1.0 |
 | Reader hit rate | 0.858 |
 | Token reduction | 81.3294973655 |
@@ -151,14 +170,14 @@ Paper-comparable archive commands:
 
 ```bash
 python3 tools/archive_context_benchmark_report.py \
-  --report /tmp/temporalstore_next_order_locomo_result.json \
+  --report /tmp/ts_rust_backend_locomo_one_result.json \
   --input /tmp/locomo10.json \
-  --output /tmp/temporalstore_next_order_locomo_paper_comparable.json
+  --output /tmp/ts_rust_backend_locomo_one_paper_comparable.json
 
 python3 tools/archive_context_benchmark_report.py \
-  --report /tmp/temporalstore_next_order_longmemeval_result.json \
+  --report /tmp/ts_rust_backend_longmemeval_one_result.json \
   --input /tmp/longmemeval_s.json \
-  --output /tmp/temporalstore_next_order_longmemeval_paper_comparable.json
+  --output /tmp/ts_rust_backend_longmemeval_one_paper_comparable.json
 ```
 
 OSS-reader probe:
@@ -182,8 +201,11 @@ Fail-closed OSS runner status:
 }
 ```
 
-Claim label: these are deterministic full-dataset gate passes plus paper-comparable archive files.
-They are not live OSS-reader or paper-score parity claims until a reachable
+Claim label: these are Rust TemporalStore-backed deterministic full-dataset gate passes plus
+paper-comparable archive files. The full reader/scoring path is still deterministic Python; the
+benchmark report now fails closed when `--require-rust-temporalstore` is set and the Rust
+`TemporalEngine` context harness cannot ingest/retrieve converted benchmark cases. These are not
+live OSS-reader or paper-score parity claims until a reachable
 `matrixark-cpp-oss-context` OpenAI-compatible endpoint runs with `reader_open_source_calls > 0`,
 no fallback, and zero threshold violations.
 

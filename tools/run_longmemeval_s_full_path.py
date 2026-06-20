@@ -36,6 +36,12 @@ def main() -> int:
     parser.add_argument("--reader-timeout-seconds", type=float, default=20.0)
     parser.add_argument("--reader-max-context-chars", type=int, default=12000)
     parser.add_argument("--reader-no-fallback", action="store_true")
+    parser.add_argument("--require-rust-temporalstore", action="store_true")
+    parser.add_argument("--rust-temporalstore-max-cases", type=int, default=4)
+    parser.add_argument("--rust-temporalstore-timeout-seconds", type=float, default=180.0)
+    parser.add_argument("--rust-temporalstore-source-limit", type=int, default=64)
+    parser.add_argument("--rust-temporalstore-jsonl", default="")
+    parser.add_argument("--rust-temporalstore-report", default="")
     args = parser.parse_args()
     thresholds = resolve_threshold_policy(args)
 
@@ -87,6 +93,15 @@ def main() -> int:
         command.extend(["--reader-base-url", args.reader_base_url])
     if args.reader_no_fallback:
         command.append("--reader-no-fallback")
+    if args.require_rust_temporalstore:
+        command.append("--require-rust-temporalstore")
+        command.extend(["--rust-temporalstore-max-cases", str(args.rust_temporalstore_max_cases)])
+        command.extend(["--rust-temporalstore-timeout-seconds", str(args.rust_temporalstore_timeout_seconds)])
+        command.extend(["--rust-temporalstore-source-limit", str(args.rust_temporalstore_source_limit)])
+        if args.rust_temporalstore_jsonl:
+            command.extend(["--rust-temporalstore-jsonl", args.rust_temporalstore_jsonl])
+        if args.rust_temporalstore_report:
+            command.extend(["--rust-temporalstore-report", args.rust_temporalstore_report])
     if thresholds["require_open_source_reader"]:
         command.append("--require-open-source-reader")
     run(command, cwd=repo)

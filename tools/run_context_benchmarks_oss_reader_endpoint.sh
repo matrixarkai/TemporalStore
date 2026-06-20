@@ -8,6 +8,10 @@ READER_PROVIDER_NAME="${TEMPORALSTORE_READER_PROVIDER_NAME:-matrixark-cpp-oss-co
 REPORT_DIR="${TEMPORALSTORE_BENCHMARK_REPORT_DIR:-${ROOT}/benchmark_reports}"
 LOC_INPUT="${TEMPORALSTORE_LOCOMO_INPUT:-/tmp/locomo10.json}"
 LONGMEM_INPUT="${TEMPORALSTORE_LONGMEMEVAL_INPUT:-/tmp/longmemeval_s.json}"
+REQUIRE_RUST_TEMPORALSTORE="${TEMPORALSTORE_REQUIRE_RUST_TEMPORALSTORE:-1}"
+RUST_TEMPORALSTORE_MAX_CASES="${TEMPORALSTORE_RUST_BACKEND_MAX_CASES:-4}"
+RUST_TEMPORALSTORE_SOURCE_LIMIT="${TEMPORALSTORE_RUST_BACKEND_SOURCE_LIMIT:-64}"
+RUST_TEMPORALSTORE_TIMEOUT_SECONDS="${TEMPORALSTORE_RUST_BACKEND_TIMEOUT_SECONDS:-180}"
 TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 ARCHIVE_DIR="${REPORT_DIR}/oss_reader_endpoint_${TIMESTAMP}"
 
@@ -24,6 +28,10 @@ write_manifest() {
   "reader_base_url": "${READER_BASE_URL}",
   "reader_provider_name": "${READER_PROVIDER_NAME}",
   "reader_model": "${READER_MODEL}",
+  "require_rust_temporalstore": "${REQUIRE_RUST_TEMPORALSTORE}",
+  "rust_temporalstore_max_cases": "${RUST_TEMPORALSTORE_MAX_CASES}",
+  "rust_temporalstore_source_limit": "${RUST_TEMPORALSTORE_SOURCE_LIMIT}",
+  "rust_temporalstore_timeout_seconds": "${RUST_TEMPORALSTORE_TIMEOUT_SECONDS}",
   "locomo_input": "${LOC_INPUT}",
   "longmemeval_input": "${LONGMEM_INPUT}",
   "locomo_status": "${locomo_status}",
@@ -52,6 +60,15 @@ fi
 
 locomo_status="skipped_missing_input"
 longmem_status="skipped_missing_input"
+RUST_BACKEND_ARGS=()
+if [[ "${REQUIRE_RUST_TEMPORALSTORE}" == "1" || "${REQUIRE_RUST_TEMPORALSTORE}" == "true" || "${REQUIRE_RUST_TEMPORALSTORE}" == "TRUE" ]]; then
+  RUST_BACKEND_ARGS=(
+    --require-rust-temporalstore
+    --rust-temporalstore-max-cases "${RUST_TEMPORALSTORE_MAX_CASES}"
+    --rust-temporalstore-source-limit "${RUST_TEMPORALSTORE_SOURCE_LIMIT}"
+    --rust-temporalstore-timeout-seconds "${RUST_TEMPORALSTORE_TIMEOUT_SECONDS}"
+  )
+fi
 
 if [[ -f "${LOC_INPUT}" ]]; then
   python3 "${ROOT}/tools/run_locomo_90_hit_rate.py" \
@@ -62,6 +79,7 @@ if [[ -f "${LOC_INPUT}" ]]; then
     --reader-provider-name "${READER_PROVIDER_NAME}" \
     --reader-model "${READER_MODEL}" \
     --reader-no-fallback \
+    "${RUST_BACKEND_ARGS[@]}" \
     --report "${ARCHIVE_DIR}/locomo_report.json" \
     --misses "${ARCHIVE_DIR}/locomo_misses.jsonl"
   python3 "${ROOT}/tools/archive_context_benchmark_report.py" \
@@ -82,6 +100,7 @@ if [[ -f "${LONGMEM_INPUT}" ]]; then
     --reader-model "${READER_MODEL}" \
     --reader-no-fallback \
     --require-open-source-reader \
+    "${RUST_BACKEND_ARGS[@]}" \
     --report "${ARCHIVE_DIR}/longmemeval_s_report.json" \
     --misses "${ARCHIVE_DIR}/longmemeval_s_misses.jsonl"
   python3 "${ROOT}/tools/archive_context_benchmark_report.py" \

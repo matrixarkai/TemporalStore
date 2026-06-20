@@ -63,6 +63,14 @@ benchmark thresholds fail. It writes an archive under
 raw reports, misses JSONL files, and `*_paper_comparable_report.json` summaries when
 the corresponding datasets are present and pass.
 
+The local endpoint runner requires Rust TemporalStore by default
+(`TEMPORALSTORE_REQUIRE_RUST_TEMPORALSTORE=1`). It converts benchmark cases to the
+Rust context JSONL contract and runs `context_workflow_harness` through a real
+`TemporalEngine` before the Python reader/scorer emits the report. Tune the bounded
+proof with `TEMPORALSTORE_RUST_BACKEND_MAX_CASES`,
+`TEMPORALSTORE_RUST_BACKEND_SOURCE_LIMIT`, and
+`TEMPORALSTORE_RUST_BACKEND_TIMEOUT_SECONDS`.
+
 To use a local registry mirror or a pre-pulled compatible image:
 
 ```bash
@@ -88,10 +96,15 @@ The runner writes:
 
 The `*_paper_comparable_report.json` files use
 `matrixark_vikingmem_paper_comparable_report_v1` and include the dataset SHA-256,
-input bytes, model/provider, reader mode, exact reader prompt templates, thresholds,
-p50/p95 latencies, token reduction, quality-gate state, and category breakdown. These
-are the files to archive when comparing Rust runs with VikingMem/OpenViking or C++
-benchmark outputs.
+input bytes, model/provider, reader mode, exact reader prompt templates, Rust
+TemporalStore backend evidence, thresholds, p50/p95 latencies, token reduction,
+quality-gate state, and category breakdown. These are the files to archive when
+comparing Rust runs with VikingMem/OpenViking or C++ benchmark outputs.
+
+The Docker runner uses a `python:3.11-slim` benchmark container and therefore does
+not run the Rust harness unless replaced with a Rust-capable benchmark image. For
+Rust-backed evidence, prefer the local endpoint runner above or run the full gate
+commands directly with `--require-rust-temporalstore`.
 
 If Docker Hub, the local registry, or the model registry is unreachable, the
 script exits non-zero and still writes a manifest with `phase` set to
