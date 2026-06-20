@@ -5,6 +5,24 @@ Fixture gates prove that ingestion, extraction, retrieval, reader scoring, and
 report emission are wired correctly. Full-dataset gates are the only thresholds
 that can support production readiness claims.
 
+## Claim Rules
+
+Benchmark result docs must stay strict:
+
+- Fixture scores are wiring evidence only; they must not be called paper-equivalent scores or
+  production-parity evidence.
+- Deterministic-reader full-dataset scores can claim retrieval/reader gate readiness for that
+  configured runner, but not live OSS-reader parity.
+- OSS/open-model claims require at least one successful real local reader call and
+  `require_open_source_reader=true`.
+- Production parity or production-ready benchmark claims require all three pieces of evidence in
+  the same result doc: real dataset artifact, real reader execution, and passing threshold output
+  with zero threshold violations.
+- Missing artifacts, skipped datasets, Docker/model pull failures, fallback readers, and fixture
+  gates must be recorded as blocked, skipped, or fixture-only evidence.
+
+`tools/validate_benchmark_claims.py` enforces this wording guard for benchmark result docs.
+
 ## Profiles
 
 | Profile | Intended use | Min cases | Min retrieval hit | Min reader hit | Min token reduction | Retrieval p95 | Reader p95 | OSS reader |

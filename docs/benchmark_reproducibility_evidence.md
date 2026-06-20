@@ -13,6 +13,10 @@ Fixture gates and full-dataset production gates intentionally use different prof
 The packaged Docker/open-model path is documented in
 [context_benchmarks_docker_open_model.md](context_benchmarks_docker_open_model.md).
 
+Claim level: LOCOMO deterministic full-dataset gate evidence plus LongMemEval_s fixture evidence.
+This page does not claim production parity because the live OSS reader path and the real
+LongMemEval_s artifact have not both passed their full-dataset thresholds in this evidence set.
+
 ## LOCOMO Full Dataset
 
 Status: `ready`

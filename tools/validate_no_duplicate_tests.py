@@ -21,6 +21,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import validate_rust_product_test_guard
+import validate_benchmark_claims
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -178,6 +179,9 @@ def main() -> None:
     rust_count = validate_rust_test_names()
     guard = validate_rust_product_test_guard.validate()
     case_count, step_count, existing_test_count = validate_corpus()
+    benchmark_claim_code = validate_benchmark_claims.main()
+    if benchmark_claim_code != 0:
+        raise SystemExit(benchmark_claim_code)
     print("no duplicate TemporalStore test cases found")
     print(f"rust_attributed_tests={rust_count}")
     print(f"rust_test_guard_grandfathered_tests={guard['grandfathered_tests']}")

@@ -5,6 +5,9 @@ LongMemEval_s runners already support. It starts an Ollama OpenAI-compatible
 reader endpoint in Docker, runs the benchmark runners from a Python container,
 and archives reports under `benchmark_reports/`.
 
+Claim level: packaged open-model benchmark path. A production parity claim requires a mounted real
+dataset, a successful real reader call, and passing threshold output in the archived report.
+
 ## Defaults
 
 | Setting | Default |
