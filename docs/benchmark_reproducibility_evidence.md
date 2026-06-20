@@ -1,8 +1,8 @@
 # Benchmark Reproducibility Evidence
 
-Validation time: 2026-06-20T22:42:00Z
+Validation time: 2026-06-20T23:25:00Z
 
-Runner revision: LongMemEval insufficient-information reader update in this commit
+Runner revision: query-aware compact evidence diversity update in this commit
 
 This page records benchmark evidence from the checked-in TemporalStore runners. It separates real
 dataset scores from fixture gates so fixture results are not presented as paper-equivalent LOCOMO or
@@ -371,6 +371,46 @@ LOCOMO was rerun as a retrieval-preservation guardrail at
 run again reported `retrieval_p95_above_max` (`323.3262940426357 ms`) against the strict 250 ms p95
 latency budget, so it is recorded as retrieval-correctness preservation rather than full
 `locomo_full` ready evidence.
+
+### LongMemEval_s Query-Aware Compact Evidence Selection
+
+Status: `ready`
+
+This pass improves compact evidence selection without dropping below the `80%` token-reduction
+floor. Simple single-hop questions keep the original lexical compaction order. Aggregation and
+multi-evidence questions keep the original top lexical sentences and may add one diverse user-memory
+sentence that contributes new query terms or useful numeric/causal/list evidence. This gives
+query-aware source/session diversity without letting generic assistant advice displace the best
+answer-bearing sentence.
+
+Command:
+
+```bash
+python3 tools/run_longmemeval_s_full_path.py \
+  --threshold-profile longmemeval_full \
+  --input /tmp/longmemeval_s.json \
+  --report /tmp/longmemeval_diverse_compaction_result6.json \
+  --misses /tmp/longmemeval_diverse_compaction_misses6.jsonl
+```
+
+Result:
+
+| Metric | Previous full run | After compact evidence diversity |
+| --- | ---: | ---: |
+| Case count | 500 | 500 |
+| Retrieval/context Hit@K | 1.0 | 1.0 |
+| Reader hit rate | 0.858 | 0.858 |
+| `multi_session` reader hit rate | 0.6766917293 | 0.6766917293 |
+| `single_session_assistant` reader hit rate | 0.9107142857 | 0.9107142857 |
+| `temporal_reasoning` reader hit rate | 0.8571428571 | 0.8571428571 |
+| Token reduction | 81.3308610512 | 81.3294973655 |
+| Avg retrieved tokens/query | 930.934 | 931.002 |
+| Threshold violations | `[]` | `[]` |
+
+LOCOMO retrieval guardrail also passed at
+`/tmp/locomo_after_diverse_compaction_guardrail_result.json`: `Hit@K = 0.9409857328`,
+`min_hit_at_k = 0.94`, `gold_evidence_window_used = false`, `token_reduction = 83.9726870326`,
+and `threshold_violations = []`.
 
 Fetch helper:
 

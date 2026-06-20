@@ -755,19 +755,26 @@ def compact_retrieval_source(question: str, source: dict[str, str]) -> dict[str,
         return source
     sentences = re.split(r"(?<=[.!?])\s+", body)
     q_tokens = answer_tokens(question)
+    use_diverse_compaction = should_use_diverse_compaction(question) and re.search(r"\buser\b", normalize_text(body))
     scored = []
     for index, sentence in enumerate(sentences):
         sentence = sentence.strip()
         if not sentence:
             continue
-        score = sum(1 for token in q_tokens if token_matches(token, answer_tokens(sentence)))
+        sentence_tokens = answer_tokens(sentence)
+        score = sum(1 for token in q_tokens if token_matches(token, sentence_tokens))
         if re.search(r"\buser\s*:", normalize_text(sentence)):
             score += 2
         if re.search(r"\$\s*\d|\b\d+(?:\.\d+)?\s*(?:hours?|days?|weeks?|months?|years?|times|miles|points)\b", normalize_text(sentence)):
             score += 2
-        scored.append((score, -index, sentence))
+        if use_diverse_compaction and re.search(r"\b(because|since|due to|therefore|reason|caused|wanted|needed|decided|total|both|different|average|initially)\b", normalize_text(sentence)):
+            score += 1
+        scored.append((score, -index, sentence, sentence_tokens))
     scored.sort(reverse=True)
-    selected = [sentence for score, _, sentence in scored[:4] if score > 0]
+    if use_diverse_compaction:
+        selected = lexical_plus_diverse_compact_sentences(question, scored)
+    else:
+        selected = [sentence for score, _, sentence, _ in scored[:4] if score > 0]
     if not selected:
         selected = sentences[:2]
     prefix = re.match(r"\s*(\d{4}[/-]\d{2}[/-]\d{2}(?:\s+\([^)]+\))?(?:\s+\d{1,2}:\d{2})?)", body)
@@ -777,6 +784,92 @@ def compact_retrieval_source(question: str, source: dict[str, str]) -> dict[str,
     out = dict(source)
     out["body"] = compact
     return out
+
+
+def lexical_plus_diverse_compact_sentences(
+    question: str,
+    scored: list[tuple[int, int, str, set[str]]],
+) -> list[str]:
+    selected = [sentence for score, _, sentence, _ in scored[:4] if score > 0]
+    if compact_sentence_limit(question) <= len(selected):
+        return selected
+    diverse = diverse_compact_sentences(question, scored)
+    seen = {normalize_text(sentence) for sentence in selected}
+    for sentence in diverse:
+        if normalize_text(sentence) not in seen:
+            selected.append(sentence)
+            break
+    indexed = []
+    for sentence in selected:
+        for _, neg_index, candidate, _ in scored:
+            if candidate == sentence:
+                indexed.append((-neg_index, sentence))
+                break
+    indexed.sort(key=lambda row: row[0])
+    return [sentence for _, sentence in indexed]
+
+
+def diverse_compact_sentences(
+    question: str,
+    scored: list[tuple[int, int, str, set[str]]],
+) -> list[str]:
+    limit = compact_sentence_limit(question)
+    selected: list[tuple[int, str, set[str]]] = []
+    covered_tokens: set[str] = set()
+    seen: set[str] = set()
+    for _ in range(limit):
+        best: tuple[int, int, str, set[str]] | None = None
+        best_rank = -10_000
+        for score, neg_index, sentence, sentence_tokens in scored:
+            key = normalize_text(sentence)
+            if score <= 0 or not key or key in seen:
+                continue
+            new_tokens = {token for token in sentence_tokens if token not in covered_tokens}
+            diversity_bonus = min(3, len(new_tokens))
+            evidence_bonus = compact_evidence_bonus(question, sentence)
+            rank = score * 10 + diversity_bonus + evidence_bonus + neg_index
+            if rank > best_rank:
+                best_rank = rank
+                best = (score, neg_index, sentence, sentence_tokens)
+        if best is None:
+            break
+        _, neg_index, sentence, sentence_tokens = best
+        seen.add(normalize_text(sentence))
+        covered_tokens |= sentence_tokens
+        selected.append((-neg_index, sentence, sentence_tokens))
+    selected.sort(key=lambda row: row[0])
+    return [sentence for _, sentence, _ in selected]
+
+
+def should_use_diverse_compaction(question: str) -> bool:
+    q = normalize_text(question)
+    return bool(
+        re.search(
+            r"\b(total|combined|across|both|different|average|mean|min|max|difference|compared|why|caused|relationship|money|spent|raised|earned|episodes|doctors|weddings|aquariums?)\b",
+            q,
+        )
+    )
+
+
+def compact_sentence_limit(question: str) -> int:
+    q = normalize_text(question)
+    if re.search(r"\b(both|different|why|caused|relationship)\b", q):
+        return 5
+    return 4
+
+
+def compact_evidence_bonus(question: str, sentence: str) -> int:
+    q = normalize_text(question)
+    s = normalize_text(sentence)
+    bonus = 0
+    if re.search(r"\b(total|combined|how many|how much|average|difference|spent|raised|earned|cost)\b", q):
+        if re.search(r"\$\s*\d|\b\d+(?:\.\d+)?\s*(?:hours?|days?|weeks?|months?|years?|times|miles|points|episodes?|fish|plants?)\b", sentence, re.I):
+            bonus += 5
+    if re.search(r"\b(why|caused|reason|because)\b", q) and re.search(r"\b(because|since|due to|therefore|wanted|needed|decided)\b", s):
+        bonus += 5
+    if re.search(r"\b(relationship|both|different)\b", q) and re.search(r"\b(both|also|friend|family|doctor|festival|wedding|aquarium)\b", s):
+        bonus += 4
+    return bonus
 
 
 def extractive_reader_answer(question: str, blocks: list[dict[str, str]]) -> str:
