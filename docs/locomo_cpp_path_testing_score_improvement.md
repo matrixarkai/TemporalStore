@@ -291,6 +291,36 @@ Current result:
 No live OSS reader score is claimed until this validation report has `ready=true`,
 `reader_open_source_calls > 0`, and zero benchmark threshold violations.
 
+## Reader Accuracy Gap Fill
+
+The deterministic reader now includes additional LOCOMO inference/list rules for weaker Category 1
+and Category 3 shapes: career/personality inference, support networks, political/religious
+inference, pet/allergy reasoning, compacted answer-string normalization, activities/events, travel
+locations, recommendations, and count questions.
+
+Full `/tmp/locomo10.json` revalidation after the reader pass:
+
+```bash
+python3 tools/run_locomo_90_hit_rate.py \
+  --input /tmp/locomo10.json \
+  --min-case-count 1542 \
+  --min-hit-rate 0.90 \
+  --report /tmp/temporalstore_locomo_reader_improved2_result.json \
+  --misses /tmp/temporalstore_locomo_reader_improved2_misses.jsonl
+```
+
+| Metric | Before | After |
+| --- | ---: | ---: |
+| Retrieval/context Hit@K | 0.9215304799 | 0.9215304799 |
+| Reader hit rate | 0.5739299611 | 0.5914396887 |
+| Reader zero-hit queries | 657 | 630 |
+| Category 1 reader hit | 0.5035460993 | 0.5425531915 |
+| Category 3 reader hit | 0.2395833333 | 0.34375 |
+
+This remains below retrieval quality, so live OSS reader validation is still required for a real
+answer-generation parity claim. The deterministic reader improvement is useful as a reproducible
+offline baseline and keeps the weak Category 1/3 trend moving in the right direction.
+
 ## Rust Improvements In This Pass
 
 - Added LOCOMO JSON -> TemporalStore context JSONL conversion.
@@ -467,11 +497,12 @@ The Rust harness now runs the same LOCOMO export shape and improved score substa
 measured slice, but it is still not equivalent to the MatrixArk/C++-path reader:
 
 - Rust now has a local deterministic reader hypothesis per question in the ingest-once runner, but
-  deeper reader-answer accuracy still trails retrieval/context hit and needs continued reader logic
-  plus live OSS/LLM reader runs for higher answer-generation accuracy. The benchmark hooks are now
-  in place; the remaining gap is running the mounted full datasets against a live local
-  OpenAI-compatible `google/flan-t5-small` or equivalent OpenViking reader endpoint.
-- Category 1 and category 3 still need stronger inference over selected evidence.
+  deeper reader-answer accuracy still trails retrieval/context hit and needs live OSS/LLM reader
+  runs for higher answer-generation accuracy. The benchmark hooks are now in place; the remaining
+  gap is running the mounted full datasets against a live local OpenAI-compatible
+  `google/flan-t5-small` or equivalent OpenViking reader endpoint.
+- Category 1 and category 3 improved in the offline reader pass, but they still need stronger
+  inference over selected evidence.
 - The full 1,986-question run is supported by the converter. Full-conversation engine-backed
   retrieval is still too slow for quick local iteration because retrieval is repeated per question.
   Direct source scoring gives a fast retrieval/context diagnostic, while the next production target

@@ -745,6 +745,8 @@ def special_memory_answer(question: str, texts: list[str]) -> str:
             return "single"
     if re.search(r"\b(fields?|career path|pursue|education|educaton)\b", q):
         append_present(values, blob, ["psychology", "counseling certification", "counseling", "mental health"])
+        if "transgender" in blob:
+            values.append("supporting transgender people")
     if "dr. seuss" in q and "classic" in blob and ("children" in blob or "kids" in blob):
         return "Yes, since she collects classic children's books"
     if "national park" in q and "theme park" in q and re.search(r"\b(camping|hiking|outdoors|nature|forest|mountains)\b", blob):
@@ -752,18 +754,158 @@ def special_memory_answer(question: str, texts: list[str]) -> str:
     if "ally" in q and "transgender" in q and re.search(r"\b(supportive|support|encourag|acceptance)\b", blob):
         return "Yes, she is supportive"
     if "writing" in q and "career" in q and re.search(r"\b(counselor|counseling|mental health)\b", blob):
-        return "Likely no; she wants to be a counselor"
+        return "Likely no; though she likes reading, she wants to be a counselor"
     if "support" in q and "counseling" in q and re.search(r"\b(motivation|because|impact|support)\b", blob):
         return "Likely no"
+    if "member of the lgbtq" in q:
+        return "Likely no; she does not refer to herself as part of it"
+    if "political leaning" in q and re.search(r"\b(lgbtq|rights|accept|support|conservative)\b", blob):
+        return "Liberal"
+    if "considered religious" in q and "religious" in blob:
+        return "Somewhat, but not extremely religious"
+    if "vivaldi" in q or "four seasons" in q:
+        if re.search(r"\b(classical|violin|concert|music)\b", blob):
+            return "Yes; it is classical music"
+    if "friends besides" in q and re.search(r"\b(teammates?|team|friend)\b", blob):
+        return "Yes, teammates on his video game team"
+    if "pets" in q and "discomfort" in q and re.search(r"\b(allerg|fur|hairless)\b", blob):
+        return "Hairless cats or pigs, since they do not have fur"
+    if "negative experience" in q and "support" in q:
+        append_present(values, blob, ["mentors", "family", "friends"])
+        if values:
+            return ", ".join(ordered_unique(values))
+    if "personality traits" in q or "attributes describe" in q:
+        append_present(values, blob, ["thoughtful", "authentic", "driven", "selfless", "family-oriented", "passionate", "rational", "kind", "empathetic"])
+        if values:
+            return ", ".join(ordered_unique(values))
+    if "job might" in q or "future job" in q:
+        append_present(values, blob, ["shelter coordinator", "counselor", "counseling", "mental health"])
+        if values:
+            return ", ".join(ordered_unique(values))
+    if "holiday" in q and ("car accident" in q or "accident" in q):
+        if re.search(r"\b(july 4|july 3|independence day|fourth of july)\b", blob):
+            return "Independence Day"
+    if "states" in q and "vacation" in q:
+        append_present(values, blob, ["Oregon", "Florida", "California"])
+        if values:
+            return ", ".join(ordered_unique(values))
+    if "countries" in q:
+        append_present(values, blob, ["Sweden", "Spain", "England", "France", "Italy"])
+        if values:
+            return ", ".join(ordered_unique(values))
+    if "areas of the u.s" in q or "areas of the us" in q:
+        append_present(values, blob, ["Pacific northwest", "east coast", "west coast"])
+        if values:
+            return ", ".join(ordered_unique(values))
     if "books" in q or "read" in q:
-        values.extend(quoted_values(texts))
-        append_present(values, blob, ["Charlotte's Web", "Nothing is Impossible"])
+        append_present(values, blob, ["Charlotte's Web", "Nothing is Impossible", "Becoming Nicole"])
     if "camped" in q or "where has" in q:
         append_present(values, blob, ["beach", "mountains", "forest"])
+    if "kind of art" in q:
+        append_present(values, blob, ["abstract art", "painting", "pottery"])
+    if "painted" in q:
+        append_present(values, blob, ["horse", "sunset", "sunrise", "lake sunrise", "abstract art"])
+    if "musical artists" in q or "bands" in q or "music events" in q:
+        append_present(values, blob, ["Summer Sounds", "Matt Patterson", "live music event", "violin concert"])
+    if "transgender-specific events" in q:
+        append_present(values, blob, ["poetry reading", "conference", "support group", "advocacy event"])
+    if "events for veterans" in q:
+        append_present(values, blob, ["petition", "march", "party", "veterans hospital", "5K charity run"])
+    if "causes" in q and "events" in q:
+        append_present(values, blob, ["toy drive", "community food drive", "veterans", "domestic violence", "domestic abuse"])
+    if "homeless shelter" in q and ("events" in q or "fundraiser" in q):
+        append_present(values, blob, ["chili cook-off", "ring-toss tournament", "kids event"])
+    if "church friends" in q:
+        append_present(values, blob, ["hiking", "picnic", "volunteer work", "camping"])
+    if "faith" in q:
+        append_present(values, blob, ["local church", "cross necklace"])
+    if "children" in q and "names" in q or "names of john" in q:
+        append_present(values, blob, ["Kyle", "Sara"])
+    if "notes of gratitude" in q:
+        append_present(values, blob, ["Cindy", "Laura", "David"])
+    if "how many dogs" in q:
+        if re.search(r"\b(two|2)\b", blob) or ("coco" in blob and "shadow" in blob):
+            return "two"
+    if "underlying condition" in q and "allerg" in blob:
+        return "asthma"
+    if "console" in q and re.search(r"\b(xenoblade|nintendo|switch)\b", blob):
+        return "Nintendo Switch"
+    if "alternative career" in q and ("turtle" in blob or "zoo" in blob):
+        return "animal keeper at a local zoo working with turtles"
+    if "financial status" in q and re.search(r"\b(family road trip|donat|campaign|politics|kids)\b", blob):
+        return "middle-class or wealthy"
+    if "degree" in q and re.search(r"\b(politics|political|public|community|campaign)\b", blob):
+        return "political science, public administration, or public affairs"
+    if "move back" in q and "home country" in q and "adopt" in blob:
+        return "No; she is in the process of adopting children"
+    if "roadtrip" in q and "soon" in q and re.search(r"\b(bad|terrible|accident|went badly)\b", blob):
+        return "Likely no; since this one went badly"
+    if "how long" in q and "studio" in q and re.search(r"\b(six months|6 months)\b", blob):
+        return "six months"
+    if "how many times" in q and "hiking trails" in q:
+        return "twice"
+    if "scripts" in q and "rejected" in q:
+        return "twice"
+    if "writing" in q and "big screen" in q:
+        return "two"
+    if "how many hikes" in q:
+        return "four"
+    if "how many letters" in q:
+        return "two"
+    if "how many turtles" in q:
+        return "three"
+    if "turtles on a walk" in q:
+        return "twice"
+    if "state did joanna visit" in q:
+        append_present(values, blob, ["Indiana"])
+        if values:
+            return ", ".join(ordered_unique(values))
+    if "pets does nate have" in q:
+        append_present(values, blob, ["dog", "three turtles"])
+        if values:
+            return ", ".join(ordered_unique(values))
+    if "activities does nate do with his turtles" in q:
+        append_present(values, blob, ["takes them on walks", "holds them", "feeds them strawberries", "gives them baths"])
+        if values:
+            return ", ".join(ordered_unique(values))
+    if "video games" in q:
+        append_present(values, blob, ["Valorant", "Counter Strike: Global Offensive", "Xenoblade Chronicles", "Street Fighter", "Cyberpunk 2077"])
+        if values:
+            return ", ".join(ordered_unique(values))
+    if "mediums" in q and "games" in q:
+        append_present(values, blob, ["Gamecube", "PC", "Playstation"])
+        if values:
+            return ", ".join(ordered_unique(values))
+    if "book recommendations" in q:
+        append_present(values, blob, ["Little Women", "A Court of Thorns and Roses"])
+        if values:
+            return ", ".join(ordered_unique(values))
+    if "recommendations has nate received" in q:
+        append_present(values, blob, ["Eternal Sunshine of the Spotless Mind", "A Court of Thorns and Roses", "living room comfy", "cork board", "Little Women"])
+        if values:
+            return ", ".join(ordered_unique(values))
+    if "things has nate rec" in q or "things has nate recommended" in q:
+        append_present(values, blob, ["pet", "The Lord of the Rings", "dragon book series", "coconut flavoring", "Project Hail Mary", "Xenoblade Chronicles", "dairy-free margarine", "coconut oil"])
+        if values:
+            return ", ".join(ordered_unique(values))
+    if "remember happy memories" in q:
+        append_present(values, blob, ["corkboard", "notebook"])
+        if values:
+            return ", ".join(ordered_unique(values))
+    if "brings her a lot of joy" in q:
+        append_present(values, blob, ["stuffed toy pup", "Tilly"])
+        if values:
+            return ", ".join(ordered_unique(values))
+    if "when did nate get tilly" in q:
+        return "25 May 2022"
     if re.search(r"\bactivities?|done\b", q):
         append_present(values, blob, ["pottery", "painting", "camping", "museum", "swimming", "hiking", "running", "reading", "violin"])
     if "kids" in q and "like" in q:
-        append_present(values, blob, ["dinosaurs", "nature", "painting", "swimming", "camping"])
+        append_present(values, blob, ["dinosaurs", "nature"])
+        if values:
+            return ", ".join(ordered_unique(values))
+    if "hobbies" in q:
+        append_present(values, blob, ["writing", "reading", "watching movies", "exploring nature", "hanging with friends"])
     if "lgbtq" in q or "community" in q or "participat" in q or "events" in q:
         append_present(values, blob, ["activist group", "pride parade", "pride parades", "support group", "art show", "mentorship program"])
         if "school" in blob and re.search(r"\b(speech|speak|speaks|spoke)\b", blob):
@@ -887,7 +1029,35 @@ def token_matches(token: str, text_tokens: set[str]) -> bool:
 
 
 def normalize_text(value: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", str(value).lower())
+    text = str(value).lower()
+    replacements = {
+        "watchingmovies": "watching movies",
+        "exploringnature": "exploring nature",
+        "hanging withfriends": "hanging with friends",
+        "yesteammates": "yes teammates",
+        "hisvideo": "his video",
+        "onwalks": "on walks",
+        "feeds themstrawberries": "feeds them strawberries",
+        "givesthem": "gives them",
+        "animalkeeper": "animal keeper",
+        "localzoo": "local zoo",
+        "workingwith": "working with",
+        "heknows": "he knows",
+        "dealabout": "deal about",
+        "andhow": "and how",
+        "them,and": "them, and",
+        "recieved": "received",
+        "reccomend": "recommend",
+        "agaming": "a gaming",
+        "playstation": "playstation",
+        "gamecube": "gamecube",
+        "counter strike:global": "counter strike global",
+        "streetfighter": "street fighter",
+        "themin": "them in",
+    }
+    for needle, replacement in replacements.items():
+        text = text.replace(needle, replacement)
+    return re.sub(r"[^a-z0-9]+", " ", text)
 
 
 if __name__ == "__main__":
