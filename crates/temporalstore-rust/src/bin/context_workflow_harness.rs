@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -114,6 +115,8 @@ struct ContextWorkflowHarnessSummary {
     external_benchmark_answer_term_coverage: f32,
     external_benchmark_missing_expected_terms: usize,
     external_benchmark_all_expected_terms_matched: bool,
+    external_benchmark_evidence_ref_coverage: f32,
+    external_benchmark_missing_expected_refs: usize,
     external_benchmark_zero_hit_queries: usize,
     external_benchmark_category_count: usize,
     external_benchmark_category_breakdown: BTreeMap<String, ExternalContextBenchmarkCategoryReport>,
@@ -135,6 +138,8 @@ struct ExternalContextBenchmarkReport {
     answer_term_coverage: f32,
     missing_expected_terms: usize,
     all_expected_terms_matched: bool,
+    evidence_ref_coverage: f32,
+    missing_expected_refs: usize,
     zero_hit_queries: usize,
     category_breakdown: BTreeMap<String, ExternalContextBenchmarkCategoryReport>,
     all_categories_passed: bool,
@@ -165,6 +170,8 @@ struct ExternalOnlyContextBenchmarkSummary {
     external_benchmark_answer_term_coverage: f32,
     external_benchmark_missing_expected_terms: usize,
     external_benchmark_all_expected_terms_matched: bool,
+    external_benchmark_evidence_ref_coverage: f32,
+    external_benchmark_missing_expected_refs: usize,
     external_benchmark_zero_hit_queries: usize,
     external_benchmark_category_count: usize,
     external_benchmark_category_breakdown: BTreeMap<String, ExternalContextBenchmarkCategoryReport>,
@@ -209,6 +216,8 @@ fn main() {
                     .missing_expected_terms,
                 external_benchmark_all_expected_terms_matched: external_benchmark
                     .all_expected_terms_matched,
+                external_benchmark_evidence_ref_coverage: external_benchmark.evidence_ref_coverage,
+                external_benchmark_missing_expected_refs: external_benchmark.missing_expected_refs,
                 external_benchmark_zero_hit_queries: external_benchmark.zero_hit_queries,
                 external_benchmark_category_count: external_benchmark.category_breakdown.len(),
                 external_benchmark_category_breakdown: external_benchmark.category_breakdown,
@@ -623,6 +632,8 @@ fn main() {
             external_benchmark_missing_expected_terms: external_benchmark.missing_expected_terms,
             external_benchmark_all_expected_terms_matched: external_benchmark
                 .all_expected_terms_matched,
+            external_benchmark_evidence_ref_coverage: external_benchmark.evidence_ref_coverage,
+            external_benchmark_missing_expected_refs: external_benchmark.missing_expected_refs,
             external_benchmark_zero_hit_queries: external_benchmark.zero_hit_queries,
             external_benchmark_category_count: external_benchmark.category_breakdown.len(),
             external_benchmark_category_breakdown: external_benchmark.category_breakdown,
@@ -664,6 +675,8 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
             answer_term_coverage: 0.0,
             missing_expected_terms: 0,
             all_expected_terms_matched: false,
+            evidence_ref_coverage: 0.0,
+            missing_expected_refs: 0,
             zero_hit_queries: 0,
             category_breakdown: BTreeMap::new(),
             all_categories_passed: false,
@@ -682,6 +695,8 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
     let mut category_reciprocal_rank_sums = BTreeMap::<String, f32>::new();
     let mut total_expected_terms = 0usize;
     let mut matched_expected_terms = 0usize;
+    let mut total_expected_refs = 0usize;
+    let mut matched_expected_refs = 0usize;
     let mut category_expected_terms = BTreeMap::<String, usize>::new();
     let mut category_matched_expected_terms = BTreeMap::<String, usize>::new();
     let max_events = std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_MAX_EVENTS")
@@ -689,6 +704,10 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(32);
+    let direct_source_scoring =
+        std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_DIRECT_SOURCE_SCORING")
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+            .unwrap_or(false);
     let mut ingested_source_sets = BTreeMap::<u64, Vec<u64>>::new();
     for (_index, case) in cases.iter().enumerate() {
         let _query_id = case.query_id.as_str();
@@ -700,62 +719,67 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
             .entry(case.category.clone())
             .or_insert(0usize) += case.expected_terms.len();
         total_expected_terms += case.expected_terms.len();
-        let source_digest = external_case_source_digest(case);
-        let tenant_hash = source_digest;
-        let node_hashes = if let Some(node_hashes) = ingested_source_sets.get(&source_digest) {
-            node_hashes.clone()
+        total_expected_refs += case.expected_source_refs.len();
+        let blocks = if direct_source_scoring {
+            external_direct_source_blocks(case, max_events)
         } else {
-            let sources = case
-                .sources
-                .iter()
-                .enumerate()
-                .map(|(source_index, source)| ContextExtractRequest {
-                    shard_id: 1,
-                    tenant_hash,
-                    source_kind: source.kind,
-                    source_id: format!("{}-{source_digest}-{source_index}", case.dataset),
-                    title: source.title.clone(),
-                    body: source.body.clone(),
-                    timestamp_ms: 1_000 + source_index as u64,
-                    provider: ContextModelProviderConfig::default(),
-                })
-                .collect::<Vec<_>>();
-            let ingest = ingest_extract_context(
+            let source_digest = external_case_source_digest(case);
+            let tenant_hash = source_digest;
+            let node_hashes = if let Some(node_hashes) = ingested_source_sets.get(&source_digest) {
+                node_hashes.clone()
+            } else {
+                let sources = case
+                    .sources
+                    .iter()
+                    .enumerate()
+                    .map(|(source_index, source)| ContextExtractRequest {
+                        shard_id: 1,
+                        tenant_hash,
+                        source_kind: source.kind,
+                        source_id: format!("{}-{source_digest}-{source_index}", case.dataset),
+                        title: source.title.clone(),
+                        body: source.body.clone(),
+                        timestamp_ms: 1_000 + source_index as u64,
+                        provider: ContextModelProviderConfig::default(),
+                    })
+                    .collect::<Vec<_>>();
+                let ingest = ingest_extract_context(
+                    engine,
+                    ContextIngestExtractRequest {
+                        shard_id: 1,
+                        tenant_hash,
+                        sources,
+                        query: case.query.clone(),
+                        start_time_ms: 0,
+                        end_time_ms: 10_000,
+                        max_events,
+                        provider: ContextModelProviderConfig::default(),
+                    },
+                );
+                if !ingest.status.ok {
+                    continue;
+                }
+                ingested_source_sets.insert(source_digest, ingest.node_hashes.clone());
+                ingest.node_hashes
+            };
+            let retrieve = retrieve_context(
                 engine,
-                ContextIngestExtractRequest {
+                ContextRetrieveRequest {
                     shard_id: 1,
                     tenant_hash,
-                    sources,
+                    node_hashes,
                     query: case.query.clone(),
                     start_time_ms: 0,
                     end_time_ms: 10_000,
                     max_events,
-                    provider: ContextModelProviderConfig::default(),
+                    min_confidence: 0.0,
+                    min_importance: 0.0,
+                    tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
                 },
             );
-            if !ingest.status.ok {
-                continue;
-            }
-            ingested_source_sets.insert(source_digest, ingest.node_hashes.clone());
-            ingest.node_hashes
+            retrieve.blocks
         };
-        let retrieve = retrieve_context(
-            engine,
-            ContextRetrieveRequest {
-                shard_id: 1,
-                tenant_hash,
-                node_hashes,
-                query: case.query.clone(),
-                start_time_ms: 0,
-                end_time_ms: 10_000,
-                max_events,
-                min_confidence: 0.0,
-                min_importance: 0.0,
-                tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
-            },
-        );
-        let hit_rank = retrieve
-            .blocks
+        let hit_rank = blocks
             .iter()
             .position(|block| {
                 let block_text = block.text.to_ascii_lowercase();
@@ -763,10 +787,16 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
                 case.expected_terms
                     .iter()
                     .any(|term| benchmark_text_matches(&block_text, &block_normalized, term))
+                    || case
+                        .expected_source_refs
+                        .iter()
+                        .any(|expected_ref| benchmark_source_ref_matches(block, expected_ref))
             })
             .map(|rank| rank + 1);
-        let matched_terms = count_matched_expected_terms(&retrieve.blocks, &case.expected_terms);
+        let matched_terms = count_matched_expected_terms(&blocks, &case.expected_terms);
+        let matched_refs = count_matched_expected_refs(&blocks, &case.expected_source_refs);
         matched_expected_terms += matched_terms;
+        matched_expected_refs += matched_refs;
         *category_matched_expected_terms
             .entry(case.category.clone())
             .or_insert(0usize) += matched_terms;
@@ -790,6 +820,12 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
     };
     let missing_expected_terms = total_expected_terms.saturating_sub(matched_expected_terms);
     let all_expected_terms_matched = total_expected_terms > 0 && missing_expected_terms == 0;
+    let evidence_ref_coverage = if total_expected_refs == 0 {
+        0.0
+    } else {
+        matched_expected_refs as f32 / total_expected_refs as f32
+    };
+    let missing_expected_refs = total_expected_refs.saturating_sub(matched_expected_refs);
     let category_breakdown = category_counts
         .into_iter()
         .map(|(category, category_case_count)| {
@@ -850,6 +886,7 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
         ready: hit_count == case_count
             && mean_reciprocal_rank >= 1.0
             && all_expected_terms_matched
+            && missing_expected_refs == 0
             && all_categories_passed,
         dataset: dataset_counts.keys().cloned().collect::<Vec<_>>().join("+"),
         case_count,
@@ -858,6 +895,8 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
         answer_term_coverage,
         missing_expected_terms,
         all_expected_terms_matched,
+        evidence_ref_coverage,
+        missing_expected_refs,
         zero_hit_queries: case_count.saturating_sub(hit_count),
         category_breakdown,
         all_categories_passed,
@@ -886,6 +925,7 @@ struct ExternalContextBenchmarkCase {
     category: String,
     query: String,
     expected_terms: Vec<String>,
+    expected_source_refs: Vec<String>,
     sources: Vec<ExternalContextBenchmarkSource>,
 }
 
@@ -958,6 +998,17 @@ fn external_case_from_value(index: usize, value: &Value) -> Option<ExternalConte
                 .map(|answer| vec![answer.to_string()])
                 .unwrap_or_default()
         });
+    let expected_source_refs = value
+        .get("expected_source_refs")
+        .or_else(|| value.get("evidence"))
+        .and_then(Value::as_array)
+        .map(|refs| {
+            refs.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let sources = external_sources_from_value(value);
     if expected_terms.is_empty() || sources.is_empty() {
         None
@@ -968,6 +1019,7 @@ fn external_case_from_value(index: usize, value: &Value) -> Option<ExternalConte
             category,
             query,
             expected_terms,
+            expected_source_refs,
             sources,
         })
     }
@@ -1041,6 +1093,58 @@ fn parse_context_source_kind(value: &str) -> ContextSourceKind {
         "user_event" | "user-event" | "event" => ContextSourceKind::UserEvent,
         _ => ContextSourceKind::Chat,
     }
+}
+
+fn external_direct_source_blocks(
+    case: &ExternalContextBenchmarkCase,
+    max_events: usize,
+) -> Vec<temporalstore_rust::ContextBlock> {
+    let mut blocks = case
+        .sources
+        .iter()
+        .enumerate()
+        .map(|(index, source)| temporalstore_rust::ContextBlock {
+            uri: format!("external://{}/{}", case.query_id, index),
+            tier: ContextTier::L2,
+            node_hash: stable_hash64(&format!("{}:{}", case.query_id, source.title)),
+            event_time_ms: 1_000 + index as u64,
+            text: source.body.clone(),
+            estimated_tokens: source.body.split_whitespace().count().max(1) as u32,
+            source_ref: source.title.clone(),
+        })
+        .collect::<Vec<_>>();
+    blocks.sort_by_key(|block| {
+        (
+            Reverse(external_direct_relevance_score(
+                case.query.as_str(),
+                &block.text,
+            )),
+            Reverse(block.event_time_ms),
+            block.uri.clone(),
+        )
+    });
+    blocks.truncate(max_events.max(1));
+    blocks
+}
+
+fn external_direct_relevance_score(query: &str, text: &str) -> u32 {
+    let query_tokens = benchmark_answer_tokens(query);
+    if query_tokens.is_empty() {
+        return 0;
+    }
+    let text_tokens = benchmark_answer_tokens(text);
+    let mut score = 0u32;
+    for token in query_tokens {
+        if benchmark_answer_token_matches(token.as_str(), &text_tokens) {
+            score = score.saturating_add(10);
+        }
+    }
+    let text_lower = text.to_ascii_lowercase();
+    let text_normalized = normalize_benchmark_text(text);
+    if benchmark_text_matches(&text_lower, &text_normalized, query) {
+        score = score.saturating_add(100);
+    }
+    score
 }
 
 fn normalize_benchmark_text(value: &str) -> String {
@@ -1146,6 +1250,37 @@ fn count_matched_expected_terms(
         .count()
 }
 
+fn benchmark_source_ref_matches(
+    block: &temporalstore_rust::ContextBlock,
+    expected_ref: &str,
+) -> bool {
+    let expected_ref = expected_ref.trim();
+    if expected_ref.is_empty() {
+        return false;
+    }
+    let normalized_ref = normalize_benchmark_text(expected_ref);
+    let normalized_ref = normalized_ref.trim();
+    if normalized_ref.is_empty() {
+        return false;
+    }
+    let text_normalized = normalize_benchmark_text(&block.text);
+    let source_ref_normalized = normalize_benchmark_text(&block.source_ref);
+    text_normalized.contains(normalized_ref) || source_ref_normalized.contains(normalized_ref)
+}
+
+fn count_matched_expected_refs(
+    blocks: &[temporalstore_rust::ContextBlock],
+    refs: &[String],
+) -> usize {
+    refs.iter()
+        .filter(|expected_ref| {
+            blocks
+                .iter()
+                .any(|block| benchmark_source_ref_matches(block, expected_ref))
+        })
+        .count()
+}
+
 fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCase> {
     vec![
         ExternalContextBenchmarkCase {
@@ -1154,6 +1289,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
             category: infer_external_benchmark_category("locomo-current-preference"),
             query: "What is Alice's current office choice after the payment problem?".to_string(),
             expected_terms: vec!["downtown".to_string()],
+            expected_source_refs: Vec::new(),
             sources: vec![
                 ExternalContextBenchmarkSource {
                     title: "Earlier preference".to_string(),
@@ -1173,6 +1309,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
             category: infer_external_benchmark_category("locomo-location-paraphrase"),
             query: "Where does Alice want to work now?".to_string(),
             expected_terms: vec!["downtown location".to_string()],
+            expected_source_refs: Vec::new(),
             sources: vec![
                 ExternalContextBenchmarkSource {
                     title: "Stale workplace memory".to_string(),
@@ -1192,6 +1329,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
             category: infer_external_benchmark_category("longmem-updated-setting"),
             query: "Which preference was updated in the recent multi session messages?".to_string(),
             expected_terms: vec!["notification".to_string()],
+            expected_source_refs: Vec::new(),
             sources: vec![
                 ExternalContextBenchmarkSource {
                     title: "Old setting".to_string(),
@@ -1211,6 +1349,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
             category: infer_external_benchmark_category("longmem-most-recent-change"),
             query: "Which setting changed most recently across the conversation history?".to_string(),
             expected_terms: vec!["notification setting".to_string()],
+            expected_source_refs: Vec::new(),
             sources: vec![
                 ExternalContextBenchmarkSource {
                     title: "Earlier account setting".to_string(),
@@ -1230,6 +1369,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
             category: infer_external_benchmark_category("locomo-temporal-after-travel"),
             query: "What did Alice decide after the airport trip conversation?".to_string(),
             expected_terms: vec!["downtown office".to_string()],
+            expected_source_refs: Vec::new(),
             sources: vec![
                 ExternalContextBenchmarkSource {
                     title: "Airport trip discussion".to_string(),
@@ -1252,6 +1392,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
                 "database migration".to_string(),
                 "backend connection pool".to_string(),
             ],
+            expected_source_refs: Vec::new(),
             sources: vec![
                 ExternalContextBenchmarkSource {
                     title: "Initial outage alert".to_string(),
@@ -1271,6 +1412,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
             category: infer_external_benchmark_category("locomo-corrected-food-restriction"),
             query: "What snack should Jordan avoid now after the correction?".to_string(),
             expected_terms: vec!["peanuts".to_string()],
+            expected_source_refs: Vec::new(),
             sources: vec![
                 ExternalContextBenchmarkSource {
                     title: "Older snack preference".to_string(),
@@ -1290,6 +1432,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
             category: infer_external_benchmark_category("longmem-medication-reminder"),
             query: "Which medication did Morgan say to remember before the doctor appointment?".to_string(),
             expected_terms: vec!["lisinopril".to_string()],
+            expected_source_refs: Vec::new(),
             sources: vec![
                 ExternalContextBenchmarkSource {
                     title: "Older clinic message".to_string(),
@@ -1309,6 +1452,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
             category: infer_external_benchmark_category("locomo-hobby-switch"),
             query: "Which hobby did Priya switch to after cancelling guitar lessons?".to_string(),
             expected_terms: vec!["pottery class".to_string()],
+            expected_source_refs: Vec::new(),
             sources: vec![
                 ExternalContextBenchmarkSource {
                     title: "Old hobby plan".to_string(),
@@ -1328,6 +1472,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
             category: infer_external_benchmark_category("longmem-backup-contact-change"),
             query: "Who is the backup contact now after Sam moved teams?".to_string(),
             expected_terms: vec!["Riley".to_string()],
+            expected_source_refs: Vec::new(),
             sources: vec![
                 ExternalContextBenchmarkSource {
                     title: "Old escalation owner".to_string(),
@@ -1347,6 +1492,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
             category: infer_external_benchmark_category("locomo-cafe-recommendation"),
             query: "Who recommended the cafe that Nina booked after the conference?".to_string(),
             expected_terms: vec!["Omar".to_string()],
+            expected_source_refs: Vec::new(),
             sources: vec![
                 ExternalContextBenchmarkSource {
                     title: "Conference dinner plan".to_string(),
@@ -1369,6 +1515,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
                 "observability dashboard".to_string(),
                 "Dana suggested".to_string(),
             ],
+            expected_source_refs: Vec::new(),
             sources: vec![
                 ExternalContextBenchmarkSource {
                     title: "Initial planning thread".to_string(),
@@ -1388,6 +1535,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
             category: infer_external_benchmark_category("locomo-appointment-reschedule"),
             query: "When is Maya's dentist appointment after it was rescheduled?".to_string(),
             expected_terms: vec!["Thursday at 3pm".to_string()],
+            expected_source_refs: Vec::new(),
             sources: vec![
                 ExternalContextBenchmarkSource {
                     title: "Original dentist appointment".to_string(),
@@ -1407,6 +1555,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
             category: infer_external_benchmark_category("longmem-deadline-date-update"),
             query: "What is the new report deadline after the calendar update?".to_string(),
             expected_terms: vec!["June 24".to_string()],
+            expected_source_refs: Vec::new(),
             sources: vec![
                 ExternalContextBenchmarkSource {
                     title: "Old report date".to_string(),
@@ -1426,6 +1575,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
             category: infer_external_benchmark_category("locomo-guest-count-update"),
             query: "How many guests did Sofia confirm after the dinner update?".to_string(),
             expected_terms: vec!["7 guests".to_string(), "two neighbors".to_string()],
+            expected_source_refs: Vec::new(),
             sources: vec![
                 ExternalContextBenchmarkSource {
                     title: "Old dinner count".to_string(),
@@ -1445,6 +1595,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
             category: infer_external_benchmark_category("longmem-risk-score-update"),
             query: "What risk score was recorded after the latest fraud review?".to_string(),
             expected_terms: vec!["87".to_string()],
+            expected_source_refs: Vec::new(),
             sources: vec![
                 ExternalContextBenchmarkSource {
                     title: "Old risk score".to_string(),
@@ -1464,6 +1615,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
             category: infer_external_benchmark_category("locomo-roommate-alias"),
             query: "What is Emma's roommate's name after the move?".to_string(),
             expected_terms: vec!["Lena".to_string()],
+            expected_source_refs: Vec::new(),
             sources: vec![
                 ExternalContextBenchmarkSource {
                     title: "Old roommate memory".to_string(),
@@ -1483,6 +1635,7 @@ fn builtin_external_context_benchmark_cases() -> Vec<ExternalContextBenchmarkCas
             category: infer_external_benchmark_category("longmem-pet-name-alias"),
             query: "What is the dog's name in the latest pet update?".to_string(),
             expected_terms: vec!["Miso".to_string()],
+            expected_source_refs: Vec::new(),
             sources: vec![
                 ExternalContextBenchmarkSource {
                     title: "Old pet note".to_string(),

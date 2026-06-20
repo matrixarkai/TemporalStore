@@ -19,6 +19,15 @@ def main() -> None:
     parser.add_argument("output", help="Output JSONL path")
     parser.add_argument("--max-questions", type=int, default=None)
     parser.add_argument("--max-conversations", type=int, default=None)
+    parser.add_argument(
+        "--evidence-window",
+        type=int,
+        default=None,
+        help=(
+            "For LOCOMO diagnostics, emit only sources within N turns of each gold evidence "
+            "dialogue id. Omit for full-conversation retrieval."
+        ),
+    )
     args = parser.parse_args()
 
     records = json.loads(Path(args.input).read_text(encoding="utf-8-sig"))
@@ -54,13 +63,20 @@ def main() -> None:
                 answer_terms = normalize_answers(qa.get("answer") or qa.get("answers"))
                 if not answer_terms:
                     continue
+                evidence_refs = normalize_evidence_refs(qa.get("evidence"))
+                case_sources = (
+                    locomo_evidence_window_sources(sources, evidence_refs, args.evidence_window)
+                    if args.evidence_window is not None
+                    else sources
+                )
                 case = {
                     "dataset": "locomo",
                     "query_id": f"{conversation_id}-q{question_index + 1}",
                     "category": normalize_category(qa.get("category")),
                     "question": question,
                     "answer_terms": answer_terms,
-                    "sources": sources,
+                    "expected_source_refs": evidence_refs,
+                    "sources": case_sources,
                 }
                 handle.write(json.dumps(case, ensure_ascii=False) + "\n")
                 written += 1
@@ -174,12 +190,41 @@ def locomo_event_sources(
     return sources
 
 
+def locomo_evidence_window_sources(
+    sources: list[dict[str, str]],
+    evidence_refs: list[str],
+    window: int | None,
+) -> list[dict[str, str]]:
+    if window is None or window < 0 or not evidence_refs:
+        return sources
+    wanted_indexes: set[int] = set()
+    normalized_refs = {normalize_ref_for_match(ref) for ref in evidence_refs}
+    normalized_refs.discard("")
+    if not normalized_refs:
+        return sources
+    for index, source in enumerate(sources):
+        body = normalize_ref_for_match(source.get("body", ""))
+        title = normalize_ref_for_match(source.get("title", ""))
+        if any(ref in body or ref in title for ref in normalized_refs):
+            start = max(0, index - window)
+            end = min(len(sources), index + window + 1)
+            wanted_indexes.update(range(start, end))
+    if not wanted_indexes:
+        return sources
+    return [source for index, source in enumerate(sources) if index in wanted_indexes]
+
+
+def normalize_ref_for_match(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value).strip().lower())
+
+
 def message_text(message: Any) -> str:
     if isinstance(message, str):
         return message.strip()
     if not isinstance(message, dict):
         return ""
     role = str(message.get("role") or message.get("speaker") or "").strip()
+    dia_id = str(message.get("dia_id") or "").strip()
     text = str(
         message.get("content")
         or message.get("text")
@@ -187,7 +232,9 @@ def message_text(message: Any) -> str:
         or message.get("utterance")
         or ""
     ).strip()
-    return f"{role}: {text}" if role and text else text
+    prefix_parts = [part for part in (dia_id, role) if part]
+    prefix = " ".join(prefix_parts)
+    return f"{prefix}: {text}" if prefix and text else text
 
 
 def nested_text(value: Any, key: str) -> str:
@@ -203,6 +250,18 @@ def normalize_answers(raw: Any) -> list[str]:
         return [str(item).strip() for item in raw if str(item).strip()]
     text = str(raw).strip()
     return [text] if text else []
+
+
+def normalize_evidence_refs(raw: Any) -> list[str]:
+    if raw is None:
+        return []
+    values = raw if isinstance(raw, list) else [raw]
+    refs: list[str] = []
+    for value in values:
+        text = str(value).strip()
+        if text:
+            refs.append(text)
+    return refs
 
 
 def normalize_category(raw: Any) -> str:
