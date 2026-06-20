@@ -1020,8 +1020,43 @@ def direct_relevance_score(question: str, text: str) -> int:
     q_tokens = answer_tokens(question)
     text_tokens = answer_tokens(text)
     score = sum(10 for token in q_tokens if token_matches(token, text_tokens))
+    score += update_semantics_score(question, text, text_tokens)
     if text_matches(text, question):
         score += 100
+    return score
+
+
+def update_semantics_score(question: str, text: str, text_tokens: set[str]) -> int:
+    """Prefer newer/superseding memories for current-preference questions."""
+
+    q = normalize_text(question)
+    if not re.search(r"\b(current|latest|now|from now|updated?|changed?|should be used|use now)\b", q):
+        return 0
+    lower = normalize_text(text)
+    score = 0
+    update_markers = (
+        "current",
+        "latest",
+        "update",
+        "changed",
+        "replaced",
+        "replace",
+        "supersedes",
+        "supersede",
+        "from now on",
+        "now the current",
+        "should use",
+        "use the",
+    )
+    for marker in update_markers:
+        if marker in lower:
+            score += 18
+    if re.search(r"\b(originally|previously|formerly|old|before|used to)\b", lower):
+        score -= 12
+    if {"prefer", "preference"} & answer_tokens(question) and {"prefer", "preference"} & text_tokens:
+        score += 12
+    if {"document", "used", "use"} & answer_tokens(question) and {"runbook", "notebook"} & text_tokens:
+        score += 12
     return score
 
 

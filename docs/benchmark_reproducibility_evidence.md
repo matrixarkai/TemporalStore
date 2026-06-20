@@ -225,6 +225,46 @@ Thresholds:
 | `max_reader_p95_ms` | 30000.0 |
 | `require_open_source_reader` | `false` |
 
+## LongMemEval_s Fixture Ranking Gap-Fill
+
+Status: `fixture-mrr-improved`
+
+The real LongMemEval_s artifact is still absent, so this is a runner-quality validation on the
+checked-in fixture only. The gap-fill adds deterministic update/current-memory ranking for
+questions that ask for current, latest, updated, changed, or "used now" facts.
+
+Command:
+
+```bash
+python3 tools/run_longmemeval_s_full_path.py \
+  --threshold-profile fixture \
+  --input tools/fixtures/longmemeval_s_full_path_fixture.json \
+  --reader-mode auto \
+  --report /tmp/longmemeval_fixture_after.json \
+  --misses /tmp/longmemeval_fixture_after_misses.jsonl
+```
+
+Result:
+
+| Metric | Before | After |
+| --- | ---: | ---: |
+| Case count | 4 | 4 |
+| Hit@K | 1.0 | 1.0 |
+| Reader hit rate | 1.0 | 1.0 |
+| Mean reciprocal rank | 0.8333333333 | 1.0 |
+| Memory-update MRR | 0.6666666667 | 1.0 |
+| Threshold violations | `[]` | `[]` |
+
+Real full-dataset validation remains blocked:
+
+```text
+missing LongMemEval_s input: /tmp/longmemeval_s.json
+real_longmemeval_exit=2
+```
+
+Claim level: fixture ranking improvement only. This is not a real LongMemEval_s benchmark score and
+does not claim production parity.
+
 Output:
 
 | Metric | Value |
