@@ -194,6 +194,53 @@ For a real LongMemEval_s artifact, set `--min-case-count` to the expected number
 questions for that export. The fixture command above intentionally uses `4`; full-dataset docs
 should not reuse that threshold.
 
+## Real Dataset Revalidation
+
+The real LOCOMO artifact was present locally and revalidated with the full gate:
+
+```bash
+sha256sum /tmp/locomo10.json
+# 79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4
+
+python3 tools/run_locomo_90_hit_rate.py \
+  --input /tmp/locomo10.json \
+  --min-case-count 1542 \
+  --min-hit-rate 0.90 \
+  --report /tmp/temporalstore_locomo_full_revalidated_result.json \
+  --misses /tmp/temporalstore_locomo_full_revalidated_misses.jsonl
+```
+
+| Metric | Result |
+| --- | ---: |
+| Input bytes | 2,805,274 |
+| Answerable cases | 1,542 |
+| Conversations loaded | 10 |
+| Source records loaded | 9,363 |
+| Retrieval/context Hit@K | 0.9215304799 |
+| Evidence-ref coverage | 0.7378022910 |
+| Answer-term coverage | 0.6640726329 |
+| Reader hit rate | 0.5739299611 |
+| Benchmark quality ready | `true` |
+| Threshold violations | 0 |
+| Per-query rows | 1,542 |
+| Token reduction | 82.9375576205 |
+| Retrieval p50 / p95 | 63.167741464 ms / 88.012098300 ms |
+| Reader p50 / p95 | 0.778204529 ms / 6.175042567 ms |
+
+The real LongMemEval_s artifact was not present locally at `/tmp/longmemeval_s.json`, so no real
+LongMemEval_s score is claimed in this document. The full-path command fails closed with exit code
+`2` and the message `missing LongMemEval_s input: /tmp/longmemeval_s.json` until that artifact is
+mounted:
+
+```bash
+python3 tools/run_longmemeval_s_full_path.py \
+  --input /tmp/longmemeval_s.json \
+  --min-case-count <expected_scored_questions> \
+  --min-hit-rate 0.90 \
+  --report /tmp/temporalstore_longmemeval_s_real_result.json \
+  --misses /tmp/temporalstore_longmemeval_s_real_misses.jsonl
+```
+
 ## Rust Improvements In This Pass
 
 - Added LOCOMO JSON -> TemporalStore context JSONL conversion.
