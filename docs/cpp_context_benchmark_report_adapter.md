@@ -83,6 +83,16 @@ fixture score.
 
 ## Cross-Repo Comparison
 
+Execution order for benchmark parity is strict:
+
+1. benchmark truth first: prove whether the archive is fixture/contract evidence or production
+   evidence, and report skipped real datasets as blockers.
+2. unified report contract next: validate both sides emit
+   `matrixark_vikingmem_context_benchmark_report_v1` with the same summary, threshold,
+   category, and per-query fields.
+3. deeper C++ parity execution last: once C++ has a native benchmark runner, compare its archive
+   against the Rust archive instead of relying on static path checks.
+
 Compare C++ and Rust reports with:
 
 ```bash
@@ -100,13 +110,15 @@ python3 tools/compare_context_benchmark_archives.py \
   --rust-archive /tmp/rust_context_benchmark_archive \
   --cpp-archive /tmp/cpp_context_benchmark_archive \
   --case-name context_benchmark_full_dataset_gates \
-  --datasets locomo longmemeval_s
+  --datasets locomo longmemeval_s \
+  --truth-mode production
 ```
 
-Use `--require-executed` only for a real full-dataset evidence pass. Without it, the archive
-comparator accepts explicit skipped/not-run statuses on both sides, which keeps missing LOCOMO,
-LongMemEval_s, or live OSS-reader artifacts honest instead of turning fixture or skipped runs into
-production evidence.
+Use `--truth-mode production` or `--require-executed` only for a real full-dataset evidence pass.
+Without it, the archive comparator accepts explicit skipped/not-run statuses on both sides, which
+keeps missing LOCOMO, LongMemEval_s, or live OSS-reader artifacts honest instead of turning fixture
+or skipped runs into production evidence. The archive result exposes `benchmark_truth_ready` and
+`truth_blockers` so readiness can separate truthful contract evidence from production evidence.
 
 The comparator checks:
 

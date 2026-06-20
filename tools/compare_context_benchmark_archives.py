@@ -40,13 +40,24 @@ def main() -> int:
     parser.add_argument("--numeric-tolerance", type=float, default=1e-9)
     parser.add_argument("--latency-ratio-tolerance", type=float, default=5.0)
     parser.add_argument("--require-executed", action="store_true")
+    parser.add_argument(
+        "--truth-mode",
+        choices=("contract", "production"),
+        default="contract",
+        help=(
+            "contract validates shape and matched skip/pass statuses; production requires every "
+            "requested real dataset to execute and pass thresholds on both sides."
+        ),
+    )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
 
     rust_manifest = load_manifest(args.rust_archive)
     cpp_manifest = load_manifest(args.cpp_archive)
     failures: list[str] = []
+    truth_blockers: list[str] = []
     dataset_results = []
+    require_executed = args.require_executed or args.truth_mode == "production"
 
     compare_manifest_field("reader_model", rust_manifest, cpp_manifest, failures)
     compare_manifest_field("reader_base_url", rust_manifest, cpp_manifest, failures, required=False)
@@ -82,27 +93,41 @@ def main() -> int:
                 result["ready"] = compare_result["ready"]
                 result["report_compare"] = compare_result
                 failures.extend(f"{dataset}: {item}" for item in compare_result["failures"])
+                if not compare_result["ready"]:
+                    truth_blockers.append(f"{dataset}: report comparison failed")
         elif rust_status in SKIPPED_STATUSES and cpp_status in SKIPPED_STATUSES:
-            result["ready"] = not args.require_executed
-            if args.require_executed:
+            result["ready"] = not require_executed
+            if require_executed:
                 failures.append(f"{dataset}: execution required but both archives skipped")
+                truth_blockers.append(f"{dataset}: skipped on both sides")
         else:
             result["ready"] = False
             failures.append(f"{dataset}: status mismatch rust={rust_status!r} cpp={cpp_status!r}")
+            truth_blockers.append(f"{dataset}: status mismatch")
         dataset_results.append(result)
+
+    executed_dataset_count = sum(
+        1
+        for result in dataset_results
+        if result["rust_status"] in PASSED_STATUSES and result["cpp_status"] in PASSED_STATUSES
+    )
+    benchmark_truth_ready = not failures and (
+        args.truth_mode == "contract" or executed_dataset_count == len(dataset_results)
+    )
+    if args.truth_mode == "production" and executed_dataset_count != len(dataset_results):
+        truth_blockers.append("not all requested datasets executed")
 
     report = {
         "format": "matrixark_vikingmem_context_benchmark_archive_compare_v1",
         "ready": not failures,
+        "benchmark_truth_ready": benchmark_truth_ready,
+        "truth_mode": args.truth_mode,
+        "truth_blockers": sorted(set(truth_blockers)),
         "rust_archive": str(args.rust_archive),
         "cpp_archive": str(args.cpp_archive),
         "case_name": args.case_name,
         "dataset_count": len(dataset_results),
-        "executed_dataset_count": sum(
-            1
-            for result in dataset_results
-            if result["rust_status"] in PASSED_STATUSES and result["cpp_status"] in PASSED_STATUSES
-        ),
+        "executed_dataset_count": executed_dataset_count,
         "failure_count": len(failures),
         "failures": failures,
         "datasets": dataset_results,
