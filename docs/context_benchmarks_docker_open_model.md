@@ -103,10 +103,12 @@ TemporalStore backend evidence, thresholds, p50/p95 latencies, token reduction,
 quality-gate state, and category breakdown. These are the files to archive when
 comparing Rust runs with VikingMem/OpenViking or C++ benchmark outputs.
 
-The Docker runner uses a `python:3.11-slim` benchmark container and therefore does
-not run the Rust harness unless replaced with a Rust-capable benchmark image. For
-Rust-backed evidence, prefer the local endpoint runner above or run the full gate
-commands directly with `--require-rust-temporalstore`.
+The local endpoint runner and the LOCOMO/LongMemEval_s full gate commands require
+the Rust TemporalStore backend by default. They invoke the Rust
+`context_workflow_harness`, compare Rust Hit@K with the Python scorer on the exact
+converted subset, and fail closed unless the parity result is on par. Use
+`--skip-rust-temporalstore` only for diagnostic Python-only runs; those reports are
+not accepted as Rust-backed benchmark evidence.
 
 If Docker Hub, the local registry, or the model registry is unreachable, the
 script exits non-zero and still writes a manifest with `phase` set to

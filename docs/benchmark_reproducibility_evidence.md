@@ -101,7 +101,6 @@ LOCOMO deterministic full gate command:
 python3 tools/run_locomo_90_hit_rate.py \
   --threshold-profile locomo_full \
   --input /tmp/locomo10.json \
-  --require-rust-temporalstore \
   --rust-temporalstore-max-cases 1 \
   --rust-temporalstore-source-limit 16 \
   --rust-temporalstore-report /tmp/ts_rust_backend_locomo_one_harness.json \
@@ -140,7 +139,6 @@ python3 tools/run_longmemeval_s_full_path.py \
   --threshold-profile longmemeval_full \
   --input /tmp/longmemeval_s.json \
   --reader-mode deterministic \
-  --require-rust-temporalstore \
   --rust-temporalstore-max-cases 1 \
   --rust-temporalstore-source-limit 16 \
   --rust-temporalstore-report /tmp/ts_rust_backend_longmemeval_one_harness.json \

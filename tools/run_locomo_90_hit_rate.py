@@ -39,7 +39,18 @@ def main() -> int:
     parser.add_argument("--reader-timeout-seconds", type=float, default=20.0)
     parser.add_argument("--reader-max-context-chars", type=int, default=12000)
     parser.add_argument("--reader-no-fallback", action="store_true")
-    parser.add_argument("--require-rust-temporalstore", action="store_true")
+    parser.add_argument(
+        "--require-rust-temporalstore",
+        action="store_true",
+        default=True,
+        help="Require the Rust TemporalStore context backend proof. Enabled by default.",
+    )
+    parser.add_argument(
+        "--skip-rust-temporalstore",
+        dest="require_rust_temporalstore",
+        action="store_false",
+        help="Diagnostic-only Python scorer run; disables the Rust TemporalStore backend proof.",
+    )
     parser.add_argument("--rust-temporalstore-max-cases", type=int, default=4)
     parser.add_argument("--rust-temporalstore-timeout-seconds", type=float, default=180.0)
     parser.add_argument("--rust-temporalstore-source-limit", type=int, default=64)
@@ -126,6 +137,10 @@ def main() -> int:
 
     report_path = Path(args.report)
     report = json.loads(report_path.read_text(encoding="utf-8"))
+    rust_backend_report = report.get("rust_temporalstore_backend_report") or {}
+    rust_score_parity = {}
+    if isinstance(rust_backend_report, dict):
+        rust_score_parity = rust_backend_report.get("rust_vs_python_subset_score") or {}
     hit_rate = float(report.get("hit_rate") or 0.0)
     answer_coverage = float(report.get("answer_term_coverage") or 0.0)
     evidence_coverage = float(report.get("evidence_ref_coverage") or 0.0)
@@ -177,6 +192,15 @@ def main() -> int:
                 "benchmark_threshold_violation_count": report.get("benchmark_threshold_violation_count"),
                 "benchmark_threshold_violations": report.get("benchmark_threshold_violations"),
                 "benchmark_thresholds": report.get("benchmark_thresholds"),
+                "rust_temporalstore_backend_required": bool(report.get("rust_temporalstore_backend_required")),
+                "rust_temporalstore_backend_ready": bool(report.get("rust_temporalstore_backend_ready")),
+                "rust_temporalstore_converted_jsonl": rust_backend_report.get("converted_jsonl")
+                if isinstance(rust_backend_report, dict)
+                else None,
+                "rust_temporalstore_report": rust_backend_report.get("report_path")
+                if isinstance(rust_backend_report, dict)
+                else None,
+                "rust_temporalstore_score_parity": rust_score_parity,
                 "answer_reader_gap_visible": answer_coverage < thresholds["min_hit_rate"],
                 "report": str(report_path),
                 "misses": args.misses,

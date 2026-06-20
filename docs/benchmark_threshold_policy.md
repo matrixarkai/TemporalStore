@@ -62,7 +62,6 @@ LOCOMO production gate:
 python3 tools/run_locomo_90_hit_rate.py \
   --threshold-profile locomo_full \
   --input /tmp/locomo10.json \
-  --require-rust-temporalstore \
   --report /tmp/temporalstore_locomo_threshold_policy_result.json \
   --misses /tmp/temporalstore_locomo_threshold_policy_misses.jsonl
 ```
@@ -86,16 +85,17 @@ python3 tools/run_longmemeval_s_full_path.py \
   --threshold-profile longmemeval_full \
   --input /tmp/longmemeval_s.json \
   --reader-mode deterministic \
-  --require-rust-temporalstore \
   --report /tmp/temporalstore_longmemeval_full_threshold_policy_result.json \
   --misses /tmp/temporalstore_longmemeval_full_threshold_policy_misses.jsonl
 ```
 
-`--require-rust-temporalstore` converts benchmark cases to the Rust context JSONL contract and runs
+LOCOMO and LongMemEval_s wrappers require the Rust TemporalStore backend by default. That path
+converts benchmark cases to the Rust context JSONL contract and runs
 `context_workflow_harness` through a real `TemporalEngine` before the deterministic Python
 reader/scorer emits the final benchmark report. The runner also scores that exact converted subset
 with the Python ranker and requires Rust Hit@K to match Python Hit@K within
-`--rust-temporalstore-score-tolerance` before marking the backend ready. Use
+`--rust-temporalstore-score-tolerance` before marking the backend ready. Use `--skip-rust-temporalstore`
+only for explicit diagnostic Python-only runs; those reports are not Rust-backed evidence. Use
 `--rust-temporalstore-max-cases 0 --rust-temporalstore-source-limit 0` only when a full Rust
 backend replay is intentionally requested; the default bounded proof keeps local full-dataset
 scoring practical while preventing Python-only benchmark evidence.
