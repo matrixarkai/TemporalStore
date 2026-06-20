@@ -66,10 +66,12 @@ the corresponding datasets are present and pass.
 The local endpoint runner requires Rust TemporalStore by default
 (`TEMPORALSTORE_REQUIRE_RUST_TEMPORALSTORE=1`). It converts benchmark cases to the
 Rust context JSONL contract and runs `context_workflow_harness` through a real
-`TemporalEngine` before the Python reader/scorer emits the report. Tune the bounded
-proof with `TEMPORALSTORE_RUST_BACKEND_MAX_CASES`,
+`TemporalEngine` before the Python reader/scorer emits the report. It also compares
+Rust Hit@K with Python Hit@K on the exact converted subset and fails closed if they
+are not on par. Tune the bounded proof with `TEMPORALSTORE_RUST_BACKEND_MAX_CASES`,
 `TEMPORALSTORE_RUST_BACKEND_SOURCE_LIMIT`, and
-`TEMPORALSTORE_RUST_BACKEND_TIMEOUT_SECONDS`.
+`TEMPORALSTORE_RUST_BACKEND_TIMEOUT_SECONDS`; tune score drift with
+`TEMPORALSTORE_RUST_BACKEND_SCORE_TOLERANCE`.
 
 To use a local registry mirror or a pre-pulled compatible image:
 

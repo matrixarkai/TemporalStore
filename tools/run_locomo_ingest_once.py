@@ -189,6 +189,12 @@ def main() -> int:
         help="Maximum ranked sources per converted Rust TemporalStore proof case. Use 0 for all sources.",
     )
     parser.add_argument(
+        "--rust-temporalstore-score-tolerance",
+        type=float,
+        default=0.0,
+        help="Allowed absolute Hit@K difference between Rust TemporalStore and Python on the converted subset.",
+    )
+    parser.add_argument(
         "--rust-temporalstore-jsonl",
         default="",
         help="Optional path for converted Rust TemporalStore context JSONL.",
@@ -532,6 +538,7 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
         )
     if int(args.rust_temporalstore_source_limit) > 0:
         limit_rust_temporalstore_sources(jsonl_path, int(args.rust_temporalstore_source_limit), args.max_events)
+    python_subset_score = score_rust_temporalstore_jsonl_with_python(jsonl_path, args.max_events)
 
     env = os.environ.copy()
     env.update(
@@ -571,6 +578,7 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
         "elapsed_ms": elapsed,
         "stdout_tail": completed.stdout[-2000:],
         "stderr_tail": completed.stderr[-2000:],
+        "python_subset_score": python_subset_score,
     }
     if completed.returncode != 0:
         raise RuntimeError(
@@ -581,9 +589,25 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
     report["harness"] = harness
     rust_case_count = int(harness.get("external_benchmark_case_count") or 0)
     rust_hit_at_k = float(harness.get("external_benchmark_hit_at_k") or 0.0)
+    python_hit_at_k = float(python_subset_score.get("hit_at_k") or 0.0)
+    score_delta = abs(rust_hit_at_k - python_hit_at_k)
+    report["rust_vs_python_subset_score"] = {
+        "python_hit_at_k": python_hit_at_k,
+        "rust_hit_at_k": rust_hit_at_k,
+        "absolute_delta": score_delta,
+        "tolerance": args.rust_temporalstore_score_tolerance,
+        "on_par": score_delta <= args.rust_temporalstore_score_tolerance,
+        "python_case_count": python_subset_score.get("case_count"),
+        "rust_case_count": rust_case_count,
+        "python_mean_reciprocal_rank": python_subset_score.get("mean_reciprocal_rank"),
+        "rust_mean_reciprocal_rank": harness.get("external_benchmark_mean_reciprocal_rank"),
+        "python_zero_hit_queries": python_subset_score.get("zero_hit_queries"),
+        "rust_zero_hit_queries": harness.get("external_benchmark_zero_hit_queries"),
+    }
     report["rust_temporalstore_backend_ready"] = (
         rust_case_count > 0
         and rust_hit_at_k > 0.0
+        and report["rust_vs_python_subset_score"]["on_par"]
         and str(harness.get("external_benchmark_source") or "") == str(jsonl_path)
     )
     report["rust_temporalstore_strict_external_ready"] = bool(harness.get("external_benchmark_ready"))
@@ -610,6 +634,46 @@ def limit_rust_temporalstore_sources(path: Path, source_limit: int, max_events: 
         "".join(json.dumps(case, ensure_ascii=False) + "\n" for case in limited),
         encoding="utf-8",
     )
+
+
+def score_rust_temporalstore_jsonl_with_python(path: Path, max_events: int) -> dict[str, Any]:
+    total = 0
+    hits = 0
+    rr_sum = 0.0
+    zero_hit_queries = 0
+    per_query = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        case = json.loads(line)
+        query_id = str(case.get("query_id") or f"query-{total + 1}")
+        query = str(case.get("query") or case.get("question") or "")
+        answers = normalize_answers(case.get("answer_terms") or case.get("expected_terms") or case.get("answers"))
+        refs = normalize_evidence_refs(case.get("expected_source_refs") or case.get("evidence"))
+        sources = [source for source in case.get("sources", []) if isinstance(source, dict)]
+        blocks = rank_sources(query, sources, max_events)
+        rank = first_hit_rank(blocks, answers, refs)
+        total += 1
+        if rank is None:
+            zero_hit_queries += 1
+        else:
+            hits += 1
+            rr_sum += 1.0 / rank
+        per_query.append(
+            {
+                "query_id": query_id,
+                "hit": rank is not None,
+                "rank": rank,
+                "retrieved_blocks": len(blocks),
+            }
+        )
+    return {
+        "case_count": total,
+        "hit_at_k": hits / total if total else 0.0,
+        "mean_reciprocal_rank": rr_sum / total if total else 0.0,
+        "zero_hit_queries": zero_hit_queries,
+        "per_query": per_query,
+    }
 
 
 def parse_last_json_object(text: str) -> dict[str, Any]:

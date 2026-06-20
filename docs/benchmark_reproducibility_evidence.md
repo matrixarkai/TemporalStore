@@ -120,6 +120,9 @@ LOCOMO result:
 | Rust TemporalStore backend ready | `true` |
 | Rust backend proof cases | 1 |
 | Rust backend Hit@K | 1.0 |
+| Python subset Hit@K | 1.0 |
+| Rust/Python subset Hit@K delta | 0.0 |
+| Rust/Python subset score on par | `true` |
 | Rust strict external ready | `true` |
 | Hit@K | 0.9409857328 |
 | Reader hit rate | 0.8488975357 |
@@ -156,6 +159,9 @@ LongMemEval_s result:
 | Rust TemporalStore backend ready | `true` |
 | Rust backend proof cases | 1 |
 | Rust backend Hit@K | 1.0 |
+| Python subset Hit@K | 1.0 |
+| Rust/Python subset Hit@K delta | 0.0 |
+| Rust/Python subset score on par | `true` |
 | Rust strict external ready | `false` |
 | Hit@K | 1.0 |
 | Reader hit rate | 0.858 |
@@ -204,8 +210,9 @@ Fail-closed OSS runner status:
 Claim label: these are Rust TemporalStore-backed deterministic full-dataset gate passes plus
 paper-comparable archive files. The full reader/scoring path is still deterministic Python; the
 benchmark report now fails closed when `--require-rust-temporalstore` is set and the Rust
-`TemporalEngine` context harness cannot ingest/retrieve converted benchmark cases. These are not
-live OSS-reader or paper-score parity claims until a reachable
+`TemporalEngine` context harness cannot ingest/retrieve converted benchmark cases, or when Rust
+Hit@K is not on par with Python Hit@K on the exact converted subset. These are not live OSS-reader
+or paper-score parity claims until a reachable
 `matrixark-cpp-oss-context` OpenAI-compatible endpoint runs with `reader_open_source_calls > 0`,
 no fallback, and zero threshold violations.
 

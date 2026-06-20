@@ -40,6 +40,7 @@ def main() -> int:
     parser.add_argument("--rust-temporalstore-max-cases", type=int, default=4)
     parser.add_argument("--rust-temporalstore-timeout-seconds", type=float, default=180.0)
     parser.add_argument("--rust-temporalstore-source-limit", type=int, default=64)
+    parser.add_argument("--rust-temporalstore-score-tolerance", type=float, default=0.0)
     parser.add_argument("--rust-temporalstore-jsonl", default="")
     parser.add_argument("--rust-temporalstore-report", default="")
     args = parser.parse_args()
@@ -98,6 +99,7 @@ def main() -> int:
         command.extend(["--rust-temporalstore-max-cases", str(args.rust_temporalstore_max_cases)])
         command.extend(["--rust-temporalstore-timeout-seconds", str(args.rust_temporalstore_timeout_seconds)])
         command.extend(["--rust-temporalstore-source-limit", str(args.rust_temporalstore_source_limit)])
+        command.extend(["--rust-temporalstore-score-tolerance", str(args.rust_temporalstore_score_tolerance)])
         if args.rust_temporalstore_jsonl:
             command.extend(["--rust-temporalstore-jsonl", args.rust_temporalstore_jsonl])
         if args.rust_temporalstore_report:

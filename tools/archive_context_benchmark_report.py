@@ -79,6 +79,11 @@ def main() -> int:
                 if isinstance(report.get("rust_temporalstore_backend_report"), dict)
                 else 0
             ),
+            "score_parity": (report.get("rust_temporalstore_backend_report") or {}).get(
+                "rust_vs_python_subset_score"
+            )
+            if isinstance(report.get("rust_temporalstore_backend_report"), dict)
+            else {},
         },
         "prompt": {
             "system": report.get("reader_prompt_system") or "",

@@ -93,7 +93,9 @@ python3 tools/run_longmemeval_s_full_path.py \
 
 `--require-rust-temporalstore` converts benchmark cases to the Rust context JSONL contract and runs
 `context_workflow_harness` through a real `TemporalEngine` before the deterministic Python
-reader/scorer emits the final benchmark report. Use
+reader/scorer emits the final benchmark report. The runner also scores that exact converted subset
+with the Python ranker and requires Rust Hit@K to match Python Hit@K within
+`--rust-temporalstore-score-tolerance` before marking the backend ready. Use
 `--rust-temporalstore-max-cases 0 --rust-temporalstore-source-limit 0` only when a full Rust
 backend replay is intentionally requested; the default bounded proof keeps local full-dataset
 scoring practical while preventing Python-only benchmark evidence.
