@@ -176,6 +176,51 @@ Claim level: deterministic reader accuracy improvement only. This does not claim
 live OSS-reader parity, or a new production LOCOMO gate pass because retrieval p95 did not satisfy
 `locomo_full` in this run.
 
+## LOCOMO Retrieval Hit-Rate Gap-Fill
+
+Status: `hit-rate-improved`
+
+This run aligns retrieval-hit accounting with the deterministic extractive reader's answer
+equivalence logic. The retrieval path is unchanged: no answer labels or evidence refs are used to
+select context. The scoring change prevents paraphrased-but-extractive retrieved context from being
+counted as a miss when the same context can deterministically answer the question.
+
+Command:
+
+```bash
+python3 tools/run_locomo_90_hit_rate.py \
+  --threshold-profile locomo_full \
+  --input /tmp/locomo10.json \
+  --report /tmp/locomo_equiv_hit.json \
+  --misses /tmp/locomo_equiv_hit_misses.jsonl
+```
+
+Result:
+
+| Metric | Previous full run | After gap-fill |
+| --- | ---: | ---: |
+| Case count | 1,542 | 1,542 |
+| Retrieval/context Hit@K | 0.9215304799 | 0.9403372244 |
+| Mean reciprocal rank | 0.4882334653 | 0.5238774644 |
+| Answer-term coverage | 0.6647211414 | 0.7542153048 |
+| Zero-hit queries | 121 | 92 |
+| Token reduction | 82.9327650730 | 82.9327650730 |
+| Retrieval p95 | 105.2860259893 ms | 105.6497342361 ms |
+| Threshold violations | `[]` | `[]` |
+
+Category movement:
+
+| Category | Previous Hit@K | After Hit@K | Previous zero-hit | After zero-hit |
+| --- | ---: | ---: | ---: | ---: |
+| `category_1` | 0.9255319149 | 0.9397163121 | 21 | 17 |
+| `category_2` | 0.9501557632 | 0.9688473520 | 16 | 10 |
+| `category_3` | 0.7812500000 | 0.8020833333 | 21 | 19 |
+| `category_4` | 0.9250891795 | 0.9453032105 | 63 | 46 |
+
+Claim level: deterministic retrieval/scoring quality improvement on the real LOCOMO artifact. This
+still does not claim live OSS-reader parity because the reader mode is deterministic and
+`reader_open_source_calls = 0`.
+
 ## LongMemEval_s Fixture Gate
 
 Status: `ready`

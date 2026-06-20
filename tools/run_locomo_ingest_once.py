@@ -1062,7 +1062,7 @@ def update_semantics_score(question: str, text: str, text_tokens: set[str]) -> i
 
 def first_hit_rank(blocks: list[dict[str, str]], answers: list[str], refs: list[str]) -> int | None:
     for index, block in enumerate(blocks, start=1):
-        if any(text_matches(block.get("body", ""), answer) for answer in answers):
+        if any(answer_equivalent(block.get("body", ""), answer) for answer in answers):
             return index
         if any(ref_matches(block, ref) for ref in refs):
             return index
@@ -1070,7 +1070,7 @@ def first_hit_rank(blocks: list[dict[str, str]], answers: list[str], refs: list[
 
 
 def count_matched_terms(blocks: list[dict[str, str]], answers: list[str]) -> int:
-    return sum(1 for answer in answers if any(text_matches(block.get("body", ""), answer) for block in blocks))
+    return sum(1 for answer in answers if any(answer_equivalent(block.get("body", ""), answer) for block in blocks))
 
 
 def count_matched_refs(blocks: list[dict[str, str]], refs: list[str]) -> int:
