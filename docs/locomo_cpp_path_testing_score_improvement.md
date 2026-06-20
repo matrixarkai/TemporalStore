@@ -190,6 +190,21 @@ python3 tools/run_locomo_90_hit_rate.py \
   --require-open-source-reader
 ```
 
+For a one-command live OSS reader validation that stores the probe and benchmark evidence, use:
+
+```bash
+python3 tools/run_live_oss_reader_validation.py \
+  --dataset locomo \
+  --input /tmp/locomo10.json \
+  --base-url http://127.0.0.1:8000/v1 \
+  --model google/flan-t5-small \
+  --min-case-count 1542 \
+  --min-hit-rate 0.90 \
+  --report /tmp/temporalstore_live_oss_reader_validation.json \
+  --benchmark-report /tmp/temporalstore_live_oss_reader_benchmark.json \
+  --misses /tmp/temporalstore_live_oss_reader_misses.jsonl
+```
+
 For a real LongMemEval_s artifact, set `--min-case-count` to the expected number of scored
 questions for that export. The fixture command above intentionally uses `4`; full-dataset docs
 should not reuse that threshold.
@@ -240,6 +255,41 @@ python3 tools/run_longmemeval_s_full_path.py \
   --report /tmp/temporalstore_longmemeval_s_real_result.json \
   --misses /tmp/temporalstore_longmemeval_s_real_misses.jsonl
 ```
+
+## Live OSS Reader Validation
+
+The live OSS reader validation path exists and fails closed unless a real OpenAI-compatible local
+reader gateway answers `/v1/models` and completes the benchmark with `--require-open-source-reader`.
+The local validation attempt for the MatrixArk/OpenViking model profile used:
+
+```bash
+python3 tools/run_live_oss_reader_validation.py \
+  --dataset locomo \
+  --input /tmp/locomo10.json \
+  --base-url http://127.0.0.1:8000/v1 \
+  --model google/flan-t5-small \
+  --min-case-count 1542 \
+  --min-hit-rate 0.90 \
+  --report /tmp/temporalstore_live_oss_reader_validation.json \
+  --benchmark-report /tmp/temporalstore_live_oss_reader_benchmark.json \
+  --misses /tmp/temporalstore_live_oss_reader_misses.jsonl
+```
+
+Current result:
+
+| Field | Result |
+| --- | --- |
+| Ready | `false` |
+| Blocker | `reader_gateway_unreachable` |
+| Probe URL | `http://127.0.0.1:8000/v1/models` |
+| Probe error | `URLError: <urlopen error [Errno 111] Connection refused>` |
+| Input artifact | `/tmp/locomo10.json` |
+| Input bytes | 2,805,274 |
+| Required cases | 1,542 |
+| Required model | `google/flan-t5-small` |
+
+No live OSS reader score is claimed until this validation report has `ready=true`,
+`reader_open_source_calls > 0`, and zero benchmark threshold violations.
 
 ## Rust Improvements In This Pass
 
