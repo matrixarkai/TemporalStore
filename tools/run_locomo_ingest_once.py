@@ -705,6 +705,9 @@ def extractive_reader_answer(question: str, blocks: list[dict[str, str]]) -> str
         if answer:
             return with_reader_context(answer, texts)
     if kind == "numeric":
+        answer = numeric_answer(question, texts)
+        if answer:
+            return with_reader_context(answer, texts)
         for text in texts:
             match = re.search(r"\b\d+(?:\.\d+)?(?:\s*(?:years?\s+old|usd|dollars?|guests?|people))?\b", text, re.I)
             if match:
@@ -722,6 +725,82 @@ def with_reader_context(answer: str, texts: list[str]) -> str:
     if not context or normalize_text(answer) in normalize_text(context):
         return answer if len(answer) > len(context) else context
     return f"{answer}\n\nEvidence context:\n{context}"
+
+
+def numeric_answer(question: str, texts: list[str]) -> str:
+    q = normalize_text(question)
+    if re.search(r"\b(how much|money|cost|spent|spend|raised?|earned?|accommodations?)\b", q):
+        amounts = money_values(texts)
+        if len(amounts) >= 2 and re.search(r"\b(more|compared|difference)\b", q):
+            return f"${format_number(abs(max(amounts) - min(amounts)))}"
+        if amounts and re.search(r"\b(total|all|combined|through all|in total)\b", q):
+            return f"${format_number(sum(amounts))}"
+        if amounts:
+            return "; ".join(f"${format_number(value)}" for value in amounts[:8])
+    if re.search(r"\baverage\b", q):
+        numbers = context_numbers(texts)
+        if numbers:
+            return format_number(sum(numbers) / len(numbers))
+    if re.search(r"\bhow many\b", q):
+        counts = count_like_numbers(question, texts)
+        if counts and re.search(r"\b(total|both|all|combined|across)\b", q):
+            return format_number(sum(counts))
+        if counts:
+            return "; ".join(format_number(value) for value in counts[:8])
+    return ""
+
+
+def money_values(texts: list[str]) -> list[float]:
+    values: list[float] = []
+    for text in texts:
+        for match in re.finditer(r"\$\s*([0-9][0-9,]*(?:\.\d+)?)", text):
+            values.append(float(match.group(1).replace(",", "")))
+    return unique_numbers(values)
+
+
+def context_numbers(texts: list[str]) -> list[float]:
+    values: list[float] = []
+    for text in texts:
+        compact = re.sub(r"\b\d{4}[/-]\d{2}[/-]\d{2}\b", " ", text)
+        for match in re.finditer(r"\b(?:age(?:d)?|is|am|turned|old)\s+(\d{1,3}(?:\.\d+)?)\b", compact, re.I):
+            value = float(match.group(1))
+            if 0 < value < 120:
+                values.append(value)
+    return unique_numbers(values)
+
+
+def count_like_numbers(question: str, texts: list[str]) -> list[float]:
+    q_tokens = answer_tokens(question)
+    values: list[float] = []
+    for text in texts:
+        compact = re.sub(r"\b\d{4}[/-]\d{2}[/-]\d{2}\b", " ", text)
+        sentences = re.split(r"(?<=[.!?])\s+", compact)
+        for sentence in sentences:
+            if not sentence.strip():
+                continue
+            s_tokens = answer_tokens(sentence)
+            if q_tokens and len(q_tokens & s_tokens) == 0:
+                continue
+            for match in re.finditer(
+                r"\b(\d+(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\b",
+                sentence,
+                re.I,
+            ):
+                value = number_value(match.group(1))
+                if 0 <= value < 10000:
+                    values.append(value)
+    return unique_numbers(values)
+
+
+def unique_numbers(values: list[float]) -> list[float]:
+    out: list[float] = []
+    seen: set[str] = set()
+    for value in values:
+        key = format_number(value)
+        if key not in seen:
+            seen.add(key)
+            out.append(value)
+    return out
 
 
 def question_kind(question: str) -> str:
@@ -749,7 +828,7 @@ def question_kind(question: str) -> str:
 
 
 def duration_answer(question: str, texts: list[str]) -> str:
-    explicit = explicit_duration_spans(texts)
+    explicit = relevant_duration_spans(question, explicit_duration_spans(texts))
     if explicit and re.search(r"\b(total|combined|in all)\b", question.lower()):
         total = sum_duration_hours(explicit)
         if total:
@@ -782,6 +861,25 @@ def duration_answer(question: str, texts: list[str]) -> str:
     if relative:
         return relative
     return ""
+
+
+def relevant_duration_spans(question: str, spans: list[str]) -> list[str]:
+    q = question.lower()
+    if re.search(r"\bmonths?\b", q):
+        allowed = ("month",)
+    elif re.search(r"\bweeks?\b", q):
+        allowed = ("week", "day")
+    elif re.search(r"\bdays?\b", q):
+        allowed = ("day", "week")
+    elif re.search(r"\bhours?\b", q):
+        allowed = ("hour",)
+    else:
+        allowed = ("hour", "day", "week", "month", "year")
+    return [
+        span
+        for span in spans
+        if any(re.search(rf"\b{unit}s?\b", span, re.I) for unit in allowed)
+    ]
 
 
 def explicit_duration_spans(texts: list[str]) -> list[str]:

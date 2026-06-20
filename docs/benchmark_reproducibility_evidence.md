@@ -136,8 +136,8 @@ Benchmark command:
 python3 tools/run_longmemeval_s_full_path.py \
   --threshold-profile longmemeval_full \
   --input /tmp/longmemeval_s.json \
-  --report /tmp/longmemeval_rate_more_validation_result.json \
-  --misses /tmp/longmemeval_rate_more_validation_misses.jsonl
+  --report /tmp/longmemeval_duration_filter_result.json \
+  --misses /tmp/longmemeval_duration_filter_misses.jsonl
 ```
 
 Run configuration:
@@ -148,8 +148,8 @@ Run configuration:
 | Reader mode | `deterministic` |
 | Reader model | `google/flan-t5-small` |
 | Max events | `14` |
-| Report JSON | `/tmp/longmemeval_rate_more_validation_result.json` |
-| Misses JSONL | `/tmp/longmemeval_rate_more_validation_misses.jsonl` |
+| Report JSON | `/tmp/longmemeval_duration_filter_result.json` |
+| Misses JSONL | `/tmp/longmemeval_duration_filter_misses.jsonl` |
 
 Output:
 
@@ -160,14 +160,14 @@ Output:
 | Source record count | 10,960 |
 | Retrieval/context Hit@K | 1.0 |
 | Mean reciprocal rank | 1.0 |
-| Reader hit rate | 0.82 |
+| Reader hit rate | 0.822 |
 | Answer-term coverage | 0.5696361355 |
-| Reader answer coverage | 0.7264742785 |
+| Reader answer coverage | 0.7289836888 |
 | Token reduction | 81.3381607810 |
-| Retrieval p95 | 68.5497564147 ms |
-| Reader p95 | 2.7984109009 ms |
+| Retrieval p95 | 55.4250744288 ms |
+| Reader p95 | 2.4207275885 ms |
 | Zero-hit queries | 0 |
-| Reader zero-hit queries | 90 |
+| Reader zero-hit queries | 89 |
 | Threshold violations | `[]` |
 | Benchmark threshold passed | `true` |
 
@@ -175,9 +175,11 @@ Reader-rate improvement note: follow-up passes made the deterministic reader ret
 extractive answer together with the retrieved evidence context, normalized numeric word/digit
 answers, handled flattened preference-answer boilerplate, improved explicit duration extraction,
 matched equivalent duration units such as `1 week` and `7 days`, and compacted retrieved turns into
-relevant evidence sentences. The compacted evidence pack lets the runner use `max_events = 14`
-while keeping token reduction above the `longmemeval_full` floor. This moved the real HELaMem
-LongMemEval_s deterministic reader hit rate from `0.586` to `0.82`
+relevant evidence sentences. A final pass also filters explicit duration spans by the requested
+unit so day-difference questions do not return unrelated hour/month snippets. The compacted
+evidence pack lets the runner use `max_events = 14` while keeping token reduction above the
+`longmemeval_full` floor. This moved the real HELaMem LongMemEval_s deterministic reader hit rate
+from `0.586` to `0.822`
 while preserving `Hit@K = 1.0`, `MRR = 1.0`, and the full threshold gate.
 
 Fetch helper:
