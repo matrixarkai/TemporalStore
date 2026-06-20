@@ -647,7 +647,101 @@ def rank_sources(question: str, sources: list[dict[str, str]], max_events: int) 
         body = source.get("body", "")
         ranked.append((direct_relevance_score(question, body), -index, source))
     ranked.sort(key=lambda row: (row[0], row[1]), reverse=True)
-    return [compact_retrieval_source(question, source) for _, _, source in ranked[: max(1, max_events)]]
+    selected = [source for _, _, source in ranked[: max(1, max_events)]]
+    selected = add_temporal_reference_sources(question, selected, sources, max_events)
+    return [compact_retrieval_source(question, source) for source in selected]
+
+
+def add_temporal_reference_sources(
+    question: str,
+    selected: list[dict[str, str]],
+    sources: list[dict[str, str]],
+    max_events: int,
+) -> list[dict[str, str]]:
+    """Keep a current-time anchor for temporal "ago"/recency questions.
+
+    LongMemEval_s asks many questions from the end of a conversation, for example
+    "How many days ago did I buy a smoker?". The event memory is relevant, but
+    the reference date is often only present in the newest conversation turn.
+    Without that current anchor the reader can only echo the event date.
+    """
+
+    q = normalize_text(question)
+    anchors = temporal_event_anchors(question)
+    single_anchor = single_temporal_event_anchor(question)
+    if single_anchor:
+        anchors.append(single_anchor)
+    if not anchors and not re.search(r"\b(ago|last|current|latest|recent|now|when)\b", q):
+        return selected
+    selected_keys = {source_identity(source) for source in selected}
+    out = list(selected)
+    for anchor in anchors[:3]:
+        source = best_source_for_temporal_anchor(anchor, sources)
+        if not source:
+            continue
+        key = source_identity(source)
+        if key in selected_keys:
+            continue
+        if len(out) >= max(1, max_events):
+            out.pop()
+        out.append(source)
+        selected_keys.add(key)
+    dated = []
+    for index, source in enumerate(sources):
+        date = source_date(source)
+        if date:
+            dated.append((date, index, source))
+    if not dated:
+        return out
+    dated.sort(key=lambda row: (row[0], row[1]), reverse=True)
+    for _, _, source in dated[:3]:
+        key = source_identity(source)
+        if key in selected_keys:
+            continue
+        if len(out) >= max(1, max_events):
+            out.pop()
+        out.append(source)
+        selected_keys.add(key)
+    return out
+
+
+def best_source_for_temporal_anchor(anchor: str, sources: list[dict[str, str]]) -> dict[str, str] | None:
+    anchor_tokens = answer_tokens(anchor)
+    if not anchor_tokens:
+        return None
+    scored: list[tuple[int, int, dict[str, str]]] = []
+    for index, source in enumerate(sources):
+        body = source.get("body", "")
+        body_tokens = answer_tokens(body)
+        hits = sum(1 for token in anchor_tokens if token_matches(token, body_tokens))
+        if not hits:
+            continue
+        bonus = 0
+        normalized_body = normalize_text(body)
+        if normalize_text(anchor) in normalized_body:
+            bonus += 8
+        if re.search(r"\b(ago|last week|last month|today|yesterday)\b", normalized_body):
+            bonus += 8
+        if "user" in normalized_body:
+            bonus += 2
+        scored.append((hits * 4 + bonus, -index, source))
+    if not scored:
+        return None
+    scored.sort(key=lambda row: (row[0], row[1]), reverse=True)
+    return scored[0][2]
+
+
+def source_identity(source: dict[str, str]) -> str:
+    return f"{source.get('title', '')}\n{source.get('body', '')[:240]}"
+
+
+def source_date(source: dict[str, str]) -> datetime | None:
+    text = source.get("body", "")
+    prefix = re.match(r"\s*(\d{4}[/-]\d{2}[/-]\d{2})", text)
+    if prefix:
+        return parse_date(prefix.group(1))
+    match = date_regex().search(text)
+    return parse_date(match.group(0)) if match else None
 
 
 def compact_retrieval_source(question: str, source: dict[str, str]) -> dict[str, str]:
@@ -828,6 +922,9 @@ def question_kind(question: str) -> str:
 
 
 def duration_answer(question: str, texts: list[str]) -> str:
+    anchored = anchored_duration_answer(question, texts)
+    if anchored:
+        return anchored
     explicit = relevant_duration_spans(question, explicit_duration_spans(texts))
     if explicit and re.search(r"\b(total|combined|in all)\b", question.lower()):
         total = sum_duration_hours(explicit)
@@ -861,6 +958,221 @@ def duration_answer(question: str, texts: list[str]) -> str:
     if relative:
         return relative
     return ""
+
+
+def anchored_duration_answer(question: str, texts: list[str]) -> str:
+    q = normalize_text(question)
+    entries = dated_text_entries(texts)
+    if not entries:
+        return ""
+    anchors = temporal_event_anchors(question)
+    if len(anchors) >= 2:
+        prefer_first_earliest = bool(re.search(r"\bhow long ha(?:d|ve) I been\b", question, re.I))
+        first = best_date_for_anchor(anchors[0], entries, prefer_earliest=prefer_first_earliest)
+        second = best_date_for_anchor(anchors[1], entries)
+        if first and second and first.date != second.date:
+            return format_temporal_delta(question, first.date, second.date, first.text, second.text)
+    if re.search(r"\bago\b", q):
+        event_anchor = single_temporal_event_anchor(question)
+        if event_anchor:
+            event = best_date_for_anchor(event_anchor, entries)
+            reference = newest_temporal_entry(entries)
+            if event and reference and event.date != reference.date:
+                return format_temporal_delta(question, event.date, reference.date, event.text, reference.text, ago=True)
+    if not re.search(r"\bhow (?:long|many)\b", q) and re.search(r"\b(first|second|last|before|after|earliest|latest)\b", q) and len(anchors) >= 1:
+        ordered = ordered_anchor_dates(anchors, entries)
+        if ordered:
+            if "second" in q and len(ordered) >= 2:
+                item = ordered[1]
+                return f"{format_date(item.date)}. Evidence: {item.text}"
+            if re.search(r"\b(last|latest|after)\b", q):
+                item = ordered[-1]
+                return f"{format_date(item.date)}. Evidence: {item.text}"
+            item = ordered[0]
+            return f"{format_date(item.date)}. Evidence: {item.text}"
+    return ""
+
+
+@dataclass
+class TemporalEntry:
+    date: datetime
+    text: str
+    rank: int
+    relative_days: int | None = None
+
+
+def dated_text_entries(texts: list[str]) -> list[TemporalEntry]:
+    entries: list[TemporalEntry] = []
+    for rank, text in enumerate(texts):
+        anchor = None
+        prefix = re.match(r"\s*(\d{4}[/-]\d{2}[/-]\d{2})", text)
+        if prefix:
+            anchor = parse_date(prefix.group(1))
+        sentences = re.split(r"(?<=[.!?])\s+", text)
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+            date = None
+            match = date_regex().search(sentence)
+            if match:
+                date = parse_date(match.group(0), default_year=anchor.year if anchor else None)
+            if date is None:
+                date = anchor
+            if date is not None:
+                relative_days = relative_offset_days(sentence)
+                if relative_days is not None and anchor is not None:
+                    date = anchor - timedelta(days=relative_days)
+                entries.append(TemporalEntry(date=date, text=sentence, rank=rank, relative_days=relative_days))
+    return entries
+
+
+def relative_offset_days(text: str) -> int | None:
+    lower = normalize_text(text)
+    if re.search(r"\btoday\b", lower):
+        return 0
+    if re.search(r"\byesterday\b", lower):
+        return 1
+    if re.search(r"\b(?:a|one) day ago\b", lower):
+        return 1
+    match = re.search(
+        r"\b(?:for\s+(?:about\s+)?|about\s+)?(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\s+"
+        r"(days?|weeks?|months?)\s+(?:ago|now)\b",
+        lower,
+    )
+    if match:
+        count = round(number_value(match.group(1)))
+        unit = match.group(2)
+        if unit.startswith("day"):
+            return count
+        if unit.startswith("week"):
+            return count * 7
+        if unit.startswith("month"):
+            return count * 30
+    if re.search(r"\b(?:a|one|last) week ago\b|\blast week\b", lower):
+        return 7
+    if re.search(r"\b(?:a|one) month ago\b|\blast month\b", lower):
+        return 30
+    return None
+
+
+def temporal_event_anchors(question: str) -> list[str]:
+    q = re.sub(r"\s+", " ", question.strip(" ?"))
+    patterns = [
+        r"\bbetween the day I\s+(.+?)\s+and the day I\s+(.+)$",
+        r"\bbetween (?:the time|when|the day)\s+(.+?)\s+and (?:the time|when|the day)\s+(.+)$",
+        r"\bfrom (?:when|the day)\s+(.+?)\s+to (?:when|the day)\s+(.+)$",
+        r"\bsince I\s+(.+?)\s+when I\s+(.+)$",
+        r"\bbefore I\s+(.+?)\s+when I\s+(.+)$",
+        r"\bhow long had I been\s+(.+?)\s+when I\s+(.+)$",
+        r"\bhow long did I\s+(.+?)\s+before I\s+(.+)$",
+        r"\bhow long have I been\s+(.+?)\s+before I\s+(.+)$",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, q, re.I)
+        if match:
+            return [clean_temporal_anchor(match.group(1)), clean_temporal_anchor(match.group(2))]
+    if re.search(r"\bwhich\b.*\bfirst\b", q, re.I) and " or " in q.lower():
+        tail = re.sub(r"^.*?\b(?:first|start first|started first),?\s*", "", q, flags=re.I)
+        parts = re.split(r"\s+or\s+", tail, flags=re.I)
+        if len(parts) >= 2:
+            return [clean_temporal_anchor(part) for part in parts[:2]]
+    return []
+
+
+def single_temporal_event_anchor(question: str) -> str:
+    q = re.sub(r"\s+", " ", question.strip(" ?"))
+    patterns = [
+        r"\bhow many (?:days|weeks|months) ago did I\s+(.+)$",
+        r"\bhow long ago did I\s+(.+)$",
+        r"\bwhen did I\s+(.+)$",
+        r"\bwhen I\s+(.+)$",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, q, re.I)
+        if match:
+            return clean_temporal_anchor(match.group(1))
+    return ""
+
+
+def clean_temporal_anchor(value: str) -> str:
+    value = re.sub(r"\b(?:the|a|an|my|our|their|his|her)\b", " ", value, flags=re.I)
+    value = re.sub(r"\b(?:for the last time|for first time|for the first time|today|yesterday|ago)\b", " ", value, flags=re.I)
+    value = re.sub(r"[^A-Za-z0-9' ]+", " ", value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def best_date_for_anchor(anchor: str, entries: list[TemporalEntry], prefer_earliest: bool = False) -> TemporalEntry | None:
+    anchor_tokens = answer_tokens(anchor)
+    if not anchor_tokens:
+        return None
+    scored: list[tuple[int, int, TemporalEntry]] = []
+    for entry in entries:
+        text_tokens = answer_tokens(entry.text)
+        hits = sum(1 for token in anchor_tokens if token_matches(token, text_tokens))
+        phrase_bonus = 5 if normalize_text(anchor) and normalize_text(anchor) in normalize_text(entry.text) else 0
+        relation_bonus = 0
+        entry_text = normalize_text(entry.text)
+        anchor_text = normalize_text(anchor)
+        if entry.relative_days is not None:
+            relation_bonus += 10
+        if "user" in entry_text:
+            relation_bonus += 2
+        if re.search(r"\b(member|group|club)\b", anchor_text) and re.search(r"\b(join|joined|became|started)\b", entry_text):
+            relation_bonus += 8
+        if re.search(r"\b(attend|meetup|workshop|participat)\b", anchor_text) and re.search(r"\b(attend|attended|went|participated)\b", entry_text):
+            relation_bonus += 8
+        if re.search(r"\b(start|began|begin|water|recover|repot|cancel|sold|harvest)\b", anchor_text) and re.search(
+            r"\b(started|began|begin|watered|watering|recovered|repotted|cancelled|canceled|sold|harvested)\b",
+            entry_text,
+        ):
+            relation_bonus += 6
+        score = hits * 3 + phrase_bonus + relation_bonus
+        if hits:
+            scored.append((score, -entry.rank, entry))
+    if not scored:
+        return None
+    scored.sort(key=lambda row: (row[0], row[1]), reverse=True)
+    best_score = scored[0][0]
+    best = [row[2] for row in scored if row[0] == best_score]
+    if prefer_earliest or re.search(r"\b(previous|last|former|old|earlier)\b", normalize_text(anchor)):
+        return sorted(best, key=lambda item: item.date)[0]
+    return sorted(best, key=lambda item: (item.date, -item.rank), reverse=True)[0]
+
+
+def newest_temporal_entry(entries: list[TemporalEntry]) -> TemporalEntry:
+    return sorted(entries, key=lambda item: (item.date, -item.rank), reverse=True)[0]
+
+
+def ordered_anchor_dates(anchors: list[str], entries: list[TemporalEntry]) -> list[TemporalEntry]:
+    chosen = [best_date_for_anchor(anchor, entries) for anchor in anchors]
+    return sorted([entry for entry in chosen if entry is not None], key=lambda item: item.date)
+
+
+def format_temporal_delta(
+    question: str,
+    left: datetime,
+    right: datetime,
+    left_text: str,
+    right_text: str,
+    ago: bool = False,
+) -> str:
+    days = abs((right - left).days)
+    q = normalize_text(question)
+    suffix = " ago" if ago else ""
+    if re.search(r"\bmonths?\b", q):
+        months = max(1, round(days / 30))
+        return f"{months} months{suffix}. Evidence: {left_text} | {right_text}"
+    if re.search(r"\bweeks?\b", q):
+        weeks = max(1, round(days / 7))
+        return f"{weeks} weeks{suffix}. Evidence: {left_text} | {right_text}"
+    if re.search(r"\bdays?\b", q):
+        return f"{days} days{suffix}. Evidence: {left_text} | {right_text}"
+    if days >= 60:
+        return f"{max(1, round(days / 30))} months{suffix}. Evidence: {left_text} | {right_text}"
+    if days >= 14:
+        return f"{max(1, round(days / 7))} weeks{suffix}. Evidence: {left_text} | {right_text}"
+    return f"{days} days{suffix}. Evidence: {left_text} | {right_text}"
 
 
 def relevant_duration_spans(question: str, spans: list[str]) -> list[str]:

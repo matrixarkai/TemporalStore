@@ -1,8 +1,8 @@
 # Benchmark Reproducibility Evidence
 
-Validation time: 2026-06-20T06:36:00Z
+Validation time: 2026-06-20T20:05:00Z
 
-Runner revision: threshold-policy update in this commit
+Runner revision: temporal anchor duration solver update in this commit
 
 This page records benchmark evidence from the checked-in TemporalStore runners. It separates real
 dataset scores from fixture gates so fixture results are not presented as paper-equivalent LOCOMO or
@@ -181,6 +181,41 @@ evidence pack lets the runner use `max_events = 14` while keeping token reductio
 `longmemeval_full` floor. This moved the real HELaMem LongMemEval_s deterministic reader hit rate
 from `0.586` to `0.822`
 while preserving `Hit@K = 1.0`, `MRR = 1.0`, and the full threshold gate.
+
+### LongMemEval_s Temporal Anchor Gap-Fill
+
+Status: `ready`
+
+This pass targets the `temporal_reasoning` reader gap. The deterministic reader now reserves
+retrieval slots for question-derived temporal anchors, normalizes relative phrases such as
+`last week`, `three months ago`, and `for about three months now`, and computes durations from the
+matched event pair instead of from every date in the retrieved context.
+
+Command:
+
+```bash
+python3 tools/run_longmemeval_s_full_path.py \
+  --threshold-profile longmemeval_full \
+  --input /tmp/longmemeval_s.json \
+  --report /tmp/longmemeval_temporal_anchor_result.json \
+  --misses /tmp/longmemeval_temporal_anchor_misses.jsonl
+```
+
+Result:
+
+| Metric | Previous full run | After temporal anchor gap-fill |
+| --- | ---: | ---: |
+| Case count | 500 | 500 |
+| Retrieval/context Hit@K | 1.0 | 1.0 |
+| Reader hit rate | 0.822 | 0.838 |
+| `temporal_reasoning` reader hit rate | 0.7894736842 | 0.8421052632 |
+| Token reduction | 81.3381607810 | 81.3325583971 |
+| Threshold violations | `[]` | `[]` |
+
+LOCOMO was rerun as a guardrail with the same reader change:
+`/tmp/locomo_temporal_anchor_result.json` stayed ready at `case_count = 1542`,
+`hit_rate = 0.9409857328`, and `reader_hit_rate = 0.8417639429`; LOCOMO `category_3`
+reader hit remained `0.4375`, so that separate inference slice still needs its own targeted pass.
 
 Fetch helper:
 
