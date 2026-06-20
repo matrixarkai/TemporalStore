@@ -425,6 +425,7 @@ def main() -> int:
         "benchmark_total_retrieved_tokens": total_retrieved_tokens,
         "max_events": args.max_events,
         "evidence_window": args.evidence_window,
+        "gold_evidence_window_used": args.evidence_window is not None,
         "misses": args.misses,
         "category_breakdown": category_breakdown,
         "weak_category_count": len(weak_categories),

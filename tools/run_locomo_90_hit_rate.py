@@ -47,6 +47,13 @@ def main() -> int:
     )
     args = parser.parse_args()
     thresholds = resolve_threshold_policy(args)
+    if args.evidence_window is not None and args.threshold_profile in {"locomo_full", "oss_reader_full"}:
+        print(
+            "--evidence-window uses gold evidence refs and is diagnostic-only; "
+            f"it is not allowed with production threshold profile {args.threshold_profile}.",
+            file=sys.stderr,
+        )
+        return 2
 
     repo = Path(__file__).resolve().parents[1]
     input_path = Path(args.input)
@@ -134,6 +141,8 @@ def main() -> int:
                 "reader_open_source_calls": report.get("reader_open_source_calls"),
                 "reader_fallback_count": report.get("reader_fallback_count"),
                 "reader_error_count": report.get("reader_error_count"),
+                "gold_evidence_window_used": bool(report.get("gold_evidence_window_used")),
+                "evidence_window": report.get("evidence_window"),
                 "benchmark_quality_ready": report.get("benchmark_quality_ready"),
                 "benchmark_hit_at_k": report.get("benchmark_hit_at_k"),
                 "benchmark_recall_at_k": report.get("benchmark_recall_at_k"),

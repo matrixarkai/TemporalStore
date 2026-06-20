@@ -1,8 +1,8 @@
 # Benchmark Reproducibility Evidence
 
-Validation time: 2026-06-20T20:42:00Z
+Validation time: 2026-06-20T21:05:00Z
 
-Runner revision: multi-evidence deterministic reader synthesis update in this commit
+Runner revision: retrieval gate preservation update in this commit
 
 This page records benchmark evidence from the checked-in TemporalStore runners. It separates real
 dataset scores from fixture gates so fixture results are not presented as paper-equivalent LOCOMO or
@@ -36,8 +36,8 @@ Command:
 python3 tools/run_locomo_90_hit_rate.py \
   --threshold-profile locomo_full \
   --input /tmp/locomo10.json \
-  --report /tmp/temporalstore_locomo_threshold_policy_result.json \
-  --misses /tmp/temporalstore_locomo_threshold_policy_misses.jsonl
+  --report /tmp/locomo_retrieval_gate_result.json \
+  --misses /tmp/locomo_retrieval_gate_misses.jsonl
 ```
 
 Run configuration:
@@ -50,8 +50,8 @@ Run configuration:
 | Reader mode effective | `deterministic` |
 | Reader model | `google/flan-t5-small` |
 | Max events | `128` |
-| Report JSON | `/tmp/temporalstore_locomo_threshold_policy_result.json` |
-| Misses JSONL | `/tmp/temporalstore_locomo_threshold_policy_misses.jsonl` |
+| Report JSON | `/tmp/locomo_retrieval_gate_result.json` |
+| Misses JSONL | `/tmp/locomo_retrieval_gate_misses.jsonl` |
 
 Thresholds:
 
@@ -59,7 +59,7 @@ Thresholds:
 | --- | ---: |
 | `threshold_profile` | `locomo_full` |
 | `min_case_count` | 1542 |
-| `min_hit_at_k` | 0.90 |
+| `min_hit_at_k` | 0.94 |
 | `min_reader_hit_rate` | 0.58 |
 | `min_token_reduction_percent` | 80.0 |
 | `max_retrieval_p95_ms` | 250.0 |
@@ -73,18 +73,18 @@ Output:
 | Case count | 1,542 |
 | Conversation count | 10 |
 | Source record count | 9,363 |
-| Retrieval/context Hit@K | 0.9215304799 |
-| Mean reciprocal rank | 0.4883179758 |
-| Evidence-ref coverage | 0.7382265592 |
-| Answer-term coverage | 0.6647211414 |
-| Reader hit rate | 0.5914396887 |
-| Reader answer coverage | 0.5914396887 |
+| Retrieval/context Hit@K | 0.9409857328 |
+| Mean reciprocal rank | 0.5190191165 |
+| Evidence-ref coverage | 0.7386508273 |
+| Answer-term coverage | 0.7421458210 |
+| Reader hit rate | 0.8495460441 |
+| Reader answer coverage | 0.8405453468 |
 | Benchmark quality ready | `true` |
 | Threshold violations | `[]` |
 | Per-query rows | 1,542 |
-| Token reduction | 82.9375085567 |
-| Retrieval p50 / p95 | 71.491033479 ms / 89.486754028 ms |
-| Reader p50 / p95 | 0.654528034 ms / 5.510890001 ms |
+| Token reduction | 83.9726870326 |
+| Retrieval p50 / p95 | 100.4060080159 ms / 125.0285457703 ms |
+| Reader p50 / p95 | 0.8833270404 ms / 10.4548558593 ms |
 
 Follow-up context gap-fill validation regenerated the report with per-category weak-slice fields:
 
@@ -251,6 +251,49 @@ LongMemEval_s was rerun as a guardrail with
 `/tmp/longmemeval_multi_evidence_result2.json`; it stayed ready at `case_count = 500`,
 `hit_rate = 1.0`, `reader_hit_rate = 0.838`, and `temporal_reasoning` reader hit
 `0.8421052632`.
+
+### LOCOMO Retrieval Gate Preservation
+
+Status: `ready`
+
+This pass hardens the production retrieval gate. `locomo_full` and `oss_reader_full` now require
+`Hit@K >= 0.94`, and the LOCOMO production wrapper rejects `--evidence-window` because that mode
+uses gold evidence references. Full production scoring must use conversation-load-once/query-many
+retrieval over the source bundle without gold evidence windows.
+
+Command:
+
+```bash
+python3 tools/run_locomo_90_hit_rate.py \
+  --threshold-profile locomo_full \
+  --input /tmp/locomo10.json \
+  --report /tmp/locomo_retrieval_gate_result.json \
+  --misses /tmp/locomo_retrieval_gate_misses.jsonl
+```
+
+Result:
+
+| Metric | Value |
+| --- | ---: |
+| Case count | 1,542 |
+| Retrieval/context Hit@K | 0.9409857328 |
+| Min retrieval Hit@K | 0.94 |
+| Reader hit rate | 0.8495460441 |
+| Gold evidence window used | `false` |
+| Evidence window | `null` |
+| Threshold violations | `[]` |
+
+Diagnostic guard:
+
+```bash
+python3 tools/run_locomo_90_hit_rate.py \
+  --threshold-profile locomo_full \
+  --input /tmp/locomo10.json \
+  --evidence-window 3
+```
+
+Expected result: exit code `2` with a message that `--evidence-window` is diagnostic-only and is
+not allowed with the production `locomo_full` profile.
 
 Fetch helper:
 

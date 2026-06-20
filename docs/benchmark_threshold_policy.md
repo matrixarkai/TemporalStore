@@ -28,9 +28,9 @@ Benchmark result docs must stay strict:
 | Profile | Intended use | Min cases | Min retrieval hit | Min reader hit | Min token reduction | Retrieval p95 | Reader p95 | OSS reader |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
 | `fixture` | Checked-in fixtures and CI smoke runs | 4 | 1.00 | 1.00 | 0% | 1000 ms | 30000 ms | No |
-| `locomo_full` | Real LOCOMO 10-conversation benchmark artifact | 1542 | 0.90 | 0.58 | 80% | 250 ms | 50 ms | No |
+| `locomo_full` | Real LOCOMO 10-conversation benchmark artifact | 1542 | 0.94 | 0.58 | 80% | 250 ms | 50 ms | No |
 | `longmemeval_full` | Real LongMemEval_s mounted artifact | 500 | 0.90 | 0.58 | 80% | 2000 ms | 200 ms | No |
-| `oss_reader_full` | Full LOCOMO with a live local OpenAI-compatible OSS reader | 1542 | 0.90 | 0.58 | 80% | 250 ms | 30000 ms | Yes |
+| `oss_reader_full` | Full LOCOMO with a live local OpenAI-compatible OSS reader | 1542 | 0.94 | 0.58 | 80% | 250 ms | 30000 ms | Yes |
 
 ## Rationale
 
@@ -38,9 +38,13 @@ Benchmark result docs must stay strict:
   token reduction because small fixture conversations can fit entirely inside the
   retrieval window.
 - `locomo_full` is based on the current real LOCOMO artifact with 1542 scored
-  cases. The 0.90 retrieval threshold matches the VikingMem parity target, while
+  cases. The 0.94 retrieval threshold preserves the current full-conversation
+  retrieval gate and prevents reader improvements from hiding retrieval regressions, while
   0.58 reader hit rate preserves the current deterministic reader improvement as
   a hard floor instead of silently accepting reader regressions.
+- `locomo_full` and `oss_reader_full` reject `--evidence-window` because that
+  option uses gold evidence references. Evidence windows are diagnostic-only and
+  must not satisfy production scoring.
 - `longmemeval_full` stays separate because the real artifact is much larger and
   has different latency characteristics. The committed fixture must not be used
   to satisfy this gate.

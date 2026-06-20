@@ -31,7 +31,7 @@ THRESHOLD_PROFILES = {
     },
     "locomo_full": {
         "min_case_count": 1542,
-        "min_hit_rate": 0.90,
+        "min_hit_rate": 0.94,
         "min_reader_hit_rate": 0.58,
         "min_token_reduction_percent": 80.0,
         "max_retrieval_p95_ms": 250.0,
@@ -49,7 +49,7 @@ THRESHOLD_PROFILES = {
     },
     "oss_reader_full": {
         "min_case_count": 1542,
-        "min_hit_rate": 0.90,
+        "min_hit_rate": 0.94,
         "min_reader_hit_rate": 0.58,
         "min_token_reduction_percent": 80.0,
         "max_retrieval_p95_ms": 250.0,
