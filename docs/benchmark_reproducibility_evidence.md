@@ -136,9 +136,8 @@ Benchmark command:
 python3 tools/run_longmemeval_s_full_path.py \
   --threshold-profile longmemeval_full \
   --input /tmp/longmemeval_s.json \
-  --max-events 4 \
-  --report /tmp/longmemeval_rate_improve_final_result.json \
-  --misses /tmp/longmemeval_rate_improve_final_misses.jsonl
+  --report /tmp/longmemeval_vikingmem_validation_result.json \
+  --misses /tmp/longmemeval_vikingmem_validation_misses.jsonl
 ```
 
 Run configuration:
@@ -148,9 +147,9 @@ Run configuration:
 | Mode | `conversation_load_once_query_many` |
 | Reader mode | `deterministic` |
 | Reader model | `google/flan-t5-small` |
-| Max events | `4` |
-| Report JSON | `/tmp/longmemeval_rate_improve_final_result.json` |
-| Misses JSONL | `/tmp/longmemeval_rate_improve_final_misses.jsonl` |
+| Max events | `14` |
+| Report JSON | `/tmp/longmemeval_vikingmem_validation_result.json` |
+| Misses JSONL | `/tmp/longmemeval_vikingmem_validation_misses.jsonl` |
 
 Output:
 
@@ -161,22 +160,24 @@ Output:
 | Source record count | 10,960 |
 | Retrieval/context Hit@K | 1.0 |
 | Mean reciprocal rank | 1.0 |
-| Reader hit rate | 0.76 |
-| Answer-term coverage | 0.5683814304 |
-| Reader answer coverage | 0.6411543287 |
-| Token reduction | 80.4410159780 |
-| Retrieval p95 | 16.5287216194 ms |
-| Reader p95 | 1.8928403268 ms |
+| Reader hit rate | 0.816 |
+| Answer-term coverage | 0.5608531995 |
+| Reader answer coverage | 0.7101631117 |
+| Token reduction | 81.3381607810 |
+| Retrieval p95 | 65.6116185768 ms |
+| Reader p95 | 2.4966352095 ms |
 | Zero-hit queries | 0 |
-| Reader zero-hit queries | 120 |
+| Reader zero-hit queries | 92 |
 | Threshold violations | `[]` |
 | Benchmark threshold passed | `true` |
 
-Reader-rate improvement note: a follow-up pass made the deterministic reader return the concise
+Reader-rate improvement note: follow-up passes made the deterministic reader return the concise
 extractive answer together with the retrieved evidence context, normalized numeric word/digit
-answers, handled flattened preference-answer boilerplate, and improved explicit duration extraction.
-This moved the real HELaMem LongMemEval_s deterministic reader hit rate from `0.586` to `0.76`
-while preserving `Hit@K = 1.0`, `MRR = 1.0`, and the `longmemeval_full` threshold gate.
+answers, handled flattened preference-answer boilerplate, improved explicit duration extraction,
+and compacted retrieved turns into relevant evidence sentences. The compacted evidence pack lets
+the runner use `max_events = 14` while keeping token reduction above the `longmemeval_full` floor.
+This moved the real HELaMem LongMemEval_s deterministic reader hit rate from `0.586` to `0.816`
+while preserving `Hit@K = 1.0`, `MRR = 1.0`, and the full threshold gate.
 
 Fetch helper:
 

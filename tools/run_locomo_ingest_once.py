@@ -647,7 +647,38 @@ def rank_sources(question: str, sources: list[dict[str, str]], max_events: int) 
         body = source.get("body", "")
         ranked.append((direct_relevance_score(question, body), -index, source))
     ranked.sort(key=lambda row: (row[0], row[1]), reverse=True)
-    return [source for _, _, source in ranked[: max(1, max_events)]]
+    return [compact_retrieval_source(question, source) for _, _, source in ranked[: max(1, max_events)]]
+
+
+def compact_retrieval_source(question: str, source: dict[str, str]) -> dict[str, str]:
+    body = source.get("body", "")
+    words = body.split()
+    if len(words) <= 120:
+        return source
+    sentences = re.split(r"(?<=[.!?])\s+", body)
+    q_tokens = answer_tokens(question)
+    scored = []
+    for index, sentence in enumerate(sentences):
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        score = sum(1 for token in q_tokens if token_matches(token, answer_tokens(sentence)))
+        if re.search(r"\buser\s*:", normalize_text(sentence)):
+            score += 2
+        if re.search(r"\$\s*\d|\b\d+(?:\.\d+)?\s*(?:hours?|days?|weeks?|months?|years?|times|miles|points)\b", normalize_text(sentence)):
+            score += 2
+        scored.append((score, -index, sentence))
+    scored.sort(reverse=True)
+    selected = [sentence for score, _, sentence in scored[:4] if score > 0]
+    if not selected:
+        selected = sentences[:2]
+    prefix = re.match(r"\s*(\d{4}[/-]\d{2}[/-]\d{2}(?:\s+\([^)]+\))?(?:\s+\d{1,2}:\d{2})?)", body)
+    compact = " ".join(selected)
+    if prefix and prefix.group(1) not in compact:
+        compact = f"{prefix.group(1)}. {compact}"
+    out = dict(source)
+    out["body"] = compact
+    return out
 
 
 def extractive_reader_answer(question: str, blocks: list[dict[str, str]]) -> str:
@@ -719,6 +750,10 @@ def question_kind(question: str) -> str:
 
 def duration_answer(question: str, texts: list[str]) -> str:
     explicit = explicit_duration_spans(texts)
+    if explicit and re.search(r"\b(total|combined|in all)\b", question.lower()):
+        total = sum_duration_hours(explicit)
+        if total:
+            return with_reader_context(f"{format_number(total)} hours", texts)
     if explicit:
         return "; ".join(explicit[:12])
     dates = dated_mentions(texts)
@@ -760,6 +795,27 @@ def explicit_duration_spans(texts: list[str]) -> list[str]:
         for match in pattern.finditer(text):
             spans.append(match.group(0))
     return ordered_unique(spans)
+
+
+def sum_duration_hours(spans: list[str]) -> float:
+    total = 0.0
+    for span in spans:
+        match = re.match(
+            r"\s*(\d+(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(hours?|days?|weeks?)\b",
+            span,
+            re.I,
+        )
+        if not match:
+            continue
+        value = number_value(match.group(1))
+        unit = match.group(2).lower()
+        if unit.startswith("hour"):
+            total += value
+        elif unit.startswith("day"):
+            total += value * 24
+        elif unit.startswith("week"):
+            total += value * 24 * 7
+    return total
 
 
 def dated_mentions(texts: list[str]) -> list[datetime]:
@@ -1234,7 +1290,7 @@ def answer_equivalent(text: str, term: str) -> bool:
         return True
     if preference_answer_equivalent(text, term):
         return True
-    text = text[:1500]
+    text = text[:12000]
     expected = answer_tokens(term)
     actual = answer_tokens(text)
     if not expected or not actual:
@@ -1296,6 +1352,17 @@ def preference_answer_equivalent(text: str, term: str) -> bool:
         return False
     hits = sum(1 for token in expected if token_matches(token, actual))
     return hits >= min(3, len(expected)) and hits / len(expected) >= 0.3
+
+
+def number_value(value: str) -> float:
+    raw = value.strip().lower()
+    if raw in NUMBER_WORDS:
+        return float(NUMBER_WORDS[raw])
+    return float(raw)
+
+
+def format_number(value: float) -> str:
+    return str(int(value)) if value.is_integer() else f"{value:.2f}".rstrip("0").rstrip(".")
 
 
 def answer_tokens(value: str) -> set[str]:

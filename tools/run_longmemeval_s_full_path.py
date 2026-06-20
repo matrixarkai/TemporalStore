@@ -27,7 +27,7 @@ def main() -> int:
     )
     parser.add_argument("--misses", default="/tmp/temporalstore_longmemeval_s_full_path_misses.jsonl")
     add_threshold_policy_args(parser)
-    parser.add_argument("--max-events", type=int, default=256)
+    parser.add_argument("--max-events", type=int, default=14)
     parser.add_argument("--reader-mode", choices=("deterministic", "open-source", "auto"), default="deterministic")
     parser.add_argument("--reader-provider-name", default="matrixark-cpp-oss-context")
     parser.add_argument("--reader-model", default="google/flan-t5-small")
