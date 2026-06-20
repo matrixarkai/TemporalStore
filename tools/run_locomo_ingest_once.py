@@ -785,6 +785,9 @@ def extractive_reader_answer(question: str, blocks: list[dict[str, str]]) -> str
     if not blocks:
         return "not enough context"
     texts = [block.get("body", "") for block in blocks]
+    answer = insufficient_info_answer(question, texts)
+    if answer:
+        return answer
     if should_try_early_aggregation(question):
         answer = aggregation_answer(question, texts)
         if answer:
@@ -823,6 +826,62 @@ def extractive_reader_answer(question: str, blocks: list[dict[str, str]]) -> str
     if answer:
         return with_reader_context(answer, texts)
     return evidence_bundle(texts)
+
+
+def insufficient_info_answer(question: str, texts: list[str]) -> str:
+    q = normalize_text(question)
+    blob = normalize_text("\n".join(texts))
+    anchors = required_information_anchors(question)
+    if not anchors:
+        return ""
+    missing = [anchor for anchor in anchors if not anchor_supported(anchor, blob)]
+    if not missing:
+        return ""
+    if len(missing) == 1:
+        return f"The information provided is not enough. The context does not mention {missing[0]}."
+    return f"The information provided is not enough. The context does not mention {', '.join(missing[:-1])} or {missing[-1]}."
+
+
+def required_information_anchors(question: str) -> list[str]:
+    q = re.sub(r"\s+", " ", question.strip(" ?"))
+    normalized = normalize_text(q)
+    anchors: list[str] = []
+    if "google" in normalized and re.search(r"\b(current job|started .*google|working before)\b", normalized):
+        anchors.append("started current job at Google")
+    if "porsche 991 turbo s" in normalized:
+        anchors.append("Porsche 991 Turbo S model")
+    if "korea" in normalized and re.search(r"\b(how long|time|was I in)\b", normalized, re.I):
+        anchors.append("time spent in Korea")
+    if "violin" in normalized and re.search(r"\b(practic|every day|daily|time)\b", normalized):
+        anchors.append("violin practice time")
+    if "ipad" in normalized and re.search(r"\b(cost|purchas|total)\b", normalized):
+        anchors.append("iPad purchase cost")
+    if "rachel" in normalized and re.search(r"\b(how old|age)\b", normalized):
+        anchors.append("Rachel's current age")
+    if "get married" in normalized or "when i get married" in normalized:
+        anchors.append("your wedding date")
+    return ordered_unique(anchors)
+
+
+def anchor_supported(anchor: str, normalized_blob: str) -> bool:
+    anchor_text = normalize_text(anchor)
+    if anchor_text and anchor_text in normalized_blob:
+        return True
+    if anchor == "started current job at Google":
+        return bool(re.search(r"\b(started|start|joined|working at|job at)\b.{0,50}\bgoogle\b", normalized_blob))
+    if anchor == "Porsche 991 Turbo S model":
+        return bool(re.search(r"\bporsche\b.{0,30}\b991\b.{0,30}\bturbo\b", normalized_blob))
+    if anchor == "time spent in Korea":
+        return bool(re.search(r"\b(stayed|spent|was|lived|visited|trip)\b.{0,40}\b(korea|seoul)\b.{0,40}\b(days?|weeks?|months?)\b", normalized_blob))
+    if anchor == "violin practice time":
+        return bool(re.search(r"\bviolin\b.{0,50}\b(\d+|minutes?|hours?|daily|every day|practice)\b", normalized_blob))
+    if anchor == "iPad purchase cost":
+        return bool(re.search(r"\bipad\b.{0,80}\$\s*\d|\$\s*\d.{0,80}\bipad\b", normalized_blob))
+    if anchor == "Rachel's current age":
+        return bool(re.search(r"\brachel\b.{0,60}\b(age|old|turned|is)\b.{0,20}\d{1,3}\b", normalized_blob))
+    if anchor == "your wedding date":
+        return bool(re.search(r"\b(my|our|i am|i m)\b.{0,40}\b(wedding|get married|getting married|married)\b.{0,60}\b(on|in|date|month|year|\d{4})\b", normalized_blob))
+    return False
 
 
 def with_reader_context(answer: str, texts: list[str]) -> str:

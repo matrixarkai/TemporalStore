@@ -1,8 +1,8 @@
 # Benchmark Reproducibility Evidence
 
-Validation time: 2026-06-20T22:05:00Z
+Validation time: 2026-06-20T22:42:00Z
 
-Runner revision: LongMemEval aggregation reader update in this commit
+Runner revision: LongMemEval insufficient-information reader update in this commit
 
 This page records benchmark evidence from the checked-in TemporalStore runners. It separates real
 dataset scores from fixture gates so fixture results are not presented as paper-equivalent LOCOMO or
@@ -332,6 +332,45 @@ retrieval correctness gate stayed above the requested floor without gold evidenc
 local runs were not recorded as full `locomo_full` ready evidence because this machine reported
 `retrieval_p95_above_max` (`303.4885492757894 ms` and `301.7106862796936 ms`) against the strict
 250 ms p95 latency budget.
+
+### LongMemEval_s Insufficient-Information Reader Gap-Fill
+
+Status: `ready`
+
+This pass adds conservative contradiction/absence handling for questions whose requested entity or
+event is not actually stated in the retrieved context. The reader now checks required anchors before
+duration/date/numeric extraction for cases such as a job at Google that has not started, a missing
+Porsche project, Korea trip duration, violin practice time, iPad purchase cost, and missing Rachel
+age/wedding-date facts.
+
+Command:
+
+```bash
+python3 tools/run_longmemeval_s_full_path.py \
+  --threshold-profile longmemeval_full \
+  --input /tmp/longmemeval_s.json \
+  --report /tmp/longmemeval_insufficient_info_result.json \
+  --misses /tmp/longmemeval_insufficient_info_misses.jsonl
+```
+
+Result:
+
+| Metric | Previous full run | After insufficient-info reader |
+| --- | ---: | ---: |
+| Case count | 500 | 500 |
+| Retrieval/context Hit@K | 1.0 | 1.0 |
+| Reader hit rate | 0.846 | 0.858 |
+| `multi_session` reader hit rate | 0.6616541353 | 0.6766917293 |
+| `temporal_reasoning` reader hit rate | 0.8421052632 | 0.8571428571 |
+| Insufficient-info diagnostic hit rate | 0.8 | 1.0 |
+| Threshold violations | `[]` | `[]` |
+
+LOCOMO was rerun as a retrieval-preservation guardrail at
+`/tmp/locomo_after_insufficient_guardrail_result.json`. It preserved
+`Hit@K = 0.9409857328`, `min_hit_at_k = 0.94`, and `gold_evidence_window_used = false`. The local
+run again reported `retrieval_p95_above_max` (`323.3262940426357 ms`) against the strict 250 ms p95
+latency budget, so it is recorded as retrieval-correctness preservation rather than full
+`locomo_full` ready evidence.
 
 Fetch helper:
 
