@@ -33,6 +33,36 @@ COMBINED_RAFT_VALIDATOR = (
     "python3 tools/validate_aws_validation_log.py --job "
     "temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>"
 )
+BENCHMARK_REQUIRED_REPORT_FIELDS = {
+    "benchmark_family",
+    "benchmark_hit_at_k",
+    "benchmark_recall_at_k",
+    "benchmark_mean_reciprocal_rank",
+    "benchmark_token_reduction_percent",
+    "benchmark_retrieval_p50_ms",
+    "benchmark_retrieval_p95_ms",
+    "benchmark_reader_p50_ms",
+    "benchmark_reader_p95_ms",
+    "benchmark_quality_ready",
+    "benchmark_threshold_passed",
+    "benchmark_threshold_violation_count",
+    "benchmark_threshold_violations",
+    "benchmark_thresholds",
+    "benchmark_per_query_count",
+    "case_count",
+    "hit_rate",
+    "reader_hit_rate",
+    "reader_mode_requested",
+    "reader_mode_effective",
+    "reader_provider_name",
+    "reader_model",
+}
+BENCHMARK_THRESHOLD_PROFILES = {
+    "fixture",
+    "locomo_full",
+    "longmemeval_full",
+    "oss_reader_full",
+}
 
 CPP_RUNNER_TEMPLATE = """#!/usr/bin/env bash
 set -euo pipefail
@@ -158,6 +188,8 @@ def validate_corpus(path: Path) -> dict:
                 seen_response_kinds.add(step["expect"]["kind"])
             if step["command"].get("suite") == CPP_RAFT_PARITY_SUITE:
                 validate_cpp_raft_step(path, case, step)
+            if step["command"].get("suite") == "cpp_context_benchmark_parity":
+                validate_context_benchmark_step(path, case, step)
         if case["name"] in COMBINED_RAFT_GATE_CASES:
             validate_combined_raft_case(path, case)
     missing_cases = sorted(set(required_case_names) - seen_case_names)
@@ -173,6 +205,45 @@ def validate_corpus(path: Path) -> dict:
     if missing_responses:
         raise SystemExit(f"{path}: missing required response kinds: {', '.join(missing_responses)}")
     return corpus
+
+
+def validate_context_benchmark_step(path: Path, case: dict, step: dict) -> None:
+    location = f"{path}: case {case['name']} step {step['name']}"
+    command = step["command"]
+    contract = command.get("report_contract")
+    if not isinstance(contract, dict):
+        raise SystemExit(f"{location}: context benchmark step must declare report_contract")
+    fields = contract.get("required_fields")
+    if not isinstance(fields, list) or not fields:
+        raise SystemExit(f"{location}: report_contract.required_fields must be a non-empty list")
+    missing_fields = sorted(BENCHMARK_REQUIRED_REPORT_FIELDS - set(fields))
+    if missing_fields:
+        raise SystemExit(
+            f"{location}: report_contract.required_fields missing {', '.join(missing_fields)}"
+        )
+    threshold_profiles = command.get("threshold_profiles")
+    if not isinstance(threshold_profiles, list) or not threshold_profiles:
+        raise SystemExit(f"{location}: threshold_profiles must be a non-empty list")
+    unknown_profiles = sorted(set(threshold_profiles) - BENCHMARK_THRESHOLD_PROFILES)
+    if unknown_profiles:
+        raise SystemExit(f"{location}: unknown threshold profiles {', '.join(unknown_profiles)}")
+    for field_name in ("rust_runner", "cpp_runner_contract", "archive_contract"):
+        if not isinstance(command.get(field_name), str) or not command[field_name]:
+            raise SystemExit(f"{location}: benchmark contract must declare {field_name}")
+    datasets = command.get("datasets")
+    if not isinstance(datasets, list) or not datasets:
+        raise SystemExit(f"{location}: benchmark contract must declare datasets")
+    for dataset in datasets:
+        if not isinstance(dataset, dict):
+            raise SystemExit(f"{location}: each dataset entry must be an object")
+        for field_name in ("name", "artifact_kind", "threshold_profile"):
+            if not isinstance(dataset.get(field_name), str) or not dataset[field_name]:
+                raise SystemExit(f"{location}: dataset entry must declare {field_name}")
+        if dataset["threshold_profile"] not in BENCHMARK_THRESHOLD_PROFILES:
+            raise SystemExit(
+                f"{location}: dataset {dataset['name']} uses unknown threshold profile "
+                f"{dataset['threshold_profile']}"
+            )
 
 
 def validate_cpp_raft_step(path: Path, case: dict, step: dict) -> None:

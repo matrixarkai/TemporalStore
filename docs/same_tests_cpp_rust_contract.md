@@ -29,13 +29,13 @@ Current corpus:
 ```text
 schema_version: 1
 name: temporalstore-unified-cpp-rust-corpus
-cases: 72
-steps: 159
+cases: 76
+steps: 163
 executable behavior cases: 26
 executable behavior steps: 106
 required command kinds: 59
 required response kinds: 19
-C++ existing-test parity surfaces: 117 unique required paths plus 60 Raft path references
+C++ existing-test parity surfaces: 127 unique required paths plus 60 Raft path references
 ```
 
 The shared cases are:
@@ -128,6 +128,70 @@ The shared cases are:
   `ingestion_dead_letter_export`,
   `ingestion_lag_metrics`, and
   `ingestion_restart_idempotence`.
+- Current Context and benchmark unification adds shared pipeline and MatrixArk/VikingMem-style
+  benchmark report contracts:
+  `context_management_ingest_retrieve_pipeline`,
+  `context_retrieval_qa_synonym_ranking`,
+  `context_benchmark_fixture_gates`, and
+  `context_benchmark_full_dataset_gates`.
+
+## Unified Benchmark Contract
+
+The benchmark cases map LOCOMO and LongMemEval_s reports into the same corpus inventory used for
+API, storage, Raft, control-plane, and ingestion cases. They use `existing_test` command entries
+with `suite=cpp_context_benchmark_parity` because each side executes a benchmark harness and emits a
+report, rather than executing a single in-engine command.
+
+Both C++ and Rust must consume these shared benchmark fields from
+`compat/unified_temporalstore_cases.json`:
+
+- `datasets`: benchmark artifact names, artifact kind, default paths, and threshold profile.
+- `threshold_profiles`: one or more of `fixture`, `locomo_full`, `longmemeval_full`, or
+  `oss_reader_full`.
+- `report_contract.format`: `matrixark_vikingmem_context_benchmark_report_v1`.
+- `report_contract.required_fields`: the MatrixArk/VikingMem report fields that both sides must
+  emit.
+- `archive_contract`: one `manifest.json`, one report JSON, and one misses JSONL per executed
+  dataset. Missing real datasets must be recorded as skipped or blocked, never as passing fixture
+  evidence.
+
+Required benchmark report fields:
+
+```text
+benchmark_family
+benchmark_hit_at_k
+benchmark_recall_at_k
+benchmark_mean_reciprocal_rank
+benchmark_token_reduction_percent
+benchmark_retrieval_p50_ms
+benchmark_retrieval_p95_ms
+benchmark_reader_p50_ms
+benchmark_reader_p95_ms
+benchmark_quality_ready
+benchmark_threshold_passed
+benchmark_threshold_violation_count
+benchmark_threshold_violations
+benchmark_thresholds
+benchmark_per_query_count
+case_count
+hit_rate
+reader_hit_rate
+reader_mode_requested
+reader_mode_effective
+reader_provider_name
+reader_model
+```
+
+Rust currently emits this shape through:
+
+```bash
+python3 tools/run_locomo_90_hit_rate.py --threshold-profile locomo_full
+python3 tools/run_longmemeval_s_full_path.py --threshold-profile fixture
+bash tools/run_context_benchmarks_docker_open_model.sh
+```
+
+C++ should emit the same JSON shape from its native MatrixArk/VikingMem benchmark path and wire the
+result into the same corpus case names.
 
 ## Rust Runner
 
@@ -197,6 +261,8 @@ The native C++ executor must:
   `coverage.required_response_kinds` entry is absent from the corpus
 - fail on duplicate case names, duplicate step names within a case, or duplicate exact command
   payloads within a case
+- validate `cpp_context_benchmark_parity` entries by consuming the dataset list, threshold profiles,
+  report contract, and archive contract
 - execute each command against C++ TemporalStore
 - compare the actual logical response to `expect`
 - restart or reload the local C++ engine when `restart_before=true`

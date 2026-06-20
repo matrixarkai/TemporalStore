@@ -11,13 +11,13 @@ compat/unified_temporalstore_cases.json
 Current inventory:
 
 ```text
-total cases: 72
-total steps: 159
+total cases: 76
+total steps: 163
 executable shared behavior cases: 26
 executable shared behavior steps: 106
-C++ existing-test parity surface cases: 46
-C++ existing-test parity surface steps: 53
-C++ required source/test/harness paths: 117 unique paths plus 60 Raft path references
+C++ existing-test parity surface cases: 50
+C++ existing-test parity surface steps: 57
+C++ required source/test/harness paths: 127 unique paths plus 60 Raft path references
 required command kinds: 59
 required response kinds: 19
 ```
@@ -130,26 +130,79 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `ingestion_dead_letter_export` | Rust-executable/C++-static gate for dead-letter capture/export and non-blocking ingestion behavior. |
 | `ingestion_lag_metrics` | Rust-executable/C++-static gate for Kafka lag, committed offset, and ingestion metric behavior. |
 | `ingestion_restart_idempotence` | Rust-executable/C++-static gate for restart/failover idempotence behavior for offsets and checkpoints. |
+| `context_management_ingest_retrieve_pipeline` | Rust-executable/C++-static gate for Context management, ingest/extract, retrieval handoff, provider routing, and OpenViking-style block construction. |
+| `context_retrieval_qa_synonym_ranking` | Rust-executable/C++-static gate for Context QA retrieval synonym and adjacent-phrase ranking. |
+| `context_benchmark_fixture_gates` | Shared C++/Rust benchmark contract for LOCOMO-style and LongMemEval_s fixture gates using MatrixArk/VikingMem report fields. |
+| `context_benchmark_full_dataset_gates` | Shared C++/Rust benchmark contract for LOCOMO, LongMemEval_s, and Docker/open-model full-dataset gates with explicit threshold profiles and archive reports. |
+
+## Unified Benchmark Report Contract
+
+The benchmark cases are `existing_test` entries because full LOCOMO/LongMemEval_s scoring is an
+external corpus/harness contract, not an in-engine command/response step. They still live in
+`compat/unified_temporalstore_cases.json` so C++ and Rust consume the same case names, threshold
+profiles, dataset artifacts, archive layout, and report fields.
+
+Required report fields for both codebases:
+
+```text
+benchmark_family
+benchmark_hit_at_k
+benchmark_recall_at_k
+benchmark_mean_reciprocal_rank
+benchmark_token_reduction_percent
+benchmark_retrieval_p50_ms
+benchmark_retrieval_p95_ms
+benchmark_reader_p50_ms
+benchmark_reader_p95_ms
+benchmark_quality_ready
+benchmark_threshold_passed
+benchmark_threshold_violation_count
+benchmark_threshold_violations
+benchmark_thresholds
+benchmark_per_query_count
+case_count
+hit_rate
+reader_hit_rate
+reader_mode_requested
+reader_mode_effective
+reader_provider_name
+reader_model
+```
+
+Shared threshold profiles:
+
+```text
+fixture
+locomo_full
+longmemeval_full
+oss_reader_full
+```
+
+Rust emits these fields through `tools/run_locomo_90_hit_rate.py`,
+`tools/run_longmemeval_s_full_path.py`, and
+`tools/run_context_benchmarks_docker_open_model.sh`. C++ should emit the same
+`matrixark_vikingmem_context_benchmark_report_v1` JSON report shape and archive one manifest plus
+one report JSON and misses JSONL per executed dataset.
 
 ## Are There Still Rust-Specific Tests?
 
 Yes. Current Rust-local attributed test count is:
 
 ```text
-Rust attributed tests: 540
-shared-corpus marked Rust tests: 11
-shared corpus cases: 72
-shared corpus steps: 159
-C++ existing-test surfaces: 117
+Rust attributed tests: 543
+shared-corpus marked Rust tests: 14
+shared corpus cases: 76
+shared corpus steps: 163
+C++ existing-test surfaces: 127
 ```
 
 The detailed reduction split and new-test guard live in
 `docs/rust_product_test_reduction_guard.md`. The current split is:
 
 ```text
-product behavior to move into shared corpus: 533
+product behavior to move into shared corpus: 536
 Rust-only internals that can remain local: 7
-existing Rust tests already marked with shared-corpus references: 11
+existing Rust tests already marked with shared-corpus references: 14
 ```
 
 The Rust-attributed tests are a migration backlog, not the desired final state. They should be

@@ -76,7 +76,9 @@
       "ingestion_dead_letter_export",
       "ingestion_lag_metrics",
       "ingestion_restart_idempotence",
-      "context_retrieval_qa_synonym_ranking"
+      "context_retrieval_qa_synonym_ranking",
+      "context_benchmark_fixture_gates",
+      "context_benchmark_full_dataset_gates"
     ],
     "required_raft_case_names": [
       "storage_data_raft_replication_gtest",
@@ -3956,6 +3958,183 @@
             ],
             "rust_runner": "cargo test -p temporalstore-rust context_relevance_ranks_qa_synonyms_and_phrases -- --test-threads=1",
             "rust_validator": "tools/run_context_workflow_local.sh"
+          }
+        }
+      ]
+    },
+    {
+      "name": "context_benchmark_fixture_gates",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "locomo_longmemeval_fixture_report_contract",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_context_benchmark_parity",
+            "mode": "shared_benchmark_contract",
+            "report_contract": {
+              "format": "matrixark_vikingmem_context_benchmark_report_v1",
+              "required_fields": [
+                "benchmark_family",
+                "benchmark_hit_at_k",
+                "benchmark_recall_at_k",
+                "benchmark_mean_reciprocal_rank",
+                "benchmark_token_reduction_percent",
+                "benchmark_retrieval_p50_ms",
+                "benchmark_retrieval_p95_ms",
+                "benchmark_reader_p50_ms",
+                "benchmark_reader_p95_ms",
+                "benchmark_quality_ready",
+                "benchmark_threshold_passed",
+                "benchmark_threshold_violation_count",
+                "benchmark_threshold_violations",
+                "benchmark_thresholds",
+                "benchmark_per_query_count",
+                "case_count",
+                "hit_rate",
+                "reader_hit_rate",
+                "reader_mode_requested",
+                "reader_mode_effective",
+                "reader_provider_name",
+                "reader_model"
+              ],
+              "per_query_required_fields": [
+                "query_id",
+                "category",
+                "hit",
+                "rank",
+                "reader_hit",
+                "retrieval_ms",
+                "reader_ms",
+                "retrieved_blocks",
+                "retrieved_tokens",
+                "source_tokens",
+                "token_reduction_percent"
+              ],
+              "thresholds_field": "benchmark_thresholds",
+              "violations_field": "benchmark_threshold_violations"
+            },
+            "cpp_runner_contract": "C++ runner consumes the same dataset entries, emits matrixark_vikingmem_context_benchmark_report_v1 JSON, and archives reports under the same manifest shape.",
+            "archive_contract": "archive directory contains manifest.json plus one report JSON and misses JSONL per executed dataset; skipped real artifacts are explicit status values, not passing scores.",
+            "required_paths": [
+              "tools/fixtures/longmemeval_s_full_path_fixture.json",
+              "tools/run_longmemeval_s_full_path.py",
+              "tools/benchmark_threshold_policy.py"
+            ],
+            "description": "Shared C++/Rust fixture benchmark gate for LOCOMO-style and LongMemEval_s-style context-memory reports. This validates benchmark wiring and report shape only; it cannot satisfy full-dataset production evidence.",
+            "threshold_profiles": [
+              "fixture"
+            ],
+            "datasets": [
+              {
+                "name": "locomo_style_fixture",
+                "artifact_kind": "checked_in_or_generated_fixture",
+                "threshold_profile": "fixture",
+                "production_evidence": false
+              },
+              {
+                "name": "longmemeval_s_fixture",
+                "artifact_kind": "tools/fixtures/longmemeval_s_full_path_fixture.json",
+                "threshold_profile": "fixture",
+                "production_evidence": false
+              }
+            ],
+            "rust_runner": "python3 tools/run_longmemeval_s_full_path.py --threshold-profile fixture --input tools/fixtures/longmemeval_s_full_path_fixture.json --reader-mode auto --report <archive>/longmemeval_s_fixture_report.json --misses <archive>/longmemeval_s_fixture_misses.jsonl",
+            "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only"
+          }
+        }
+      ]
+    },
+    {
+      "name": "context_benchmark_full_dataset_gates",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "locomo_longmemeval_full_report_contract",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_context_benchmark_parity",
+            "mode": "shared_benchmark_contract",
+            "report_contract": {
+              "format": "matrixark_vikingmem_context_benchmark_report_v1",
+              "required_fields": [
+                "benchmark_family",
+                "benchmark_hit_at_k",
+                "benchmark_recall_at_k",
+                "benchmark_mean_reciprocal_rank",
+                "benchmark_token_reduction_percent",
+                "benchmark_retrieval_p50_ms",
+                "benchmark_retrieval_p95_ms",
+                "benchmark_reader_p50_ms",
+                "benchmark_reader_p95_ms",
+                "benchmark_quality_ready",
+                "benchmark_threshold_passed",
+                "benchmark_threshold_violation_count",
+                "benchmark_threshold_violations",
+                "benchmark_thresholds",
+                "benchmark_per_query_count",
+                "case_count",
+                "hit_rate",
+                "reader_hit_rate",
+                "reader_mode_requested",
+                "reader_mode_effective",
+                "reader_provider_name",
+                "reader_model"
+              ],
+              "per_query_required_fields": [
+                "query_id",
+                "category",
+                "hit",
+                "rank",
+                "reader_hit",
+                "retrieval_ms",
+                "reader_ms",
+                "retrieved_blocks",
+                "retrieved_tokens",
+                "source_tokens",
+                "token_reduction_percent"
+              ],
+              "thresholds_field": "benchmark_thresholds",
+              "violations_field": "benchmark_threshold_violations"
+            },
+            "cpp_runner_contract": "C++ runner consumes the same dataset entries, emits matrixark_vikingmem_context_benchmark_report_v1 JSON, and archives reports under the same manifest shape.",
+            "archive_contract": "archive directory contains manifest.json plus one report JSON and misses JSONL per executed dataset; skipped real artifacts are explicit status values, not passing scores.",
+            "required_paths": [
+              "tools/run_locomo_90_hit_rate.py",
+              "tools/run_context_benchmarks_docker_open_model.sh",
+              "docker-compose.context-benchmarks.yml"
+            ],
+            "description": "Shared C++/Rust full-dataset benchmark gate for LOCOMO, LongMemEval_s, and live OSS-reader reports. Production evidence requires real mounted artifacts and passing threshold profiles.",
+            "threshold_profiles": [
+              "locomo_full",
+              "longmemeval_full",
+              "oss_reader_full"
+            ],
+            "datasets": [
+              {
+                "name": "locomo_full",
+                "artifact_kind": "external_full_dataset",
+                "default_path": "/tmp/locomo10.json",
+                "threshold_profile": "locomo_full",
+                "production_evidence": true
+              },
+              {
+                "name": "longmemeval_s_full",
+                "artifact_kind": "external_full_dataset",
+                "default_path": "/tmp/longmemeval_s.json",
+                "threshold_profile": "longmemeval_full",
+                "production_evidence": true
+              },
+              {
+                "name": "locomo_oss_reader_full",
+                "artifact_kind": "docker_open_model_run",
+                "default_path": "/bench-input/locomo10.json",
+                "threshold_profile": "oss_reader_full",
+                "production_evidence": true
+              }
+            ],
+            "rust_runner": "bash tools/run_context_benchmarks_docker_open_model.sh",
+            "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only"
           }
         }
       ]
