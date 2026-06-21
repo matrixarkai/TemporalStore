@@ -50,6 +50,54 @@ The harness output should include:
 - `benchmark_ready: true`
 - `external_benchmark_ready: true`
 
+## Scale Benchmark Rule
+
+All scale ingestion, extraction, and retrieval evidence must use Rust TemporalStore as the
+storage/retrieval backend. Python may orchestrate conversion, scoring, and report emission, but
+accepted benchmark reports must show:
+
+- `all_pipelines_use_rust_temporalstore: true`
+- `rust_temporalstore_backend_ready: true`
+- `rust_temporalstore_full_replay_ready: true`
+- `python_only_diagnostic: false`
+
+Use the full Rust replay flags for production-scale LOCOMO and LongMemEval_s runs:
+
+```bash
+python3 tools/run_locomo_90_hit_rate.py \
+  --threshold-profile locomo_full \
+  --input /tmp/locomo10.json \
+  --reader-mode deterministic \
+  --require-full-rust-temporalstore-replay \
+  --rust-temporalstore-release \
+  --rust-temporalstore-batch-size 8 \
+  --rust-temporalstore-timeout-seconds 120 \
+  --report /tmp/ts_full_rust_replay_gate/locomo_full_rust_replay_result.json \
+  --misses /tmp/ts_full_rust_replay_gate/locomo_full_rust_replay_misses.jsonl
+
+python3 tools/run_longmemeval_s_full_path.py \
+  --threshold-profile longmemeval_full \
+  --input /tmp/longmemeval_s.json \
+  --reader-mode deterministic \
+  --require-full-rust-temporalstore-replay \
+  --rust-temporalstore-release \
+  --rust-temporalstore-batch-size 16 \
+  --rust-temporalstore-timeout-seconds 600 \
+  --report /tmp/ts_full_rust_replay_gate/longmemeval_s_full_rust_replay_result.json \
+  --misses /tmp/ts_full_rust_replay_gate/longmemeval_s_full_rust_replay_misses.jsonl
+```
+
+Current local scale evidence:
+
+- LongMemEval_s full Rust replay passes on the real `/tmp/longmemeval_s.json` artifact with 500
+  cases, 10,960 sources, Hit@K 1.0, reader hit 0.956, and the required Rust-backed fields all true.
+- LOCOMO full Rust replay on the real `/tmp/locomo10.json` artifact is still blocked: batch 1 of 10
+  times out before `rust_temporalstore_full_replay_ready` can become true. Keep this recorded as
+  failed-closed evidence, not as a bounded proof.
+
+`--skip-rust-temporalstore --allow-python-only-diagnostic` remains available only for local
+debugging. Reports from that mode are never production benchmark evidence.
+
 ## Start The HTTP Server
 
 Use a dedicated data directory so repeated manual runs do not mix with other tests:
