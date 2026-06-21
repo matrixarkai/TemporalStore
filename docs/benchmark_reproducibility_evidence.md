@@ -1003,3 +1003,58 @@ LongMemEval_s category movement:
 
 Claim level: deterministic Rust-backed engineering gate only. Live OSS-reader and full Rust replay
 are still required for paper-comparable VikingMem evidence.
+
+## Full Rust Replay Runtime Optimization
+
+Date: 2026-06-21
+
+Status: `locomo-full-rust-ready-longmem-runtime-complete`
+
+This pass optimizes full Rust TemporalStore replay runtime by building `context_workflow_harness`
+once, running the prebuilt binary for every batch, defaulting full replay to 64-case batches,
+counting merged batch totals from batch summaries, enabling all-source retrieval for full replay,
+and chunking large ingestion requests inside the Rust harness.
+
+Validation commands:
+
+```bash
+cargo fmt --all
+cargo check -p temporalstore-rust --bin context_workflow_harness
+python3 -m py_compile tools/run_locomo_ingest_once.py tools/run_locomo_90_hit_rate.py tools/run_longmemeval_s_full_path.py
+python3 tools/validate_benchmark_claims.py
+python3 tools/run_locomo_90_hit_rate.py \
+  --threshold-profile locomo_full \
+  --input /tmp/locomo10.json \
+  --reader-mode deterministic \
+  --require-full-rust-temporalstore-replay \
+  --rust-temporalstore-release \
+  --rust-temporalstore-timeout-seconds 1800 \
+  --report /tmp/ts_batchopt_locomo_full.json \
+  --misses /tmp/ts_batchopt_locomo_full_misses.jsonl
+python3 tools/run_longmemeval_s_full_path.py \
+  --threshold-profile longmemeval_full \
+  --input /tmp/longmemeval_s.json \
+  --reader-mode deterministic \
+  --require-full-rust-temporalstore-replay \
+  --rust-temporalstore-release \
+  --rust-temporalstore-timeout-seconds 1800 \
+  --report /tmp/ts_batchopt4_longmem_full.json \
+  --misses /tmp/ts_batchopt4_longmem_full_misses.jsonl
+```
+
+Result:
+
+| Dataset | Full Rust replay | Case count | Rust Hit@K | Rust zero-hit | Runtime |
+| --- | --- | ---: | ---: | ---: | ---: |
+| LOCOMO | ready | 1,542 | 0.9993514916 | 1 | 324,563 ms |
+| LongMemEval_s | runtime complete, retrieval parity blocked | 500 | 0.864 | 68 | 1,697,901 ms |
+
+LOCOMO produced `rust_temporalstore_full_replay_ready=true` with
+`all_cases=true`, `all_sources=true`, and batched replay enabled. LongMemEval_s now completes all
+500 cases/all source text through Rust TemporalStore without timing out, but it remains blocked on
+Rust retrieval parity because 68 cases return zero hits while the Python source-order scorer has
+zero zero-hit queries. That is a retrieval-quality gap, not a batch-runtime gap.
+
+Claim level: LOCOMO full deterministic Rust replay evidence is ready. LongMemEval_s full deterministic
+Rust replay has runtime evidence only and must not be used as production or VikingMem-comparable
+evidence until the 68 zero-hit Rust retrieval cases are fixed.

@@ -744,6 +744,19 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(32);
+    let all_source_replay = std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_ALL_SOURCE_REPLAY")
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false);
+    let selected_id_limit = std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_SELECTED_ID_LIMIT")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(128);
+    let ingest_chunk_size = std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_INGEST_CHUNK_SIZE")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(64);
     let direct_source_scoring =
         std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_DIRECT_SOURCE_SCORING")
             .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
@@ -761,9 +774,14 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
             .or_insert(0usize) += case.expected_terms.len();
         total_expected_terms += case.expected_terms.len();
         total_expected_refs += case.expected_source_refs.len();
+        let case_max_events = if all_source_replay {
+            max_events.max(case.sources.len()).max(1)
+        } else {
+            max_events
+        };
         let retrieval_started = Instant::now();
         let mut blocks = if direct_source_scoring {
-            external_direct_source_blocks(case, max_events)
+            external_direct_source_blocks(case, case_max_events)
         } else {
             let source_digest = external_case_source_digest(case);
             let tenant_hash = source_digest;
@@ -798,24 +816,34 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
                                 }
                             })
                             .collect::<Vec<_>>();
-                        let ingest = ingest_extract_context(
-                            engine,
-                            ContextIngestExtractRequest {
-                                shard_id: 1,
-                                tenant_hash,
-                                sources,
-                                query: case.query.clone(),
-                                start_time_ms: 0,
-                                end_time_ms: 10_000,
-                                max_events,
-                                provider: ContextModelProviderConfig::default(),
-                            },
-                        );
-                        if !ingest.status.ok {
-                            continue;
+                        let mut node_hashes = Vec::new();
+                        let mut ingest_ok = true;
+                        for chunk in sources.chunks(ingest_chunk_size) {
+                            let ingest = ingest_extract_context(
+                                engine,
+                                ContextIngestExtractRequest {
+                                    shard_id: 1,
+                                    tenant_hash,
+                                    sources: chunk.to_vec(),
+                                    query: case.query.clone(),
+                                    start_time_ms: 0,
+                                    end_time_ms: 10_000,
+                                    max_events: case_max_events,
+                                    provider: ContextModelProviderConfig::default(),
+                                },
+                            );
+                            if !ingest.status.ok {
+                                ingest_ok = false;
+                                break;
+                            }
+                            node_hashes.extend(ingest.node_hashes);
                         }
-                        ingested_source_sets.insert(source_digest, ingest.node_hashes.clone());
-                        ingest.node_hashes
+                        if !ingest_ok {
+                            Vec::new()
+                        } else {
+                            ingested_source_sets.insert(source_digest, node_hashes.clone());
+                            node_hashes
+                        }
                     };
                 let retrieve = retrieve_context(
                     engine,
@@ -823,10 +851,14 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
                         shard_id: 1,
                         tenant_hash,
                         node_hashes,
-                        query: String::new(),
+                        query: if all_source_replay {
+                            case.query.clone()
+                        } else {
+                            String::new()
+                        },
                         start_time_ms: 0,
                         end_time_ms: 10_000,
-                        max_events,
+                        max_events: case_max_events,
                         min_confidence: 0.0,
                         min_importance: 0.0,
                         tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
@@ -843,6 +875,7 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
         let matched_refs = count_matched_expected_refs(&blocks, &case.expected_source_refs);
         let selected_source_ids = blocks
             .iter()
+            .take(selected_id_limit)
             .map(|block| {
                 if block.source_ref.trim().is_empty() {
                     block.uri.clone()

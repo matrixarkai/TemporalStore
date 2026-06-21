@@ -261,7 +261,7 @@ def main() -> int:
         args.rust_temporalstore_max_cases = 0
         args.rust_temporalstore_source_limit = 0
         if args.rust_temporalstore_batch_size <= 0:
-            args.rust_temporalstore_batch_size = 16
+            args.rust_temporalstore_batch_size = 64
     rust_backend_report = run_rust_temporalstore_backend(args) if args.require_rust_temporalstore else None
     reader = BenchmarkReader(
         ReaderConfig(
@@ -647,13 +647,18 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
             "TEMPORALSTORE_CONTEXT_BENCHMARK_REPORT_ONLY": "1",
             "TEMPORALSTORE_CONTEXT_BENCHMARK_JSONL": str(jsonl_path),
             "TEMPORALSTORE_CONTEXT_BENCHMARK_MAX_EVENTS": str(args.max_events),
+            "TEMPORALSTORE_CONTEXT_BENCHMARK_ALL_SOURCE_REPLAY": "1"
+            if args.require_full_rust_temporalstore_replay and int(args.rust_temporalstore_source_limit) == 0
+            else "0",
+            "TEMPORALSTORE_CONTEXT_BENCHMARK_SELECTED_ID_LIMIT": "128",
             "CARGO_TARGET_DIR": env.get("CARGO_TARGET_DIR", "/tmp/temporalstore-context-benchmark-target"),
         }
     )
-    command = ["cargo", "run"]
-    if args.rust_temporalstore_release:
-        command.append("--release")
-    command.extend(["-p", "temporalstore-rust", "--bin", "context_workflow_harness"])
+    command, build_report = prepare_rust_temporalstore_harness_command(
+        repo=repo,
+        env=env,
+        release=bool(args.rust_temporalstore_release),
+    )
     started = time.perf_counter()
     batch_reports: list[dict[str, Any]] = []
     if use_batch_replay:
@@ -709,6 +714,7 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
     report: dict[str, Any] = {
         "rust_temporalstore_backend_ready": False,
         "command": command,
+        "build_report": build_report,
         "converted_jsonl": str(jsonl_path),
         "converted_stdout": converted.stdout.strip()[-1000:],
         "report_path": str(report_path),
@@ -810,6 +816,48 @@ def run_rust_temporalstore_harness(
         check=False,
         timeout=timeout_seconds,
     )
+
+
+def prepare_rust_temporalstore_harness_command(
+    *,
+    repo: Path,
+    env: dict[str, str],
+    release: bool,
+) -> tuple[list[str], dict[str, Any]]:
+    started = time.perf_counter()
+    build_command = ["cargo", "build"]
+    if release:
+        build_command.append("--release")
+    build_command.extend(["-p", "temporalstore-rust", "--bin", "context_workflow_harness"])
+    completed = subprocess.run(
+        build_command,
+        cwd=repo,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    target_dir = Path(env.get("CARGO_TARGET_DIR") or repo / "target")
+    profile = "release" if release else "debug"
+    exe_name = "context_workflow_harness.exe" if os.name == "nt" else "context_workflow_harness"
+    binary = target_dir / profile / exe_name
+    report = {
+        "command": build_command,
+        "returncode": completed.returncode,
+        "elapsed_ms": elapsed_ms(started),
+        "stdout_tail": completed.stdout[-2000:],
+        "stderr_tail": completed.stderr[-2000:],
+        "binary": str(binary),
+        "profile": profile,
+    }
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "Rust TemporalStore benchmark harness build failed: "
+            f"{completed.stderr.strip()[-1000:] or completed.stdout.strip()[-1000:]}"
+        )
+    if not binary.exists():
+        raise RuntimeError(f"Rust TemporalStore benchmark harness binary missing after build: {binary}")
+    return [str(binary)], report
 
 
 def run_rust_temporalstore_batches(
@@ -1046,7 +1094,18 @@ def rust_temporalstore_source_signature(case: dict[str, Any]) -> str:
 def merge_rust_temporalstore_harnesses(harnesses: list[dict[str, Any]], source: str) -> dict[str, Any]:
     per_query: list[dict[str, Any]] = []
     categories: dict[str, dict[str, float]] = defaultdict(lambda: {"case_count": 0, "rr_sum": 0.0, "hits": 0, "missing_terms": 0, "zero_hit": 0})
+    total_case_count = 0
+    total_hit_count = 0
+    total_rr_sum = 0.0
+    total_zero_hit = 0
     for harness in harnesses:
+        harness_count = int(harness.get("external_benchmark_case_count") or 0)
+        harness_hit_rate = float(harness.get("external_benchmark_hit_at_k") or 0.0)
+        harness_mrr = float(harness.get("external_benchmark_mean_reciprocal_rank") or 0.0)
+        total_case_count += harness_count
+        total_hit_count += round(harness_hit_rate * harness_count)
+        total_rr_sum += harness_mrr * harness_count
+        total_zero_hit += int(harness.get("external_benchmark_zero_hit_queries") or 0)
         per_query.extend([row for row in harness.get("external_benchmark_per_query") or [] if isinstance(row, dict)])
         for name, row in (harness.get("external_benchmark_category_breakdown") or {}).items():
             if not isinstance(row, dict):
@@ -1058,10 +1117,10 @@ def merge_rust_temporalstore_harnesses(harnesses: list[dict[str, Any]], source: 
             bucket["rr_sum"] += float(row.get("mean_reciprocal_rank") or 0.0) * count
             bucket["missing_terms"] += int(row.get("missing_expected_terms") or 0)
             bucket["zero_hit"] += int(row.get("zero_hit_queries") or 0)
-    total = len(per_query)
-    hits = sum(1 for row in per_query if bool(row.get("hit")))
-    rr_sum = sum(1.0 / float(row["rank"]) for row in per_query if row.get("rank"))
-    zero_hit = sum(1 for row in per_query if bool(row.get("zero_hit")) or not bool(row.get("hit")))
+    total = total_case_count or len(per_query)
+    hits = total_hit_count if total_case_count else sum(1 for row in per_query if bool(row.get("hit")))
+    rr_sum = total_rr_sum if total_case_count else sum(1.0 / float(row["rank"]) for row in per_query if row.get("rank"))
+    zero_hit = total_zero_hit if total_case_count else sum(1 for row in per_query if bool(row.get("zero_hit")) or not bool(row.get("hit")))
     category_breakdown = {
         name: {
             "case_count": int(values["case_count"]),
