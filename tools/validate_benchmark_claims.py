@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import re
 import sys
 from pathlib import Path
@@ -38,6 +39,7 @@ REQUIRED_EVIDENCE = (
 
 
 def main() -> int:
+    validate_temporal_reasoning_rules()
     failures: list[str] = []
     for path in benchmark_docs():
         text = path.read_text(encoding="utf-8", errors="ignore")
@@ -59,6 +61,63 @@ def main() -> int:
         return 1
     print("benchmark claim validation passed")
     return 0
+
+
+def validate_temporal_reasoning_rules() -> None:
+    runner = load_locomo_runner()
+    texts = [
+        "2023-01-10 I joined the running club.",
+        "2023-01-12 I bought new running shoes.",
+        "2023-01-20 I ran my first race.",
+        "2023-02-01 I watered the orchids.",
+        "2023-02-03 I watered the orchids again.",
+        "2023-03-01 I scheduled the workshop in two weeks.",
+    ]
+    checks = [
+        (
+            "Did I buy new running shoes before I ran my first race?",
+            "Yes",
+            "before/after comparison",
+        ),
+        (
+            "When did I run my first race after I bought new running shoes?",
+            "20 January 2023",
+            "anchored after-date selection",
+        ),
+        (
+            "What did I do before I ran my first race?",
+            "bought new running shoes",
+            "nearest prior event selection",
+        ),
+        (
+            "When did I first water the orchids?",
+            "1 February 2023",
+            "first occurrence selection",
+        ),
+        (
+            "When did I last water the orchids?",
+            "3 February 2023",
+            "last occurrence selection",
+        ),
+    ]
+    for question, expected, label in checks:
+        answer = runner.temporal_ordering_answer(question, texts)
+        if expected.lower() not in answer.lower():
+            raise SystemExit(f"temporal rule failed {label}: expected {expected!r}, got {answer!r}")
+    relative_entries = runner.dated_text_entries([texts[-1]])
+    if not any(runner.format_date(entry.date) == "15 March 2023" for entry in relative_entries):
+        raise SystemExit("temporal rule failed future relative-date normalization")
+
+
+def load_locomo_runner():
+    path = ROOT / "tools" / "run_locomo_ingest_once.py"
+    spec = importlib.util.spec_from_file_location("run_locomo_ingest_once_for_validation", path)
+    if spec is None or spec.loader is None:
+        raise SystemExit("unable to load run_locomo_ingest_once.py for temporal validation")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def benchmark_docs() -> list[Path]:

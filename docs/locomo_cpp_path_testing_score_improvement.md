@@ -48,19 +48,24 @@ The Rust-backed benchmark path now emits richer MatrixArk/VikingMem comparison e
 Rust-only, C++-only, and shared-hard misses for both retrieval and reader hits. The C++ adapter
 template in `compat/cpp_context_benchmark_report_adapter.h` was updated to emit the same fields.
 
-Latest local deterministic runs after the Category 3 temporal/multi-hop rescue pass:
+Latest local deterministic runs after the Category 3 temporal/multi-hop rescue and generic
+temporal-ordering pass:
 
 | Dataset | Hit@K | Reader hit | MRR | Token reduction | Retrieval p95 | Gate |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| LOCOMO `/tmp/locomo10.json` | 0.9533073930 | 0.8644617380 | 0.5324929681 | 83.9763% | 19.506 ms | passed |
-| LongMemEval_s `/tmp/longmemeval_s.json` | 1.0000000000 | 0.9000000000 | 1.0000000000 | 81.3269% | 24.140 ms | passed |
+| LOCOMO `/tmp/locomo10.json` | 0.9533073930 | 0.8644617380 | 0.5324929681 | 83.9726% | 19.792 ms | passed |
+| LongMemEval_s `/tmp/longmemeval_s.json` | 1.0000000000 | 0.8980000000 | 1.0000000000 | 81.3289% | 27.944 ms | passed |
 
 LOCOMO Category 3 improved from Hit@K `0.8125` and reader hit `0.53125` to Hit@K
 `0.9583333333` and reader hit `0.7083333333`. The pass adds conservative inference-aware
 retrieval equivalence and deterministic reader synthesis for temporal/multi-hop shapes such as
 future jobs, likely yes/no, travel state/country recall, inferred hobbies/careers, and
-relationship/trait answers. LongMemEval_s multi-session remains the weakest LongMemEval_s
-category: reader hit is `0.7819548872`, answer-term coverage is `0.4972067039`.
+relationship/trait answers. The generic temporal-ordering pass adds tested rules for
+before/after comparisons, first/second/last occurrence selection, nearest event before/after an
+anchor, anchored target-date selection, and future relative-date normalization such as tomorrow,
+next week/month, and `in N days/weeks/months`. LongMemEval_s temporal reasoning is `0.8721804511`;
+multi-session remains the weakest LongMemEval_s category with reader hit `0.7819548872` and
+answer-term coverage `0.4972067039`.
 
 The new full Rust replay flag is validated on the checked-in LongMemEval_s fixture:
 

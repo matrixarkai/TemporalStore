@@ -1531,6 +1531,10 @@ def context_benchmark_direct_answer(question: str, texts: list[str]) -> str:
     answer = relative_time_arithmetic_answer(question, texts)
     if answer:
         return answer
+    if question_kind(question) != "duration":
+        answer = temporal_ordering_answer(question, texts)
+        if answer:
+            return answer
     answer = direct_numeric_fact_answer(question, texts)
     if answer:
         return answer
@@ -2653,6 +2657,8 @@ def relative_offset_days(text: str) -> int | None:
         return 0
     if re.search(r"\byesterday\b", lower):
         return 1
+    if re.search(r"\btomorrow\b", lower):
+        return -1
     if re.search(r"\b(?:a|one) day ago\b", lower):
         return 1
     match = re.search(
@@ -2673,6 +2679,24 @@ def relative_offset_days(text: str) -> int | None:
         return 7
     if re.search(r"\b(?:a|one) month ago\b|\blast month\b", lower):
         return 30
+    future = re.search(
+        r"\bin\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+"
+        r"(days?|weeks?|months?)\b",
+        lower,
+    )
+    if future:
+        count = round(number_value(future.group(1)))
+        unit = future.group(2)
+        if unit.startswith("day"):
+            return -count
+        if unit.startswith("week"):
+            return -(count * 7)
+        if unit.startswith("month"):
+            return -(count * 30)
+    if re.search(r"\bnext week\b", lower):
+        return -7
+    if re.search(r"\bnext month\b", lower):
+        return -30
     return None
 
 
@@ -2758,6 +2782,44 @@ def best_date_for_anchor(anchor: str, entries: list[TemporalEntry], prefer_earli
     if prefer_earliest or re.search(r"\b(previous|last|former|old|earlier)\b", normalize_text(anchor)):
         return sorted(best, key=lambda item: item.date)[0]
     return sorted(best, key=lambda item: (item.date, -item.rank), reverse=True)[0]
+
+
+def best_date_for_anchor_near(
+    anchor: str,
+    entries: list[TemporalEntry],
+    before: datetime | None = None,
+    after: datetime | None = None,
+) -> TemporalEntry | None:
+    anchor_tokens = answer_tokens(anchor)
+    if not anchor_tokens:
+        return None
+    scored: list[tuple[int, int, TemporalEntry]] = []
+    normalized_anchor = normalize_text(anchor)
+    for entry in entries:
+        if before is not None and entry.date >= before:
+            continue
+        if after is not None and entry.date <= after:
+            continue
+        text_tokens = answer_tokens(entry.text)
+        hits = sum(1 for token in anchor_tokens if token_matches(token, text_tokens))
+        if hits == 0:
+            continue
+        score = hits * 5
+        if normalized_anchor and normalized_anchor in normalize_text(entry.text):
+            score += 10
+        if entry.relative_days is not None:
+            score += 4
+        if before is not None:
+            distance = abs((before - entry.date).days)
+        elif after is not None:
+            distance = abs((entry.date - after).days)
+        else:
+            distance = 0
+        scored.append((score, -distance, entry))
+    if not scored:
+        return None
+    scored.sort(key=lambda row: (row[0], row[1], -row[2].rank), reverse=True)
+    return scored[0][2]
 
 
 def newest_temporal_entry(entries: list[TemporalEntry]) -> TemporalEntry:
@@ -2881,7 +2943,197 @@ def relative_duration_answer(texts: list[str]) -> str:
     return "; ".join(ordered_unique(found))
 
 
+def temporal_ordering_answer(question: str, texts: list[str]) -> str:
+    q = normalize_text(question)
+    if not re.search(r"\b(before|after|first|second|last|earliest|latest|happened|occurred|when did)\b", q):
+        return ""
+    entries = dated_text_entries(texts)
+    if not entries:
+        return ""
+    answer = temporal_pair_order_answer(question, entries)
+    if answer:
+        return answer
+    answer = temporal_constrained_date_answer(question, entries)
+    if answer:
+        return answer
+    answer = temporal_neighbor_answer(question, entries)
+    if answer:
+        return answer
+    return temporal_ordinal_event_answer(question, entries)
+
+
+def temporal_pair_order_answer(question: str, entries: list[TemporalEntry]) -> str:
+    q = normalize_text(question)
+    anchors = temporal_event_anchors(question)
+    if len(anchors) < 2:
+        comparison = temporal_comparison_anchors(question)
+        if comparison:
+            left_anchor, relation, right_anchor = comparison
+            left = best_date_for_anchor(left_anchor, entries)
+            right = best_date_for_anchor(right_anchor, entries)
+            if not left or not right:
+                return ""
+            if relation == "before":
+                result = left.date < right.date
+            else:
+                result = left.date > right.date
+            return (
+                f"{'Yes' if result else 'No'}. Evidence: "
+                f"{left_anchor} -> {format_date(left.date)} ({left.text}) | "
+                f"{right_anchor} -> {format_date(right.date)} ({right.text})"
+            )
+        return ""
+    chosen: list[tuple[str, TemporalEntry]] = []
+    for anchor in anchors:
+        entry = best_date_for_anchor(anchor, entries)
+        if entry:
+            chosen.append((anchor, entry))
+    if len(chosen) < 2:
+        return ""
+    ordered = sorted(chosen, key=lambda item: item[1].date)
+    if re.search(r"\b(second)\b", q) and len(ordered) >= 2:
+        anchor, entry = ordered[1]
+        return f"{anchor}. Evidence: {format_date(entry.date)} ({entry.text})"
+    if re.search(r"\b(last|latest|after)\b", q):
+        anchor, entry = ordered[-1]
+        return f"{anchor}. Evidence: {format_date(entry.date)} ({entry.text})"
+    if re.search(r"\b(first|earliest|before)\b", q):
+        anchor, entry = ordered[0]
+        return f"{anchor}. Evidence: {format_date(entry.date)} ({entry.text})"
+    return ""
+
+
+def temporal_comparison_anchors(question: str) -> tuple[str, str, str] | None:
+    q = re.sub(r"\s+", " ", question.strip(" ?"))
+    patterns = [
+        r"\bdid I\s+(.+?)\s+(before|after)\s+I\s+(.+)$",
+        r"\bhad I\s+(.+?)\s+(before|after)\s+I\s+(.+)$",
+        r"\bwas\s+(.+?)\s+(before|after)\s+(.+)$",
+        r"\bwhich happened\s+(before|after)\s+(.+?),\s*(.+)$",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, q, re.I)
+        if not match:
+            continue
+        if pattern.startswith(r"\bwhich"):
+            relation = match.group(1).lower()
+            return (clean_temporal_anchor(match.group(3)), relation, clean_temporal_anchor(match.group(2)))
+        return (clean_temporal_anchor(match.group(1)), match.group(2).lower(), clean_temporal_anchor(match.group(3)))
+    return None
+
+
+def temporal_constrained_date_answer(question: str, entries: list[TemporalEntry]) -> str:
+    q = re.sub(r"\s+", " ", question.strip(" ?"))
+    patterns = [
+        r"\bwhen did I\s+(.+?)\s+(before|after)\s+I\s+(.+)$",
+        r"\bwhen did I\s+(.+?)\s+(before|after)\s+(?:the time|the day|when)\s+I\s+(.+)$",
+        r"\bwhen did\s+(.+?)\s+(before|after)\s+(.+)$",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, q, re.I)
+        if not match:
+            continue
+        target_anchor = clean_temporal_anchor(match.group(1))
+        relation = match.group(2).lower()
+        boundary_anchor = clean_temporal_anchor(match.group(3))
+        boundary = best_date_for_anchor(boundary_anchor, entries)
+        if not boundary:
+            continue
+        target = best_date_for_anchor_near(
+            target_anchor,
+            entries,
+            before=boundary.date if relation == "before" else None,
+            after=boundary.date if relation == "after" else None,
+        )
+        if target:
+            return f"{format_date(target.date)}. Evidence: {target.text} | anchor: {boundary.text}"
+    return ""
+
+
+def temporal_neighbor_answer(question: str, entries: list[TemporalEntry]) -> str:
+    q = re.sub(r"\s+", " ", question.strip(" ?"))
+    match = re.search(r"\b(?:what|which|who|where)\b.*?\b(before|after)\s+(?:I\s+)?(.+)$", q, re.I)
+    if not match:
+        return ""
+    relation = match.group(1).lower()
+    anchor = clean_temporal_anchor(match.group(2))
+    boundary = best_date_for_anchor(anchor, entries)
+    if not boundary:
+        return ""
+    candidates = [
+        entry
+        for entry in entries
+        if entry is not boundary and (entry.date < boundary.date if relation == "before" else entry.date > boundary.date)
+    ]
+    if not candidates:
+        return ""
+    if relation == "before":
+        selected = sorted(candidates, key=lambda item: (item.date, -item.rank), reverse=True)[0]
+    else:
+        selected = sorted(candidates, key=lambda item: (item.date, item.rank))[0]
+    return f"{format_date(selected.date)}. Evidence: {selected.text} | anchor: {boundary.text}"
+
+
+def temporal_ordinal_event_answer(question: str, entries: list[TemporalEntry]) -> str:
+    q = normalize_text(question)
+    if not re.search(r"\b(first|second|last|earliest|latest)\b", q):
+        return ""
+    anchor = temporal_ordinal_anchor(question)
+    if not anchor:
+        return ""
+    matches = matching_temporal_entries(anchor, entries)
+    if not matches:
+        return ""
+    ordered = sorted(matches, key=lambda item: item.date)
+    if "second" in q and len(ordered) >= 2:
+        selected = ordered[1]
+    elif re.search(r"\b(last|latest)\b", q):
+        selected = ordered[-1]
+    else:
+        selected = ordered[0]
+    return f"{format_date(selected.date)}. Evidence: {selected.text}"
+
+
+def temporal_ordinal_anchor(question: str) -> str:
+    q = re.sub(r"\s+", " ", question.strip(" ?"))
+    patterns = [
+        r"\b(?:first|second|last|earliest|latest)\s+time\s+I\s+(.+)$",
+        r"\bwhen did I\s+(?:first|last)\s+(.+)$",
+        r"\bwhat was the\s+(?:first|second|last|earliest|latest)\s+(.+)$",
+        r"\bwhich\s+(.+?)\s+(?:happened|occurred|came)\s+(?:first|last|earliest|latest)\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, q, re.I)
+        if match:
+            return clean_temporal_anchor(match.group(1))
+    return single_temporal_event_anchor(question)
+
+
+def matching_temporal_entries(anchor: str, entries: list[TemporalEntry]) -> list[TemporalEntry]:
+    anchor_tokens = answer_tokens(anchor)
+    if not anchor_tokens:
+        return []
+    matches: list[tuple[int, int, TemporalEntry]] = []
+    normalized_anchor = normalize_text(anchor)
+    for entry in entries:
+        text_tokens = answer_tokens(entry.text)
+        hits = sum(1 for token in anchor_tokens if token_matches(token, text_tokens))
+        if hits == 0:
+            continue
+        score = hits * 4
+        if normalized_anchor and normalized_anchor in normalize_text(entry.text):
+            score += 8
+        matches.append((score, -entry.rank, entry))
+    if not matches:
+        return []
+    max_score = max(score for score, _, _ in matches)
+    return [entry for score, _, entry in matches if score >= max_score - 2]
+
+
 def date_answer(question: str, texts: list[str]) -> str:
+    ordered = temporal_ordering_answer(question, texts)
+    if ordered:
+        return ordered
     target_terms = answer_tokens(question) - {name.lower() for name in re.findall(r"\b[A-Z][a-z]+\b", question)}
     relative_candidates = []
     absolute_candidates = []
@@ -2915,6 +3167,10 @@ def relative_date_answer(text: str) -> str:
         return format_date(anchor - timedelta(days=1))
     if "tomorrow" in lower:
         return format_date(anchor + timedelta(days=1))
+    if "next week" in lower:
+        return f"the week after {anchor_text}"
+    if "next weekend" in lower:
+        return f"the weekend after {anchor_text}"
     if "next month" in lower:
         month = anchor.month + 1
         year = anchor.year + (1 if month > 12 else 0)
@@ -2938,6 +3194,16 @@ def relative_date_answer(text: str) -> str:
         return f"the week before {anchor_text}"
     if re.search(r"\b(last weekend|over the weekend|during the weekend|weekend before)\b", lower):
         return f"the weekend before {anchor_text}"
+    match = re.search(
+        r"\bin\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+"
+        r"(days?|weeks?|months?)\b",
+        lower,
+    )
+    if match:
+        count = round(number_value(match.group(1)))
+        unit = match.group(2)
+        days = count if unit.startswith("day") else count * 7 if unit.startswith("week") else count * 30
+        return format_date(anchor + timedelta(days=days))
     return ""
 
 
