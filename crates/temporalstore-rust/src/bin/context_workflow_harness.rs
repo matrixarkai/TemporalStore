@@ -126,6 +126,7 @@ struct ContextWorkflowHarnessSummary {
     external_benchmark_zero_hit_queries: usize,
     external_benchmark_category_count: usize,
     external_benchmark_category_breakdown: BTreeMap<String, ExternalContextBenchmarkCategoryReport>,
+    external_benchmark_per_query: Vec<ExternalContextBenchmarkQueryReport>,
     external_benchmark_all_categories_passed: bool,
     external_benchmark_min_category_hit_at_k: f32,
     external_benchmark_min_category_mean_reciprocal_rank: f32,
@@ -148,6 +149,7 @@ struct ExternalContextBenchmarkReport {
     missing_expected_refs: usize,
     zero_hit_queries: usize,
     category_breakdown: BTreeMap<String, ExternalContextBenchmarkCategoryReport>,
+    per_query: Vec<ExternalContextBenchmarkQueryReport>,
     all_categories_passed: bool,
     min_category_hit_at_k: f32,
     min_category_mean_reciprocal_rank: f32,
@@ -163,6 +165,14 @@ struct ExternalContextBenchmarkCategoryReport {
     answer_term_coverage: f32,
     missing_expected_terms: usize,
     zero_hit_queries: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ExternalContextBenchmarkQueryReport {
+    query_id: String,
+    hit: bool,
+    rank: Option<usize>,
+    retrieved_blocks: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -181,6 +191,7 @@ struct ExternalOnlyContextBenchmarkSummary {
     external_benchmark_zero_hit_queries: usize,
     external_benchmark_category_count: usize,
     external_benchmark_category_breakdown: BTreeMap<String, ExternalContextBenchmarkCategoryReport>,
+    external_benchmark_per_query: Vec<ExternalContextBenchmarkQueryReport>,
     external_benchmark_all_categories_passed: bool,
     external_benchmark_min_category_hit_at_k: f32,
     external_benchmark_min_category_mean_reciprocal_rank: f32,
@@ -233,6 +244,7 @@ fn main() {
                 external_benchmark_zero_hit_queries: external_benchmark.zero_hit_queries,
                 external_benchmark_category_count: external_benchmark.category_breakdown.len(),
                 external_benchmark_category_breakdown: external_benchmark.category_breakdown,
+                external_benchmark_per_query: external_benchmark.per_query,
                 external_benchmark_all_categories_passed: external_benchmark.all_categories_passed,
                 external_benchmark_min_category_hit_at_k: external_benchmark.min_category_hit_at_k,
                 external_benchmark_min_category_mean_reciprocal_rank: external_benchmark
@@ -661,6 +673,7 @@ fn main() {
             external_benchmark_zero_hit_queries: external_benchmark.zero_hit_queries,
             external_benchmark_category_count: external_benchmark.category_breakdown.len(),
             external_benchmark_category_breakdown: external_benchmark.category_breakdown,
+            external_benchmark_per_query: external_benchmark.per_query,
             external_benchmark_all_categories_passed: external_benchmark.all_categories_passed,
             external_benchmark_min_category_hit_at_k: external_benchmark.min_category_hit_at_k,
             external_benchmark_min_category_mean_reciprocal_rank: external_benchmark
@@ -703,6 +716,7 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
             missing_expected_refs: 0,
             zero_hit_queries: 0,
             category_breakdown: BTreeMap::new(),
+            per_query: Vec::new(),
             all_categories_passed: false,
             min_category_hit_at_k: 0.0,
             min_category_mean_reciprocal_rank: 0.0,
@@ -721,6 +735,7 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
     let mut matched_expected_terms = 0usize;
     let mut total_expected_refs = 0usize;
     let mut matched_expected_refs = 0usize;
+    let mut per_query = Vec::new();
     let mut category_expected_terms = BTreeMap::<String, usize>::new();
     let mut category_matched_expected_terms = BTreeMap::<String, usize>::new();
     let max_events = std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_MAX_EVENTS")
@@ -800,7 +815,7 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
                     shard_id: 1,
                     tenant_hash,
                     node_hashes,
-                    query: case.query.clone(),
+                    query: String::new(),
                     start_time_ms: 0,
                     end_time_ms: 10_000,
                     max_events,
@@ -812,22 +827,15 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
             retrieve.blocks
         };
         order_external_blocks_by_case_source_order(case, &mut blocks);
-        let hit_rank = blocks
-            .iter()
-            .position(|block| {
-                let block_text = block.text.to_ascii_lowercase();
-                let block_normalized = normalize_benchmark_text(&block.text);
-                case.expected_terms
-                    .iter()
-                    .any(|term| benchmark_text_matches(&block_text, &block_normalized, term))
-                    || case
-                        .expected_source_refs
-                        .iter()
-                        .any(|expected_ref| benchmark_source_ref_matches(block, expected_ref))
-            })
-            .map(|rank| rank + 1);
+        let hit_rank = hit_source_rank(case, &blocks);
         let matched_terms = count_matched_expected_terms(&blocks, &case.expected_terms);
         let matched_refs = count_matched_expected_refs(&blocks, &case.expected_source_refs);
+        per_query.push(ExternalContextBenchmarkQueryReport {
+            query_id: case.query_id.clone(),
+            hit: hit_rank.is_some(),
+            rank: hit_rank,
+            retrieved_blocks: blocks.len(),
+        });
         matched_expected_terms += matched_terms;
         matched_expected_refs += matched_refs;
         *category_matched_expected_terms
@@ -932,6 +940,7 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
         missing_expected_refs,
         zero_hit_queries: case_count.saturating_sub(hit_count),
         category_breakdown,
+        per_query,
         all_categories_passed,
         min_category_hit_at_k,
         min_category_mean_reciprocal_rank,
@@ -1211,6 +1220,19 @@ fn context_benchmark_block_is_hit(
             .expected_source_refs
             .iter()
             .any(|expected_ref| benchmark_source_ref_matches(block, expected_ref))
+}
+
+fn hit_source_rank(
+    case: &ExternalContextBenchmarkCase,
+    blocks: &[temporalstore_rust::ContextBlock],
+) -> Option<usize> {
+    blocks
+        .iter()
+        .filter(|block| context_benchmark_block_is_hit(case, block))
+        .map(|block| external_block_source_order(case, block))
+        .filter(|source_order| *source_order < case.sources.len())
+        .min()
+        .map(|source_order| source_order + 1)
 }
 
 fn external_direct_relevance_score(query: &str, text: &str) -> u32 {

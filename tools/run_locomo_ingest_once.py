@@ -598,9 +598,10 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
     mean_reciprocal_rank_delta = abs(rust_mean_reciprocal_rank - python_mean_reciprocal_rank)
     case_count_on_par = rust_case_count == int(python_subset_score.get("case_count") or 0)
     zero_hit_queries_on_par = rust_zero_hit_queries == python_zero_hit_queries
+    effective_tolerance = max(float(args.rust_temporalstore_score_tolerance), 1e-6)
     score_on_par = (
-        hit_at_k_delta <= args.rust_temporalstore_score_tolerance
-        and mean_reciprocal_rank_delta <= args.rust_temporalstore_score_tolerance
+        hit_at_k_delta <= effective_tolerance
+        and mean_reciprocal_rank_delta <= effective_tolerance
         and case_count_on_par
         and zero_hit_queries_on_par
     )
@@ -611,6 +612,7 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
         "hit_at_k_delta": hit_at_k_delta,
         "mean_reciprocal_rank_delta": mean_reciprocal_rank_delta,
         "tolerance": args.rust_temporalstore_score_tolerance,
+        "effective_tolerance": effective_tolerance,
         "on_par": score_on_par,
         "python_case_count": python_subset_score.get("case_count"),
         "rust_case_count": rust_case_count,
