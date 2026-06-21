@@ -8,6 +8,8 @@ import re
 import sys
 from pathlib import Path
 
+from benchmark_threshold_policy import THRESHOLD_PROFILES
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs"
@@ -39,6 +41,7 @@ REQUIRED_EVIDENCE = (
 
 
 def main() -> int:
+    validate_locomo_latency_gate()
     validate_temporal_reasoning_rules()
     validate_category_one_synthesis_rules()
     failures: list[str] = []
@@ -62,6 +65,19 @@ def main() -> int:
         return 1
     print("benchmark claim validation passed")
     return 0
+
+
+def validate_locomo_latency_gate() -> None:
+    locomo = THRESHOLD_PROFILES["locomo_full"]
+    if locomo["min_hit_rate"] < 0.94:
+        raise SystemExit("locomo_full min_hit_rate must preserve full Hit@K >= 0.94")
+    if locomo["max_retrieval_p95_ms"] > 250.0:
+        raise SystemExit("locomo_full max_retrieval_p95_ms must stay <= 250 ms")
+    oss_reader = THRESHOLD_PROFILES["oss_reader_full"]
+    if oss_reader["min_hit_rate"] < 0.94:
+        raise SystemExit("oss_reader_full min_hit_rate must preserve full Hit@K >= 0.94")
+    if oss_reader["max_retrieval_p95_ms"] > 250.0:
+        raise SystemExit("oss_reader_full max_retrieval_p95_ms must stay <= 250 ms")
 
 
 def validate_temporal_reasoning_rules() -> None:

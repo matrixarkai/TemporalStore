@@ -53,7 +53,7 @@ temporal-ordering pass, and Category 1 inference/list synthesis pass:
 
 | Dataset | Hit@K | Reader hit | MRR | Token reduction | Retrieval p95 | Gate |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| LOCOMO `/tmp/locomo10.json` | 0.9533073930 | 0.8774319066 | 0.5324929681 | 83.9726% | 19.437 ms | passed |
+| LOCOMO `/tmp/locomo10.json` | 0.9533073930 | 0.8774319066 | 0.5324929681 | 83.9726% | 19.365 ms | passed |
 | LongMemEval_s `/tmp/longmemeval_s.json` | 1.0000000000 | 0.8980000000 | 1.0000000000 | 81.3289% | 23.411 ms | passed |
 
 LOCOMO Category 3 improved from Hit@K `0.8125` and reader hit `0.53125` to Hit@K
@@ -71,6 +71,10 @@ LOCOMO Category 1 improved from reader hit `0.7907801418` to `0.8617021277`. The
 deterministic synthesis for support-network lists, relationship/shared-frustration answers,
 identity and transition-change answers, career/personality-style summaries, and list questions
 that were previously falling through to numeric noise or raw evidence bundles.
+
+The `locomo_full` and `oss_reader_full` production benchmark profiles keep the full retrieval
+gate locked at Hit@K `>= 0.94` and retrieval p95 `<= 250 ms`. `tools/validate_benchmark_claims.py`
+now fails if either profile weakens those two constraints.
 
 The new full Rust replay flag is validated on the checked-in LongMemEval_s fixture:
 
