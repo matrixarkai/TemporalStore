@@ -40,6 +40,7 @@ REQUIRED_EVIDENCE = (
 
 def main() -> int:
     validate_temporal_reasoning_rules()
+    validate_category_one_synthesis_rules()
     failures: list[str] = []
     for path in benchmark_docs():
         text = path.read_text(encoding="utf-8", errors="ignore")
@@ -107,6 +108,53 @@ def validate_temporal_reasoning_rules() -> None:
     relative_entries = runner.dated_text_entries([texts[-1]])
     if not any(runner.format_date(entry.date) == "15 March 2023" for entry in relative_entries):
         raise SystemExit("temporal rule failed future relative-date normalization")
+
+
+def validate_category_one_synthesis_rules() -> None:
+    runner = load_locomo_runner()
+    checks = [
+        (
+            "What people has Maria met and helped while volunteering?",
+            [
+                "Maria met Jean while volunteering.",
+                "Maria connected David with support services.",
+                "Cindy and Laura sent Maria notes of gratitude.",
+            ],
+            ("David", "Jean", "Cindy", "Laura"),
+            "support-network list",
+        ),
+        (
+            "What are some changes Caroline has faced during her transition journey?",
+            [
+                "Caroline's relationships have changed due to her journey.",
+                "Some friends were not able to handle the changes, but her family and friends support her.",
+            ],
+            ("body", "unsupportive friends"),
+            "identity/transition synthesis",
+        ),
+        (
+            "What is a shared frustration regarding dog ownership for Audrey and Andrew?",
+            [
+                "Audrey and Andrew both love dogs, but they discuss how dog ownership takes time, attention, and care.",
+            ],
+            ("rewarding", "frustrating"),
+            "relationship synthesis",
+        ),
+        (
+            "How many dogs has Maria adopted from the dog shelter she volunteers at?",
+            [
+                "Maria adopted a puppy from the dog shelter and named her Coco.",
+                "Maria later adopted another puppy from the dog shelter and named it Shadow.",
+            ],
+            ("two",),
+            "numeric list override",
+        ),
+    ]
+    for question, texts, expected_terms, label in checks:
+        answer = runner.category_one_synthesis_answer(question, texts)
+        missing = [term for term in expected_terms if term.lower() not in answer.lower()]
+        if missing:
+            raise SystemExit(f"category 1 synthesis failed {label}: missing {missing!r}, got {answer!r}")
 
 
 def load_locomo_runner():

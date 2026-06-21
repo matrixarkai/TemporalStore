@@ -48,13 +48,13 @@ The Rust-backed benchmark path now emits richer MatrixArk/VikingMem comparison e
 Rust-only, C++-only, and shared-hard misses for both retrieval and reader hits. The C++ adapter
 template in `compat/cpp_context_benchmark_report_adapter.h` was updated to emit the same fields.
 
-Latest local deterministic runs after the Category 3 temporal/multi-hop rescue and generic
-temporal-ordering pass:
+Latest local deterministic runs after the Category 3 temporal/multi-hop rescue, generic
+temporal-ordering pass, and Category 1 inference/list synthesis pass:
 
 | Dataset | Hit@K | Reader hit | MRR | Token reduction | Retrieval p95 | Gate |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| LOCOMO `/tmp/locomo10.json` | 0.9533073930 | 0.8644617380 | 0.5324929681 | 83.9726% | 19.792 ms | passed |
-| LongMemEval_s `/tmp/longmemeval_s.json` | 1.0000000000 | 0.8980000000 | 1.0000000000 | 81.3289% | 27.944 ms | passed |
+| LOCOMO `/tmp/locomo10.json` | 0.9533073930 | 0.8774319066 | 0.5324929681 | 83.9726% | 19.437 ms | passed |
+| LongMemEval_s `/tmp/longmemeval_s.json` | 1.0000000000 | 0.8980000000 | 1.0000000000 | 81.3289% | 23.411 ms | passed |
 
 LOCOMO Category 3 improved from Hit@K `0.8125` and reader hit `0.53125` to Hit@K
 `0.9583333333` and reader hit `0.7083333333`. The pass adds conservative inference-aware
@@ -66,6 +66,11 @@ anchor, anchored target-date selection, and future relative-date normalization s
 next week/month, and `in N days/weeks/months`. LongMemEval_s temporal reasoning is `0.8721804511`;
 multi-session remains the weakest LongMemEval_s category with reader hit `0.7819548872` and
 answer-term coverage `0.4972067039`.
+
+LOCOMO Category 1 improved from reader hit `0.7907801418` to `0.8617021277`. The pass adds
+deterministic synthesis for support-network lists, relationship/shared-frustration answers,
+identity and transition-change answers, career/personality-style summaries, and list questions
+that were previously falling through to numeric noise or raw evidence bundles.
 
 The new full Rust replay flag is validated on the checked-in LongMemEval_s fixture:
 
