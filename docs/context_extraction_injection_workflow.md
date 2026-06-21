@@ -74,9 +74,12 @@ profiles through `GET /context/workflow/state`:
 - `openviking-internvl-vllm`: `OpenGVLab/InternVL2_5-8B` VLM,
   `Qwen/Qwen2.5-7B-Instruct` chat model, `BAAI/bge-m3` embedding model, OpenAI-compatible
   gateway at `127.0.0.1:8000/v1`
+- `vikingmem-gpt-4o-mini-reader`: `gpt-4o-mini` reader/chat model for VikingMem benchmark parity,
+  `sentence-transformers/all-MiniLM-L6-v2` embedding model, OpenAI-compatible gateway at
+  `https://api.openai.com/v1`
 - `matrixark-cpp-oss-context`: `google/flan-t5-small` extraction model and
-  `sentence-transformers/all-MiniLM-L6-v2` embedding model, matching the open-source model setup
-  used by the C++/MatrixArk LOCOMO path in the "LLM Specific TemporalStore Use Cases" thread
+  `sentence-transformers/all-MiniLM-L6-v2` embedding model, retained for legacy open-source
+  MatrixArk/C++ comparison runs
 - `openviking-minigpt4-gpt-style-vlm`: `Vision-CAIR/MiniGPT-4` as the open-source GPT-4-style VLM,
   `lmsys/vicuna-7b-v1.5` chat model, `BAAI/bge-m3` embedding model, OpenAI-compatible gateway at
   `127.0.0.1:8000/v1`

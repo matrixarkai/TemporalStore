@@ -3,8 +3,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 READER_BASE_URL="${TEMPORALSTORE_READER_BASE_URL:-}"
-READER_MODEL="${TEMPORALSTORE_READER_MODEL:-google/flan-t5-small}"
-READER_PROVIDER_NAME="${TEMPORALSTORE_READER_PROVIDER_NAME:-matrixark-cpp-oss-context}"
+READER_MODEL="${TEMPORALSTORE_READER_MODEL:-gpt-4o-mini}"
+READER_PROVIDER_NAME="${TEMPORALSTORE_READER_PROVIDER_NAME:-vikingmem-gpt-4o-mini-reader}"
 REPORT_DIR="${TEMPORALSTORE_BENCHMARK_REPORT_DIR:-${ROOT}/benchmark_reports}"
 LOC_INPUT="${TEMPORALSTORE_LOCOMO_INPUT:-/tmp/locomo10.json}"
 LONGMEM_INPUT="${TEMPORALSTORE_LONGMEMEVAL_INPUT:-/tmp/longmemeval_s.json}"
@@ -56,7 +56,7 @@ JSON
 
 if [[ -z "${READER_BASE_URL}" ]]; then
   write_manifest "not_run" "not_run" "missing_reader_base_url" \
-    "set TEMPORALSTORE_READER_BASE_URL to the C++/OpenViking OpenAI-compatible /v1 endpoint"
+    "set TEMPORALSTORE_READER_BASE_URL to an OpenAI-compatible /v1 endpoint serving gpt-4o-mini"
   cat "${ARCHIVE_DIR}/manifest.json"
   exit 2
 fi

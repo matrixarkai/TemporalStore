@@ -221,12 +221,14 @@ python3 tools/run_longmemeval_s_full_path.py \
 The same open-source reader hook is available for LongMemEval_s:
 
 ```bash
-TEMPORALSTORE_READER_BASE_URL=http://127.0.0.1:8000/v1 \
+OPENAI_API_KEY=<redacted> \
+TEMPORALSTORE_READER_BASE_URL=https://api.openai.com/v1 \
 python3 tools/run_longmemeval_s_full_path.py \
   --input /tmp/longmemeval_s.json \
   --min-hit-rate 0.90 \
   --reader-mode open-source \
-  --reader-model google/flan-t5-small
+  --reader-provider-name vikingmem-gpt-4o-mini-reader \
+  --reader-model gpt-4o-mini
 ```
 
 The converter path remains available for engine-backed external JSONL replay:
@@ -272,19 +274,20 @@ The wrapper uses the conversation-load-once/query-many runner, fails if the comp
 so deterministic/LLM reader accuracy is not confused with retrieval hit rate.
 It also reports the local deterministic extractive reader hit rate.
 
-To match the open-source reader/model path from the MatrixArk/C++ and OpenViking-style setup, point
-the same runner at a local OpenAI-compatible gateway. The default model name is
-`google/flan-t5-small`, matching the C++ benchmark thread's OSS reader profile, but any local
-OpenAI-compatible endpoint can be supplied:
+For VikingMem benchmark parity, point the same runner at an OpenAI-compatible gateway
+serving `gpt-4o-mini`. The default live-reader profile is
+`vikingmem-gpt-4o-mini-reader` with model `gpt-4o-mini`; deterministic-reader
+reports remain engineering evidence only:
 
 ```bash
-export TEMPORALSTORE_READER_BASE_URL=http://127.0.0.1:8000/v1
+export OPENAI_API_KEY=<redacted>
+export TEMPORALSTORE_READER_BASE_URL=https://api.openai.com/v1
 python3 tools/run_locomo_90_hit_rate.py \
   --input /tmp/locomo10.json \
   --min-hit-rate 0.90 \
   --reader-mode open-source \
-  --reader-provider-name matrixark-cpp-oss-context \
-  --reader-model google/flan-t5-small
+  --reader-provider-name vikingmem-gpt-4o-mini-reader \
+  --reader-model gpt-4o-mini
 ```
 
 Use `--reader-mode auto` for local development: it calls the open-source gateway when
@@ -342,7 +345,8 @@ python3 tools/run_locomo_90_hit_rate.py \
   --min-case-count 1542 \
   --min-hit-rate 0.90 \
   --reader-mode open-source \
-  --reader-model google/flan-t5-small \
+  --reader-provider-name vikingmem-gpt-4o-mini-reader \
+  --reader-model gpt-4o-mini \
   --require-open-source-reader
 ```
 
@@ -352,8 +356,9 @@ For a one-command live OSS reader validation that stores the probe and benchmark
 python3 tools/run_live_oss_reader_validation.py \
   --dataset locomo \
   --input /tmp/locomo10.json \
-  --base-url http://127.0.0.1:8000/v1 \
-  --model google/flan-t5-small \
+  --base-url https://api.openai.com/v1 \
+  --provider-name vikingmem-gpt-4o-mini-reader \
+  --model gpt-4o-mini \
   --min-case-count 1542 \
   --min-hit-rate 0.90 \
   --report /tmp/temporalstore_live_oss_reader_validation.json \

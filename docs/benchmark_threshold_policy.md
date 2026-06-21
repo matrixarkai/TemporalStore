@@ -152,7 +152,7 @@ and report path.
 
 The Docker/open-model runner for `oss_reader_full` is documented in
 [context_benchmarks_docker_open_model.md](context_benchmarks_docker_open_model.md).
-Use `tools/run_context_benchmarks_oss_reader_endpoint.sh` when validating the exact
-C++/MatrixArk/OpenViking reader profile against an existing OpenAI-compatible
-endpoint. That path defaults to `matrixark-cpp-oss-context` and
-`google/flan-t5-small`, and must report `reader_open_source_calls > 0`.
+Use `tools/run_context_benchmarks_oss_reader_endpoint.sh` when validating the
+VikingMem parity reader profile against an existing OpenAI-compatible endpoint.
+That path defaults to `vikingmem-gpt-4o-mini-reader` and `gpt-4o-mini`, and must
+report `reader_open_source_calls > 0`.

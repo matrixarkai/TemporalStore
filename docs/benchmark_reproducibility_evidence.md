@@ -40,9 +40,10 @@ Status: `blocked_missing_reader_endpoint`
 The exact C++/MatrixArk/OpenViking reader path is now packaged as a fail-closed endpoint runner:
 
 ```bash
-TEMPORALSTORE_READER_BASE_URL=http://127.0.0.1:8000/v1 \
-TEMPORALSTORE_READER_PROVIDER_NAME=matrixark-cpp-oss-context \
-TEMPORALSTORE_READER_MODEL=google/flan-t5-small \
+OPENAI_API_KEY=<redacted> \
+TEMPORALSTORE_READER_BASE_URL=https://api.openai.com/v1 \
+TEMPORALSTORE_READER_PROVIDER_NAME=vikingmem-gpt-4o-mini-reader \
+TEMPORALSTORE_READER_MODEL=gpt-4o-mini \
 TEMPORALSTORE_LOCOMO_INPUT=/tmp/locomo10.json \
 TEMPORALSTORE_LONGMEMEVAL_INPUT=/tmp/longmemeval_s.json \
 bash tools/run_context_benchmarks_oss_reader_endpoint.sh

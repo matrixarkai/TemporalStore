@@ -4,7 +4,8 @@ This is the shared C++/Rust contract for `context_openviking_blocks_provider_swi
 
 The case validates that a Context ingest/extract batch can mix:
 
-- the MatrixArk/C++ open-source text profile using `google/flan-t5-small`
+- the VikingMem parity reader profile using `gpt-4o-mini`
+- the legacy MatrixArk/C++ open-source text profile using `google/flan-t5-small`
 - the OpenViking-style VLM profile using `Vision-CAIR/MiniGPT-4`
 - provider/model accounting in ingest summaries
 - OpenViking-style L2 context blocks for both text and VLM-shaped memories

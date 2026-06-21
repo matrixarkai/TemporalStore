@@ -136,8 +136,8 @@ def main() -> int:
             "reader endpoint; auto calls the endpoint when configured and otherwise falls back."
         ),
     )
-    parser.add_argument("--reader-provider-name", default="matrixark-cpp-oss-context")
-    parser.add_argument("--reader-model", default="google/flan-t5-small")
+    parser.add_argument("--reader-provider-name", default="vikingmem-gpt-4o-mini-reader")
+    parser.add_argument("--reader-model", default="gpt-4o-mini")
     parser.add_argument(
         "--reader-base-url",
         default=os.environ.get("TEMPORALSTORE_READER_BASE_URL", ""),
@@ -145,8 +145,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--reader-api-key-env",
-        default="TEMPORALSTORE_READER_API_KEY",
-        help="Environment variable containing the local reader API key if the gateway requires one.",
+        default="OPENAI_API_KEY",
+        help="Environment variable containing the reader API key if the gateway requires one.",
     )
     parser.add_argument("--reader-timeout-seconds", type=float, default=20.0)
     parser.add_argument("--reader-max-context-chars", type=int, default=12000)

@@ -578,6 +578,19 @@ pub fn default_context_model_providers() -> Vec<ContextModelProviderConfig> {
             mock_mode: false,
         },
         ContextModelProviderConfig {
+            provider_name: "vikingmem-gpt-4o-mini-reader".to_string(),
+            provider_kind: ContextProviderKind::OpenAiCompatible,
+            base_url: "https://api.openai.com/v1".to_string(),
+            api_key_env: "OPENAI_API_KEY".to_string(),
+            model: "gpt-4o-mini".to_string(),
+            embedding_model: "sentence-transformers/all-MiniLM-L6-v2".to_string(),
+            vlm_model: "none".to_string(),
+            timeout_ms: 30_000,
+            max_retries: 2,
+            fallback_provider: Some(Box::new(ContextModelProviderConfig::default())),
+            mock_mode: false,
+        },
+        ContextModelProviderConfig {
             provider_name: "matrixark-cpp-oss-context".to_string(),
             provider_kind: ContextProviderKind::OpenAiCompatible,
             base_url: "http://127.0.0.1:8000/v1".to_string(),
@@ -660,6 +673,24 @@ pub fn openviking_open_source_model_profiles() -> Vec<ContextOpenVikingModelProf
                 .to_string(),
         },
         ContextOpenVikingModelProfile {
+            profile_name: "vikingmem-gpt-4o-mini-reader".to_string(),
+            provider_name: "vikingmem-gpt-4o-mini-reader".to_string(),
+            provider_kind: ContextProviderKind::OpenAiCompatible,
+            base_url: "https://api.openai.com/v1".to_string(),
+            chat_model: "gpt-4o-mini".to_string(),
+            vlm_model: "none".to_string(),
+            embedding_model: "sentence-transformers/all-MiniLM-L6-v2".to_string(),
+            capabilities: vec![
+                "vikingmem_reader_parity".to_string(),
+                "chat_context_extraction".to_string(),
+                "semantic_retrieval".to_string(),
+                "locomo_context_benchmark".to_string(),
+                "longmemeval_s_context_benchmark".to_string(),
+            ],
+            notes: "VikingMem benchmark parity reader profile using GPT-4o-mini through an OpenAI-compatible /v1/chat/completions endpoint."
+                .to_string(),
+        },
+        ContextOpenVikingModelProfile {
             profile_name: "matrixark-cpp-oss-context".to_string(),
             provider_name: "matrixark-cpp-oss-context".to_string(),
             provider_kind: ContextProviderKind::OpenAiCompatible,
@@ -708,7 +739,7 @@ pub fn openviking_context_parity_cases() -> Vec<ContextOpenVikingParityCase> {
             positive_memory: "Later planning note: Dana suggested the observability dashboard because the team needed better benchmark traces, so Lee picked that project.".to_string(),
             stale_memory: "Initial planning thread: Lee considered a search cleanup project and had not chosen the final work item.".to_string(),
             expected_terms: vec!["Dana".to_string(), "observability dashboard".to_string()],
-            expected_model_profile: "matrixark-cpp-oss-context".to_string(),
+            expected_model_profile: "vikingmem-gpt-4o-mini-reader".to_string(),
             uses_vlm: false,
             benchmark_proven: true,
         },
@@ -719,7 +750,7 @@ pub fn openviking_context_parity_cases() -> Vec<ContextOpenVikingParityCase> {
             positive_memory: "Latest calendar update: Maya rescheduled the dentist appointment to Thursday at 3pm after the clinic called.".to_string(),
             stale_memory: "Earlier memory: Maya had a dentist appointment scheduled for Tuesday morning.".to_string(),
             expected_terms: vec!["Thursday".to_string(), "3pm".to_string()],
-            expected_model_profile: "matrixark-cpp-oss-context".to_string(),
+            expected_model_profile: "vikingmem-gpt-4o-mini-reader".to_string(),
             uses_vlm: false,
             benchmark_proven: true,
         },
@@ -730,7 +761,7 @@ pub fn openviking_context_parity_cases() -> Vec<ContextOpenVikingParityCase> {
             positive_memory: "Latest fraud review: the checkout risk score was updated to 87 after the payment incident escalated.".to_string(),
             stale_memory: "Earlier fraud review: the checkout risk score was 42 before the payment incident escalated.".to_string(),
             expected_terms: vec!["87".to_string()],
-            expected_model_profile: "matrixark-cpp-oss-context".to_string(),
+            expected_model_profile: "vikingmem-gpt-4o-mini-reader".to_string(),
             uses_vlm: false,
             benchmark_proven: true,
         },
@@ -741,7 +772,7 @@ pub fn openviking_context_parity_cases() -> Vec<ContextOpenVikingParityCase> {
             positive_memory: "Latest pet update: the newly adopted dog is named Miso and needs evening walks.".to_string(),
             stale_memory: "Old profile note: the family dog was called Pepper in a previous home.".to_string(),
             expected_terms: vec!["Miso".to_string()],
-            expected_model_profile: "matrixark-cpp-oss-context".to_string(),
+            expected_model_profile: "vikingmem-gpt-4o-mini-reader".to_string(),
             uses_vlm: false,
             benchmark_proven: true,
         },
@@ -752,7 +783,7 @@ pub fn openviking_context_parity_cases() -> Vec<ContextOpenVikingParityCase> {
             positive_memory: "Later chat: Omar recommended the quiet riverside cafe, and Nina booked it after the conference.".to_string(),
             stale_memory: "Earlier conversation: Nina wanted to book a cafe after the conference but had not chosen one yet.".to_string(),
             expected_terms: vec!["Omar".to_string(), "riverside cafe".to_string()],
-            expected_model_profile: "matrixark-cpp-oss-context".to_string(),
+            expected_model_profile: "vikingmem-gpt-4o-mini-reader".to_string(),
             uses_vlm: false,
             benchmark_proven: true,
         },
@@ -3762,6 +3793,12 @@ mod tests {
             matrixark_cpp_provider.embedding_model,
             "sentence-transformers/all-MiniLM-L6-v2"
         );
+        let vikingmem_reader = providers
+            .iter()
+            .find(|provider| provider.provider_name == "vikingmem-gpt-4o-mini-reader")
+            .expect("VikingMem GPT-4o-mini reader profile should be exposed");
+        assert_eq!(vikingmem_reader.model, "gpt-4o-mini");
+        assert_eq!(vikingmem_reader.api_key_env, "OPENAI_API_KEY");
 
         let state = context_workflow_state_report();
         assert!(state
@@ -3776,6 +3813,13 @@ mod tests {
             .openviking_model_profiles
             .iter()
             .any(|profile| profile.vlm_model.contains("InternVL")));
+        assert!(state.openviking_model_profiles.iter().any(|profile| {
+            profile.profile_name == "vikingmem-gpt-4o-mini-reader"
+                && profile.chat_model == "gpt-4o-mini"
+                && profile
+                    .capabilities
+                    .contains(&"vikingmem_reader_parity".to_string())
+        }));
         assert!(state.openviking_model_profiles.iter().any(|profile| {
             profile.profile_name == "matrixark-cpp-oss-context"
                 && profile.chat_model == "google/flan-t5-small"

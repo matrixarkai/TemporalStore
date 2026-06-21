@@ -55,7 +55,7 @@ validation. `FinalizedJson(...)` performs that derivation and immediately valida
 | `benchmark_max_retrieved_tokens_per_query` | Largest compact evidence token count across queries. |
 | `reader_hit_rate` | Answer/reader hit rate. |
 | `reader_mode_requested`, `reader_mode_effective` | `deterministic`, `open-source`, or equivalent C++ mode labels. |
-| `reader_provider_name` | Provider profile, for example `matrixark-cpp-oss-context`. |
+| `reader_provider_name` | Provider profile, for example `vikingmem-gpt-4o-mini-reader`. |
 | `reader_model` | Reader model identifier. |
 | `benchmark_thresholds` | The selected shared threshold profile values. |
 | `benchmark_threshold_violations` | Exact threshold failure strings. |
