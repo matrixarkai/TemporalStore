@@ -33,6 +33,7 @@ struct ContextBenchmarkThresholds {
 struct ContextBenchmarkPerQueryRow {
   std::string query_id;
   std::string category;
+  std::string reader_answer;
   bool hit = false;
   bool reader_hit = false;
   int64_t rank = 0;  // Use 0 when no rank exists; JSON emits null.
@@ -47,6 +48,9 @@ struct ContextBenchmarkPerQueryRow {
   double token_reduction_percent = 0.0;
   double retrieval_ms = 0.0;
   double reader_ms = 0.0;
+  std::vector<std::string> expected_answer_terms;
+  std::vector<std::string> expected_source_ref_ids;
+  std::vector<std::string> retrieved_source_ids;
 };
 
 struct ContextBenchmarkReport {
@@ -90,6 +94,8 @@ struct ContextBenchmarkReport {
 
   bool benchmark_quality_ready = false;
   bool benchmark_threshold_passed = false;
+  bool paper_comparable_claim_ready = false;
+  bool rust_temporalstore_full_replay_ready = false;
   int64_t benchmark_threshold_violation_count = 0;
   std::vector<std::string> benchmark_threshold_violations;
   ContextBenchmarkThresholds benchmark_thresholds;
@@ -123,12 +129,16 @@ inline nlohmann::json ToJson(const ContextBenchmarkPerQueryRow& row) {
       {"hit", row.hit},
       {"rank", std::move(rank)},
       {"reader_hit", row.reader_hit},
+      {"reader_answer", row.reader_answer},
       {"matched_answer_terms", row.matched_answer_terms},
       {"answer_terms", row.answer_terms},
+      {"expected_answer_terms", row.expected_answer_terms},
       {"matched_retrieval_answer_terms", row.matched_retrieval_answer_terms},
       {"expected_source_refs", row.expected_source_refs},
+      {"expected_source_ref_ids", row.expected_source_ref_ids},
       {"matched_source_refs", row.matched_source_refs},
       {"retrieved_blocks", row.retrieved_blocks},
+      {"retrieved_source_ids", row.retrieved_source_ids},
       {"source_tokens", row.source_tokens},
       {"retrieved_tokens", row.retrieved_tokens},
       {"token_reduction_percent", row.token_reduction_percent},
@@ -171,6 +181,8 @@ inline nlohmann::json ToJson(const ContextBenchmarkReport& report) {
       {"reader_zero_hit_queries", report.reader_zero_hit_queries},
       {"benchmark_quality_ready", report.benchmark_quality_ready},
       {"benchmark_threshold_passed", report.benchmark_threshold_passed},
+      {"paper_comparable_claim_ready", report.paper_comparable_claim_ready},
+      {"rust_temporalstore_full_replay_ready", report.rust_temporalstore_full_replay_ready},
       {"benchmark_threshold_violation_count", report.benchmark_threshold_violation_count},
       {"benchmark_threshold_violations", report.benchmark_threshold_violations},
       {"benchmark_thresholds", ToJson(report.benchmark_thresholds)},
@@ -219,6 +231,8 @@ inline void ValidateReportContract(const nlohmann::json& report) {
       "reader_mode_effective",
       "reader_provider_name",
       "reader_model",
+      "paper_comparable_claim_ready",
+      "rust_temporalstore_full_replay_ready",
   };
   for (const auto& field : required) {
     if (!report.contains(field)) {
@@ -227,6 +241,33 @@ inline void ValidateReportContract(const nlohmann::json& report) {
   }
   if (!report.contains("benchmark_per_query") || !report["benchmark_per_query"].is_array()) {
     throw std::invalid_argument("benchmark_per_query must be an array");
+  }
+  static const std::vector<std::string> per_query_required = {
+      "query_id",
+      "category",
+      "hit",
+      "rank",
+      "reader_hit",
+      "reader_answer",
+      "expected_answer_terms",
+      "expected_source_ref_ids",
+      "retrieved_source_ids",
+      "retrieval_ms",
+      "reader_ms",
+      "retrieved_blocks",
+      "retrieved_tokens",
+      "source_tokens",
+      "token_reduction_percent",
+  };
+  for (const auto& row : report["benchmark_per_query"]) {
+    if (!row.is_object()) {
+      throw std::invalid_argument("benchmark_per_query row must be an object");
+    }
+    for (const auto& field : per_query_required) {
+      if (!row.contains(field)) {
+        throw std::invalid_argument("missing benchmark per-query field: " + field);
+      }
+    }
   }
 }
 

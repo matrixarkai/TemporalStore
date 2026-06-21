@@ -37,6 +37,10 @@ PER_QUERY_EXACT_FIELDS = (
     "hit",
     "rank",
     "reader_hit",
+    "reader_answer",
+    "expected_answer_terms",
+    "expected_source_ref_ids",
+    "retrieved_source_ids",
     "retrieved_blocks",
     "source_tokens",
     "retrieved_tokens",
@@ -177,7 +181,13 @@ def compare_summary(
     latency_ratio_tolerance: float,
     failures: list[str],
 ) -> None:
-    for field in ("benchmark_family", "reader_provider_name", "reader_model"):
+    for field in (
+        "benchmark_family",
+        "reader_provider_name",
+        "reader_model",
+        "paper_comparable_claim_ready",
+        "rust_temporalstore_full_replay_ready",
+    ):
         compare_equal(field, rust.get(field), cpp.get(field), failures)
     for field in NUMERIC_SUMMARY_FIELDS:
         compare_number(field, rust.get(field), cpp.get(field), tolerance, failures)

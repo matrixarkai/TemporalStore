@@ -54,6 +54,11 @@ def main() -> int:
     parser.add_argument("--rust-temporalstore-score-tolerance", type=float, default=0.0)
     parser.add_argument("--rust-temporalstore-jsonl", default="")
     parser.add_argument("--rust-temporalstore-report", default="")
+    parser.add_argument(
+        "--require-full-rust-temporalstore-replay",
+        action="store_true",
+        help="Require every converted LongMemEval_s case and all sources to run through Rust TemporalStore.",
+    )
     args = parser.parse_args()
     thresholds = resolve_threshold_policy(args)
 
@@ -111,6 +116,8 @@ def main() -> int:
         command.extend(["--rust-temporalstore-timeout-seconds", str(args.rust_temporalstore_timeout_seconds)])
         command.extend(["--rust-temporalstore-source-limit", str(args.rust_temporalstore_source_limit)])
         command.extend(["--rust-temporalstore-score-tolerance", str(args.rust_temporalstore_score_tolerance)])
+        if args.require_full_rust_temporalstore_replay:
+            command.append("--require-full-rust-temporalstore-replay")
         if args.rust_temporalstore_jsonl:
             command.extend(["--rust-temporalstore-jsonl", args.rust_temporalstore_jsonl])
         if args.rust_temporalstore_report:
@@ -174,17 +181,20 @@ def main() -> int:
         "benchmark_thresholds": report.get("benchmark_thresholds") or {},
         "rust_temporalstore_backend_required": bool(report.get("rust_temporalstore_backend_required")),
         "rust_temporalstore_backend_ready": bool(report.get("rust_temporalstore_backend_ready")),
+        "rust_temporalstore_full_replay_required": bool(report.get("rust_temporalstore_full_replay_required")),
+        "rust_temporalstore_full_replay_ready": bool(report.get("rust_temporalstore_full_replay_ready")),
         "rust_temporalstore_converted_jsonl": rust_backend_report.get("converted_jsonl")
         if isinstance(rust_backend_report, dict)
         else None,
         "rust_temporalstore_report": rust_backend_report.get("report_path") if isinstance(rust_backend_report, dict) else None,
         "rust_temporalstore_score_parity": rust_score_parity,
+        "paper_comparable_claim_ready": bool(report.get("paper_comparable_claim_ready")),
         "category_breakdown": report.get("category_breakdown") or {},
         "report": str(report_path),
         "misses": args.misses,
     }
     print(json.dumps(output, indent=2, sort_keys=True))
-    return 0 if output["longmemeval_s_full_path_ready"] else 1
+    return 0 if output["longmemeval_s_full_path_ready"] and output["benchmark_threshold_passed"] else 1
 
 
 def run(command: list[str], cwd: Path) -> None:

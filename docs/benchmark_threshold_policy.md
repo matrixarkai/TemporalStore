@@ -102,6 +102,29 @@ only for explicit diagnostic Python-only runs; those reports are not Rust-backed
 backend replay is intentionally requested; the default bounded proof keeps local full-dataset
 scoring practical while preventing Python-only benchmark evidence.
 
+For production benchmark claims, prefer the explicit guard:
+
+```bash
+python3 tools/run_locomo_90_hit_rate.py \
+  --threshold-profile locomo_full \
+  --input /tmp/locomo10.json \
+  --require-full-rust-temporalstore-replay
+```
+
+The same flag is supported by `tools/run_longmemeval_s_full_path.py`. It forces all converted cases
+and all source records through the Rust `context_workflow_harness`, emits
+`rust_temporalstore_full_replay_ready`, and adds `full_rust_temporalstore_replay_not_ready` to the
+threshold violations if the all-case Rust evidence is incomplete.
+
+For Docker/open-model archives, set:
+
+```bash
+TEMPORALSTORE_REQUIRE_FULL_RUST_REPLAY=1
+```
+
+This keeps the fast default for iteration while making paper-comparable archives fail closed unless
+the Rust backend evidence is all-case and untrimmed.
+
 Explicit threshold flags override profile defaults. Use overrides only when the
 artifact contract changes, and record the reason in the reproducibility evidence
 doc with the command, input hash, case count, model mode, reader mode, thresholds,

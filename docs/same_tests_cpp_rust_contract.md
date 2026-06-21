@@ -183,7 +183,13 @@ reader_mode_requested
 reader_mode_effective
 reader_provider_name
 reader_model
+paper_comparable_claim_ready
+rust_temporalstore_full_replay_ready
 ```
+
+Required `benchmark_per_query` fields now include the query ID, category, retrieval hit/rank,
+reader hit, reader answer, expected answer terms, expected source refs, retrieved source IDs,
+retrieval/reader latency, retrieved blocks, source tokens, retrieved tokens, and token reduction.
 
 Rust currently emits this shape through:
 

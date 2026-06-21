@@ -58,6 +58,11 @@ def main() -> int:
     parser.add_argument("--rust-temporalstore-jsonl", default="")
     parser.add_argument("--rust-temporalstore-report", default="")
     parser.add_argument(
+        "--require-full-rust-temporalstore-replay",
+        action="store_true",
+        help="Require every converted LOCOMO case and all sources to run through Rust TemporalStore.",
+    )
+    parser.add_argument(
         "--evidence-window",
         type=int,
         default=None,
@@ -125,6 +130,8 @@ def main() -> int:
         command.extend(["--rust-temporalstore-timeout-seconds", str(args.rust_temporalstore_timeout_seconds)])
         command.extend(["--rust-temporalstore-source-limit", str(args.rust_temporalstore_source_limit)])
         command.extend(["--rust-temporalstore-score-tolerance", str(args.rust_temporalstore_score_tolerance)])
+        if args.require_full_rust_temporalstore_replay:
+            command.append("--require-full-rust-temporalstore-replay")
         if args.rust_temporalstore_jsonl:
             command.extend(["--rust-temporalstore-jsonl", args.rust_temporalstore_jsonl])
         if args.rust_temporalstore_report:
@@ -194,6 +201,10 @@ def main() -> int:
                 "benchmark_thresholds": report.get("benchmark_thresholds"),
                 "rust_temporalstore_backend_required": bool(report.get("rust_temporalstore_backend_required")),
                 "rust_temporalstore_backend_ready": bool(report.get("rust_temporalstore_backend_ready")),
+                "rust_temporalstore_full_replay_required": bool(
+                    report.get("rust_temporalstore_full_replay_required")
+                ),
+                "rust_temporalstore_full_replay_ready": bool(report.get("rust_temporalstore_full_replay_ready")),
                 "rust_temporalstore_converted_jsonl": rust_backend_report.get("converted_jsonl")
                 if isinstance(rust_backend_report, dict)
                 else None,
@@ -201,6 +212,7 @@ def main() -> int:
                 if isinstance(rust_backend_report, dict)
                 else None,
                 "rust_temporalstore_score_parity": rust_score_parity,
+                "paper_comparable_claim_ready": bool(report.get("paper_comparable_claim_ready")),
                 "answer_reader_gap_visible": answer_coverage < thresholds["min_hit_rate"],
                 "report": str(report_path),
                 "misses": args.misses,
@@ -209,7 +221,7 @@ def main() -> int:
             sort_keys=True,
         )
     )
-    return 0 if hit_rate >= thresholds["min_hit_rate"] else 1
+    return 0 if bool(report.get("benchmark_threshold_passed")) else 1
 
 
 def run(

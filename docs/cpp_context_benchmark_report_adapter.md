@@ -50,6 +50,8 @@ The header is a single-file C++17 adapter template using `nlohmann::json`. It de
 | `weak_categories` | Categories below the shared threshold policy, each with explicit reasons. |
 | `weak_category_policy` | The category-level threshold values used to classify weak categories. |
 | `benchmark_per_query` | One row per scored query, keyed by `query_id`. |
+| `paper_comparable_claim_ready` | True only when real dataset thresholds pass, no gold evidence window is used, Rust TemporalStore evidence is ready, and required OSS-reader calls occurred. |
+| `rust_temporalstore_full_replay_ready` | Rust-side field showing whether every converted case and all sources ran through the Rust TemporalStore harness. C++ reports may set this false or omit it unless comparing Rust backend evidence. |
 
 Each `benchmark_per_query` row must include:
 
@@ -59,6 +61,10 @@ category
 hit
 rank
 reader_hit
+reader_answer
+expected_answer_terms
+expected_source_ref_ids
+retrieved_source_ids
 retrieval_ms
 reader_ms
 retrieved_blocks
@@ -103,6 +109,11 @@ python3 tools/compare_context_benchmark_reports.py \
   --case-name context_benchmark_full_dataset_gates \
   --dataset locomo
 ```
+
+For production benchmark evidence, run Rust with `--require-full-rust-temporalstore-replay` or set
+`TEMPORALSTORE_REQUIRE_FULL_RUST_REPLAY=1` in the Docker/open-model runner. That disables the bounded
+Rust proof shortcut and requires every converted query and untrimmed source bundle to pass through
+`context_workflow_harness`.
 
 Compare complete Docker/open-model archive directories with:
 

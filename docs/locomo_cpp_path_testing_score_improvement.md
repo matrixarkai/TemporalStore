@@ -34,6 +34,48 @@ The latest MatrixArk/C++-path reference result in `/tmp/matrixark_locomo_after_r
 | Prompt tokens avg | 3,771.06 |
 | Retrieval p50 / p95 | 159 ms / 217 ms |
 
+## 2026-06-20 VikingMem Gap-Fill Update
+
+The Rust-backed benchmark path now emits richer MatrixArk/VikingMem comparison evidence:
+
+- `paper_comparable_claim_ready`
+- `rust_temporalstore_full_replay_required`
+- `rust_temporalstore_full_replay_ready`
+- per-query `reader_answer`, `expected_answer_terms`, `expected_source_ref_ids`, and
+  `retrieved_source_ids`
+
+`tools/compare_context_benchmark_reports.py` compares those fields case-by-case and reports
+Rust-only, C++-only, and shared-hard misses for both retrieval and reader hits. The C++ adapter
+template in `compat/cpp_context_benchmark_report_adapter.h` was updated to emit the same fields.
+
+Latest local deterministic runs:
+
+| Dataset | Hit@K | Reader hit | MRR | Token reduction | Retrieval p95 | Gate |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| LOCOMO `/tmp/locomo10.json` | 0.9442282750 | 0.8527885863 | 0.5274161347 | 83.9727% | 21.491 ms | passed |
+| LongMemEval_s `/tmp/longmemeval_s.json` | 1.0000000000 | 0.9000000000 | 1.0000000000 | 81.3269% | 26.205 ms | passed |
+
+LOCOMO Category 3 remains the weakest category even after improvement: reader hit is
+`0.53125`, retrieval Hit@K is `0.8125`. LongMemEval_s multi-session remains the weakest
+LongMemEval_s category: reader hit is `0.7819548872`, answer-term coverage is `0.4972067039`.
+
+The new full Rust replay flag is validated on the checked-in LongMemEval_s fixture:
+
+```bash
+python3 tools/run_longmemeval_s_full_path.py \
+  --threshold-profile fixture \
+  --input tools/fixtures/longmemeval_s_full_path_fixture.json \
+  --require-full-rust-temporalstore-replay
+```
+
+That run requires all converted fixture cases and all source records to pass through the Rust
+`context_workflow_harness`; it reports `rust_temporalstore_full_replay_ready=true`.
+
+Remaining VikingMem gap: live OSS-reader parity is still not claimed in this update. The
+deterministic reader results above are useful regression gates, but paper-comparable VikingMem
+claims still require `reader_open_source_calls > 0` through the matching OpenViking/C++ reader
+endpoint and archived `*_paper_comparable_report.json` output.
+
 Rust now has a converter so the same LOCOMO and LongMemEval_s-style exports can be fed to the
 TemporalStore context harness:
 

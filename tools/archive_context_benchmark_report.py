@@ -59,6 +59,8 @@ def main() -> int:
         "rust_temporalstore_backend": {
             "required": bool(report.get("rust_temporalstore_backend_required")),
             "ready": bool(report.get("rust_temporalstore_backend_ready")),
+            "full_replay_required": bool(report.get("rust_temporalstore_full_replay_required")),
+            "full_replay_ready": bool(report.get("rust_temporalstore_full_replay_ready")),
             "strict_external_ready": bool(
                 (report.get("rust_temporalstore_backend_report") or {}).get(
                     "rust_temporalstore_strict_external_ready"
@@ -116,6 +118,7 @@ def main() -> int:
         "quality_gate": {
             "passed": bool(report.get("benchmark_threshold_passed")),
             "quality_ready": bool(report.get("benchmark_quality_ready")),
+            "paper_comparable_claim_ready": bool(report.get("paper_comparable_claim_ready")),
             "violation_count": int(report.get("benchmark_threshold_violation_count") or 0),
             "violations": report.get("benchmark_threshold_violations") or [],
             "gold_evidence_window_used": bool(report.get("gold_evidence_window_used")),

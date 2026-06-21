@@ -4072,7 +4072,9 @@
                 "reader_mode_requested",
                 "reader_mode_effective",
                 "reader_provider_name",
-                "reader_model"
+                "reader_model",
+                "paper_comparable_claim_ready",
+                "rust_temporalstore_full_replay_ready"
               ],
               "per_query_required_fields": [
                 "query_id",
@@ -4080,6 +4082,10 @@
                 "hit",
                 "rank",
                 "reader_hit",
+                "reader_answer",
+                "expected_answer_terms",
+                "expected_source_ref_ids",
+                "retrieved_source_ids",
                 "retrieval_ms",
                 "reader_ms",
                 "retrieved_blocks",
@@ -4160,7 +4166,9 @@
                 "reader_mode_requested",
                 "reader_mode_effective",
                 "reader_provider_name",
-                "reader_model"
+                "reader_model",
+                "paper_comparable_claim_ready",
+                "rust_temporalstore_full_replay_ready"
               ],
               "per_query_required_fields": [
                 "query_id",
@@ -4168,6 +4176,10 @@
                 "hit",
                 "rank",
                 "reader_hit",
+                "reader_answer",
+                "expected_answer_terms",
+                "expected_source_ref_ids",
+                "retrieved_source_ids",
                 "retrieval_ms",
                 "reader_ms",
                 "retrieved_blocks",

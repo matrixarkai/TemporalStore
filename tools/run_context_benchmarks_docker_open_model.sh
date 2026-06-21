@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE_FILE="${ROOT}/docker-compose.context-benchmarks.yml"
 MODEL="${TEMPORALSTORE_READER_MODEL:-qwen2.5:0.5b}"
 READER_IMAGE="${TEMPORALSTORE_READER_IMAGE:-ollama/ollama:0.3.14}"
+REQUIRE_FULL_RUST_TEMPORALSTORE_REPLAY="${TEMPORALSTORE_REQUIRE_FULL_RUST_REPLAY:-0}"
 INPUT_DIR="${TEMPORALSTORE_BENCHMARK_INPUT_DIR:-/tmp}"
 REPORT_DIR="${TEMPORALSTORE_BENCHMARK_REPORT_DIR:-${ROOT}/benchmark_reports}"
 READER_BASE_URL="http://open-reader:11434/v1"
@@ -28,6 +29,7 @@ write_manifest() {
   "reader_base_url": "${READER_BASE_URL}",
   "reader_image": "${READER_IMAGE}",
   "reader_model": "${MODEL}",
+  "require_full_rust_temporalstore_replay": "${REQUIRE_FULL_RUST_TEMPORALSTORE_REPLAY}",
   "locomo_input": "${LOC_INPUT}",
   "longmemeval_input": "${LONGMEM_INPUT}",
   "locomo_status": "${locomo_status}",
@@ -81,6 +83,7 @@ if run_runner test -f "${LOC_INPUT}"; then
       --reader-provider-name matrixark-cpp-oss-context \
       --reader-model "${MODEL}" \
       --reader-no-fallback \
+      $(if [[ "${REQUIRE_FULL_RUST_TEMPORALSTORE_REPLAY}" == "1" || "${REQUIRE_FULL_RUST_TEMPORALSTORE_REPLAY}" == "true" || "${REQUIRE_FULL_RUST_TEMPORALSTORE_REPLAY}" == "TRUE" ]]; then printf '%s' '--require-full-rust-temporalstore-replay'; fi) \
       --report /bench-output/"$(basename "${ARCHIVE_DIR}")"/locomo_report.json \
       --misses /bench-output/"$(basename "${ARCHIVE_DIR}")"/locomo_misses.jsonl
   run_runner \
@@ -105,6 +108,7 @@ if run_runner test -f "${LONGMEM_INPUT}"; then
       --reader-model "${MODEL}" \
       --reader-no-fallback \
       --require-open-source-reader \
+      $(if [[ "${REQUIRE_FULL_RUST_TEMPORALSTORE_REPLAY}" == "1" || "${REQUIRE_FULL_RUST_TEMPORALSTORE_REPLAY}" == "true" || "${REQUIRE_FULL_RUST_TEMPORALSTORE_REPLAY}" == "TRUE" ]]; then printf '%s' '--require-full-rust-temporalstore-replay'; fi) \
       --report /bench-output/"$(basename "${ARCHIVE_DIR}")"/longmemeval_s_report.json \
       --misses /bench-output/"$(basename "${ARCHIVE_DIR}")"/longmemeval_s_misses.jsonl
   run_runner \

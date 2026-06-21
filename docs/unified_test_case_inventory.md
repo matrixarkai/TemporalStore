@@ -170,7 +170,13 @@ reader_mode_requested
 reader_mode_effective
 reader_provider_name
 reader_model
+paper_comparable_claim_ready
+rust_temporalstore_full_replay_ready
 ```
+
+Each `benchmark_per_query` row carries query/category, hit/rank, reader hit and answer,
+expected answer terms, expected source refs, retrieved source IDs, latency, token counts, and token
+reduction so C++/Rust comparisons can isolate retrieval, evidence-ordering, and reader-only misses.
 
 Shared threshold profiles:
 
