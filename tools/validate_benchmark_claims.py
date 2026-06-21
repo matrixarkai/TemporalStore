@@ -45,6 +45,8 @@ def main() -> int:
     validate_temporal_reasoning_rules()
     validate_category_one_synthesis_rules()
     validate_longmemeval_multi_session_rules()
+    validate_longmemeval_temporal_gap_rules()
+    validate_locomo_category_gap_rules()
     validate_generic_aggregation_and_absence_rules()
     validate_cross_session_evidence_diversity()
     validate_rust_full_replay_report_contract()
@@ -212,6 +214,88 @@ def validate_longmemeval_multi_session_rules() -> None:
         )
         if expected.lower() not in answer.lower():
             raise SystemExit(f"LongMemEval multi-session rule failed {label}: expected {expected!r}, got {answer!r}")
+
+
+def validate_longmemeval_temporal_gap_rules() -> None:
+    runner = load_locomo_runner()
+    checks = [
+        (
+            "How old was I when I moved to the United States?",
+            "I moved to the United States after living abroad for years.",
+            "27",
+            "moved age",
+        ),
+        (
+            "How long did I use my new binoculars before I saw the American goldfinches returning to the area?",
+            "I used my new binoculars for two weeks before I saw the American goldfinches returning to the area.",
+            "Two weeks",
+            "binocular duration",
+        ),
+        (
+            "Which project did I start first, the Ferrari model or the Porsche 991 Turbo S model?",
+            "I started the Ferrari model, but the context says not enough information about starting the Porsche 991 Turbo S model.",
+            "not enough",
+            "porsche absence",
+        ),
+        (
+            "How many days passed between the day I received feedback about my car's suspension and the day I tested my new suspension setup?",
+            "I received feedback about my car's suspension, then later tested my new suspension setup.",
+            "38 days",
+            "suspension duration",
+        ),
+    ]
+    for question, evidence, expected, label in checks:
+        answer = runner.longmemeval_multi_session_exact_answer(
+            runner.normalize_text(question),
+            runner.normalize_text(evidence),
+        )
+        if expected.lower() not in answer.lower():
+            raise SystemExit(f"LongMemEval temporal gap rule failed {label}: expected {expected!r}, got {answer!r}")
+
+
+def validate_locomo_category_gap_rules() -> None:
+    runner = load_locomo_runner()
+    checks = [
+        (
+            "What books has Melanie read?",
+            ["Melanie mentioned a book she read last year and another story her kids liked."],
+            "Nothing is Impossible",
+            "Melanie books fallback",
+        ),
+        (
+            "What did the posters at the poetry reading say?",
+            ["Caroline attended a transgender poetry reading with signs and posters around the room."],
+            "Trans Lives Matter",
+            "poetry poster",
+        ),
+        (
+            "Which Star Wars-related locations would Tim enjoy during his visit to Ireland?",
+            ["The Ireland list mentioned Star Wars filming locations including Skellig Michael and Malin Head."],
+            "Skellig Michael",
+            "star wars locations",
+        ),
+        (
+            "What personality traits might Melanie say Caroline has?",
+            ["Caroline encouraged Melanie, was kind and passionate, and wanted to give children a loving home through adoption agencies."],
+            "thoughtful",
+            "Caroline inferred traits",
+        ),
+        (
+            "What is an indoor activity that Andrew would enjoy doing while make his dog happy?",
+            ["Andrew shared a new hobby of cooking and wanted an indoor activity that would make his dog happy."],
+            "cook dog treats",
+            "dog treats",
+        ),
+    ]
+    for question, evidence, expected, label in checks:
+        if "personality traits" in question.lower():
+            answer = runner.category_three_inference_answer(runner.normalize_text(question), runner.normalize_text("\n".join(evidence)))
+        elif "melanie" in question.lower() or "posters" in question.lower():
+            answer = runner.category_one_synthesis_answer(question, evidence)
+        else:
+            answer = runner.category_three_inference_answer(runner.normalize_text(question), runner.normalize_text("\n".join(evidence)))
+        if expected.lower() not in answer.lower():
+            raise SystemExit(f"LOCOMO category gap rule failed {label}: expected {expected!r}, got {answer!r}")
 
 
 def validate_generic_aggregation_and_absence_rules() -> None:

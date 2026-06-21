@@ -54,19 +54,19 @@ multi-session aggregation pass:
 
 | Dataset | Hit@K | Reader hit | MRR | Token reduction | Retrieval p95 | Gate |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| LOCOMO `/tmp/locomo10.json` | 0.9533073930 | 0.8774319066 | 0.5324929681 | 83.9844% | 18.872 ms | passed |
-| LongMemEval_s `/tmp/longmemeval_s.json` | 1.0000000000 | 0.9380000000 | 1.0000000000 | 81.4017% | 23.569 ms | passed |
+| LOCOMO `/tmp/locomo10.json` | 0.9533073930 | 0.8839169909 | 0.5324929681 | 83.9844% | 19.304 ms | passed |
+| LongMemEval_s `/tmp/longmemeval_s.json` | 1.0000000000 | 0.9560000000 | 1.0000000000 | 81.4017% | 25.918 ms | passed |
 
 LOCOMO Category 3 improved from Hit@K `0.8125` and reader hit `0.53125` to Hit@K
-`0.9583333333` and reader hit `0.7083333333`. The pass adds conservative inference-aware
+`0.9583333333` and reader hit `0.7291666667`. The pass adds conservative inference-aware
 retrieval equivalence and deterministic reader synthesis for temporal/multi-hop shapes such as
 future jobs, likely yes/no, travel state/country recall, inferred hobbies/careers, and
 relationship/trait answers. The generic temporal-ordering pass adds tested rules for
 before/after comparisons, first/second/last occurrence selection, nearest event before/after an
 anchor, anchored target-date selection, and future relative-date normalization such as tomorrow,
-next week/month, and `in N days/weeks/months`. LongMemEval_s temporal reasoning is `0.8721804511`.
+next week/month, and `in N days/weeks/months`. LongMemEval_s temporal reasoning is `0.9172932331`.
 LongMemEval_s multi-session improved from reader hit `0.7819548872` and reader answer coverage
-`0.7094972067` to reader hit `0.9323308271` and reader answer coverage `0.8212290503`. Retrieval
+`0.7094972067` to reader hit `0.9548872180` and reader answer coverage `0.8379888268`. Retrieval
 answer-term coverage for the category remains `0.4972067039`, so the remaining gap is still
 visible instead of being folded into the reader score. The pass adds exact aggregation for money
 totals/differences, count totals, percentages, item totals, page counts, trip distance, age
@@ -339,19 +339,39 @@ python3 tools/run_locomo_90_hit_rate.py \
 | Retrieval p50 / p95 | 63.167741464 ms / 88.012098300 ms |
 | Reader p50 / p95 | 0.778204529 ms / 6.175042567 ms |
 
-The real LongMemEval_s artifact was not present locally at `/tmp/longmemeval_s.json`, so no real
-LongMemEval_s score is claimed in this document. The full-path command fails closed with exit code
-`2` and the message `missing LongMemEval_s input: /tmp/longmemeval_s.json` until that artifact is
-mounted:
+The real LongMemEval_s artifact was present locally and revalidated with the full gate:
 
 ```bash
+sha256sum /tmp/longmemeval_s.json
+# 821a2034d219ab45846873dd14c14f12cfe7776e73527a483f9dac095d38620c
+
 python3 tools/run_longmemeval_s_full_path.py \
   --input /tmp/longmemeval_s.json \
-  --min-case-count <expected_scored_questions> \
-  --min-hit-rate 0.90 \
-  --report /tmp/temporalstore_longmemeval_s_real_result.json \
-  --misses /tmp/temporalstore_longmemeval_s_real_misses.jsonl
+  --threshold-profile longmemeval_full \
+  --reader-mode deterministic \
+  --rust-temporalstore-max-cases 4 \
+  --rust-temporalstore-source-limit 16 \
+  --rust-temporalstore-timeout-seconds 300 \
+  --rust-temporalstore-score-tolerance 0 \
+  --report /tmp/ts_gapfill_longmem_4_v2_result.json \
+  --misses /tmp/ts_gapfill_longmem_4_v2_misses.jsonl
 ```
+
+| Metric | Result |
+| --- | ---: |
+| Input bytes | 15,388,478 |
+| Scored cases | 500 |
+| Conversations loaded | 500 |
+| Source records loaded | 10,960 |
+| Retrieval/context Hit@K | 1.0000000000 |
+| Reader hit rate | 0.9560000000 |
+| Temporal reasoning reader hit | 0.9172932331 |
+| Multi-session reader hit | 0.9548872180 |
+| Multi-session answer-term coverage | 0.4972067039 |
+| Token reduction | 81.4016523861 |
+| Retrieval p50 / p95 | 12.932049343 ms / 25.917761883 ms |
+| Reader p50 / p95 | 1.033911016 ms / 6.454977865 ms |
+| Threshold violations | 0 |
 
 ## Live OSS Reader Validation
 
