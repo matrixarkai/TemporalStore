@@ -109,8 +109,9 @@ the Rust TemporalStore backend by default. They invoke the Rust
 `context_workflow_harness`, compare Rust case count, Hit@K, mean reciprocal rank,
 and zero-hit queries with the Python scorer on the exact converted subset, and
 fail closed unless the parity result is on par. Use
-`--skip-rust-temporalstore` only for diagnostic Python-only runs; those reports are
-not accepted as Rust-backed benchmark evidence.
+`--skip-rust-temporalstore --allow-python-only-diagnostic` only for diagnostic Python-only runs;
+those reports are not accepted as Rust-backed benchmark evidence. Production benchmark evidence
+requires `all_pipelines_use_rust_temporalstore=true`.
 
 If Docker Hub, the local registry, or the model registry is unreachable, the
 script exits non-zero and still writes a manifest with `phase` set to

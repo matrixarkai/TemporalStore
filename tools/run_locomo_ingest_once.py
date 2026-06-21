@@ -169,7 +169,19 @@ def main() -> int:
     parser.add_argument(
         "--require-rust-temporalstore",
         action="store_true",
-        help="Run the Rust TemporalStore context harness against converted benchmark cases before scoring.",
+        default=True,
+        help="Run the Rust TemporalStore context harness against converted benchmark cases before scoring. Enabled by default.",
+    )
+    parser.add_argument(
+        "--skip-rust-temporalstore",
+        dest="require_rust_temporalstore",
+        action="store_false",
+        help="Diagnostic-only Python scorer run; requires --allow-python-only-diagnostic.",
+    )
+    parser.add_argument(
+        "--allow-python-only-diagnostic",
+        action="store_true",
+        help="Permit --skip-rust-temporalstore for local debugging. Reports from this mode are not benchmark evidence.",
     )
     parser.add_argument(
         "--rust-temporalstore-max-cases",
@@ -228,6 +240,13 @@ def main() -> int:
         help="Optional path for the Rust TemporalStore harness JSON report.",
     )
     args = parser.parse_args()
+    if not args.require_rust_temporalstore and not args.allow_python_only_diagnostic:
+        print(
+            "Rust TemporalStore backend is required for all benchmark/pipeline evidence; "
+            "use --allow-python-only-diagnostic with --skip-rust-temporalstore only for local debugging.",
+            file=sys.stderr,
+        )
+        return 2
     if args.require_full_rust_temporalstore_replay:
         args.require_rust_temporalstore = True
         args.rust_temporalstore_max_cases = 0
@@ -481,6 +500,9 @@ def main() -> int:
         "input": str(args.input),
         "input_sha256": sha256_file(Path(args.input)),
         "input_bytes": Path(args.input).stat().st_size if Path(args.input).exists() else 0,
+        "all_pipelines_use_rust_temporalstore": args.require_rust_temporalstore
+        and bool(rust_backend_report and rust_backend_report.get("rust_temporalstore_backend_ready")),
+        "python_only_diagnostic": not args.require_rust_temporalstore,
         "rust_temporalstore_backend_required": args.require_rust_temporalstore,
         "rust_temporalstore_backend_ready": bool(
             rust_backend_report and rust_backend_report.get("rust_temporalstore_backend_ready")

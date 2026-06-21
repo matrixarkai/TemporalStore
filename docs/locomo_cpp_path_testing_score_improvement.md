@@ -98,6 +98,13 @@ zero-hit query IDs, retrieved block counts, and retrieval latency deltas. A full
 marked ready when the Rust case count matches the converted dataset and the score/rank/zero-hit
 comparison is on par.
 
+All LOCOMO, LongMemEval_s, Docker, and OSS-reader benchmark entrypoints now require the Rust
+TemporalStore backend for benchmark evidence. Python still orchestrates conversion, scoring, and
+reader reporting, but every accepted benchmark report must have
+`all_pipelines_use_rust_temporalstore=true`. `--skip-rust-temporalstore` is rejected unless paired
+with `--allow-python-only-diagnostic`, and that mode is explicitly not accepted as benchmark
+evidence.
+
 Local validation of that contract used both dataset wrappers. LOCOMO and LongMemEval_s bounded
 Rust-backed smokes each ran four converted cases with zero Hit@K/rank deltas and matching zero-hit
 query IDs. The committed LongMemEval_s fixture also passed `--require-full-rust-temporalstore-replay`

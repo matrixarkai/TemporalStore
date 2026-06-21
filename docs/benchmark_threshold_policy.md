@@ -95,9 +95,11 @@ converts benchmark cases to the Rust context JSONL contract and runs
 reader/scorer emits the final benchmark report. The runner also scores that exact converted subset
 with the Python ranker and requires Rust case count, Hit@K, mean reciprocal rank, and zero-hit
 query count to match the Python scorer within `--rust-temporalstore-score-tolerance` before marking
-the backend ready. A fixed `1e-6` numerical epsilon is always allowed so Rust f32 report output does
-not fail exact source-rank parity. Use `--skip-rust-temporalstore`
-only for explicit diagnostic Python-only runs; those reports are not Rust-backed evidence. Use
+the backend ready. Reports also emit `all_pipelines_use_rust_temporalstore`; production benchmark
+evidence requires that field to be `true`. A fixed `1e-6` numerical epsilon is always allowed so
+Rust f32 report output does not fail exact source-rank parity. Use `--skip-rust-temporalstore`
+only with `--allow-python-only-diagnostic` for explicit diagnostic Python-only runs; those reports
+are not Rust-backed evidence. Use
 `--rust-temporalstore-max-cases 0 --rust-temporalstore-source-limit 0` only when a full Rust
 backend replay is intentionally requested; the default bounded proof keeps local full-dataset
 scoring practical while preventing Python-only benchmark evidence. Full replay is batched by

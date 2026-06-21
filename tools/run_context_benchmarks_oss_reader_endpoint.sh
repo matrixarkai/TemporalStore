@@ -9,6 +9,7 @@ REPORT_DIR="${TEMPORALSTORE_BENCHMARK_REPORT_DIR:-${ROOT}/benchmark_reports}"
 LOC_INPUT="${TEMPORALSTORE_LOCOMO_INPUT:-/tmp/locomo10.json}"
 LONGMEM_INPUT="${TEMPORALSTORE_LONGMEMEVAL_INPUT:-/tmp/longmemeval_s.json}"
 REQUIRE_RUST_TEMPORALSTORE="${TEMPORALSTORE_REQUIRE_RUST_TEMPORALSTORE:-1}"
+ALLOW_PYTHON_ONLY_DIAGNOSTIC="${TEMPORALSTORE_ALLOW_PYTHON_ONLY_DIAGNOSTIC:-0}"
 RUST_TEMPORALSTORE_MAX_CASES="${TEMPORALSTORE_RUST_BACKEND_MAX_CASES:-4}"
 RUST_TEMPORALSTORE_SOURCE_LIMIT="${TEMPORALSTORE_RUST_BACKEND_SOURCE_LIMIT:-64}"
 RUST_TEMPORALSTORE_TIMEOUT_SECONDS="${TEMPORALSTORE_RUST_BACKEND_TIMEOUT_SECONDS:-180}"
@@ -33,6 +34,7 @@ write_manifest() {
   "reader_provider_name": "${READER_PROVIDER_NAME}",
   "reader_model": "${READER_MODEL}",
   "require_rust_temporalstore": "${REQUIRE_RUST_TEMPORALSTORE}",
+  "allow_python_only_diagnostic": "${ALLOW_PYTHON_ONLY_DIAGNOSTIC}",
   "rust_temporalstore_max_cases": "${RUST_TEMPORALSTORE_MAX_CASES}",
   "rust_temporalstore_source_limit": "${RUST_TEMPORALSTORE_SOURCE_LIMIT}",
   "rust_temporalstore_batch_size": "${RUST_TEMPORALSTORE_BATCH_SIZE}",
@@ -66,6 +68,13 @@ if [[ ! -f "${LOC_INPUT}" && ! -f "${LONGMEM_INPUT}" ]]; then
   exit 2
 fi
 
+if [[ ! "${REQUIRE_RUST_TEMPORALSTORE}" =~ ^(1|true|TRUE)$ && ! "${ALLOW_PYTHON_ONLY_DIAGNOSTIC}" =~ ^(1|true|TRUE)$ ]]; then
+  write_manifest "not_run" "not_run" "rust_temporalstore_required" \
+    "Rust TemporalStore backend is required; set TEMPORALSTORE_ALLOW_PYTHON_ONLY_DIAGNOSTIC=1 only for local Python-only debugging"
+  cat "${ARCHIVE_DIR}/manifest.json"
+  exit 2
+fi
+
 locomo_status="skipped_missing_input"
 longmem_status="skipped_missing_input"
 RUST_BACKEND_ARGS=()
@@ -84,6 +93,8 @@ if [[ "${REQUIRE_RUST_TEMPORALSTORE}" == "1" || "${REQUIRE_RUST_TEMPORALSTORE}" 
   if [[ "${RUST_TEMPORALSTORE_RELEASE}" == "1" || "${RUST_TEMPORALSTORE_RELEASE}" == "true" || "${RUST_TEMPORALSTORE_RELEASE}" == "TRUE" ]]; then
     RUST_BACKEND_ARGS+=(--rust-temporalstore-release)
   fi
+elif [[ "${ALLOW_PYTHON_ONLY_DIAGNOSTIC}" == "1" || "${ALLOW_PYTHON_ONLY_DIAGNOSTIC}" == "true" || "${ALLOW_PYTHON_ONLY_DIAGNOSTIC}" == "TRUE" ]]; then
+  RUST_BACKEND_ARGS=(--skip-rust-temporalstore --allow-python-only-diagnostic)
 fi
 
 if [[ -f "${LOC_INPUT}" ]]; then

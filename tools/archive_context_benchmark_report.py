@@ -60,6 +60,8 @@ def main() -> int:
             "reader_error_count": int(report.get("reader_error_count") or 0),
         },
         "rust_temporalstore_backend": {
+            "all_pipelines_use_rust_temporalstore": bool(report.get("all_pipelines_use_rust_temporalstore")),
+            "python_only_diagnostic": bool(report.get("python_only_diagnostic")),
             "required": bool(report.get("rust_temporalstore_backend_required")),
             "ready": bool(report.get("rust_temporalstore_backend_ready")),
             "full_replay_required": bool(report.get("rust_temporalstore_full_replay_required")),

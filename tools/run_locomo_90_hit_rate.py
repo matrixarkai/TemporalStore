@@ -49,7 +49,12 @@ def main() -> int:
         "--skip-rust-temporalstore",
         dest="require_rust_temporalstore",
         action="store_false",
-        help="Diagnostic-only Python scorer run; disables the Rust TemporalStore backend proof.",
+        help="Diagnostic-only Python scorer run; requires --allow-python-only-diagnostic.",
+    )
+    parser.add_argument(
+        "--allow-python-only-diagnostic",
+        action="store_true",
+        help="Permit --skip-rust-temporalstore for local debugging. Reports from this mode are not benchmark evidence.",
     )
     parser.add_argument("--rust-temporalstore-max-cases", type=int, default=4)
     parser.add_argument("--rust-temporalstore-timeout-seconds", type=float, default=180.0)
@@ -71,6 +76,13 @@ def main() -> int:
         help="Optional diagnostic evidence window. Omit for full conversation-load-once scoring.",
     )
     args = parser.parse_args()
+    if not args.require_rust_temporalstore and not args.allow_python_only_diagnostic:
+        print(
+            "Rust TemporalStore backend is required for LOCOMO benchmark evidence; "
+            "use --allow-python-only-diagnostic with --skip-rust-temporalstore only for local debugging.",
+            file=sys.stderr,
+        )
+        return 2
     thresholds = resolve_threshold_policy(args)
     if args.evidence_window is not None and args.threshold_profile in {"locomo_full", "oss_reader_full"}:
         print(
@@ -141,6 +153,8 @@ def main() -> int:
             command.extend(["--rust-temporalstore-jsonl", args.rust_temporalstore_jsonl])
         if args.rust_temporalstore_report:
             command.extend(["--rust-temporalstore-report", args.rust_temporalstore_report])
+    elif args.allow_python_only_diagnostic:
+        command.extend(["--skip-rust-temporalstore", "--allow-python-only-diagnostic"])
     if thresholds["require_open_source_reader"]:
         command.append("--require-open-source-reader")
     if args.evidence_window is not None:
@@ -204,6 +218,10 @@ def main() -> int:
                 "benchmark_threshold_violation_count": report.get("benchmark_threshold_violation_count"),
                 "benchmark_threshold_violations": report.get("benchmark_threshold_violations"),
                 "benchmark_thresholds": report.get("benchmark_thresholds"),
+                "all_pipelines_use_rust_temporalstore": bool(
+                    report.get("all_pipelines_use_rust_temporalstore")
+                ),
+                "python_only_diagnostic": bool(report.get("python_only_diagnostic")),
                 "rust_temporalstore_backend_required": bool(report.get("rust_temporalstore_backend_required")),
                 "rust_temporalstore_backend_ready": bool(report.get("rust_temporalstore_backend_ready")),
                 "rust_temporalstore_full_replay_required": bool(
