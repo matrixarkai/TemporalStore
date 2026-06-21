@@ -67,8 +67,9 @@ The local endpoint runner requires Rust TemporalStore by default
 (`TEMPORALSTORE_REQUIRE_RUST_TEMPORALSTORE=1`). It converts benchmark cases to the
 Rust context JSONL contract and runs `context_workflow_harness` through a real
 `TemporalEngine` before the Python reader/scorer emits the report. It also compares
-Rust Hit@K with Python Hit@K on the exact converted subset and fails closed if they
-are not on par. Tune the bounded proof with `TEMPORALSTORE_RUST_BACKEND_MAX_CASES`,
+Rust case count, Hit@K, mean reciprocal rank, and zero-hit queries with Python on
+the exact converted subset and fails closed if they are not on par. Tune the bounded
+proof with `TEMPORALSTORE_RUST_BACKEND_MAX_CASES`,
 `TEMPORALSTORE_RUST_BACKEND_SOURCE_LIMIT`, and
 `TEMPORALSTORE_RUST_BACKEND_TIMEOUT_SECONDS`; tune score drift with
 `TEMPORALSTORE_RUST_BACKEND_SCORE_TOLERANCE`.
@@ -105,8 +106,9 @@ comparing Rust runs with VikingMem/OpenViking or C++ benchmark outputs.
 
 The local endpoint runner and the LOCOMO/LongMemEval_s full gate commands require
 the Rust TemporalStore backend by default. They invoke the Rust
-`context_workflow_harness`, compare Rust Hit@K with the Python scorer on the exact
-converted subset, and fail closed unless the parity result is on par. Use
+`context_workflow_harness`, compare Rust case count, Hit@K, mean reciprocal rank,
+and zero-hit queries with the Python scorer on the exact converted subset, and
+fail closed unless the parity result is on par. Use
 `--skip-rust-temporalstore` only for diagnostic Python-only runs; those reports are
 not accepted as Rust-backed benchmark evidence.
 

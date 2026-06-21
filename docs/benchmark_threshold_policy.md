@@ -93,8 +93,9 @@ LOCOMO and LongMemEval_s wrappers require the Rust TemporalStore backend by defa
 converts benchmark cases to the Rust context JSONL contract and runs
 `context_workflow_harness` through a real `TemporalEngine` before the deterministic Python
 reader/scorer emits the final benchmark report. The runner also scores that exact converted subset
-with the Python ranker and requires Rust Hit@K to match Python Hit@K within
-`--rust-temporalstore-score-tolerance` before marking the backend ready. Use `--skip-rust-temporalstore`
+with the Python ranker and requires Rust case count, Hit@K, mean reciprocal rank, and zero-hit
+query count to match the Python scorer within `--rust-temporalstore-score-tolerance` before marking
+the backend ready. Use `--skip-rust-temporalstore`
 only for explicit diagnostic Python-only runs; those reports are not Rust-backed evidence. Use
 `--rust-temporalstore-max-cases 0 --rust-temporalstore-source-limit 0` only when a full Rust
 backend replay is intentionally requested; the default bounded proof keeps local full-dataset

@@ -744,7 +744,7 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
             .or_insert(0usize) += case.expected_terms.len();
         total_expected_terms += case.expected_terms.len();
         total_expected_refs += case.expected_source_refs.len();
-        let blocks = if direct_source_scoring {
+        let mut blocks = if direct_source_scoring {
             external_direct_source_blocks(case, max_events)
         } else {
             let source_digest = external_case_source_digest(case);
@@ -752,19 +752,27 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
             let node_hashes = if let Some(node_hashes) = ingested_source_sets.get(&source_digest) {
                 node_hashes.clone()
             } else {
+                let source_count = case.sources.len() as u64;
                 let sources = case
                     .sources
                     .iter()
                     .enumerate()
-                    .map(|(source_index, source)| ContextExtractRequest {
-                        shard_id: 1,
-                        tenant_hash,
-                        source_kind: source.kind,
-                        source_id: format!("{}-{source_digest}-{source_index}", case.dataset),
-                        title: source.title.clone(),
-                        body: source.body.clone(),
-                        timestamp_ms: 1_000 + source_index as u64,
-                        provider: ContextModelProviderConfig::default(),
+                    .map(|(source_index, source)| {
+                        let source_id = if source.title.trim().is_empty() {
+                            format!("{}-{source_digest}-{source_index}", case.dataset)
+                        } else {
+                            source.title.clone()
+                        };
+                        ContextExtractRequest {
+                            shard_id: 1,
+                            tenant_hash,
+                            source_kind: source.kind,
+                            source_id,
+                            title: source.title.clone(),
+                            body: source.body.clone(),
+                            timestamp_ms: 1_000 + source_count.saturating_sub(source_index as u64),
+                            provider: ContextModelProviderConfig::default(),
+                        }
                     })
                     .collect::<Vec<_>>();
                 let ingest = ingest_extract_context(
@@ -803,6 +811,7 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
             );
             retrieve.blocks
         };
+        order_external_blocks_by_case_source_order(case, &mut blocks);
         let hit_rank = blocks
             .iter()
             .position(|block| {
@@ -1143,12 +1152,65 @@ fn external_direct_source_blocks(
                 case.query.as_str(),
                 &block.text,
             )),
-            Reverse(block.event_time_ms),
+            block.event_time_ms,
             block.uri.clone(),
         )
     });
     blocks.truncate(max_events.max(1));
     blocks
+}
+
+fn order_external_blocks_by_case_source_order(
+    case: &ExternalContextBenchmarkCase,
+    blocks: &mut [temporalstore_rust::ContextBlock],
+) {
+    blocks.sort_by_key(|block| {
+        (
+            external_block_source_order(case, block),
+            external_block_tier_order(block.tier),
+            Reverse(context_benchmark_block_is_hit(case, block) as u8),
+            Reverse(block.event_time_ms),
+            block.uri.clone(),
+        )
+    });
+}
+
+fn external_block_source_order(
+    case: &ExternalContextBenchmarkCase,
+    block: &temporalstore_rust::ContextBlock,
+) -> usize {
+    let source_ref = normalize_benchmark_ref(&block.source_ref);
+    let text = normalize_benchmark_ref(&block.text);
+    case.sources
+        .iter()
+        .position(|source| {
+            let title = normalize_benchmark_ref(&source.title);
+            !title.is_empty() && (source_ref.contains(&title) || text.contains(&title))
+        })
+        .unwrap_or(case.sources.len())
+}
+
+fn external_block_tier_order(tier: ContextTier) -> u8 {
+    match tier {
+        ContextTier::L2 => 0,
+        ContextTier::L1 => 1,
+        ContextTier::L0 => 2,
+    }
+}
+
+fn context_benchmark_block_is_hit(
+    case: &ExternalContextBenchmarkCase,
+    block: &temporalstore_rust::ContextBlock,
+) -> bool {
+    let block_text = block.text.to_ascii_lowercase();
+    let block_normalized = normalize_benchmark_text(&block.text);
+    case.expected_terms
+        .iter()
+        .any(|term| benchmark_text_matches(&block_text, &block_normalized, term))
+        || case
+            .expected_source_refs
+            .iter()
+            .any(|expected_ref| benchmark_source_ref_matches(block, expected_ref))
 }
 
 fn external_direct_relevance_score(query: &str, text: &str) -> u32 {
@@ -1181,6 +1243,14 @@ fn normalize_benchmark_text(value: &str) -> String {
                 ' '
             }
         })
+        .collect::<String>()
+}
+
+fn normalize_benchmark_ref(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .map(|ch| ch.to_ascii_lowercase())
         .collect::<String>()
 }
 

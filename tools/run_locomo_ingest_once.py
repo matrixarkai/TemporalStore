@@ -590,19 +590,36 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
     rust_case_count = int(harness.get("external_benchmark_case_count") or 0)
     rust_hit_at_k = float(harness.get("external_benchmark_hit_at_k") or 0.0)
     python_hit_at_k = float(python_subset_score.get("hit_at_k") or 0.0)
-    score_delta = abs(rust_hit_at_k - python_hit_at_k)
+    rust_mean_reciprocal_rank = float(harness.get("external_benchmark_mean_reciprocal_rank") or 0.0)
+    python_mean_reciprocal_rank = float(python_subset_score.get("mean_reciprocal_rank") or 0.0)
+    python_zero_hit_queries = int(python_subset_score.get("zero_hit_queries") or 0)
+    rust_zero_hit_queries = int(harness.get("external_benchmark_zero_hit_queries") or 0)
+    hit_at_k_delta = abs(rust_hit_at_k - python_hit_at_k)
+    mean_reciprocal_rank_delta = abs(rust_mean_reciprocal_rank - python_mean_reciprocal_rank)
+    case_count_on_par = rust_case_count == int(python_subset_score.get("case_count") or 0)
+    zero_hit_queries_on_par = rust_zero_hit_queries == python_zero_hit_queries
+    score_on_par = (
+        hit_at_k_delta <= args.rust_temporalstore_score_tolerance
+        and mean_reciprocal_rank_delta <= args.rust_temporalstore_score_tolerance
+        and case_count_on_par
+        and zero_hit_queries_on_par
+    )
     report["rust_vs_python_subset_score"] = {
         "python_hit_at_k": python_hit_at_k,
         "rust_hit_at_k": rust_hit_at_k,
-        "absolute_delta": score_delta,
+        "absolute_delta": hit_at_k_delta,
+        "hit_at_k_delta": hit_at_k_delta,
+        "mean_reciprocal_rank_delta": mean_reciprocal_rank_delta,
         "tolerance": args.rust_temporalstore_score_tolerance,
-        "on_par": score_delta <= args.rust_temporalstore_score_tolerance,
+        "on_par": score_on_par,
         "python_case_count": python_subset_score.get("case_count"),
         "rust_case_count": rust_case_count,
-        "python_mean_reciprocal_rank": python_subset_score.get("mean_reciprocal_rank"),
-        "rust_mean_reciprocal_rank": harness.get("external_benchmark_mean_reciprocal_rank"),
-        "python_zero_hit_queries": python_subset_score.get("zero_hit_queries"),
-        "rust_zero_hit_queries": harness.get("external_benchmark_zero_hit_queries"),
+        "case_count_on_par": case_count_on_par,
+        "python_mean_reciprocal_rank": python_mean_reciprocal_rank,
+        "rust_mean_reciprocal_rank": rust_mean_reciprocal_rank,
+        "python_zero_hit_queries": python_zero_hit_queries,
+        "rust_zero_hit_queries": rust_zero_hit_queries,
+        "zero_hit_queries_on_par": zero_hit_queries_on_par,
     }
     report["rust_temporalstore_backend_ready"] = (
         rust_case_count > 0
