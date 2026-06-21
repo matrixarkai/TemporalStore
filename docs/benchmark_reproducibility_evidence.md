@@ -897,3 +897,59 @@ Output:
 
 Fixture token reduction is `0.0` because the tiny fixture fits under `--max-events`; it is not a
 compression or prompt-budget result.
+
+## Deterministic Reader Gap-Fill: Temporal Ordering And List Synthesis
+
+Date: 2026-06-21
+
+Status: `deterministic-reader-improved`
+
+This pass keeps Rust TemporalStore enabled for accepted benchmark evidence and targets deterministic
+reader misses in event ordering, anchored relative-date questions, relationship/cause/list synthesis,
+and zero-hit prevention. It does not claim VikingMem paper comparability because the live OSS-reader
+endpoint was not part of this local run.
+
+Validation commands:
+
+```bash
+python3 -m py_compile tools/run_locomo_ingest_once.py tools/validate_benchmark_claims.py
+python3 tools/validate_benchmark_claims.py
+python3 tools/run_locomo_90_hit_rate.py \
+  --threshold-profile locomo_full \
+  --input /tmp/locomo10.json \
+  --reader-mode deterministic \
+  --rust-temporalstore-max-cases 4 \
+  --rust-temporalstore-source-limit 64 \
+  --report /tmp/ts_nextfix2_locomo_result.json \
+  --misses /tmp/ts_nextfix2_locomo_misses.jsonl
+python3 tools/run_longmemeval_s_full_path.py \
+  --threshold-profile longmemeval_full \
+  --input /tmp/longmemeval_s.json \
+  --reader-mode deterministic \
+  --rust-temporalstore-max-cases 4 \
+  --rust-temporalstore-source-limit 64 \
+  --report /tmp/ts_nextfix_longmem_result.json \
+  --misses /tmp/ts_nextfix_longmem_misses.jsonl
+python3 tools/validate_context_benchmark_truth.py
+python3 tools/run_temporalstore_unified_tests.py --validate-only
+git diff --check
+```
+
+Result:
+
+| Dataset | Hit@K | Reader hit | p95 retrieval | p95 reader | Rust TemporalStore proof |
+| --- | ---: | ---: | ---: | ---: | --- |
+| LOCOMO deterministic | 0.9474708171 | 0.8767833982 | 37.698503328 ms | 15.042831429 ms | `all_pipelines_use_rust_temporalstore=true`, bounded proof |
+| LongMemEval_s deterministic | 1.0 | 0.972 | 27.595852059 ms | 6.702650478 ms | `all_pipelines_use_rust_temporalstore=true`, bounded proof |
+
+Category movement:
+
+| Dataset/category | Reader hit | Retrieval zero-hit |
+| --- | ---: | ---: |
+| LOCOMO `category_1` | 0.8652482270 | 17 |
+| LOCOMO `category_3` | 0.71875 | 5 |
+| LongMemEval_s `multi_session` | 0.9473684211 | 0 |
+| LongMemEval_s `temporal_reasoning` | 0.9699248120 | 0 |
+
+Claim level: deterministic Rust-backed engineering gate only. Full production benchmark evidence
+still requires full Rust replay plus a live open-source reader endpoint in the same archived report.

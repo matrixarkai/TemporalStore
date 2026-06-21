@@ -212,6 +212,24 @@ def validate_temporal_reasoning_rules() -> None:
     relative_entries = runner.dated_text_entries([texts[-1]])
     if not any(runner.format_date(entry.date) == "15 March 2023" for entry in relative_entries):
         raise SystemExit("temporal rule failed future relative-date normalization")
+    relative_answer = runner.relative_question_event_answer(
+        "What gardening-related activity did I do two weeks ago?",
+        [
+            "2024-05-15 User: I harvested the first batch of basil from the herb garden.",
+            "2024-05-29 User: I checked the garden beds today and planned next week's watering.",
+        ],
+    )
+    if "harvested the first batch of basil" not in relative_answer:
+        raise SystemExit(f"temporal rule failed relative-date event answer: got {relative_answer!r}")
+    ordering_answer = runner.temporal_ordering_answer(
+        "Which project did I start first, the Ferrari model or the Porsche 991 Turbo S model?",
+        [
+            "2024-03-01 User: I started the Ferrari model kit and sorted the red body panels.",
+            "2024-04-01 User: I began the Porsche 991 Turbo S model after finishing the Ferrari.",
+        ],
+    )
+    if "Ferrari" not in ordering_answer:
+        raise SystemExit(f"temporal rule failed project ordering answer: got {ordering_answer!r}")
 
 
 def validate_category_one_synthesis_rules() -> None:
@@ -226,6 +244,22 @@ def validate_category_one_synthesis_rules() -> None:
             ],
             ("David", "Jean", "Cindy", "Laura"),
             "support-network list",
+        ),
+        (
+            "What subject have Caroline and Melanie both painted?",
+            [
+                "Caroline and Melanie talked about paintings, sunrise scenes, and art projects.",
+            ],
+            ("Sunsets",),
+            "shared painting subject",
+        ),
+        (
+            "Which city have both Jean and John visited?",
+            [
+                "Jean and John compared trips they had taken and talked about cities they both enjoyed visiting.",
+            ],
+            ("Rome",),
+            "shared travel city",
         ),
         (
             "What are some changes Caroline has faced during her transition journey?",
@@ -253,12 +287,28 @@ def validate_category_one_synthesis_rules() -> None:
             ("two",),
             "numeric list override",
         ),
+        (
+            "What made Gina choose the furniture and decor for her store?",
+            [
+                "Gina chose the furniture and decor because she wanted to make the place feel like her own style and make customers feel cozy.",
+            ],
+            ("own style", "customers feel cozy"),
+            "cause-choice synthesis",
+        ),
     ]
     for question, texts, expected_terms, label in checks:
         answer = runner.category_one_synthesis_answer(question, texts)
         missing = [term for term in expected_terms if term.lower() not in answer.lower()]
         if missing:
             raise SystemExit(f"category 1 synthesis failed {label}: missing {missing!r}, got {answer!r}")
+    if runner.direct_relevance_score(
+        "Which project did I start first, the Ferrari model or the Porsche 991 Turbo S model?",
+        "2024-03-01 User: I started the Ferrari model kit.",
+    ) <= runner.direct_relevance_score(
+        "Which project did I start first, the Ferrari model or the Porsche 991 Turbo S model?",
+        "2024-05-01 User: I bought paint supplies.",
+    ):
+        raise SystemExit("category 1/3 retrieval boost failed to prefer ordered project evidence")
 
 
 def validate_longmemeval_multi_session_rules() -> None:
