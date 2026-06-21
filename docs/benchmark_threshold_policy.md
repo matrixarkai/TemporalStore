@@ -109,6 +109,12 @@ batch index, batch path, completed batches, and stdout/stderr tails. Add
 `--rust-temporalstore-release` for production/full-dataset archives; the default dev build is kept
 for fast local bounded proof.
 
+The standalone Rust `context_workflow_harness` built-in external fixture gates pipeline execution
+on complete Hit@K coverage, no zero-hit queries, no missing answer terms, and no missing expected
+refs. It still reports MRR/category MRR for quality tracking, but rank-1 ordering is not required
+for the built-in pipeline readiness assertion because Rust retrieval can emit valid internal
+context blocks before the exact source block.
+
 For production benchmark claims, prefer the explicit guard:
 
 ```bash

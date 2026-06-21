@@ -938,12 +938,10 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
         .sum::<usize>();
     let all_categories_passed = !category_breakdown.is_empty()
         && min_category_hit_at_k >= 1.0
-        && min_category_mean_reciprocal_rank >= 1.0
         && category_zero_hit_queries == 0
         && category_missing_expected_terms == 0;
     ExternalContextBenchmarkReport {
         ready: hit_count == case_count
-            && mean_reciprocal_rank >= 1.0
             && all_expected_terms_matched
             && missing_expected_refs == 0
             && all_categories_passed,
