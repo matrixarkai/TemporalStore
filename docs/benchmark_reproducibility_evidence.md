@@ -953,3 +953,53 @@ Category movement:
 
 Claim level: deterministic Rust-backed engineering gate only. Full production benchmark evidence
 still requires full Rust replay plus a live open-source reader endpoint in the same archived report.
+
+## Deterministic Reader Gap-Fill: Totals, Durations, Absence, And Lists
+
+Date: 2026-06-21
+
+Status: `longmemeval-reader-improved`
+
+This pass targets better totals/differences/list extraction, duration variants, insufficient-info
+handling, and evidence diversity without increasing selected context enough to drop LongMemEval_s
+token reduction below the `80%` full-profile floor.
+
+Validation commands:
+
+```bash
+python3 -m py_compile tools/run_locomo_ingest_once.py tools/validate_benchmark_claims.py
+python3 tools/validate_benchmark_claims.py
+python3 tools/run_longmemeval_s_full_path.py \
+  --threshold-profile longmemeval_full \
+  --input /tmp/longmemeval_s.json \
+  --reader-mode deterministic \
+  --rust-temporalstore-max-cases 4 \
+  --rust-temporalstore-source-limit 64 \
+  --report /tmp/ts_nextfix_totals2_longmem_result.json \
+  --misses /tmp/ts_nextfix_totals2_longmem_misses.jsonl
+python3 tools/run_locomo_90_hit_rate.py \
+  --threshold-profile locomo_full \
+  --input /tmp/locomo10.json \
+  --reader-mode deterministic \
+  --rust-temporalstore-max-cases 4 \
+  --rust-temporalstore-source-limit 64 \
+  --report /tmp/ts_nextfix_totals_locomo_result.json \
+  --misses /tmp/ts_nextfix_totals_locomo_misses.jsonl
+```
+
+Result:
+
+| Dataset | Hit@K | Reader hit | Token reduction | Retrieval zero-hit | Threshold |
+| --- | ---: | ---: | ---: | ---: | --- |
+| LongMemEval_s deterministic | 1.0 | 0.986 | 81.3902615990% | 0 | passed |
+| LOCOMO deterministic | 0.9474708171 | 0.8767833982 | not applicable in report summary | 81 | passed |
+
+LongMemEval_s category movement:
+
+| Category | Reader hit | Retrieval zero-hit |
+| --- | ---: | ---: |
+| `multi_session` | 0.9774436090 | 0 |
+| `temporal_reasoning` | 0.9849624060 | 0 |
+
+Claim level: deterministic Rust-backed engineering gate only. Live OSS-reader and full Rust replay
+are still required for paper-comparable VikingMem evidence.

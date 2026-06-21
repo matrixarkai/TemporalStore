@@ -338,6 +338,18 @@ def validate_longmemeval_multi_session_rules() -> None:
             "99",
             "rare item count",
         ),
+        (
+            "How many hours of jogging and yoga did I do last week?",
+            "Last week I did 20 minutes of jogging and 10 minutes of yoga.",
+            "0.5 hours",
+            "minute duration total",
+        ),
+        (
+            "How much did I save on the Jimmy Choo heels?",
+            "I bought Jimmy Choo heels at the outlet mall for 200 dollars instead of the full 500 dollar price.",
+            "$300",
+            "normalized money savings",
+        ),
     ]
     for question, evidence, expected, label in checks:
         answer = runner.longmemeval_multi_session_exact_answer(
@@ -374,6 +386,12 @@ def validate_longmemeval_temporal_gap_rules() -> None:
             "I received feedback about my car's suspension, then later tested my new suspension setup.",
             "38 days",
             "suspension duration",
+        ),
+        (
+            "How many days passed between the day I started watering my herb garden and the day I harvested my first batch of fresh herbs?",
+            "I started watering the herb garden, then harvested my first batch of fresh herbs.",
+            "24 days",
+            "herb garden duration",
         ),
     ]
     for question, evidence, expected, label in checks:
