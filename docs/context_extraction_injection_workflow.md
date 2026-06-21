@@ -188,20 +188,23 @@ local TemporalStore evidence:
 - `benchmark_evidence_retention_at_k` and per-query `evidence_retained` evidence proving the
   expected answer/topic survives budgeted context injection, not only retrieval
 - `benchmark_thresholds`, `benchmark_threshold_passed`, and threshold violation counts for
-  explicit regression gates on hit@k, MRR, recall proxy, evidence retention, selected-token budget,
+  explicit regression gates on hit@k, recall proxy, evidence retention, selected-token budget,
   token reduction, latency, and throughput
+- `benchmark_mean_reciprocal_rank`, `benchmark_sweep_min_mean_reciprocal_rank`, and
+  `external_benchmark_mean_reciprocal_rank` remain quality metrics. They are emitted for trend
+  tracking, but MRR is not part of the Rust-native pipeline readiness contract.
 - per-query hit rank, reciprocal rank, evidence retention, selected-block count, token count, and
   latency
 - `benchmark_sweep_*` fields covering multi-profile source/query sweeps, minimum hit@k, minimum
-  MRR, minimum evidence retention, minimum token reduction, total source/query coverage, maximum
+  MRR quality metric, minimum evidence retention, minimum token reduction, total source/query coverage, maximum
   p95 retrieval/injection latency, selected-token averages and maximums, zero-hit totals, profile
   signatures, workload coverage ranges, and sweep-wide threshold pass/fail evidence
 - `external_benchmark_*` fields covering optional LOCOMO/LongMemEval-style JSONL replay, including
   dataset name, case count, hit@k, MRR, answer-term coverage, missing expected terms, zero-hit
   queries, and source path
 - `external_benchmark_category_count` and `external_benchmark_category_breakdown` fields covering
-  per-reasoning-type case count, hit@k, MRR, answer-term coverage, missing expected terms, and
-  zero-hit queries for single-hop, multi-hop reasoning, temporal, memory update, quantity,
+  per-reasoning-type case count, hit@k, MRR quality metric, answer-term coverage, missing expected
+  terms, and zero-hit queries for single-hop, multi-hop reasoning, temporal, memory update, quantity,
   social-link, and entity-alias style cases
 - `external_benchmark_all_categories_passed`, `external_benchmark_min_category_hit_at_k`,
   `external_benchmark_min_category_mean_reciprocal_rank`, and

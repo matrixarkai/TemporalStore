@@ -357,7 +357,8 @@ python3 tools/validate_aws_validation_log.py \
 Each JSONL record can use `query` or `question`, `answer_terms` or `expected_terms`, optional
 `category`, `reasoning_type`, or `question_type`, and `sources`, `messages`, or `conversation`
 arrays. Category labels are reported in `external_benchmark_category_breakdown`, and the harness
-fails `external_benchmark_ready` unless every category has hit@k 1.0, MRR 1.0, and zero misses.
+fails `external_benchmark_ready` unless every category has hit@k 1.0, zero missing expected terms,
+and zero zero-hit queries. MRR remains reported as a quality metric, not a readiness blocker.
 All `answer_terms` / `expected_terms` are treated as required evidence terms; the run also fails
 unless `external_benchmark_answer_term_coverage` is 1.0 and
 `external_benchmark_missing_expected_terms` is 0.

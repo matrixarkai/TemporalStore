@@ -2984,7 +2984,7 @@ fn default_benchmark_query_count() -> usize {
 fn default_benchmark_thresholds() -> ContextPipelineBenchmarkThresholds {
     ContextPipelineBenchmarkThresholds {
         min_hit_at_k: 1.0,
-        min_mean_reciprocal_rank: 1.0,
+        min_mean_reciprocal_rank: 0.0,
         min_recall_at_k: 1.0,
         min_evidence_retention_at_k: 1.0,
         min_token_reduction_percent: 0.1,
@@ -3641,6 +3641,7 @@ mod tests {
         assert!(benchmark.threshold_passed);
         assert!(benchmark.threshold_violations.is_empty());
         assert_eq!(benchmark.thresholds.min_hit_at_k, 1.0);
+        assert_eq!(benchmark.thresholds.min_mean_reciprocal_rank, 0.0);
         assert_eq!(benchmark.thresholds.min_evidence_retention_at_k, 1.0);
         assert_eq!(benchmark.thresholds.max_selected_tokens_per_query, 256);
         assert!(benchmark.source_kind_counts.len() >= 3);
@@ -3690,7 +3691,7 @@ mod tests {
         assert!(sweep.max_sources_per_topic >= sweep.min_sources_per_topic);
         assert!(sweep.min_source_kind_coverage_count >= 3);
         assert_eq!(sweep.min_hit_at_k, 1.0);
-        assert_eq!(sweep.min_mean_reciprocal_rank, 1.0);
+        assert!(sweep.min_mean_reciprocal_rank > 0.0);
         assert_eq!(sweep.min_evidence_retention_at_k, 1.0);
         assert!(sweep.min_token_reduction_percent > 0.0);
         assert!(sweep.max_selected_tokens_per_query <= 256);

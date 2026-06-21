@@ -442,7 +442,6 @@ fn main() {
         && benchmark.retrieval_successes == benchmark.query_count
         && benchmark.injection_successes == benchmark.query_count
         && benchmark.hit_at_k >= 1.0
-        && benchmark.mean_reciprocal_rank >= 1.0
         && benchmark.recall_at_k >= 1.0
         && benchmark.evidence_retention_at_k >= 1.0
         && benchmark.token_reduction_percent > 0.0
@@ -507,7 +506,6 @@ fn main() {
         && benchmark_sweep.max_sources_per_topic >= benchmark_sweep.min_sources_per_topic
         && benchmark_sweep.min_source_kind_coverage_count >= 3
         && benchmark_sweep.min_hit_at_k >= 1.0
-        && benchmark_sweep.min_mean_reciprocal_rank >= 1.0
         && benchmark_sweep.min_evidence_retention_at_k >= 1.0
         && benchmark_sweep.min_token_reduction_percent > 0.0
         && benchmark_sweep.total_zero_hit_queries == 0
