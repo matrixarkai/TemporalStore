@@ -52,6 +52,7 @@ def main() -> int:
     validate_generic_aggregation_and_absence_rules()
     validate_cross_session_evidence_diversity()
     validate_rust_full_replay_report_contract()
+    validate_archive_paper_comparable_contract_examples()
     validate_archive_paper_comparable_claims()
     failures: list[str] = []
     for path in benchmark_docs():
@@ -79,21 +80,79 @@ def main() -> int:
 def validate_archive_paper_comparable_claims() -> None:
     for path in (DOCS / "benchmark_archives").glob("*.json"):
         data = json.loads(path.read_text(encoding="utf-8"))
-        quality = data.get("quality_gate") if isinstance(data.get("quality_gate"), dict) else data
-        ready = bool(quality.get("paper_comparable_claim_ready"))
-        if not ready:
-            continue
-        model = data.get("model") if isinstance(data.get("model"), dict) else {}
-        rust = data.get("rust_temporalstore_backend") if isinstance(data.get("rust_temporalstore_backend"), dict) else {}
-        missing = []
-        if int(model.get("reader_open_source_calls") or data.get("reader_open_source_calls") or 0) <= 0:
-            missing.append("reader_open_source_calls")
-        if not bool(rust.get("all_pipelines_use_rust_temporalstore") or data.get("all_pipelines_use_rust_temporalstore")):
-            missing.append("all_pipelines_use_rust_temporalstore")
-        if not bool(rust.get("full_replay_ready") or data.get("rust_temporalstore_full_replay_ready")):
-            missing.append("rust_temporalstore_full_replay_ready")
+        missing = archive_paper_comparable_missing_fields(data)
         if missing:
             raise SystemExit(f"{relative(path)} overclaims paper comparable readiness; missing {missing!r}")
+
+
+def archive_paper_comparable_missing_fields(data: dict) -> list[str]:
+    quality = data.get("quality_gate") if isinstance(data.get("quality_gate"), dict) else data
+    ready = bool(quality.get("paper_comparable_claim_ready"))
+    if not ready:
+        return []
+    model = data.get("model") if isinstance(data.get("model"), dict) else {}
+    rust = data.get("rust_temporalstore_backend") if isinstance(data.get("rust_temporalstore_backend"), dict) else {}
+    dataset = data.get("dataset") if isinstance(data.get("dataset"), dict) else {}
+    thresholds = data.get("thresholds") if isinstance(data.get("thresholds"), dict) else {}
+    missing = []
+    if int(model.get("reader_open_source_calls") or data.get("reader_open_source_calls") or 0) <= 0:
+        missing.append("reader_open_source_calls")
+    if model.get("reader_mode_effective") != "open-source":
+        missing.append("reader_mode_effective=open-source")
+    if not bool(thresholds.get("require_open_source_reader")):
+        missing.append("thresholds.require_open_source_reader")
+    if not dataset.get("sha256") or int(dataset.get("bytes") or 0) <= 0:
+        missing.append("real_dataset_artifact")
+    if int(dataset.get("case_count") or data.get("case_count") or 0) < int(thresholds.get("min_case_count") or 0):
+        missing.append("case_count>=threshold_min_case_count")
+    if int(thresholds.get("min_case_count") or 0) <= 4:
+        missing.append("full_dataset_threshold_profile")
+    if not bool(rust.get("all_pipelines_use_rust_temporalstore") or data.get("all_pipelines_use_rust_temporalstore")):
+        missing.append("all_pipelines_use_rust_temporalstore")
+    if bool(rust.get("python_only_diagnostic") or data.get("python_only_diagnostic")):
+        missing.append("python_only_diagnostic=false")
+    if not bool(rust.get("full_replay_ready") or data.get("rust_temporalstore_full_replay_ready")):
+        missing.append("rust_temporalstore_full_replay_ready")
+    return missing
+
+
+def validate_archive_paper_comparable_contract_examples() -> None:
+    base = {
+        "quality_gate": {"paper_comparable_claim_ready": True},
+        "model": {
+            "reader_mode_effective": "open-source",
+            "reader_open_source_calls": 12,
+        },
+        "dataset": {
+            "sha256": "a" * 64,
+            "bytes": 1024,
+            "case_count": 500,
+        },
+        "thresholds": {
+            "min_case_count": 500,
+            "require_open_source_reader": True,
+        },
+        "rust_temporalstore_backend": {
+            "all_pipelines_use_rust_temporalstore": True,
+            "python_only_diagnostic": False,
+            "full_replay_ready": True,
+        },
+    }
+    if archive_paper_comparable_missing_fields(base):
+        raise SystemExit("valid paper-comparable archive contract example should pass")
+    deterministic = json.loads(json.dumps(base))
+    deterministic["model"]["reader_mode_effective"] = "deterministic"
+    if "reader_mode_effective=open-source" not in archive_paper_comparable_missing_fields(deterministic):
+        raise SystemExit("deterministic archive example must not satisfy paper-comparable contract")
+    fixture = json.loads(json.dumps(base))
+    fixture["thresholds"]["min_case_count"] = 4
+    fixture["dataset"]["case_count"] = 4
+    if "full_dataset_threshold_profile" not in archive_paper_comparable_missing_fields(fixture):
+        raise SystemExit("fixture archive example must not satisfy paper-comparable contract")
+    python_only = json.loads(json.dumps(base))
+    python_only["rust_temporalstore_backend"]["python_only_diagnostic"] = True
+    if "python_only_diagnostic=false" not in archive_paper_comparable_missing_fields(python_only):
+        raise SystemExit("Python-only diagnostic archive example must not satisfy paper-comparable contract")
 
 
 def validate_locomo_latency_gate() -> None:

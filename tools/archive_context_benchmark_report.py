@@ -30,10 +30,19 @@ def main() -> int:
             dataset_hash = sha256_file(input_path)
         if not input_bytes:
             input_bytes = input_path.stat().st_size
+    thresholds = report.get("benchmark_thresholds") if isinstance(report.get("benchmark_thresholds"), dict) else {}
+    case_count = int(report.get("case_count") or 0)
+    min_case_count = int(thresholds.get("min_case_count") or 0)
     strict_paper_ready = (
         bool(report.get("benchmark_threshold_passed"))
         and not bool(report.get("gold_evidence_window_used"))
+        and bool(dataset_hash)
+        and input_bytes > 0
+        and case_count >= min_case_count
+        and min_case_count > 4
+        and bool(thresholds.get("require_open_source_reader"))
         and bool(report.get("all_pipelines_use_rust_temporalstore"))
+        and not bool(report.get("python_only_diagnostic"))
         and bool(report.get("rust_temporalstore_backend_ready"))
         and bool(report.get("rust_temporalstore_full_replay_ready"))
         and int(report.get("reader_open_source_calls") or 0) > 0
@@ -105,7 +114,7 @@ def main() -> int:
             "user_template": report.get("reader_prompt_user_template") or "",
             "max_context_chars": report.get("reader_max_context_chars"),
         },
-        "thresholds": report.get("benchmark_thresholds") or {},
+        "thresholds": thresholds,
         "metrics": {
             "hit_at_k": float(report.get("benchmark_hit_at_k") or report.get("hit_rate") or 0.0),
             "recall_at_k": float(report.get("benchmark_recall_at_k") or report.get("hit_rate") or 0.0),

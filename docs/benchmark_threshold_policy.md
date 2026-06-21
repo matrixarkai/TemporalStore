@@ -18,6 +18,9 @@ Benchmark result docs must stay strict:
 - Production parity, production-ready, or paper-comparable benchmark claims require all evidence in
   the same result doc: real dataset artifact, live OSS reader calls, full Rust TemporalStore replay,
   all-pipeline Rust evidence, and passing threshold output with zero threshold violations.
+- The archive gate must also show `reader_mode_effective=open-source`,
+  `require_open_source_reader=true`, `python_only_diagnostic=false`, and a non-fixture full-dataset
+  case threshold.
 - Paper-comparable archives must include dataset hash, model/provider, reader mode, prompt,
   thresholds, p50/p95 latencies, token reduction, and category breakdown.
 - Missing artifacts, skipped datasets, Docker/model pull failures, fallback readers, and fixture
