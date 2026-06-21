@@ -46,6 +46,7 @@ def main() -> int:
     validate_category_one_synthesis_rules()
     validate_longmemeval_multi_session_rules()
     validate_generic_aggregation_and_absence_rules()
+    validate_cross_session_evidence_diversity()
     failures: list[str] = []
     for path in benchmark_docs():
         text = path.read_text(encoding="utf-8", errors="ignore")
@@ -256,6 +257,26 @@ def validate_generic_aggregation_and_absence_rules() -> None:
     )
     if "not enough information" not in missing.lower():
         raise SystemExit(f"insufficient-info detection failed: got {missing!r}")
+
+
+def validate_cross_session_evidence_diversity() -> None:
+    runner = load_locomo_runner()
+    sources = [
+        {"title": "case session_1 turn 1", "body": "2025-01-01. User: I read 120 pages in the mystery novel."},
+        {"title": "case session_1 turn 2", "body": "2025-01-01. User: I bought tea and mentioned the mystery novel again."},
+        {"title": "case session_2 turn 1", "body": "2025-01-08. User: I read 80 pages in the same mystery novel."},
+        {"title": "case session_3 turn 1", "body": "2025-01-15. User: I read 40 pages in the same mystery novel."},
+    ]
+    ranked = runner.rank_sources("How many total pages did I read in the mystery novel?", sources, 3)
+    groups = {runner.source_group_identity(source) for source in ranked}
+    if len(ranked) > 3:
+        raise SystemExit(f"cross-session diversity exceeded max_events: got {len(ranked)}")
+    if len(groups) < 3:
+        raise SystemExit(f"cross-session diversity failed: expected 3 groups, got {sorted(groups)!r}")
+    tokens = sum(runner.estimated_tokens(source["body"]) for source in ranked)
+    source_tokens = sum(runner.estimated_tokens(source["body"]) for source in sources)
+    if runner.token_reduction_percent(source_tokens, tokens) <= 0.0:
+        raise SystemExit("cross-session diversity should still compact retrieved tokens")
 
 
 def load_locomo_runner():

@@ -252,6 +252,8 @@ def main() -> int:
     total_retrieved_tokens = 0
     max_retrieved_tokens = 0
     total_retrieved_blocks = 0
+    total_retrieved_source_groups = 0
+    multi_source_group_queries = 0
     conversations_loaded = 0
     source_count = 0
     dataset_counts: defaultdict[str, int] = defaultdict(int)
@@ -300,6 +302,7 @@ def main() -> int:
                 qa.get("category") or qa.get("question_type") or qa.get("reasoning_type") or qa.get("ability")
             )
             retrieved_tokens = sum(estimated_tokens(block.get("body", "")) for block in blocks)
+            retrieved_source_groups = distinct_source_group_count(blocks)
             query_id = f"{conversation_id}-q{question_index + 1}"
 
             total += 1
@@ -307,6 +310,9 @@ def main() -> int:
             total_retrieved_tokens += retrieved_tokens
             max_retrieved_tokens = max(max_retrieved_tokens, retrieved_tokens)
             total_retrieved_blocks += len(blocks)
+            total_retrieved_source_groups += retrieved_source_groups
+            if retrieved_source_groups >= 2:
+                multi_source_group_queries += 1
             retrieval_latencies_ms.append(retrieval_ms)
             reader_latencies_ms.append(reader_ms)
             total_answer_terms += len(answers)
@@ -366,6 +372,8 @@ def main() -> int:
                     "retrieved_source_ids": [
                         str(block.get("id") or block.get("title") or "") for block in blocks[: args.max_events]
                     ],
+                    "retrieved_source_groups": retrieved_source_groups,
+                    "retrieved_source_group_ids": [source_group_identity(block) for block in blocks[: args.max_events]],
                     "source_tokens": source_tokens,
                     "retrieved_tokens": retrieved_tokens,
                     "token_reduction_percent": token_reduction_percent(source_tokens, retrieved_tokens),
@@ -508,6 +516,8 @@ def main() -> int:
         "benchmark_reader_p50_ms": percentile(reader_latencies_ms, 50),
         "benchmark_reader_p95_ms": percentile(reader_latencies_ms, 95),
         "benchmark_avg_retrieved_blocks_per_query": total_retrieved_blocks / total if total else 0.0,
+        "benchmark_avg_retrieved_source_groups_per_query": total_retrieved_source_groups / total if total else 0.0,
+        "benchmark_multi_source_group_query_rate": multi_source_group_queries / total if total else 0.0,
         "benchmark_avg_source_tokens_per_query": total_source_tokens / total if total else 0.0,
         "benchmark_avg_retrieved_tokens_per_query": total_retrieved_tokens / total if total else 0.0,
         "benchmark_max_retrieved_tokens_per_query": max_retrieved_tokens,
@@ -1030,10 +1040,114 @@ def rank_sources(question: str, sources: list[dict[str, str]], max_events: int) 
         body = source.get("body", "")
         ranked.append((direct_relevance_score(question, body), -index, source))
     ranked.sort(key=lambda row: (row[0], row[1]), reverse=True)
-    selected = [source for _, _, source in ranked[: max(1, max_events)]]
+    if should_use_cross_session_diversity(question):
+        selected = diverse_ranked_sources(question, ranked, max_events)
+    else:
+        selected = [source for _, _, source in ranked[: max(1, max_events)]]
     selected = add_temporal_reference_sources(question, selected, sources, max_events)
     selected = add_domain_reference_sources(question, selected, sources, max_events)
+    selected = refill_cross_session_sources(question, selected, ranked, max_events)
     return [compact_retrieval_source(question, source) for source in selected]
+
+
+def should_use_cross_session_diversity(question: str) -> bool:
+    q = normalize_text(question)
+    return bool(
+        re.search(
+            r"\b(across|over time|all sessions?|multi[- ]?session|total|combined|in all|altogether|average|mean|minimum|min|maximum|max|difference|compared|how many total|how much total|list|which|what named|updates?)\b",
+            q,
+        )
+    )
+
+
+def diverse_ranked_sources(
+    question: str,
+    ranked: list[tuple[int, int, dict[str, str]]],
+    max_events: int,
+) -> list[dict[str, str]]:
+    limit = max(1, max_events)
+    primary = [source for score, _index, source in ranked if score > 0][:limit]
+    if len(primary) >= limit and distinct_source_group_count(primary) >= min(3, limit):
+        return primary
+    selected = list(primary)
+    selected_keys = {source_identity(source) for source in selected}
+    selected_groups = {source_group_identity(source) for source in selected}
+    for score, _index, source in ranked:
+        if len(selected) >= limit:
+            break
+        if score <= 0:
+            continue
+        key = source_identity(source)
+        group = source_group_identity(source)
+        if key in selected_keys or group in selected_groups:
+            continue
+        selected.append(source)
+        selected_keys.add(key)
+        selected_groups.add(group)
+    if len(selected) < limit:
+        for score, _index, source in ranked:
+            if len(selected) >= limit:
+                break
+            if score <= 0:
+                continue
+            key = source_identity(source)
+            if key in selected_keys:
+                continue
+            selected.append(source)
+            selected_keys.add(key)
+    return selected[:limit]
+
+
+def refill_cross_session_sources(
+    question: str,
+    selected: list[dict[str, str]],
+    ranked: list[tuple[int, int, dict[str, str]]],
+    max_events: int,
+) -> list[dict[str, str]]:
+    if not should_use_cross_session_diversity(question):
+        return selected[: max(1, max_events)]
+    limit = max(1, max_events)
+    out = list(selected[:limit])
+    if distinct_source_group_count(out) >= min(3, limit):
+        return out
+    selected_keys = {source_identity(source) for source in out}
+    selected_groups = [source_group_identity(source) for source in out]
+    for score, _index, source in ranked:
+        if score <= 0:
+            continue
+        key = source_identity(source)
+        group = source_group_identity(source)
+        if key in selected_keys or group in selected_groups:
+            continue
+        replace_at = duplicate_group_replacement_index(out)
+        if replace_at is None:
+            if len(out) < limit:
+                out.append(source)
+            else:
+                break
+        else:
+            out[replace_at] = source
+        selected_keys.add(key)
+        selected_groups = [source_group_identity(item) for item in out]
+        if distinct_source_group_count(out) >= min(3, limit):
+            break
+    return out[:limit]
+
+
+def duplicate_group_replacement_index(selected: list[dict[str, str]]) -> int | None:
+    counts: dict[str, int] = {}
+    for source in selected:
+        group = source_group_identity(source)
+        counts[group] = counts.get(group, 0) + 1
+    for index in range(len(selected) - 1, -1, -1):
+        group = source_group_identity(selected[index])
+        if counts.get(group, 0) > 1:
+            return index
+    return None
+
+
+def distinct_source_group_count(sources: list[dict[str, str]]) -> int:
+    return len({source_group_identity(source) for source in sources})
 
 
 def add_temporal_reference_sources(
@@ -1317,6 +1431,22 @@ def add_domain_reference_sources(
 
 def source_identity(source: dict[str, str]) -> str:
     return f"{source.get('title', '')}\n{source.get('body', '')[:240]}"
+
+
+def source_group_identity(source: dict[str, str]) -> str:
+    title = str(source.get("title") or "")
+    body = str(source.get("body") or "")
+    text = f"{title} {body}"
+    match = re.search(r"\b((?:session|week)[_-]?\d+)\b", text, re.I)
+    if match:
+        return match.group(1).lower().replace("-", "_")
+    prefix = re.match(r"^\s*([^\s]+)\s+([^\s]+)", title)
+    if prefix and re.search(r"\d", prefix.group(2)):
+        return f"{prefix.group(1).lower()}:{prefix.group(2).lower()}"
+    date = source_date(source)
+    if date:
+        return date.date().isoformat()
+    return normalize_text(title.split(" turn ", 1)[0].split(" summary ", 1)[0]) or source_identity(source)
 
 
 def source_date(source: dict[str, str]) -> datetime | None:
