@@ -9,10 +9,14 @@
 
 #pragma once
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <map>
+#include <numeric>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -113,6 +117,225 @@ struct ContextBenchmarkReport {
   nlohmann::json weak_category_policy = nlohmann::json::object();
   std::vector<ContextBenchmarkPerQueryRow> benchmark_per_query;
 };
+
+inline double SafeRate(double numerator, double denominator) {
+  return denominator > 0.0 ? numerator / denominator : 0.0;
+}
+
+inline double Percentile(std::vector<double> values, double pct) {
+  if (values.empty()) {
+    return 0.0;
+  }
+  std::sort(values.begin(), values.end());
+  if (values.size() == 1) {
+    return values.front();
+  }
+  const double rank = (static_cast<double>(values.size() - 1) * pct) / 100.0;
+  const auto lower = static_cast<std::size_t>(rank);
+  const auto upper = static_cast<std::size_t>(std::ceil(rank));
+  if (lower == upper) {
+    return values[lower];
+  }
+  return values[lower] + (values[upper] - values[lower]) * (rank - static_cast<double>(lower));
+}
+
+inline nlohmann::json CategoryStatsToJson(
+    int64_t case_count,
+    int64_t hits,
+    double reciprocal_rank_sum,
+    int64_t answer_terms,
+    int64_t matched_answer_terms,
+    int64_t retrieval_answer_terms,
+    int64_t source_refs,
+    int64_t matched_source_refs,
+    int64_t reader_hits,
+    int64_t reader_answer_terms,
+    int64_t zero_hit_queries) {
+  return nlohmann::json{
+      {"case_count", case_count},
+      {"hit_rate", SafeRate(static_cast<double>(hits), static_cast<double>(case_count))},
+      {"mean_reciprocal_rank", SafeRate(reciprocal_rank_sum, static_cast<double>(case_count))},
+      {"answer_term_coverage", SafeRate(static_cast<double>(matched_answer_terms), static_cast<double>(answer_terms))},
+      {"retrieval_answer_term_coverage", SafeRate(static_cast<double>(retrieval_answer_terms), static_cast<double>(answer_terms))},
+      {"evidence_ref_coverage", SafeRate(static_cast<double>(matched_source_refs), static_cast<double>(source_refs))},
+      {"reader_hit_rate", SafeRate(static_cast<double>(reader_hits), static_cast<double>(case_count))},
+      {"reader_answer_coverage", SafeRate(static_cast<double>(reader_answer_terms), static_cast<double>(answer_terms))},
+      {"zero_hit_queries", zero_hit_queries},
+  };
+}
+
+inline void FinalizeReport(ContextBenchmarkReport* report) {
+  if (report == nullptr) {
+    throw std::invalid_argument("report must not be null");
+  }
+  const int64_t row_count = static_cast<int64_t>(report->benchmark_per_query.size());
+  report->benchmark_per_query_count = row_count;
+  if (report->case_count == 0) {
+    report->case_count = row_count;
+  }
+  report->zero_hit_queries = 0;
+  report->reader_zero_hit_queries = 0;
+
+  int64_t hits = 0;
+  int64_t reader_hits = 0;
+  int64_t answer_terms = 0;
+  int64_t matched_answer_terms = 0;
+  int64_t retrieval_answer_terms = 0;
+  int64_t source_refs = 0;
+  int64_t matched_source_refs = 0;
+  int64_t source_tokens = 0;
+  int64_t retrieved_tokens = 0;
+  int64_t retrieved_blocks = 0;
+  int64_t retrieved_source_groups = 0;
+  int64_t multi_source_group_queries = 0;
+  double reciprocal_rank_sum = 0.0;
+  std::vector<double> retrieval_latencies;
+  std::vector<double> reader_latencies;
+  std::map<std::string, std::vector<const ContextBenchmarkPerQueryRow*>> by_category;
+  std::unordered_set<std::string> query_ids;
+
+  for (const auto& row : report->benchmark_per_query) {
+    if (row.query_id.empty()) {
+      throw std::invalid_argument("benchmark_per_query row has empty query_id");
+    }
+    if (!query_ids.insert(row.query_id).second) {
+      throw std::invalid_argument("duplicate benchmark query_id: " + row.query_id);
+    }
+    by_category[row.category.empty() ? "unknown" : row.category].push_back(&row);
+    if (row.hit) {
+      ++hits;
+    } else {
+      ++report->zero_hit_queries;
+    }
+    if (row.reader_hit) {
+      ++reader_hits;
+    } else {
+      ++report->reader_zero_hit_queries;
+    }
+    if (row.rank > 0) {
+      reciprocal_rank_sum += 1.0 / static_cast<double>(row.rank);
+    }
+    answer_terms += row.answer_terms;
+    matched_answer_terms += row.matched_answer_terms;
+    retrieval_answer_terms += row.matched_retrieval_answer_terms;
+    source_refs += row.expected_source_refs;
+    matched_source_refs += row.matched_source_refs;
+    source_tokens += row.source_tokens;
+    retrieved_tokens += row.retrieved_tokens;
+    retrieved_blocks += row.retrieved_blocks;
+    retrieved_source_groups += row.retrieved_source_groups;
+    if (row.retrieved_source_groups > 1) {
+      ++multi_source_group_queries;
+    }
+    retrieval_latencies.push_back(row.retrieval_ms);
+    reader_latencies.push_back(row.reader_ms);
+  }
+
+  report->hit_rate = SafeRate(static_cast<double>(hits), static_cast<double>(report->case_count));
+  report->benchmark_hit_at_k = report->hit_rate;
+  if (report->benchmark_recall_at_k == 0.0) {
+    report->benchmark_recall_at_k = report->hit_rate;
+  }
+  report->mean_reciprocal_rank = SafeRate(reciprocal_rank_sum, static_cast<double>(report->case_count));
+  report->benchmark_mean_reciprocal_rank = report->mean_reciprocal_rank;
+  report->answer_term_coverage = SafeRate(static_cast<double>(matched_answer_terms), static_cast<double>(answer_terms));
+  report->evidence_ref_coverage = SafeRate(static_cast<double>(matched_source_refs), static_cast<double>(source_refs));
+  report->reader_hit_rate = SafeRate(static_cast<double>(reader_hits), static_cast<double>(report->case_count));
+  report->reader_answer_coverage = SafeRate(static_cast<double>(matched_answer_terms), static_cast<double>(answer_terms));
+  report->benchmark_token_reduction_percent =
+      100.0 * (1.0 - SafeRate(static_cast<double>(retrieved_tokens), static_cast<double>(source_tokens)));
+  report->benchmark_retrieval_p50_ms = Percentile(retrieval_latencies, 50.0);
+  report->benchmark_retrieval_p95_ms = Percentile(retrieval_latencies, 95.0);
+  report->benchmark_reader_p50_ms = Percentile(reader_latencies, 50.0);
+  report->benchmark_reader_p95_ms = Percentile(reader_latencies, 95.0);
+  report->benchmark_avg_retrieved_blocks_per_query =
+      SafeRate(static_cast<double>(retrieved_blocks), static_cast<double>(report->case_count));
+  report->benchmark_avg_retrieved_source_groups_per_query =
+      SafeRate(static_cast<double>(retrieved_source_groups), static_cast<double>(report->case_count));
+  report->benchmark_multi_source_group_query_rate =
+      SafeRate(static_cast<double>(multi_source_group_queries), static_cast<double>(report->case_count));
+  report->benchmark_avg_source_tokens_per_query =
+      SafeRate(static_cast<double>(source_tokens), static_cast<double>(report->case_count));
+  report->benchmark_avg_retrieved_tokens_per_query =
+      SafeRate(static_cast<double>(retrieved_tokens), static_cast<double>(report->case_count));
+  for (const auto& row : report->benchmark_per_query) {
+    report->benchmark_max_retrieved_tokens_per_query =
+        std::max(report->benchmark_max_retrieved_tokens_per_query, static_cast<double>(row.retrieved_tokens));
+  }
+
+  nlohmann::json categories = nlohmann::json::object();
+  for (const auto& [category, rows] : by_category) {
+    int64_t category_hits = 0;
+    int64_t category_reader_hits = 0;
+    int64_t category_answer_terms = 0;
+    int64_t category_matched_answer_terms = 0;
+    int64_t category_retrieval_answer_terms = 0;
+    int64_t category_source_refs = 0;
+    int64_t category_matched_source_refs = 0;
+    int64_t category_zero_hit_queries = 0;
+    double category_reciprocal_rank_sum = 0.0;
+    for (const auto* row : rows) {
+      if (row->hit) {
+        ++category_hits;
+      } else {
+        ++category_zero_hit_queries;
+      }
+      if (row->reader_hit) {
+        ++category_reader_hits;
+      }
+      if (row->rank > 0) {
+        category_reciprocal_rank_sum += 1.0 / static_cast<double>(row->rank);
+      }
+      category_answer_terms += row->answer_terms;
+      category_matched_answer_terms += row->matched_answer_terms;
+      category_retrieval_answer_terms += row->matched_retrieval_answer_terms;
+      category_source_refs += row->expected_source_refs;
+      category_matched_source_refs += row->matched_source_refs;
+    }
+    categories[category] = CategoryStatsToJson(
+        static_cast<int64_t>(rows.size()),
+        category_hits,
+        category_reciprocal_rank_sum,
+        category_answer_terms,
+        category_matched_answer_terms,
+        category_retrieval_answer_terms,
+        category_source_refs,
+        category_matched_source_refs,
+        category_reader_hits,
+        category_matched_answer_terms,
+        category_zero_hit_queries);
+  }
+  report->category_breakdown = categories;
+
+  std::vector<std::string> violations;
+  if (report->case_count < report->benchmark_thresholds.min_case_count) {
+    violations.push_back("case_count below min_case_count");
+  }
+  if (report->benchmark_hit_at_k < report->benchmark_thresholds.min_hit_at_k) {
+    violations.push_back("benchmark_hit_at_k below min_hit_at_k");
+  }
+  if (report->reader_hit_rate < report->benchmark_thresholds.min_reader_hit_rate) {
+    violations.push_back("reader_hit_rate below min_reader_hit_rate");
+  }
+  if (report->benchmark_token_reduction_percent < report->benchmark_thresholds.min_token_reduction_percent) {
+    violations.push_back("benchmark_token_reduction_percent below min_token_reduction_percent");
+  }
+  if (report->benchmark_thresholds.max_retrieval_p95_ms > 0.0 &&
+      report->benchmark_retrieval_p95_ms > report->benchmark_thresholds.max_retrieval_p95_ms) {
+    violations.push_back("benchmark_retrieval_p95_ms above max_retrieval_p95_ms");
+  }
+  if (report->benchmark_thresholds.max_reader_p95_ms > 0.0 &&
+      report->benchmark_reader_p95_ms > report->benchmark_thresholds.max_reader_p95_ms) {
+    violations.push_back("benchmark_reader_p95_ms above max_reader_p95_ms");
+  }
+  if (report->benchmark_thresholds.require_open_source_reader && report->reader_open_source_calls <= 0) {
+    violations.push_back("reader_open_source_calls required");
+  }
+  report->benchmark_threshold_violations = violations;
+  report->benchmark_threshold_violation_count = static_cast<int64_t>(violations.size());
+  report->benchmark_threshold_passed = violations.empty();
+  report->benchmark_quality_ready = report->benchmark_threshold_passed && report->case_count > 0;
+}
 
 inline nlohmann::json ToJson(const ContextBenchmarkThresholds& thresholds) {
   return nlohmann::json{
@@ -293,6 +516,13 @@ inline void ValidateReportContract(const nlohmann::json& report) {
       }
     }
   }
+}
+
+inline nlohmann::json FinalizedJson(ContextBenchmarkReport report) {
+  FinalizeReport(&report);
+  auto json = ToJson(report);
+  ValidateReportContract(json);
+  return json;
 }
 
 }  // namespace temporalstore::compat

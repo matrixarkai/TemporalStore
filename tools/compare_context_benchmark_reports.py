@@ -102,6 +102,7 @@ def main() -> int:
         "cpp_case_count": cpp.get("case_count"),
         "rust_per_query_count": len(rust.get("benchmark_per_query") or []),
         "cpp_per_query_count": len(cpp.get("benchmark_per_query") or []),
+        "report_pair_summary": report_pair_summary(rust, cpp),
         "summary_compare": summary_compare,
         "category_compare": category_compare,
         "per_query_compare": per_query_compare,
@@ -114,6 +115,8 @@ def main() -> int:
         "reader_rust_only_miss_count": per_query_compare["reader_misses"]["rust_only_count"],
         "reader_cpp_only_miss_count": per_query_compare["reader_misses"]["cpp_only_count"],
         "reader_shared_hard_miss_count": per_query_compare["reader_misses"]["shared_hard_count"],
+        "misses_by_category": per_query_compare["misses_by_category"],
+        "field_mismatches_by_query": per_query_compare["field_mismatches_by_query"],
         "failure_count": len(failures),
         "failures": failures,
     }
@@ -199,7 +202,6 @@ def compare_summary(
         "reader_provider_name",
         "reader_model",
         "paper_comparable_claim_ready",
-        "rust_temporalstore_full_replay_ready",
     ):
         compare_equal(field, rust.get(field), cpp.get(field), failures)
     for field in NUMERIC_SUMMARY_FIELDS:
@@ -317,6 +319,8 @@ def compare_per_query(
         "token_reduction_deltas": {},
         "retrieval_misses": empty_miss_partition(),
         "reader_misses": empty_miss_partition(),
+        "misses_by_category": {},
+        "field_mismatches_by_query": {},
     }
     if not rust_rows or not cpp_rows:
         return result
@@ -332,6 +336,10 @@ def compare_per_query(
     result["common_query_count"] = len(common_query_ids)
     result["retrieval_misses"] = classify_misses(common_query_ids, rust_rows, cpp_rows, field="hit")
     result["reader_misses"] = classify_misses(common_query_ids, rust_rows, cpp_rows, field="reader_hit")
+    result["misses_by_category"] = {
+        "retrieval": misses_by_category(result["retrieval_misses"]),
+        "reader": misses_by_category(result["reader_misses"]),
+    }
     retrieval_latency_deltas = []
     reader_latency_deltas = []
     token_reduction_deltas = []
@@ -367,6 +375,7 @@ def compare_per_query(
         reader_latency_deltas.append(abs_numeric_delta(rust_row.get("reader_ms"), cpp_row.get("reader_ms")))
         token_reduction_deltas.append(abs_numeric_delta(rust_row.get("token_reduction_percent"), cpp_row.get("token_reduction_percent")))
     result["field_mismatch_count"] = len(result["field_mismatches"])
+    result["field_mismatches_by_query"] = field_mismatches_by_query(result["field_mismatches"])
     result["selected_source_delta_count"] = len(result["selected_source_deltas"])
     result["selected_source_deltas"] = result["selected_source_deltas"][:50]
     result["latency_deltas"] = {
@@ -381,6 +390,47 @@ def compare_per_query(
         "max": max((value for value in token_reduction_deltas if value is not None), default=None),
     }
     return result
+
+
+def report_pair_summary(rust: dict[str, Any], cpp: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "dataset": {"rust": rust.get("dataset"), "cpp": cpp.get("dataset")},
+        "reader_model": {"rust": rust.get("reader_model"), "cpp": cpp.get("reader_model")},
+        "reader_mode_effective": {
+            "rust": rust.get("reader_mode_effective"),
+            "cpp": cpp.get("reader_mode_effective"),
+        },
+        "hit_at_k": {"rust": rust.get("benchmark_hit_at_k"), "cpp": cpp.get("benchmark_hit_at_k")},
+        "reader_hit_rate": {"rust": rust.get("reader_hit_rate"), "cpp": cpp.get("reader_hit_rate")},
+        "token_reduction_percent": {
+            "rust": rust.get("benchmark_token_reduction_percent"),
+            "cpp": cpp.get("benchmark_token_reduction_percent"),
+        },
+        "rust_temporalstore_full_replay_ready": rust.get("rust_temporalstore_full_replay_ready"),
+        "cpp_rust_temporalstore_full_replay_ready_field": cpp.get("rust_temporalstore_full_replay_ready"),
+    }
+
+
+def misses_by_category(partition: dict[str, Any]) -> dict[str, dict[str, int]]:
+    out: dict[str, dict[str, int]] = {}
+    for bucket in ("rust_only", "cpp_only", "shared_hard"):
+        for row in partition.get(bucket, []):
+            category = str(row.get("category") or "unknown")
+            out.setdefault(category, {"rust_only": 0, "cpp_only": 0, "shared_hard": 0})
+            out[category][bucket] += 1
+    return out
+
+
+def field_mismatches_by_query(mismatches: list[dict[str, Any]]) -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {}
+    for mismatch in mismatches:
+        field = str(mismatch.get("field") or "")
+        if not field.startswith("query["):
+            continue
+        query_id = field.split("]", 1)[0][len("query[") :]
+        leaf = field.split("].", 1)[1] if "]." in field else field
+        out.setdefault(query_id, []).append(leaf)
+    return dict(sorted(out.items()))
 
 
 def empty_miss_partition() -> dict[str, Any]:

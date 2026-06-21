@@ -48,6 +48,23 @@ def main() -> int:
         ),
     )
     require_snippets(
+        ROOT / "tools" / "compare_context_benchmark_reports.py",
+        (
+            "report_pair_summary",
+            "misses_by_category",
+            "field_mismatches_by_query",
+            "reader_shared_hard_miss_count",
+        ),
+    )
+    require_snippets(
+        ROOT / "tools" / "validate_context_benchmark_comparator.py",
+        (
+            "context benchmark comparator self-test passed",
+            "cpp_only_miss_count",
+            "field_mismatches_by_query",
+        ),
+    )
+    require_snippets(
         ROOT / "tools" / "archive_context_benchmark_report.py",
         (
             "matrixark_vikingmem_context_benchmark_report_v1",
@@ -62,6 +79,8 @@ def main() -> int:
         ROOT / "compat" / "cpp_context_benchmark_report_adapter.h",
         (
             "matrixark_vikingmem_context_benchmark_report_v1",
+            "FinalizeReport",
+            "FinalizedJson",
             "input_sha256",
             "retrieved_source_group_ids",
             "benchmark_avg_retrieved_source_groups_per_query",

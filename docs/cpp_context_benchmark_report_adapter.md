@@ -26,8 +26,16 @@ The header is a single-file C++17 adapter template using `nlohmann::json`. It de
 - `ContextBenchmarkThresholds`
 - `ContextBenchmarkPerQueryRow`
 - `ContextBenchmarkReport`
+- `FinalizeReport(...)`
+- `FinalizedJson(...)`
 - `ToJson(...)`
 - `ValidateReportContract(...)`
+
+`FinalizeReport(...)` lets the C++ runner populate native per-query rows first and then derive the
+shared summary fields: case count, Hit@K, recall, MRR, reader hit rate, token reduction, p50/p95
+latencies, source-group density, category breakdown, threshold violations, and duplicate query-id
+validation. `FinalizedJson(...)` performs that derivation and immediately validates the
+`matrixark_vikingmem_context_benchmark_report_v1` contract before the report is written.
 
 ## Required C++ Mapping
 
@@ -161,6 +169,18 @@ The same taxonomy is emitted for `reader_hit` as `reader_rust_only`,
 `reader_cpp_only`, and `reader_shared_hard`. Shared-hard misses are tracked as benchmark
 quality gaps, while Rust-only and C++-only misses are parity deltas because the two systems
 disagree on the same query.
+
+The comparator result also includes:
+
+- `report_pair_summary`: side-by-side model, mode, Hit@K, reader-hit, and token-reduction fields.
+- `misses_by_category`: retrieval and reader miss partitions grouped by reasoning category.
+- `field_mismatches_by_query`: compact query-id to field-name map for exact per-query drift.
+
+Run the self-test for the contract and taxonomy with:
+
+```bash
+python3 tools/validate_context_benchmark_comparator.py
+```
 
 The archive comparator checks:
 
