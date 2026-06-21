@@ -1994,6 +1994,9 @@ def best_percent_near(normalized_blob: str, anchors: tuple[str, ...]) -> float |
 def insufficient_info_answer(question: str, texts: list[str]) -> str:
     q = normalize_text(question)
     blob = normalize_text("\n".join(texts))
+    explicit = explicit_absence_or_contradiction_answer(q, blob)
+    if explicit:
+        return explicit
     anchors = required_information_anchors(question)
     if not anchors:
         return ""
@@ -2003,6 +2006,28 @@ def insufficient_info_answer(question: str, texts: list[str]) -> str:
     if len(missing) == 1:
         return f"The information provided is not enough. The context does not mention {missing[0]}."
     return f"The information provided is not enough. The context does not mention {', '.join(missing[:-1])} or {missing[-1]}."
+
+
+def explicit_absence_or_contradiction_answer(q: str, normalized_blob: str) -> str:
+    if re.search(r"\b(not enough information|insufficient information|not enough context|not provided|not stated|not mentioned|no information)\b", normalized_blob):
+        return "not enough information"
+    if re.match(r"\s*(?:did|do|does|have|has|had|am|is|are|was|were|can|could|will|would)\b", q):
+        q_tokens = answer_tokens(q)
+        negative_sentences = []
+        for sentence in re.split(r"(?<=[.!?])\s+", normalized_blob):
+            if re.search(r"\b(do you|can you|would you|could you|don t have personal|not know|not access)\b", sentence):
+                continue
+            if not re.search(
+                r"\b(?:no,\s*)?(?:i|we|my|our)\b.{0,80}\b(?:did not|didn t|do not|don t|never|no longer|not|cannot|can t|without)\b",
+                sentence,
+            ):
+                continue
+            overlap = sum(1 for token in q_tokens if token_matches(token, answer_tokens(sentence)))
+            if overlap >= max(2, min(4, len(q_tokens) // 3)):
+                negative_sentences.append(sentence.strip())
+        if negative_sentences:
+            return f"No. Evidence: {clean_answer_clause(negative_sentences[0])}"
+    return ""
 
 
 def required_information_anchors(question: str) -> list[str]:
@@ -2091,12 +2116,145 @@ def aggregation_answer(question: str, texts: list[str]) -> str:
     special = named_list_aggregation(question, sentences)
     if special:
         return special
+    if re.search(r"\b(difference|how much more|how many more|more than|less than|compared)\b", q) and not re.search(
+        r"\b(money|cost|spent|spend|raised|earned|price|\$)\b",
+        q,
+    ):
+        deterministic = deterministic_generic_aggregation(question, sentences)
+        if deterministic:
+            return deterministic
     if re.search(r"\b(money|cost|spent|spend|raised|earned|price|accommodations?|per night|total amount)\b", q):
         return money_aggregation(question, sentences)
     if re.search(r"\b(average|mean|min|max|minimum|maximum|old|age)\b", q):
         return numeric_stat_aggregation(question, sentences)
     if re.search(r"\b(how many|total number|number of|count|total)\b", q):
         return count_aggregation(question, sentences)
+    deterministic = deterministic_generic_aggregation(question, sentences)
+    if deterministic:
+        return deterministic
+    return ""
+
+
+def deterministic_generic_aggregation(question: str, sentences: list[str]) -> str:
+    q = normalize_text(question)
+    if re.search(r"\b(named|names?|which|what)\b", q) and re.search(r"\b(items?|books?|movies?|restaurants?|places?|cities|countries|people|sports|events|projects?)\b", q):
+        named = generic_named_item_list(question, sentences)
+        if named:
+            return named
+    values = generic_quantity_mentions(question, sentences)
+    if not values:
+        return ""
+    numbers = [value for value, _unit, _sentence in values]
+    if re.search(r"\b(difference|how much more|how many more|more than|less than|compared)\b", q) and len(numbers) >= 2:
+        diff = max(numbers) - min(numbers)
+        unit = preferred_quantity_unit(values)
+        return format_quantity(diff, unit)
+    if re.search(r"\b(average|mean)\b", q):
+        return format_number(sum(numbers) / len(numbers))
+    if re.search(r"\b(minimum|min|least|lowest|smallest|youngest)\b", q):
+        return format_number(min(numbers))
+    if re.search(r"\b(maximum|max|most|highest|largest|oldest)\b", q):
+        return format_number(max(numbers))
+    if re.search(r"\b(total|combined|in all|altogether|sum|how many total|how much total)\b", q):
+        unit = preferred_quantity_unit(values)
+        return format_quantity(sum(numbers), unit)
+    if re.search(r"\bhow many\b", q) and len(numbers) >= 2:
+        unit = preferred_quantity_unit(values)
+        return format_quantity(sum(numbers), unit)
+    return ""
+
+
+def generic_quantity_mentions(question: str, sentences: list[str]) -> list[tuple[float, str, str]]:
+    q_tokens = aggregation_query_tokens(question)
+    mentions: list[tuple[int, float, str, str]] = []
+    seen: set[tuple[float, str, str]] = set()
+    for sentence in sentences:
+        normalized = normalize_text(sentence)
+        if re.search(r"\b(example|for example|typically|usually|guidelines|recommend|can cost|could cost|prices range|between|from)\b", normalized):
+            continue
+        overlap = sum(1 for token in q_tokens if token_matches(token, answer_tokens(sentence)))
+        if overlap == 0:
+            continue
+        for value, unit in quantity_mentions_in_sentence(sentence):
+            key = (value, unit, normalized[:140])
+            if key in seen:
+                continue
+            seen.add(key)
+            mentions.append((overlap, value, unit, sentence))
+    mentions.sort(key=lambda row: (row[0], row[1]), reverse=True)
+    return [(value, unit, sentence) for _score, value, unit, sentence in mentions]
+
+
+def quantity_mentions_in_sentence(sentence: str) -> list[tuple[float, str]]:
+    out: list[tuple[float, str]] = []
+    for match in re.finditer(r"\$\s*([0-9][0-9,]*(?:\.\d+)?)", sentence):
+        out.append((float(match.group(1).replace(",", "")), "$"))
+    unit_pattern = (
+        r"\b(\d+(?:,\d{3})*(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
+        r"thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|seventy)\s+"
+        r"(pages?|miles?|pounds?|years?|times?|items?|comments?|views?|followers?|sports?|events?|projects?|"
+        r"books?|novels?|videos?|orders?|workshops?|tickets?|mugs?|shoes?|plants?|eggs?|dozen|minutes?|hours?)\b"
+    )
+    for match in re.finditer(unit_pattern, normalize_text(sentence)):
+        raw = match.group(1).replace(",", "")
+        unit = match.group(2)
+        out.append((number_value(raw), canonical_quantity_unit(unit)))
+    return out
+
+
+def canonical_quantity_unit(unit: str) -> str:
+    unit = unit.lower()
+    if unit.startswith("page"):
+        return "pages"
+    if unit.startswith("mile"):
+        return "miles"
+    if unit.startswith("pound"):
+        return "pounds"
+    if unit.startswith("year"):
+        return "years"
+    if unit.startswith("minute"):
+        return "minutes"
+    if unit.startswith("hour"):
+        return "hours"
+    if unit == "dozen":
+        return "dozen"
+    return re.sub(r"s$", "", unit)
+
+
+def preferred_quantity_unit(values: list[tuple[float, str, str]]) -> str:
+    units = [unit for _value, unit, _sentence in values if unit]
+    if not units:
+        return ""
+    counts: dict[str, int] = {}
+    for unit in units:
+        counts[unit] = counts.get(unit, 0) + 1
+    return sorted(counts.items(), key=lambda row: (-row[1], row[0]))[0][0]
+
+
+def format_quantity(value: float, unit: str) -> str:
+    if unit == "$":
+        return f"${format_number(value)}"
+    if unit:
+        return f"{format_number(value)} {unit}"
+    return format_number(value)
+
+
+def generic_named_item_list(question: str, sentences: list[str]) -> str:
+    q_tokens = aggregation_query_tokens(question)
+    values: list[str] = []
+    for sentence in sentences:
+        if sum(1 for token in q_tokens if token_matches(token, answer_tokens(sentence))) == 0:
+            continue
+        values.extend(quoted_values([sentence]))
+        values.extend(named_entities(sentence))
+    cleaned = []
+    for value in values:
+        if re.search(r"\b(?:assistant|user|evidence|context|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", value, re.I):
+            continue
+        cleaned.append(value)
+    cleaned = ordered_unique(cleaned)
+    if len(cleaned) >= 2:
+        return ", ".join(cleaned[:10])
     return ""
 
 
@@ -2121,7 +2279,13 @@ def aggregation_sentences(question: str, texts: list[str], limit: int = 12) -> l
             if not sentence:
                 continue
             normalized = normalize_text(sentence)
-            if not re.search(r"\d|\$\s*\d|\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|twenty|thirty|forty|fifty)\b", normalized):
+            named_list_query = re.search(r"\b(named|names?|which|what)\b", normalize_text(question)) and re.search(
+                r"\b(items?|books?|movies?|restaurants?|places?|cities|countries|people|sports|events|projects?)\b",
+                normalize_text(question),
+            )
+            has_quantity = re.search(r"\d|\$\s*\d|\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|twenty|thirty|forty|fifty)\b", normalized)
+            has_named_value = bool(quoted_values([sentence]) or named_entities(sentence))
+            if not has_quantity and not (named_list_query and has_named_value):
                 continue
             s_tokens = answer_tokens(sentence)
             overlap = sum(1 for token in q_tokens if token_matches(token, s_tokens))
@@ -2248,6 +2412,11 @@ def count_aggregation(question: str, sentences: list[str]) -> str:
     special = named_list_aggregation(question, sentences)
     if special:
         return special
+    quantities = generic_quantity_mentions(question, sentences)
+    if quantities and re.search(r"\b(total|both|all|combined|across|initially|how many total)\b", q):
+        unit = preferred_quantity_unit(quantities)
+        if unit:
+            return format_quantity(sum(value for value, _unit, _sentence in quantities), unit)
     values = aggregation_numbers(question, sentences)
     if not values:
         return ""

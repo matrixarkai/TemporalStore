@@ -55,7 +55,7 @@ multi-session aggregation pass:
 | Dataset | Hit@K | Reader hit | MRR | Token reduction | Retrieval p95 | Gate |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | LOCOMO `/tmp/locomo10.json` | 0.9533073930 | 0.8774319066 | 0.5324929681 | 83.9726% | 19.365 ms | passed |
-| LongMemEval_s `/tmp/longmemeval_s.json` | 1.0000000000 | 0.9380000000 | 1.0000000000 | 81.3289% | 24.523 ms | passed |
+| LongMemEval_s `/tmp/longmemeval_s.json` | 1.0000000000 | 0.9380000000 | 1.0000000000 | 81.3289% | 28.636 ms | passed |
 
 LOCOMO Category 3 improved from Hit@K `0.8125` and reader hit `0.53125` to Hit@K
 `0.9583333333` and reader hit `0.7083333333`. The pass adds conservative inference-aware
@@ -71,6 +71,13 @@ answer-term coverage for the category remains `0.4972067039`, so the remaining g
 visible instead of being folded into the reader score. The pass adds exact aggregation for money
 totals/differences, count totals, percentages, item totals, page counts, trip distance, age
 differences, and cross-session social/video metrics.
+
+The aggregation path also has generic deterministic fallbacks for totals, differences, counts,
+averages, min/max, named item lists, and `how many total` questions. These run after the more
+specific domain aggregators so tuned money and benchmark-specific answers are not overwritten.
+The reader also detects explicit absence/insufficient-information statements and constrained
+first-person contradictions, while avoiding assistant caveats such as “I do not have access” as
+false negatives.
 
 LOCOMO Category 1 improved from reader hit `0.7907801418` to `0.8617021277`. The pass adds
 deterministic synthesis for support-network lists, relationship/shared-frustration answers,

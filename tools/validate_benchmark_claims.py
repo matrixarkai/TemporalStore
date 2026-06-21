@@ -45,6 +45,7 @@ def main() -> int:
     validate_temporal_reasoning_rules()
     validate_category_one_synthesis_rules()
     validate_longmemeval_multi_session_rules()
+    validate_generic_aggregation_and_absence_rules()
     failures: list[str] = []
     for path in benchmark_docs():
         text = path.read_text(encoding="utf-8", errors="ignore")
@@ -209,6 +210,52 @@ def validate_longmemeval_multi_session_rules() -> None:
         )
         if expected.lower() not in answer.lower():
             raise SystemExit(f"LongMemEval multi-session rule failed {label}: expected {expected!r}, got {answer!r}")
+
+
+def validate_generic_aggregation_and_absence_rules() -> None:
+    runner = load_locomo_runner()
+    aggregation_checks = [
+        (
+            "How many total pages did I read?",
+            ["I read 120 pages on Monday.", "I read 80 pages on Tuesday."],
+            "200 pages",
+            "generic total",
+        ),
+        (
+            "What was the difference between the largest and smallest orders?",
+            ["The largest orders had 15 items.", "The smallest orders had 9 items."],
+            "6 item",
+            "generic difference",
+        ),
+        (
+            "What was the average number of miles across my runs?",
+            ["I ran 4 miles on Tuesday.", "I ran 6 miles on Thursday."],
+            "5",
+            "generic average",
+        ),
+        (
+            "Which named projects did I mention?",
+            ['The project "Orion Search" is active.', 'The project "Delta Notes" is finished.'],
+            "Orion Search",
+            "named item list",
+        ),
+    ]
+    for question, texts, expected, label in aggregation_checks:
+        answer = runner.aggregation_answer(question, texts)
+        if expected.lower() not in answer.lower():
+            raise SystemExit(f"generic aggregation failed {label}: expected {expected!r}, got {answer!r}")
+    absence = runner.insufficient_info_answer(
+        "Did I buy the concert tickets?",
+        ["I did not buy the concert tickets because the show was sold out."],
+    )
+    if not absence.lower().startswith("no."):
+        raise SystemExit(f"contradiction detection failed: got {absence!r}")
+    missing = runner.insufficient_info_answer(
+        "How much did the iPad purchase cost?",
+        ["The context says not enough information was provided about the iPad purchase."],
+    )
+    if "not enough information" not in missing.lower():
+        raise SystemExit(f"insufficient-info detection failed: got {missing!r}")
 
 
 def load_locomo_runner():
