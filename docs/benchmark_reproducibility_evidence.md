@@ -79,6 +79,13 @@ Current validation rerun:
 | Live OSS-reader endpoint | blocked closed | `tools/run_context_benchmarks_oss_reader_endpoint.sh` exits `2` with `phase=missing_reader_base_url` when no endpoint is configured |
 | Release-mode full Rust replay fixture | passed | `tools/run_longmemeval_s_full_path.py --threshold-profile fixture --require-full-rust-temporalstore-replay --rust-temporalstore-release` reports `all_pipelines_use_rust_temporalstore=true` and `rust_temporalstore_full_replay_ready=true` |
 
+Dataset-scale full Rust replay rerun:
+
+| Dataset | Result | Evidence |
+| --- | --- | --- |
+| LOCOMO | blocked closed | `docs/benchmark_archives/locomo_full_rust_replay_failed_latest.json` records `rust_temporalstore_batch_timeout` at batch `1/10` with `rust_temporalstore_full_replay_ready=false` |
+| LongMemEval_s | passed | `docs/benchmark_archives/longmemeval_s_full_rust_replay_latest.json` records 500 cases, `all_pipelines_use_rust_temporalstore=true`, `rust_temporalstore_full_replay_ready=true`, `python_only_diagnostic=false`, Hit@K `1.0`, and reader hit `0.956` |
+
 Successful live-reader runs now archive `*_paper_comparable_report.json` beside the raw benchmark
 report. That compact archive uses `matrixark_vikingmem_paper_comparable_report_v1` and carries the
 dataset hash, model/provider, reader mode, prompt templates, thresholds, p50/p95 latency, token

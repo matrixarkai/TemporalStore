@@ -125,6 +125,7 @@ def main() -> int:
     if args.reader_no_fallback:
         command.append("--reader-no-fallback")
     if args.require_rust_temporalstore:
+        rust_report_path = args.rust_temporalstore_report or str(Path(args.report).with_suffix(".rust_temporalstore.json"))
         command.append("--require-rust-temporalstore")
         command.extend(["--rust-temporalstore-max-cases", str(args.rust_temporalstore_max_cases)])
         command.extend(["--rust-temporalstore-timeout-seconds", str(args.rust_temporalstore_timeout_seconds)])
@@ -137,8 +138,7 @@ def main() -> int:
             command.append("--require-full-rust-temporalstore-replay")
         if args.rust_temporalstore_jsonl:
             command.extend(["--rust-temporalstore-jsonl", args.rust_temporalstore_jsonl])
-        if args.rust_temporalstore_report:
-            command.extend(["--rust-temporalstore-report", args.rust_temporalstore_report])
+        command.extend(["--rust-temporalstore-report", rust_report_path])
     elif args.allow_python_only_diagnostic:
         command.extend(["--skip-rust-temporalstore", "--allow-python-only-diagnostic"])
     if thresholds["require_open_source_reader"]:
