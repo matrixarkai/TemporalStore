@@ -1246,11 +1246,13 @@ def paper_comparable_claim_ready(report: dict[str, Any], thresholds: dict[str, A
         return False
     if not report.get("benchmark_threshold_passed"):
         return False
+    if not report.get("all_pipelines_use_rust_temporalstore"):
+        return False
     if not report.get("rust_temporalstore_backend_ready"):
         return False
-    if report.get("rust_temporalstore_full_replay_required") and not report.get("rust_temporalstore_full_replay_ready"):
+    if not report.get("rust_temporalstore_full_replay_ready"):
         return False
-    if thresholds.get("require_open_source_reader") and int(report.get("reader_open_source_calls") or 0) <= 0:
+    if int(report.get("reader_open_source_calls") or 0) <= 0:
         return False
     return True
 

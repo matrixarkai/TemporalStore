@@ -52,6 +52,7 @@ def main() -> int:
     validate_generic_aggregation_and_absence_rules()
     validate_cross_session_evidence_diversity()
     validate_rust_full_replay_report_contract()
+    validate_archive_paper_comparable_claims()
     failures: list[str] = []
     for path in benchmark_docs():
         text = path.read_text(encoding="utf-8", errors="ignore")
@@ -73,6 +74,26 @@ def main() -> int:
         return 1
     print("benchmark claim validation passed")
     return 0
+
+
+def validate_archive_paper_comparable_claims() -> None:
+    for path in (DOCS / "benchmark_archives").glob("*.json"):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        quality = data.get("quality_gate") if isinstance(data.get("quality_gate"), dict) else data
+        ready = bool(quality.get("paper_comparable_claim_ready"))
+        if not ready:
+            continue
+        model = data.get("model") if isinstance(data.get("model"), dict) else {}
+        rust = data.get("rust_temporalstore_backend") if isinstance(data.get("rust_temporalstore_backend"), dict) else {}
+        missing = []
+        if int(model.get("reader_open_source_calls") or data.get("reader_open_source_calls") or 0) <= 0:
+            missing.append("reader_open_source_calls")
+        if not bool(rust.get("all_pipelines_use_rust_temporalstore") or data.get("all_pipelines_use_rust_temporalstore")):
+            missing.append("all_pipelines_use_rust_temporalstore")
+        if not bool(rust.get("full_replay_ready") or data.get("rust_temporalstore_full_replay_ready")):
+            missing.append("rust_temporalstore_full_replay_ready")
+        if missing:
+            raise SystemExit(f"{relative(path)} overclaims paper comparable readiness; missing {missing!r}")
 
 
 def validate_locomo_latency_gate() -> None:

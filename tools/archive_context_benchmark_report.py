@@ -30,6 +30,14 @@ def main() -> int:
             dataset_hash = sha256_file(input_path)
         if not input_bytes:
             input_bytes = input_path.stat().st_size
+    strict_paper_ready = (
+        bool(report.get("benchmark_threshold_passed"))
+        and not bool(report.get("gold_evidence_window_used"))
+        and bool(report.get("all_pipelines_use_rust_temporalstore"))
+        and bool(report.get("rust_temporalstore_backend_ready"))
+        and bool(report.get("rust_temporalstore_full_replay_ready"))
+        and int(report.get("reader_open_source_calls") or 0) > 0
+    )
 
     archived = {
         "schema": "matrixark_vikingmem_paper_comparable_report_v1",
@@ -123,7 +131,7 @@ def main() -> int:
         "quality_gate": {
             "passed": bool(report.get("benchmark_threshold_passed")),
             "quality_ready": bool(report.get("benchmark_quality_ready")),
-            "paper_comparable_claim_ready": bool(report.get("paper_comparable_claim_ready")),
+            "paper_comparable_claim_ready": strict_paper_ready,
             "violation_count": int(report.get("benchmark_threshold_violation_count") or 0),
             "violations": report.get("benchmark_threshold_violations") or [],
             "gold_evidence_window_used": bool(report.get("gold_evidence_window_used")),

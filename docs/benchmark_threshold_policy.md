@@ -15,9 +15,9 @@ Benchmark result docs must stay strict:
   configured runner, but not live OSS-reader parity.
 - OSS/open-model claims require at least one successful real local reader call and
   `require_open_source_reader=true`.
-- Production parity or production-ready benchmark claims require all three pieces of evidence in
-  the same result doc: real dataset artifact, real reader execution, and passing threshold output
-  with zero threshold violations.
+- Production parity, production-ready, or paper-comparable benchmark claims require all evidence in
+  the same result doc: real dataset artifact, live OSS reader calls, full Rust TemporalStore replay,
+  all-pipeline Rust evidence, and passing threshold output with zero threshold violations.
 - Paper-comparable archives must include dataset hash, model/provider, reader mode, prompt,
   thresholds, p50/p95 latencies, token reduction, and category breakdown.
 - Missing artifacts, skipped datasets, Docker/model pull failures, fallback readers, and fixture

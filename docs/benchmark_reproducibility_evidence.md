@@ -72,6 +72,13 @@ No live OSS-reader score is claimed from this pass. A VikingMem/OpenViking parit
 reachable OpenAI-compatible endpoint serving the same model profile and a report with
 `reader_open_source_calls > 0`, no deterministic fallback, and zero threshold violations.
 
+Current validation rerun:
+
+| Gate | Result | Evidence |
+| --- | --- | --- |
+| Live OSS-reader endpoint | blocked closed | `tools/run_context_benchmarks_oss_reader_endpoint.sh` exits `2` with `phase=missing_reader_base_url` when no endpoint is configured |
+| Release-mode full Rust replay fixture | passed | `tools/run_longmemeval_s_full_path.py --threshold-profile fixture --require-full-rust-temporalstore-replay --rust-temporalstore-release` reports `all_pipelines_use_rust_temporalstore=true` and `rust_temporalstore_full_replay_ready=true` |
+
 Successful live-reader runs now archive `*_paper_comparable_report.json` beside the raw benchmark
 report. That compact archive uses `matrixark_vikingmem_paper_comparable_report_v1` and carries the
 dataset hash, model/provider, reader mode, prompt templates, thresholds, p50/p95 latency, token
@@ -93,7 +100,7 @@ The requested implementation order has been executed in the checked-in runner:
 | LOCOMO full gate | passed | `/tmp/ts_rust_backend_locomo_one_result.json` |
 | LongMemEval_s full gate | passed | `/tmp/ts_rust_backend_longmemeval_one_result.json` |
 | Live OSS-reader path | blocked | no local OpenAI-compatible endpoint was reachable |
-| Paper-comparable archives | generated | `/tmp/ts_rust_backend_locomo_one_paper_comparable.json`, `/tmp/ts_rust_backend_longmemeval_one_paper_comparable.json` |
+| Compact archive reports | generated, not paper-ready | deterministic reports can be archived for comparison fields, but `paper_comparable_claim_ready=false` until live OSS-reader calls and full Rust replay both pass |
 
 LOCOMO deterministic full gate command:
 

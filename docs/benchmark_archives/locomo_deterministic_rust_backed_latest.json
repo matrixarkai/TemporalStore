@@ -105,7 +105,7 @@
   },
   "quality_gate": {
     "gold_evidence_window_used": false,
-    "paper_comparable_claim_ready": true,
+    "paper_comparable_claim_ready": false,
     "passed": true,
     "quality_ready": true,
     "violation_count": 0,
