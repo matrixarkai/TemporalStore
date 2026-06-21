@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
 import sys
+import tempfile
 from pathlib import Path
 
 from benchmark_threshold_policy import THRESHOLD_PROFILES
@@ -420,6 +422,49 @@ def validate_rust_full_replay_report_contract() -> None:
         raise SystemExit(f"Rust full replay report contract missing fields: {missing!r}")
     if not comparison["on_par"] or not comparison["zero_hit_query_ids_match"]:
         raise SystemExit(f"Rust full replay comparison contract failed: {comparison!r}")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        jsonl = Path(tmpdir) / "cases.jsonl"
+        jsonl.write_text(
+            "".join(
+                json.dumps({"query_id": f"q{i}", "sources": [{"title": f"source-{i}", "body": "body"}]}) + "\n"
+                for i in range(3)
+            ),
+            encoding="utf-8",
+        )
+        batches = runner.split_rust_temporalstore_jsonl(jsonl, 2)
+        if len(batches) != 2:
+            raise SystemExit(f"Rust full replay batching contract failed: expected 2 batches, got {len(batches)}")
+    merged = runner.merge_rust_temporalstore_harnesses(
+        [
+            {
+                "external_benchmark_per_query": rust_rows[:1],
+                "external_benchmark_category_breakdown": {
+                    "fixture": {
+                        "case_count": 1,
+                        "hit_at_k": 1.0,
+                        "mean_reciprocal_rank": 1.0,
+                        "missing_expected_terms": 0,
+                        "zero_hit_queries": 0,
+                    }
+                },
+            },
+            {
+                "external_benchmark_per_query": rust_rows[1:],
+                "external_benchmark_category_breakdown": {
+                    "fixture": {
+                        "case_count": 1,
+                        "hit_at_k": 0.0,
+                        "mean_reciprocal_rank": 0.0,
+                        "missing_expected_terms": 1,
+                        "zero_hit_queries": 1,
+                    }
+                },
+            },
+        ],
+        "cases.jsonl",
+    )
+    if merged["external_benchmark_case_count"] != 2 or merged["external_benchmark_zero_hit_queries"] != 1:
+        raise SystemExit(f"Rust full replay merge contract failed: {merged!r}")
 
 
 def load_locomo_runner():

@@ -13,6 +13,8 @@ RUST_TEMPORALSTORE_MAX_CASES="${TEMPORALSTORE_RUST_BACKEND_MAX_CASES:-4}"
 RUST_TEMPORALSTORE_SOURCE_LIMIT="${TEMPORALSTORE_RUST_BACKEND_SOURCE_LIMIT:-64}"
 RUST_TEMPORALSTORE_TIMEOUT_SECONDS="${TEMPORALSTORE_RUST_BACKEND_TIMEOUT_SECONDS:-180}"
 RUST_TEMPORALSTORE_SCORE_TOLERANCE="${TEMPORALSTORE_RUST_BACKEND_SCORE_TOLERANCE:-0}"
+RUST_TEMPORALSTORE_BATCH_SIZE="${TEMPORALSTORE_RUST_BACKEND_BATCH_SIZE:-0}"
+RUST_TEMPORALSTORE_RELEASE="${TEMPORALSTORE_RUST_BACKEND_RELEASE:-0}"
 REQUIRE_FULL_RUST_TEMPORALSTORE_REPLAY="${TEMPORALSTORE_REQUIRE_FULL_RUST_REPLAY:-0}"
 TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 ARCHIVE_DIR="${REPORT_DIR}/oss_reader_endpoint_${TIMESTAMP}"
@@ -33,8 +35,10 @@ write_manifest() {
   "require_rust_temporalstore": "${REQUIRE_RUST_TEMPORALSTORE}",
   "rust_temporalstore_max_cases": "${RUST_TEMPORALSTORE_MAX_CASES}",
   "rust_temporalstore_source_limit": "${RUST_TEMPORALSTORE_SOURCE_LIMIT}",
+  "rust_temporalstore_batch_size": "${RUST_TEMPORALSTORE_BATCH_SIZE}",
   "rust_temporalstore_timeout_seconds": "${RUST_TEMPORALSTORE_TIMEOUT_SECONDS}",
   "rust_temporalstore_score_tolerance": "${RUST_TEMPORALSTORE_SCORE_TOLERANCE}",
+  "rust_temporalstore_release": "${RUST_TEMPORALSTORE_RELEASE}",
   "require_full_rust_temporalstore_replay": "${REQUIRE_FULL_RUST_TEMPORALSTORE_REPLAY}",
   "locomo_input": "${LOC_INPUT}",
   "longmemeval_input": "${LONGMEM_INPUT}",
@@ -71,10 +75,14 @@ if [[ "${REQUIRE_RUST_TEMPORALSTORE}" == "1" || "${REQUIRE_RUST_TEMPORALSTORE}" 
     --rust-temporalstore-max-cases "${RUST_TEMPORALSTORE_MAX_CASES}"
     --rust-temporalstore-source-limit "${RUST_TEMPORALSTORE_SOURCE_LIMIT}"
     --rust-temporalstore-timeout-seconds "${RUST_TEMPORALSTORE_TIMEOUT_SECONDS}"
+    --rust-temporalstore-batch-size "${RUST_TEMPORALSTORE_BATCH_SIZE}"
     --rust-temporalstore-score-tolerance "${RUST_TEMPORALSTORE_SCORE_TOLERANCE}"
   )
   if [[ "${REQUIRE_FULL_RUST_TEMPORALSTORE_REPLAY}" == "1" || "${REQUIRE_FULL_RUST_TEMPORALSTORE_REPLAY}" == "true" || "${REQUIRE_FULL_RUST_TEMPORALSTORE_REPLAY}" == "TRUE" ]]; then
     RUST_BACKEND_ARGS+=(--require-full-rust-temporalstore-replay)
+  fi
+  if [[ "${RUST_TEMPORALSTORE_RELEASE}" == "1" || "${RUST_TEMPORALSTORE_RELEASE}" == "true" || "${RUST_TEMPORALSTORE_RELEASE}" == "TRUE" ]]; then
+    RUST_BACKEND_ARGS+=(--rust-temporalstore-release)
   fi
 fi
 

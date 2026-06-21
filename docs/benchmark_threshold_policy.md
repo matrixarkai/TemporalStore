@@ -100,7 +100,12 @@ not fail exact source-rank parity. Use `--skip-rust-temporalstore`
 only for explicit diagnostic Python-only runs; those reports are not Rust-backed evidence. Use
 `--rust-temporalstore-max-cases 0 --rust-temporalstore-source-limit 0` only when a full Rust
 backend replay is intentionally requested; the default bounded proof keeps local full-dataset
-scoring practical while preventing Python-only benchmark evidence.
+scoring practical while preventing Python-only benchmark evidence. Full replay is batched by
+default when `--require-full-rust-temporalstore-replay` is set. Use
+`--rust-temporalstore-batch-size <N>` to tune the batch size; timeout reports include the failed
+batch index, batch path, completed batches, and stdout/stderr tails. Add
+`--rust-temporalstore-release` for production/full-dataset archives; the default dev build is kept
+for fast local bounded proof.
 
 For production benchmark claims, prefer the explicit guard:
 
@@ -108,18 +113,22 @@ For production benchmark claims, prefer the explicit guard:
 python3 tools/run_locomo_90_hit_rate.py \
   --threshold-profile locomo_full \
   --input /tmp/locomo10.json \
-  --require-full-rust-temporalstore-replay
+  --require-full-rust-temporalstore-replay \
+  --rust-temporalstore-batch-size 16 \
+  --rust-temporalstore-release
 ```
 
 The same flag is supported by `tools/run_longmemeval_s_full_path.py`. It forces all converted cases
 and all source records through the Rust `context_workflow_harness`, emits
-`rust_temporalstore_full_replay_ready`, and adds `full_rust_temporalstore_replay_not_ready` to the
-threshold violations if the all-case Rust evidence is incomplete.
+`rust_temporalstore_full_replay_ready`, records `batch_replay_used` and `batch_reports`, and adds
+`full_rust_temporalstore_replay_not_ready` to the threshold violations if the all-case Rust
+evidence is incomplete.
 
 For Docker/open-model archives, set:
 
 ```bash
 TEMPORALSTORE_REQUIRE_FULL_RUST_REPLAY=1
+TEMPORALSTORE_RUST_BACKEND_RELEASE=1
 ```
 
 This keeps the fast default for iteration while making paper-comparable archives fail closed unless

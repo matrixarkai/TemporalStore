@@ -88,7 +88,11 @@ LOCOMO stayed above its Hit@K and latency gates after the same selector change.
 Rust TemporalStore replay has two modes. The default benchmark commands keep a bounded proof
 (`--rust-temporalstore-max-cases 4`) so local validation remains fast. Production benchmark claims
 must pass `--require-full-rust-temporalstore-replay`, which forces all converted cases and all
-sources through the Rust `context_workflow_harness`. The Rust-backed report compares Python
+sources through the Rust `context_workflow_harness`. Full replay now uses batched Rust harness
+execution by default (`--rust-temporalstore-batch-size 16`) so long LOCOMO and LongMemEval_s runs
+produce per-batch evidence and fail closed with the failed batch index instead of only a monolithic
+timeout. Production archives should add `--rust-temporalstore-release` so the all-case Rust replay
+does not use an unoptimized dev binary. The Rust-backed report compares Python
 orchestration and Rust TemporalStore case-by-case for Hit@K, rank, selected evidence IDs,
 zero-hit query IDs, retrieved block counts, and retrieval latency deltas. A full replay is only
 marked ready when the Rust case count matches the converted dataset and the score/rank/zero-hit
@@ -97,9 +101,10 @@ comparison is on par.
 Local validation of that contract used both dataset wrappers. LOCOMO and LongMemEval_s bounded
 Rust-backed smokes each ran four converted cases with zero Hit@K/rank deltas and matching zero-hit
 query IDs. The committed LongMemEval_s fixture also passed `--require-full-rust-temporalstore-replay`
-with `all_cases=true`, `all_sources=true`, matching Rust/Python case counts, and zero Hit@K/rank
-deltas. Real full-dataset production claims should use the same flag against `/tmp/locomo10.json`
-and `/tmp/longmemeval_s.json` and archive the generated Rust backend report.
+with `all_cases=true`, `all_sources=true`, `batch_replay_used=true`, grouped batch reports,
+matching Rust/Python case counts, and zero Hit@K/rank deltas. Real full-dataset production claims
+should use the same flag against `/tmp/locomo10.json` and `/tmp/longmemeval_s.json` and archive the
+generated Rust backend report.
 
 LOCOMO Category 1 improved from reader hit `0.7907801418` to `0.8617021277`. The pass adds
 deterministic synthesis for support-network lists, relationship/shared-frustration answers,
@@ -116,7 +121,8 @@ The new full Rust replay flag is validated on the checked-in LongMemEval_s fixtu
 python3 tools/run_longmemeval_s_full_path.py \
   --threshold-profile fixture \
   --input tools/fixtures/longmemeval_s_full_path_fixture.json \
-  --require-full-rust-temporalstore-replay
+  --require-full-rust-temporalstore-replay \
+  --rust-temporalstore-batch-size 1
 ```
 
 That run requires all converted fixture cases and all source records to pass through the Rust
@@ -126,6 +132,21 @@ Remaining VikingMem gap: live OSS-reader parity is still not claimed in this upd
 deterministic reader results above are useful regression gates, but paper-comparable VikingMem
 claims still require `reader_open_source_calls > 0` through the matching OpenViking/C++ reader
 endpoint and archived `*_paper_comparable_report.json` output.
+
+Current fail-closed status:
+
+- LOCOMO and LongMemEval_s live OSS-reader gates remain blocked when neither `--reader-base-url`
+  nor `TEMPORALSTORE_READER_BASE_URL` is configured. The OSS endpoint script writes a manifest with
+  `phase=missing_reader_base_url` and does not claim a score.
+- Monolithic all-case Rust replay is not production evidence for the local real datasets because it
+  timed out in prior runs. The replacement full-replay path is grouped batching plus optional
+  release build.
+- LongMemEval_s full Rust replay with a 64-case dev-build batch failed closed at batch `1/8` after
+  `300s`, proving that batch size was too large for local dev builds.
+- A one-case all-source LongMemEval_s Rust replay completed with Rust/Python parity in about
+  `3.13s`, and a 16-case all-source probe completed with Rust/Python parity in about `80.14s`.
+  The default full-replay batch size is therefore `16`; production archives should also pass
+  `--rust-temporalstore-release`.
 
 Rust now has a converter so the same LOCOMO and LongMemEval_s-style exports can be fed to the
 TemporalStore context harness:

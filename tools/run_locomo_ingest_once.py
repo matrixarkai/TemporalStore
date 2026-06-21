@@ -190,6 +190,20 @@ def main() -> int:
         help="Maximum ranked sources per converted Rust TemporalStore proof case. Use 0 for all sources.",
     )
     parser.add_argument(
+        "--rust-temporalstore-batch-size",
+        type=int,
+        default=0,
+        help=(
+            "Batch size for full Rust TemporalStore replay. Use 0 for the production default "
+            "when --require-full-rust-temporalstore-replay is set; bounded proof remains one batch."
+        ),
+    )
+    parser.add_argument(
+        "--rust-temporalstore-release",
+        action="store_true",
+        help="Run the Rust TemporalStore context harness with cargo --release for production benchmark replay.",
+    )
+    parser.add_argument(
         "--require-full-rust-temporalstore-replay",
         action="store_true",
         help=(
@@ -218,6 +232,8 @@ def main() -> int:
         args.require_rust_temporalstore = True
         args.rust_temporalstore_max_cases = 0
         args.rust_temporalstore_source_limit = 0
+        if args.rust_temporalstore_batch_size <= 0:
+            args.rust_temporalstore_batch_size = 16
     rust_backend_report = run_rust_temporalstore_backend(args) if args.require_rust_temporalstore else None
     reader = BenchmarkReader(
         ReaderConfig(
@@ -586,6 +602,8 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
         use_source_order=int(args.rust_temporalstore_source_limit) == 0,
     )
     converted_case_count = int(python_subset_score.get("case_count") or 0)
+    batch_size = int(getattr(args, "rust_temporalstore_batch_size", 0) or 0)
+    use_batch_replay = bool(args.require_full_rust_temporalstore_replay and batch_size > 0 and converted_case_count > batch_size)
 
     env = os.environ.copy()
     env.update(
@@ -597,23 +615,61 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
             "CARGO_TARGET_DIR": env.get("CARGO_TARGET_DIR", "/tmp/temporalstore-context-benchmark-target"),
         }
     )
-    command = ["cargo", "run", "-p", "temporalstore-rust", "--bin", "context_workflow_harness"]
+    command = ["cargo", "run"]
+    if args.rust_temporalstore_release:
+        command.append("--release")
+    command.extend(["-p", "temporalstore-rust", "--bin", "context_workflow_harness"])
     started = time.perf_counter()
-    try:
-        completed = subprocess.run(
-            command,
-            cwd=repo,
-            env=env,
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=args.rust_temporalstore_timeout_seconds,
+    batch_reports: list[dict[str, Any]] = []
+    if use_batch_replay:
+        harness = run_rust_temporalstore_batches(
+            repo=repo,
+            command=command,
+            base_env=env,
+            source_jsonl=jsonl_path,
+            batch_size=batch_size,
+            timeout_seconds=float(args.rust_temporalstore_timeout_seconds),
+            report_path=report_path,
         )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(
-            "Rust TemporalStore benchmark harness timed out after "
-            f"{args.rust_temporalstore_timeout_seconds}s; stdout={exc.stdout!r} stderr={exc.stderr!r}"
-        ) from exc
+        completed_returncode = 0
+        stdout_tail = ""
+        stderr_tail = ""
+        batch_reports = harness.pop("_batch_reports", [])
+    else:
+        try:
+            completed = run_rust_temporalstore_harness(
+                repo=repo,
+                command=command,
+                env=env,
+                timeout_seconds=float(args.rust_temporalstore_timeout_seconds),
+            )
+        except subprocess.TimeoutExpired as exc:
+            timeout_report = {
+                "rust_temporalstore_backend_ready": False,
+                "rust_temporalstore_full_replay_ready": False,
+                "failure": "rust_temporalstore_harness_timeout",
+                "timeout_seconds": args.rust_temporalstore_timeout_seconds,
+                "converted_jsonl": str(jsonl_path),
+                "requested_max_cases": max_cases,
+                "requested_source_limit": int(args.rust_temporalstore_source_limit),
+                "full_replay_requested": bool(args.require_full_rust_temporalstore_replay),
+                "stdout_tail": decoded_tail(exc.stdout),
+                "stderr_tail": decoded_tail(exc.stderr),
+            }
+            report_path.write_text(json.dumps(timeout_report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            raise RuntimeError(
+                "Rust TemporalStore benchmark harness timed out after "
+                f"{args.rust_temporalstore_timeout_seconds}s; see {report_path}"
+            ) from exc
+        completed_returncode = completed.returncode
+        stdout_tail = completed.stdout[-2000:]
+        stderr_tail = completed.stderr[-2000:]
+        if completed.returncode != 0:
+            raise RuntimeError(
+                "Rust TemporalStore benchmark harness failed: "
+                f"{completed.stderr.strip()[-1000:] or completed.stdout.strip()[-1000:]}"
+            )
+        harness = parse_last_json_object(completed.stdout)
     elapsed = elapsed_ms(started)
     report: dict[str, Any] = {
         "rust_temporalstore_backend_ready": False,
@@ -621,25 +677,24 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
         "converted_jsonl": str(jsonl_path),
         "converted_stdout": converted.stdout.strip()[-1000:],
         "report_path": str(report_path),
-        "returncode": completed.returncode,
+        "returncode": completed_returncode,
         "elapsed_ms": elapsed,
-        "stdout_tail": completed.stdout[-2000:],
-        "stderr_tail": completed.stderr[-2000:],
+        "stdout_tail": stdout_tail,
+        "stderr_tail": stderr_tail,
         "python_subset_score": python_subset_score,
         "requested_max_cases": max_cases,
         "requested_source_limit": int(args.rust_temporalstore_source_limit),
+        "requested_batch_size": batch_size,
+        "rust_build_profile": "release" if args.rust_temporalstore_release else "dev",
+        "batch_replay_used": use_batch_replay,
+        "batch_reports": batch_reports,
         "full_replay_requested": bool(args.require_full_rust_temporalstore_replay),
         "full_replay_contract": {
             "all_cases": max_cases == 0,
             "all_sources": int(args.rust_temporalstore_source_limit) == 0,
+            "batched": use_batch_replay,
         },
     }
-    if completed.returncode != 0:
-        raise RuntimeError(
-            "Rust TemporalStore benchmark harness failed: "
-            f"{completed.stderr.strip()[-1000:] or completed.stdout.strip()[-1000:]}"
-        )
-    harness = parse_last_json_object(completed.stdout)
     report["harness"] = harness
     rust_case_count = int(harness.get("external_benchmark_case_count") or 0)
     rust_hit_at_k = float(harness.get("external_benchmark_hit_at_k") or 0.0)
@@ -699,6 +754,216 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
     if not report["rust_temporalstore_backend_ready"]:
         raise RuntimeError(f"Rust TemporalStore backend did not report ready; see {report_path}")
     return report
+
+
+def run_rust_temporalstore_harness(
+    *,
+    repo: Path,
+    command: list[str],
+    env: dict[str, str],
+    timeout_seconds: float,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        command,
+        cwd=repo,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=timeout_seconds,
+    )
+
+
+def run_rust_temporalstore_batches(
+    *,
+    repo: Path,
+    command: list[str],
+    base_env: dict[str, str],
+    source_jsonl: Path,
+    batch_size: int,
+    timeout_seconds: float,
+    report_path: Path,
+) -> dict[str, Any]:
+    batch_paths = split_rust_temporalstore_jsonl(source_jsonl, batch_size)
+    harnesses: list[dict[str, Any]] = []
+    batch_reports: list[dict[str, Any]] = []
+    for index, batch_path in enumerate(batch_paths, start=1):
+        env = dict(base_env)
+        env["TEMPORALSTORE_CONTEXT_BENCHMARK_JSONL"] = str(batch_path)
+        started = time.perf_counter()
+        try:
+            completed = run_rust_temporalstore_harness(
+                repo=repo,
+                command=command,
+                env=env,
+                timeout_seconds=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            failure = {
+                "rust_temporalstore_backend_ready": False,
+                "rust_temporalstore_full_replay_ready": False,
+                "failure": "rust_temporalstore_batch_timeout",
+                "failed_batch_index": index,
+                "batch_count": len(batch_paths),
+                "batch_path": str(batch_path),
+                "batch_size": batch_size,
+                "timeout_seconds": timeout_seconds,
+                "stdout_tail": decoded_tail(exc.stdout),
+                "stderr_tail": decoded_tail(exc.stderr),
+                "completed_batches": batch_reports,
+            }
+            report_path.write_text(json.dumps(failure, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            raise RuntimeError(
+                "Rust TemporalStore full replay batch timed out "
+                f"at batch {index}/{len(batch_paths)} after {timeout_seconds}s; see {report_path}"
+            ) from exc
+        batch_report = {
+            "batch_index": index,
+            "batch_count": len(batch_paths),
+            "batch_path": str(batch_path),
+            "returncode": completed.returncode,
+            "elapsed_ms": elapsed_ms(started),
+            "stdout_tail": completed.stdout[-1000:],
+            "stderr_tail": completed.stderr[-1000:],
+        }
+        if completed.returncode != 0:
+            failure = {
+                "rust_temporalstore_backend_ready": False,
+                "rust_temporalstore_full_replay_ready": False,
+                "failure": "rust_temporalstore_batch_failed",
+                "failed_batch": batch_report,
+                "completed_batches": batch_reports,
+            }
+            report_path.write_text(json.dumps(failure, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            raise RuntimeError(
+                "Rust TemporalStore full replay batch failed: "
+                f"{completed.stderr.strip()[-1000:] or completed.stdout.strip()[-1000:]}"
+            )
+        harness = parse_last_json_object(completed.stdout)
+        batch_report.update(
+            {
+                "case_count": int(harness.get("external_benchmark_case_count") or 0),
+                "hit_at_k": float(harness.get("external_benchmark_hit_at_k") or 0.0),
+                "mean_reciprocal_rank": float(harness.get("external_benchmark_mean_reciprocal_rank") or 0.0),
+                "zero_hit_queries": int(harness.get("external_benchmark_zero_hit_queries") or 0),
+            }
+        )
+        harnesses.append(harness)
+        batch_reports.append(batch_report)
+    merged = merge_rust_temporalstore_harnesses(harnesses, str(source_jsonl))
+    merged["_batch_reports"] = batch_reports
+    return merged
+
+
+def split_rust_temporalstore_jsonl(path: Path, batch_size: int) -> list[Path]:
+    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if batch_size <= 0 or len(lines) <= batch_size:
+        return [path]
+    cases = [json.loads(line) for line in lines]
+    groups: list[list[dict[str, Any]]] = []
+    for case in cases:
+        signature = rust_temporalstore_source_signature(case)
+        if not groups or rust_temporalstore_source_signature(groups[-1][0]) != signature:
+            groups.append([case])
+        else:
+            groups[-1].append(case)
+    batches: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    for group in groups:
+        if current and len(current) + len(group) > batch_size:
+            batches.append(current)
+            current = []
+        current.extend(group)
+    if current:
+        batches.append(current)
+    batch_paths: list[Path] = []
+    stem = path.with_suffix("")
+    for index, batch in enumerate(batches, start=1):
+        batch_path = stem.with_name(f"{stem.name}.batch-{index:04d}.jsonl")
+        batch_path.write_text(
+            "".join(json.dumps(case, ensure_ascii=False) + "\n" for case in batch),
+            encoding="utf-8",
+        )
+        batch_paths.append(batch_path)
+    return batch_paths
+
+
+def rust_temporalstore_source_signature(case: dict[str, Any]) -> str:
+    sources = case.get("sources")
+    if not isinstance(sources, list):
+        return ""
+    digest = hashlib.sha256()
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        digest.update(str(source.get("id") or source.get("source_ref") or source.get("title") or "").encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(str(len(str(source.get("body") or ""))).encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def merge_rust_temporalstore_harnesses(harnesses: list[dict[str, Any]], source: str) -> dict[str, Any]:
+    per_query: list[dict[str, Any]] = []
+    categories: dict[str, dict[str, float]] = defaultdict(lambda: {"case_count": 0, "rr_sum": 0.0, "hits": 0, "missing_terms": 0, "zero_hit": 0})
+    for harness in harnesses:
+        per_query.extend([row for row in harness.get("external_benchmark_per_query") or [] if isinstance(row, dict)])
+        for name, row in (harness.get("external_benchmark_category_breakdown") or {}).items():
+            if not isinstance(row, dict):
+                continue
+            count = int(row.get("case_count") or 0)
+            bucket = categories[str(name)]
+            bucket["case_count"] += count
+            bucket["hits"] += float(row.get("hit_at_k") or 0.0) * count
+            bucket["rr_sum"] += float(row.get("mean_reciprocal_rank") or 0.0) * count
+            bucket["missing_terms"] += int(row.get("missing_expected_terms") or 0)
+            bucket["zero_hit"] += int(row.get("zero_hit_queries") or 0)
+    total = len(per_query)
+    hits = sum(1 for row in per_query if bool(row.get("hit")))
+    rr_sum = sum(1.0 / float(row["rank"]) for row in per_query if row.get("rank"))
+    zero_hit = sum(1 for row in per_query if bool(row.get("zero_hit")) or not bool(row.get("hit")))
+    category_breakdown = {
+        name: {
+            "case_count": int(values["case_count"]),
+            "hit_at_k": values["hits"] / values["case_count"] if values["case_count"] else 0.0,
+            "mean_reciprocal_rank": values["rr_sum"] / values["case_count"] if values["case_count"] else 0.0,
+            "answer_term_coverage": 0.0,
+            "missing_expected_terms": int(values["missing_terms"]),
+            "zero_hit_queries": int(values["zero_hit"]),
+        }
+        for name, values in categories.items()
+    }
+    min_category_hit = min((row["hit_at_k"] for row in category_breakdown.values()), default=0.0)
+    min_category_mrr = min((row["mean_reciprocal_rank"] for row in category_breakdown.values()), default=0.0)
+    return {
+        "external_benchmark_ready": bool(total and all(bool(row.get("hit")) for row in per_query)),
+        "external_benchmark_dataset": "merged_full_replay",
+        "external_benchmark_case_count": total,
+        "external_benchmark_hit_at_k": hits / total if total else 0.0,
+        "external_benchmark_mean_reciprocal_rank": rr_sum / total if total else 0.0,
+        "external_benchmark_answer_term_coverage": 0.0,
+        "external_benchmark_missing_expected_terms": sum(int(row.get("missing_expected_terms") or 0) for row in category_breakdown.values()),
+        "external_benchmark_all_expected_terms_matched": False,
+        "external_benchmark_evidence_ref_coverage": 0.0,
+        "external_benchmark_missing_expected_refs": 0,
+        "external_benchmark_zero_hit_queries": zero_hit,
+        "external_benchmark_category_count": len(category_breakdown),
+        "external_benchmark_category_breakdown": category_breakdown,
+        "external_benchmark_per_query": per_query,
+        "external_benchmark_all_categories_passed": all(row["zero_hit_queries"] == 0 for row in category_breakdown.values()),
+        "external_benchmark_min_category_hit_at_k": min_category_hit,
+        "external_benchmark_min_category_mean_reciprocal_rank": min_category_mrr,
+        "external_benchmark_category_zero_hit_queries": sum(row["zero_hit_queries"] for row in category_breakdown.values()),
+        "external_benchmark_source": source,
+    }
+
+
+def decoded_tail(value: Any, limit: int = 2000) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")[-limit:]
+    return str(value)[-limit:]
 
 
 def compare_rust_python_per_query(
