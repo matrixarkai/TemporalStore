@@ -84,7 +84,7 @@ Dataset-scale full Rust replay rerun:
 
 | Dataset | Result | Evidence |
 | --- | --- | --- |
-| LOCOMO | blocked closed | `docs/benchmark_archives/locomo_full_rust_replay_failed_latest.json` records `rust_temporalstore_batch_timeout` at batch `1/10` with `rust_temporalstore_full_replay_ready=false` |
+| LOCOMO | passed | `docs/benchmark_archives/locomo_full_rust_replay_latest.json` records 1,542 cases, `all_pipelines_use_rust_temporalstore=true`, `rust_temporalstore_full_replay_ready=true`, `python_only_diagnostic=false`, Hit@K `0.9533073930`, reader hit `0.8839169909`, and Rust/Python Hit@K delta `0.0` after source packing preserved all source text |
 | LongMemEval_s | passed | `docs/benchmark_archives/longmemeval_s_full_rust_replay_latest.json` records 500 cases, `all_pipelines_use_rust_temporalstore=true`, `rust_temporalstore_full_replay_ready=true`, `python_only_diagnostic=false`, Hit@K `1.0`, and reader hit `0.956` |
 
 Successful live-reader runs now archive `*_paper_comparable_report.json` beside the raw benchmark

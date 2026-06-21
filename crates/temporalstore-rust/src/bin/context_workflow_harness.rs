@@ -749,6 +749,7 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
             .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
             .unwrap_or(false);
     let mut ingested_source_sets = BTreeMap::<u64, Vec<u64>>::new();
+    let mut retrieved_source_sets = BTreeMap::<u64, Vec<temporalstore_rust::ContextBlock>>::new();
     for (_index, case) in cases.iter().enumerate() {
         let _query_id = case.query_id.as_str();
         *dataset_counts.entry(case.dataset.clone()).or_insert(0usize) += 1;
@@ -766,67 +767,74 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
         } else {
             let source_digest = external_case_source_digest(case);
             let tenant_hash = source_digest;
-            let node_hashes = if let Some(node_hashes) = ingested_source_sets.get(&source_digest) {
-                node_hashes.clone()
+            if let Some(blocks) = retrieved_source_sets.get(&source_digest) {
+                blocks.clone()
             } else {
-                let source_count = case.sources.len() as u64;
-                let sources = case
-                    .sources
-                    .iter()
-                    .enumerate()
-                    .map(|(source_index, source)| {
-                        let source_id = if source.title.trim().is_empty() {
-                            format!("{}-{source_digest}-{source_index}", case.dataset)
-                        } else {
-                            source.title.clone()
-                        };
-                        ContextExtractRequest {
-                            shard_id: 1,
-                            tenant_hash,
-                            source_kind: source.kind,
-                            source_id,
-                            title: source.title.clone(),
-                            body: source.body.clone(),
-                            timestamp_ms: 1_000 + source_count.saturating_sub(source_index as u64),
-                            provider: ContextModelProviderConfig::default(),
+                let node_hashes =
+                    if let Some(node_hashes) = ingested_source_sets.get(&source_digest) {
+                        node_hashes.clone()
+                    } else {
+                        let source_count = case.sources.len() as u64;
+                        let sources = case
+                            .sources
+                            .iter()
+                            .enumerate()
+                            .map(|(source_index, source)| {
+                                let source_id = if source.title.trim().is_empty() {
+                                    format!("{}-{source_digest}-{source_index}", case.dataset)
+                                } else {
+                                    source.title.clone()
+                                };
+                                ContextExtractRequest {
+                                    shard_id: 1,
+                                    tenant_hash,
+                                    source_kind: source.kind,
+                                    source_id,
+                                    title: source.title.clone(),
+                                    body: source.body.clone(),
+                                    timestamp_ms: 1_000
+                                        + source_count.saturating_sub(source_index as u64),
+                                    provider: ContextModelProviderConfig::default(),
+                                }
+                            })
+                            .collect::<Vec<_>>();
+                        let ingest = ingest_extract_context(
+                            engine,
+                            ContextIngestExtractRequest {
+                                shard_id: 1,
+                                tenant_hash,
+                                sources,
+                                query: case.query.clone(),
+                                start_time_ms: 0,
+                                end_time_ms: 10_000,
+                                max_events,
+                                provider: ContextModelProviderConfig::default(),
+                            },
+                        );
+                        if !ingest.status.ok {
+                            continue;
                         }
-                    })
-                    .collect::<Vec<_>>();
-                let ingest = ingest_extract_context(
+                        ingested_source_sets.insert(source_digest, ingest.node_hashes.clone());
+                        ingest.node_hashes
+                    };
+                let retrieve = retrieve_context(
                     engine,
-                    ContextIngestExtractRequest {
+                    ContextRetrieveRequest {
                         shard_id: 1,
                         tenant_hash,
-                        sources,
-                        query: case.query.clone(),
+                        node_hashes,
+                        query: String::new(),
                         start_time_ms: 0,
                         end_time_ms: 10_000,
                         max_events,
-                        provider: ContextModelProviderConfig::default(),
+                        min_confidence: 0.0,
+                        min_importance: 0.0,
+                        tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
                     },
                 );
-                if !ingest.status.ok {
-                    continue;
-                }
-                ingested_source_sets.insert(source_digest, ingest.node_hashes.clone());
-                ingest.node_hashes
-            };
-            let retrieve = retrieve_context(
-                engine,
-                ContextRetrieveRequest {
-                    shard_id: 1,
-                    tenant_hash,
-                    node_hashes,
-                    query: String::new(),
-                    start_time_ms: 0,
-                    end_time_ms: 10_000,
-                    max_events,
-                    min_confidence: 0.0,
-                    min_importance: 0.0,
-                    tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
-                },
-            );
-            retrieve.blocks
+                retrieved_source_sets.insert(source_digest, retrieve.blocks.clone());
+                retrieve.blocks
+            }
         };
         order_external_blocks_by_case_source_order(case, &mut blocks);
         let retrieval_ms = retrieval_started.elapsed().as_millis();
@@ -996,21 +1004,43 @@ fn parse_external_context_benchmark_cases(path: &Path) -> Vec<ExternalContextBen
     let Ok(content) = fs::read_to_string(path) else {
         return Vec::new();
     };
-    content
-        .lines()
-        .enumerate()
-        .filter_map(|(index, line)| {
-            let trimmed = line.trim().trim_start_matches('\u{feff}');
-            if trimmed.is_empty() {
-                return None;
+    let mut source_sets = BTreeMap::<String, Vec<ExternalContextBenchmarkSource>>::new();
+    let mut cases = Vec::new();
+    for (index, line) in content.lines().enumerate() {
+        let trimmed = line.trim().trim_start_matches('\u{feff}');
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(trimmed) else {
+            continue;
+        };
+        let source_set_id = value
+            .get("source_set_id")
+            .or_else(|| value.get("source_set_ref"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let mut sources = external_sources_from_value(&value);
+        if sources.is_empty() {
+            if let Some(source_set_id) = source_set_id.as_ref() {
+                if let Some(cached) = source_sets.get(source_set_id) {
+                    sources = cached.clone();
+                }
             }
-            let value: Value = serde_json::from_str(trimmed).ok()?;
-            external_case_from_value(index, &value)
-        })
-        .collect()
+        } else if let Some(source_set_id) = source_set_id.as_ref() {
+            source_sets.insert(source_set_id.clone(), sources.clone());
+        }
+        if let Some(case) = external_case_from_value_with_sources(index, &value, sources) {
+            cases.push(case);
+        }
+    }
+    cases
 }
 
-fn external_case_from_value(index: usize, value: &Value) -> Option<ExternalContextBenchmarkCase> {
+fn external_case_from_value_with_sources(
+    index: usize,
+    value: &Value,
+    sources: Vec<ExternalContextBenchmarkSource>,
+) -> Option<ExternalContextBenchmarkCase> {
     let dataset = value
         .get("dataset")
         .and_then(Value::as_str)
@@ -1065,7 +1095,6 @@ fn external_case_from_value(index: usize, value: &Value) -> Option<ExternalConte
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let sources = external_sources_from_value(value);
     if expected_terms.is_empty() || sources.is_empty() {
         None
     } else {

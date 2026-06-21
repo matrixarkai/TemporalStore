@@ -377,8 +377,10 @@ def normalize_evidence_refs(raw: Any) -> list[str]:
     refs: list[str] = []
     for value in values:
         text = str(value).strip()
-        if text:
-            refs.append(text)
+        if not text:
+            continue
+        split_refs = re.findall(r"\bD\d+:\d+\b", text)
+        refs.extend(split_refs or [text])
     return refs
 
 

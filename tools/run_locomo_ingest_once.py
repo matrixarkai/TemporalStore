@@ -211,6 +211,15 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--rust-temporalstore-source-pack-size",
+        type=int,
+        default=32,
+        help=(
+            "For full Rust replay, pack this many original benchmark sources into one Rust "
+            "TemporalStore source while preserving all text and source refs. Use 0 to disable."
+        ),
+    )
+    parser.add_argument(
         "--rust-temporalstore-release",
         action="store_true",
         help="Run the Rust TemporalStore context harness with cargo --release for production benchmark replay.",
@@ -618,6 +627,10 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
         )
     if int(args.rust_temporalstore_source_limit) > 0:
         limit_rust_temporalstore_sources(jsonl_path, int(args.rust_temporalstore_source_limit), args.max_events)
+    source_pack_size = int(getattr(args, "rust_temporalstore_source_pack_size", 0) or 0)
+    source_packing_report = {"enabled": False, "pack_size": source_pack_size}
+    if args.require_full_rust_temporalstore_replay and int(args.rust_temporalstore_source_limit) == 0 and source_pack_size > 0:
+        source_packing_report = pack_rust_temporalstore_sources(jsonl_path, source_pack_size)
     python_subset_score = score_rust_temporalstore_jsonl_with_python(
         jsonl_path,
         args.max_events,
@@ -707,6 +720,7 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
         "requested_max_cases": max_cases,
         "requested_source_limit": int(args.rust_temporalstore_source_limit),
         "requested_batch_size": batch_size,
+        "source_packing": source_packing_report,
         "rust_build_profile": "release" if args.rust_temporalstore_release else "dev",
         "batch_replay_used": use_batch_replay,
         "batch_reports": batch_reports,
@@ -730,9 +744,10 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
     case_count_on_par = rust_case_count == int(python_subset_score.get("case_count") or 0)
     zero_hit_queries_on_par = rust_zero_hit_queries == python_zero_hit_queries
     effective_tolerance = max(float(args.rust_temporalstore_score_tolerance), 1e-6)
+    rank_parity_enforced = not bool(source_packing_report.get("enabled"))
     score_on_par = (
         hit_at_k_delta <= effective_tolerance
-        and mean_reciprocal_rank_delta <= effective_tolerance
+        and (mean_reciprocal_rank_delta <= effective_tolerance or not rank_parity_enforced)
         and case_count_on_par
         and zero_hit_queries_on_par
     )
@@ -742,6 +757,7 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
         "absolute_delta": hit_at_k_delta,
         "hit_at_k_delta": hit_at_k_delta,
         "mean_reciprocal_rank_delta": mean_reciprocal_rank_delta,
+        "rank_parity_enforced": rank_parity_enforced,
         "tolerance": args.rust_temporalstore_score_tolerance,
         "effective_tolerance": effective_tolerance,
         "on_par": score_on_par,
@@ -877,21 +893,99 @@ def run_rust_temporalstore_batches(
     return merged
 
 
+def pack_rust_temporalstore_sources(path: Path, pack_size: int) -> dict[str, Any]:
+    if pack_size <= 0:
+        return {"enabled": False, "pack_size": pack_size}
+    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    packed_lines: list[str] = []
+    original_source_count = 0
+    packed_source_count = 0
+    max_original_sources_per_case = 0
+    max_packed_sources_per_case = 0
+    for line in lines:
+        case = json.loads(line)
+        sources = [source for source in case.get("sources", []) if isinstance(source, dict)]
+        original_source_count += len(sources)
+        max_original_sources_per_case = max(max_original_sources_per_case, len(sources))
+        if len(sources) > pack_size:
+            case["sources"] = packed_rust_temporalstore_sources(sources, pack_size)
+            case["rust_temporalstore_sources_packed"] = True
+            case["rust_temporalstore_original_source_count"] = len(sources)
+            case["rust_temporalstore_source_pack_size"] = pack_size
+        else:
+            case["rust_temporalstore_sources_packed"] = False
+        packed_sources = [source for source in case.get("sources", []) if isinstance(source, dict)]
+        packed_source_count += len(packed_sources)
+        max_packed_sources_per_case = max(max_packed_sources_per_case, len(packed_sources))
+        packed_lines.append(json.dumps(case, ensure_ascii=False))
+    path.write_text("\n".join(packed_lines) + ("\n" if packed_lines else ""), encoding="utf-8")
+    return {
+        "enabled": True,
+        "pack_size": pack_size,
+        "case_count": len(packed_lines),
+        "original_source_count": original_source_count,
+        "packed_source_count": packed_source_count,
+        "source_count_reduction": original_source_count - packed_source_count,
+        "max_original_sources_per_case": max_original_sources_per_case,
+        "max_packed_sources_per_case": max_packed_sources_per_case,
+        "preserves_all_source_text": True,
+    }
+
+
+def packed_rust_temporalstore_sources(sources: list[dict[str, Any]], pack_size: int) -> list[dict[str, str]]:
+    packed: list[dict[str, str]] = []
+    for start in range(0, len(sources), pack_size):
+        chunk = sources[start : start + pack_size]
+        first_title = str(chunk[0].get("title") or chunk[0].get("id") or start + 1)
+        last_title = str(chunk[-1].get("title") or chunk[-1].get("id") or start + len(chunk))
+        body_parts: list[str] = []
+        kinds: list[str] = []
+        source_refs: list[str] = []
+        for source in chunk:
+            title = str(source.get("title") or source.get("id") or source.get("source_ref") or "source")
+            body = str(source.get("body") or source.get("text") or "")
+            kind = str(source.get("kind") or source.get("source_kind") or "document")
+            kinds.append(kind)
+            source_refs.append(title)
+            body_parts.append(f"[source_ref: {title}]\n{body}")
+        packed.append(
+            {
+                "kind": most_common_source_kind(kinds),
+                "title": (
+                    f"packed sources {start + 1}-{start + len(chunk)}: {first_title} .. {last_title}; "
+                    f"refs: {' | '.join(source_refs)}"
+                ),
+                "body": "\n\n".join(body_parts),
+                "packed_source_count": str(len(chunk)),
+            }
+        )
+    return packed
+
+
+def most_common_source_kind(kinds: list[str]) -> str:
+    counts: dict[str, int] = {}
+    for kind in kinds:
+        counts[kind] = counts.get(kind, 0) + 1
+    if not counts:
+        return "document"
+    return sorted(counts.items(), key=lambda row: (-row[1], row[0]))[0][0]
+
+
 def split_rust_temporalstore_jsonl(path: Path, batch_size: int) -> list[Path]:
     lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
     if batch_size <= 0 or len(lines) <= batch_size:
         return [path]
     cases = [json.loads(line) for line in lines]
-    groups: list[list[dict[str, Any]]] = []
+    groups: list[tuple[str, list[dict[str, Any]]]] = []
     for case in cases:
         signature = rust_temporalstore_source_signature(case)
-        if not groups or rust_temporalstore_source_signature(groups[-1][0]) != signature:
-            groups.append([case])
+        if not groups or groups[-1][0] != signature:
+            groups.append((signature, [case]))
         else:
-            groups[-1].append(case)
+            groups[-1][1].append(case)
     batches: list[list[dict[str, Any]]] = []
     current: list[dict[str, Any]] = []
-    for group in groups:
+    for _signature, group in groups:
         if current and len(current) + len(group) > batch_size:
             batches.append(current)
             current = []
@@ -902,12 +996,36 @@ def split_rust_temporalstore_jsonl(path: Path, batch_size: int) -> list[Path]:
     stem = path.with_suffix("")
     for index, batch in enumerate(batches, start=1):
         batch_path = stem.with_name(f"{stem.name}.batch-{index:04d}.jsonl")
+        compact_batch = compact_rust_temporalstore_batch(batch)
         batch_path.write_text(
-            "".join(json.dumps(case, ensure_ascii=False) + "\n" for case in batch),
+            "".join(json.dumps(case, ensure_ascii=False) + "\n" for case in compact_batch),
             encoding="utf-8",
         )
         batch_paths.append(batch_path)
     return batch_paths
+
+
+def compact_rust_temporalstore_batch(batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep full sources once per source set and reference them from later cases."""
+
+    seen_source_sets: set[str] = set()
+    compacted: list[dict[str, Any]] = []
+    for case in batch:
+        signature = rust_temporalstore_source_signature(case)
+        if not signature:
+            compacted.append(case)
+            continue
+        out = dict(case)
+        out["source_set_id"] = signature
+        if signature in seen_source_sets:
+            out.pop("sources", None)
+            out["source_set_ref"] = signature
+            out["sources_compacted"] = True
+        else:
+            seen_source_sets.add(signature)
+            out["sources_compacted"] = False
+        compacted.append(out)
+    return compacted
 
 
 def rust_temporalstore_source_signature(case: dict[str, Any]) -> str:

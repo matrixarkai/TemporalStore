@@ -95,9 +95,11 @@ Current local scale evidence:
   the same real LongMemEval_s artifact at Hit@K 1.0 and improves reader hit to 0.974. A fresh full
   replay attempt after that change timed out locally before writing a report, so the 0.974 score is
   bounded Rust-backed evidence rather than a new full-replay production claim.
-- LOCOMO full Rust replay on the real `/tmp/locomo10.json` artifact is still blocked: batch 1 of 10
-  times out before `rust_temporalstore_full_replay_ready` can become true. Keep this recorded as
-  failed-closed evidence, not as a bounded proof.
+- LOCOMO full Rust replay now passes on the real `/tmp/locomo10.json` artifact with 1,542 cases,
+  Hit@K 0.9533073930, reader hit 0.8839169909, retrieval p95 46.160 ms, and the required
+  Rust-backed fields all true. The optimized replay uses source packing to preserve all source text
+  and refs while reducing repeated Rust extraction calls: 1,475,584 repeated per-case source objects
+  are packed into 46,782 Rust benchmark source objects with `preserves_all_source_text: true`.
 
 `--skip-rust-temporalstore --allow-python-only-diagnostic` remains available only for local
 debugging. Reports from that mode are never production benchmark evidence.

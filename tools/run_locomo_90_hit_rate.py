@@ -60,6 +60,7 @@ def main() -> int:
     parser.add_argument("--rust-temporalstore-timeout-seconds", type=float, default=180.0)
     parser.add_argument("--rust-temporalstore-source-limit", type=int, default=64)
     parser.add_argument("--rust-temporalstore-batch-size", type=int, default=0)
+    parser.add_argument("--rust-temporalstore-source-pack-size", type=int, default=32)
     parser.add_argument("--rust-temporalstore-release", action="store_true")
     parser.add_argument("--rust-temporalstore-score-tolerance", type=float, default=0.0)
     parser.add_argument("--rust-temporalstore-jsonl", default="")
@@ -145,6 +146,7 @@ def main() -> int:
         command.extend(["--rust-temporalstore-timeout-seconds", str(args.rust_temporalstore_timeout_seconds)])
         command.extend(["--rust-temporalstore-source-limit", str(args.rust_temporalstore_source_limit)])
         command.extend(["--rust-temporalstore-batch-size", str(args.rust_temporalstore_batch_size)])
+        command.extend(["--rust-temporalstore-source-pack-size", str(args.rust_temporalstore_source_pack_size)])
         command.extend(["--rust-temporalstore-score-tolerance", str(args.rust_temporalstore_score_tolerance)])
         if args.rust_temporalstore_release:
             command.append("--rust-temporalstore-release")

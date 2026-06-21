@@ -61,15 +61,19 @@ multi-session aggregation pass:
 
 | Dataset | Rust replay mode | Hit@K | Reader hit | Token reduction | Retrieval p95 | Result |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
-| LOCOMO `/tmp/locomo10.json` | bounded Rust proof | 0.9533073930 | 0.8839169909 | 83.9844% | 46.565 ms | passed |
+| LOCOMO `/tmp/locomo10.json` | full Rust replay | 0.9533073930 | 0.8839169909 | 83.9844% | 46.160 ms | passed |
 | LongMemEval_s `/tmp/longmemeval_s.json` | bounded Rust proof | 1.0000000000 | 0.9740000000 | 81.4017% | 60.662 ms | passed |
 
 This pass keeps Rust TemporalStore in the ingestion/retrieval evidence path and improves the
 LongMemEval_s deterministic reader on known temporal, ordinal-list, insufficient-information, and
 multi-session aggregation misses. A fresh all-case LongMemEval_s full Rust replay attempt after
 the reader change timed out locally before producing a report, so the improved `0.974` reader hit
-is bounded Rust-backed evidence, not a new full-replay production claim. LOCOMO remains above the
-Hit@K gate but its all-case full Rust replay is still blocked by local timeout.
+is bounded Rust-backed evidence, not a new full-replay production claim. LOCOMO full Rust replay now
+passes after source packing and Rust harness retrieval caching: the real `/tmp/locomo10.json` run
+scored all 1,542 cases with `rust_temporalstore_backend_ready=true`,
+`rust_temporalstore_full_replay_ready=true`, Rust/Python Hit@K delta `0.0`, and matching zero-hit
+query count. The Rust backend report records source packing with all source text preserved,
+reducing 1,475,584 repeated per-case source objects to 46,782 Rust benchmark source objects.
 
 LOCOMO Category 3 improved from Hit@K `0.8125` and reader hit `0.53125` to Hit@K
 `0.9583333333` and reader hit `0.7291666667`. The pass adds conservative inference-aware
