@@ -1,0 +1,19 @@
+{
+  "archive_dir": "/tmp/ts_live_oss_docker_retry/open_model_20260621T091620Z",
+  "reader_base_url": "http://open-reader:11434/v1",
+  "reader_image": "ollama/ollama:0.3.14",
+  "reader_model": "qwen2.5:0.5b",
+  "require_full_rust_temporalstore_replay": "0",
+  "rust_temporalstore_batch_size": "0",
+  "rust_temporalstore_release": "0",
+  "locomo_input": "/bench-input/locomo10.json",
+  "longmemeval_input": "/bench-input/longmemeval_s.json",
+  "locomo_status": "not_run",
+  "longmemeval_status": "not_run",
+  "phase": "docker_start_failed",
+  "error": "Docker open-reader image pull failed: failed to resolve docker.io/ollama/ollama:0.3.14 because Docker Hub returned a TLS handshake timeout",
+  "reader_open_source_calls": 0,
+  "paper_comparable_claim_ready": false,
+  "created_at_utc": "20260621T091620Z",
+  "claim_level": "live_oss_reader_required"
+}
