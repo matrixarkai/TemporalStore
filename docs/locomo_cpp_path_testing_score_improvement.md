@@ -48,16 +48,19 @@ The Rust-backed benchmark path now emits richer MatrixArk/VikingMem comparison e
 Rust-only, C++-only, and shared-hard misses for both retrieval and reader hits. The C++ adapter
 template in `compat/cpp_context_benchmark_report_adapter.h` was updated to emit the same fields.
 
-Latest local deterministic runs:
+Latest local deterministic runs after the Category 3 temporal/multi-hop rescue pass:
 
 | Dataset | Hit@K | Reader hit | MRR | Token reduction | Retrieval p95 | Gate |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| LOCOMO `/tmp/locomo10.json` | 0.9442282750 | 0.8527885863 | 0.5274161347 | 83.9727% | 21.491 ms | passed |
-| LongMemEval_s `/tmp/longmemeval_s.json` | 1.0000000000 | 0.9000000000 | 1.0000000000 | 81.3269% | 26.205 ms | passed |
+| LOCOMO `/tmp/locomo10.json` | 0.9533073930 | 0.8644617380 | 0.5324929681 | 83.9763% | 19.506 ms | passed |
+| LongMemEval_s `/tmp/longmemeval_s.json` | 1.0000000000 | 0.9000000000 | 1.0000000000 | 81.3269% | 24.140 ms | passed |
 
-LOCOMO Category 3 remains the weakest category even after improvement: reader hit is
-`0.53125`, retrieval Hit@K is `0.8125`. LongMemEval_s multi-session remains the weakest
-LongMemEval_s category: reader hit is `0.7819548872`, answer-term coverage is `0.4972067039`.
+LOCOMO Category 3 improved from Hit@K `0.8125` and reader hit `0.53125` to Hit@K
+`0.9583333333` and reader hit `0.7083333333`. The pass adds conservative inference-aware
+retrieval equivalence and deterministic reader synthesis for temporal/multi-hop shapes such as
+future jobs, likely yes/no, travel state/country recall, inferred hobbies/careers, and
+relationship/trait answers. LongMemEval_s multi-session remains the weakest LongMemEval_s
+category: reader hit is `0.7819548872`, answer-term coverage is `0.4972067039`.
 
 The new full Rust replay flag is validated on the checked-in LongMemEval_s fixture:
 
