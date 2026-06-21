@@ -1,7 +1,7 @@
 use std::cmp::Reverse;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;
@@ -173,6 +173,9 @@ struct ExternalContextBenchmarkQueryReport {
     hit: bool,
     rank: Option<usize>,
     retrieved_blocks: usize,
+    selected_source_ids: Vec<String>,
+    zero_hit: bool,
+    retrieval_ms: u128,
 }
 
 #[derive(Debug, Serialize)]
@@ -759,6 +762,7 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
             .or_insert(0usize) += case.expected_terms.len();
         total_expected_terms += case.expected_terms.len();
         total_expected_refs += case.expected_source_refs.len();
+        let retrieval_started = Instant::now();
         let mut blocks = if direct_source_scoring {
             external_direct_source_blocks(case, max_events)
         } else {
@@ -827,14 +831,28 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
             retrieve.blocks
         };
         order_external_blocks_by_case_source_order(case, &mut blocks);
+        let retrieval_ms = retrieval_started.elapsed().as_millis();
         let hit_rank = hit_source_rank(case, &blocks);
         let matched_terms = count_matched_expected_terms(&blocks, &case.expected_terms);
         let matched_refs = count_matched_expected_refs(&blocks, &case.expected_source_refs);
+        let selected_source_ids = blocks
+            .iter()
+            .map(|block| {
+                if block.source_ref.trim().is_empty() {
+                    block.uri.clone()
+                } else {
+                    block.source_ref.clone()
+                }
+            })
+            .collect::<Vec<_>>();
         per_query.push(ExternalContextBenchmarkQueryReport {
             query_id: case.query_id.clone(),
             hit: hit_rank.is_some(),
             rank: hit_rank,
             retrieved_blocks: blocks.len(),
+            selected_source_ids,
+            zero_hit: hit_rank.is_none(),
+            retrieval_ms,
         });
         matched_expected_terms += matched_terms;
         matched_expected_refs += matched_refs;

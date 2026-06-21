@@ -708,12 +708,20 @@ def compare_rust_python_per_query(
     missing_in_rust: list[str] = []
     hit_deltas: list[dict[str, Any]] = []
     rank_deltas: list[dict[str, Any]] = []
+    selected_id_deltas: list[dict[str, Any]] = []
+    latency_deltas_ms: list[float] = []
+    rust_zero_hit_ids: list[str] = []
+    python_zero_hit_ids: list[str] = []
     for row in python_rows:
         query_id = str(row.get("query_id") or "")
         rust = rust_by_id.get(query_id)
         if rust is None:
             missing_in_rust.append(query_id)
             continue
+        if bool(row.get("zero_hit")):
+            python_zero_hit_ids.append(query_id)
+        if bool(rust.get("zero_hit")) or not bool(rust.get("hit")):
+            rust_zero_hit_ids.append(query_id)
         if bool(row.get("hit")) != bool(rust.get("hit")):
             hit_deltas.append(
                 {
@@ -730,17 +738,50 @@ def compare_rust_python_per_query(
                     "rust_rank": rust.get("rank"),
                 }
             )
+        python_ids = normalized_selected_source_ids(row.get("selected_source_ids"))
+        rust_ids = normalized_selected_source_ids(rust.get("selected_source_ids"))
+        if python_ids and rust_ids and python_ids != rust_ids:
+            selected_id_deltas.append(
+                {
+                    "query_id": query_id,
+                    "python_selected_source_ids": python_ids[:10],
+                    "rust_selected_source_ids": rust_ids[:10],
+                    "shared_selected_source_id_count": len(set(python_ids) & set(rust_ids)),
+                }
+            )
+        latency_deltas_ms.append(abs(float(row.get("retrieval_ms") or 0.0) - float(rust.get("retrieval_ms") or 0.0)))
+    rust_extra_ids = sorted(set(rust_by_id) - {str(row.get("query_id") or "") for row in python_rows})
     return {
         "python_query_count": len(python_rows),
         "rust_query_count": len(rust_rows),
         "missing_in_rust_count": len(missing_in_rust),
         "missing_in_rust": missing_in_rust[:50],
+        "extra_in_rust_count": len(rust_extra_ids),
+        "extra_in_rust": rust_extra_ids[:50],
         "hit_delta_count": len(hit_deltas),
         "hit_deltas": hit_deltas[:50],
         "rank_delta_count": len(rank_deltas),
         "rank_deltas": rank_deltas[:50],
-        "on_par": not missing_in_rust and not hit_deltas and not rank_deltas,
+        "selected_source_id_delta_count": len(selected_id_deltas),
+        "selected_source_id_deltas": selected_id_deltas[:50],
+        "python_zero_hit_query_ids": python_zero_hit_ids[:50],
+        "rust_zero_hit_query_ids": rust_zero_hit_ids[:50],
+        "zero_hit_query_ids_match": set(python_zero_hit_ids) == set(rust_zero_hit_ids),
+        "retrieval_latency_delta_p50_ms": percentile(latency_deltas_ms, 50),
+        "retrieval_latency_delta_p95_ms": percentile(latency_deltas_ms, 95),
+        "on_par": not missing_in_rust and not rust_extra_ids and not hit_deltas and not rank_deltas,
     }
+
+
+def normalized_selected_source_ids(raw: Any) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for value in raw:
+        normalized = normalize_text(str(value))
+        if normalized:
+            out.append(normalized[:300])
+    return out
 
 
 def limit_rust_temporalstore_sources(path: Path, source_limit: int, max_events: int) -> None:
@@ -767,6 +808,8 @@ def score_rust_temporalstore_jsonl_with_python(path: Path, max_events: int, *, u
     hits = 0
     rr_sum = 0.0
     zero_hit_queries = 0
+    zero_hit_query_ids: list[str] = []
+    retrieval_latencies_ms: list[float] = []
     per_query = []
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
@@ -777,11 +820,15 @@ def score_rust_temporalstore_jsonl_with_python(path: Path, max_events: int, *, u
         answers = normalize_answers(case.get("answer_terms") or case.get("expected_terms") or case.get("answers"))
         refs = normalize_evidence_refs(case.get("expected_source_refs") or case.get("evidence"))
         sources = [source for source in case.get("sources", []) if isinstance(source, dict)]
+        retrieval_started = time.perf_counter()
         blocks = sources if use_source_order else rank_sources(query, sources, max_events)
+        retrieval_ms = elapsed_ms(retrieval_started)
+        retrieval_latencies_ms.append(retrieval_ms)
         rank = first_hit_rank(blocks, answers, refs)
         total += 1
         if rank is None:
             zero_hit_queries += 1
+            zero_hit_query_ids.append(query_id)
         else:
             hits += 1
             rr_sum += 1.0 / rank
@@ -791,6 +838,9 @@ def score_rust_temporalstore_jsonl_with_python(path: Path, max_events: int, *, u
                 "hit": rank is not None,
                 "rank": rank,
                 "retrieved_blocks": len(blocks),
+                "selected_source_ids": [benchmark_source_id(block) for block in blocks[:max_events]],
+                "zero_hit": rank is None,
+                "retrieval_ms": retrieval_ms,
             }
         )
     return {
@@ -798,9 +848,16 @@ def score_rust_temporalstore_jsonl_with_python(path: Path, max_events: int, *, u
         "hit_at_k": hits / total if total else 0.0,
         "mean_reciprocal_rank": rr_sum / total if total else 0.0,
         "zero_hit_queries": zero_hit_queries,
+        "zero_hit_query_ids": zero_hit_query_ids[:200],
+        "retrieval_p50_ms": percentile(retrieval_latencies_ms, 50),
+        "retrieval_p95_ms": percentile(retrieval_latencies_ms, 95),
         "scoring_order": "source_order" if use_source_order else "python_rank_sources",
         "per_query": per_query,
     }
+
+
+def benchmark_source_id(source: dict[str, Any]) -> str:
+    return str(source.get("id") or source.get("source_ref") or source.get("title") or source.get("uri") or "")[:300]
 
 
 def parse_last_json_object(text: str) -> dict[str, Any]:

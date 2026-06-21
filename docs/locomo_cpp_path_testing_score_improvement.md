@@ -85,6 +85,22 @@ full deterministic run selected evidence from multiple source groups for `64.6%`
 an average of `1.856` source groups per query, while keeping token reduction above the `80%` gate.
 LOCOMO stayed above its Hit@K and latency gates after the same selector change.
 
+Rust TemporalStore replay has two modes. The default benchmark commands keep a bounded proof
+(`--rust-temporalstore-max-cases 4`) so local validation remains fast. Production benchmark claims
+must pass `--require-full-rust-temporalstore-replay`, which forces all converted cases and all
+sources through the Rust `context_workflow_harness`. The Rust-backed report compares Python
+orchestration and Rust TemporalStore case-by-case for Hit@K, rank, selected evidence IDs,
+zero-hit query IDs, retrieved block counts, and retrieval latency deltas. A full replay is only
+marked ready when the Rust case count matches the converted dataset and the score/rank/zero-hit
+comparison is on par.
+
+Local validation of that contract used both dataset wrappers. LOCOMO and LongMemEval_s bounded
+Rust-backed smokes each ran four converted cases with zero Hit@K/rank deltas and matching zero-hit
+query IDs. The committed LongMemEval_s fixture also passed `--require-full-rust-temporalstore-replay`
+with `all_cases=true`, `all_sources=true`, matching Rust/Python case counts, and zero Hit@K/rank
+deltas. Real full-dataset production claims should use the same flag against `/tmp/locomo10.json`
+and `/tmp/longmemeval_s.json` and archive the generated Rust backend report.
+
 LOCOMO Category 1 improved from reader hit `0.7907801418` to `0.8617021277`. The pass adds
 deterministic synthesis for support-network lists, relationship/shared-frustration answers,
 identity and transition-change answers, career/personality-style summaries, and list questions

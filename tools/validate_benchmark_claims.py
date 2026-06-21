@@ -47,6 +47,7 @@ def main() -> int:
     validate_longmemeval_multi_session_rules()
     validate_generic_aggregation_and_absence_rules()
     validate_cross_session_evidence_diversity()
+    validate_rust_full_replay_report_contract()
     failures: list[str] = []
     for path in benchmark_docs():
         text = path.read_text(encoding="utf-8", errors="ignore")
@@ -277,6 +278,64 @@ def validate_cross_session_evidence_diversity() -> None:
     source_tokens = sum(runner.estimated_tokens(source["body"]) for source in sources)
     if runner.token_reduction_percent(source_tokens, tokens) <= 0.0:
         raise SystemExit("cross-session diversity should still compact retrieved tokens")
+
+
+def validate_rust_full_replay_report_contract() -> None:
+    runner = load_locomo_runner()
+    python_rows = [
+        {
+            "query_id": "q1",
+            "hit": True,
+            "rank": 1,
+            "retrieved_blocks": 2,
+            "selected_source_ids": ["session_1 turn 1", "session_2 turn 1"],
+            "zero_hit": False,
+            "retrieval_ms": 2.0,
+        },
+        {
+            "query_id": "q2",
+            "hit": False,
+            "rank": None,
+            "retrieved_blocks": 1,
+            "selected_source_ids": ["session_3 turn 1"],
+            "zero_hit": True,
+            "retrieval_ms": 3.0,
+        },
+    ]
+    rust_rows = [
+        {
+            "query_id": "q1",
+            "hit": True,
+            "rank": 1,
+            "retrieved_blocks": 2,
+            "selected_source_ids": ["session_1 turn 1", "session_2 turn 1"],
+            "zero_hit": False,
+            "retrieval_ms": 5.0,
+        },
+        {
+            "query_id": "q2",
+            "hit": False,
+            "rank": None,
+            "retrieved_blocks": 1,
+            "selected_source_ids": ["session_3 turn 1"],
+            "zero_hit": True,
+            "retrieval_ms": 7.0,
+        },
+    ]
+    comparison = runner.compare_rust_python_per_query(python_rows, rust_rows)
+    required = [
+        "selected_source_id_delta_count",
+        "python_zero_hit_query_ids",
+        "rust_zero_hit_query_ids",
+        "zero_hit_query_ids_match",
+        "retrieval_latency_delta_p95_ms",
+        "on_par",
+    ]
+    missing = [field for field in required if field not in comparison]
+    if missing:
+        raise SystemExit(f"Rust full replay report contract missing fields: {missing!r}")
+    if not comparison["on_par"] or not comparison["zero_hit_query_ids_match"]:
+        raise SystemExit(f"Rust full replay comparison contract failed: {comparison!r}")
 
 
 def load_locomo_runner():
