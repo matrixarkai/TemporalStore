@@ -82,7 +82,8 @@ python3 tools/run_longmemeval_s_full_path.py \
   --require-full-rust-temporalstore-replay \
   --rust-temporalstore-release \
   --rust-temporalstore-batch-size 16 \
-  --rust-temporalstore-timeout-seconds 600 \
+  --rust-temporalstore-source-pack-size 0 \
+  --rust-temporalstore-timeout-seconds 900 \
   --report /tmp/ts_full_rust_replay_gate/longmemeval_s_full_rust_replay_result.json \
   --misses /tmp/ts_full_rust_replay_gate/longmemeval_s_full_rust_replay_misses.jsonl
 ```
@@ -90,11 +91,10 @@ python3 tools/run_longmemeval_s_full_path.py \
 Current local scale evidence:
 
 - LongMemEval_s full Rust replay passes on the real `/tmp/longmemeval_s.json` artifact with 500
-  cases, 10,960 sources, Hit@K 1.0, reader hit 0.956, and the required Rust-backed fields all true.
-- The latest deterministic reader optimization pass keeps the bounded Rust TemporalStore proof on
-  the same real LongMemEval_s artifact at Hit@K 1.0 and improves reader hit to 0.974. A fresh full
-  replay attempt after that change timed out locally before writing a report, so the 0.974 score is
-  bounded Rust-backed evidence rather than a new full-replay production claim.
+  cases, 10,960 sources, Hit@K 1.0, reader hit 0.974, retrieval p95 28.978 ms, token reduction
+  81.4017%, and the required Rust-backed fields all true. The passing replay used release-mode
+  batches of 16 with source packing disabled, because LongMemEval_s native per-session sources
+  preserve exact per-query output and Rust/Python case parity.
 - LOCOMO full Rust replay now passes on the real `/tmp/locomo10.json` artifact with 1,542 cases,
   Hit@K 0.9533073930, reader hit 0.8839169909, retrieval p95 46.160 ms, and the required
   Rust-backed fields all true. The optimized replay uses source packing to preserve all source text

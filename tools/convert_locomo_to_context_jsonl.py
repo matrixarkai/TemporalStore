@@ -52,6 +52,7 @@ def main() -> None:
         records = records[: args.max_conversations]
 
     written = 0
+    query_id_counts: dict[str, int] = {}
     out = Path(args.output)
     with out.open("w", encoding="utf-8") as handle:
         for record_index, record in enumerate(records):
@@ -83,9 +84,11 @@ def main() -> None:
                     if args.evidence_window is not None and evidence_refs
                     else sources
                 )
+                base_query_id = f"{conversation_id}-q{question_index + 1}"
+                query_id = unique_query_id(base_query_id, query_id_counts)
                 case = {
                     "dataset": dataset_name,
-                    "query_id": f"{conversation_id}-q{question_index + 1}",
+                    "query_id": query_id,
                     "category": normalize_category(
                         qa.get("category")
                         or qa.get("question_type")
@@ -389,6 +392,14 @@ def normalize_category(raw: Any) -> str:
     if value.isdigit():
         return f"category_{value}"
     return value
+
+
+def unique_query_id(base: str, counts: dict[str, int]) -> str:
+    count = counts.get(base, 0) + 1
+    counts[base] = count
+    if count == 1:
+        return base
+    return f"{base}-dup{count}"
 
 
 def clean_id(value: Any) -> str:

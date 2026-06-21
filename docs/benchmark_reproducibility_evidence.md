@@ -85,7 +85,7 @@ Dataset-scale full Rust replay rerun:
 | Dataset | Result | Evidence |
 | --- | --- | --- |
 | LOCOMO | passed | `docs/benchmark_archives/locomo_full_rust_replay_latest.json` records 1,542 cases, `all_pipelines_use_rust_temporalstore=true`, `rust_temporalstore_full_replay_ready=true`, `python_only_diagnostic=false`, Hit@K `0.9533073930`, reader hit `0.8839169909`, and Rust/Python Hit@K delta `0.0` after source packing preserved all source text |
-| LongMemEval_s | passed | `docs/benchmark_archives/longmemeval_s_full_rust_replay_latest.json` records 500 cases, `all_pipelines_use_rust_temporalstore=true`, `rust_temporalstore_full_replay_ready=true`, `python_only_diagnostic=false`, Hit@K `1.0`, and reader hit `0.956` |
+| LongMemEval_s | passed | `docs/benchmark_archives/longmemeval_s_full_rust_replay_latest.json` records 500 cases, `all_pipelines_use_rust_temporalstore=true`, `rust_temporalstore_full_replay_ready=true`, `python_only_diagnostic=false`, Hit@K `1.0`, reader hit `0.974`, retrieval p95 `28.978386277 ms`, and Rust/Python Hit@K delta `0.0` |
 
 Successful live-reader runs now archive `*_paper_comparable_report.json` beside the raw benchmark
 report. That compact archive uses `matrixark_vikingmem_paper_comparable_report_v1` and carries the
@@ -106,7 +106,7 @@ The requested implementation order has been executed in the checked-in runner:
 | Insufficient-info detector | implemented | missing-anchor and not-enough-information answers are emitted before aggregation/temporal synthesis |
 | Rust TemporalStore backend proof | passed | `context_workflow_harness` ingested/retrieved converted benchmark cases through `TemporalEngine` before Python reader scoring |
 | LOCOMO full gate | passed | `/tmp/ts_rust_backend_locomo_one_result.json` |
-| LongMemEval_s full gate | passed | `/tmp/ts_rust_backend_longmemeval_one_result.json` |
+| LongMemEval_s full gate | passed | `/tmp/ts_longmemeval_full_replay_rerun3/longmemeval_s_full_rust_replay_result.json` |
 | Live OSS-reader path | blocked | no local OpenAI-compatible endpoint was reachable |
 | Compact archive reports | generated, not paper-ready | deterministic reports can be archived for comparison fields, but `paper_comparable_claim_ready=false` until live OSS-reader calls and full Rust replay both pass |
 

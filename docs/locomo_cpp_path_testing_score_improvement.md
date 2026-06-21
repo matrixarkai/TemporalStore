@@ -62,14 +62,16 @@ multi-session aggregation pass:
 | Dataset | Rust replay mode | Hit@K | Reader hit | Token reduction | Retrieval p95 | Result |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
 | LOCOMO `/tmp/locomo10.json` | full Rust replay | 0.9533073930 | 0.8839169909 | 83.9844% | 46.160 ms | passed |
-| LongMemEval_s `/tmp/longmemeval_s.json` | bounded Rust proof | 1.0000000000 | 0.9740000000 | 81.4017% | 60.662 ms | passed |
+| LongMemEval_s `/tmp/longmemeval_s.json` | full Rust replay | 1.0000000000 | 0.9740000000 | 81.4017% | 28.978 ms | passed |
 
 This pass keeps Rust TemporalStore in the ingestion/retrieval evidence path and improves the
 LongMemEval_s deterministic reader on known temporal, ordinal-list, insufficient-information, and
-multi-session aggregation misses. A fresh all-case LongMemEval_s full Rust replay attempt after
-the reader change timed out locally before producing a report, so the improved `0.974` reader hit
-is bounded Rust-backed evidence, not a new full-replay production claim. LOCOMO full Rust replay now
-passes after source packing and Rust harness retrieval caching: the real `/tmp/locomo10.json` run
+multi-session aggregation misses. LongMemEval_s now also passes as a full 500-case Rust replay with
+`rust_temporalstore_full_replay_ready=true`, exact Rust/Python Hit@K and rank parity, and zero
+zero-hit queries. The passing LongMemEval_s replay disables source packing because the native
+per-session source shape preserves exact case output, while packed mode previously failed closed on
+case-count parity. LOCOMO full Rust replay now passes after source packing and Rust harness
+retrieval caching: the real `/tmp/locomo10.json` run
 scored all 1,542 cases with `rust_temporalstore_backend_ready=true`,
 `rust_temporalstore_full_replay_ready=true`, Rust/Python Hit@K delta `0.0`, and matching zero-hit
 query count. The Rust backend report records source packing with all source text preserved,
@@ -395,12 +397,14 @@ python3 tools/run_longmemeval_s_full_path.py \
   --input /tmp/longmemeval_s.json \
   --threshold-profile longmemeval_full \
   --reader-mode deterministic \
-  --rust-temporalstore-max-cases 4 \
-  --rust-temporalstore-source-limit 16 \
-  --rust-temporalstore-timeout-seconds 300 \
+  --require-full-rust-temporalstore-replay \
+  --rust-temporalstore-release \
+  --rust-temporalstore-batch-size 16 \
+  --rust-temporalstore-source-pack-size 0 \
+  --rust-temporalstore-timeout-seconds 900 \
   --rust-temporalstore-score-tolerance 0 \
-  --report /tmp/ts_gapfill_longmem_4_v2_result.json \
-  --misses /tmp/ts_gapfill_longmem_4_v2_misses.jsonl
+  --report /tmp/ts_longmemeval_full_replay_rerun3/longmemeval_s_full_rust_replay_result.json \
+  --misses /tmp/ts_longmemeval_full_replay_rerun3/longmemeval_s_full_rust_replay_misses.jsonl
 ```
 
 | Metric | Result |
@@ -410,13 +414,15 @@ python3 tools/run_longmemeval_s_full_path.py \
 | Conversations loaded | 500 |
 | Source records loaded | 10,960 |
 | Retrieval/context Hit@K | 1.0000000000 |
-| Reader hit rate | 0.9560000000 |
-| Temporal reasoning reader hit | 0.9172932331 |
-| Multi-session reader hit | 0.9548872180 |
-| Multi-session answer-term coverage | 0.4972067039 |
+| Reader hit rate | 0.9740000000 |
+| Reader answer coverage | 0.8695106650 |
+| Answer-term coverage | 0.6398996236 |
 | Token reduction | 81.4016523861 |
-| Retrieval p50 / p95 | 12.932049343 ms / 25.917761883 ms |
-| Reader p50 / p95 | 1.033911016 ms / 6.454977865 ms |
+| Retrieval p95 | 28.978386277 ms |
+| Full Rust replay ready | `true` |
+| Rust/Python case parity | `true` |
+| Rust/Python Hit@K delta | 0.0 |
+| Rust/Python rank delta | 0.0 |
 | Threshold violations | 0 |
 
 ## Live OSS Reader Validation
