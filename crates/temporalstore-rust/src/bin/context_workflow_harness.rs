@@ -1039,7 +1039,10 @@ fn parse_external_context_benchmark_cases(path: &Path) -> Vec<ExternalContextBen
     };
     let mut source_sets = BTreeMap::<String, Vec<ExternalContextBenchmarkSource>>::new();
     let mut cases = Vec::new();
-    for (index, line) in content.lines().enumerate() {
+    // Official LongMemEval-cleaned records can contain Unicode line separators
+    // inside JSON strings. Split JSONL only on physical LF bytes; str::lines()
+    // treats those Unicode separators as record boundaries and corrupts cases.
+    for (index, line) in content.split('\n').enumerate() {
         let trimmed = line.trim().trim_start_matches('\u{feff}');
         if trimmed.is_empty() {
             continue;

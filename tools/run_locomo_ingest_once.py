@@ -944,14 +944,14 @@ def run_rust_temporalstore_batches(
 def pack_rust_temporalstore_sources(path: Path, pack_size: int) -> dict[str, Any]:
     if pack_size <= 0:
         return {"enabled": False, "pack_size": pack_size}
-    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
     packed_lines: list[str] = []
     original_source_count = 0
     packed_source_count = 0
     max_original_sources_per_case = 0
     max_packed_sources_per_case = 0
-    for line in lines:
-        case = json.loads(line)
+    case_count = 0
+    for case in iter_jsonl_cases(path):
+        case_count += 1
         sources = [source for source in case.get("sources", []) if isinstance(source, dict)]
         original_source_count += len(sources)
         max_original_sources_per_case = max(max_original_sources_per_case, len(sources))
@@ -970,7 +970,7 @@ def pack_rust_temporalstore_sources(path: Path, pack_size: int) -> dict[str, Any
     return {
         "enabled": True,
         "pack_size": pack_size,
-        "case_count": len(packed_lines),
+        "case_count": case_count,
         "original_source_count": original_source_count,
         "packed_source_count": packed_source_count,
         "source_count_reduction": original_source_count - packed_source_count,
@@ -1020,10 +1020,9 @@ def most_common_source_kind(kinds: list[str]) -> str:
 
 
 def split_rust_temporalstore_jsonl(path: Path, batch_size: int) -> list[Path]:
-    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    if batch_size <= 0 or len(lines) <= batch_size:
+    cases = list(iter_jsonl_cases(path))
+    if batch_size <= 0 or len(cases) <= batch_size:
         return [path]
-    cases = [json.loads(line) for line in lines]
     groups: list[tuple[str, list[dict[str, Any]]]] = []
     for case in cases:
         signature = rust_temporalstore_source_signature(case)
@@ -1249,12 +1248,23 @@ def normalized_selected_source_ids(raw: Any) -> list[str]:
     return out
 
 
+def iter_jsonl_cases(path: Path):
+    """Read JSONL by physical newlines only.
+
+    Official LongMemEval-cleaned records can contain Unicode line-separator
+    characters inside JSON strings. str.splitlines() treats those characters as
+    record delimiters and corrupts otherwise valid JSONL.
+    """
+
+    with path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if line.strip():
+                yield json.loads(line)
+
+
 def limit_rust_temporalstore_sources(path: Path, source_limit: int, max_events: int) -> None:
     limited = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        case = json.loads(line)
+    for case in iter_jsonl_cases(path):
         sources = case.get("sources")
         query = str(case.get("query") or case.get("question") or "")
         if isinstance(sources, list) and len(sources) > source_limit:
@@ -1276,10 +1286,7 @@ def score_rust_temporalstore_jsonl_with_python(path: Path, max_events: int, *, u
     zero_hit_query_ids: list[str] = []
     retrieval_latencies_ms: list[float] = []
     per_query = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        case = json.loads(line)
+    for case in iter_jsonl_cases(path):
         query_id = str(case.get("query_id") or f"query-{total + 1}")
         query = str(case.get("query") or case.get("question") or "")
         answers = normalize_answers(case.get("answer_terms") or case.get("expected_terms") or case.get("answers"))
