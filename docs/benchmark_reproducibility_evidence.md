@@ -18,6 +18,21 @@ full-dataset gate evidence from a real LongMemEval_s artifact. This page does no
 parity for the live OSS reader path because open-source reader calls have not passed the
 full-dataset thresholds in this evidence set.
 
+Current VikingMem/OpenViking-comparable status:
+
+| Status item | Result | Evidence |
+| --- | --- | --- |
+| Final status archive | blocked closed for paper-comparable scoring | `docs/benchmark_archives/vikingmem_comparable_status_latest.json` |
+| LOCOMO deterministic full Rust replay | passed | 1,542 cases, Hit@K `0.9533073930`, reader hit `0.8839169909`, retrieval p95 `46.160098043 ms`, `rust_temporalstore_full_replay_ready=true` |
+| LongMemEval_s deterministic full Rust replay | passed | 500 cases, Hit@K `1.0`, reader hit `0.974`, retrieval p95 `28.978386277 ms`, `rust_temporalstore_full_replay_ready=true` |
+| Live OSS-reader required run | failed closed | `docs/benchmark_archives/oss_reader_required_failed_latest.json` records that `/v1/models` was reachable, but required `/v1/chat/completions` calls timed out and `reader_open_source_calls=0` |
+
+The deterministic full-replay reports are accepted engineering evidence for the Rust
+TemporalStore-backed ingestion/retrieval path. They are not a VikingMem paper-comparable result.
+A paper-comparable claim requires a live OpenViking/C++ compatible OSS reader run with
+`reader_open_source_calls > 0`, no deterministic fallback, full Rust replay, passing thresholds,
+and `paper_comparable_claim_ready=true`.
+
 ## C++/OpenViking OSS Reader Gap
 
 Status: `blocked_missing_reader_endpoint`
@@ -78,6 +93,7 @@ Current validation rerun:
 | --- | --- | --- |
 | Live OSS-reader endpoint | blocked closed | `docs/benchmark_archives/live_oss_reader_endpoint_failed_latest.json` records `phase=missing_reader_base_url` and `reader_open_source_calls=0` when no endpoint is configured |
 | Packaged HF OSS-reader endpoint | blocked closed | `docs/benchmark_archives/hf_oss_reader_endpoint_failed_latest.json` records `phase=reader_start_failed` because `google/flan-t5-small` was not cached locally and Hugging Face download failed with `Network is unreachable` |
+| OSS-reader required LOCOMO/LongMemEval_s run | blocked closed | `docs/benchmark_archives/oss_reader_required_failed_latest.json` records reachable `/v1/models`, bounded Rust TemporalStore proofs for both datasets, and timeout on required `/v1/chat/completions` |
 | Docker/open-model reader | blocked closed | `docs/benchmark_archives/docker_open_model_failed_latest.json` records `phase=docker_start_failed` because pulling `ollama/ollama:0.3.14` hit a Docker Hub TLS handshake timeout |
 | Release-mode full Rust replay fixture | passed | `tools/run_longmemeval_s_full_path.py --threshold-profile fixture --require-full-rust-temporalstore-replay --rust-temporalstore-release` reports `all_pipelines_use_rust_temporalstore=true` and `rust_temporalstore_full_replay_ready=true` |
 

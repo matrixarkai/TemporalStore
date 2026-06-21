@@ -1,0 +1,57 @@
+{
+  "archive_dir": "/tmp/temporalstore_oss_required_20260621T202127Z",
+  "blockers": [
+    "google/flan-t5-small model files are not available in the local Hugging Face cache",
+    "the live endpoint answers /v1/models but generation does not complete within reader timeout",
+    "reader_open_source_calls remains 0, so VikingMem/OpenViking paper-comparable scoring is not claimed"
+  ],
+  "claim_level": "live_oss_reader_required_failed_closed",
+  "locomo": {
+    "blockers": [
+      "benchmark_gate_failed"
+    ],
+    "dataset": "LOCOMO",
+    "elapsed_seconds": 79.652,
+    "input": "/tmp/locomo10.json",
+    "input_bytes": 2805274,
+    "reader_probe_ok": true,
+    "reader_probe_url": "http://127.0.0.1:8005/v1/models",
+    "ready": false,
+    "returncode": 1,
+    "stderr_tail": "sers/Deeproute/Documents/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStore/tools/run_locomo_90_hit_rate.py\", line 256, in run\n    subprocess.run(command, cwd=cwd, check=True)\n  File \"/usr/lib/python3.10/subprocess.py\", line 526, in run\n    raise CalledProcessError(retcode, process.args,\nsubprocess.CalledProcessError: Command '['/usr/bin/python3', '/mnt/c/Users/Deeproute/Documents/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStore/tools/run_locomo_ingest_once.py', '--input', '/tmp/locomo10.json', '--output', '/tmp/temporalstore_oss_required_20260621T202127Z/locomo_live_oss_benchmark.json', '--misses', '/tmp/temporalstore_oss_required_20260621T202127Z/locomo_live_oss_misses.jsonl', '--min-hit-rate', '0.94', '--min-case-count', '1542', '--min-reader-hit-rate', '0.0', '--min-token-reduction-percent', '0.0', '--max-retrieval-p95-ms', '1000.0', '--max-reader-p95-ms', '30000.0', '--max-events', '128', '--reader-mode', 'open-source', '--reader-provider-name', 'matrixark-cpp-oss-context', '--reader-model', 'google/flan-t5-small', '--reader-api-key-env', 'TEMPORALSTORE_READER_API_KEY', '--reader-timeout-seconds', '20.0', '--reader-max-context-chars', '12000', '--reader-base-url', 'http://127.0.0.1:8005/v1', '--reader-no-fallback', '--require-rust-temporalstore', '--rust-temporalstore-max-cases', '4', '--rust-temporalstore-timeout-seconds', '180.0', '--rust-temporalstore-source-limit', '64', '--rust-temporalstore-batch-size', '0', '--rust-temporalstore-source-pack-size', '32', '--rust-temporalstore-score-tolerance', '0.0', '--rust-temporalstore-report', '/tmp/temporalstore_oss_required_20260621T202127Z/locomo_live_oss_benchmark.rust_temporalstore.json', '--require-open-source-reader']' returned non-zero exit status 1.\n"
+  },
+  "longmemeval_s": {
+    "blockers": [
+      "benchmark_gate_failed"
+    ],
+    "dataset": "LongMemEval_s",
+    "elapsed_seconds": 33.866,
+    "input": "/tmp/longmemeval_s.json",
+    "input_bytes": 15388478,
+    "reader_probe_ok": true,
+    "reader_probe_url": "http://127.0.0.1:8005/v1/models",
+    "ready": false,
+    "returncode": 1,
+    "stderr_tail": "alstore-code-from-matrixarkai/work/TemporalStore/tools/run_longmemeval_s_full_path.py\", line 224, in run\n    subprocess.run(command, cwd=cwd, check=True)\n  File \"/usr/lib/python3.10/subprocess.py\", line 526, in run\n    raise CalledProcessError(retcode, process.args,\nsubprocess.CalledProcessError: Command '['/usr/bin/python3', '/mnt/c/Users/Deeproute/Documents/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStore/tools/run_locomo_ingest_once.py', '--input', '/tmp/longmemeval_s.json', '--output', '/tmp/temporalstore_oss_required_20260621T202127Z/longmemeval_live_oss_benchmark.json', '--misses', '/tmp/temporalstore_oss_required_20260621T202127Z/longmemeval_live_oss_misses.jsonl', '--dataset-name', 'longmemeval_s', '--min-hit-rate', '0.9', '--min-case-count', '500', '--min-reader-hit-rate', '0.0', '--min-token-reduction-percent', '0.0', '--max-retrieval-p95-ms', '1000.0', '--max-reader-p95-ms', '30000.0', '--max-events', '128', '--reader-mode', 'open-source', '--reader-provider-name', 'matrixark-cpp-oss-context', '--reader-model', 'google/flan-t5-small', '--reader-api-key-env', 'TEMPORALSTORE_READER_API_KEY', '--reader-timeout-seconds', '20.0', '--reader-max-context-chars', '12000', '--reader-base-url', 'http://127.0.0.1:8005/v1', '--reader-no-fallback', '--require-rust-temporalstore', '--rust-temporalstore-max-cases', '4', '--rust-temporalstore-timeout-seconds', '180.0', '--rust-temporalstore-source-limit', '64', '--rust-temporalstore-batch-size', '0', '--rust-temporalstore-source-pack-size', '32', '--rust-temporalstore-score-tolerance', '0.0', '--rust-temporalstore-report', '/tmp/temporalstore_oss_required_20260621T202127Z/longmemeval_live_oss_benchmark.rust_temporalstore.json', '--require-open-source-reader']' returned non-zero exit status 1.\n"
+  },
+  "paper_comparable_claim_ready": false,
+  "phase": "chat_completion_timeout",
+  "reader_base_url": "http://127.0.0.1:8005/v1",
+  "reader_model": "google/flan-t5-small",
+  "reader_open_source_calls": 0,
+  "reader_provider_name": "matrixark-cpp-oss-context",
+  "rust_temporalstore_bounded_proof": {
+    "locomo": {
+      "case_count": 4,
+      "executed": true,
+      "hit_at_k_delta": 0.0
+    },
+    "longmemeval_s": {
+      "case_count": 4,
+      "executed": true,
+      "hit_at_k_delta": 0.0
+    }
+  },
+  "schema": "matrixark_vikingmem_live_oss_reader_required_archive_v1",
+  "summary": "The packaged OpenAI-compatible HF endpoint answered /v1/models, but both LOCOMO and LongMemEval_s failed closed because required /v1/chat/completions calls timed out while the model was unavailable locally."
+}

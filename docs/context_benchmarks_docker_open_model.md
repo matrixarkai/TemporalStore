@@ -190,6 +190,19 @@ complete the live gate, pre-populate the Hugging Face cache or pass
 `tools/run_context_benchmarks_oss_reader_endpoint.sh` against the same
 `TEMPORALSTORE_READER_BASE_URL`.
 
+The later required-reader run reached the packaged endpoint at `/v1/models`, then
+failed closed on both real datasets because `/v1/chat/completions` timed out while
+the model was still unavailable locally:
+
+```text
+docs/benchmark_archives/oss_reader_required_failed_latest.json
+```
+
+That archive is the current honest VikingMem/OpenViking live-reader status:
+endpoint packaging is proven far enough to answer model discovery, Rust
+TemporalStore bounded proofs execute, but `reader_open_source_calls = 0` and no
+paper-comparable score is claimed.
+
 If Docker Hub, the local registry, or the model registry is unreachable, the
 script exits non-zero and still writes a manifest with `phase` set to
 `docker_start_failed` or `model_pull_failed`.

@@ -160,6 +160,17 @@ deterministic reader results above are useful regression gates, but paper-compar
 claims still require `reader_open_source_calls > 0` through the matching OpenViking/C++ reader
 endpoint and archived `*_paper_comparable_report.json` output.
 
+Final checked-in status archive:
+
+```text
+docs/benchmark_archives/vikingmem_comparable_status_latest.json
+```
+
+It records that LOCOMO and LongMemEval_s deterministic full Rust replay pass, while the required
+live OSS-reader run remains blocked closed. The packaged HF endpoint answered `/v1/models`, but
+both real dataset runs timed out on required `/v1/chat/completions`; therefore
+`reader_open_source_calls=0` and `paper_comparable_claim_ready=false`.
+
 Current fail-closed status:
 
 - LOCOMO and LongMemEval_s live OSS-reader gates remain blocked when neither `--reader-base-url`
