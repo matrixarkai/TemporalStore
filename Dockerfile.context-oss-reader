@@ -1,0 +1,20 @@
+FROM python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    TEMPORALSTORE_READER_MODEL=google/flan-t5-small \
+    TEMPORALSTORE_HF_READER_HOST=0.0.0.0 \
+    TEMPORALSTORE_HF_READER_PORT=8000
+
+RUN python -m pip install --no-cache-dir --upgrade pip \
+    && python -m pip install --no-cache-dir \
+      torch --index-url https://download.pytorch.org/whl/cpu \
+    && python -m pip install --no-cache-dir \
+      transformers==4.45.2 \
+      sentencepiece==0.2.0 \
+      safetensors==0.4.5
+
+WORKDIR /app
+COPY tools/openai_compatible_hf_reader.py /app/openai_compatible_hf_reader.py
+
+EXPOSE 8000
+CMD ["python", "/app/openai_compatible_hf_reader.py"]

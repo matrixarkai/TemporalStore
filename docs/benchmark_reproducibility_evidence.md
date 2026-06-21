@@ -77,6 +77,7 @@ Current validation rerun:
 | Gate | Result | Evidence |
 | --- | --- | --- |
 | Live OSS-reader endpoint | blocked closed | `docs/benchmark_archives/live_oss_reader_endpoint_failed_latest.json` records `phase=missing_reader_base_url` and `reader_open_source_calls=0` when no endpoint is configured |
+| Packaged HF OSS-reader endpoint | blocked closed | `docs/benchmark_archives/hf_oss_reader_endpoint_failed_latest.json` records `phase=reader_start_failed` because `google/flan-t5-small` was not cached locally and Hugging Face download failed with `Network is unreachable` |
 | Docker/open-model reader | blocked closed | `docs/benchmark_archives/docker_open_model_failed_latest.json` records `phase=docker_start_failed` because pulling `ollama/ollama:0.3.14` hit a Docker Hub TLS handshake timeout |
 | Release-mode full Rust replay fixture | passed | `tools/run_longmemeval_s_full_path.py --threshold-profile fixture --require-full-rust-temporalstore-replay --rust-temporalstore-release` reports `all_pipelines_use_rust_temporalstore=true` and `rust_temporalstore_full_replay_ready=true` |
 

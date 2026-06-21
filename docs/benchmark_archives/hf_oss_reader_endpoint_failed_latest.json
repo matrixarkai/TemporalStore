@@ -1,0 +1,20 @@
+{
+  "archive_dir": "/tmp/temporalstore_hf_oss_reader_reports/hf_oss_reader_endpoint_20260621T200932Z",
+  "blockers": [
+    "Hugging Face model files for google/flan-t5-small were not cached locally",
+    "WSL model download failed with Network is unreachable while requesting huggingface.co"
+  ],
+  "claim_level": "live_oss_reader_endpoint_smoke",
+  "created_at_utc": "20260621T200932Z",
+  "error": "reader did not answer /v1/models; see reader.log",
+  "paper_comparable_claim_ready": false,
+  "phase": "reader_start_failed",
+  "reader_base_url": "http://127.0.0.1:8000/v1",
+  "reader_log_tail": " send\n    raise RuntimeError(\"Cannot send a request, as the client has been closed.\")\nRuntimeError: Cannot send a request, as the client has been closed.\n\nDuring handling of the above exception, another exception occurred:\n\nTraceback (most recent call last):\n  File \"/mnt/c/Users/Deeproute/Documents/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStore/tools/openai_compatible_hf_reader.py\", line 163, in <module>\n    raise SystemExit(main())\n  File \"/mnt/c/Users/Deeproute/Documents/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStore/tools/openai_compatible_hf_reader.py\", line 154, in main\n    state.ensure_loaded()\n  File \"/mnt/c/Users/Deeproute/Documents/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStore/tools/openai_compatible_hf_reader.py\", line 42, in ensure_loaded\n    self._tokenizer = AutoTokenizer.from_pretrained(self.model_name)\n  File \"/root/.local/lib/python3.10/site-packages/transformers/models/auto/tokenization_auto.py\", line 720, in from_pretrained\n    config = PreTrainedConfig.from_pretrained(pretrained_model_name_or_path, **kwargs)\n  File \"/root/.local/lib/python3.10/site-packages/transformers/configuration_utils.py\", line 646, in from_pretrained\n    config_dict, kwargs = cls.get_config_dict(pretrained_model_name_or_path, **kwargs)\n  File \"/root/.local/lib/python3.10/site-packages/transformers/configuration_utils.py\", line 687, in get_config_dict\n    config_dict, kwargs = cls._get_config_dict(pretrained_model_name_or_path, **kwargs)\n  File \"/root/.local/lib/python3.10/site-packages/transformers/configuration_utils.py\", line 764, in _get_config_dict\n    raise OSError(\nOSError: Can't load the configuration of 'google/flan-t5-small'. If you were trying to load it from 'https://huggingface.co/models', make sure you don't have a local directory with the same name. Otherwise, make sure 'google/flan-t5-small' is the correct path to a directory containing a config.json file\n",
+  "reader_model": "google/flan-t5-small",
+  "reader_open_source_calls": 0,
+  "reader_provider_name": "matrixark-cpp-oss-context",
+  "schema": "matrixark_vikingmem_live_oss_reader_endpoint_archive_v1",
+  "smoke_input": "/mnt/c/Users/Deeproute/Documents/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStore/tools/fixtures/longmemeval_s_full_path_fixture.json",
+  "smoke_status": "not_run"
+}

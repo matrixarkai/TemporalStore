@@ -5,6 +5,12 @@ LongMemEval_s runners already support. It starts an Ollama OpenAI-compatible
 reader endpoint in Docker, runs the benchmark runners from a Python container,
 and archives reports under `benchmark_reports/`.
 
+The repo also includes a Hugging Face Transformers endpoint for the exact
+`matrixark-cpp-oss-context` text-reader profile. It serves the OpenAI-compatible
+`/v1/models` and `/v1/chat/completions` APIs from
+`tools/openai_compatible_hf_reader.py`, defaults to `google/flan-t5-small`, and
+is packaged by `Dockerfile.context-oss-reader`.
+
 Claim level: packaged open-model benchmark path. A production parity claim requires a mounted real
 dataset, a successful real reader call, and passing threshold output in the archived report.
 
@@ -45,7 +51,36 @@ bash tools/run_context_benchmarks_docker_open_model.sh
 The Docker/Ollama path above is useful when the chosen model is available in
 Ollama. The C++/MatrixArk/OpenViking benchmark path uses the
 `matrixark-cpp-oss-context` profile with `google/flan-t5-small`. Run that exact
-reader/model through an already-started OpenAI-compatible endpoint with:
+reader/model through the packaged Hugging Face endpoint with:
+
+```bash
+TEMPORALSTORE_READER_MODEL=google/flan-t5-small \
+TEMPORALSTORE_BENCHMARK_REPORT_DIR=/tmp/temporalstore_hf_oss_reader_reports \
+bash tools/run_hf_oss_reader_endpoint.sh
+```
+
+That script starts `tools/openai_compatible_hf_reader.py`, waits for
+`/v1/models`, and runs a fixture smoke through the LongMemEval_s runner with
+`--reader-mode open-source`, `--require-open-source-reader`, and the Rust
+TemporalStore backend enabled. For a long-running endpoint without the smoke,
+set `TEMPORALSTORE_OSS_READER_RUN_SMOKE=0` and use:
+
+```bash
+TEMPORALSTORE_READER_BASE_URL=http://127.0.0.1:8000/v1 \
+TEMPORALSTORE_READER_PROVIDER_NAME=matrixark-cpp-oss-context \
+TEMPORALSTORE_READER_MODEL=google/flan-t5-small \
+bash tools/run_context_benchmarks_oss_reader_endpoint.sh
+```
+
+To build the same endpoint in Docker:
+
+```bash
+docker-compose -f docker-compose.context-benchmarks.yml build hf-reader
+docker-compose -f docker-compose.context-benchmarks.yml up -d hf-reader
+```
+
+When the endpoint is already running, execute the full dataset benchmark path
+with:
 
 ```bash
 TEMPORALSTORE_READER_BASE_URL=http://127.0.0.1:8000/v1 \
@@ -112,6 +147,48 @@ fail closed unless the parity result is on par. Use
 `--skip-rust-temporalstore --allow-python-only-diagnostic` only for diagnostic Python-only runs;
 those reports are not accepted as Rust-backed benchmark evidence. Production benchmark evidence
 requires `all_pipelines_use_rust_temporalstore=true`.
+
+## Hugging Face Endpoint Validation
+
+Local validation on 2026-06-21 packaged the endpoint and attempted to start the
+live `google/flan-t5-small` reader:
+
+```bash
+TEMPORALSTORE_BENCHMARK_REPORT_DIR=/tmp/temporalstore_hf_oss_reader_reports \
+TEMPORALSTORE_READER_MODEL=google/flan-t5-small \
+TEMPORALSTORE_HF_READER_PORT=8000 \
+bash tools/run_hf_oss_reader_endpoint.sh
+```
+
+Packaging checks passed:
+
+```bash
+bash -n tools/run_hf_oss_reader_endpoint.sh
+python3 -m py_compile tools/openai_compatible_hf_reader.py
+docker-compose -f docker-compose.context-benchmarks.yml config
+```
+
+The live run failed closed before any benchmark score because the requested model
+was not cached locally and WSL could not reach Hugging Face:
+
+```text
+Network is unreachable while requesting
+https://huggingface.co/google/flan-t5-small/resolve/main/config.json
+```
+
+Failure archive:
+
+```text
+docs/benchmark_archives/hf_oss_reader_endpoint_failed_latest.json
+```
+
+No paper-comparable claim is made from this run:
+`reader_open_source_calls = 0` and `paper_comparable_claim_ready = false`. To
+complete the live gate, pre-populate the Hugging Face cache or pass
+`TEMPORALSTORE_READER_MODEL=/path/to/local/flan-t5-small`, rerun
+`tools/run_hf_oss_reader_endpoint.sh`, then run
+`tools/run_context_benchmarks_oss_reader_endpoint.sh` against the same
+`TEMPORALSTORE_READER_BASE_URL`.
 
 If Docker Hub, the local registry, or the model registry is unreachable, the
 script exits non-zero and still writes a manifest with `phase` set to

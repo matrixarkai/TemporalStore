@@ -11,6 +11,24 @@ services:
       timeout: 5s
       retries: 30
 
+  hf-reader:
+    build:
+      context: .
+      dockerfile: Dockerfile.context-oss-reader
+    environment:
+      TEMPORALSTORE_READER_MODEL: "${TEMPORALSTORE_READER_MODEL:-google/flan-t5-small}"
+      TEMPORALSTORE_HF_READER_HOST: "0.0.0.0"
+      TEMPORALSTORE_HF_READER_PORT: "8000"
+    ports:
+      - "${TEMPORALSTORE_HF_READER_PORT:-8000}:8000"
+    volumes:
+      - temporalstore-hf-cache:/root/.cache/huggingface
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/models', timeout=2).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+
   benchmark-runner:
     image: python:3.11-slim
     working_dir: /workspace
@@ -30,3 +48,4 @@ services:
 
 volumes:
   temporalstore-ollama:
+  temporalstore-hf-cache:
