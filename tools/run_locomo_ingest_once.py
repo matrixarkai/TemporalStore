@@ -457,6 +457,7 @@ def main() -> int:
     ]
 
     report = {
+        "schema": "matrixark_vikingmem_context_benchmark_report_v1",
         "mode": "conversation_load_once_query_many",
         "benchmark_family": "vikingmem_long_memory",
         "dataset": args.dataset_name or dominant_dataset_name(dataset_counts),

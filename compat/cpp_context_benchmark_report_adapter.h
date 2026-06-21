@@ -43,6 +43,7 @@ struct ContextBenchmarkPerQueryRow {
   int64_t expected_source_refs = 0;
   int64_t matched_source_refs = 0;
   int64_t retrieved_blocks = 0;
+  int64_t retrieved_source_groups = 0;
   int64_t source_tokens = 0;
   int64_t retrieved_tokens = 0;
   double token_reduction_percent = 0.0;
@@ -51,13 +52,16 @@ struct ContextBenchmarkPerQueryRow {
   std::vector<std::string> expected_answer_terms;
   std::vector<std::string> expected_source_ref_ids;
   std::vector<std::string> retrieved_source_ids;
+  std::vector<std::string> retrieved_source_group_ids;
 };
 
 struct ContextBenchmarkReport {
+  std::string schema = "matrixark_vikingmem_context_benchmark_report_v1";
   std::string benchmark_family = "vikingmem_long_memory";
   std::string dataset;
   std::string mode = "conversation_load_once_query_many";
   std::string input;
+  std::string input_sha256;
   std::string reader_mode_requested;
   std::string reader_mode_effective;
   std::string reader_provider_name;
@@ -67,6 +71,7 @@ struct ContextBenchmarkReport {
   int64_t case_count = 0;
   int64_t conversation_count = 0;
   int64_t source_count = 0;
+  int64_t input_bytes = 0;
   int64_t benchmark_per_query_count = 0;
   int64_t reader_open_source_calls = 0;
   int64_t reader_fallback_count = 0;
@@ -89,8 +94,11 @@ struct ContextBenchmarkReport {
   double benchmark_reader_p50_ms = 0.0;
   double benchmark_reader_p95_ms = 0.0;
   double benchmark_avg_retrieved_blocks_per_query = 0.0;
+  double benchmark_avg_retrieved_source_groups_per_query = 0.0;
+  double benchmark_multi_source_group_query_rate = 0.0;
   double benchmark_avg_source_tokens_per_query = 0.0;
   double benchmark_avg_retrieved_tokens_per_query = 0.0;
+  double benchmark_max_retrieved_tokens_per_query = 0.0;
 
   bool benchmark_quality_ready = false;
   bool benchmark_threshold_passed = false;
@@ -139,6 +147,8 @@ inline nlohmann::json ToJson(const ContextBenchmarkPerQueryRow& row) {
       {"matched_source_refs", row.matched_source_refs},
       {"retrieved_blocks", row.retrieved_blocks},
       {"retrieved_source_ids", row.retrieved_source_ids},
+      {"retrieved_source_groups", row.retrieved_source_groups},
+      {"retrieved_source_group_ids", row.retrieved_source_group_ids},
       {"source_tokens", row.source_tokens},
       {"retrieved_tokens", row.retrieved_tokens},
       {"token_reduction_percent", row.token_reduction_percent},
@@ -153,10 +163,13 @@ inline nlohmann::json ToJson(const ContextBenchmarkReport& report) {
     rows.push_back(ToJson(row));
   }
   return nlohmann::json{
+      {"schema", report.schema},
       {"mode", report.mode},
       {"benchmark_family", report.benchmark_family},
       {"dataset", report.dataset},
       {"input", report.input},
+      {"input_sha256", report.input_sha256},
+      {"input_bytes", report.input_bytes},
       {"case_count", report.case_count},
       {"conversation_count", report.conversation_count},
       {"source_count", report.source_count},
@@ -197,15 +210,21 @@ inline nlohmann::json ToJson(const ContextBenchmarkReport& report) {
       {"benchmark_reader_p50_ms", report.benchmark_reader_p50_ms},
       {"benchmark_reader_p95_ms", report.benchmark_reader_p95_ms},
       {"benchmark_avg_retrieved_blocks_per_query", report.benchmark_avg_retrieved_blocks_per_query},
+      {"benchmark_avg_retrieved_source_groups_per_query", report.benchmark_avg_retrieved_source_groups_per_query},
+      {"benchmark_multi_source_group_query_rate", report.benchmark_multi_source_group_query_rate},
       {"benchmark_avg_source_tokens_per_query", report.benchmark_avg_source_tokens_per_query},
       {"benchmark_avg_retrieved_tokens_per_query", report.benchmark_avg_retrieved_tokens_per_query},
+      {"benchmark_max_retrieved_tokens_per_query", report.benchmark_max_retrieved_tokens_per_query},
       {"benchmark_token_reduction_percent", report.benchmark_token_reduction_percent},
   };
 }
 
 inline void ValidateReportContract(const nlohmann::json& report) {
   static const std::vector<std::string> required = {
+      "schema",
       "benchmark_family",
+      "input_sha256",
+      "input_bytes",
       "benchmark_hit_at_k",
       "benchmark_recall_at_k",
       "benchmark_mean_reciprocal_rank",
@@ -224,6 +243,9 @@ inline void ValidateReportContract(const nlohmann::json& report) {
       "weak_categories",
       "weak_category_policy",
       "benchmark_per_query_count",
+      "benchmark_avg_retrieved_source_groups_per_query",
+      "benchmark_multi_source_group_query_rate",
+      "benchmark_max_retrieved_tokens_per_query",
       "case_count",
       "hit_rate",
       "reader_hit_rate",
@@ -252,6 +274,8 @@ inline void ValidateReportContract(const nlohmann::json& report) {
       "expected_answer_terms",
       "expected_source_ref_ids",
       "retrieved_source_ids",
+      "retrieved_source_groups",
+      "retrieved_source_group_ids",
       "retrieval_ms",
       "reader_ms",
       "retrieved_blocks",

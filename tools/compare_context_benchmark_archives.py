@@ -65,6 +65,10 @@ def main() -> int:
         "reader_cpp_only": 0,
         "reader_shared_hard": 0,
     }
+    summary_compare: dict[str, Any] = {}
+    category_compare: dict[str, Any] = {}
+    token_reduction_delta: dict[str, Any] = {}
+    latency_deltas: dict[str, Any] = {}
     require_executed = args.require_executed or args.truth_mode == "production"
 
     compare_manifest_field("reader_model", rust_manifest, cpp_manifest, failures)
@@ -107,6 +111,10 @@ def main() -> int:
                 miss_totals["reader_cpp_only"] += int(compare_result.get("reader_cpp_only_miss_count") or 0)
                 miss_totals["reader_shared_hard"] += int(compare_result.get("reader_shared_hard_miss_count") or 0)
                 failures.extend(f"{dataset}: {item}" for item in compare_result["failures"])
+                summary_compare[dataset] = compare_result.get("summary_compare") or {}
+                category_compare[dataset] = compare_result.get("category_compare") or {}
+                token_reduction_delta[dataset] = compare_result.get("token_reduction_delta")
+                latency_deltas[dataset] = compare_result.get("latency_deltas") or {}
                 if not compare_result["ready"]:
                     truth_blockers.append(f"{dataset}: report comparison failed")
         elif rust_status in SKIPPED_STATUSES and cpp_status in SKIPPED_STATUSES:
@@ -143,6 +151,10 @@ def main() -> int:
         "dataset_count": len(dataset_results),
         "executed_dataset_count": executed_dataset_count,
         "miss_totals": miss_totals,
+        "summary_compare": summary_compare,
+        "category_compare": category_compare,
+        "token_reduction_delta": token_reduction_delta,
+        "latency_deltas": latency_deltas,
         "failure_count": len(failures),
         "failures": failures,
         "datasets": dataset_results,

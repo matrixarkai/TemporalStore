@@ -1,0 +1,299 @@
+{
+  "archive_required_fields_ready": true,
+  "category_breakdown": {
+    "knowledge_update": {
+      "answer_term_coverage": 0.7596153846153846,
+      "case_count": 78,
+      "deterministic_reader_answer_coverage": 0.8461538461538461,
+      "deterministic_reader_hit_rate": 0.9871794871794872,
+      "hit_rate": 1.0,
+      "mean_reciprocal_rank": 1.0,
+      "reader_answer_coverage": 0.8461538461538461,
+      "reader_hit_rate": 0.9871794871794872,
+      "zero_hit_queries": 0
+    },
+    "multi_session": {
+      "answer_term_coverage": 0.4972067039106145,
+      "case_count": 133,
+      "deterministic_reader_answer_coverage": 0.8212290502793296,
+      "deterministic_reader_hit_rate": 0.9323308270676691,
+      "hit_rate": 1.0,
+      "mean_reciprocal_rank": 1.0,
+      "reader_answer_coverage": 0.8212290502793296,
+      "reader_hit_rate": 0.9323308270676691,
+      "zero_hit_queries": 0
+    },
+    "single_session_assistant": {
+      "answer_term_coverage": 0.9411764705882353,
+      "case_count": 56,
+      "deterministic_reader_answer_coverage": 0.9411764705882353,
+      "deterministic_reader_hit_rate": 0.9464285714285714,
+      "hit_rate": 1.0,
+      "mean_reciprocal_rank": 1.0,
+      "reader_answer_coverage": 0.9411764705882353,
+      "reader_hit_rate": 0.9464285714285714,
+      "zero_hit_queries": 0
+    },
+    "single_session_preference": {
+      "answer_term_coverage": 0.5,
+      "case_count": 30,
+      "deterministic_reader_answer_coverage": 0.8584905660377359,
+      "deterministic_reader_hit_rate": 1.0,
+      "hit_rate": 1.0,
+      "mean_reciprocal_rank": 1.0,
+      "reader_answer_coverage": 0.8584905660377359,
+      "reader_hit_rate": 1.0,
+      "zero_hit_queries": 0
+    },
+    "single_session_user": {
+      "answer_term_coverage": 0.7619047619047619,
+      "case_count": 70,
+      "deterministic_reader_answer_coverage": 0.8690476190476191,
+      "deterministic_reader_hit_rate": 0.9857142857142858,
+      "hit_rate": 1.0,
+      "mean_reciprocal_rank": 1.0,
+      "reader_answer_coverage": 0.8690476190476191,
+      "reader_hit_rate": 0.9857142857142858,
+      "zero_hit_queries": 0
+    },
+    "temporal_reasoning": {
+      "answer_term_coverage": 0.606694560669456,
+      "case_count": 133,
+      "deterministic_reader_answer_coverage": 0.7740585774058577,
+      "deterministic_reader_hit_rate": 0.8721804511278195,
+      "hit_rate": 1.0,
+      "mean_reciprocal_rank": 1.0,
+      "reader_answer_coverage": 0.7740585774058577,
+      "reader_hit_rate": 0.8721804511278195,
+      "zero_hit_queries": 0
+    }
+  },
+  "claim_level": "paper_comparable_report_fields",
+  "created_at_unix": 1782020651,
+  "dataset": {
+    "bytes": 15388478,
+    "case_count": 500,
+    "conversation_count": 500,
+    "input": "/tmp/longmemeval_s.json",
+    "name": "longmemeval_s",
+    "record_counts": {
+      "longmemeval_s": 500
+    },
+    "sha256": "821a2034d219ab45846873dd14c14f12cfe7776e73527a483f9dac095d38620c",
+    "source_count": 10960
+  },
+  "metrics": {
+    "answer_term_coverage": 0.6398996235884568,
+    "avg_retrieved_blocks_per_query": 12.846,
+    "avg_retrieved_tokens_per_query": 927.404,
+    "avg_source_tokens_per_query": 4986.486,
+    "evidence_ref_coverage": 0.9789029535864979,
+    "hit_at_k": 1.0,
+    "mean_reciprocal_rank": 1.0,
+    "reader_answer_coverage": 0.8331242158092849,
+    "reader_hit_rate": 0.938,
+    "reader_p50_ms": 2.1974859409965575,
+    "reader_p95_ms": 6.557430751854554,
+    "recall_at_k": 1.0,
+    "retrieval_p50_ms": 12.36202399013564,
+    "retrieval_p95_ms": 24.51610353309661,
+    "token_reduction_percent": 81.40165238606907
+  },
+  "model": {
+    "provider_name": "matrixark-cpp-oss-context",
+    "reader_error_count": 0,
+    "reader_fallback_count": 0,
+    "reader_mode_effective": "deterministic",
+    "reader_mode_requested": "deterministic",
+    "reader_model": "google/flan-t5-small",
+    "reader_open_source_calls": 0
+  },
+  "paper_name": "VikingMem/OpenViking long-memory benchmark",
+  "prompt": {
+    "max_context_chars": 12000,
+    "system": "You are an extractive long-memory benchmark reader. Answer only from the supplied context. Prefer short spans, names, dates, yes/no, or comma-separated lists. If the context is insufficient, say not enough context.",
+    "user_template": "Question: {question}\n\nContext:\n{context}\n\nAnswer:"
+  },
+  "quality_gate": {
+    "gold_evidence_window_used": false,
+    "paper_comparable_claim_ready": true,
+    "passed": true,
+    "quality_ready": true,
+    "violation_count": 0,
+    "violations": []
+  },
+  "report_contract_format": "matrixark_vikingmem_context_benchmark_report_v1",
+  "report_path": "/tmp/ts_contract_longmem_4_result.json",
+  "rust_temporalstore_backend": {
+    "case_count": 4,
+    "converted_jsonl": "/tmp/ts_contract_longmem_4.jsonl",
+    "full_replay_ready": false,
+    "full_replay_required": false,
+    "ready": true,
+    "report_path": "/tmp/ts_contract_longmem_4_harness.json",
+    "required": true,
+    "score_parity": {
+      "absolute_delta": 0.0,
+      "case_count_on_par": true,
+      "effective_tolerance": 1e-06,
+      "hit_at_k_delta": 0.0,
+      "mean_reciprocal_rank_delta": 0.0,
+      "on_par": true,
+      "per_query_delta": {
+        "extra_in_rust": [],
+        "extra_in_rust_count": 0,
+        "hit_delta_count": 0,
+        "hit_deltas": [],
+        "missing_in_rust": [],
+        "missing_in_rust_count": 0,
+        "on_par": true,
+        "python_query_count": 4,
+        "python_zero_hit_query_ids": [],
+        "rank_delta_count": 0,
+        "rank_deltas": [],
+        "retrieval_latency_delta_p50_ms": 1217.6107709915377,
+        "retrieval_latency_delta_p95_ms": 1323.5821215352976,
+        "rust_query_count": 4,
+        "rust_zero_hit_query_ids": [],
+        "selected_source_id_delta_count": 4,
+        "selected_source_id_deltas": [
+          {
+            "python_selected_source_ids": [
+              "gpt4 2655b836 answer 4be1b6b4 2 turn 12",
+              "gpt4 2655b836 answer 4be1b6b4 2 turn 1",
+              "gpt4 2655b836 answer 4be1b6b4 2 turn 9",
+              "gpt4 2655b836 answer 4be1b6b4 2 turn 11",
+              "gpt4 2655b836 answer 4be1b6b4 3 turn 3",
+              "gpt4 2655b836 answer 4be1b6b4 3 turn 5",
+              "gpt4 2655b836 answer 4be1b6b4 3 turn 11",
+              "gpt4 2655b836 answer 4be1b6b4 1 turn 1",
+              "gpt4 2655b836 answer 4be1b6b4 1 turn 5",
+              "gpt4 2655b836 answer 4be1b6b4 1 turn 12"
+            ],
+            "query_id": "gpt4_2655b836-q1",
+            "rust_selected_source_ids": [
+              "gpt4 2655b836 answer 4be1b6b4 2 turn 12",
+              "tsctx tenant 16879803879552477537 node 1663123826598723896 source gpt4 2655b836 answer 4be1b6b4 2 turn 12",
+              "tsctx tenant 16879803879552477537 node 1663123826598723896 source gpt4 2655b836 answer 4be1b6b4 2 turn 12",
+              "tsctx tenant 16879803879552477537 node 1631259883655359962 source gpt4 2655b836 answer 4be1b6b4 2 turn 1",
+              "gpt4 2655b836 answer 4be1b6b4 2 turn 1",
+              "gpt4 2655b836 answer 4be1b6b4 2 turn 11",
+              "gpt4 2655b836 answer 4be1b6b4 2 turn 10",
+              "tsctx tenant 16879803879552477537 node 1631259883655359962 source gpt4 2655b836 answer 4be1b6b4 2 turn 1",
+              "tsctx tenant 16879803879552477537 node 1663127125133608529 source gpt4 2655b836 answer 4be1b6b4 2 turn 11",
+              "tsctx tenant 16879803879552477537 node 1663126025621980318 source gpt4 2655b836 answer 4be1b6b4 2 turn 10"
+            ],
+            "shared_selected_source_id_count": 14
+          },
+          {
+            "python_selected_source_ids": [
+              "gpt4 2487a7cb answer 1c6b85ea 2 turn 3",
+              "gpt4 2487a7cb answer 1c6b85ea 2 turn 6",
+              "gpt4 2487a7cb answer 1c6b85ea 1 turn 11",
+              "gpt4 2487a7cb answer 1c6b85ea 1 turn 2",
+              "gpt4 2487a7cb answer 1c6b85ea 1 turn 4",
+              "gpt4 2487a7cb answer 1c6b85ea 2 turn 2",
+              "gpt4 2487a7cb answer 1c6b85ea 2 turn 4",
+              "gpt4 2487a7cb answer 1c6b85ea 2 turn 10",
+              "gpt4 2487a7cb answer 1c6b85ea 1 turn 8",
+              "gpt4 2487a7cb answer 1c6b85ea 1 turn 10"
+            ],
+            "query_id": "gpt4_2487a7cb-q1",
+            "rust_selected_source_ids": [
+              "gpt4 2487a7cb answer 1c6b85ea 1 turn 2",
+              "tsctx tenant 12399112047656896149 node 3034184198801261432 source gpt4 2487a7cb answer 1c6b85ea 1 turn 2",
+              "tsctx tenant 12399112047656896149 node 3034184198801261432 source gpt4 2487a7cb answer 1c6b85ea 1 turn 2",
+              "gpt4 2487a7cb answer 1c6b85ea 2 turn 3",
+              "tsctx tenant 12399112047656896149 node 14897804254153834840 source gpt4 2487a7cb answer 1c6b85ea 2 turn 3",
+              "tsctx tenant 12399112047656896149 node 14897804254153834840 source gpt4 2487a7cb answer 1c6b85ea 2 turn 3",
+              "gpt4 2487a7cb answer 1c6b85ea 2 turn 6",
+              "tsctx tenant 12399112047656896149 node 14897809751711975895 source gpt4 2487a7cb answer 1c6b85ea 2 turn 6",
+              "tsctx tenant 12399112047656896149 node 14897809751711975895 source gpt4 2487a7cb answer 1c6b85ea 2 turn 6",
+              "gpt4 2487a7cb answer 1c6b85ea 1 turn 11"
+            ],
+            "shared_selected_source_id_count": 14
+          },
+          {
+            "python_selected_source_ids": [
+              "gpt4 76048e76 answer b535969f 2 turn 1",
+              "gpt4 76048e76 answer b535969f 2 turn 6",
+              "gpt4 76048e76 answer b535969f 2 turn 12",
+              "gpt4 76048e76 answer b535969f 1 turn 1",
+              "gpt4 76048e76 answer b535969f 1 turn 2",
+              "gpt4 76048e76 answer b535969f 1 turn 6",
+              "gpt4 76048e76 answer b535969f 1 turn 9",
+              "gpt4 76048e76 answer b535969f 1 turn 10",
+              "gpt4 76048e76 answer b535969f 1 turn 12",
+              "gpt4 76048e76 answer b535969f 2 turn 2"
+            ],
+            "query_id": "gpt4_76048e76-q1",
+            "rust_selected_source_ids": [
+              "gpt4 76048e76 answer b535969f 2 turn 1",
+              "gpt4 76048e76 answer b535969f 2 turn 12",
+              "gpt4 76048e76 answer b535969f 2 turn 10",
+              "tsctx tenant 5368445526348536052 node 13251438115859148544 source gpt4 76048e76 answer b535969f 2 turn 1",
+              "tsctx tenant 5368445526348536052 node 6338582721432990198 source gpt4 76048e76 answer b535969f 2 turn 12",
+              "tsctx tenant 5368445526348536052 node 6338580522409733776 source gpt4 76048e76 answer b535969f 2 turn 10",
+              "tsctx tenant 5368445526348536052 node 13251438115859148544 source gpt4 76048e76 answer b535969f 2 turn 1",
+              "tsctx tenant 5368445526348536052 node 6338582721432990198 source gpt4 76048e76 answer b535969f 2 turn 12",
+              "tsctx tenant 5368445526348536052 node 6338580522409733776 source gpt4 76048e76 answer b535969f 2 turn 10",
+              "gpt4 76048e76 answer b535969f 2 turn 6"
+            ],
+            "shared_selected_source_id_count": 14
+          },
+          {
+            "python_selected_source_ids": [
+              "gpt4 2312f94c answer 5328c3c2 2 turn 4",
+              "gpt4 2312f94c answer 5328c3c2 2 turn 2",
+              "gpt4 2312f94c answer 5328c3c2 2 turn 1",
+              "gpt4 2312f94c answer 5328c3c2 1 turn 2",
+              "gpt4 2312f94c answer 5328c3c2 1 turn 6",
+              "gpt4 2312f94c answer 5328c3c2 1 turn 1",
+              "gpt4 2312f94c answer 5328c3c2 1 turn 4",
+              "gpt4 2312f94c answer 5328c3c2 1 turn 8",
+              "gpt4 2312f94c answer 5328c3c2 1 turn 12",
+              "gpt4 2312f94c answer 5328c3c2 2 turn 6"
+            ],
+            "query_id": "gpt4_2312f94c-q1",
+            "rust_selected_source_ids": [
+              "gpt4 2312f94c answer 5328c3c2 2 turn 4",
+              "tsctx tenant 15100871954877427895 node 3873503559982019300 source gpt4 2312f94c answer 5328c3c2 2 turn 4",
+              "tsctx tenant 15100871954877427895 node 3873503559982019300 source gpt4 2312f94c answer 5328c3c2 2 turn 4",
+              "gpt4 2312f94c answer 5328c3c2 2 turn 2",
+              "tsctx tenant 15100871954877427895 node 3873501360958762878 source gpt4 2312f94c answer 5328c3c2 2 turn 2",
+              "tsctx tenant 15100871954877427895 node 3873501360958762878 source gpt4 2312f94c answer 5328c3c2 2 turn 2",
+              "gpt4 2312f94c answer 5328c3c2 2 turn 1",
+              "gpt4 2312f94c answer 5328c3c2 2 turn 10",
+              "tsctx tenant 15100871954877427895 node 3873500261447134667 source gpt4 2312f94c answer 5328c3c2 2 turn 1",
+              "tsctx tenant 15100871954877427895 node 5196938267207590273 source gpt4 2312f94c answer 5328c3c2 2 turn 10"
+            ],
+            "shared_selected_source_id_count": 14
+          }
+        ],
+        "zero_hit_query_ids_match": true
+      },
+      "python_case_count": 4,
+      "python_hit_at_k": 1.0,
+      "python_mean_reciprocal_rank": 1.0,
+      "python_zero_hit_queries": 0,
+      "rust_case_count": 4,
+      "rust_hit_at_k": 1.0,
+      "rust_mean_reciprocal_rank": 1.0,
+      "rust_zero_hit_queries": 0,
+      "tolerance": 0.0,
+      "zero_hit_queries_on_par": true
+    },
+    "strict_external_ready": false
+  },
+  "schema": "matrixark_vikingmem_paper_comparable_report_v1",
+  "source_report": "/tmp/ts_contract_longmem_4_result.json",
+  "thresholds": {
+    "max_reader_p95_ms": 200.0,
+    "max_retrieval_p95_ms": 2000.0,
+    "min_case_count": 500,
+    "min_hit_at_k": 0.9,
+    "min_reader_hit_rate": 0.58,
+    "min_token_reduction_percent": 80.0,
+    "require_open_source_reader": false
+  }
+}

@@ -41,6 +41,30 @@ def main() -> int:
             '"production"',
             "require_executed",
             "report comparison failed",
+            "summary_compare",
+            "category_compare",
+            "token_reduction_delta",
+            "latency_deltas",
+        ),
+    )
+    require_snippets(
+        ROOT / "tools" / "archive_context_benchmark_report.py",
+        (
+            "matrixark_vikingmem_context_benchmark_report_v1",
+            "archive_required_fields_ready",
+            "benchmark_retrieval_p50_ms",
+            "benchmark_retrieval_p95_ms",
+            "benchmark_token_reduction_percent",
+            "category_breakdown",
+        ),
+    )
+    require_snippets(
+        ROOT / "compat" / "cpp_context_benchmark_report_adapter.h",
+        (
+            "matrixark_vikingmem_context_benchmark_report_v1",
+            "input_sha256",
+            "retrieved_source_group_ids",
+            "benchmark_avg_retrieved_source_groups_per_query",
         ),
     )
     require_snippets(

@@ -186,6 +186,19 @@ python3 tools/archive_context_benchmark_report.py \
   --output /tmp/ts_rust_backend_longmemeval_one_paper_comparable.json
 ```
 
+Current checked-in deterministic archive summaries using the shared
+`matrixark_vikingmem_context_benchmark_report_v1` contract:
+
+| Dataset | Archive JSON | Case count | Dataset hash prefix | Reader mode | Retrieval p95 | Token reduction |
+| --- | --- | ---: | --- | --- | ---: | ---: |
+| LOCOMO | `docs/benchmark_archives/locomo_deterministic_rust_backed_latest.json` | 1,542 | `79fa87e90f04` | deterministic | 18.8017 ms | 83.9844% |
+| LongMemEval_s | `docs/benchmark_archives/longmemeval_s_deterministic_rust_backed_latest.json` | 500 | `821a2034d219` | deterministic | 24.5161 ms | 81.4017% |
+
+The archive JSONs include dataset hash/bytes, case count, model and reader mode, threshold policy,
+p50/p95 latency, token reduction, category breakdown, and the raw report path. The Rust/C++ report
+comparator now emits `summary_compare`, `category_compare`, `token_reduction_delta`,
+`latency_deltas`, selected-source deltas, and Rust-only/C++-only/shared-hard miss partitions.
+
 OSS-reader probe:
 
 | Endpoint | Probe result |

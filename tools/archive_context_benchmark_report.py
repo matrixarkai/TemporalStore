@@ -33,10 +33,13 @@ def main() -> int:
 
     archived = {
         "schema": "matrixark_vikingmem_paper_comparable_report_v1",
+        "report_contract_format": "matrixark_vikingmem_context_benchmark_report_v1",
         "created_at_unix": int(time.time()),
         "paper_name": args.paper_name,
         "claim_level": args.claim_level,
         "source_report": str(report_path),
+        "report_path": str(report_path),
+        "archive_required_fields_ready": archive_required_fields_ready(report, dataset_hash, input_bytes),
         "dataset": {
             "name": report.get("dataset"),
             "input": str(input_path) if str(input_path) else str(report.get("input") or ""),
@@ -127,6 +130,27 @@ def main() -> int:
     Path(args.output).write_text(json.dumps(archived, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(archived, indent=2, sort_keys=True))
     return 0
+
+
+def archive_required_fields_ready(report: dict[str, Any], dataset_hash: str, input_bytes: int) -> bool:
+    required_report_fields = (
+        "case_count",
+        "reader_model",
+        "reader_mode_effective",
+        "benchmark_thresholds",
+        "benchmark_retrieval_p50_ms",
+        "benchmark_retrieval_p95_ms",
+        "benchmark_reader_p50_ms",
+        "benchmark_reader_p95_ms",
+        "benchmark_token_reduction_percent",
+        "category_breakdown",
+    )
+    return (
+        bool(dataset_hash)
+        and input_bytes > 0
+        and bool(report.get("input") or report.get("dataset"))
+        and all(field in report for field in required_report_fields)
+    )
 
 
 def sha256_file(path: Path) -> str:

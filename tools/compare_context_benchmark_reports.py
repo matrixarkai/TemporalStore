@@ -24,6 +24,9 @@ NUMERIC_SUMMARY_FIELDS = (
     "benchmark_token_reduction_percent",
     "reader_hit_rate",
     "benchmark_threshold_violation_count",
+    "benchmark_avg_retrieved_source_groups_per_query",
+    "benchmark_multi_source_group_query_rate",
+    "benchmark_max_retrieved_tokens_per_query",
 )
 LATENCY_FIELDS = (
     "benchmark_retrieval_p50_ms",
@@ -41,7 +44,9 @@ PER_QUERY_EXACT_FIELDS = (
     "expected_answer_terms",
     "expected_source_ref_ids",
     "retrieved_source_ids",
+    "retrieved_source_group_ids",
     "retrieved_blocks",
+    "retrieved_source_groups",
     "source_tokens",
     "retrieved_tokens",
 )
@@ -81,9 +86,9 @@ def main() -> int:
         if cpp.get("dataset") != args.dataset:
             failures.append(f"cpp dataset {cpp.get('dataset')!r} != expected {args.dataset!r}")
 
-    compare_summary(rust, cpp, args.numeric_tolerance, args.latency_ratio_tolerance, failures)
+    summary_compare = compare_summary(rust, cpp, args.numeric_tolerance, args.latency_ratio_tolerance, failures)
     compare_thresholds(rust, cpp, args.numeric_tolerance, failures)
-    compare_category_breakdown(rust, cpp, args.numeric_tolerance, failures)
+    category_compare = compare_category_breakdown(rust, cpp, args.numeric_tolerance, failures)
     per_query_compare = compare_per_query(rust, cpp, args.numeric_tolerance, failures)
 
     result = {
@@ -97,7 +102,12 @@ def main() -> int:
         "cpp_case_count": cpp.get("case_count"),
         "rust_per_query_count": len(rust.get("benchmark_per_query") or []),
         "cpp_per_query_count": len(cpp.get("benchmark_per_query") or []),
+        "summary_compare": summary_compare,
+        "category_compare": category_compare,
         "per_query_compare": per_query_compare,
+        "latency_deltas": summary_compare["latency_deltas"],
+        "token_reduction_delta": summary_compare["numeric_deltas"].get("benchmark_token_reduction_percent"),
+        "category_deltas": category_compare["category_deltas"],
         "rust_only_miss_count": per_query_compare["retrieval_misses"]["rust_only_count"],
         "cpp_only_miss_count": per_query_compare["retrieval_misses"]["cpp_only_count"],
         "shared_hard_miss_count": per_query_compare["retrieval_misses"]["shared_hard_count"],
@@ -180,8 +190,11 @@ def compare_summary(
     tolerance: float,
     latency_ratio_tolerance: float,
     failures: list[str],
-) -> None:
+) -> dict[str, Any]:
+    numeric_deltas: dict[str, float | None] = {}
+    latency_deltas: dict[str, dict[str, float | None]] = {}
     for field in (
+        "schema",
         "benchmark_family",
         "reader_provider_name",
         "reader_model",
@@ -191,14 +204,20 @@ def compare_summary(
         compare_equal(field, rust.get(field), cpp.get(field), failures)
     for field in NUMERIC_SUMMARY_FIELDS:
         compare_number(field, rust.get(field), cpp.get(field), tolerance, failures)
+        numeric_deltas[field] = numeric_delta(rust.get(field), cpp.get(field))
     for field in LATENCY_FIELDS:
         compare_latency(field, rust.get(field), cpp.get(field), latency_ratio_tolerance, failures)
+        latency_deltas[field] = latency_delta(rust.get(field), cpp.get(field))
     compare_equal(
         "benchmark_threshold_violations",
         rust.get("benchmark_threshold_violations"),
         cpp.get("benchmark_threshold_violations"),
         failures,
     )
+    return {
+        "numeric_deltas": numeric_deltas,
+        "latency_deltas": latency_deltas,
+    }
 
 
 def compare_thresholds(
@@ -235,23 +254,26 @@ def compare_category_breakdown(
     cpp: dict[str, Any],
     tolerance: float,
     failures: list[str],
-) -> None:
+) -> dict[str, Any]:
+    result: dict[str, Any] = {"category_deltas": {}, "missing_categories": []}
     rust_categories = rust.get("category_breakdown")
     cpp_categories = cpp.get("category_breakdown")
     if not isinstance(rust_categories, dict) or not isinstance(cpp_categories, dict):
         failures.append("category_breakdown must be objects in both reports")
-        return
+        return result
     if set(rust_categories) != set(cpp_categories):
         failures.append(
             f"category_breakdown keys differ: rust={sorted(rust_categories)} cpp={sorted(cpp_categories)}"
         )
-        return
+        result["missing_categories"] = sorted(set(rust_categories) ^ set(cpp_categories))
+        return result
     for category in sorted(rust_categories):
         rust_row = rust_categories[category]
         cpp_row = cpp_categories[category]
         if not isinstance(rust_row, dict) or not isinstance(cpp_row, dict):
             failures.append(f"category_breakdown.{category} must be objects in both reports")
             continue
+        result["category_deltas"][category] = {}
         for field in (
             "case_count",
             "hit_rate",
@@ -268,9 +290,11 @@ def compare_category_breakdown(
                 tolerance,
                 failures,
             )
+            result["category_deltas"][category][field] = numeric_delta(rust_row.get(field), cpp_row.get(field))
     compare_number("weak_category_count", rust.get("weak_category_count"), cpp.get("weak_category_count"), tolerance, failures)
     compare_equal("weak_categories", rust.get("weak_categories"), cpp.get("weak_categories"), failures)
     compare_equal("weak_category_policy", rust.get("weak_category_policy"), cpp.get("weak_category_policy"), failures)
+    return result
 
 
 def compare_per_query(
@@ -287,6 +311,10 @@ def compare_per_query(
         "missing_in_rust": [],
         "field_mismatch_count": 0,
         "field_mismatches": [],
+        "selected_source_delta_count": 0,
+        "selected_source_deltas": [],
+        "latency_deltas": {},
+        "token_reduction_deltas": {},
         "retrieval_misses": empty_miss_partition(),
         "reader_misses": empty_miss_partition(),
     }
@@ -304,6 +332,9 @@ def compare_per_query(
     result["common_query_count"] = len(common_query_ids)
     result["retrieval_misses"] = classify_misses(common_query_ids, rust_rows, cpp_rows, field="hit")
     result["reader_misses"] = classify_misses(common_query_ids, rust_rows, cpp_rows, field="reader_hit")
+    retrieval_latency_deltas = []
+    reader_latency_deltas = []
+    token_reduction_deltas = []
     for query_id in common_query_ids:
         rust_row = rust_rows[query_id]
         cpp_row = cpp_rows[query_id]
@@ -324,7 +355,31 @@ def compare_per_query(
                 failures,
                 result["field_mismatches"],
             )
+        if normalize_id_list(rust_row.get("retrieved_source_ids")) != normalize_id_list(cpp_row.get("retrieved_source_ids")):
+            result["selected_source_deltas"].append(
+                {
+                    "query_id": query_id,
+                    "rust_retrieved_source_ids": rust_row.get("retrieved_source_ids"),
+                    "cpp_retrieved_source_ids": cpp_row.get("retrieved_source_ids"),
+                }
+            )
+        retrieval_latency_deltas.append(abs_numeric_delta(rust_row.get("retrieval_ms"), cpp_row.get("retrieval_ms")))
+        reader_latency_deltas.append(abs_numeric_delta(rust_row.get("reader_ms"), cpp_row.get("reader_ms")))
+        token_reduction_deltas.append(abs_numeric_delta(rust_row.get("token_reduction_percent"), cpp_row.get("token_reduction_percent")))
     result["field_mismatch_count"] = len(result["field_mismatches"])
+    result["selected_source_delta_count"] = len(result["selected_source_deltas"])
+    result["selected_source_deltas"] = result["selected_source_deltas"][:50]
+    result["latency_deltas"] = {
+        "retrieval_ms_p50": percentile_present(retrieval_latency_deltas, 50),
+        "retrieval_ms_p95": percentile_present(retrieval_latency_deltas, 95),
+        "reader_ms_p50": percentile_present(reader_latency_deltas, 50),
+        "reader_ms_p95": percentile_present(reader_latency_deltas, 95),
+    }
+    result["token_reduction_deltas"] = {
+        "p50": percentile_present(token_reduction_deltas, 50),
+        "p95": percentile_present(token_reduction_deltas, 95),
+        "max": max((value for value in token_reduction_deltas if value is not None), default=None),
+    }
     return result
 
 
@@ -448,6 +503,55 @@ def compare_number_tracking(
     compare_number(field, rust_value, cpp_value, tolerance, failures)
     if len(failures) != before:
         mismatches.append({"field": field, "rust": rust_value, "cpp": cpp_value})
+
+
+def numeric_delta(rust_value: Any, cpp_value: Any) -> float | None:
+    try:
+        rust_number = float(rust_value)
+        cpp_number = float(cpp_value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(rust_number) or not math.isfinite(cpp_number):
+        return None
+    return rust_number - cpp_number
+
+
+def abs_numeric_delta(rust_value: Any, cpp_value: Any) -> float | None:
+    delta = numeric_delta(rust_value, cpp_value)
+    return abs(delta) if delta is not None else None
+
+
+def latency_delta(rust_value: Any, cpp_value: Any) -> dict[str, float | None]:
+    try:
+        rust_number = float(rust_value)
+        cpp_number = float(cpp_value)
+    except (TypeError, ValueError):
+        return {"absolute_ms": None, "ratio": None}
+    if rust_number < 0 or cpp_number < 0:
+        return {"absolute_ms": None, "ratio": None}
+    smaller = max(min(rust_number, cpp_number), 1e-9)
+    larger = max(rust_number, cpp_number)
+    return {"absolute_ms": abs(rust_number - cpp_number), "ratio": larger / smaller}
+
+
+def percentile_present(values: list[float | None], pct: float) -> float | None:
+    present = sorted(value for value in values if value is not None)
+    if not present:
+        return None
+    if len(present) == 1:
+        return present[0]
+    rank = (len(present) - 1) * pct / 100.0
+    lower = math.floor(rank)
+    upper = math.ceil(rank)
+    if lower == upper:
+        return present[int(rank)]
+    return present[lower] + (present[upper] - present[lower]) * (rank - lower)
+
+
+def normalize_id_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip().lower() for item in value if str(item).strip()]
 
 
 def compare_latency(field: str, rust_value: Any, cpp_value: Any, ratio: float, failures: list[str]) -> None:

@@ -33,6 +33,8 @@ The header is a single-file C++17 adapter template using `nlohmann::json`. It de
 
 | Shared field | C++ source meaning |
 | --- | --- |
+| `schema` | Always `matrixark_vikingmem_context_benchmark_report_v1`. |
+| `input_sha256`, `input_bytes` | Hash and byte size of the exact benchmark artifact. |
 | `benchmark_family` | Always `vikingmem_long_memory`. |
 | `benchmark_hit_at_k` / `hit_rate` | Retrieval/context Hit@K. |
 | `benchmark_recall_at_k` | Same as Hit@K unless C++ reports a distinct recall value. |
@@ -40,6 +42,9 @@ The header is a single-file C++17 adapter template using `nlohmann::json`. It de
 | `benchmark_token_reduction_percent` | Percent reduction from full source tokens to retrieved context tokens. |
 | `benchmark_retrieval_p50_ms`, `benchmark_retrieval_p95_ms` | Retrieval latency percentiles. |
 | `benchmark_reader_p50_ms`, `benchmark_reader_p95_ms` | Reader/answer generation latency percentiles. |
+| `benchmark_avg_retrieved_source_groups_per_query` | Average distinct session/source groups selected per query. |
+| `benchmark_multi_source_group_query_rate` | Fraction of queries whose compact evidence spans multiple groups. |
+| `benchmark_max_retrieved_tokens_per_query` | Largest compact evidence token count across queries. |
 | `reader_hit_rate` | Answer/reader hit rate. |
 | `reader_mode_requested`, `reader_mode_effective` | `deterministic`, `open-source`, or equivalent C++ mode labels. |
 | `reader_provider_name` | Provider profile, for example `matrixark-cpp-oss-context`. |
@@ -65,6 +70,8 @@ reader_answer
 expected_answer_terms
 expected_source_ref_ids
 retrieved_source_ids
+retrieved_source_groups
+retrieved_source_group_ids
 retrieval_ms
 reader_ms
 retrieved_blocks
@@ -141,6 +148,8 @@ The comparator checks:
 - per-query `query_id` coverage
 - per-query hit, reader-hit, rank, category, token counts, and token reduction
 - latency fields are present, non-negative, and within a configurable ratio
+- named delta reports: `token_reduction_delta`, `latency_deltas`, `category_deltas`,
+  per-query latency deltas, and selected-source deltas
 
 The report comparator also emits a case-by-case miss taxonomy:
 
