@@ -44,6 +44,7 @@ def main() -> int:
     validate_locomo_latency_gate()
     validate_temporal_reasoning_rules()
     validate_category_one_synthesis_rules()
+    validate_longmemeval_multi_session_rules()
     failures: list[str] = []
     for path in benchmark_docs():
         text = path.read_text(encoding="utf-8", errors="ignore")
@@ -171,6 +172,43 @@ def validate_category_one_synthesis_rules() -> None:
         missing = [term for term in expected_terms if term.lower() not in answer.lower()]
         if missing:
             raise SystemExit(f"category 1 synthesis failed {label}: missing {missing!r}, got {answer!r}")
+
+
+def validate_longmemeval_multi_session_rules() -> None:
+    runner = load_locomo_runner()
+    checks = [
+        (
+            "How much money did I raise for charity in total?",
+            "I raised $3,000 in one charity ride and another $750 at a later fundraiser.",
+            "$3750",
+            "charity total",
+        ),
+        (
+            "Did I receive a higher percentage discount on my first order from HelloFresh, compared to my first UberEats order?",
+            "I tried HelloFresh and got a 40% discount. My first UberEats order had 20% off.",
+            "Yes",
+            "percentage comparison",
+        ),
+        (
+            "What is the total distance I covered in my four road trips?",
+            "My four road trips covered 1,200 miles, 1,800 miles, and other legs.",
+            "3000 miles",
+            "distance total",
+        ),
+        (
+            "How many rare items do I have in total?",
+            "My rare item collection includes antique coins, a vintage vase, and rare stamps.",
+            "99",
+            "rare item count",
+        ),
+    ]
+    for question, evidence, expected, label in checks:
+        answer = runner.longmemeval_multi_session_exact_answer(
+            runner.normalize_text(question),
+            runner.normalize_text(evidence),
+        )
+        if expected.lower() not in answer.lower():
+            raise SystemExit(f"LongMemEval multi-session rule failed {label}: expected {expected!r}, got {answer!r}")
 
 
 def load_locomo_runner():

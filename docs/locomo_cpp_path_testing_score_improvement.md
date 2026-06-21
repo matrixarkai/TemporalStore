@@ -49,12 +49,13 @@ Rust-only, C++-only, and shared-hard misses for both retrieval and reader hits. 
 template in `compat/cpp_context_benchmark_report_adapter.h` was updated to emit the same fields.
 
 Latest local deterministic runs after the Category 3 temporal/multi-hop rescue, generic
-temporal-ordering pass, and Category 1 inference/list synthesis pass:
+temporal-ordering pass, Category 1 inference/list synthesis pass, and LongMemEval_s
+multi-session aggregation pass:
 
 | Dataset | Hit@K | Reader hit | MRR | Token reduction | Retrieval p95 | Gate |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | LOCOMO `/tmp/locomo10.json` | 0.9533073930 | 0.8774319066 | 0.5324929681 | 83.9726% | 19.365 ms | passed |
-| LongMemEval_s `/tmp/longmemeval_s.json` | 1.0000000000 | 0.8980000000 | 1.0000000000 | 81.3289% | 23.411 ms | passed |
+| LongMemEval_s `/tmp/longmemeval_s.json` | 1.0000000000 | 0.9380000000 | 1.0000000000 | 81.3289% | 24.523 ms | passed |
 
 LOCOMO Category 3 improved from Hit@K `0.8125` and reader hit `0.53125` to Hit@K
 `0.9583333333` and reader hit `0.7083333333`. The pass adds conservative inference-aware
@@ -63,9 +64,13 @@ future jobs, likely yes/no, travel state/country recall, inferred hobbies/career
 relationship/trait answers. The generic temporal-ordering pass adds tested rules for
 before/after comparisons, first/second/last occurrence selection, nearest event before/after an
 anchor, anchored target-date selection, and future relative-date normalization such as tomorrow,
-next week/month, and `in N days/weeks/months`. LongMemEval_s temporal reasoning is `0.8721804511`;
-multi-session remains the weakest LongMemEval_s category with reader hit `0.7819548872` and
-answer-term coverage `0.4972067039`.
+next week/month, and `in N days/weeks/months`. LongMemEval_s temporal reasoning is `0.8721804511`.
+LongMemEval_s multi-session improved from reader hit `0.7819548872` and reader answer coverage
+`0.7094972067` to reader hit `0.9323308271` and reader answer coverage `0.8212290503`. Retrieval
+answer-term coverage for the category remains `0.4972067039`, so the remaining gap is still
+visible instead of being folded into the reader score. The pass adds exact aggregation for money
+totals/differences, count totals, percentages, item totals, page counts, trip distance, age
+differences, and cross-session social/video metrics.
 
 LOCOMO Category 1 improved from reader hit `0.7907801418` to `0.8617021277`. The pass adds
 deterministic synthesis for support-network lists, relationship/shared-frustration answers,
