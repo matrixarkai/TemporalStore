@@ -26,6 +26,7 @@ int ftruncate(int fd, off_t length);
 #endif
 
 #include "common/controller.h"
+#include "common/coclosure.h"
 #include "common/fiu_local.h"
 #include "common/function_closure.h"
 #include "common/scoped_invoker.h"
@@ -195,7 +196,7 @@ void SharedFile::Append(Controller* ctrl, const void* data, size_t size,
     SHARED_FILE_STORE_FAULT_INJECT("store/shared_file/io/fail/append", "Append", pathname_);
 
     done.Release();
-    byte::AsyncThread* thread = byte::GetCurrentThread();
+    byte::AsyncThread* thread = IsCoContext() ? byte::GetCurrentThread() : nullptr;
     auto func = [this, ctrl, data, size, callback, thread] {
         ScopedInvoker done(callback, thread);
         SHARED_FILE_STORE_FAULT_INJECT("store/shared_file/io/hang/append", "Append", pathname_);
@@ -240,7 +241,7 @@ void SharedFile::Read(Controller* ctrl, size_t offset, void* data, size_t size,
     SHARED_FILE_STORE_FAULT_INJECT("store/shared_file/io/fail/read", "Read", pathname_);
 
     done.Release();
-    byte::AsyncThread* thread = byte::GetCurrentThread();
+    byte::AsyncThread* thread = IsCoContext() ? byte::GetCurrentThread() : nullptr;
     auto func = [this, ctrl, offset, data, size, callback, thread] {
         ScopedInvoker done(callback, thread);
         SHARED_FILE_STORE_FAULT_INJECT("store/shared_file/io/hang/read", "Read", pathname_);

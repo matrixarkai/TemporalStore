@@ -38,7 +38,7 @@ class NeptuneSyncer {
         client_opts_(client_opts) {
         drop_pct_ = 0;
     }
-    virtual ~NeptuneSyncer() {}
+    virtual ~NeptuneSyncer() { timer_thread_.stop_and_join(); }
 
     Status Init();
     std::string RefreshNeptuneServer();

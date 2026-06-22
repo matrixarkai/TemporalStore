@@ -23,7 +23,7 @@ services:
     image: python:3.12-slim
     container_name: temporalstore-vars-exporter
     environment:
-      - VARS_TARGETS=server=http://host.docker.internal:18001/vars,metaserver=http://host.docker.internal:18000/vars
+      - VARS_TARGETS=${VARS_TARGETS:-nodeserver=http://host.docker.internal:18001/vars,metaserver=http://host.docker.internal:18000/vars,proxy=http://host.docker.internal:18090/vars}
       - VARS_INTERVAL_SECONDS=5
       - VARS_OUTPUT_DIR=/var/lib/node_exporter/textfile_collector
       - VARS_OUTPUT_FILE=temporalstore-vars.prom

@@ -27,6 +27,8 @@ DEFINE_uint64(server_heartbeat_report_stats_sample, 60, "stats would be piped by
 BRPC_VALIDATE_GFLAG(server_heartbeat_report_stats_sample, brpc::PassValidate);
 DEFINE_bool(server_auto_register, true, "register to metaserver automatically");
 BRPC_VALIDATE_GFLAG(server_auto_register, brpc::PassValidate);
+DEFINE_bool(server_notify_stop_on_shutdown, true, "notify metaserver when server stops");
+BRPC_VALIDATE_GFLAG(server_notify_stop_on_shutdown, brpc::PassValidate);
 
 ////////
 
@@ -241,6 +243,9 @@ void Heartbeat::InitHeartbeatRequest(metaserver::ServerHeartbeatRequest* request
 }
 
 void Heartbeat::SendStopSignal() {
+    if (!FLAGS_server_notify_stop_on_shutdown) {
+        return;
+    }
     butil::EndPoint leader_endpoint;
     Status status = ms_tracker_->GetLeaderEndpoint(&leader_endpoint);
     if (!status.ok()) {
@@ -280,4 +285,3 @@ void Heartbeat::SendStopSignal() {
 
 }  // namespace server
 }  // namespace bcache2
-

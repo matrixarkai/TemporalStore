@@ -2,6 +2,7 @@
 
 #include "partition/storage/op_logger.h"
 
+#include "common/coclosure.h"
 #include "common/function_closure.h"
 #include "common/scoped_invoker.h"
 #include "partition/cmd_context.h"
@@ -180,6 +181,48 @@ void OpLogger::Commit(Controller* ctrl, Closure<void>* callback) {
     if (callback != nullptr) {
         stream_->Commit(ctrl, callback);
     }
+}
+
+Status OpLogger::AppendReplayedLog(const storage::OpLog& oplog, uint64_t* log_id,
+                                   uint32_t* log_size) {
+    if (oplog.sequence() == 0) {
+        return Status::InvalidArgument("replayed oplog sequence is empty");
+    }
+    if (current_sequence_ != 0 && oplog.sequence() <= current_sequence_) {
+        if (log_id != nullptr) {
+            *log_id = 0;
+        }
+        if (log_size != nullptr) {
+            *log_size = 0;
+        }
+        return Status::OK();
+    }
+
+    storage::OpLog local_oplog = oplog;
+    local_oplog.set_version(kOpLogVersion);
+    std::string bytes;
+    if (!local_oplog.SerializeToString(&bytes)) {
+        return Status::Internal("serialize replayed oplog failed");
+    }
+
+    uint64_t id = 0;
+    const uint32_t size = static_cast<uint32_t>(bytes.size());
+    stream_->Append(std::move(bytes), &id);
+    Controller ctrl;
+    CoSyncClosure sync;
+    stream_->Commit(&ctrl, &sync);
+    sync.Wait();
+    if (!ctrl.status().ok()) {
+        return ctrl.status();
+    }
+
+    if (log_id != nullptr) {
+        *log_id = id;
+    }
+    if (log_size != nullptr) {
+        *log_size = size;
+    }
+    return Status::OK();
 }
 
 void OpLogger::Truncate(uint64_t log_id) { stream_->Truncate(log_id); }

@@ -332,8 +332,11 @@ bool QueryRows(bcache2::client::TableCore* table, const std::string& prefix, int
     bcache2::feature2::QueryResponse response;
     const bool queried = RetryUntil(retry_ms, 20, [&]() {
         response.Clear();
-        return ExecuteRaw(table, bcache2::Module::FEATURE, bcache2::feature2::QUERY, key, request,
-                          &response, "FEATURE Query");
+        if (!ExecuteRaw(table, bcache2::Module::FEATURE, bcache2::feature2::QUERY, key, request,
+                        &response, "FEATURE Query")) {
+            return false;
+        }
+        return !query_case.filters.empty() || response.point_list_size() > 0;
     });
     if (!queried) {
         return false;

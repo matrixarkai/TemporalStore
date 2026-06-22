@@ -13,6 +13,30 @@ enum Function {
     QUERY_PACK_AUDIT = 7;
     MARK_SUMMARY_DIRTY = 8;
     QUERY_SUMMARY_DIRTY = 9;
+    UPSERT_CHILD_REF = 10;
+    QUERY_CHILDREN = 11;
+    UPSERT_EMBEDDING = 12;
+    QUERY_EMBEDDINGS = 13;
+    TRAVERSE_CONTEXT_TREE = 14;
+    UPSERT_SUMMARY = 15;
+    QUERY_SUMMARIES = 16;
+    WRITE_COMPRESSION_EVENT = 17;
+    QUERY_COMPRESSION_EVENTS = 18;
+    UPSERT_ENTITY = 19;
+    GET_ENTITY = 20;
+    QUERY_ENTITIES = 21;
+    COMPRESS_EVENTS = 22;
+    WRITE_EXTRACTED_EVENT = 23;
+    QUERY_NODE_CONTEXT = 24;
+}
+
+enum InternalContextIndex {
+    INTERNAL_INDEX_UNSPECIFIED = 0;
+    INTERNAL_INDEX_EVENT_KIND = 1;
+    INTERNAL_INDEX_ENTITY = 2;
+    INTERNAL_INDEX_STATUS = 3;
+    INTERNAL_INDEX_SOURCE = 4;
+    INTERNAL_INDEX_EVENT_TIME_BUCKET = 5;
 }
 
 message ContextNode {
@@ -21,27 +45,21 @@ message ContextNode {
     uint32 kind = 3;
     string canonical_name = 4;
     string l0 = 5;
-    uint32 status = 6;
-    uint64 last_event_time_ms = 7;
-    bool summary_dirty = 8;
-    string l1_ref = 9;
-    string raw_metadata_ref = 10;
+    uint64 last_event_time_ms = 6;
 }
 
 message ContextEvent {
+    reserved 4, 5;
+    reserved "actor_hash", "valid_until_ms";
     uint64 event_id_hash = 1;
+    // Optional extracted/source/business time. The primary serving timeline key is
+    // ingestion_time_ms so late-arriving facts do not rewrite old hot timelines.
     uint64 event_time_ms = 2;
-    uint32 kind = 3;
-    uint32 type = 4;
-    uint64 actor_hash = 5;
-    uint32 status = 6;
-    uint64 valid_until_ms = 7;
-    float confidence = 8;
-    float importance = 9;
-    string text = 10;
-    string source_ref = 11;
-    repeated uint64 related_node_hashes = 12;
-    bytes compact_attrs = 13;
+    uint32 type = 3;
+    float confidence = 6;
+    float importance = 7;
+    string text = 8;
+    uint64 ingestion_time_ms = 9;
 }
 
 message IndexRef {
@@ -53,25 +71,83 @@ message IndexRef {
 message AuditRef {
     uint64 node_hash = 1;
     uint64 event_time_ms = 2;
-    string reason = 3;
 }
 
 message ContextPackAudit {
     string query_id = 1;
     uint64 session_hash = 2;
     uint64 request_time_ms = 3;
-    uint64 query_hash = 4;
-    uint32 max_prompt_tokens = 5;
-    uint32 selected_tokens = 6;
-    repeated AuditRef selected_refs = 7;
-    repeated AuditRef blocked_refs = 8;
+    uint32 max_prompt_tokens = 4;
+    uint32 selected_tokens = 5;
+    repeated AuditRef selected_refs = 6;
 }
 
 message SummaryDirtyMarker {
     uint64 node_hash = 1;
     uint64 event_time_ms = 2;
-    uint32 reason = 3;
-    uint32 propagate_depth = 4;
+    uint32 propagate_depth = 3;
+}
+
+message ContextChildRef {
+    reserved 3, 4;
+    reserved "child_name", "child_kind";
+    uint64 parent_hash = 1;
+    uint64 child_hash = 2;
+    uint64 updated_at_ms = 5;
+}
+
+message ContextEmbedding {
+    reserved 3;
+    reserved "dim";
+    uint64 ref_hash = 1;
+    uint32 level = 2;
+    repeated float vector = 4;
+    uint64 updated_at_ms = 5;
+}
+
+message ContextSummary {
+    reserved 1, 6;
+    reserved "summary_id_hash", "valid_until_ms";
+    uint64 node_hash = 2;
+    uint32 level = 3;
+    string text = 4;
+    uint64 valid_from_ms = 5;
+}
+
+message ContextCompressionEvent {
+    uint64 compression_id_hash = 1;
+    uint64 node_hash = 2;
+    uint64 source_start_ms = 3;
+    uint64 source_end_ms = 4;
+    uint64 compressed_time_ms = 5;
+    string summary = 6;
+}
+
+message ContextEntity {
+    uint64 entity_hash = 1;
+    uint64 node_hash = 2;
+    uint32 type = 3;
+    string name = 4;
+    string value = 5;
+    uint64 updated_at_ms = 6;
+    uint64 valid_from_ms = 7;
+    float confidence = 8;
+    repeated uint64 source_event_hashes = 9;
+}
+
+message ExtractedContextIndexes {
+    uint64 scope_hash = 1;
+    repeated uint64 entity_hashes = 2;
+    uint64 status_hash = 3;
+    uint64 source_hash = 4;
+    uint64 event_time_bucket_ms = 5;
+    repeated InternalContextIndex disabled_indexes = 6;
+}
+
+message TraversedNode {
+    uint64 node_hash = 1;
+    uint32 depth = 2;
+    float score = 3;
 }
 
 message UpsertNodeRequest {
@@ -105,6 +181,20 @@ message WriteEventResponse {
     string object_key = 1;
 }
 
+message WriteExtractedEventRequest {
+    uint64 tenant_hash = 1;
+    uint64 node_hash = 2;
+    ContextEvent event = 3;
+    ExtractedContextIndexes indexes = 4;
+    bool first_write_only = 5;
+}
+
+message WriteExtractedEventResponse {
+    string event_object_key = 1;
+    repeated string index_object_keys = 2;
+    uint32 written_index_count = 3;
+}
+
 message QueryEventsRequest {
     uint64 tenant_hash = 1;
     uint64 node_hash = 2;
@@ -113,15 +203,18 @@ message QueryEventsRequest {
     uint32 limit = 5;
     bool current_valid_only = 6;
     uint64 as_of_ms = 7;
-    repeated uint32 kinds = 8;
-    repeated uint32 statuses = 9;
-    float min_confidence = 10;
-    float min_importance = 11;
+    repeated uint32 types = 8;
+    float min_confidence = 9;
+    float min_importance = 10;
+    uint64 decay_half_life_ms = 11;
+    float min_decayed_score = 12;
+    bool rank_by_decayed_score = 13;
 }
 
 message QueryEventsResponse {
     string object_key = 1;
     repeated ContextEvent events = 2;
+    repeated float decayed_scores = 3;
 }
 
 message WriteIndexRefRequest {
@@ -194,4 +287,172 @@ message QuerySummaryDirtyRequest {
 message QuerySummaryDirtyResponse {
     string object_key = 1;
     repeated SummaryDirtyMarker markers = 2;
+}
+
+message UpsertChildRefRequest {
+    uint64 tenant_hash = 1;
+    ContextChildRef ref = 2;
+}
+
+message UpsertChildRefResponse {
+    string object_key = 1;
+    bool created = 2;
+    uint32 parent_child_count = 3;
+}
+
+message QueryChildrenRequest {
+    uint64 tenant_hash = 1;
+    uint64 parent_hash = 2;
+    uint32 limit = 3;
+}
+
+message QueryChildrenResponse {
+    string object_key = 1;
+    repeated ContextChildRef refs = 2;
+}
+
+message UpsertEmbeddingRequest {
+    uint64 tenant_hash = 1;
+    ContextEmbedding embedding = 2;
+}
+
+message UpsertEmbeddingResponse {
+    string object_key = 1;
+}
+
+message QueryEmbeddingsRequest {
+    uint64 tenant_hash = 1;
+    repeated uint64 ref_hashes = 2;
+    uint32 limit = 3;
+}
+
+message QueryEmbeddingsResponse {
+    repeated ContextEmbedding embeddings = 1;
+}
+
+message TraverseContextTreeRequest {
+    uint64 tenant_hash = 1;
+    uint64 start_node_hash = 2;
+    repeated float query_vector = 3;
+    uint32 max_depth = 4;
+    uint32 top_k_per_depth = 5;
+    uint32 max_children_scored_per_parent = 6;
+    uint32 max_candidate_nodes = 7;
+    bool leaf_only = 8;
+}
+
+message TraverseContextTreeResponse {
+    repeated TraversedNode nodes = 1;
+}
+
+message UpsertSummaryRequest {
+    uint64 tenant_hash = 1;
+    ContextSummary summary = 2;
+}
+
+message UpsertSummaryResponse {
+    string object_key = 1;
+}
+
+message QuerySummariesRequest {
+    uint64 tenant_hash = 1;
+    uint64 node_hash = 2;
+    uint32 level = 3;
+    uint64 as_of_ms = 4;
+    uint32 limit = 5;
+}
+
+message QuerySummariesResponse {
+    string object_key = 1;
+    repeated ContextSummary summaries = 2;
+}
+
+message WriteCompressionEventRequest {
+    uint64 tenant_hash = 1;
+    ContextCompressionEvent event = 2;
+}
+
+message WriteCompressionEventResponse {
+    string object_key = 1;
+}
+
+message QueryCompressionEventsRequest {
+    uint64 tenant_hash = 1;
+    repeated uint64 node_hashes = 2;
+    uint64 start_time_ms = 3;
+    uint64 end_time_ms = 4;
+    uint32 limit = 5;
+}
+
+message QueryCompressionEventsResponse {
+    repeated ContextCompressionEvent events = 1;
+}
+
+message QueryNodeContextRequest {
+    uint64 tenant_hash = 1;
+    uint64 node_hash = 2;
+    uint32 summary_level = 3;
+    uint64 as_of_ms = 4;
+    uint64 cold_start_time_ms = 5;
+    uint64 cold_end_time_ms = 6;
+    uint32 compression_limit = 7;
+}
+
+message QueryNodeContextResponse {
+    bool node_exists = 1;
+    ContextNode node = 2;
+    bool overall_summary_exists = 3;
+    ContextSummary overall_summary = 4;
+    repeated ContextCompressionEvent cold_window_summaries = 5;
+}
+
+message CompressEventsRequest {
+    uint64 tenant_hash = 1;
+    uint64 node_hash = 2;
+    uint64 source_start_ms = 3;
+    uint64 source_end_ms = 4;
+    uint64 compressed_time_ms = 5;
+    uint32 max_source_events = 6;
+    float min_confidence = 7;
+    float min_importance = 8;
+}
+
+message CompressEventsResponse {
+    string object_key = 1;
+    ContextCompressionEvent event = 2;
+    uint32 source_event_count = 3;
+    bool truncated_source_events = 4;
+}
+
+message UpsertEntityRequest {
+    uint64 tenant_hash = 1;
+    ContextEntity entity = 2;
+}
+
+message UpsertEntityResponse {
+    string object_key = 1;
+}
+
+message GetEntityRequest {
+    uint64 tenant_hash = 1;
+    uint64 node_hash = 2;
+    uint64 entity_hash = 3;
+}
+
+message GetEntityResponse {
+    bool exist = 1;
+    string object_key = 2;
+    ContextEntity entity = 3;
+}
+
+message QueryEntitiesRequest {
+    uint64 tenant_hash = 1;
+    uint64 node_hash = 2;
+    repeated uint64 entity_hashes = 3;
+    uint32 limit = 4;
+}
+
+message QueryEntitiesResponse {
+    string object_key = 1;
+    repeated ContextEntity entities = 2;
 }

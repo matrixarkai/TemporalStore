@@ -152,6 +152,10 @@ Status Query(ExecuteEnv* env, const QueryRequest& request, QueryResponse* respon
     ObjectHandle<model::FeatureModel> object;
     Status status = env->GetObject(request.key(), &object);
     if (!status.ok()) {
+        if (status.IsNotFound()) {
+            response->set_key(request.key());
+            return Status::OK();
+        }
         return status;
     }
 

@@ -1,0 +1,279 @@
+syntax = "proto3";
+
+package bcache2;
+
+import "base.proto";
+import "config.proto";
+import "storage.proto";
+
+enum ServerState {
+  SERVER_UNKNOWN_STATE = 0;
+  SERVER_NORMAL = 1;
+  SERVER_FROZEN = 2;
+}
+
+enum ProxyState {
+  PROXY_UNKNOWN_STATE = 0;
+  PROXY_IDLE = 1;
+  PROXY_NORMAL = 2;
+  PROXY_FROZEN = 3;
+}
+
+enum FreezeServerReason {
+  FREEZE_SERVER_REASON_UNKNOWN = 0;
+  CONVICT = 1;
+  MAINTAIN = 2;
+}
+
+enum PartitionState {
+  P_CREATING = 0;
+  P_LOADING = 1;
+  P_NORMAL = 2;
+  P_FREEZING = 3;
+  P_FROZEN = 4;
+}
+
+enum PartitionSetState {
+  PSET_CREATING = 0;
+  PSET_NORMAL = 1;
+  PSET_FROZEN = 2;
+}
+
+enum PartitionBornObjective {
+  PBO_UNKNOWN = 0;
+  PBO_NORMAL = 1;
+  PBO_RECOVER = 2;
+  PBO_BALANCE = 3;
+}
+
+enum PartitionRole {
+  PARTITION_ROLE_UNKNOWN = 0;
+  PARTITION_ROLE_PRIMARY = 1;
+  PARTITION_ROLE_SECONDARY = 2;
+}
+
+enum PartitionLoadStage {
+  INIT = 0;
+  LOADING = 1;
+  LOADED = 2;
+  UNLOADING = 3;
+  UNLOADED = 4;
+  FAILED = 5;
+}
+
+enum PartitionUnitRelation {
+  PARTITION_UNIT_RELATION_UNKNOWN = 0;
+  ANTI_ENTROPY = 1;
+  INDEPENDENT = 2;
+}
+
+enum ElectionPolicy {
+  NORMAL_ELECTION = 0;
+  PROMOTE_DERIVED = 1;
+  PROMOTE_SECONDARY = 2;
+}
+
+enum TableState {
+  TABLE_CREATING = 0;
+  TABLE_NORMAL = 1;
+  TABLE_FROZEN = 2;
+}
+
+message PlacementSpec {
+  string host = 1;
+  uint32 numa_node = 2;
+  Endpoint server = 3;
+  NUMANode node = 4;
+  Location location = 5;
+}
+
+message PartitionPlacementInfo {
+  uint64 id = 1;
+  PlacementSpec placement = 2;
+}
+
+message PartitionUnit {
+  uint32 id = 1;
+  uint32 partition_num = 2;
+  repeated Location placement_set = 3;
+  string storage_pool_uri = 4;
+}
+
+message QuotaInfo {
+  uint64 qps = 1;
+  uint64 bandwidth = 2;
+}
+
+message ConsulInfo {
+  string name = 1;
+  string token = 2;
+}
+
+message NamespaceInfo {
+  uint32 id = 1;
+  string name = 2;
+  repeated ConsulInfo consul_info = 3;
+  uint32 table_count = 4;
+  int64 created_at = 5;
+}
+
+message TableInfo {
+  uint32 id = 1;
+  string namespace_name = 2;
+  string name = 3;
+  uint32 partition_set_num = 4;
+  repeated PartitionUnit partition_units = 5;
+  PartitionUnitRelation partition_unit_relation = 6;
+  QuotaInfo quota = 7;
+  Config config = 8;
+  ElectionPolicy election_policy = 9;
+  TableState state = 10;
+  int64 frozen_at = 11;
+  int64 created_at = 12;
+}
+
+message ProxyInfo {
+  uint32 id = 1;
+  Endpoint endpoint = 2;
+  Location location = 3;
+  string namespace_name = 4;
+  ProxyState state = 5;
+  int64 created_at = 6;
+}
+
+message ProxyGroupInfo {
+  string namespace_name = 1;
+  Location placement = 2;
+  ProxyConfig config = 3;
+  repeated ProxyInfo proxies = 4;
+  uint32 instance_num = 5;
+}
+
+message ServerInfo {
+  uint32 id = 1;
+  Endpoint endpoint = 2;
+  Location location = 3;
+  repeated NUMANode numa_nodes = 4;
+  ServerState state = 5;
+  int64 frozen_at = 6;
+  FreezeServerReason freeze_reason = 7;
+  int64 created_at = 8;
+}
+
+message PartitionInfo {
+  uint64 id = 1;
+  PartitionState state = 2;
+  PartitionBornObjective born_objective = 3;
+  int64 frozen_at = 4;
+  int64 created_at = 5;
+  Location placement_expect = 6;
+  PlacementSpec placement_actual = 7;
+  PartitionUnit partition_unit = 8;
+  PartitionRole role = 9;
+  uint64 derived_id = 10;
+  uint64 inherited_id = 11;
+  uint64 version_u64 = 12;
+  uint32 stage = 13;
+  bool readonly = 14;
+  IndexInfo index_info = 15;
+  OpLoggerInfo op_logger_info = 16;
+  PageStoreInfo page_store_info = 17;
+  ConditionInfo condition_info = 18;
+  ReplicatorInfo replicator_info = 19;
+}
+
+message MembershipInfo {
+  message Unit {
+    uint32 partition_unit_id = 1;
+    uint64 primary_id = 2;
+    uint64 election_term = 3;
+    uint64 version = 4;
+    repeated uint64 active_id_list = 5;
+    repeated uint64 frozen_id_list = 6;
+  }
+  uint64 partition_set_version = 1;
+  repeated Unit units = 2;
+  repeated PartitionPlacementInfo placements = 3;
+}
+
+message PartitionStats {
+  uint64 id = 1;
+  uint32 stage = 2;
+  PartitionRole role = 3;
+  RpcStatus replicator_status = 4;
+}
+
+message AllocatorStats {
+  uint64 alloced_size = 1;
+  uint64 alloc_cnt = 2;
+  uint64 dealloc_cnt = 3;
+}
+
+message StreamInfo {
+  string uri = 1;
+  storage.BlobHeader blob_header = 2;
+  repeated storage.BlobInfo blob_infos = 3;
+}
+
+message ZoneInfo {
+  uint32 zone_id = 1;
+  StreamInfo stream_info = 2;
+  storage.IndexLog.ZoneInfo zone_storage_info = 3;
+}
+
+message PageStoreInfo {
+  repeated ZoneInfo zones = 1;
+  uint32 writting_zone_id = 2;
+  uint64 version = 3;
+}
+
+message IndexInfo {
+  AllocatorStats slot_node_alloc_stats = 1;
+  AllocatorStats overhead_alloc_stats = 2;
+  uint64 slot_count = 3;
+  uint64 dirty_slot_count = 4;
+  storage.IndexLog.MetaItem meta = 5;
+  StreamInfo stream_info = 6;
+  uint64 current_sequence = 7;
+  AllocatorStats model_alloc_stats = 8;
+  AllocatorStats slot_context_alloc_stats = 9;
+}
+
+message OpLoggerInfo {
+  StreamInfo stream_info = 1;
+  uint64 current_sequence = 2;
+}
+
+message ConditionInfo {
+  uint32 version = 1;
+  uint64 partition_id = 2;
+  uint32 load_version = 3;
+  string remote_ip = 4;
+  uint32 remote_port = 5;
+}
+
+message ReplicatorInfo {
+  uint64 replayed_oplog_num = 1;
+  uint64 replayed_index_log_num = 2;
+  RpcStatus status = 3;
+}
+
+message ProxyConfig {
+  repeated string consul_names = 1;
+  uint32 version = 2;
+}
+
+message ManagementInfo {
+  bool readonly = 1;
+  repeated string reserved_namespace_name_list = 2;
+  repeated string reserved_table_name_list = 3;
+  repeated string reserved_consul_name_list = 4;
+}
+
+message PartitionSetInfo {
+  uint64 id = 1;
+  PartitionSetState state = 2;
+  MembershipInfo membership = 3;
+  uint32 slot_range_begin = 4;
+  uint32 slot_range_end = 5;
+}

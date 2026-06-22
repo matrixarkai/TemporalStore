@@ -1,6 +1,7 @@
 // Copyright (c) 2022-present, ByteDance Inc. All rights reserved.
 #include <unordered_map>
 
+#include "butil/endpoint.h"
 #include "gtest/gtest.h"
 
 #include "common/proto_enhance.h"
@@ -98,6 +99,18 @@ TEST(ProtoEnhanceTest, EndpointConvert) {
         Status status = ToEndpoint2(ep, &ep2);
         ASSERT_TRUE(!status.ok());
     }
+}
+
+TEST(ProtoEnhanceTest, DualStackBRpcEndpointPrefersIp4) {
+    Endpoint ep;
+    ep.set_addr_family(Endpoint::ADDR_DUAL_STACK);
+    ep.set_ip4("127.0.0.1");
+    ep.set_ip6("::1");
+    ep.set_port(26620);
+
+    butil::EndPoint brpc_ep = ToBRpcEndpoint(ep);
+    ASSERT_EQ(26620, brpc_ep.port);
+    ASSERT_STREQ("127.0.0.1", butil::ip2str(brpc_ep.ip).c_str());
 }
 
 TEST(LocationTest, BelongsToTest) {

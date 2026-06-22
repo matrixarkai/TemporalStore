@@ -23,6 +23,9 @@ class Partition;
 
 // Read-only stream implementation used by secondary partitions. Metadata still
 // comes from GetInfo/RestoreInfo; stream payloads are pulled from the primary.
+// This must cover index, oplog, and page-zone streams. Oplog only contains
+// recent mutations; dumped historical pages are read through PARTITION_STREAM_PAGE
+// from the current primary's local/shared backing store.
 class RemotePartitionStream : public stream::Stream {
  public:
     struct Options {

@@ -40,15 +40,22 @@ class RedisServiceImpl : public brpc::RedisService {
         mock_master_port_ = port;
     }
     uint64_t GetLoadedPartitionId() { return loaded_partition_id_; }
+    uint64_t GetLoadedPartitionLoadVersion() { return loaded_partition_load_version_; }
     void SetLoadedPartitionId(uint64_t partition_id) { loaded_partition_id_ = partition_id; }
+    void SetLoadedPartitionLoadVersion(uint64_t load_version) {
+        loaded_partition_load_version_ = load_version;
+    }
     PartitionManager* GetPartitionManager() { return partition_manager_; }
+    int64_t GetCommandTimeoutMs() const { return command_timeout_ms_; }
 
  private:
     std::unordered_map<std::string, std::string> config_map_ = {
-        {"maxmemory", "1000"}, {"server-id", "123456789"}, {"requirepass", ""}};
+        {"maxmemory", "1073741824"}, {"server-id", "123456789"}, {"requirepass", ""}};
     std::string mock_master_host_;
     std::string mock_master_port_;
     uint64_t loaded_partition_id_ = 0;
+    uint64_t loaded_partition_load_version_ = 0;
+    int64_t command_timeout_ms_ = 5000;
     PartitionManager* partition_manager_ = nullptr;
     std::vector<std::unique_ptr<RedisCommandHandler>> command_holder_;
 };

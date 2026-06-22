@@ -30,11 +30,47 @@ DECLARE_uint64(stream_blob_deletion_min_gap);
 DECLARE_uint64(stream_blob_switch_retry_interval_us);
 
 DECLARE_bool(stream_aggregate_flush);
+DECLARE_string(stream_aggregate_flush_profile);
 DECLARE_uint64(stream_aggregate_flush_loop_interval_ms);
 DECLARE_uint64(stream_aggregate_flush_batch_size_byte);
 
 namespace bcache2 {
 namespace stream {
+namespace {
+
+void ApplyAggregateFlushProfile() {
+    static bool applied = false;
+    if (applied) {
+        return;
+    }
+    applied = true;
+
+    if (FLAGS_stream_aggregate_flush_profile == "custom") {
+        return;
+    }
+
+    if (FLAGS_stream_aggregate_flush_profile == "low_latency") {
+        FLAGS_stream_aggregate_flush_loop_interval_ms = 1;
+        FLAGS_stream_aggregate_flush_batch_size_byte = 256 * 1024;
+    } else if (FLAGS_stream_aggregate_flush_profile == "throughput") {
+        FLAGS_stream_aggregate_flush_loop_interval_ms = 5;
+        FLAGS_stream_aggregate_flush_batch_size_byte = 1024 * 1024;
+    } else if (FLAGS_stream_aggregate_flush_profile == "batch_ingest") {
+        FLAGS_stream_aggregate_flush_loop_interval_ms = 50;
+        FLAGS_stream_aggregate_flush_batch_size_byte = 4 * 1024 * 1024;
+    } else {
+        FLAGS_stream_aggregate_flush_loop_interval_ms = 2;
+        FLAGS_stream_aggregate_flush_batch_size_byte = 512 * 1024;
+    }
+
+    LOG_INFO("Applied stream aggregate flush profile")
+        .put("Profile", FLAGS_stream_aggregate_flush_profile)
+        .put("Enabled", FLAGS_stream_aggregate_flush)
+        .put("LoopIntervalMs", FLAGS_stream_aggregate_flush_loop_interval_ms)
+        .put("BatchSizeBytes", FLAGS_stream_aggregate_flush_batch_size_byte);
+}
+
+}  // namespace
 
 StreamImpl::StreamImpl(LogBasedEnv* env, const std::string& uri, const Env::Condition& condition,
                        StoreRepPolicy rep_policy, const std::string& token,
@@ -50,6 +86,18 @@ StreamImpl::StreamImpl(LogBasedEnv* env, const std::string& uri, const Env::Cond
 StreamImpl::~StreamImpl() { BYTE_ASSERT(commit_tasks_.Empty()); }
 
 void StreamImpl::LoopFlush() {
+    if (UNLIKELY(!IsCoContext())) {
+        if (stop_loop_flush_sync_ != nullptr) {
+            stop_loop_flush_sync_->Run();
+            return;
+        }
+        if (FLAGS_stream_aggregate_flush) {
+            TryAppend(false);
+        }
+        byte::InvokeLaterInCurrentThread(FLAGS_stream_aggregate_flush_loop_interval_ms * 1000,
+                                         NewCoClosure(this, &StreamImpl::LoopFlush));
+        return;
+    }
     while (stop_loop_flush_sync_ == nullptr) {
         CoSleep(FLAGS_stream_aggregate_flush_loop_interval_ms * 1000);
         if (stop_loop_flush_sync_ == nullptr && FLAGS_stream_aggregate_flush) {
@@ -62,6 +110,8 @@ void StreamImpl::LoopFlush() {
 }
 
 Status StreamImpl::Load() {
+    ApplyAggregateFlushProfile();
+
     std::vector<BlobInfo> tmp_blobs;
     std::vector<BlobInfo> data_blobs;
     Status status = stream_base_->ListBlobs(&tmp_blobs, &data_blobs);
@@ -148,8 +198,8 @@ Status StreamImpl::Load() {
 void StreamImpl::Close(Closure<void>* callback) {
     LOG_CALL_INFO().put("Uri", stream_base_->Uri());
     if (!IsCoContext()) {
-        byte::InvokeInCurrentThread(NewCoClosure(this, &StreamImpl::Close, callback));
-        return;
+        LOG_WARNING("Stream close running outside coroutine context")
+            .put("Uri", stream_base_->Uri());
     }
 
     ScopedInvoker done(callback);
@@ -157,11 +207,14 @@ void StreamImpl::Close(Closure<void>* callback) {
         return;
     }
 
-    closed_ = true;
     if (!staled_ && inflight_offset_ != persistent_offset_) {
         CoSyncClosure sync;
         close_callback_ = &sync;  // wait for inflight operations finish to avoid callback coredump
+        closed_ = true;
         sync.Wait();
+        close_callback_ = nullptr;
+    } else {
+        closed_ = true;
     }
 
     if (FLAGS_stream_aggregate_flush) {
@@ -197,6 +250,7 @@ void StreamImpl::AppendV(std::vector<std::string> data, uint64_t* id) {
 }
 
 void StreamImpl::Commit(Controller* ctrl, Closure<void>* callback) {
+    std::lock_guard<std::recursive_mutex> lock(stream_mu_);
     LOG_CALL_DEBUG()
         .put("Uri", stream_base_->Uri())
         .put("IncomingOffset", stream_buffer_->Length())
@@ -217,9 +271,11 @@ void StreamImpl::Commit(Controller* ctrl, Closure<void>* callback) {
     task.callback = callback;
     task.offset = stream_buffer_->Length();
     commit_tasks_.Push(task);
+    TryAppend(false);
 }
 
 void StreamImpl::AppendToBuffer(std::vector<std::string> datas, uint64_t* id) {
+    std::lock_guard<std::recursive_mutex> lock(stream_mu_);
     size_t size = 0;
     uint32_t record_crc32c = 0;
     for (auto& data : datas) {
@@ -346,6 +402,7 @@ void StreamImpl::AppendToBufferSlowPath(std::vector<std::string> datas, uint64_t
 }
 
 void StreamImpl::TryAppend(bool aggregate_flush) {
+    std::lock_guard<std::recursive_mutex> lock(stream_mu_);
     size_t size = stream_buffer_->DistanceWithFirstDelimiter();
 
     if (UNLIKELY(
@@ -365,6 +422,17 @@ void StreamImpl::TryAppend(bool aggregate_flush) {
     Task* task = new Task;
     task->offset = inflight_offset_;
     task->data.resize(size);
+    if (UNLIKELY(!stream_buffer_->CanReadFront(size))) {
+        LOG_WARNING("Append to bytestore skipped because front buffer is not readable")
+            .put("Uri", stream_base_->Uri())
+            .put("StreamLength", stream_buffer_->Length())
+            .put("StreamStart", stream_buffer_->Start())
+            .put("InflightOffset", inflight_offset_)
+            .put("PersistentOffset", persistent_offset_)
+            .put("Size", size);
+        delete task;
+        return;
+    }
     stream_buffer_->GetFrontData(&task->data[0], size);
 
     LOG_DEBUG("Try append to bytestore")
@@ -400,8 +468,8 @@ void StreamImpl::AppendInternal(Task* task) {
             .put("InflightBlobOffset", inflight_blob_offset_)
             .put("DataSize", task->data.size())
             .put("Task", task);
-        // switch new blob in background and callback AppendInternal
-        byte::InvokeInCurrentThread(NewCoClosure(this, &StreamImpl::SwitchNewBlobToAppend, task));
+        // Switch the blob in a coroutine because SealAndNew may retry with CoSleep.
+        ScheduleSwitchNewBlobToAppend(task);
         return;
     }
 
@@ -415,6 +483,7 @@ void StreamImpl::AppendInternal(Task* task) {
 }
 
 void StreamImpl::OnAppendDone(Task* task) {
+    std::lock_guard<std::recursive_mutex> lock(stream_mu_);
     BYTE_ASSERT_DEBUG(!task->inplace);
     BYTE_ASSERT(task->offset == persistent_offset_);
     if (!task->ctrl.status().ok() && !closed_ && !staled_) {
@@ -427,7 +496,7 @@ void StreamImpl::OnAppendDone(Task* task) {
             .put("DataSize", task->data.size())
             .put("Error", task->ctrl.status().ToString())
             .put("Task", task);
-        byte::InvokeInCurrentThread(NewCoClosure(this, &StreamImpl::SwitchNewBlobToAppend, task));
+        ScheduleSwitchNewBlobToAppend(task);
         return;
     }
 
@@ -510,8 +579,18 @@ void StreamImpl::OnAppendDone(Task* task) {
     }
 }
 
+void StreamImpl::ScheduleSwitchNewBlobToAppend(Task* task) {
+    byte::InvokeLaterInCurrentThread(0, NewCoClosure(this, &StreamImpl::SwitchNewBlobToAppend, task));
+}
+
 void StreamImpl::SwitchNewBlobToAppend(Task* task) {
-    BYTE_ASSERT(IsCoContext());
+    if (UNLIKELY(!IsCoContext())) {
+        LOG_WARNING("Switch new blob rescheduled outside coroutine context")
+            .put("Uri", stream_base_->Uri())
+            .put("Task", task);
+        ScheduleSwitchNewBlobToAppend(task);
+        return;
+    }
 
     // Close writting blob
     writing_blob_->Close();

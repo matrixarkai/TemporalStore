@@ -79,6 +79,9 @@ Status Proxy::Start(Options opts) {
     client_opts.log_dir = opts_.log_dir;
     client_opts.log_level = static_cast<client::LogLevel>(static_cast<int>(opts_.log_level));
     client_opts.af = client::AddressFamily::kIp4;
+    if (FLAGS_proxy_pin_primary_reads) {
+        client_opts.partition_pick_opts.policy = client::PartitionPickOptions::Policy::kPrimary;
+    }
     client_opts.master_consul = opts_.master_consul;
     client_opts.master_addr = opts_.master_endpoint;
     client_.reset(new client::ClientImpl());
@@ -134,8 +137,10 @@ void Proxy::Join() {
 
 Status Proxy::StartHeartbeat() {
     Endpoint self_endpoint;
-    self_endpoint.set_ip4(getenv("BYTED_HOST_IP"));
-    self_endpoint.set_ip6(getenv("BYTED_HOST_IPV6"));
+    const char* host_ip = getenv("BYTED_HOST_IP");
+    const char* host_ip_v6 = getenv("BYTED_HOST_IPV6");
+    self_endpoint.set_ip4(host_ip != nullptr ? host_ip : "");
+    self_endpoint.set_ip6(host_ip_v6 != nullptr ? host_ip_v6 : "");
     if (self_endpoint.ip4().empty() && self_endpoint.ip6().empty()) {
         return Status::Internal("ip4/ip6 are all empty");
     } else if (self_endpoint.ip4().empty()) {

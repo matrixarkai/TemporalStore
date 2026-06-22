@@ -14,6 +14,7 @@
 DECLARE_uint64(stream_max_blob_size);
 
 DECLARE_bool(stream_aggregate_flush);
+DECLARE_string(stream_aggregate_flush_profile);
 DECLARE_uint64(stream_aggregate_flush_loop_interval_ms);
 DECLARE_uint64(stream_aggregate_flush_batch_size_byte);
 
@@ -212,9 +213,17 @@ TEST_F(LogBasedStreamTest, LastBlobInfo) {
 }
 
 TEST_F(LogBasedStreamTest, AggregateFlush) {
+    const bool old_aggregate_flush = FLAGS_stream_aggregate_flush;
+    const std::string old_profile = FLAGS_stream_aggregate_flush_profile;
+    const uint64_t old_interval = FLAGS_stream_aggregate_flush_loop_interval_ms;
+    const uint64_t old_batch_size = FLAGS_stream_aggregate_flush_batch_size_byte;
+
     uint64_t start = GetCurrentTimeInMs();
     std::cout << "start " << start << std::endl;
     FLAGS_stream_aggregate_flush = true;
+    FLAGS_stream_aggregate_flush_profile = "custom";
+    FLAGS_stream_aggregate_flush_loop_interval_ms = 10;
+    FLAGS_stream_aggregate_flush_batch_size_byte = 4096;
     stream_.reset(new StreamImpl(env_.get(), uri_, Env::Condition(), StoreRepPolicy(), "test",
                                  metrics_manager_.get()));
     Status status = stream_->Load();
@@ -244,7 +253,17 @@ TEST_F(LogBasedStreamTest, AggregateFlush) {
     ASSERT_TRUE(ctrl.status().ok()) << ctrl.status();
     ASSERT_TRUE(cost2 < FLAGS_stream_aggregate_flush_loop_interval_ms - (start2 - start1));
 
-    FLAGS_stream_aggregate_flush = false;
+    FLAGS_stream_aggregate_flush = old_aggregate_flush;
+    FLAGS_stream_aggregate_flush_profile = old_profile;
+    FLAGS_stream_aggregate_flush_loop_interval_ms = old_interval;
+    FLAGS_stream_aggregate_flush_batch_size_byte = old_batch_size;
+}
+
+TEST_F(LogBasedStreamTest, AggregateFlushProfileDefaults) {
+    ASSERT_TRUE(FLAGS_stream_aggregate_flush);
+    ASSERT_EQ(FLAGS_stream_aggregate_flush_profile, "default");
+    ASSERT_EQ(FLAGS_stream_aggregate_flush_loop_interval_ms, 2);
+    ASSERT_EQ(FLAGS_stream_aggregate_flush_batch_size_byte, 512 * 1024UL);
 }
 }  // namespace stream
 }  // namespace bcache2

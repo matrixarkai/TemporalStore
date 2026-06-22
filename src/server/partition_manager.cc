@@ -14,6 +14,7 @@
 
 #include "common/bits.h"
 #include "common/cmd_manager.h"
+#include "common/coclosure.h"
 #include "common/function_closure.h"
 #include "common/scoped_invoker.h"
 #include "partition/partition.h"
@@ -349,7 +350,7 @@ void PartitionManager::BatchExecuteCmd(Controller* ctrl, const BatchExecuteCmdRe
     const uint64_t partition_id = request->partition_id();
     byte::AsyncThreadPool* execute_pool =
         raft_propose_pool_ != nullptr ? raft_propose_pool_ : thread_pool_;
-    execute_pool->PushTask(partition_id, NewFuncClosure([this, context, partition_id] {
+    execute_pool->PushTask(partition_id, NewCoFuncClosure([this, context, partition_id] {
         ThreadLocalInfo* previous_thread_info = thread_info_;
         thread_info_ = &thread_infos_[partition_id % thread_pool_->ThreadNum()];
         BatchExecuteCmdInternal(context);
@@ -362,10 +363,17 @@ void PartitionManager::BatchExecuteCmdLocally(Controller* ctrl,
                                               BatchExecuteCmdResponse* response,
                                               Closure<void>* callback) {
     BatchExecuteContext* context = NewBatchExecuteContext(ctrl, request, response, callback);
-    ThreadLocalInfo* previous_thread_info = thread_info_;
-    thread_info_ = &thread_infos_[request->partition_id() % thread_pool_->ThreadNum()];
-    BatchExecuteCmdInternal(context);
-    thread_info_ = previous_thread_info;
+    auto execute = [this, context, partition_id = request->partition_id()] {
+        ThreadLocalInfo* previous_thread_info = thread_info_;
+        thread_info_ = &thread_infos_[partition_id % thread_pool_->ThreadNum()];
+        BatchExecuteCmdInternal(context);
+        thread_info_ = previous_thread_info;
+    };
+    if (IsCoContext()) {
+        execute();
+        return;
+    }
+    NewCoFuncClosure(std::move(execute))->Run();
 }
 
 PartitionManager::BatchExecuteContext* PartitionManager::NewBatchExecuteContext(

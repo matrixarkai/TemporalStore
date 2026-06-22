@@ -602,8 +602,24 @@ Status PartitionSet::PromotePrimaryWithLock(uint64_t legacy_primary_id, uint32_t
             }
         }
         CHECK(new_primary) << this;
+    } else if (policy == ElectionPolicy::PROMOTE_SECONDARY) {
+        for (auto& partition : units_[unit_id]) {
+            if (partition->GetId() == legacy_primary_id) {
+                continue;
+            }
+            if (partition->GetState() != PartitionState::P_NORMAL) {
+                continue;
+            }
+            if (partition->GetRole() != PartitionRole::PARTITION_ROLE_SECONDARY) {
+                continue;
+            }
+            new_primary = partition;
+            break;
+        }
+        if (!new_primary) {
+            return Status::FailedPrecondition("no healthy secondary to promote");
+        }
     } else {
-        // TODO(wuzhenyu) impl
         CHECK(false) << this << ElectionPolicy_Name(policy);
     }
     CHECK(new_primary.get() != nullptr);
@@ -1062,4 +1078,3 @@ Status PartitionSet::LoadSnapshot(google::protobuf::io::FileInputStream* stream)
 
 }  // namespace metaserver
 }  // namespace bcache2
-

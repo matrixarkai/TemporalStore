@@ -87,6 +87,59 @@ TEST_F(ProxyTest, FeatureAdd_FeatureQuery) {
     }
 }
 
+
+TEST_F(ProxyTest, ProxyRejectsWrongAccountNamespace) {
+    const bool old_enforce = FLAGS_proxy_ingestion_enforce_account;
+    const std::string old_account = FLAGS_proxy_ingestion_account;
+    FLAGS_proxy_ingestion_enforce_account = true;
+    FLAGS_proxy_ingestion_account = "bjmeetsfo";
+
+    thrift::SetRequest request;
+    thrift::SetResponse response;
+    request.__set_namespace_name("ns");
+    request.__set_table_name("table");
+    request.__set_key("key");
+    request.__set_value("value");
+
+    brpc::ThriftStub stub(&channel_);
+    brpc::Controller ctrl;
+    stub.CallMethod("Set", &ctrl, &request, &response, NULL);
+
+    FLAGS_proxy_ingestion_enforce_account = old_enforce;
+    FLAGS_proxy_ingestion_account = old_account;
+
+    ASSERT_FALSE(ctrl.Failed());
+    ASSERT_EQ(response.status.code, kPermissionDenied) << response.status.message;
+}
+
+TEST_F(ProxyTest, ProxyWriteIngestionQuotaIsWriteOnly) {
+    const uint64_t old_max_inflight = FLAGS_proxy_ingestion_max_inflight;
+    const uint64_t old_max_write_inflight = FLAGS_proxy_ingestion_max_write_inflight;
+    FLAGS_proxy_ingestion_max_inflight = 0;
+    FLAGS_proxy_ingestion_max_write_inflight = 1;
+
+    Bcache2ThriftService service(nullptr);
+    ASSERT_TRUE(service.IsWriteMethod("Set"));
+    ASSERT_TRUE(service.IsWriteMethod("HMSet"));
+    ASSERT_TRUE(service.IsWriteMethod("FeatureAdd"));
+    ASSERT_FALSE(service.IsWriteMethod("Get"));
+    ASSERT_FALSE(service.IsWriteMethod("HMGet"));
+
+    ASSERT_TRUE(service.TryAcquireIngestRequest(true).ok());
+    Status blocked = service.TryAcquireIngestRequest(true);
+    ASSERT_EQ(blocked.errorcode(), kResourceExhausted) << blocked;
+
+    ASSERT_TRUE(service.TryAcquireIngestRequest(false).ok());
+    service.ReleaseIngestRequest(false);
+    service.ReleaseIngestRequest(true);
+
+    ASSERT_TRUE(service.TryAcquireIngestRequest(true).ok());
+    service.ReleaseIngestRequest(true);
+
+    FLAGS_proxy_ingestion_max_inflight = old_max_inflight;
+    FLAGS_proxy_ingestion_max_write_inflight = old_max_write_inflight;
+}
+
 TEST_F(ProxyTest, GetSet) {
     {
         thrift::SetRequest request;

@@ -2,9 +2,96 @@
 
 This backlog tracks open engineering and product work discussed during the AWS/EFS, replication, cache, SDK, and productization work. It is intentionally explicit so we can turn items into issues later.
 
-## Current Status Snapshot - 2026-06-07
+## Current Status Snapshot - 2026-06-10
+
+Latest AWS/test state:
+
+- The 2026-06-09 AWS replication benchmark is documented in `docs/TEMPORALSTORE_AWS_REPLICATION_BENCH_2026_06_09.md`.
+- Shared-store async passed on two 2-vCPU data nodes with 2-thread write QPS `4395`, read QPS `3072`, and secondary visibility around `104 ms`.
+- Shared-store sync passed with 2-thread write QPS `167`, read QPS `4705`, and secondary visibility around `101 ms`; the write path is EFS-latency-bound.
+- Raft consensus mode started servers but failed on the first primary write timeout; the missing piece is still control-plane integration for a stable Raft replica group instead of anti-entropy derived-partition churn.
+- The temporary AWS benchmark data nodes and EFS were destroyed after the run.
+- The only remaining AWS node is `temporalstore-test-meta-01` / `i-05f55360d92c43908` (`t3.small`, public IP `34.223.234.63`) for the website/observation/monitoring pages.
+- No EFS filesystems or data-node EC2 instances are currently running.
+- Live public pages are `https://matrixark.ai/`, `https://matrixark.ai/observation/`, and `https://matrixark.ai/monitoring/`.
+
+## MatrixArk LLM Context Backlog
+
+- Implement a full VikingMem-style Keyword Graph for auxiliary recall.
+  - Current status: `docs/matrixark_weighted_multi_path_recall.md` implements an auxiliary keyword path over node path, `ContextIndex`, event type, entity text, and segment topics. This is useful, but it is not yet the full keyword graph described in VikingMem.
+  - Target behavior: for indirect-memory questions such as "Do you remember my nickname?", dense semantic matching can fail because the query and the original memory may have low direct similarity. Build a keyword graph where each keyword is connected to associated memories and memory segments.
+  - Keyword embedding: compute each keyword embedding as the average of embeddings from memory segments containing that keyword, so the keyword captures the semantic neighborhood of the memories it links to.
+  - Storage model:
+    - `ContextKeyword`: keyword text, keyword hash, scope/node path, averaged embedding, source segment refs, source event/entity refs, updated time, confidence, and optional business weight.
+    - `ContextKeywordEdge`: keyword hash -> memory ref, with edge weight, source count, last_seen_ms, and node hash.
+  - Ingestion/update path:
+    - extract salient keywords from `ContextSegment`, `ContextEntity`, and high-importance `ContextEvent`;
+    - update keyword averages asynchronously or in bounded mini-batches;
+    - keep writes lightweight by appending edges and refreshing keyword embeddings outside the hot event write path when needed.
+  - Retrieval path:
+    - encode query;
+    - retrieve keyword candidates by lexical match plus keyword embedding similarity;
+    - expand from top keyword nodes to linked memory refs;
+    - rank this auxiliary path independently from primary dense-sparse recall;
+    - merge with a smaller auxiliary quota, preserving the existing primary-path-heavy behavior.
+  - Tests:
+    - nickname/preference indirect query where dense semantic search alone misses the memory;
+    - keyword graph recovers the linked memory;
+    - averaged keyword embedding changes after new segments arrive;
+    - stale/superseded linked memories are blocked or demoted;
+    - C++ TemporalStore direct backend round trip for keyword nodes and edges.
+
+- Add multi-vector rerank for high-quality memory reranking under p99 latency budgets.
+  - Current status: MatrixArk has primary dense/sparse scoring, time decay, business weights, and an auxiliary keyword path. OpenViking open-source appears to support external/cloud rerank providers, but the backlog still needs a TemporalStore-native multi-vector reranker for low-latency memory search.
+  - Problem: cross-encoder rerankers can be accurate but may add seconds of p99 latency when candidate sets are large. Memory retrieval needs reranking in hundreds of milliseconds, especially for interactive agents.
+  - Target design: precompute and store ColBERT-style token-level or phrase-level vectors during extraction for `ContextSegment`, high-value `ContextEvent`, and `ContextEntity` state.
+  - Scoring: at query time, encode the query into multi-vectors and use late interaction / MaxSim against the stored memory multi-vectors after the first-stage TemporalStore tree recall.
+  - Compression:
+    - quantize multi-vectors to compact int8/4-bit or product-quantized payloads;
+    - merge near-duplicate token vectors inside a memory segment;
+    - cap vectors per memory by saliency and token budget;
+    - keep storage overhead near dense-vector storage for common memories.
+  - Storage model:
+    - `ContextMultiVector`: ref hash, ref type, model id, vector count, dim, quantization, compressed vector bytes, source text checksum, updated time.
+    - `ContextRerankAudit`: query id/context pack id, candidate count, reranked count, p50/p95/p99 timing, selected refs, dropped refs, and fallback reason.
+  - Retrieval path:
+    - run existing primary/auxiliary recall first;
+    - rerank only a bounded candidate set, e.g. top 32/64/128;
+    - return fallback ranked results if rerank exceeds deadline;
+    - record whether rerank was used in `ContextPackAudit`.
+  - API/config:
+    - `ranking.rerank.enabled`;
+    - `ranking.rerank.max_candidates`;
+    - `ranking.rerank.deadline_ms`;
+    - `ranking.rerank.model`;
+    - `ranking.rerank.quantization`;
+    - `ranking.rerank.fallback=weighted_recall`.
+  - Tests:
+    - rerank improves a hard query where dense/sparse first-stage order is wrong;
+    - timeout fallback returns weighted-recall results without failure;
+    - quantized scores stay close to float scores;
+    - C++ TemporalStore direct backend stores and reads multi-vector payloads;
+    - benchmark reports p50/p95/p99 rerank latency and answer-quality delta.
+
+## Prior Status Snapshot - 2026-06-08
 
 Completed since the last backlog update:
+
+- Restore checkpoint:
+  - Restored the cleaned source tree on branch `main-no-deps`.
+  - Restored the optional client-example CMake guard so missing benchmark-only sources do not break normal builds.
+  - Restored the AWS shared-store vs Raft comparison harness under `tools/workspace/aws_temporalstore_raft_vs_shared_test.ps1`.
+  - Added the recovered AWS result note: `docs/aws_raft_vs_shared_store_scale_2026-06-08.md`.
+
+- AWS shared-store vs Raft comparison:
+  - Shared-store/EFS path passed the low-thread STRING replication smoke and scale run on two 2-vCPU data nodes.
+  - Best observed low-thread shared-store result in that run was about 17.2k write QPS and 19.7k read QPS at 8 threads, with zero benchmark errors.
+  - Raft path was not yet positive-tested on AWS; it timed out on primary writes at the 5s propose/request boundary.
+  - The Raft result is a correctness blocker, not a performance result.
+  - A newer 2026-06-08 shared-store async STRING run passed at 19.9k write QPS and 20.7k read QPS at 8 threads with zero errors; see `docs/aws_shared_store_string_qps_2026-06-08.md`.
+  - A 2026-06-08 Raft bring-up attempt was blocked before benchmark because the deployed AWS server binary is stale and does not recognize current-source read-mode flags; see `docs/raft_production_readiness_and_qps_2026-06-08.md`.
+  - Current source now has data-Raft snapshot/load callback hooks, a per-partition applied-index sidecar, local-stream loading for Raft replicas, and a scoped readonly bypass for committed Raft apply.
+  - Local `file://` partition snapshot export/import is implemented for Raft: condition, index, oplog, and page stream files are copied into the snapshot and reinstalled by rebuilding volatile partition managers. Raft remains guarded for non-local stores until S3/shared-store snapshot adapters and failover tests pass.
 
 - Website and product docs:
   - MatrixArk website now uses public product names: TemporalStore, MatrixDB, and MatrixKV.
@@ -27,6 +114,33 @@ Completed since the last backlog update:
   - Two-replica table creation/recovery still has a `Missing condition info` path in the deployed runtime; secondary aggregate reads remain untrusted until fixed.
 
 ## P0 Correctness And Recovery
+
+- Complete Byteraft-backed data-node Raft replication mode.
+  - Design doc: `docs/data_node_raft_replication_design.md`.
+  - Keep it separate from shared-store replay and `secondary_pull_stream_from_primary`.
+  - Add partition-level Raft FSM that applies committed `storage::OpLog` through `ObjectManager::ReplayOplog()`.
+  - Ack strong writes only after quorum commit.
+  - Add leader-only write guard and explicit read modes: leader, linearizable/read-index, replica-stale, and replica-min-index.
+  - Add snapshot/install-snapshot before allowing new/far-behind nodes to recover without the old primary's local files.
+  - Current code has a guarded flag `--data_replication_mode=raft_consensus` backed by Byteraft. Direct command writes still need to be refactored to propose through Raft before local mutation.
+  - Added isolated `DataRaftCommandEntry` command envelope and codec.
+  - Added committed command apply path through `Partition::ApplyDataRaftCommand` / `ApplyDataRaftEntry`.
+  - Added a first write-only leader path that proposes the command envelope through Byteraft and waits for the local FSM applied index before acknowledging.
+  - Added pending apply-response tracking so the leader returns the response/status produced by the committed FSM apply.
+  - Added a fail-closed guard for empty Byteraft snapshots. Snapshot/checkpoint tests must opt in explicitly with `--data_raft_enable_empty_snapshot_for_tests=true`; production `file://` Raft snapshots should use the real partition snapshot path.
+  - Added partition-thread-safe FSM apply: Raft apply bounces to the partition's owning worker thread, while leader proposal waiting runs on the server background async pool to avoid self-deadlock.
+  - Added ReadIndex, AddLearner, PromotePeer, and bounded-stale-read guardrail hooks.
+  - Added an explicit Raft read policy gate: leader-only by default, linearizable leader reads through ReadIndex, bounded-stale secondary reads with an index-lag budget, and an unsafe bring-up mode.
+  - Added ByteKV-style `FlexibleApply` handling for data Raft batches so data/no-op/meta/config-change entries advance applied index in order.
+  - Added per-partition applied-index sidecar restore/advance under `--data_raft_work_dir/applied/<partition_id>`.
+  - Added data-Raft snapshot/load callback wiring from Byteraft FSM into `Partition`.
+  - Changed data-Raft replicas to load their own local streams instead of restoring primary/shared-store stream metadata.
+  - Changed data-Raft replicas to open local streams writable for committed Raft apply while keeping direct client writes blocked on readonly partitions.
+  - Changed committed data-Raft apply to bypass local readonly/quota write-admission checks so committed entries apply deterministically on replicas.
+  - Hardened the AWS shared-store vs Raft harness so Raft runs are opt-in bring-up tests, not accidental production benchmarks.
+  - The current AWS runtime must be rebuilt before Raft can be tested because the deployed binary does not include the latest `data_raft_read_mode` flags.
+  - Remaining work is real snapshots/install-snapshot, atomic storage+applied-index recovery point, learner catch-up proof, promotion/failover tests, routing integration, and AWS zero-error Raft smoke.
+  - Production policy: use `raft_consensus` for no-data-loss deployments after proposal/apply/snapshot are complete; use `shared_store --storage_async=false` as the conservative fallback today; use `storage_async=true` only for streaming data that can be replayed.
 
 - Enforce one primary lease/epoch per logical shard.
   - Metaserver must be the authority for each logical shard's primary partition id and epoch.
@@ -145,7 +259,7 @@ Completed since the last backlog update:
   - Server, proxy, benchmark, and client examples should use the same runtime env file.
 
 - Never commit third-party dependency code or generated binary artifacts.
-  - No Byte/Byteraft/internal dependency code.
+  - No internal dependency code.
   - No build archives.
   - No large `.a`, `.so`, `.tar.gz`, or build directories.
   - No presigned URL files or temporary AWS security-token JSON.

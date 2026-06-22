@@ -149,7 +149,7 @@ bool TestSet(bcache2::client::TableCore* table, const std::string& prefix) {
     for (const char* member : members) {
         bcache2::set::SAddRequest request;
         request.set_key(key);
-        request.set_member(member);
+        request.add_members(member);
         bcache2::set::SAddResponse response;
         if (!ExecuteRaw(table, bcache2::Module::SET, bcache2::set::SADD, key, request, &response,
                         std::string("SET SAdd ") + member)) {

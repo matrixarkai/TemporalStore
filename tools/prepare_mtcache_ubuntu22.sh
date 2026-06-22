@@ -27,6 +27,35 @@ for tool in cmake curl g++ git make patch unzip; do
   require_tool "${tool}"
 done
 
+patch_mtcache_for_local_toolchain() {
+  local allocator_header="${MTCACHE_DIR}/src/allocator/simple_allocator.h"
+  if [[ ! -f "${allocator_header}" ]]; then
+    echo "missing MtCache allocator header: ${allocator_header}" >&2
+    exit 1
+  fi
+
+  perl -0pi -e \
+    's/noodle::Result<AllocatorStats, CacheError> GetStats\(\) const override \{\n\s*return \{\};\n\s*\}/noodle::Result<AllocatorStats, CacheError> GetStats() const override {\n    return AllocatorStats{};\n  }/g; s/noodle::Result<uint64_t, CacheError> Capacity\(\) const override \{ return \{\}; \}/noodle::Result<uint64_t, CacheError> Capacity() const override { return uint64_t{0}; }/g' \
+    "${allocator_header}"
+
+  local unified_cache_source="${MTCACHE_DIR}/src/unified_cache.cpp"
+  if [[ -f "${unified_cache_source}" ]] && \
+     ! grep -q '#include "buffer/string_buffer.h"' "${unified_cache_source}"; then
+    perl -0pi -e \
+      's/#include "buffer\/iobuf_buffer.h"\n/#include "buffer\/iobuf_buffer.h"\n#include "buffer\/string_buffer.h"\n/' \
+      "${unified_cache_source}"
+  fi
+
+  local allocator_source
+  while IFS= read -r allocator_source; do
+    perl -0pi -e \
+      's/noodle::Result<void\*, CacheError> pre_alloc_res(?: = nullptr)?;/noodle::Result<void*, CacheError> pre_alloc_res = static_cast<void*>(nullptr);/g; s/noodle::Result<void\*, CacheError> alloc_res(?: = nullptr)?;/noodle::Result<void*, CacheError> alloc_res = static_cast<void*>(nullptr);/g' \
+      "${allocator_source}"
+  done < <(find "${MTCACHE_DIR}/src/allocator" -maxdepth 1 -type f -name '*.cpp')
+}
+
+patch_mtcache_for_local_toolchain
+
 mkdir -p "${PREFIX}/include" "${PREFIX}/lib" "${PREFIX}/lib/cmake" "${BUILD_DIR}/downloads"
 
 copy_noodle() {
@@ -171,10 +200,174 @@ build_terarkdb() {
     "${PREFIX}/lib/"
 }
 
+build_bytedisk_shim() {
+  if [[ -f "${PREFIX}/include/libbytedisk.h" && -f "${PREFIX}/lib/libbytedisk.a" ]]; then
+    return
+  fi
+
+  local shim_dir="${BUILD_DIR}/bytedisk-shim"
+  mkdir -p "${shim_dir}" "${PREFIX}/include" "${PREFIX}/lib"
+  cat > "${PREFIX}/include/libbytedisk.h" <<'EOF'
+#pragma once
+
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef void* bytedisk_dev_handle_t;
+typedef void* bytedisk_ns_handle_t;
+typedef void* bytedisk_zone_handle_t;
+
+typedef enum bytedisk_device_type {
+  BYTEDISK_DEVICE_TYPE_UNKNOWN = 0,
+} bytedisk_device_type;
+
+typedef enum bytedisk_zone_state {
+  BYTEDISK_ZND_STATE_EMPTY = 0,
+  BYTEDISK_ZND_STATE_EOPEN = 1,
+  BYTEDISK_ZND_STATE_CLOSED = 2,
+  BYTEDISK_ZND_STATE_FULL = 3,
+} bytedisk_zone_state;
+
+typedef enum bytedisk_io_status_code {
+  BYTEDISK_IO_SC_SUCCESS = 0,
+  BYTEDISK_IO_SC_ERROR = 1,
+} bytedisk_io_status_code;
+
+bytedisk_dev_handle_t bytedisk_open_dev(const char* name);
+void bytedisk_close_dev(bytedisk_dev_handle_t dev);
+bytedisk_device_type bytedisk_get_dev_type(bytedisk_dev_handle_t dev);
+uint64_t bytedisk_get_dev_zone_size(bytedisk_dev_handle_t dev);
+uint64_t bytedisk_get_dev_zone_cnt(bytedisk_dev_handle_t dev);
+uint64_t bytedisk_get_dev_size(bytedisk_dev_handle_t dev);
+uint64_t bytedisk_get_dev_zone_cap(bytedisk_dev_handle_t dev);
+bytedisk_ns_handle_t bytedisk_allocate_namespace(bytedisk_dev_handle_t dev, uint64_t offset, uint64_t size);
+bytedisk_ns_handle_t bytedisk_reset_namespace(bytedisk_ns_handle_t ns);
+void bytedisk_free_namespace(bytedisk_ns_handle_t ns);
+uint64_t bytedisk_get_ns_nr_zones(bytedisk_ns_handle_t ns);
+bytedisk_zone_handle_t bytedisk_zone_get(bytedisk_ns_handle_t ns, uint64_t zone_id);
+int bytedisk_zone_exp_open(bytedisk_zone_handle_t zone);
+bytedisk_zone_state bytedisk_get_zone_state(bytedisk_zone_handle_t zone);
+int bytedisk_zone_close(bytedisk_zone_handle_t zone);
+int bytedisk_zone_finish(bytedisk_zone_handle_t zone);
+int bytedisk_zone_reset(bytedisk_zone_handle_t zone);
+uint64_t bytedisk_get_zone_start(bytedisk_zone_handle_t zone);
+uint64_t bytedisk_get_zone_writepointer(bytedisk_zone_handle_t zone);
+uint64_t bytedisk_get_zone_capacity(bytedisk_zone_handle_t zone);
+int bytedisk_async_read(bytedisk_ns_handle_t ns, uint64_t offset, void* buf, uint64_t size,
+                        void (*callback)(bytedisk_io_status_code, void*), void* callback_arg);
+
+#ifdef __cplusplus
+}
+#endif
+EOF
+
+  cat > "${shim_dir}/libbytedisk_shim.c" <<'EOF'
+#include "libbytedisk.h"
+
+#include <errno.h>
+#include <stddef.h>
+
+bytedisk_dev_handle_t bytedisk_open_dev(const char* name) {
+  (void)name;
+  errno = ENOTSUP;
+  return NULL;
+}
+void bytedisk_close_dev(bytedisk_dev_handle_t dev) { (void)dev; }
+bytedisk_device_type bytedisk_get_dev_type(bytedisk_dev_handle_t dev) {
+  (void)dev;
+  return BYTEDISK_DEVICE_TYPE_UNKNOWN;
+}
+uint64_t bytedisk_get_dev_zone_size(bytedisk_dev_handle_t dev) {
+  (void)dev;
+  return 0;
+}
+uint64_t bytedisk_get_dev_zone_cnt(bytedisk_dev_handle_t dev) {
+  (void)dev;
+  return 0;
+}
+uint64_t bytedisk_get_dev_size(bytedisk_dev_handle_t dev) {
+  (void)dev;
+  return 0;
+}
+uint64_t bytedisk_get_dev_zone_cap(bytedisk_dev_handle_t dev) {
+  (void)dev;
+  return 0;
+}
+bytedisk_ns_handle_t bytedisk_allocate_namespace(bytedisk_dev_handle_t dev, uint64_t offset, uint64_t size) {
+  (void)dev;
+  (void)offset;
+  (void)size;
+  return NULL;
+}
+bytedisk_ns_handle_t bytedisk_reset_namespace(bytedisk_ns_handle_t ns) { return ns; }
+void bytedisk_free_namespace(bytedisk_ns_handle_t ns) { (void)ns; }
+uint64_t bytedisk_get_ns_nr_zones(bytedisk_ns_handle_t ns) {
+  (void)ns;
+  return 0;
+}
+bytedisk_zone_handle_t bytedisk_zone_get(bytedisk_ns_handle_t ns, uint64_t zone_id) {
+  (void)ns;
+  (void)zone_id;
+  return NULL;
+}
+int bytedisk_zone_exp_open(bytedisk_zone_handle_t zone) {
+  (void)zone;
+  return -1;
+}
+bytedisk_zone_state bytedisk_get_zone_state(bytedisk_zone_handle_t zone) {
+  (void)zone;
+  return BYTEDISK_ZND_STATE_EMPTY;
+}
+int bytedisk_zone_close(bytedisk_zone_handle_t zone) {
+  (void)zone;
+  return -1;
+}
+int bytedisk_zone_finish(bytedisk_zone_handle_t zone) {
+  (void)zone;
+  return -1;
+}
+int bytedisk_zone_reset(bytedisk_zone_handle_t zone) {
+  (void)zone;
+  return -1;
+}
+uint64_t bytedisk_get_zone_start(bytedisk_zone_handle_t zone) {
+  (void)zone;
+  return 0;
+}
+uint64_t bytedisk_get_zone_writepointer(bytedisk_zone_handle_t zone) {
+  (void)zone;
+  return 0;
+}
+uint64_t bytedisk_get_zone_capacity(bytedisk_zone_handle_t zone) {
+  (void)zone;
+  return 0;
+}
+int bytedisk_async_read(bytedisk_ns_handle_t ns, uint64_t offset, void* buf, uint64_t size,
+                        void (*callback)(bytedisk_io_status_code, void*), void* callback_arg) {
+  (void)ns;
+  (void)offset;
+  (void)buf;
+  (void)size;
+  if (callback) {
+    callback(BYTEDISK_IO_SC_ERROR, callback_arg);
+  }
+  errno = ENOTSUP;
+  return -1;
+}
+EOF
+
+  gcc -I"${PREFIX}/include" -fPIC -c "${shim_dir}/libbytedisk_shim.c" -o "${shim_dir}/libbytedisk_shim.o"
+  ar rcs "${PREFIX}/lib/libbytedisk.a" "${shim_dir}/libbytedisk_shim.o"
+}
+
 copy_noodle
 build_folly
 if [[ "${ENABLE_MTCACHE_SSD_CACHE}" == "ON" ]]; then
   build_terarkdb
+  build_bytedisk_shim
 fi
 
 mkdir -p "${MTCACHE_DIR}/3rd"

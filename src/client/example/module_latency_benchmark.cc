@@ -205,7 +205,7 @@ bool BenchmarkSet(bcache2::client::TableCore* table, const std::string& prefix, 
                      const std::string key = prefix + ":set:" + std::to_string(i);
                      bcache2::set::SAddRequest request;
                      request.set_key(key);
-                     request.set_member("campaign_" + std::to_string(i));
+                     request.add_members("campaign_" + std::to_string(i));
                      bcache2::set::SAddResponse response;
                      return ExecuteRaw(table, bcache2::Module::SET, bcache2::set::SADD, key,
                                        request, &response, "SET SAdd");

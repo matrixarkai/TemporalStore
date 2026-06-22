@@ -93,6 +93,35 @@ TEST_F(FeatureModuleTest, SimpleTest) {
     }
 }
 
+TEST_F(FeatureModuleTest, QueryMissingKeyReturnsEmpty) {
+    Client* tmp_client = nullptr;
+    Status status = Client::Create(ClientOptions(), &tmp_client);
+    ASSERT_TRUE(status.ok());
+    std::unique_ptr<Client> client(tmp_client);
+
+    Table* tmp_table = nullptr;
+    status = client->OpenTable(
+        "tcp://127.0.0.1:" + std::to_string(cluster_.GetMaster()->GetMasterPort()) + "/ns/table",
+        TableOptions(), &tmp_table);
+    ASSERT_TRUE(status.ok()) << status.message();
+    std::unique_ptr<Table> table_release_gurad(tmp_table);
+    LightTable table(tmp_table);
+
+    feature2::QueryRequest request;
+    feature2::QueryResponse response;
+    request.set_key("missing-key");
+    request.set_start_ts(0);
+    request.set_end_ts(1000);
+    request.set_count(100);
+    request.set_format("protobuf");
+
+    Controller ctrl;
+    table.Execute(&ctrl, MakeCmdId(FEATURE, feature2::QUERY), "missing-key", request, &response);
+    ASSERT_EQ(ctrl.status.code(), 0) << ctrl.status.ToString();
+    ASSERT_EQ(response.key(), "missing-key");
+    ASSERT_EQ(response.point_list_size(), 0);
+}
+
 TEST_F(FeatureModuleTest, TruncateTest) {
     // New client
     Client* tmp_client = nullptr;

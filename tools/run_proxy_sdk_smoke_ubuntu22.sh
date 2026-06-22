@@ -50,7 +50,8 @@ PYTHONPATH="${ROOT}/sdk/python" \
 
 (
   cd "${ROOT}/sdk/rust/temporalstore"
-  cargo run --no-default-features --features proxy --example proxy_sequence_features
+  TEMPORALSTORE_UNIFIED_CORPUS="${ROOT}/sdk/unified/temporalstore_unified_corpus.json" \
+    cargo test --no-default-features --features proxy --test unified_corpus
 ) | tee "${RESULT_DIR}/rust_proxy.out"
 
 grep -q "profile=" "${RESULT_DIR}/python_proxy.out"
@@ -59,8 +60,7 @@ grep -q "profile=" "${RESULT_DIR}/go_proxy.out"
 grep -q "rows=" "${RESULT_DIR}/go_proxy.out"
 grep -q "profile=" "${RESULT_DIR}/java_proxy.out"
 grep -q "rows=1" "${RESULT_DIR}/java_proxy.out"
-grep -q "profile=" "${RESULT_DIR}/rust_proxy.out"
-grep -q "SequenceFeatureRow" "${RESULT_DIR}/rust_proxy.out"
+grep -q "unified_corpus_proxy_contract ... ok" "${RESULT_DIR}/rust_proxy.out"
 
 echo "PASS proxy SDK smoke"
 echo "wrote:"

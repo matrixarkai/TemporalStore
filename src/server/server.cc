@@ -86,6 +86,7 @@ Status Server::Start() {
     metrics_env_option.background_pool = background_thread_pool_.get();
     metrics_env_ = std::make_shared<MetricsEnv>();
     metrics_env_->Init(metrics_env_option);
+    service_metrics_.Expose("temporalstore_nodeserver");
 
     // Init store layer
     store_layer_.reset(new stream::StoreLayer(background_thread_pool_.get()));
@@ -140,7 +141,8 @@ Status Server::Start() {
 
     // Init partition manager
     partition_manager_.reset(new PartitionManager(options_.cluster_name, this,  //
-                                                  worker_thread_pool_.get(), env_.get(),
+                                                  worker_thread_pool_.get(),
+                                                  background_thread_pool_.get(), env_.get(),
                                                   blockcache_.get()));
 
     // Init Logger
@@ -153,7 +155,7 @@ Status Server::Start() {
     byte::SetByteLogMaxFileSize(options_.log_max_file_size);
 
     // Init service
-    service_.reset(new ServiceImpl(partition_manager_.get()));
+    service_.reset(new ServiceImpl(partition_manager_.get(), &service_metrics_));
     redis_service_ = new RedisServiceImpl(partition_manager_.get());
     redis_service_->SetConfig("requirepass", options_.requirepass);
     redis_service_->InitCommands();
@@ -322,11 +324,11 @@ void Server::Stop() {
         LOG_INFO("stopping meta_tinker");
         meta_tinker_->Stop();
     }
+    LOG_INFO("unloading all");
+    partition_manager_->UnloadAll();
     LOG_INFO("stopping server");
     server_->Stop(0);
     server_->Join();
-    LOG_INFO("unloading all");
-    partition_manager_->UnloadAll();
 
     LOG_INFO("stopping reset all");
     metrics_env_->Stop();

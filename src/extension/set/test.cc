@@ -55,13 +55,14 @@ TEST_F(HashModuleTest, SimpleTest) {
     {
         set::SAddRequest request;
         request.set_key("key1");
-        request.set_member("field1");
+        request.add_members("field1");
 
         set::SAddResponse response;
 
         Controller ctrl;
         table.Execute(&ctrl, MakeCmdId(SET, set::SADD), "key1", request, &response);
         ASSERT_EQ(ctrl.status.code(), 0);
+        ASSERT_EQ(response.added(), 1);
     }
 
     // Hash get
@@ -75,6 +76,47 @@ TEST_F(HashModuleTest, SimpleTest) {
         table.Execute(&ctrl, MakeCmdId(SET, set::SMEMBERS), "key1", request, &response);
         ASSERT_EQ(ctrl.status.code(), 0);
         ASSERT_EQ(response.members_size(), 1);
+    }
+
+    // Set cardinality.
+    {
+        set::SCardRequest request;
+        request.set_key("key1");
+
+        set::SCardResponse response;
+
+        Controller ctrl;
+        table.Execute(&ctrl, MakeCmdId(SET, set::SCARD), "key1", request, &response);
+        ASSERT_EQ(ctrl.status.code(), 0);
+        ASSERT_EQ(response.len(), 1);
+    }
+
+    // Set membership.
+    {
+        set::SIsMemberRequest request;
+        request.set_key("key1");
+        request.set_member("field1");
+
+        set::SIsMemberResponse response;
+
+        Controller ctrl;
+        table.Execute(&ctrl, MakeCmdId(SET, set::SISMEMBER), "key1", request, &response);
+        ASSERT_EQ(ctrl.status.code(), 0);
+        ASSERT_TRUE(response.exist());
+    }
+
+    // Set remove.
+    {
+        set::SRemRequest request;
+        request.set_key("key1");
+        request.add_members("field1");
+
+        set::SRemResponse response;
+
+        Controller ctrl;
+        table.Execute(&ctrl, MakeCmdId(SET, set::SREM), "key1", request, &response);
+        ASSERT_EQ(ctrl.status.code(), 0);
+        ASSERT_EQ(response.removed(), 1);
     }
 }
 

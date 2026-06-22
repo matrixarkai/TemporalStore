@@ -6,7 +6,8 @@ target_link_libraries(partition_test
     benchlib
     recordstream
     test_common
-    gtest)
+    gtest
+    /usr/lib/x86_64-linux-gnu/libfmt.so)
 target_compile_options(partition_test PUBLIC -fno-access-control)
 gtest_discover_tests(partition_test DISCOVERY_MODE PRE_TEST)
 

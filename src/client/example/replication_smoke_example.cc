@@ -57,8 +57,9 @@ bool OpenTable(const std::string& metaserver, const std::string& idc,
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc != 5) {
+    if (argc < 5 || argc > 7) {
         std::cout << "usage: " << argv[0] << " <metaserver_host:port> <idc> <namespace> <table>"
+                  << " [max_wait_ms=10000] [poll_ms=1]"
                   << std::endl;
         return 2;
     }
@@ -67,6 +68,8 @@ int main(int argc, char** argv) {
     const std::string idc = argv[2];
     const std::string namespace_name = argv[3];
     const std::string table_name = argv[4];
+    const int max_wait_ms = argc > 5 ? std::atoi(argv[5]) : 10000;
+    const int poll_ms = std::max(0, argc > 6 ? std::atoi(argv[6]) : 1);
 
     std::unique_ptr<bcache2::client::Client> writer_client;
     std::unique_ptr<bcache2::client::Table> writer_table;
@@ -96,22 +99,38 @@ int main(int argc, char** argv) {
     std::string got;
     bcache2::Status last_status;
     const auto start = std::chrono::steady_clock::now();
-    for (int attempt = 1; attempt <= 100; ++attempt) {
+    const auto deadline = start + std::chrono::milliseconds(std::max(0, max_wait_ms));
+    for (int attempt = 1;; ++attempt) {
         got.clear();
+        const auto raw_begin = std::chrono::steady_clock::now();
         last_status = secondary_reader_table->Get(key, &got);
+        const auto raw_end = std::chrono::steady_clock::now();
         if (last_status.ok() && got == value) {
             const auto elapsed =
                 std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - start)
                     .count();
+            const auto raw_us =
+                std::chrono::duration_cast<std::chrono::microseconds>(raw_end - raw_begin)
+                    .count();
             std::cout << "PASS replication smoke: secondary read matched after " << attempt
-                      << " attempts, " << elapsed << " ms" << std::endl;
+                      << " attempts, visibility_wall_ms=" << elapsed
+                      << ", raw_success_read_us=" << raw_us
+                      << ", poll_ms=" << poll_ms << std::endl;
             return 0;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if (std::chrono::steady_clock::now() >= deadline) {
+            break;
+        }
+        if (poll_ms > 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(poll_ms));
+        } else {
+            std::this_thread::yield();
+        }
     }
 
     std::cerr << "FAIL secondary read did not catch up; last_status=" << last_status.ToString()
-              << " value=" << got << std::endl;
+              << " value=" << got << " max_wait_ms=" << max_wait_ms
+              << " poll_ms=" << poll_ms << std::endl;
     return 1;
 }

@@ -31,7 +31,7 @@ class MetaSyncer {
     };
 
     explicit MetaSyncer(const Options& options) : options_(options) {}
-    virtual ~MetaSyncer() {}  // TODO(wuzhenyu) stop and cleanup
+    virtual ~MetaSyncer() { timer_thread_.stop_and_join(); }
 
     Status Init();
     Status OpenTable(TableCore* table);

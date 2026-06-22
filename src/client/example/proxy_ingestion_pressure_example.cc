@@ -31,17 +31,19 @@ struct Options {
     bool verify_reads = false;
     int verify_timeout_ms = 10000;
     int verify_poll_ms = 20;
+    int write_retries = 3;
 };
 
 void Usage(const char* argv0) {
     std::cerr << "usage: " << argv0
               << " <proxy_host:port> <namespace> <table> <key_prefix> [ops] [threads] "
-                 "[value_size] [verify_reads:0|1] [verify_timeout_ms] [verify_poll_ms]"
+                 "[value_size] [verify_reads:0|1] [verify_timeout_ms] [verify_poll_ms] "
+                 "[write_retries]"
               << std::endl;
 }
 
 bool ParseOptions(int argc, char** argv, Options* options) {
-    if (argc < 5 || argc > 11) {
+    if (argc < 5 || argc > 12) {
         Usage(argv[0]);
         return false;
     }
@@ -67,8 +69,12 @@ bool ParseOptions(int argc, char** argv, Options* options) {
     if (argc >= 11) {
         options->verify_poll_ms = std::atoi(argv[10]);
     }
+    if (argc >= 12) {
+        options->write_retries = std::atoi(argv[11]);
+    }
     if (options->ops <= 0 || options->threads <= 0 || options->value_size <= 0 ||
-        options->verify_timeout_ms <= 0 || options->verify_poll_ms <= 0) {
+        options->verify_timeout_ms <= 0 || options->verify_poll_ms <= 0 ||
+        options->write_retries < 0) {
         Usage(argv[0]);
         return false;
     }
@@ -111,6 +117,21 @@ bool SetOne(brpc::Channel* channel, const Options& options, int op, const std::s
     }
     *status_code = response.status.code;
     return response.status.code == bcache2::kOK;
+}
+
+bool SetOneWithRetry(brpc::Channel* channel, const Options& options, int op,
+                     const std::string& value, int* status_code, int* retry_count) {
+    for (int attempt = 0; attempt <= options.write_retries; ++attempt) {
+        if (SetOne(channel, options, op, value, status_code)) {
+            *retry_count += attempt;
+            return true;
+        }
+        if (attempt < options.write_retries) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20 * (attempt + 1)));
+        }
+    }
+    *retry_count += options.write_retries;
+    return false;
 }
 
 bool GetOneOnce(brpc::Channel* channel, const Options& options, int op, const std::string& expected) {
@@ -167,6 +188,7 @@ int main(int argc, char** argv) {
     std::atomic<int> status_failed{0};
     std::atomic<int> read_failed{0};
     std::atomic<int> first_status_code{bcache2::kOK};
+    std::atomic<int> write_retry_attempts{0};
 
     const auto begin = std::chrono::steady_clock::now();
     std::vector<std::thread> workers;
@@ -184,7 +206,9 @@ int main(int argc, char** argv) {
                     break;
                 }
                 int status_code = bcache2::kOK;
-                if (!SetOne(&channel, options, op, value, &status_code)) {
+                int retry_count = 0;
+                if (!SetOneWithRetry(&channel, options, op, value, &status_code, &retry_count)) {
+                    write_retry_attempts.fetch_add(retry_count, std::memory_order_relaxed);
                     if (status_code == -1) {
                         rpc_failed.fetch_add(1, std::memory_order_relaxed);
                     } else {
@@ -194,6 +218,7 @@ int main(int argc, char** argv) {
                     }
                     continue;
                 }
+                write_retry_attempts.fetch_add(retry_count, std::memory_order_relaxed);
                 ok.fetch_add(1, std::memory_order_relaxed);
             }
         });
@@ -229,6 +254,8 @@ int main(int argc, char** argv) {
     std::cout << "read_verified=" << (options.ops - read_failed.load()) << std::endl;
     std::cout << "verify_timeout_ms=" << options.verify_timeout_ms << std::endl;
     std::cout << "verify_poll_ms=" << options.verify_poll_ms << std::endl;
+    std::cout << "write_retries=" << options.write_retries << std::endl;
+    std::cout << "write_retry_attempts=" << write_retry_attempts.load() << std::endl;
     std::cout << "rpc_failed=" << rpc_failed.load() << std::endl;
     std::cout << "status_failed=" << status_failed.load() << std::endl;
     std::cout << "read_failed=" << read_failed.load() << std::endl;

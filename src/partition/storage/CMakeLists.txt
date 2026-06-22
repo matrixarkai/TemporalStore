@@ -1,5 +1,8 @@
 file(GLOB HDRS "*.h")
 file(GLOB SRCS "*.cc")
+list(APPEND SRCS data_raft_consensus.cc)
+list(REMOVE_DUPLICATES SRCS)
+include_directories(${PROJECT_SOURCE_DIR}/thirdparty/byteraft)
 add_library(partition_storage ${HDRS} ${SRCS})
 target_link_libraries(partition_storage
     partition_index
@@ -8,6 +11,7 @@ target_link_libraries(partition_storage
     blockcache
     bytestore
     byte
+    byteraft
     gflags
     libprotobuf
     brpc-static

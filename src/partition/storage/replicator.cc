@@ -56,11 +56,38 @@ void Replicator::Stop() {
 }
 
 void Replicator::LoopWorker() {
-    BYTE_ASSERT(IsCoContext());  // must in a coroutine
+    auto init_loop = [this] {
+        if (loop_initialized_) {
+            return;
+        }
+        UpdateRemoteChannel();
+        index_log_iter_ = index_->NewIndexLogIterator(index_->LogLength());
+        op_logger_iter_ = op_logger_->NewIterator(op_logger_->Length());
+        loop_initialized_ = true;
+    };
 
-    UpdateRemoteChannel();
-    index_log_iter_ = index_->NewIndexLogIterator(index_->LogLength());
-    op_logger_iter_ = op_logger_->NewIterator(op_logger_->Length());
+    if (UNLIKELY(!IsCoContext())) {
+        LOG_WARNING("Replicator running outside coroutine context")
+            .put("PartitionId", partition_->GetPartitionID());
+        init_loop();
+        if (stop_sync_.get() == nullptr && status_.ok()) {
+            MainLoop();
+        }
+        if (stopped_) {
+            if (stop_sync_ != nullptr) {
+                stop_sync_->Run();
+            }
+            stopped_ = true;
+            return;
+        }
+        if (stop_sync_.get() == nullptr && status_.ok()) {
+            uint64_t delay_us = LastLoopMadeProgress() ? 0 : FLAGS_replicator_loop_interval_us;
+            byte::InvokeLaterInCurrentThread(delay_us, NewCoClosure(this, &Replicator::LoopWorker));
+        }
+        return;
+    }
+
+    init_loop();
 
     while (stop_sync_.get() == nullptr && status_.ok()) {
         MainLoop();
@@ -154,7 +181,10 @@ void Replicator::MainLoop() {
 }
 
 Status Replicator::UpdateRemoteInfo() {
-    BYTE_ASSERT(IsCoContext());
+    if (UNLIKELY(!IsCoContext())) {
+        LOG_WARNING("UpdateRemoteInfo running outside coroutine context")
+            .put("PartitionId", partition_->GetPartitionID());
+    }
     if (UNLIKELY(remote_channel_ == nullptr)) {
         return Status::FailedPrecondition("Empty channel");
     }

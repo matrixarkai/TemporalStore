@@ -492,7 +492,7 @@ SERVER_PORT="${SERVER_PORT}" \
 SERVER_COUNT="${SERVER_COUNT}" \
 REPLICA_COUNT="${REPLICA_COUNT}" \
 KEEP_RUNNING=1 \
-METASERVER_EXTRA_FLAGS="--metaserver_convict_routine_interval_ms=500 --metaserver_convict_safe_mode_warning_ratio=100 --metaserver_convict_safe_mode_critical_ratio=100 --metaserver_meta_check_routine_interval_sec=1 --metaserver_meta_check_max_freeze_partition_per_min=100" \
+METASERVER_EXTRA_FLAGS="--metaserver_convict_routine_interval_ms=500 --metaserver_convict_safe_mode_enabled=false --metaserver_convict_safe_mode_warning_ratio=100 --metaserver_convict_safe_mode_critical_ratio=100 --metaserver_meta_check_routine_interval_sec=1 --metaserver_meta_check_max_freeze_partition_per_min=100" \
 SERVER_EXTRA_FLAGS="--data_replication_mode=raft_consensus --data_raft_work_dir=${SMOKE_DIR}/data-raft --data_raft_raft_port_delta=${DATA_RAFT_RAFT_PORT_DELTA} --data_raft_snapshot_port_delta=${DATA_RAFT_SNAPSHOT_PORT_DELTA} --data_raft_enable_empty_snapshot_for_tests=false --data_raft_read_mode=bounded_stale --data_raft_bounded_stale_max_index_lag=0 --data_raft_propose_timeout_ms=5000 --server_heartbeat_interval_ms=500 --server_heartbeat_timeout_ms=1000 --server_meta_tinker_interval_ms=500 --storage_enable_evict=false --storage_enable_expire=false --storage_enable_page_gc=false --storage_enable_page_compaction=false --storage_enable_index_gc=false --storage_enable_oplog_rolling=false" \
   bash "${ROOT}/tools/smoke_ubuntu22.sh" > "${RUN_LOG_DIR}/cluster.stdout" 2> "${RUN_LOG_DIR}/cluster.stderr" &
 smoke_pid=$!

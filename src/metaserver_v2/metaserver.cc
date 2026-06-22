@@ -105,6 +105,10 @@ Status MetaServer::Start() {
     LOG_INFO("start meta query server").put("port", port - 1000);
     brpc::ServerOptions options2;
     if (meta_query_server_->Start(port - 1000, &options2) != 0) {
+        rpc_server_->Stop(0);
+        rpc_server_->Join();
+        raft_server_->Stop();
+        event_harbor_->Stop();
         return Status::Internal("failed to start meta query server");
     }
 
@@ -289,4 +293,3 @@ Status MetaServer::InitRpcServer() {
 
 }  // namespace metaserver
 }  // namespace bcache2
-

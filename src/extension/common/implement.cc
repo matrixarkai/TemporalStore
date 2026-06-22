@@ -47,5 +47,25 @@ Status Ttl(ExecuteEnv* env, const TtlRequest& request, TtlResponse* response) {
 }
 REGISTER_FUNCTION(COMMON, TTL, Ttl, Read);
 
+Status Exists(ExecuteEnv* env, const ExistsRequest& request, ExistsResponse* response) {
+    ObjectHandle<partition::Object> object;
+    return env->GetObject(request.key(), &object);
+}
+REGISTER_FUNCTION(COMMON, EXISTS, Exists, Read);
+
+Status Persist(ExecuteEnv* env, const PersistRequest& request, PersistResponse* response) {
+    ObjectHandle<partition::Object> object;
+    Status status = env->GetObject(request.key(), &object);
+    if (!status.ok()) {
+        return status;
+    }
+    if (object.Ttl() == 0) {
+        return Status::NotFound("key has no ttl");
+    }
+    object.SetTtl(0);
+    return Status::OK();
+}
+REGISTER_FUNCTION(COMMON, PERSIST, Persist, Write);
+
 }  // namespace common2
 }  // namespace bcache2

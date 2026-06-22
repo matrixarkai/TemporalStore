@@ -2,25 +2,583 @@
 
 #include "server/redis_command_handler.h"
 
+#include <algorithm>
+#include <cerrno>
+#include <climits>
+#include <cmath>
 #include <cstdint>
+#include <ctime>
 #include <memory>
+#include <pthread.h>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <strings.h>
 
+#include "bthread/countdown_event.h"
 #include "butil/file_util.h"
 #include "butil/files/file_path.h"
 #include "common/bthread_closure.h"
 #include "common/function_closure.h"
 #include "common/logging.h"
 #include "include/byte_log.h"
+#include "extension/common/interface.pb.h"
+#include "extension/hash/interface.pb.h"
+#include "extension/set/interface.pb.h"
+#include "extension/string/interface.pb.h"
+#include "extension/modules.pb.h"
 #include "protocol/server.pb.h"
 #include "server/redis_service.h"
 #include "src/common/controller.h"
 
 namespace bcache2 {
 namespace server {
+
+namespace {
+
+constexpr uint64_t kRedisTraceSeed = 0x7265646973ULL;
+pthread_mutex_t g_redis_backend_mu = PTHREAD_MUTEX_INITIALIZER;
+
+class PthreadMutexGuard {
+ public:
+    explicit PthreadMutexGuard(pthread_mutex_t* mu) : mu_(mu) { pthread_mutex_lock(mu_); }
+    ~PthreadMutexGuard() { pthread_mutex_unlock(mu_); }
+
+ private:
+    pthread_mutex_t* mu_;
+};
+
+bool IsOkStatus(const RpcStatus& status) {
+    return status.code() == Code::kOK;
+}
+
+void SetRedisError(brpc::RedisReply* reply, const std::string& message) {
+    reply->SetError("ERR " + message);
+}
+
+void SetRedisStatusError(brpc::RedisReply* reply, const RpcStatus& status) {
+    if (status.code() == Code::kNotFound) {
+        reply->SetNullString();
+        return;
+    }
+    SetRedisError(reply, status.message().empty() ? "command failed" : status.message());
+}
+
+
+
+class RedisSyncClosure : public Closure<void> {
+ public:
+    void Run() override { done_.signal(); }
+    bool IsSelfDelete() const override { return false; }
+    bool WaitForMs(int64_t timeout_ms) {
+        timespec deadline;
+        clock_gettime(CLOCK_REALTIME, &deadline);
+        deadline.tv_sec += timeout_ms / 1000;
+        deadline.tv_nsec += (timeout_ms % 1000) * 1000000;
+        if (deadline.tv_nsec >= 1000000000) {
+            deadline.tv_sec += 1;
+            deadline.tv_nsec -= 1000000000;
+        }
+        return done_.timed_wait(deadline) == 0;
+    }
+
+ private:
+    bthread::CountdownEvent done_{1};
+};
+
+bool ExecuteRedisBatch(RedisServiceImpl* redis_service, const std::vector<CmdRequest>& commands,
+                       BatchExecuteCmdResponse* response, brpc::RedisReply* reply) {
+    PthreadMutexGuard backend_lock(&g_redis_backend_mu);
+    uint64_t partition_id = redis_service->GetLoadedPartitionId();
+    if (partition_id == 0) {
+        SetRedisError(reply, "no partition loaded for Redis command serving");
+        return false;
+    }
+    BatchExecuteCmdRequest request;
+    request.mutable_opt()->set_trace_id(kRedisTraceSeed ^ butil::fast_rand());
+    request.set_partition_id(partition_id);
+    request.set_load_version(redis_service->GetLoadedPartitionLoadVersion());
+    for (const auto& cmd : commands) {
+        *request.add_request() = cmd;
+    }
+
+    Controller ctrl;
+    RedisSyncClosure* sync = new RedisSyncClosure();
+    redis_service->GetPartitionManager()->BatchExecuteCmdLocally(&ctrl, &request, response, sync);
+    if (!sync->WaitForMs(redis_service->GetCommandTimeoutMs())) {
+        // The backend may still complete later and signal this closure, so intentionally keep it
+        // alive after timeout instead of returning a dangling stack callback.
+        LOG_WARNING("Redis backend batch timed out")
+            .put("PartitionId", request.partition_id())
+            .put("LoadVersion", request.load_version())
+            .put("RequestSize", request.request_size())
+            .put("TraceId", request.opt().trace_id())
+            .put("TimeoutMs", redis_service->GetCommandTimeoutMs());
+        SetRedisError(reply, "Redis backend command timed out");
+        return false;
+    }
+    delete sync;
+    if (!ctrl.status().ok()) {
+        SetRedisError(reply, ctrl.status().ToString());
+        return false;
+    }
+    if (!IsOkStatus(response->status())) {
+        SetRedisStatusError(reply, response->status());
+        return false;
+    }
+    if (response->response_size() != static_cast<int>(commands.size())) {
+        SetRedisError(reply, "partition response size mismatch");
+        return false;
+    }
+    return true;
+}
+
+bool ExecuteRedisSingle(RedisServiceImpl* redis_service, const CmdRequest& command,
+                        CmdResponse* cmd_response, brpc::RedisReply* reply) {
+    BatchExecuteCmdResponse batch_response;
+    if (!ExecuteRedisBatch(redis_service, {command}, &batch_response, reply)) {
+        return false;
+    }
+    *cmd_response = batch_response.response(0);
+    return true;
+}
+
+template <typename Request>
+CmdRequest ModuleCmd(Module module, uint32_t function_id, const Request& request) {
+    CmdRequest cmd;
+    cmd.set_module_id(module);
+    cmd.set_function_id(function_id);
+    request.SerializeToString(cmd.mutable_request_bytes());
+    return cmd;
+}
+
+CmdRequest StringSetCmd(const std::string& key, const std::string& value, bool nx = false,
+                        bool xx = false) {
+    str2::SetRequest request;
+    request.set_key(key);
+    request.set_value(value);
+    request.set_nx_flag(nx);
+    request.set_xx_flag(xx);
+    return ModuleCmd(Module::STRING, str2::SET, request);
+}
+
+CmdRequest StringSetExCmd(const std::string& key, const std::string& value, uint64_t ttl_ms) {
+    str2::SetexRequest request;
+    request.set_key(key);
+    request.set_value(value);
+    request.set_ttl_ms(ttl_ms);
+    return ModuleCmd(Module::STRING, str2::SETEX, request);
+}
+
+CmdRequest StringGetCmd(const std::string& key) {
+    str2::GetRequest request;
+    request.set_key(key);
+    return ModuleCmd(Module::STRING, str2::GET, request);
+}
+
+CmdRequest StringAppendCmd(const std::string& key, const std::string& value) {
+    str2::AppendRequest request;
+    request.set_key(key);
+    request.set_value(value);
+    return ModuleCmd(Module::STRING, str2::APPEND, request);
+}
+
+CmdRequest StringStrlenCmd(const std::string& key) {
+    str2::StrlenRequest request;
+    request.set_key(key);
+    return ModuleCmd(Module::STRING, str2::STRLEN, request);
+}
+
+CmdRequest StringIncrByCmd(const std::string& key, int64_t increment) {
+    str2::IncrByRequest request;
+    request.set_key(key);
+    request.set_increment(increment);
+    return ModuleCmd(Module::STRING, str2::INCRBY, request);
+}
+
+CmdRequest DelCmd(const std::string& key) {
+    common2::DelObjectRequest request;
+    request.set_key(key);
+    return ModuleCmd(Module::COMMON, common2::DEL_OBJECT, request);
+}
+
+CmdRequest ExistsCmd(const std::string& key) {
+    common2::ExistsRequest request;
+    request.set_key(key);
+    return ModuleCmd(Module::COMMON, common2::EXISTS, request);
+}
+
+CmdRequest ExpireCmd(const std::string& key, uint64_t ttl_ms) {
+    common2::ExpireRequest request;
+    request.set_key(key);
+    request.set_ttl_ms(ttl_ms);
+    return ModuleCmd(Module::COMMON, common2::EXPIRE, request);
+}
+
+CmdRequest TtlCmd(const std::string& key) {
+    common2::TtlRequest request;
+    request.set_key(key);
+    return ModuleCmd(Module::COMMON, common2::TTL, request);
+}
+
+CmdRequest PersistCmd(const std::string& key) {
+    common2::PersistRequest request;
+    request.set_key(key);
+    return ModuleCmd(Module::COMMON, common2::PERSIST, request);
+}
+
+CmdRequest HashSetCmd(const std::string& key, const std::string& field, const std::string& value) {
+    hash2::SetRequest request;
+    request.set_key(key);
+    request.set_field(field);
+    request.set_value(value);
+    return ModuleCmd(Module::HASH, hash2::SET, request);
+}
+
+CmdRequest HashGetExtCmd(const std::string& key, const std::string& field) {
+    hash2::GetRequest request;
+    request.set_key(key);
+    request.set_field(field);
+    return ModuleCmd(Module::HASH, hash2::GET, request);
+}
+
+CmdRequest HashDelCmd(const std::string& key, const std::string& field) {
+    hash2::DelRequest request;
+    request.set_key(key);
+    request.set_field(field);
+    return ModuleCmd(Module::HASH, hash2::DEL, request);
+}
+
+CmdRequest HashLenCmd(const std::string& key) {
+    hash2::LenRequest request;
+    request.set_key(key);
+    return ModuleCmd(Module::HASH, hash2::LEN, request);
+}
+
+CmdRequest HashGetAllCmd(const std::string& key) {
+    hash2::GetAllRequest request;
+    request.set_key(key);
+    return ModuleCmd(Module::HASH, hash2::GETALL, request);
+}
+
+CmdRequest HashIncrByCmd(const std::string& key, const std::string& field, int64_t delta) {
+    hash2::IncrByRequest request;
+    request.set_key(key);
+    request.set_field(field);
+    request.set_increment(delta);
+    return ModuleCmd(Module::HASH, hash2::INCRBY, request);
+}
+
+CmdRequest SetAddCmd(const std::string& key, const std::vector<std::string>& members) {
+    set::SAddRequest request;
+    request.set_key(key);
+    for (const auto& member : members) {
+        request.add_members(member);
+    }
+    return ModuleCmd(Module::SET, set::SADD, request);
+}
+
+CmdRequest SetRemCmd(const std::string& key, const std::vector<std::string>& members) {
+    set::SRemRequest request;
+    request.set_key(key);
+    for (const auto& member : members) {
+        request.add_members(member);
+    }
+    return ModuleCmd(Module::SET, set::SREM, request);
+}
+
+CmdRequest SetMembersCmd(const std::string& key) {
+    set::SMembersRequest request;
+    request.set_key(key);
+    return ModuleCmd(Module::SET, set::SMEMBERS, request);
+}
+
+CmdRequest SetCardCmd(const std::string& key) {
+    set::SCardRequest request;
+    request.set_key(key);
+    return ModuleCmd(Module::SET, set::SCARD, request);
+}
+
+CmdRequest SetIsMemberCmd(const std::string& key, const std::string& member) {
+    set::SIsMemberRequest request;
+    request.set_key(key);
+    request.set_member(member);
+    return ModuleCmd(Module::SET, set::SISMEMBER, request);
+}
+
+bool ParseStringGetResponse(const CmdResponse& response, str2::GetResponse* parsed,
+                            brpc::RedisReply* reply) {
+    if (parsed->ParseFromString(response.response_bytes())) {
+        return true;
+    }
+    SetRedisError(reply, "failed to parse GET response");
+    return false;
+}
+
+bool ParseHashGetResponse(const CmdResponse& response, hash2::GetResponse* parsed,
+                          brpc::RedisReply* reply) {
+    if (parsed->ParseFromString(response.response_bytes())) {
+        return true;
+    }
+    SetRedisError(reply, "failed to parse HGET response");
+    return false;
+}
+
+bool ParseInt64Arg(const std::string& arg, int64_t* value) {
+    try {
+        size_t pos = 0;
+        long long parsed = std::stoll(arg, &pos, 10);
+        if (pos != arg.size()) {
+            return false;
+        }
+        *value = parsed;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool ParseDoubleArg(const std::string& arg, double* value) {
+    char* end = nullptr;
+    errno = 0;
+    double parsed = std::strtod(arg.c_str(), &end);
+    if (end == arg.c_str() || *end != '\0' || errno == ERANGE || !std::isfinite(parsed)) {
+        return false;
+    }
+    *value = parsed;
+    return true;
+}
+
+std::string FormatDouble(double value) {
+    std::ostringstream out;
+    out.precision(17);
+    out << value;
+    return out.str();
+}
+
+bool ReadLine(const std::string& raw, size_t* pos, std::string* line) {
+    size_t end = raw.find('\n', *pos);
+    if (end == std::string::npos) {
+        return false;
+    }
+    *line = raw.substr(*pos, end - *pos);
+    *pos = end + 1;
+    return true;
+}
+
+std::string EncodeStringVector(const std::string& prefix, const std::vector<std::string>& values) {
+    std::string out = prefix;
+    out.append(std::to_string(values.size())).append("\n");
+    for (const auto& value : values) {
+        out.append(std::to_string(value.size())).append("\n");
+        out.append(value).append("\n");
+    }
+    return out;
+}
+
+bool DecodeStringVector(const std::string& raw, const std::string& prefix,
+                        std::vector<std::string>* values) {
+    if (raw.compare(0, prefix.size(), prefix) != 0) {
+        return false;
+    }
+    size_t pos = prefix.size();
+    std::string line;
+    if (!ReadLine(raw, &pos, &line)) {
+        return false;
+    }
+    size_t count = 0;
+    try {
+        count = static_cast<size_t>(std::stoull(line));
+    } catch (...) {
+        return false;
+    }
+    values->clear();
+    values->reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        if (!ReadLine(raw, &pos, &line)) {
+            return false;
+        }
+        size_t len = 0;
+        try {
+            len = static_cast<size_t>(std::stoull(line));
+        } catch (...) {
+            return false;
+        }
+        if (raw.size() < pos + len || raw.size() == pos + len || raw[pos + len] != '\n') {
+            return false;
+        }
+        values->emplace_back(raw.data() + pos, len);
+        pos += len + 1;
+    }
+    return pos == raw.size();
+}
+
+const std::string& ListPrefix() {
+    static const std::string prefix = "TSREDIS_LIST_V1\n";
+    return prefix;
+}
+
+bool LoadEncodedList(RedisServiceImpl* redis_service, const std::string& key,
+                     std::vector<std::string>* values, brpc::RedisReply* reply) {
+    CmdResponse response;
+    if (!ExecuteRedisSingle(redis_service, StringGetCmd(key), &response, reply)) {
+        return false;
+    }
+    if (!IsOkStatus(response.response_status())) {
+        values->clear();
+        return true;
+    }
+    str2::GetResponse get_response;
+    if (!ParseStringGetResponse(response, &get_response, reply)) {
+        return false;
+    }
+    if (!DecodeStringVector(get_response.value(), ListPrefix(), values)) {
+        SetRedisError(reply, "WRONGTYPE Operation against a key holding the wrong kind of value");
+        return false;
+    }
+    return true;
+}
+
+bool SaveEncodedList(RedisServiceImpl* redis_service, const std::string& key,
+                     const std::vector<std::string>& values, brpc::RedisReply* reply) {
+    CmdResponse response;
+    CmdRequest command = values.empty() ? DelCmd(key) : StringSetCmd(key, EncodeStringVector(ListPrefix(), values));
+    if (!ExecuteRedisSingle(redis_service, command, &response, reply)) {
+        return false;
+    }
+    if (!IsOkStatus(response.response_status()) && !values.empty()) {
+        SetRedisStatusError(reply, response.response_status());
+        return false;
+    }
+    return true;
+}
+
+int64_t NormalizeIndex(int64_t index, int64_t size) {
+    return index < 0 ? size + index : index;
+}
+
+std::pair<int64_t, int64_t> NormalizeRange(int64_t start, int64_t stop, int64_t size) {
+    start = NormalizeIndex(start, size);
+    stop = NormalizeIndex(stop, size);
+    if (start < 0) start = 0;
+    if (stop >= size) stop = size - 1;
+    return {start, stop};
+}
+
+struct ZItem {
+    std::string member;
+    double score = 0;
+    std::string score_text;
+};
+
+const std::string& ZSetPrefix() {
+    static const std::string prefix = "TSREDIS_ZSET_V1\n";
+    return prefix;
+}
+
+std::string EncodeZSet(const std::vector<ZItem>& items) {
+    std::vector<std::string> values;
+    values.reserve(items.size() * 2);
+    for (const auto& item : items) {
+        values.emplace_back(item.member);
+        values.emplace_back(item.score_text);
+    }
+    return EncodeStringVector(ZSetPrefix(), values);
+}
+
+bool DecodeZSet(const std::string& raw, std::vector<ZItem>* items) {
+    std::vector<std::string> values;
+    if (!DecodeStringVector(raw, ZSetPrefix(), &values) || values.size() % 2 != 0) {
+        return false;
+    }
+    items->clear();
+    items->reserve(values.size() / 2);
+    for (size_t i = 0; i + 1 < values.size(); i += 2) {
+        double score = 0;
+        if (!ParseDoubleArg(values[i + 1], &score)) {
+            return false;
+        }
+        items->push_back({values[i], score, values[i + 1]});
+    }
+    return true;
+}
+
+bool LoadEncodedZSet(RedisServiceImpl* redis_service, const std::string& key,
+                     std::vector<ZItem>* items, brpc::RedisReply* reply) {
+    CmdResponse response;
+    if (!ExecuteRedisSingle(redis_service, StringGetCmd(key), &response, reply)) {
+        return false;
+    }
+    if (!IsOkStatus(response.response_status())) {
+        items->clear();
+        return true;
+    }
+    str2::GetResponse get_response;
+    if (!ParseStringGetResponse(response, &get_response, reply)) {
+        return false;
+    }
+    if (!DecodeZSet(get_response.value(), items)) {
+        SetRedisError(reply, "WRONGTYPE Operation against a key holding the wrong kind of value");
+        return false;
+    }
+    return true;
+}
+
+bool SaveEncodedZSet(RedisServiceImpl* redis_service, const std::string& key,
+                     const std::vector<ZItem>& items, brpc::RedisReply* reply) {
+    CmdResponse response;
+    CmdRequest command = items.empty() ? DelCmd(key) : StringSetCmd(key, EncodeZSet(items));
+    if (!ExecuteRedisSingle(redis_service, command, &response, reply)) {
+        return false;
+    }
+    if (!IsOkStatus(response.response_status()) && !items.empty()) {
+        SetRedisStatusError(reply, response.response_status());
+        return false;
+    }
+    return true;
+}
+
+void SortZSet(std::vector<ZItem>* items, bool reverse = false) {
+    std::sort(items->begin(), items->end(), [](const ZItem& lhs, const ZItem& rhs) {
+        if (lhs.score != rhs.score) {
+            return lhs.score < rhs.score;
+        }
+        return lhs.member < rhs.member;
+    });
+    if (reverse) {
+        std::reverse(items->begin(), items->end());
+    }
+}
+
+int FindZMember(const std::vector<ZItem>& items, const std::string& member) {
+    for (size_t i = 0; i < items.size(); ++i) {
+        if (items[i].member == member) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+bool ParseZRangeBound(const std::string& raw, double* value) {
+    if (!strcasecmp(raw.c_str(), "-inf")) {
+        *value = -INFINITY;
+        return true;
+    }
+    if (!strcasecmp(raw.c_str(), "+inf") || !strcasecmp(raw.c_str(), "inf")) {
+        *value = INFINITY;
+        return true;
+    }
+    return ParseDoubleArg(raw, value);
+}
+
+bool WithScoresArg(RedisClientContext* c, size_t index) {
+    return c->ArgSize() > index && !strcasecmp(c->StrArg(index).c_str(), "withscores");
+}
+
+}  // namespace
+
 
 RedisCommand::RedisCommand(const std::string& name, CmdType cmd_type, int artiy,
                            const std::string& sflags, int firstkey, int lastkey, int keystep)
@@ -93,28 +651,29 @@ RedisCommandHandler::RedisCommandHandler(
       partition_manager_(redis_service->GetPartitionManager()),
       redis_service_(redis_service) {}
 
-brpc::RedisCommandHandler::Result RedisCommandHandler::Run(
-    const std::vector<const char*>& raw_args, brpc::RedisReply* output, bool /*flush_batched*/) {
+brpc::RedisCommandHandlerResult RedisCommandHandler::Run(
+    const std::vector<butil::StringPiece>& raw_args, brpc::RedisReply* output,
+    bool /*flush_batched*/) {
     std::vector<std::string> args;
     args.reserve(raw_args.size());
-    for (const char* arg : raw_args) {
-        args.emplace_back(arg == nullptr ? "" : arg);
+    for (const auto& arg : raw_args) {
+        args.emplace_back(arg.data(), arg.size());
     }
 
     if ((command_.GetArtiy() > 0 && static_cast<int>(args.size()) != command_.GetArtiy()) ||
         (command_.GetArtiy() < 0 && static_cast<int>(args.size()) < -1 * command_.GetArtiy())) {
         output->SetError("ERR wrong number of arguments for '" + command_.GetName() + "' command");
-        return brpc::RedisCommandHandler::OK;
+        return brpc::REDIS_CMD_HANDLED;
     }
 
     RedisClientContext client(args, output);
     if (handler_ == nullptr) {
-        output->SetStatus("OK");
+        Unsupported(&client);
     } else {
         handler_(this, &client);
     }
 
-    return brpc::RedisCommandHandler::OK;
+    return brpc::REDIS_CMD_HANDLED;
 }
 
 void RedisCommandHandler::Ping(RedisClientContext* c) {
@@ -161,7 +720,7 @@ void RedisCommandHandler::Config(RedisClientContext* c) {
     }
 
     if (!strcasecmp(op.c_str(), "rewrite") && c->ArgSize() == 2) {
-        c->reply->SetStatus("OK");
+        c->reply->SetError("ERR CONFIG REWRITE is not supported by the native Redis bridge yet");
         return;
     }
 
@@ -203,17 +762,7 @@ void RedisCommandHandler::ConfigSet(RedisClientContext* c) {
 }
 
 void RedisCommandHandler::SlaveOf(RedisClientContext* c) {
-    if (c->ArgSize() < 3) {
-        c->reply->SetError("ERR wrong arguments");
-    }
-    const std::string& master_host = c->StrArg(1);
-    const std::string& master_port = c->StrArg(2);
-    if (!strcasecmp(master_host.c_str(), "no") && !strcasecmp(master_port.c_str(), "one")) {
-        redis_service_->SetMaster("", "");
-    } else {
-        redis_service_->SetMaster(master_host, master_port);
-    }
-    c->reply->SetStatus("OK");
+    c->reply->SetError("ERR SLAVEOF is not supported by the native Redis bridge yet");
 }
 
 void RedisCommandHandler::Info(RedisClientContext* c) {
@@ -620,6 +1169,7 @@ void RedisCommandHandler::PartitionLoad(RedisClientContext* c) {
         .put("PartitionId", request.partition_id())
         .put("PartitionUri", request.partition_uri());
     redis_service_->SetLoadedPartitionId(request.partition_id());
+    redis_service_->SetLoadedPartitionLoadVersion(request.load_version());
     c->reply->SetStatus("OK");
 }
 
@@ -656,5 +1206,1029 @@ void RedisCommandHandler::Auth(RedisClientContext* c) {
     c->reply->SetStatus("OK");
 }
 
-}  // namespace server
+
+void RedisCommandHandler::Get(RedisClientContext* c) {
+    CmdResponse response;
+    if (!ExecuteRedisSingle(redis_service_, StringGetCmd(c->StrArg(1)), &response, c->reply)) {
+        return;
+    }
+    if (!IsOkStatus(response.response_status())) {
+        c->reply->SetNullString();
+        return;
+    }
+    str2::GetResponse get_response;
+    if (!ParseStringGetResponse(response, &get_response, c->reply)) {
+        return;
+    }
+    c->reply->SetString(get_response.value());
+}
+
+void RedisCommandHandler::Set(RedisClientContext* c) {
+    if (c->ArgSize() != 3 && c->ArgSize() != 4) {
+        c->reply->SetError("ERR only SET key value [NX|XX] is supported by the native Redis bridge");
+        return;
+    }
+    bool nx = false;
+    bool xx = false;
+    if (c->ArgSize() == 4) {
+        const std::string option = c->StrArg(3);
+        if (!strcasecmp(option.c_str(), "nx")) {
+            nx = true;
+        } else if (!strcasecmp(option.c_str(), "xx")) {
+            xx = true;
+        } else {
+            c->reply->SetError("ERR unsupported SET option");
+            return;
+        }
+    }
+    CmdResponse response;
+    if (!ExecuteRedisSingle(redis_service_, StringSetCmd(c->StrArg(1), c->StrArg(2), nx, xx),
+                            &response, c->reply)) {
+        return;
+    }
+    if (!IsOkStatus(response.response_status())) {
+        if ((nx && response.response_status().code() == Code::kAlreadyExists) ||
+            (xx && response.response_status().code() == Code::kNotFound)) {
+            c->reply->SetNullString();
+            return;
+        }
+        SetRedisStatusError(c->reply, response.response_status());
+        return;
+    }
+    c->reply->SetStatus("OK");
+}
+
+void RedisCommandHandler::SetNx(RedisClientContext* c) {
+    CmdResponse response;
+    if (!ExecuteRedisSingle(redis_service_, StringSetCmd(c->StrArg(1), c->StrArg(2), true, false),
+                            &response, c->reply)) {
+        return;
+    }
+    if (!IsOkStatus(response.response_status())) {
+        if (response.response_status().code() == Code::kAlreadyExists) {
+            c->reply->SetInteger(0);
+            return;
+        }
+        SetRedisStatusError(c->reply, response.response_status());
+        return;
+    }
+    c->reply->SetInteger(1);
+}
+
+void RedisCommandHandler::SetEx(RedisClientContext* c) {
+    int64_t seconds = 0;
+    if (!ParseInt64Arg(c->StrArg(2), &seconds) || seconds <= 0) {
+        c->reply->SetError("ERR invalid expire time in setex");
+        return;
+    }
+    CmdResponse response;
+    if (!ExecuteRedisSingle(redis_service_, StringSetExCmd(c->StrArg(1), c->StrArg(3), seconds * 1000),
+                            &response, c->reply)) {
+        return;
+    }
+    if (!IsOkStatus(response.response_status())) {
+        SetRedisStatusError(c->reply, response.response_status());
+        return;
+    }
+    c->reply->SetStatus("OK");
+}
+
+void RedisCommandHandler::PSetEx(RedisClientContext* c) {
+    int64_t milliseconds = 0;
+    if (!ParseInt64Arg(c->StrArg(2), &milliseconds) || milliseconds <= 0) {
+        c->reply->SetError("ERR invalid expire time in psetex");
+        return;
+    }
+    CmdResponse response;
+    if (!ExecuteRedisSingle(redis_service_,
+                            StringSetExCmd(c->StrArg(1), c->StrArg(3), milliseconds), &response,
+                            c->reply)) {
+        return;
+    }
+    if (!IsOkStatus(response.response_status())) {
+        SetRedisStatusError(c->reply, response.response_status());
+        return;
+    }
+    c->reply->SetStatus("OK");
+}
+
+void RedisCommandHandler::GetSet(RedisClientContext* c) {
+    BatchExecuteCmdResponse response;
+    if (!ExecuteRedisBatch(redis_service_,
+                           {StringGetCmd(c->StrArg(1)),
+                            StringSetCmd(c->StrArg(1), c->StrArg(2))},
+                           &response, c->reply)) {
+        return;
+    }
+    const auto& get_item = response.response(0);
+    const auto& set_item = response.response(1);
+    if (!IsOkStatus(set_item.response_status())) {
+        SetRedisStatusError(c->reply, set_item.response_status());
+        return;
+    }
+    if (!IsOkStatus(get_item.response_status())) {
+        c->reply->SetNullString();
+        return;
+    }
+    str2::GetResponse get_response;
+    if (!ParseStringGetResponse(get_item, &get_response, c->reply)) {
+        return;
+    }
+    c->reply->SetString(get_response.value());
+}
+
+void RedisCommandHandler::GetDel(RedisClientContext* c) {
+    BatchExecuteCmdResponse response;
+    if (!ExecuteRedisBatch(redis_service_, {StringGetCmd(c->StrArg(1)), DelCmd(c->StrArg(1))},
+                           &response, c->reply)) {
+        return;
+    }
+    const auto& get_item = response.response(0);
+    if (!IsOkStatus(get_item.response_status())) {
+        c->reply->SetNullString();
+        return;
+    }
+    str2::GetResponse get_response;
+    if (!ParseStringGetResponse(get_item, &get_response, c->reply)) {
+        return;
+    }
+    c->reply->SetString(get_response.value());
+}
+
+void RedisCommandHandler::MGet(RedisClientContext* c) {
+    std::vector<CmdRequest> commands;
+    for (size_t i = 1; i < c->ArgSize(); ++i) {
+        commands.emplace_back(StringGetCmd(c->StrArg(i)));
+    }
+    BatchExecuteCmdResponse response;
+    if (!ExecuteRedisBatch(redis_service_, commands, &response, c->reply)) {
+        return;
+    }
+    c->reply->SetArray(response.response_size());
+    for (int i = 0; i < response.response_size(); ++i) {
+        const auto& item = response.response(i);
+        if (!IsOkStatus(item.response_status())) {
+            (*c->reply)[i].SetNullString();
+        } else {
+            str2::GetResponse get_response;
+            if (!ParseStringGetResponse(item, &get_response, c->reply)) {
+                return;
+            }
+            (*c->reply)[i].SetString(get_response.value());
+        }
+    }
+}
+
+void RedisCommandHandler::MSet(RedisClientContext* c) {
+    if ((c->ArgSize() - 1) % 2 != 0) {
+        c->reply->SetError("ERR wrong number of arguments for 'mset' command");
+        return;
+    }
+    std::vector<CmdRequest> commands;
+    for (size_t i = 1; i + 1 < c->ArgSize(); i += 2) {
+        commands.emplace_back(StringSetCmd(c->StrArg(i), c->StrArg(i + 1)));
+    }
+    BatchExecuteCmdResponse response;
+    if (!ExecuteRedisBatch(redis_service_, commands, &response, c->reply)) {
+        return;
+    }
+    for (int i = 0; i < response.response_size(); ++i) {
+        if (!IsOkStatus(response.response(i).response_status())) {
+            SetRedisStatusError(c->reply, response.response(i).response_status());
+            return;
+        }
+    }
+    c->reply->SetStatus("OK");
+}
+
+void RedisCommandHandler::Del(RedisClientContext* c) {
+    std::vector<CmdRequest> commands;
+    for (size_t i = 1; i < c->ArgSize(); ++i) {
+        commands.emplace_back(DelCmd(c->StrArg(i)));
+    }
+    BatchExecuteCmdResponse response;
+    if (!ExecuteRedisBatch(redis_service_, commands, &response, c->reply)) {
+        return;
+    }
+    int64_t deleted = 0;
+    for (int i = 0; i < response.response_size(); ++i) {
+        if (IsOkStatus(response.response(i).response_status())) {
+            ++deleted;
+        }
+    }
+    c->reply->SetInteger(deleted);
+}
+
+void RedisCommandHandler::Exists(RedisClientContext* c) {
+    std::vector<CmdRequest> commands;
+    for (size_t i = 1; i < c->ArgSize(); ++i) {
+        commands.emplace_back(ExistsCmd(c->StrArg(i)));
+    }
+    BatchExecuteCmdResponse response;
+    if (!ExecuteRedisBatch(redis_service_, commands, &response, c->reply)) {
+        return;
+    }
+    int64_t existing = 0;
+    for (int i = 0; i < response.response_size(); ++i) {
+        if (IsOkStatus(response.response(i).response_status())) {
+            ++existing;
+        }
+    }
+    c->reply->SetInteger(existing);
+}
+
+void RedisCommandHandler::Expire(RedisClientContext* c) {
+    int64_t seconds = 0;
+    if (!ParseInt64Arg(c->StrArg(2), &seconds) || seconds < 0) {
+        c->reply->SetError("ERR invalid expire time in expire");
+        return;
+    }
+    CmdResponse response;
+    if (!ExecuteRedisSingle(redis_service_, ExpireCmd(c->StrArg(1), seconds * 1000), &response,
+                            c->reply)) {
+        return;
+    }
+    c->reply->SetInteger(IsOkStatus(response.response_status()) ? 1 : 0);
+}
+
+void RedisCommandHandler::PExpire(RedisClientContext* c) {
+    int64_t milliseconds = 0;
+    if (!ParseInt64Arg(c->StrArg(2), &milliseconds) || milliseconds < 0) {
+        c->reply->SetError("ERR invalid expire time in pexpire");
+        return;
+    }
+    CmdResponse response;
+    if (!ExecuteRedisSingle(redis_service_, ExpireCmd(c->StrArg(1), milliseconds), &response,
+                            c->reply)) {
+        return;
+    }
+    c->reply->SetInteger(IsOkStatus(response.response_status()) ? 1 : 0);
+}
+
+void RedisCommandHandler::Ttl(RedisClientContext* c) {
+    CmdResponse response;
+    if (!ExecuteRedisSingle(redis_service_, TtlCmd(c->StrArg(1)), &response, c->reply)) {
+        return;
+    }
+    if (!IsOkStatus(response.response_status())) {
+        c->reply->SetInteger(-2);
+        return;
+    }
+    common2::TtlResponse ttl_response;
+    if (!ttl_response.ParseFromString(response.response_bytes())) {
+        SetRedisError(c->reply, "failed to parse TTL response");
+        return;
+    }
+    uint64_t ttl_ms = ttl_response.ttl_ms();
+    c->reply->SetInteger(ttl_ms == 0 ? -1 : static_cast<int64_t>((ttl_ms + 999) / 1000));
+}
+
+void RedisCommandHandler::PTtl(RedisClientContext* c) {
+    CmdResponse response;
+    if (!ExecuteRedisSingle(redis_service_, TtlCmd(c->StrArg(1)), &response, c->reply)) {
+        return;
+    }
+    if (!IsOkStatus(response.response_status())) {
+        c->reply->SetInteger(-2);
+        return;
+    }
+    common2::TtlResponse ttl_response;
+    if (!ttl_response.ParseFromString(response.response_bytes())) {
+        SetRedisError(c->reply, "failed to parse PTTL response");
+        return;
+    }
+    uint64_t ttl_ms = ttl_response.ttl_ms();
+    c->reply->SetInteger(ttl_ms == 0 ? -1 : static_cast<int64_t>(ttl_ms));
+}
+
+void RedisCommandHandler::Persist(RedisClientContext* c) {
+    CmdResponse response;
+    if (!ExecuteRedisSingle(redis_service_, PersistCmd(c->StrArg(1)), &response, c->reply)) {
+        return;
+    }
+    c->reply->SetInteger(IsOkStatus(response.response_status()) ? 1 : 0);
+}
+
+void RedisCommandHandler::Append(RedisClientContext* c) {
+    CmdResponse response;
+    if (!ExecuteRedisSingle(redis_service_, StringAppendCmd(c->StrArg(1), c->StrArg(2)), &response,
+                            c->reply)) {
+        return;
+    }
+    if (!IsOkStatus(response.response_status())) {
+        SetRedisStatusError(c->reply, response.response_status());
+        return;
+    }
+    str2::AppendResponse append_response;
+    if (!append_response.ParseFromString(response.response_bytes())) {
+        SetRedisError(c->reply, "failed to parse APPEND response");
+        return;
+    }
+    c->reply->SetInteger(static_cast<int64_t>(append_response.len()));
+}
+
+void RedisCommandHandler::Strlen(RedisClientContext* c) {
+    CmdResponse response;
+    if (!ExecuteRedisSingle(redis_service_, StringStrlenCmd(c->StrArg(1)), &response, c->reply)) {
+        return;
+    }
+    if (!IsOkStatus(response.response_status())) {
+        c->reply->SetInteger(0);
+        return;
+    }
+    str2::StrlenResponse strlen_response;
+    if (!strlen_response.ParseFromString(response.response_bytes())) {
+        SetRedisError(c->reply, "failed to parse STRLEN response");
+        return;
+    }
+    c->reply->SetInteger(static_cast<int64_t>(strlen_response.len()));
+}
+
+void RedisCommandHandler::IncrBy(RedisClientContext* c) {
+    int64_t increment = 1;
+    const std::string command = c->StrArg(0);
+    if (!strcasecmp(command.c_str(), "decr")) {
+        increment = -1;
+    } else if (!strcasecmp(command.c_str(), "incrby") ||
+               !strcasecmp(command.c_str(), "decrby")) {
+        if (!ParseInt64Arg(c->StrArg(2), &increment)) {
+            c->reply->SetError("ERR value is not an integer or out of range");
+            return;
+        }
+        if (!strcasecmp(command.c_str(), "decrby")) {
+            if (increment == LLONG_MIN) {
+                c->reply->SetError("ERR decrement would overflow");
+                return;
+            }
+            increment = -increment;
+        }
+    }
+
+    CmdResponse response;
+    if (!ExecuteRedisSingle(redis_service_, StringIncrByCmd(c->StrArg(1), increment), &response,
+                            c->reply)) {
+        return;
+    }
+    if (!IsOkStatus(response.response_status())) {
+        SetRedisStatusError(c->reply, response.response_status());
+        return;
+    }
+    str2::IncrByResponse incr_response;
+    if (!incr_response.ParseFromString(response.response_bytes())) {
+        SetRedisError(c->reply, "failed to parse INCRBY response");
+        return;
+    }
+    c->reply->SetInteger(incr_response.value());
+}
+
+void RedisCommandHandler::HSet(RedisClientContext* c) {
+    if ((c->ArgSize() - 2) % 2 != 0) {
+        c->reply->SetError("ERR wrong number of arguments for 'hset' command");
+        return;
+    }
+
+    std::vector<CmdRequest> precheck_commands;
+    for (size_t i = 2; i + 1 < c->ArgSize(); i += 2) {
+        precheck_commands.emplace_back(HashGetExtCmd(c->StrArg(1), c->StrArg(i)));
+    }
+    BatchExecuteCmdResponse precheck_response;
+    if (!ExecuteRedisBatch(redis_service_, precheck_commands, &precheck_response, c->reply)) {
+        return;
+    }
+    int64_t added = 0;
+    for (int i = 0; i < precheck_response.response_size(); ++i) {
+        const auto& item = precheck_response.response(i);
+        hash2::GetResponse get_response;
+        if (!IsOkStatus(item.response_status())) {
+            ++added;
+            continue;
+        }
+        if (!ParseHashGetResponse(item, &get_response, c->reply)) {
+            return;
+        }
+        if (!get_response.exist()) {
+            ++added;
+        }
+    }
+
+    std::vector<CmdRequest> commands;
+    for (size_t i = 2; i + 1 < c->ArgSize(); i += 2) {
+        commands.emplace_back(HashSetCmd(c->StrArg(1), c->StrArg(i), c->StrArg(i + 1)));
+    }
+    BatchExecuteCmdResponse response;
+    if (!ExecuteRedisBatch(redis_service_, commands, &response, c->reply)) {
+        return;
+    }
+    for (int i = 0; i < response.response_size(); ++i) {
+        if (!IsOkStatus(response.response(i).response_status())) {
+            SetRedisStatusError(c->reply, response.response(i).response_status());
+            return;
+        }
+    }
+    c->reply->SetInteger(added);
+}
+
+void RedisCommandHandler::HGet(RedisClientContext* c) {
+    CmdResponse response;
+    if (!ExecuteRedisSingle(redis_service_, HashGetExtCmd(c->StrArg(1), c->StrArg(2)), &response,
+                            c->reply)) {
+        return;
+    }
+    hash2::GetResponse get_response;
+    if (!IsOkStatus(response.response_status()) ||
+        !ParseHashGetResponse(response, &get_response, c->reply) || !get_response.exist()) {
+        c->reply->SetNullString();
+        return;
+    }
+    c->reply->SetString(get_response.value());
+}
+
+void RedisCommandHandler::HMGet(RedisClientContext* c) {
+    std::vector<CmdRequest> commands;
+    for (size_t i = 2; i < c->ArgSize(); ++i) {
+        commands.emplace_back(HashGetExtCmd(c->StrArg(1), c->StrArg(i)));
+    }
+    BatchExecuteCmdResponse response;
+    if (!ExecuteRedisBatch(redis_service_, commands, &response, c->reply)) {
+        return;
+    }
+    c->reply->SetArray(response.response_size());
+    for (int i = 0; i < response.response_size(); ++i) {
+        const auto& item = response.response(i);
+        hash2::GetResponse get_response;
+        if (!IsOkStatus(item.response_status()) ||
+            !ParseHashGetResponse(item, &get_response, c->reply) || !get_response.exist()) {
+            (*c->reply)[i].SetNullString();
+        } else {
+            (*c->reply)[i].SetString(get_response.value());
+        }
+    }
+}
+
+void RedisCommandHandler::HDel(RedisClientContext* c) {
+    std::vector<CmdRequest> commands;
+    for (size_t i = 2; i < c->ArgSize(); ++i) {
+        commands.emplace_back(HashDelCmd(c->StrArg(1), c->StrArg(i)));
+    }
+    BatchExecuteCmdResponse response;
+    if (!ExecuteRedisBatch(redis_service_, commands, &response, c->reply)) {
+        return;
+    }
+    int64_t deleted = 0;
+    for (int i = 0; i < response.response_size(); ++i) {
+        if (IsOkStatus(response.response(i).response_status())) {
+            ++deleted;
+        }
+    }
+    c->reply->SetInteger(deleted);
+}
+
+void RedisCommandHandler::HExists(RedisClientContext* c) {
+    CmdResponse response;
+    if (!ExecuteRedisSingle(redis_service_, HashGetExtCmd(c->StrArg(1), c->StrArg(2)), &response,
+                            c->reply)) {
+        return;
+    }
+    hash2::GetResponse get_response;
+    c->reply->SetInteger(IsOkStatus(response.response_status()) &&
+                                 ParseHashGetResponse(response, &get_response, c->reply) &&
+                                 get_response.exist()
+                             ? 1
+                             : 0);
+}
+
+void RedisCommandHandler::HLen(RedisClientContext* c) {
+    CmdResponse response;
+    if (!ExecuteRedisSingle(redis_service_, HashLenCmd(c->StrArg(1)), &response, c->reply)) {
+        return;
+    }
+    if (!IsOkStatus(response.response_status())) {
+        c->reply->SetInteger(0);
+        return;
+    }
+    hash2::LenResponse len_response;
+    if (!len_response.ParseFromString(response.response_bytes())) {
+        SetRedisError(c->reply, "failed to parse HLEN response");
+        return;
+    }
+    c->reply->SetInteger(static_cast<int64_t>(len_response.len()));
+}
+
+void RedisCommandHandler::HGetAll(RedisClientContext* c) {
+    CmdResponse response;
+    if (!ExecuteRedisSingle(redis_service_, HashGetAllCmd(c->StrArg(1)), &response, c->reply)) {
+        return;
+    }
+    if (!IsOkStatus(response.response_status())) {
+        c->reply->SetArray(0);
+        return;
+    }
+    hash2::GetAllResponse getall_response;
+    if (!getall_response.ParseFromString(response.response_bytes())) {
+        SetRedisError(c->reply, "failed to parse HGETALL response");
+        return;
+    }
+    c->reply->SetArray(getall_response.fields_size() * 2);
+    for (int i = 0; i < getall_response.fields_size(); ++i) {
+        (*c->reply)[i * 2].SetString(getall_response.fields(i));
+        (*c->reply)[i * 2 + 1].SetString(getall_response.values(i));
+    }
+}
+
+void RedisCommandHandler::HIncrBy(RedisClientContext* c) {
+    int64_t delta = 0;
+    if (!ParseInt64Arg(c->StrArg(3), &delta)) {
+        c->reply->SetError("ERR value is not an integer or out of range");
+        return;
+    }
+    CmdResponse response;
+    if (!ExecuteRedisSingle(redis_service_, HashIncrByCmd(c->StrArg(1), c->StrArg(2), delta),
+                            &response, c->reply)) {
+        return;
+    }
+    if (!IsOkStatus(response.response_status())) {
+        SetRedisStatusError(c->reply, response.response_status());
+        return;
+    }
+    hash2::IncrByResponse incr_response;
+    if (!incr_response.ParseFromString(response.response_bytes())) {
+        SetRedisError(c->reply, "failed to parse HINCRBY response");
+        return;
+    }
+    c->reply->SetInteger(incr_response.value());
+}
+
+void RedisCommandHandler::SAdd(RedisClientContext* c) {
+    std::vector<std::string> members;
+    for (size_t i = 2; i < c->ArgSize(); ++i) {
+        members.emplace_back(c->StrArg(i));
+    }
+    CmdResponse response;
+    if (!ExecuteRedisSingle(redis_service_, SetAddCmd(c->StrArg(1), members), &response,
+                            c->reply)) {
+        return;
+    }
+    if (!IsOkStatus(response.response_status())) {
+        SetRedisStatusError(c->reply, response.response_status());
+        return;
+    }
+    set::SAddResponse sadd_response;
+    if (!sadd_response.ParseFromString(response.response_bytes())) {
+        SetRedisError(c->reply, "failed to parse SADD response");
+        return;
+    }
+    c->reply->SetInteger(static_cast<int64_t>(sadd_response.added()));
+}
+
+void RedisCommandHandler::SRem(RedisClientContext* c) {
+    std::vector<std::string> members;
+    for (size_t i = 2; i < c->ArgSize(); ++i) {
+        members.emplace_back(c->StrArg(i));
+    }
+    CmdResponse response;
+    if (!ExecuteRedisSingle(redis_service_, SetRemCmd(c->StrArg(1), members), &response,
+                            c->reply)) {
+        return;
+    }
+    if (!IsOkStatus(response.response_status())) {
+        SetRedisStatusError(c->reply, response.response_status());
+        return;
+    }
+    set::SRemResponse srem_response;
+    if (!srem_response.ParseFromString(response.response_bytes())) {
+        SetRedisError(c->reply, "failed to parse SREM response");
+        return;
+    }
+    c->reply->SetInteger(static_cast<int64_t>(srem_response.removed()));
+}
+
+void RedisCommandHandler::SMembers(RedisClientContext* c) {
+    CmdResponse response;
+    if (!ExecuteRedisSingle(redis_service_, SetMembersCmd(c->StrArg(1)), &response, c->reply)) {
+        return;
+    }
+    if (!IsOkStatus(response.response_status())) {
+        c->reply->SetArray(0);
+        return;
+    }
+    set::SMembersResponse members_response;
+    if (!members_response.ParseFromString(response.response_bytes())) {
+        SetRedisError(c->reply, "failed to parse SMEMBERS response");
+        return;
+    }
+    c->reply->SetArray(members_response.members_size());
+    for (int i = 0; i < members_response.members_size(); ++i) {
+        (*c->reply)[i].SetString(members_response.members(i));
+    }
+}
+
+void RedisCommandHandler::SCard(RedisClientContext* c) {
+    CmdResponse response;
+    if (!ExecuteRedisSingle(redis_service_, SetCardCmd(c->StrArg(1)), &response, c->reply)) {
+        return;
+    }
+    if (!IsOkStatus(response.response_status())) {
+        c->reply->SetInteger(0);
+        return;
+    }
+    set::SCardResponse scard_response;
+    if (!scard_response.ParseFromString(response.response_bytes())) {
+        SetRedisError(c->reply, "failed to parse SCARD response");
+        return;
+    }
+    c->reply->SetInteger(static_cast<int64_t>(scard_response.len()));
+}
+
+void RedisCommandHandler::SIsMember(RedisClientContext* c) {
+    CmdResponse response;
+    if (!ExecuteRedisSingle(redis_service_, SetIsMemberCmd(c->StrArg(1), c->StrArg(2)),
+                            &response, c->reply)) {
+        return;
+    }
+    if (!IsOkStatus(response.response_status())) {
+        c->reply->SetInteger(0);
+        return;
+    }
+    set::SIsMemberResponse sismember_response;
+    if (!sismember_response.ParseFromString(response.response_bytes())) {
+        SetRedisError(c->reply, "failed to parse SISMEMBER response");
+        return;
+    }
+    c->reply->SetInteger(sismember_response.exist() ? 1 : 0);
+}
+
+void RedisCommandHandler::LPush(RedisClientContext* c) {
+    std::vector<std::string> values;
+    if (!LoadEncodedList(redis_service_, c->StrArg(1), &values, c->reply)) {
+        return;
+    }
+    for (size_t i = 2; i < c->ArgSize(); ++i) {
+        values.insert(values.begin(), c->StrArg(i));
+    }
+    if (!SaveEncodedList(redis_service_, c->StrArg(1), values, c->reply)) {
+        return;
+    }
+    c->reply->SetInteger(static_cast<int64_t>(values.size()));
+}
+
+void RedisCommandHandler::RPush(RedisClientContext* c) {
+    std::vector<std::string> values;
+    if (!LoadEncodedList(redis_service_, c->StrArg(1), &values, c->reply)) {
+        return;
+    }
+    for (size_t i = 2; i < c->ArgSize(); ++i) {
+        values.emplace_back(c->StrArg(i));
+    }
+    if (!SaveEncodedList(redis_service_, c->StrArg(1), values, c->reply)) {
+        return;
+    }
+    c->reply->SetInteger(static_cast<int64_t>(values.size()));
+}
+
+void RedisCommandHandler::LPop(RedisClientContext* c) {
+    std::vector<std::string> values;
+    if (!LoadEncodedList(redis_service_, c->StrArg(1), &values, c->reply)) {
+        return;
+    }
+    int64_t count = 1;
+    bool count_mode = c->ArgSize() == 3;
+    if (count_mode && (!ParseInt64Arg(c->StrArg(2), &count) || count < 0)) {
+        c->reply->SetError("ERR value is out of range, must be positive");
+        return;
+    }
+    if (values.empty()) {
+        if (count_mode) {
+            c->reply->SetNullArray();
+        } else {
+            c->reply->SetNullString();
+        }
+        return;
+    }
+    int64_t n = std::min<int64_t>(count, values.size());
+    if (count_mode) {
+        c->reply->SetArray(n);
+        for (int64_t i = 0; i < n; ++i) {
+            (*c->reply)[i].SetString(values[i]);
+        }
+    } else {
+        c->reply->SetString(values.front());
+    }
+    values.erase(values.begin(), values.begin() + n);
+    SaveEncodedList(redis_service_, c->StrArg(1), values, c->reply);
+}
+
+void RedisCommandHandler::RPop(RedisClientContext* c) {
+    std::vector<std::string> values;
+    if (!LoadEncodedList(redis_service_, c->StrArg(1), &values, c->reply)) {
+        return;
+    }
+    int64_t count = 1;
+    bool count_mode = c->ArgSize() == 3;
+    if (count_mode && (!ParseInt64Arg(c->StrArg(2), &count) || count < 0)) {
+        c->reply->SetError("ERR value is out of range, must be positive");
+        return;
+    }
+    if (values.empty()) {
+        if (count_mode) {
+            c->reply->SetNullArray();
+        } else {
+            c->reply->SetNullString();
+        }
+        return;
+    }
+    int64_t n = std::min<int64_t>(count, values.size());
+    if (count_mode) {
+        c->reply->SetArray(n);
+        for (int64_t i = 0; i < n; ++i) {
+            (*c->reply)[i].SetString(values[values.size() - 1 - i]);
+        }
+    } else {
+        c->reply->SetString(values.back());
+    }
+    values.erase(values.end() - n, values.end());
+    SaveEncodedList(redis_service_, c->StrArg(1), values, c->reply);
+}
+
+void RedisCommandHandler::LLen(RedisClientContext* c) {
+    std::vector<std::string> values;
+    if (!LoadEncodedList(redis_service_, c->StrArg(1), &values, c->reply)) {
+        return;
+    }
+    c->reply->SetInteger(static_cast<int64_t>(values.size()));
+}
+
+void RedisCommandHandler::LIndex(RedisClientContext* c) {
+    int64_t index = 0;
+    if (!ParseInt64Arg(c->StrArg(2), &index)) {
+        c->reply->SetError("ERR value is not an integer or out of range");
+        return;
+    }
+    std::vector<std::string> values;
+    if (!LoadEncodedList(redis_service_, c->StrArg(1), &values, c->reply)) {
+        return;
+    }
+    index = NormalizeIndex(index, values.size());
+    if (index < 0 || index >= static_cast<int64_t>(values.size())) {
+        c->reply->SetNullString();
+        return;
+    }
+    c->reply->SetString(values[index]);
+}
+
+void RedisCommandHandler::LRange(RedisClientContext* c) {
+    int64_t start = 0;
+    int64_t stop = 0;
+    if (!ParseInt64Arg(c->StrArg(2), &start) || !ParseInt64Arg(c->StrArg(3), &stop)) {
+        c->reply->SetError("ERR value is not an integer or out of range");
+        return;
+    }
+    std::vector<std::string> values;
+    if (!LoadEncodedList(redis_service_, c->StrArg(1), &values, c->reply)) {
+        return;
+    }
+    auto range = NormalizeRange(start, stop, values.size());
+    if (values.empty() || range.first > range.second || range.first >= static_cast<int64_t>(values.size())) {
+        c->reply->SetArray(0);
+        return;
+    }
+    int64_t n = range.second - range.first + 1;
+    c->reply->SetArray(n);
+    for (int64_t i = 0; i < n; ++i) {
+        (*c->reply)[i].SetString(values[range.first + i]);
+    }
+}
+
+void RedisCommandHandler::LTrim(RedisClientContext* c) {
+    int64_t start = 0;
+    int64_t stop = 0;
+    if (!ParseInt64Arg(c->StrArg(2), &start) || !ParseInt64Arg(c->StrArg(3), &stop)) {
+        c->reply->SetError("ERR value is not an integer or out of range");
+        return;
+    }
+    std::vector<std::string> values;
+    if (!LoadEncodedList(redis_service_, c->StrArg(1), &values, c->reply)) {
+        return;
+    }
+    auto range = NormalizeRange(start, stop, values.size());
+    std::vector<std::string> kept;
+    if (!values.empty() && range.first <= range.second &&
+        range.first < static_cast<int64_t>(values.size())) {
+        kept.assign(values.begin() + range.first, values.begin() + range.second + 1);
+    }
+    if (!SaveEncodedList(redis_service_, c->StrArg(1), kept, c->reply)) {
+        return;
+    }
+    c->reply->SetStatus("OK");
+}
+
+void RedisCommandHandler::ZAdd(RedisClientContext* c) {
+    if ((c->ArgSize() - 2) % 2 != 0) {
+        c->reply->SetError("ERR wrong number of arguments for 'zadd' command");
+        return;
+    }
+    std::vector<ZItem> items;
+    if (!LoadEncodedZSet(redis_service_, c->StrArg(1), &items, c->reply)) {
+        return;
+    }
+    int64_t added = 0;
+    for (size_t i = 2; i + 1 < c->ArgSize(); i += 2) {
+        double score = 0;
+        if (!ParseDoubleArg(c->StrArg(i), &score)) {
+            c->reply->SetError("ERR value is not a valid float");
+            return;
+        }
+        int index = FindZMember(items, c->StrArg(i + 1));
+        if (index < 0) {
+            items.push_back({c->StrArg(i + 1), score, FormatDouble(score)});
+            ++added;
+        } else {
+            items[index].score = score;
+            items[index].score_text = FormatDouble(score);
+        }
+    }
+    if (!SaveEncodedZSet(redis_service_, c->StrArg(1), items, c->reply)) {
+        return;
+    }
+    c->reply->SetInteger(added);
+}
+
+void RedisCommandHandler::ZRem(RedisClientContext* c) {
+    std::vector<ZItem> items;
+    if (!LoadEncodedZSet(redis_service_, c->StrArg(1), &items, c->reply)) {
+        return;
+    }
+    int64_t removed = 0;
+    for (size_t i = 2; i < c->ArgSize(); ++i) {
+        int index = FindZMember(items, c->StrArg(i));
+        if (index >= 0) {
+            items.erase(items.begin() + index);
+            ++removed;
+        }
+    }
+    if (!SaveEncodedZSet(redis_service_, c->StrArg(1), items, c->reply)) {
+        return;
+    }
+    c->reply->SetInteger(removed);
+}
+
+void RedisCommandHandler::ZCard(RedisClientContext* c) {
+    std::vector<ZItem> items;
+    if (!LoadEncodedZSet(redis_service_, c->StrArg(1), &items, c->reply)) {
+        return;
+    }
+    c->reply->SetInteger(static_cast<int64_t>(items.size()));
+}
+
+void RedisCommandHandler::ZScore(RedisClientContext* c) {
+    std::vector<ZItem> items;
+    if (!LoadEncodedZSet(redis_service_, c->StrArg(1), &items, c->reply)) {
+        return;
+    }
+    int index = FindZMember(items, c->StrArg(2));
+    if (index < 0) {
+        c->reply->SetNullString();
+        return;
+    }
+    c->reply->SetString(items[index].score_text);
+}
+
+void RedisCommandHandler::ZRank(RedisClientContext* c) {
+    std::vector<ZItem> items;
+    if (!LoadEncodedZSet(redis_service_, c->StrArg(1), &items, c->reply)) {
+        return;
+    }
+    SortZSet(&items);
+    int index = FindZMember(items, c->StrArg(2));
+    if (index < 0) {
+        c->reply->SetNullString();
+        return;
+    }
+    c->reply->SetInteger(index);
+}
+
+void RedisCommandHandler::ZRevRank(RedisClientContext* c) {
+    std::vector<ZItem> items;
+    if (!LoadEncodedZSet(redis_service_, c->StrArg(1), &items, c->reply)) {
+        return;
+    }
+    SortZSet(&items, true);
+    int index = FindZMember(items, c->StrArg(2));
+    if (index < 0) {
+        c->reply->SetNullString();
+        return;
+    }
+    c->reply->SetInteger(index);
+}
+
+void RedisCommandHandler::ZRange(RedisClientContext* c) {
+    int64_t start = 0;
+    int64_t stop = 0;
+    if (!ParseInt64Arg(c->StrArg(2), &start) || !ParseInt64Arg(c->StrArg(3), &stop)) {
+        c->reply->SetError("ERR value is not an integer or out of range");
+        return;
+    }
+    std::vector<ZItem> items;
+    if (!LoadEncodedZSet(redis_service_, c->StrArg(1), &items, c->reply)) {
+        return;
+    }
+    SortZSet(&items);
+    auto range = NormalizeRange(start, stop, items.size());
+    bool with_scores = WithScoresArg(c, 4);
+    if (items.empty() || range.first > range.second || range.first >= static_cast<int64_t>(items.size())) {
+        c->reply->SetArray(0);
+        return;
+    }
+    int64_t n = range.second - range.first + 1;
+    c->reply->SetArray(with_scores ? n * 2 : n);
+    for (int64_t i = 0; i < n; ++i) {
+        (*c->reply)[with_scores ? i * 2 : i].SetString(items[range.first + i].member);
+        if (with_scores) {
+            (*c->reply)[i * 2 + 1].SetString(items[range.first + i].score_text);
+        }
+    }
+}
+
+void RedisCommandHandler::ZRevRange(RedisClientContext* c) {
+    int64_t start = 0;
+    int64_t stop = 0;
+    if (!ParseInt64Arg(c->StrArg(2), &start) || !ParseInt64Arg(c->StrArg(3), &stop)) {
+        c->reply->SetError("ERR value is not an integer or out of range");
+        return;
+    }
+    std::vector<ZItem> items;
+    if (!LoadEncodedZSet(redis_service_, c->StrArg(1), &items, c->reply)) {
+        return;
+    }
+    SortZSet(&items, true);
+    auto range = NormalizeRange(start, stop, items.size());
+    bool with_scores = WithScoresArg(c, 4);
+    if (items.empty() || range.first > range.second || range.first >= static_cast<int64_t>(items.size())) {
+        c->reply->SetArray(0);
+        return;
+    }
+    int64_t n = range.second - range.first + 1;
+    c->reply->SetArray(with_scores ? n * 2 : n);
+    for (int64_t i = 0; i < n; ++i) {
+        (*c->reply)[with_scores ? i * 2 : i].SetString(items[range.first + i].member);
+        if (with_scores) {
+            (*c->reply)[i * 2 + 1].SetString(items[range.first + i].score_text);
+        }
+    }
+}
+
+void RedisCommandHandler::ZRangeByScore(RedisClientContext* c) {
+    double min_score = 0;
+    double max_score = 0;
+    if (!ParseZRangeBound(c->StrArg(2), &min_score) ||
+        !ParseZRangeBound(c->StrArg(3), &max_score)) {
+        c->reply->SetError("ERR min or max is not a float");
+        return;
+    }
+    std::vector<ZItem> items;
+    if (!LoadEncodedZSet(redis_service_, c->StrArg(1), &items, c->reply)) {
+        return;
+    }
+    SortZSet(&items);
+    bool with_scores = WithScoresArg(c, 4);
+    std::vector<ZItem> selected;
+    for (const auto& item : items) {
+        if (item.score >= min_score && item.score <= max_score) {
+            selected.push_back(item);
+        }
+    }
+    c->reply->SetArray(with_scores ? selected.size() * 2 : selected.size());
+    for (size_t i = 0; i < selected.size(); ++i) {
+        (*c->reply)[with_scores ? i * 2 : i].SetString(selected[i].member);
+        if (with_scores) {
+            (*c->reply)[i * 2 + 1].SetString(selected[i].score_text);
+        }
+    }
+}
+
+void RedisCommandHandler::ZCount(RedisClientContext* c) {
+    double min_score = 0;
+    double max_score = 0;
+    if (!ParseZRangeBound(c->StrArg(2), &min_score) ||
+        !ParseZRangeBound(c->StrArg(3), &max_score)) {
+        c->reply->SetError("ERR min or max is not a float");
+        return;
+    }
+    std::vector<ZItem> items;
+    if (!LoadEncodedZSet(redis_service_, c->StrArg(1), &items, c->reply)) {
+        return;
+    }
+    int64_t count = 0;
+    for (const auto& item : items) {
+        if (item.score >= min_score && item.score <= max_score) {
+            ++count;
+        }
+    }
+    c->reply->SetInteger(count);
+}
+
+void RedisCommandHandler::Unsupported(RedisClientContext* c) {
+    c->reply->SetError("ERR command '" + c->StrArg(0) + "' is not supported by the native Redis bridge yet");
+}
+
+}  // namespace serve
 }  // namespace bcache2

@@ -25,7 +25,19 @@ endif()
 if (CYGWIN)
     list(APPEND BCACHE2_SERVER_LINK_LIBS snappy)
 endif()
-target_link_libraries(bcache2-server ${BCACHE2_SERVER_LINK_LIBS})
+target_link_libraries(bcache2-server
+    ${BCACHE2_SERVER_LINK_LIBS}
+    brpc-static
+    byte
+    byteraft
+    /usr/lib/x86_64-linux-gnu/libleveldb.so
+    /usr/lib/x86_64-linux-gnu/libfmt.so
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    /usr/lib/x86_64-linux-gnu/libabsl_throw_delegate.so
+    /usr/lib/x86_64-linux-gnu/libabsl_time_zone.so
+    /usr/lib/x86_64-linux-gnu/libabsl_raw_logging_internal.so
+    /usr/lib/x86_64-linux-gnu/libabsl_log_severity.so)
 target_compile_options(bcache2-server PUBLIC "-DBRPC_ENABLE_CPU_PROFILER")
 if (CYGWIN)
     target_link_options(bcache2-server PRIVATE
