@@ -38,6 +38,7 @@ class MatrixArkMcpServerTest(unittest.TestCase):
             {
                 "matrixark_ingest",
                 "matrixark_batch_extract",
+                "matrixark_session_commit",
                 "matrixark_retrieve",
                 "matrixark_feedback",
                 "matrixark_replay",
@@ -234,6 +235,86 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         )
         self.assertIn("error", response)
         self.assertIn("API key is required", response["error"]["message"])
+
+    def test_session_commit_derives_segments_entities_without_duplicate_events(self):
+        scope = {"user_id": "alice", "session_id": "thread-session-buffer"}
+        first = self.call_tool(
+            "matrixark_ingest",
+            {
+                "messages": [{"role": "user", "content": "I moved to Seattle today."}],
+                "scope": scope,
+            },
+        )
+        second = self.call_tool(
+            "matrixark_ingest",
+            {
+                "messages": [{"role": "user", "content": "Actually I moved to Austin now."}],
+                "scope": scope,
+            },
+        )
+        self.assertEqual(first["session_buffer"]["pending_event_count"], 1)
+        self.assertEqual(second["session_buffer"]["pending_event_count"], 2)
+
+        committed = self.call_tool(
+            "matrixark_session_commit",
+            {
+                "scope": scope,
+                "threshold_messages": 20,
+                "force": True,
+                "agent_hook": {
+                    "source": "codex",
+                    "hook_type": "session_commit",
+                    "hook_id": "commit-location",
+                    "observed_at_ms": 1781500000000,
+                    "auto_captured": True,
+                },
+            },
+        )
+        self.assertEqual(committed["status"], "committed")
+        self.assertEqual(committed["events_written"], 0)
+        self.assertFalse(committed["raw_events_duplicated"])
+        self.assertEqual(set(committed["source_event_ids"]), {first["event_id_hash"], second["event_id_hash"]})
+        self.assertGreaterEqual(committed["segments_written"], 1)
+        self.assertGreaterEqual(committed["entities_written"], 1)
+
+        replay = self.call_tool("matrixark_replay", {"context_pack_id": "debug"})
+        events = [record for record in replay["events"] if record.get("record_type") == "context_event"]
+        self.assertEqual(len(events), 2)
+        segments = [record for record in replay["events"] if record.get("record_type") == "context_segment"]
+        self.assertTrue(segments)
+        self.assertTrue(any(set(segment.get("source_event_ids", [])) for segment in segments))
+        entities = [record for record in replay["events"] if record.get("record_type") == "context_entity"]
+        self.assertTrue(any(record.get("entity_type") == "location" for record in entities))
+        self.assertTrue(all(record.get("source_event_ids") for record in entities))
+        commits = [record for record in replay["events"] if record.get("record_type") == "context_batch_commit"]
+        self.assertEqual(len(commits), 1)
+
+    def test_ingest_auto_batch_extract_commits_at_threshold(self):
+        scope = {"user_id": "bob", "session_id": "thread-auto-buffer"}
+        first = self.call_tool(
+            "matrixark_ingest",
+            {
+                "messages": [{"role": "user", "content": "I prefer Rust for storage engines."}],
+                "scope": scope,
+                "auto_batch_extract": True,
+                "session_buffer_threshold": 2,
+            },
+        )
+        self.assertIsNone(first["auto_batch_extract_result"])
+        second = self.call_tool(
+            "matrixark_ingest",
+            {
+                "messages": [{"role": "assistant", "content": "Noted that Rust is the current storage preference."}],
+                "scope": scope,
+                "auto_batch_extract": True,
+                "session_buffer_threshold": 2,
+            },
+        )
+        auto = second["auto_batch_extract_result"]
+        self.assertIsNotNone(auto)
+        self.assertEqual(auto["status"], "committed")
+        self.assertEqual(auto["events_written"], 0)
+        self.assertFalse(auto["raw_events_duplicated"])
 
     def test_agent_direct_ingest_generates_summary_embedding_and_retrieves_by_layer_score(self):
         ingest = self.call_tool(

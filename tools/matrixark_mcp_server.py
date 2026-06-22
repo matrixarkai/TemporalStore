@@ -60,6 +60,7 @@ MATRIXARK_CONTEXT_SCOPES = {
 MATRIXARK_TOOL_SCOPES: dict[str, set[str]] = {
     "matrixark_ingest": {"context:ingest"},
     "matrixark_batch_extract": {"context:ingest"},
+    "matrixark_session_commit": {"context:ingest"},
     "matrixark_retrieve": {"context:retrieve"},
     "matrixark_feedback": {"context:feedback"},
     "matrixark_replay": {"context:replay"},
@@ -259,6 +260,35 @@ def context_node_key(envelope: Json) -> tuple[Any, Any, Any, Any]:
         scope.get("team", ""),
         scope.get("project", ""),
     )
+
+
+def session_buffer_key_from_scope(scope: Json) -> tuple[str, str, str, str]:
+    user_id = str(scope.get("user_id") or "")
+    session_id = str(scope.get("session_id") or user_id or "")
+    return (
+        str(scope.get("account_id") or "acct_dev"),
+        str(scope.get("tenant_id") or "tenant_dev"),
+        user_id,
+        session_id,
+    )
+
+
+def session_buffer_key(envelope: Json) -> tuple[str, str, str, str]:
+    return session_buffer_key_from_scope(envelope.get("scope", {}))
+
+
+def message_from_event_record(record: Json) -> Json | None:
+    messages = record.get("envelope", {}).get("messages", [])
+    if isinstance(messages, list) and messages:
+        message = messages[0]
+        if isinstance(message, dict) and "role" in message and "content" in message:
+            return dict(message)
+    text = str(record.get("text", ""))
+    if ":" in text:
+        role, content = text.split(":", 1)
+        role = role.strip() or "user"
+        return {"role": role if role in {"user", "assistant", "tool", "system"} else "user", "content": content.strip()}
+    return None
 
 
 def session_summary_for_events(level: str, event_records: list[Json], all_records: list[Json]) -> Json | None:
@@ -758,7 +788,7 @@ def semantic_saliency_score(text: str) -> float:
     score = 0.2
     if re.search(r"\b(recursion|base case|merge sort|algorithm|complexity|efficiency|dynamic programming|graph|game)\b", lower):
         score += 0.55
-    if re.search(r"\b(prefer|favorite|approved|budget|plan|correction|instead|current|remember|important)\b", lower):
+    if re.search(r"\b(prefer|favorite|approved|budget|plan|correction|instead|current|remember|important|moved|moving|located|location|live|lives|staying)\b", lower):
         score += 0.45
     if re.search(r"\b(is|means|because|therefore|warning|avoid|must|should|cannot|can)\b", lower):
         score += 0.2
@@ -773,6 +803,7 @@ def infer_segment_topic(text: str) -> str:
         ("recursion", ["recursion", "recursive", "base case", "merge sort", "call stack"]),
         ("game_algorithm", ["game", "minimax", "alpha beta", "pathfinding", "npc"]),
         ("preference", ["prefer", "favorite", "likes", "loves"]),
+        ("location", ["moved", "moving", "located", "location", "live", "lives", "staying"]),
         ("approval_budget", ["approved", "approval", "budget", "cost", "purchase"]),
         ("plan_status", ["plan", "current", "status", "going to", "will"]),
         ("correction", ["correction", "instead", "wrong", "changed", "updated"]),
@@ -819,7 +850,8 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
     entities: list[Json] = []
     text = text_from_messages(messages)
     lower = text.lower()
-    source_refs = [str(index) for index, _ in enumerate(messages)]
+    source_event_ids = envelope.get("source_event_ids", [])
+    source_refs = [str(ref) for ref in source_event_ids] if isinstance(source_event_ids, list) and source_event_ids else [str(index) for index, _ in enumerate(messages)]
     patterns = [
         ("preference", r"\b(?:prefer|prefers|favorite|likes?|loves?)\s+([^.;!?]{2,120})"),
         ("relationship", r"\b(?:friend|partner|mother|father|sister|brother|wife|husband|manager|teammate)\s+([^.;!?]{0,120})"),
@@ -969,6 +1001,7 @@ def normalize_envelope(args: Json, *, default_kind: str) -> Json:
         "rejected_refs",
         "raw_uri",
         "resource_type",
+        "source_event_ids",
     ]:
         if field in args:
             envelope[field] = args[field]
@@ -1554,6 +1587,126 @@ class MatrixArkLocalAdapter:
                 return record
         return None
 
+    def pending_session_events(self, scope: Json, *, limit: int | None = None) -> list[Json]:
+        key = session_buffer_key_from_scope(scope)
+        committed: set[int] = set()
+        events: list[Json] = []
+        for record in self.read_all():
+            if record.get("record_type") == "context_batch_commit" and session_buffer_key_from_scope(record.get("scope", {})) == key:
+                for ref in record.get("source_event_ids", []):
+                    try:
+                        committed.add(int(ref))
+                    except (TypeError, ValueError):
+                        continue
+            elif record.get("record_type") == "context_event" and session_buffer_key(record.get("envelope", {})) == key:
+                try:
+                    event_hash = int(record.get("event_id_hash"))
+                except (TypeError, ValueError):
+                    continue
+                if event_hash not in committed:
+                    events.append(record)
+        if limit is not None:
+            return events[:limit]
+        return events
+
+    def append_session_buffer_event(self, *, envelope: Json, event_id_hash: int, node_hash: int, node_path: list[str], hook: Json | None) -> None:
+        key = session_buffer_key(envelope)
+        self.append(
+            {
+                "record_type": "session_buffer_event",
+                "buffer_key_hash": stable_hash(":".join(key)),
+                "buffer_key": list(key),
+                "event_id_hash": event_id_hash,
+                "node_hash": node_hash,
+                "node_path": node_path,
+                "scope": envelope["scope"],
+                "status": "pending",
+                "agent_hook": hook,
+                "created_at_ms": envelope["ingestion_time_ms"],
+            }
+        )
+
+    def default_session_node_path(self, scope: Json) -> list[str]:
+        account_id = str(scope.get("account_id") or "acct_dev")
+        tenant_id = str(scope.get("tenant_id") or "tenant_dev")
+        user_id = str(scope.get("user_id") or "unknown_user")
+        session_id = str(scope.get("session_id") or user_id or "default_session")
+        return [
+            f"account:{account_id}",
+            f"tenant:{tenant_id}",
+            f"principal:user:{user_id}",
+            "collection:sessions",
+            f"session:{session_id}",
+        ]
+
+    def session_commit(self, args: Json, *, hook: Json | None = None) -> Json:
+        scope = optional_object(args, "scope")
+        threshold = args.get("threshold_messages", 20)
+        if not isinstance(threshold, int) or threshold <= 0:
+            raise MatrixArkError("threshold_messages must be a positive integer")
+        force = bool(args.get("force", True))
+        max_messages = args.get("max_messages")
+        if max_messages is not None and (not isinstance(max_messages, int) or max_messages <= 0):
+            raise MatrixArkError("max_messages must be a positive integer")
+        pending = self.pending_session_events(scope, limit=max_messages)
+        if len(pending) < threshold and not force:
+            return {
+                "status": "deferred",
+                "pending_event_count": len(pending),
+                "threshold_messages": threshold,
+                "reason": "session buffer below extraction threshold",
+            }
+        messages = []
+        source_event_ids = []
+        for record in pending:
+            message = message_from_event_record(record)
+            if not message:
+                continue
+            messages.append(message)
+            source_event_ids.append(record["event_id_hash"])
+        if not messages:
+            return {"status": "empty", "pending_event_count": len(pending), "threshold_messages": threshold}
+        metadata = optional_object(args, "metadata")
+        if "node_path" not in metadata:
+            metadata = {**metadata, "node_path": self.default_session_node_path(scope)}
+        batch_result = self.batch_extract(
+            {
+                "messages": messages,
+                "scope": scope,
+                "metadata": metadata,
+                "threshold_messages": threshold,
+                "force": True,
+                "derive_from_existing_events": True,
+                "source_event_ids": source_event_ids,
+                "skip_prior_context": bool(args.get("skip_prior_context", False)),
+            },
+            hook=hook,
+        )
+        commit_id_hash = stable_hash(f"commit:{scope}:{source_event_ids}:{now_ms()}")
+        self.append(
+            {
+                "record_type": "context_batch_commit",
+                "commit_id_hash": commit_id_hash,
+                "batch_id_hash": batch_result.get("batch_id_hash"),
+                "node_hash": batch_result.get("node_hash"),
+                "node_path": metadata["node_path"],
+                "source_event_ids": source_event_ids,
+                "scope": scope,
+                "message_count": len(messages),
+                "threshold_messages": threshold,
+                "agent_hook": hook,
+                "created_at_ms": now_ms(),
+            }
+        )
+        return {
+            **batch_result,
+            "status": "committed",
+            "commit_id_hash": commit_id_hash,
+            "pending_event_count": len(pending),
+            "source_event_ids": source_event_ids,
+            "raw_events_duplicated": False,
+        }
+
     def append_node_summary_embeddings(
         self,
         *,
@@ -1710,6 +1863,24 @@ class MatrixArkLocalAdapter:
             "agent_hook": hook,
         }
         self.append(record)
+        self.append_session_buffer_event(envelope=envelope, event_id_hash=event_id_hash, node_hash=node_hash, node_path=node_path, hook=hook)
+        pending_event_count = len(self.pending_session_events(envelope["scope"]))
+        auto_batch_result: Json | None = None
+        auto_batch_extract = bool(args.get("auto_batch_extract", False))
+        session_buffer_threshold = args.get("session_buffer_threshold", 20)
+        if not isinstance(session_buffer_threshold, int) or session_buffer_threshold <= 0:
+            raise MatrixArkError("session_buffer_threshold must be a positive integer")
+        if auto_batch_extract and pending_event_count >= session_buffer_threshold:
+            auto_batch_result = self.session_commit(
+                {
+                    "scope": envelope["scope"],
+                    "metadata": envelope["metadata"],
+                    "threshold_messages": session_buffer_threshold,
+                    "force": False,
+                    "skip_prior_context": bool(args.get("skip_prior_context", False)),
+                },
+                hook=hook,
+            )
         return {
             "status": "accepted",
             "event_id_hash": event_id_hash,
@@ -1722,6 +1893,13 @@ class MatrixArkLocalAdapter:
             "prior_message_count": extraction.get("prior_message_count", 0),
             "prior_summary_count": extraction.get("prior_summary_count", 0),
             "quality_warning": extraction.get("quality_warning", ""),
+            "session_buffer": {
+                "buffer_key": list(session_buffer_key(envelope)),
+                "pending_event_count": pending_event_count,
+                "threshold_messages": session_buffer_threshold,
+                "auto_batch_extract": auto_batch_extract,
+            },
+            "auto_batch_extract_result": auto_batch_result,
         }
 
     def batch_extract(self, args: Json, *, hook: Json | None = None) -> Json:
@@ -1729,6 +1907,8 @@ class MatrixArkLocalAdapter:
         hook = validate_hook(hook)
         threshold = args.get("threshold_messages", 20)
         force = bool(args.get("force", False))
+        derive_from_existing_events = bool(args.get("derive_from_existing_events", False))
+        source_event_ids = [int(ref) for ref in args.get("source_event_ids", [])] if isinstance(args.get("source_event_ids", []), list) else []
         if not isinstance(threshold, int) or threshold <= 0:
             raise MatrixArkError("threshold_messages must be a positive integer")
         if len(envelope["messages"]) < threshold and not force:
@@ -1768,47 +1948,50 @@ class MatrixArkLocalAdapter:
             source_hash=batch_id_hash,
         )
 
-        for index, message in enumerate(envelope["messages"]):
-            event_text = f"{message['role']}: {message['content']}"
-            event_id_hash = stable_hash(f"{batch_id_hash}:event:{index}:{event_text}")
-            self.append(
-                {
-                    "record_type": "context_event",
-                    "event_id_hash": event_id_hash,
-                    "batch_id_hash": batch_id_hash,
-                    "node_hash": node_hash,
-                    "node_path": node_path,
-                    "text": event_text,
-                    "summary_text": summarize_text(event_text),
-                    "envelope": {
-                        **envelope,
-                        "messages": [message],
-                    },
-                    "internal_extraction": {
-                        "mode": extraction["mode"],
-                        "classification": extraction["classification"],
-                        "event_type": extraction["event_type"],
+        event_hashes: list[int] = list(source_event_ids) if derive_from_existing_events else []
+        if not derive_from_existing_events:
+            for index, message in enumerate(envelope["messages"]):
+                event_text = f"{message['role']}: {message['content']}"
+                event_id_hash = stable_hash(f"{batch_id_hash}:event:{index}:{event_text}")
+                event_hashes.append(event_id_hash)
+                self.append(
+                    {
+                        "record_type": "context_event",
+                        "event_id_hash": event_id_hash,
                         "batch_id_hash": batch_id_hash,
-                    },
-                    "prior_context": prior_context,
-                    "agent_hook": hook,
-                }
-            )
-            self.append(
-                {
-                    "record_type": "context_embedding",
-                    "embedding_type": "event_text",
-                    "ref_type": "event",
-                    "ref_hash": event_id_hash,
-                    "node_hash": node_hash,
-                    "node_path": node_path,
-                    "dim": EMBEDDING_DIM,
-                    "model": "matrixark-local-token-hash-v1",
-                    "vector": embedding_for_text(event_text),
-                    "scope": envelope["scope"],
-                    "updated_at_ms": envelope["ingestion_time_ms"],
-                }
-            )
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "text": event_text,
+                        "summary_text": summarize_text(event_text),
+                        "envelope": {
+                            **envelope,
+                            "messages": [message],
+                        },
+                        "internal_extraction": {
+                            "mode": extraction["mode"],
+                            "classification": extraction["classification"],
+                            "event_type": extraction["event_type"],
+                            "batch_id_hash": batch_id_hash,
+                        },
+                        "prior_context": prior_context,
+                        "agent_hook": hook,
+                    }
+                )
+                self.append(
+                    {
+                        "record_type": "context_embedding",
+                        "embedding_type": "event_text",
+                        "ref_type": "event",
+                        "ref_hash": event_id_hash,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "dim": EMBEDDING_DIM,
+                        "model": "matrixark-local-token-hash-v1",
+                        "vector": embedding_for_text(event_text),
+                        "scope": envelope["scope"],
+                        "updated_at_ms": envelope["ingestion_time_ms"],
+                    }
+                )
 
         entity_hashes = []
         for entity in extraction["entities"]:
@@ -1837,6 +2020,7 @@ class MatrixArkLocalAdapter:
                     "confidence": updated_entity["confidence"],
                     "operator": updated_entity["operator"],
                     "source_refs": updated_entity["source_refs"],
+                    "source_event_ids": source_event_ids,
                     "field_patches": updated_entity.get("field_patches", []),
                     "patch_results": updated_entity.get("patch_results", []),
                     "update_mode": updated_entity.get("update_mode", ""),
@@ -1892,6 +2076,7 @@ class MatrixArkLocalAdapter:
                     "topic": segment["topic"],
                     "coordinate_tuples": segment["coordinate_tuples"],
                     "message_indexes": segment["message_indexes"],
+                    "source_event_ids": [event_hashes[index] for index in segment["message_indexes"] if index < len(event_hashes)],
                     "saliency_score": segment["saliency_score"],
                     "summary_text": segment["summary_text"],
                     "text": segment["text"],
@@ -1927,6 +2112,7 @@ class MatrixArkLocalAdapter:
                 "summary_text": batch_summary,
                 "source_entity_hashes": entity_hashes,
                 "source_segment_hashes": segment_hashes,
+                "source_event_ids": event_hashes,
                 "scope": envelope["scope"],
                 "updated_at_ms": envelope["ingestion_time_ms"],
             }
@@ -1969,13 +2155,16 @@ class MatrixArkLocalAdapter:
                 "message_count": extraction["message_count"],
                 "token_count_estimate": extraction["token_count_estimate"],
                 "outputs": {
-                    "events": len(envelope["messages"]),
+                    "events": 0 if derive_from_existing_events else len(envelope["messages"]),
+                    "source_events": len(event_hashes),
                     "entities": len(entity_hashes),
                     "segments": len(segment_hashes),
                     "summaries": 1,
                     "indexes": len(extraction["indexes"]),
                 },
                 "mode": extraction["mode"],
+                "derive_from_existing_events": derive_from_existing_events,
+                "source_event_ids": event_hashes,
                 "agent_hook": hook,
                 "created_at_ms": now_ms(),
             }
@@ -1988,7 +2177,9 @@ class MatrixArkLocalAdapter:
             "node_hash": node_hash,
             "message_count": extraction["message_count"],
             "token_count_estimate": extraction["token_count_estimate"],
-            "events_written": len(envelope["messages"]),
+            "events_written": 0 if derive_from_existing_events else len(envelope["messages"]),
+            "source_event_count": len(event_hashes),
+            "raw_events_duplicated": not derive_from_existing_events,
             "entities_written": len(entity_hashes),
             "segments_written": len(segment_hashes),
             "summary_hash": summary_hash,
@@ -2866,6 +3057,44 @@ TOOLS: list[Json] = [
                 "api_key": API_KEY_SCHEMA,
                 "raw_uri": {"type": "string", "description": "Optional resource URI/path when kind=resource."},
                 "resource_type": {"type": "string", "description": "Optional resource type such as md, txt, pdf, url."},
+                "auto_batch_extract": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "If true, commit the same-session buffer once session_buffer_threshold pending events accumulate.",
+                },
+                "session_buffer_threshold": {
+                    "type": "integer",
+                    "default": 20,
+                    "description": "Pending same-session raw event threshold for automatic one-pass batch extraction.",
+                },
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_session_commit",
+        "description": "Commit pending same-session raw ContextEvents into derived entities, segments, summaries, and indexes without duplicating raw events.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "scope": SCOPE_SCHEMA,
+                "metadata": METADATA_SCHEMA,
+                "agent_hook": AGENT_HOOK_SCHEMA,
+                "api_key": API_KEY_SCHEMA,
+                "threshold_messages": {
+                    "type": "integer",
+                    "default": 20,
+                    "description": "Minimum pending raw events unless force=true. Explicit session_commit defaults to force=true.",
+                },
+                "force": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Force commit even below threshold for session end/task complete hooks.",
+                },
+                "max_messages": {
+                    "type": "integer",
+                    "description": "Optional cap for how many pending raw events to commit in this batch.",
+                },
             },
             "additionalProperties": True,
         },
@@ -3129,6 +3358,10 @@ class MatrixArkMcpServer:
         if name == "matrixark_batch_extract":
             result = self.adapter.batch_extract(args, hook=hook)
             self.access.append_audit("context.batch_extract", identity, status="ok", details={"batch_id_hash": result.get("batch_id_hash")})
+            return {**result, "access": args.get("_matrixark_auth", {})}
+        if name == "matrixark_session_commit":
+            result = self.adapter.session_commit(args, hook=hook)
+            self.access.append_audit("context.session_commit", identity, status="ok", details={"commit_id_hash": result.get("commit_id_hash"), "batch_id_hash": result.get("batch_id_hash")})
             return {**result, "access": args.get("_matrixark_auth", {})}
         if name == "matrixark_retrieve":
             result = self.adapter.retrieve(args)

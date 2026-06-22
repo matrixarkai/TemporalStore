@@ -51,6 +51,84 @@ Recommended split:
 | `source_type` | secondary index | message, feedback, resource |
 | `segment_topic` | secondary index | approval_budget, recursion |
 
+
+## 2.1 One-Message Hooks And Session Commit
+
+Codex, Claude, Cursor, and similar agents usually emit one message or tool result at a time. MatrixArk now supports the VikingMem-style compromise:
+
+```text
+single incoming hook message
+-> write raw ContextEvent immediately
+-> append event id to same-session SessionBuffer
+-> when threshold/session boundary happens
+-> matrixark_session_commit
+-> one-pass extraction over buffered raw events
+-> write ContextEntity / ContextSegment / ContextIndex / ContextSummary
+```
+
+The grouping key is general and auth-oriented, not company/team/project oriented:
+
+```text
+account_id + tenant_id + user_id + session_id
+```
+
+If `session_id` is missing, MatrixArk can fall back to the user, but production hooks should send a real session/thread/run id.
+
+### Immediate ingest
+
+`matrixark_ingest` writes:
+
+```text
+ContextEvent              raw replayable evidence
+ContextEmbedding          event text vector
+ContextSummary/Embedding  node_l0/node_l1 refresh for traversal
+session_buffer_event      pending event pointer for later commit
+```
+
+Optional auto commit:
+
+```json
+{
+  "messages": [{"role": "user", "content": "I moved to Seattle today."}],
+  "scope": {"user_id": "alice", "session_id": "thread_123"},
+  "auto_batch_extract": true,
+  "session_buffer_threshold": 20
+}
+```
+
+When the pending same-session raw event count reaches the threshold, MatrixArk calls the same session commit path automatically.
+
+### Explicit session commit
+
+Agents can commit at session end, task completion, feedback, or a topic boundary:
+
+```json
+{
+  "scope": {"user_id": "alice", "session_id": "thread_123"},
+  "force": true,
+  "threshold_messages": 20,
+  "agent_hook": {
+    "source": "codex",
+    "hook_type": "session_commit",
+    "hook_id": "thread_123_done",
+    "observed_at_ms": 1781500000000,
+    "auto_captured": true
+  }
+}
+```
+
+The commit path does **not** duplicate raw events. It reads pending source events and writes derived records:
+
+```text
+ContextSegment.source_event_ids = [event_1, event_3]
+ContextEntity.source_event_ids  = [event_1, event_3]
+ContextSummary.source_event_ids = [event_1, event_2, event_3]
+ContextIndex.batch_id_hash      = derived batch id
+context_batch_commit            = replayable commit audit
+```
+
+This matters because `ContextEvent` remains the atomic evidence unit, while segments/entities are derived memory over one or more events.
+
 ## 3. How Query Text Becomes Index Filters
 
 MatrixArk owns query understanding. The agent can send only a raw query plus optional scope hints.
@@ -496,8 +574,11 @@ Implemented today in MatrixArk Python runtime:
 - Layer-by-layer tree traversal using L0/L1 node embeddings.
 - General `ContextIndex` terms for event/entity/status/source/segment.
 - Query-derived secondary-index prefilter before leaf similarity scoring.
+- `SessionBuffer` records for one-message-at-a-time hooks.
+- `matrixark_session_commit` for session/task-boundary one-pass extraction.
+- Source-event-linked `ContextEntity`, `ContextSegment`, and `ContextSummary` records without duplicating raw batch events.
 - Flat `ContextEntity` updates attached to the selected node.
-- Saliency/topic-based `ContextSegment` creation in batch extraction.
+- Saliency/topic-based `ContextSegment` creation in batch/session extraction.
 - ContextPack audit telemetry for traversal and secondary filters.
 
 Still needed for production TemporalStore-native serving:
@@ -505,6 +586,7 @@ Still needed for production TemporalStore-native serving:
 - Native `ContextChildRef` APIs instead of inferring children from path prefixes.
 - Native `QUERY_CONTEXT_INDEX` and index-intersection APIs.
 - Native point lookup for latest `ContextEntity` by `entity_hash`.
+- Native SessionBuffer/index APIs for pending event lookup and commit marking.
 - Better query understanding with OSS/OpenAI-compatible provider.
 - Promote high-value segments into `ContextNode(node_type=segment)`.
 - Stronger temporal query planning for `valid_as_of`, before/after, and stale blockers.
