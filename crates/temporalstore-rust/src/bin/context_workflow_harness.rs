@@ -133,6 +133,12 @@ struct ContextWorkflowHarnessSummary {
     external_benchmark_min_category_mean_reciprocal_rank: f32,
     external_benchmark_category_zero_hit_queries: usize,
     external_benchmark_source: String,
+    external_benchmark_all_source_replay: bool,
+    external_benchmark_direct_source_scoring: bool,
+    external_benchmark_rust_context_event_ingest: bool,
+    external_benchmark_ingested_source_sets: usize,
+    external_benchmark_retrieved_source_sets: usize,
+    external_benchmark_total_retrieved_blocks: usize,
     parity_evidence: Vec<String>,
 }
 
@@ -156,6 +162,12 @@ struct ExternalContextBenchmarkReport {
     min_category_mean_reciprocal_rank: f32,
     category_zero_hit_queries: usize,
     source: String,
+    all_source_replay: bool,
+    direct_source_scoring: bool,
+    rust_context_event_ingest: bool,
+    ingested_source_sets: usize,
+    retrieved_source_sets: usize,
+    total_retrieved_blocks: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -201,6 +213,12 @@ struct ExternalOnlyContextBenchmarkSummary {
     external_benchmark_min_category_mean_reciprocal_rank: f32,
     external_benchmark_category_zero_hit_queries: usize,
     external_benchmark_source: String,
+    external_benchmark_all_source_replay: bool,
+    external_benchmark_direct_source_scoring: bool,
+    external_benchmark_rust_context_event_ingest: bool,
+    external_benchmark_ingested_source_sets: usize,
+    external_benchmark_retrieved_source_sets: usize,
+    external_benchmark_total_retrieved_blocks: usize,
     provider_names: Vec<String>,
     openviking_model_profile_count: usize,
     openviking_model_profile_names: Vec<String>,
@@ -256,6 +274,14 @@ fn main() {
                 external_benchmark_category_zero_hit_queries: external_benchmark
                     .category_zero_hit_queries,
                 external_benchmark_source: external_benchmark.source,
+                external_benchmark_all_source_replay: external_benchmark.all_source_replay,
+                external_benchmark_direct_source_scoring: external_benchmark.direct_source_scoring,
+                external_benchmark_rust_context_event_ingest: external_benchmark
+                    .rust_context_event_ingest,
+                external_benchmark_ingested_source_sets: external_benchmark.ingested_source_sets,
+                external_benchmark_retrieved_source_sets: external_benchmark.retrieved_source_sets,
+                external_benchmark_total_retrieved_blocks: external_benchmark
+                    .total_retrieved_blocks,
                 provider_names: state
                     .providers
                     .iter()
@@ -683,6 +709,13 @@ fn main() {
             external_benchmark_category_zero_hit_queries: external_benchmark
                 .category_zero_hit_queries,
             external_benchmark_source: external_benchmark.source,
+            external_benchmark_all_source_replay: external_benchmark.all_source_replay,
+            external_benchmark_direct_source_scoring: external_benchmark.direct_source_scoring,
+            external_benchmark_rust_context_event_ingest: external_benchmark
+                .rust_context_event_ingest,
+            external_benchmark_ingested_source_sets: external_benchmark.ingested_source_sets,
+            external_benchmark_retrieved_source_sets: external_benchmark.retrieved_source_sets,
+            external_benchmark_total_retrieved_blocks: external_benchmark.total_retrieved_blocks,
             parity_evidence: parity.evidence,
         })
         .expect("context workflow summary should serialize")
@@ -724,6 +757,12 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
             min_category_mean_reciprocal_rank: 0.0,
             category_zero_hit_queries: 0,
             source,
+            all_source_replay: false,
+            direct_source_scoring: false,
+            rust_context_event_ingest: false,
+            ingested_source_sets: 0,
+            retrieved_source_sets: 0,
+            total_retrieved_blocks: 0,
         };
     }
 
@@ -738,6 +777,7 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
     let mut total_expected_refs = 0usize;
     let mut matched_expected_refs = 0usize;
     let mut per_query = Vec::new();
+    let mut total_retrieved_blocks = 0usize;
     let mut category_expected_terms = BTreeMap::<String, usize>::new();
     let mut category_matched_expected_terms = BTreeMap::<String, usize>::new();
     let max_events = std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_MAX_EVENTS")
@@ -881,6 +921,7 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
         let hit_rank = hit_source_rank(case, &blocks);
         let matched_terms = count_matched_expected_terms(&blocks, &case.expected_terms);
         let matched_refs = count_matched_expected_refs(&blocks, &case.expected_source_refs);
+        total_retrieved_blocks += blocks.len();
         let selected_source_ids = blocks
             .iter()
             .take(selected_id_limit)
@@ -1009,6 +1050,12 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
         min_category_mean_reciprocal_rank,
         category_zero_hit_queries,
         source,
+        all_source_replay,
+        direct_source_scoring,
+        rust_context_event_ingest: all_source_replay && !direct_source_scoring,
+        ingested_source_sets: ingested_source_sets.len(),
+        retrieved_source_sets: retrieved_source_sets.len(),
+        total_retrieved_blocks,
     }
 }
 
@@ -2175,4 +2222,86 @@ fn now_ms() -> u128 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn packed_external_sources_use_rust_context_event_ingest_and_score_refs() {
+        let root = std::env::temp_dir().join(format!(
+            "temporalstore-packed-external-source-test-{}",
+            now_ms()
+        ));
+        let engine = TemporalEngine::with_local_dirs(
+            1024 * 1024,
+            root.join("cache"),
+            root.join("pages"),
+            root.join("indexes"),
+        );
+        engine.load_shard(1);
+        let tenant_hash = 42;
+        let packed_title = "packed sources 1-2: conversation answer_blue turn 1 .. conversation filler turn 1; refs: conversation answer_blue turn 1 | conversation filler turn 1";
+        let packed_body = "[source_ref: conversation answer_blue turn 1]\nThe preferred notebook color is cobalt blue.\n\n[source_ref: conversation filler turn 1]\nUnrelated planning note.";
+        let sources = vec![ContextExtractRequest {
+            shard_id: 1,
+            tenant_hash,
+            source_kind: ContextSourceKind::Chat,
+            source_id: packed_title.to_string(),
+            title: packed_title.to_string(),
+            body: packed_body.to_string(),
+            timestamp_ms: 1_000,
+            provider: ContextModelProviderConfig::default(),
+        }];
+
+        let node_hashes = ingest_external_benchmark_sources(&engine, tenant_hash, &sources)
+            .expect("packed external sources should ingest through Rust context events");
+        assert_eq!(node_hashes.len(), 1);
+
+        let retrieve = retrieve_context(
+            &engine,
+            ContextRetrieveRequest {
+                shard_id: 1,
+                tenant_hash,
+                node_hashes,
+                query: String::new(),
+                start_time_ms: 0,
+                end_time_ms: 10_000,
+                max_events: 8,
+                min_confidence: 0.0,
+                min_importance: 0.0,
+                tiers: vec![ContextTier::L2],
+            },
+        );
+        assert!(retrieve.status.ok);
+        assert!(!retrieve.blocks.is_empty());
+
+        let case = ExternalContextBenchmarkCase {
+            dataset: "longmemeval_s".to_string(),
+            query_id: "packed-q1".to_string(),
+            category: "multi_session".to_string(),
+            query: "What color was the preferred notebook?".to_string(),
+            expected_terms: vec!["cobalt blue".to_string()],
+            expected_source_refs: vec!["conversation answer_blue turn 1".to_string()],
+            sources: vec![ExternalContextBenchmarkSource {
+                title: packed_title.to_string(),
+                body: packed_body.to_string(),
+                kind: ContextSourceKind::Chat,
+            }],
+        };
+        let mut blocks = retrieve.blocks;
+        order_external_blocks_by_case_source_order(&case, &mut blocks);
+        assert_eq!(hit_source_rank(&case, &blocks), Some(1));
+        assert_eq!(
+            count_matched_expected_refs(&blocks, &case.expected_source_refs),
+            1
+        );
+        assert_eq!(
+            count_matched_expected_terms(&blocks, &case.expected_terms),
+            1
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
