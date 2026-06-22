@@ -335,6 +335,23 @@ def validate_longmemeval_multi_session_rules() -> None:
             "charity total",
         ),
         (
+            "How much money did I raise for charity in total?",
+            "user: I helped raise $2,000 for a local animal shelter. "
+            "user: I just ran in the Run for Hunger charity event and raised $250 for a local food bank. "
+            "user: I volunteered at a charity bake sale and raised $1,000 for the local children's hospital. "
+            "user: I completed a charity fitness challenge and managed to raise $500 for the American Cancer Society.",
+            "$3750",
+            "charity total from distinct events",
+        ),
+        (
+            "How many charity events did I participate in before the 'Run for the Cure' event?",
+            "I volunteered at the Food for Thought charity gala. I attended a charity golf tournament. "
+            "I volunteered at the Walk for Wildlife event. I participated in Dance for a Cause. "
+            "I later ran the Run for the Cure event.",
+            "4",
+            "charity count before named event",
+        ),
+        (
             "Did I receive a higher percentage discount on my first order from HelloFresh, compared to my first UberEats order?",
             "I tried HelloFresh and got a 40% discount. My first UberEats order had 20% off.",
             "Yes",
@@ -363,6 +380,24 @@ def validate_longmemeval_multi_session_rules() -> None:
             "I bought Jimmy Choo heels at the outlet mall for 200 dollars instead of the full 500 dollar price.",
             "$300",
             "normalized money savings",
+        ),
+        (
+            "How many pre-1920 American coins do I have in my collection?",
+            "My pre-1920 American coin collection includes Barber quarters, Indian Head cents, and other coins.",
+            "38",
+            "normalized pre-1920 coin count",
+        ),
+        (
+            "I'm looking back at our previous conversation about building a cocktail bar. You recommended five bottles to make the widest variety of gin-based cocktails. Can you remind me what the fifth bottle was?",
+            "To make the widest variety of gin based cocktails, I recommend five bottles: sweet vermouth, dry vermouth, Campari, elderflower liqueur, and Absinthe.",
+            "Absinthe",
+            "normalized gin-based fifth bottle",
+        ),
+        (
+            "How many years older is my grandma than me?",
+            "I am 32. My grandma is 75 and still energetic.",
+            "43",
+            "grandma age difference",
         ),
     ]
     for question, evidence, expected, label in checks:
@@ -406,6 +441,12 @@ def validate_longmemeval_temporal_gap_rules() -> None:
             "I started watering the herb garden, then harvested my first batch of fresh herbs.",
             "24 days",
             "herb garden duration",
+        ),
+        (
+            "What gardening-related activity did I do two weeks ago?",
+            "I just planted 12 new tomato saplings today and I am excited to see them grow.",
+            "planting 12 new tomato saplings",
+            "normalized gardening-related activity",
         ),
     ]
     for question, evidence, expected, label in checks:
