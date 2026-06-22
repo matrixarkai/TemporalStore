@@ -24,6 +24,10 @@ use temporalstore_rust::{
 };
 use temporalstore_snapshot::object_store::FileObjectStore;
 
+const EXTERNAL_CONTEXT_MAX_CANONICAL_NAME_BYTES: usize = 512;
+const EXTERNAL_CONTEXT_MAX_REF_BYTES: usize = 4096;
+const EXTERNAL_CONTEXT_MAX_COMPACT_ATTRS_BYTES: usize = 8 * 1024;
+
 #[derive(Debug, Serialize)]
 struct ContextWorkflowHarnessSummary {
     root: String,
@@ -1328,24 +1332,42 @@ fn ingest_external_benchmark_sources(
             source.source_id, source.body
         ));
         let timestamp_ms = 1_000 + source_count.saturating_sub(source_index as u64);
-        let l0 = truncate_external_words(&format!("{}: {}", source.title, source.body), 32);
-        let l1 = format!(
-            "kind={:?}; title={}; key_facts={}",
-            source.source_kind,
-            source.title,
-            truncate_external_words(&source.body, 96)
+        let canonical_name = compact_external_context_value(
+            &source.title,
+            EXTERNAL_CONTEXT_MAX_CANONICAL_NAME_BYTES,
         );
+        let source_ref =
+            compact_external_context_value(&source.source_id, EXTERNAL_CONTEXT_MAX_REF_BYTES);
+        let l0 = truncate_external_words(&format!("{}: {}", canonical_name, source.body), 32);
+        let l1 = compact_external_context_value(
+            &format!(
+                "kind={:?}; title={}; key_facts={}",
+                source.source_kind,
+                canonical_name,
+                truncate_external_words(&source.body, 96)
+            ),
+            EXTERNAL_CONTEXT_MAX_REF_BYTES,
+        );
+        let compact_attrs = compact_external_context_bytes(l1.as_bytes());
+        let l1 = String::from_utf8(compact_attrs.clone()).unwrap_or_else(|_| {
+            format!(
+                "kind={:?}; title={}; key_facts_hash={:016x}",
+                source.source_kind,
+                canonical_name,
+                stable_hash64(&source.body)
+            )
+        });
         let node = ContextNode {
             node_hash,
             parent_hash: 0,
             kind: external_source_kind_code(source.source_kind),
-            canonical_name: source.title.clone(),
+            canonical_name,
             l0: l0.clone(),
             status: 1,
             last_event_time_ms: timestamp_ms,
             summary_dirty: true,
             l1_ref: l1.clone(),
-            raw_metadata_ref: source.source_id.clone(),
+            raw_metadata_ref: source_ref.clone(),
         };
         let event = ContextEvent {
             event_id_hash,
@@ -1358,9 +1380,9 @@ fn ingest_external_benchmark_sources(
             confidence: 1.0,
             importance: 1.0,
             text: source.body.clone(),
-            source_ref: source.source_id.clone(),
+            source_ref,
             related_node_hashes: vec![node_hash],
-            compact_attrs: l1.as_bytes().to_vec(),
+            compact_attrs,
         };
         let index_ref = ContextIndexRef {
             primary_node_hash: node_hash,
@@ -1421,6 +1443,34 @@ fn external_source_kind_code(kind: ContextSourceKind) -> u32 {
         ContextSourceKind::Code => 4,
         ContextSourceKind::Incident => 5,
         ContextSourceKind::UserEvent => 6,
+    }
+}
+
+fn compact_external_context_value(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+    let suffix = format!(" ... [ctx64:{:016x}]", stable_hash64(value));
+    if suffix.len() >= max_bytes {
+        return suffix.chars().take(max_bytes).collect::<String>();
+    }
+    let prefix_limit = max_bytes - suffix.len();
+    let mut prefix_end = 0usize;
+    for (index, ch) in value.char_indices() {
+        let next = index + ch.len_utf8();
+        if next > prefix_limit {
+            break;
+        }
+        prefix_end = next;
+    }
+    format!("{}{}", value[..prefix_end].trim_end(), suffix)
+}
+
+fn compact_external_context_bytes(value: &[u8]) -> Vec<u8> {
+    if value.len() <= EXTERNAL_CONTEXT_MAX_COMPACT_ATTRS_BYTES {
+        value.to_vec()
+    } else {
+        value[..EXTERNAL_CONTEXT_MAX_COMPACT_ATTRS_BYTES].to_vec()
     }
 }
 
@@ -2251,14 +2301,21 @@ mod tests {
         );
         engine.load_shard(1);
         let tenant_hash = 42;
-        let packed_title = "packed sources 1-2: conversation answer_blue turn 1 .. conversation filler turn 1; refs: conversation answer_blue turn 1 | conversation filler turn 1";
+        let packed_refs = (1..=40)
+            .map(|index| format!("conversation filler turn {index}"))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        let packed_title = format!(
+            "packed sources 1-40: conversation answer_blue turn 1 .. conversation filler turn 40; refs: conversation answer_blue turn 1 | {packed_refs}"
+        );
+        assert!(packed_title.len() > EXTERNAL_CONTEXT_MAX_CANONICAL_NAME_BYTES);
         let packed_body = "[source_ref: conversation answer_blue turn 1]\nThe preferred notebook color is cobalt blue.\n\n[source_ref: conversation filler turn 1]\nUnrelated planning note.";
         let sources = vec![ContextExtractRequest {
             shard_id: 1,
             tenant_hash,
             source_kind: ContextSourceKind::Chat,
-            source_id: packed_title.to_string(),
-            title: packed_title.to_string(),
+            source_id: packed_title.clone(),
+            title: packed_title.clone(),
             body: packed_body.to_string(),
             timestamp_ms: 1_000,
             provider: ContextModelProviderConfig::default(),
@@ -2267,6 +2324,22 @@ mod tests {
         let node_hashes = ingest_external_benchmark_sources(&engine, tenant_hash, &sources)
             .expect("packed external sources should ingest through Rust context events");
         assert_eq!(node_hashes.len(), 1);
+        let node_response = engine.execute(temporalstore_rust::ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextGetNode {
+                tenant_hash,
+                node_hash: node_hashes[0],
+            },
+        });
+        match node_response.response {
+            CommandResponse::ContextNode {
+                node: Some(node), ..
+            } => {
+                assert!(node.canonical_name.len() <= EXTERNAL_CONTEXT_MAX_CANONICAL_NAME_BYTES);
+                assert!(node.canonical_name.contains("[ctx64:"));
+            }
+            other => panic!("expected packed Context node, got {other:?}"),
+        }
 
         let retrieve = retrieve_context(
             &engine,
