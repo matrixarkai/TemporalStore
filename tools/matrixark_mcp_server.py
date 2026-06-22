@@ -1477,6 +1477,60 @@ class MatrixArkLocalAdapter:
                 return record
         return None
 
+    def append_node_summary_embeddings(
+        self,
+        *,
+        node_path: list[str],
+        source_text: str,
+        scope: Json,
+        updated_at_ms: int,
+        source_hash_field: str,
+        source_hash: int,
+    ) -> None:
+        for depth, prefix in enumerate(node_prefixes(node_path), start=1):
+            prefix_hash = stable_hash("/".join(prefix))
+            prefix_label = " / ".join(prefix)
+            l0_summary = summarize_text(f"{prefix_label} :: {source_text}", limit=220)
+            l1_summary = summarize_text(
+                f"Context node {prefix_label}. Overview: {source_text}. "
+                f"This node belongs to path {prefix_label} and should be used for tree-first retrieval before leaf event/entity recall.",
+                limit=1200,
+            )
+            for level, summary_text, embedding_type in [
+                ("node_l0", l0_summary, "node_l0"),
+                ("node_l1", l1_summary, "node_l1"),
+            ]:
+                self.append(
+                    {
+                        "record_type": "context_summary",
+                        "summary_type": level,
+                        "node_hash": prefix_hash,
+                        "node_path": prefix,
+                        "depth": depth,
+                        "summary_text": summary_text,
+                        source_hash_field: source_hash,
+                        "scope": scope,
+                        "updated_at_ms": updated_at_ms,
+                    }
+                )
+                self.append(
+                    {
+                        "record_type": "context_embedding",
+                        "embedding_type": embedding_type,
+                        "ref_type": "node",
+                        "ref_hash": prefix_hash,
+                        "node_hash": prefix_hash,
+                        "node_path": prefix,
+                        "depth": depth,
+                        "dim": EMBEDDING_DIM,
+                        "model": "matrixark-local-token-hash-v1",
+                        "vector": embedding_for_text(summary_text),
+                        source_hash_field: source_hash,
+                        "scope": scope,
+                        "updated_at_ms": updated_at_ms,
+                    }
+                )
+
     def ingest(self, args: Json, *, hook: Json | None = None) -> Json:
         envelope = normalize_envelope(args, default_kind="message")
         hook = validate_hook(hook)
@@ -1504,39 +1558,14 @@ class MatrixArkLocalAdapter:
         summary_text = summarize_text(text)
         event_embedding = embedding_for_text(text)
         summary_embedding = embedding_for_text(" ".join(node_path + [summary_text]))
-        for depth, prefix in enumerate(node_prefixes(node_path), start=1):
-            prefix_hash = stable_hash("/".join(prefix))
-            prefix_summary = summarize_text(" / ".join(prefix) + " :: " + text)
-            self.append(
-                {
-                    "record_type": "context_summary",
-                    "summary_type": "node_l0",
-                    "node_hash": prefix_hash,
-                    "node_path": prefix,
-                    "depth": depth,
-                    "summary_text": prefix_summary,
-                    "source_event_hash": event_id_hash,
-                    "scope": envelope["scope"],
-                    "updated_at_ms": envelope["ingestion_time_ms"],
-                }
-            )
-            self.append(
-                {
-                    "record_type": "context_embedding",
-                    "embedding_type": "node_l0",
-                    "ref_type": "node",
-                    "ref_hash": prefix_hash,
-                    "node_hash": prefix_hash,
-                    "node_path": prefix,
-                    "depth": depth,
-                    "dim": EMBEDDING_DIM,
-                    "model": "matrixark-local-token-hash-v1",
-                    "vector": embedding_for_text(prefix_summary),
-                    "source_event_hash": event_id_hash,
-                    "scope": envelope["scope"],
-                    "updated_at_ms": envelope["ingestion_time_ms"],
-                }
-            )
+        self.append_node_summary_embeddings(
+            node_path=node_path,
+            source_text=text,
+            scope=envelope["scope"],
+            updated_at_ms=envelope["ingestion_time_ms"],
+            source_hash_field="source_event_hash",
+            source_hash=event_id_hash,
+        )
         session_key_parts = [str(part) for part in context_node_key(envelope)]
         if any(session_key_parts):
             session_summary_source = " ".join(
@@ -1653,39 +1682,14 @@ class MatrixArkLocalAdapter:
         node_hash = stable_hash("/".join(node_path))
         batch_summary = extraction["batch_summary"]
 
-        for depth, prefix in enumerate(node_prefixes(node_path), start=1):
-            prefix_hash = stable_hash("/".join(prefix))
-            prefix_summary = summarize_text(" / ".join(prefix) + " :: " + batch_summary, limit=512)
-            self.append(
-                {
-                    "record_type": "context_summary",
-                    "summary_type": "node_l0",
-                    "node_hash": prefix_hash,
-                    "node_path": prefix,
-                    "depth": depth,
-                    "summary_text": prefix_summary,
-                    "source_batch_hash": batch_id_hash,
-                    "scope": envelope["scope"],
-                    "updated_at_ms": envelope["ingestion_time_ms"],
-                }
-            )
-            self.append(
-                {
-                    "record_type": "context_embedding",
-                    "embedding_type": "node_l0",
-                    "ref_type": "node",
-                    "ref_hash": prefix_hash,
-                    "node_hash": prefix_hash,
-                    "node_path": prefix,
-                    "depth": depth,
-                    "dim": EMBEDDING_DIM,
-                    "model": "matrixark-local-token-hash-v1",
-                    "vector": embedding_for_text(prefix_summary),
-                    "source_batch_hash": batch_id_hash,
-                    "scope": envelope["scope"],
-                    "updated_at_ms": envelope["ingestion_time_ms"],
-                }
-            )
+        self.append_node_summary_embeddings(
+            node_path=node_path,
+            source_text=batch_summary,
+            scope=envelope["scope"],
+            updated_at_ms=envelope["ingestion_time_ms"],
+            source_hash_field="source_batch_hash",
+            source_hash=batch_id_hash,
+        )
 
         for index, message in enumerate(envelope["messages"]):
             event_text = f"{message['role']}: {message['content']}"
