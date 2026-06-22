@@ -76,6 +76,10 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         self.assertEqual(feedback["inputSchema"]["required"], ["messages"])
         self.assertIn("strongly recommended", feedback["inputSchema"]["properties"]["context_pack_id"]["description"])
         self.assertNotIn("infer", feedback["inputSchema"]["properties"])
+        retrieve = next(tool for tool in response["result"]["tools"] if tool["name"] == "matrixark_retrieve")
+        self.assertIn("local_context", retrieve["inputSchema"]["properties"])
+        self.assertIn("local_context_tokens", retrieve["inputSchema"]["properties"])
+        self.assertIn("shared prompt context budget", retrieve["inputSchema"]["properties"]["max_context_tokens"]["description"])
         create_key = next(tool for tool in response["result"]["tools"] if tool["name"] == "matrixark_admin_create_api_key")
         self.assertIn("api_key", create_key["inputSchema"]["properties"])
 
@@ -190,6 +194,52 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         ]
         self.assertTrue(versioned_embeddings)
         self.assertTrue(all(len(record.get("vector", [])) == 32 for record in versioned_embeddings))
+
+    def test_retrieve_dedupes_remote_context_against_local_context_budget(self):
+        duplicate_text = "The rollout checklist is already in the open file."
+        unique_text = "Priya owns the rollout launch plan."
+        duplicate = self.call_tool(
+            "matrixark_ingest",
+            {
+                "messages": [{"role": "user", "content": duplicate_text}],
+                "scope": {"user_id": "alice", "session_id": "sess-local-remote"},
+                "metadata": {"node_path": ["user:alice", "topic:gpu"]},
+            },
+        )
+        unique = self.call_tool(
+            "matrixark_ingest",
+            {
+                "messages": [{"role": "user", "content": unique_text}],
+                "scope": {"user_id": "alice", "session_id": "sess-local-remote"},
+                "metadata": {"node_path": ["user:alice", "topic:gpu"]},
+            },
+        )
+
+        pack = self.call_tool(
+            "matrixark_retrieve",
+            {
+                "query": "rollout",
+                "scope": {"user_id": "alice", "session_id": "sess-local-remote"},
+                "max_context_tokens": 24,
+                "local_context": [
+                    {
+                        "ref_type": "file_snippet",
+                        "source": "codex:open-buffer",
+                        "text": duplicate_text,
+                    }
+                ],
+                "local_context_tokens": 5,
+            },
+        )
+
+        selected_hashes = {ref["ref_hash"] for ref in pack["selected_refs"]}
+        self.assertNotIn(duplicate["event_id_hash"], selected_hashes)
+        self.assertIn(unique["event_id_hash"], selected_hashes)
+        self.assertGreaterEqual(pack["used_local_context_tokens"], 5)
+        self.assertLessEqual(pack["used_remote_context_tokens"], pack["remote_context_budget_tokens"])
+        self.assertLessEqual(pack["total_prompt_context_tokens"], 24)
+        self.assertEqual(pack["local_context_policy"]["mode"], "shared_budget_dedupe")
+        self.assertGreaterEqual(pack["dropped_refs"]["duplicate"], 1)
 
     def test_access_management_key_lifecycle_and_session_isolation(self):
         account = self.call_tool(
