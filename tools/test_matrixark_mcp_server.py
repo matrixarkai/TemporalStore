@@ -257,6 +257,70 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         self.assertEqual(pack["selected_refs"][0]["ref_hash"], ingest["event_id_hash"])
         self.assertGreater(pack["selected_refs"][0]["embedding_score"], 0)
         self.assertTrue(any(score["depth"] >= 3 for score in pack["layer_scores"]))
+        traversal = pack["recall_policy"]["tree_traversal"]
+        self.assertTrue(traversal["enabled"])
+        self.assertFalse(traversal["fallback_to_flat"])
+        self.assertGreaterEqual(traversal["selected_path_count"], 1)
+
+    def test_batch_extract_writes_node_l0_and_retrieve_uses_tree_first_traversal(self):
+        relevant = self.call_tool(
+            "matrixark_batch_extract",
+            {
+                "messages": [
+                    {"role": "user", "content": "The stream proxy rollback runbook says restart the proxy before draining queues."},
+                    {"role": "assistant", "content": "Use the infra runbook for Project Phoenix rollback evidence."},
+                ],
+                "scope": {"user_id": "alice", "session_id": "bench-tree", "team": "infra_team"},
+                "metadata": {"node_path": ["company_a", "infra_team", "runbooks", "stream_proxy"]},
+                "threshold_messages": 20,
+                "force": True,
+            },
+        )
+        self.assertEqual(relevant["status"], "accepted")
+        self.assertTrue(relevant["one_pass"])
+
+        decoy = self.call_tool(
+            "matrixark_batch_extract",
+            {
+                "messages": [
+                    {"role": "user", "content": "The unrelated finance archive mentions stream proxy rollback as a decoy."},
+                    {"role": "assistant", "content": "This archive is not the infra runbook path."},
+                ],
+                "scope": {"user_id": "alice", "session_id": "bench-tree", "team": "infra_team"},
+                "metadata": {"node_path": ["company_b", "finance_team", "archives", "decoys"]},
+                "threshold_messages": 20,
+                "force": True,
+            },
+        )
+        self.assertEqual(decoy["status"], "accepted")
+
+        pack = self.call_tool(
+            "matrixark_retrieve",
+            {
+                "query": "company_a infra_team stream proxy rollback runbook",
+                "scope": {"user_id": "alice", "session_id": "bench-tree", "team": "infra_team"},
+                "max_context_tokens": 20,
+                "ranking": {"top_k_per_layer": 1, "max_children_scored_per_parent": 32},
+            },
+        )
+        self.assertFalse(pack["insufficient_context"])
+        traversal = pack["recall_policy"]["tree_traversal"]
+        self.assertTrue(traversal["enabled"])
+        self.assertEqual(traversal["top_k_per_layer"], 1)
+        self.assertFalse(traversal["fallback_to_flat"])
+        self.assertTrue(pack["layer_scores"])
+        selected_paths = [ref.get("node_path", []) for ref in pack["selected_refs"]]
+        self.assertTrue(selected_paths)
+        self.assertTrue(all(path[:1] == ["company_a"] for path in selected_paths), selected_paths)
+        replay = self.call_tool("matrixark_replay", {"context_pack_id": "debug"})
+        self.assertTrue(
+            any(
+                record.get("record_type") == "context_embedding"
+                and record.get("embedding_type") == "node_l0"
+                and record.get("node_path") == ["company_a", "infra_team", "runbooks", "stream_proxy"]
+                for record in replay["events"]
+            )
+        )
 
     def test_non_feedback_extraction_uses_same_session_prior_context(self):
         prior = self.call_tool(

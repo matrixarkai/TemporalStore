@@ -1343,6 +1343,107 @@ def node_prefixes(node_path: list[str]) -> list[list[str]]:
     return [node_path[: index + 1] for index in range(len(node_path))]
 
 
+def node_path_tuple(node_path: Any) -> tuple[str, ...]:
+    if not isinstance(node_path, list):
+        return ()
+    return tuple(str(part) for part in node_path if str(part))
+
+
+def starts_with_path(path: tuple[str, ...], prefix: tuple[str, ...]) -> bool:
+    return len(path) >= len(prefix) and path[: len(prefix)] == prefix
+
+
+def top_scored_nodes(nodes: list[Json], limit: int) -> list[Json]:
+    return sorted(
+        nodes,
+        key=lambda item: (-float(item.get("score", 0.0)), int(item.get("depth", 0)), str(item.get("node_path", []))),
+    )[:limit]
+
+
+def tree_first_traversal(
+    node_scores: dict[int, Json],
+    *,
+    top_k_per_layer: int,
+    max_children_scored_per_parent: int,
+) -> Json:
+    """Traverse ContextNode summaries layer by layer and return selected subtrees.
+
+    The current Python runtime infers ContextNode children from node_path prefixes.
+    C++ can later replace this with native ContextChildRef/list-children APIs while
+    preserving the retrieval contract.
+    """
+    node_by_path: dict[tuple[str, ...], Json] = {}
+    children_by_parent: dict[tuple[str, ...], list[Json]] = {}
+    for node in node_scores.values():
+        path = node_path_tuple(node.get("node_path", []))
+        if not path:
+            continue
+        current = node_by_path.get(path)
+        if current is None or float(node.get("score", 0.0)) > float(current.get("score", 0.0)):
+            node_by_path[path] = node
+    for path, node in node_by_path.items():
+        parent = path[:-1]
+        children_by_parent.setdefault(parent, []).append(node)
+
+    roots = children_by_parent.get((), [])
+    if not roots:
+        return {
+            "selected_node_hashes": set(),
+            "selected_paths": set(),
+            "leaf_paths": set(),
+            "trace": [],
+            "fallback_to_flat": True,
+        }
+
+    frontier = top_scored_nodes(roots[:max_children_scored_per_parent], top_k_per_layer)
+    selected_paths: set[tuple[str, ...]] = set()
+    selected_node_hashes: set[int] = set()
+    leaf_paths: set[tuple[str, ...]] = set()
+    trace: list[Json] = []
+
+    while frontier:
+        next_frontier: list[Json] = []
+        for node in frontier:
+            path = node_path_tuple(node.get("node_path", []))
+            if not path:
+                continue
+            selected_paths.add(path)
+            try:
+                selected_node_hashes.add(int(node.get("node_hash")))
+            except (TypeError, ValueError):
+                pass
+            children = children_by_parent.get(path, [])[:max_children_scored_per_parent]
+            picked_children = top_scored_nodes(children, top_k_per_layer) if children else []
+            trace.append(
+                {
+                    "node_hash": node.get("node_hash"),
+                    "node_path": list(path),
+                    "depth": node.get("depth", len(path)),
+                    "score": node.get("score", 0.0),
+                    "dense_score": node.get("dense_score", 0.0),
+                    "sparse_score": node.get("sparse_score", 0.0),
+                    "children_scored": len(children),
+                    "children_selected": len(picked_children),
+                    "selected": True,
+                }
+            )
+            if picked_children:
+                next_frontier.extend(picked_children)
+            else:
+                leaf_paths.add(path)
+        frontier = next_frontier
+
+    if not leaf_paths:
+        leaf_paths = set(selected_paths)
+    return {
+        "selected_node_hashes": selected_node_hashes,
+        "selected_paths": selected_paths,
+        "leaf_paths": leaf_paths,
+        "trace": trace,
+        "fallback_to_flat": False,
+    }
+
+
 def scope_matches(record_scope: Json, query_scope: Json) -> bool:
     return not query_scope or all(record_scope.get(key) == value for key, value in query_scope.items())
 
@@ -1551,6 +1652,40 @@ class MatrixArkLocalAdapter:
         node_path = normalized_node_path(envelope, node_hint)
         node_hash = stable_hash("/".join(node_path))
         batch_summary = extraction["batch_summary"]
+
+        for depth, prefix in enumerate(node_prefixes(node_path), start=1):
+            prefix_hash = stable_hash("/".join(prefix))
+            prefix_summary = summarize_text(" / ".join(prefix) + " :: " + batch_summary, limit=512)
+            self.append(
+                {
+                    "record_type": "context_summary",
+                    "summary_type": "node_l0",
+                    "node_hash": prefix_hash,
+                    "node_path": prefix,
+                    "depth": depth,
+                    "summary_text": prefix_summary,
+                    "source_batch_hash": batch_id_hash,
+                    "scope": envelope["scope"],
+                    "updated_at_ms": envelope["ingestion_time_ms"],
+                }
+            )
+            self.append(
+                {
+                    "record_type": "context_embedding",
+                    "embedding_type": "node_l0",
+                    "ref_type": "node",
+                    "ref_hash": prefix_hash,
+                    "node_hash": prefix_hash,
+                    "node_path": prefix,
+                    "depth": depth,
+                    "dim": EMBEDDING_DIM,
+                    "model": "matrixark-local-token-hash-v1",
+                    "vector": embedding_for_text(prefix_summary),
+                    "source_batch_hash": batch_id_hash,
+                    "scope": envelope["scope"],
+                    "updated_at_ms": envelope["ingestion_time_ms"],
+                }
+            )
 
         for index, message in enumerate(envelope["messages"]):
             event_text = f"{message['role']}: {message['content']}"
@@ -1803,6 +1938,7 @@ class MatrixArkLocalAdapter:
         segment_embedding_scores: dict[int, float] = {}
         index_terms_by_batch: dict[Any, list[str]] = {}
         index_terms_by_node: dict[Any, list[str]] = {}
+        node_summary_text_by_hash: dict[int, str] = {}
         for record in records:
             record_type = record.get("record_type")
             if record_type == "context_index" and scope_matches(record.get("scope", {}), scope):
@@ -1810,18 +1946,36 @@ class MatrixArkLocalAdapter:
                 if index_name:
                     index_terms_by_batch.setdefault(record.get("batch_id_hash"), []).append(index_name)
                     index_terms_by_node.setdefault(record.get("node_hash"), []).append(index_name)
+            if record_type == "context_summary" and scope_matches(record.get("scope", {}), scope):
+                summary_type = str(record.get("summary_type", ""))
+                if summary_type in {"node_l0", "node_l1", "batch_l0", "session_l0"}:
+                    try:
+                        node_hash_for_summary = int(record.get("node_hash"))
+                    except (TypeError, ValueError):
+                        continue
+                    existing = node_summary_text_by_hash.get(node_hash_for_summary, "")
+                    summary_text = str(record.get("summary_text", ""))
+                    if len(summary_text) > len(existing):
+                        node_summary_text_by_hash[node_hash_for_summary] = summary_text
+        for record in records:
+            record_type = record.get("record_type")
             if record_type == "context_embedding" and not scope_matches(record.get("scope", {}), scope):
                 continue
-            if record_type == "context_embedding" and record.get("embedding_type") == "node_l0":
-                score = cosine(query_embedding, record.get("vector", []))
+            if record_type == "context_embedding" and record.get("embedding_type") in {"node_l0", "node_l1"}:
+                dense_score = cosine(query_embedding, record.get("vector", []))
                 node_hash = record["node_hash"]
+                node_text = " ".join(record.get("node_path", [])) + " " + node_summary_text_by_hash.get(node_hash, "")
+                sparse_score = sparse_lexical_score(query_terms, node_text)
+                score = round(clamp01(0.72 * normalized_dense_score(dense_score) + 0.28 * sparse_score), 6)
                 current = node_scores.get(node_hash)
                 if current is None or score > current["score"]:
                     node_scores[node_hash] = {
                         "node_hash": node_hash,
                         "node_path": record.get("node_path", []),
-                        "depth": record.get("depth", 0),
+                        "depth": record.get("depth", len(record.get("node_path", []))),
                         "score": score,
+                        "dense_score": dense_score,
+                        "sparse_score": sparse_score,
                         "embedding_type": record.get("embedding_type"),
                     }
             elif record_type == "context_embedding" and record.get("embedding_type") == "event_text":
@@ -1831,9 +1985,33 @@ class MatrixArkLocalAdapter:
             elif record_type == "context_embedding" and record.get("embedding_type") == "segment_text":
                 segment_embedding_scores[record["ref_hash"]] = cosine(query_embedding, record.get("vector", []))
 
+        top_k_per_layer = integer_arg(ranking, "top_k_per_layer", 8, minimum=1)
+        max_children_scored_per_parent = integer_arg(ranking, "max_children_scored_per_parent", 10000, minimum=1)
+        traversal = tree_first_traversal(
+            node_scores,
+            top_k_per_layer=top_k_per_layer,
+            max_children_scored_per_parent=max_children_scored_per_parent,
+        )
+        selected_paths = traversal["selected_paths"]
+        selected_leaf_paths = traversal["leaf_paths"]
+        selected_node_hashes = traversal["selected_node_hashes"]
+
+        def selected_by_tree(record: Json) -> bool:
+            if traversal.get("fallback_to_flat"):
+                return True
+            path = node_path_tuple(record.get("node_path", []))
+            if path and path in selected_paths:
+                return True
+            if path and any(starts_with_path(path, leaf_path) for leaf_path in selected_leaf_paths):
+                return True
+            try:
+                return int(record.get("node_hash")) in selected_node_hashes
+            except (TypeError, ValueError):
+                return False
+
         layer_scores = sorted(
-            node_scores.values(),
-            key=lambda item: (item["depth"], -item["score"], item["node_hash"]),
+            traversal["trace"] or node_scores.values(),
+            key=lambda item: (item.get("depth", 0), -float(item.get("score", 0.0)), item.get("node_hash", 0)),
         )
         primary_matches = []
         auxiliary_matches = []
@@ -1843,6 +2021,8 @@ class MatrixArkLocalAdapter:
             envelope = record.get("envelope", {})
             record_scope = envelope.get("scope", {})
             if not scope_matches(record_scope, scope):
+                continue
+            if not selected_by_tree(record):
                 continue
             text = str(record.get("text", ""))
             sparse_score = sparse_lexical_score(query_terms, text)
@@ -1891,6 +2071,8 @@ class MatrixArkLocalAdapter:
                 continue
             if not scope_matches(record.get("scope", {}), scope):
                 continue
+            if not selected_by_tree(record):
+                continue
             text = f"{record.get('entity_type', '')}: {record.get('entity_name', '')} = {record.get('state', '')}"
             sparse_score = sparse_lexical_score(query_terms, text)
             keyword_score = len(query_terms.intersection(tokens(text)))
@@ -1935,6 +2117,8 @@ class MatrixArkLocalAdapter:
             if record.get("record_type") != "context_segment":
                 continue
             if not scope_matches(record.get("scope", {}), scope):
+                continue
+            if not selected_by_tree(record):
                 continue
             text = f"{record.get('topic', '')}: {record.get('summary_text', '')}"
             sparse_score = sparse_lexical_score(query_terms, text)
@@ -2004,8 +2188,18 @@ class MatrixArkLocalAdapter:
             "packing_policy": f"question_type_aware:{question_type}",
             "query_embedding_model": "matrixark-local-token-hash-v1",
             "recall_policy": {
-                "primary_path": "hybrid dense semantic + sparse lexical",
-                "auxiliary_path": "keyword graph",
+                "tree_traversal": {
+                    "enabled": True,
+                    "summary_embeddings": ["node_l0", "node_l1"],
+                    "top_k_per_layer": top_k_per_layer,
+                    "max_children_scored_per_parent": max_children_scored_per_parent,
+                    "selected_node_count": len(selected_node_hashes),
+                    "selected_path_count": len(selected_paths),
+                    "selected_leaf_count": len(traversal.get("leaf_paths", [])),
+                    "fallback_to_flat": bool(traversal.get("fallback_to_flat")),
+                },
+                "primary_path": "tree-first hybrid dense semantic + sparse lexical",
+                "auxiliary_path": "keyword graph inside selected tree",
                 "time_decay": {
                     "freshness_tolerance_ms": ranking.get("freshness_tolerance_ms", DEFAULT_TIME_DECAY_TOLERANCE_MS),
                     "half_life_ms": ranking.get("half_life_ms", DEFAULT_TIME_DECAY_HALFLIFE_MS),
@@ -2032,6 +2226,7 @@ class MatrixArkLocalAdapter:
                 "summary_text": pack_summary,
                 "selected_refs": compact_refs_for_audit(selected),
                 "layer_scores": layer_scores[:24],
+                "tree_traversal": pack["recall_policy"]["tree_traversal"],
                 "question_type": question_type,
                 "packing_policy": pack["packing_policy"],
                 "recall_policy": pack["recall_policy"],
