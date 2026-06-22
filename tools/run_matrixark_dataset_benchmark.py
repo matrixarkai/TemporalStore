@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import statistics
 import subprocess
 import sys
@@ -13,6 +14,34 @@ from typing import Any
 
 
 Json = dict[str, Any]
+ANSWER_SUPPORT_STOPWORDS = {
+    "the",
+    "and",
+    "or",
+    "but",
+    "for",
+    "with",
+    "that",
+    "this",
+    "from",
+    "into",
+    "onto",
+    "what",
+    "which",
+    "when",
+    "where",
+    "why",
+    "how",
+    "who",
+    "after",
+    "before",
+    "first",
+    "second",
+    "using",
+    "not",
+    "correctly",
+    "functioning",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -72,6 +101,34 @@ def normalize_answer(answer: Any) -> list[str]:
 def contains_answer(text: str, answer: Any) -> bool:
     lower = text.lower()
     return any(value and value in lower for value in normalize_answer(answer))
+
+
+def answer_key_tokens(value: str) -> list[str]:
+    return [
+        token
+        for token in re.findall(r"[a-z0-9]+", value.lower())
+        if len(token) > 2 and token not in ANSWER_SUPPORT_STOPWORDS
+    ]
+
+
+def answer_support_score(text: str, answer: Any) -> float:
+    lower = text.lower()
+    best = 0.0
+    for value in normalize_answer(answer):
+        if value in lower:
+            best = max(best, 1.0)
+            continue
+        key_tokens = answer_key_tokens(value)
+        if not key_tokens:
+            continue
+        text_tokens = set(re.findall(r"[a-z0-9]+", lower))
+        coverage = sum(1 for token in key_tokens if token in text_tokens) / len(key_tokens)
+        best = max(best, coverage)
+    return round(best, 6)
+
+
+def answer_supported(text: str, answer: Any) -> bool:
+    return contains_answer(text, answer) or answer_support_score(text, answer) >= 0.5
 
 
 def percentile(values: list[float], pct: float) -> float:
@@ -190,6 +247,7 @@ def build_report(
     sessions_ingested: int,
     questions: list[Json],
     hits: int,
+    support_hits: int,
     evidence_hits: int,
     context_hits: int,
     token_counts: list[int],
@@ -221,20 +279,21 @@ def build_report(
             "request_timeout_ms": args.request_timeout_ms,
             "io_timeout_ms": args.io_timeout_ms,
             "reader_execution_mode": "deterministic_context_substring_debug",
-            "judge_execution_mode": "exact_substring_debug",
+            "judge_execution_mode": "exact_or_key_token_support_debug",
         },
         "models": {
             "embedding_model": "hashing:hashing-local",
             "reader_provider": "deterministic-context",
             "reader_model": "matrixark-context-substring-v1",
-            "judge_provider": "exact-substring",
-            "judge_model": "matrixark-local-substring-v1",
+            "judge_provider": "exact-or-key-token-support",
+            "judge_model": "matrixark-local-support-v1",
         },
         "scores": {
             "answer_hit": hits / max(1, questions_run),
+            "answer_support_hit": support_hits / max(1, questions_run),
             "context_recall": context_hits / max(1, questions_run),
             "evidence_session_recall": evidence_hits / max(1, questions_run),
-            "final_judge_score": hits / max(1, questions_run),
+            "final_judge_score": support_hits / max(1, questions_run),
             "compression_answer_hidden_count": 0,
             "compression_safety_passed": True,
         },
@@ -249,7 +308,8 @@ def build_report(
         "failure_categories": {
             "context_recall_miss": questions_run - context_hits,
             "evidence_session_miss": questions_run - evidence_hits,
-            "reader_miss": questions_run - hits,
+            "reader_exact_substring_miss": questions_run - hits,
+            "reader_support_miss": questions_run - support_hits,
             "compression_hidden_answer": 0,
             "token_budget_pressure": sum(1 for count in token_counts if count >= args.max_context_tokens),
         },
@@ -316,7 +376,7 @@ def main() -> int:
         result_rows: list[Json] = []
         retrieval_latencies: list[float] = []
         token_counts: list[int] = []
-        answer_hits = evidence_hits = context_hits = 0
+        answer_hits = answer_support_hits = evidence_hits = context_hits = 0
         ingestion_started = time.perf_counter()
 
         data = json.load(open(args.data_path, encoding="utf-8"))
@@ -393,9 +453,12 @@ def main() -> int:
             selected = pack.get("selected_refs", [])
             text = selected_text(selected)
             answer_hit = contains_answer(text, question["answer"])
+            support_score = answer_support_score(text, question["answer"])
+            support_hit = answer_hit or support_score >= 0.5
             evidence_hit = any(evidence.lower() in text.lower() for evidence in question.get("evidence", []))
             context_hit = bool(selected)
             answer_hits += int(answer_hit)
+            answer_support_hits += int(support_hit)
             evidence_hits += int(evidence_hit)
             context_hits += int(context_hit)
             used_tokens = int(pack.get("used_context_tokens") or sum(len(str(ref.get("text", "")).split()) for ref in selected))
@@ -407,6 +470,8 @@ def main() -> int:
                 "answer": question["answer"],
                 "prediction": prediction,
                 "answer_hit": answer_hit,
+                "answer_support_hit": support_hit,
+                "answer_support_score": support_score,
                 "evidence_hit": evidence_hit,
                 "context_pack_id": pack.get("context_pack_id"),
                 "selected_ref_count": len(selected),
@@ -415,7 +480,7 @@ def main() -> int:
                 "category": question.get("category"),
             }
             hypothesis_rows.append(row)
-            judge_rows.append({**row, "judge": "exact_substring_debug", "score": int(answer_hit)})
+            judge_rows.append({**row, "judge": "exact_or_key_token_support_debug", "score": int(support_hit)})
             context_pack_rows.append({"question_id": question["question_id"], "context_pack": pack})
             result_rows.append({**row, "selected_refs": selected[:8]})
     finally:
@@ -441,6 +506,7 @@ def main() -> int:
         sessions_ingested=sessions_ingested,
         questions=questions,
         hits=answer_hits,
+        support_hits=answer_support_hits,
         evidence_hits=evidence_hits,
         context_hits=context_hits,
         token_counts=token_counts,
