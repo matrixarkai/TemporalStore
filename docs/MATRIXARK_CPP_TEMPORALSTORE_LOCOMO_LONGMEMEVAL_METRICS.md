@@ -372,3 +372,32 @@ Before claiming official LongMemEval_s parity:
 - Keep `compression_answer_hidden_count == 0`.
 - Add CPU, RSS, ingestion throughput, retrieval p50/p95, context recall, evidence recall, token pressure, exact hit, support/judge score, and failure buckets.
 - Repeat with OSS/OpenAI-compatible reader/judge for paper-style score parity.
+
+## Score Gap Closure Added
+
+The latest benchmark harness now closes the practical score-debug gaps that were making MatrixArk hard to compare against VikingMem-style runs:
+
+- Question-type-aware retrieval requests: `date`, `current_state`, `multi_hop`, `evidence`, `why_emotion`, and `fact`.
+- Question-type-aware packing in the MCP retriever:
+  - date questions favor date-bearing turns;
+  - current-state questions favor `ContextEntity`;
+  - evidence questions favor raw `ContextEvent`;
+  - multi-hop questions diversify across nodes/sessions;
+  - why/emotion questions favor answer-bearing reason/emotion sentences.
+- Deterministic reader diagnostics now select the best answer-bearing snippet instead of only reporting exact substring hits.
+- Token efficiency is reported:
+  - answer-bearing tokens;
+  - answer-bearing token density;
+  - final judge score per 1K selected context tokens;
+  - dropped duplicate, stale, low-score, over-budget, summary, and raw-L2 token buckets.
+- Long runs now checkpoint artifacts during the question loop. If LongMemEval_s times out, the partial `result.json`, `report.json`, `hypotheses.jsonl`, `context_packs.jsonl`, `judge.jsonl`, and `progress.json` remain usable for triage.
+
+These changes improve benchmark iteration and failure diagnosis. They do not make deterministic local scoring equivalent to VikingMem paper numbers; paper-style parity still requires matching dataset version, reader model, judge model, prompt, and scoring protocol.
+
+## Remaining VikingMem Score Gap
+
+The remaining score gap is now concentrated in three places:
+
+1. Reader/judge parity: run GPT-4o-mini or a matched OSS instruct reader plus an OpenAI-compatible judge.
+2. Official LongMemEval_s full completion: use the local official cleaned file and rely on checkpoint artifacts during long C++ runs.
+3. Failure-driven extraction improvements: inspect the new buckets for `reader_miss_with_evidence`, `temporal_or_entity_miss`, and `answer_density_miss`, then tune extraction and packing without changing the customer-facing API.

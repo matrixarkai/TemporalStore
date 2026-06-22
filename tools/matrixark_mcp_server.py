@@ -932,6 +932,21 @@ def sparse_lexical_score(query_terms: set[str], text: str) -> float:
     return clamp01(matched / max(len(query_terms), 1))
 
 
+def infer_query_type(query: str) -> str:
+    lower = query.lower()
+    if re.search(r"\b(when|what date|which date|day|month|year|yesterday|tomorrow|last week|next week)\b", lower):
+        return "date"
+    if re.search(r"\b(current|currently|latest|now|still|today|valid|status|preference|prefer|likes|where does|where is)\b", lower):
+        return "current_state"
+    if re.search(r"\b(why|reason|because|feel|felt|emotion|happy|sad|angry|worried|excited)\b", lower):
+        return "why_emotion"
+    if re.search(r"\b(evidence|quote|exactly|what did .* say|conversation|dialogue|message)\b", lower):
+        return "evidence"
+    if re.search(r"\b(both|together|across|between|compare|combine|sessions|multi-hop|multi session|multi-session)\b", lower):
+        return "multi_hop"
+    return "fact"
+
+
 def hybrid_origin_score(query_terms: set[str], text: str, embedding_score: float, node_score: float) -> float:
     dense = normalized_dense_score(embedding_score)
     sparse = sparse_lexical_score(query_terms, text)
@@ -1079,28 +1094,114 @@ def merge_ranked_paths(primary: list[Json], auxiliary: list[Json], *, total_limi
     return selected[:total_limit]
 
 
+def question_type_ref_boost(candidate: Json, question_type: str) -> float:
+    ref_type = str(candidate.get("ref_type", ""))
+    text = str(candidate.get("text", "")).lower()
+    event_type = str(candidate.get("event_type") or candidate.get("entity_type") or candidate.get("topic") or "").lower()
+    if question_type == "current_state":
+        if ref_type == "entity":
+            return 0.28
+        if "correction" in event_type or "confirmation" in event_type:
+            return 0.16
+        return 0.0
+    if question_type == "evidence":
+        return 0.22 if ref_type == "event" else 0.05 if ref_type == "segment" else 0.0
+    if question_type == "date":
+        return 0.18 if re.search(r"\b(20\d{2}|19\d{2}|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", text) else 0.0
+    if question_type == "multi_hop":
+        return 0.14 if ref_type in {"entity", "segment"} else 0.04
+    if question_type == "why_emotion":
+        return 0.18 if re.search(r"\b(because|reason|felt|feel|happy|sad|angry|worried|excited|concerned)\b", text) else 0.0
+    if question_type == "fact":
+        return 0.14 if ref_type in {"entity", "event"} else 0.03
+    return 0.0
+
+
+def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float, float]:
+    score = float(candidate.get("score", 0.0))
+    boosted = clamp01(score + question_type_ref_boost(candidate, question_type))
+    token_efficiency = boosted / max(1, token_count(str(candidate.get("text", ""))))
+    return (boosted, token_efficiency, score)
+
+
+def diversify_for_question_type(candidates: list[Json], question_type: str, *, total_limit: int) -> list[Json]:
+    if question_type != "multi_hop":
+        return candidates[:total_limit]
+    selected: list[Json] = []
+    deferred: list[Json] = []
+    seen_nodes: set[Any] = set()
+    for candidate in candidates:
+        node_hash = candidate.get("node_hash")
+        if node_hash not in seen_nodes:
+            selected.append(candidate)
+            seen_nodes.add(node_hash)
+        else:
+            deferred.append(candidate)
+        if len(selected) >= total_limit:
+            return selected
+    selected.extend(deferred)
+    return selected[:total_limit]
+
+
 def select_token_budgeted_refs(
     primary: list[Json],
     auxiliary: list[Json],
     *,
     max_context_tokens: int,
     auxiliary_quota: int,
-) -> tuple[list[Json], int, int]:
+    question_type: str = "fact",
+) -> tuple[list[Json], int, Json]:
     candidates = merge_ranked_paths(
         primary,
         auxiliary,
         total_limit=max(8, min(256, max_context_tokens)),
         auxiliary_quota=auxiliary_quota,
     )
+    candidates.sort(key=lambda item: packing_sort_key(item, question_type), reverse=True)
+    candidates = diversify_for_question_type(candidates, question_type, total_limit=max(8, min(256, max_context_tokens)))
     selected: list[Json] = []
     used_tokens = 0
-    dropped_over_budget = 0
+    dropped: Json = {
+        "over_budget": 0,
+        "duplicate": 0,
+        "low_score": 0,
+        "stale": 0,
+        "summary": 0,
+        "raw_l2": 0,
+        "estimated_tokens": {
+            "over_budget": 0,
+            "duplicate": 0,
+            "low_score": 0,
+            "stale": 0,
+            "summary": 0,
+            "raw_l2": 0,
+        },
+    }
+    seen_text_hashes: set[int] = set()
     for candidate in candidates:
         ref_tokens = max(1, token_count(str(candidate.get("text", ""))))
-        if selected and used_tokens + ref_tokens > max_context_tokens:
-            dropped_over_budget += 1
+        text_hash = stable_hash(str(candidate.get("text", ""))[:512])
+        if text_hash in seen_text_hashes:
+            dropped["duplicate"] += 1
+            dropped["estimated_tokens"]["duplicate"] += ref_tokens
             continue
-        selected.append({**candidate, "token_estimate": ref_tokens})
+        if float(candidate.get("score", 0.0)) < 0.04:
+            dropped["low_score"] += 1
+            dropped["estimated_tokens"]["low_score"] += ref_tokens
+            continue
+        if selected and used_tokens + ref_tokens > max_context_tokens:
+            dropped["over_budget"] += 1
+            dropped["estimated_tokens"]["over_budget"] += ref_tokens
+            continue
+        seen_text_hashes.add(text_hash)
+        selected.append(
+            {
+                **candidate,
+                "token_estimate": ref_tokens,
+                "packing_score": round(packing_sort_key(candidate, question_type)[0], 6),
+                "packing_policy": question_type,
+            }
+        )
         used_tokens += ref_tokens
         if used_tokens >= max_context_tokens:
             break
@@ -1109,8 +1210,8 @@ def select_token_budgeted_refs(
         clipped_words = tokens(str(first.get("text", "")))[:max_context_tokens]
         selected = [{**first, "text": " ".join(clipped_words), "token_estimate": len(clipped_words)}]
         used_tokens = len(clipped_words)
-        dropped_over_budget = max(0, len(candidates) - 1)
-    return selected, used_tokens, dropped_over_budget
+        dropped["over_budget"] = max(0, len(candidates) - 1)
+    return selected, used_tokens, dropped
 
 
 def compact_refs_for_audit(refs: list[Json], *, preview_chars: int = 160) -> list[Json]:
@@ -1598,6 +1699,7 @@ class MatrixArkLocalAdapter:
         query = require_string(args, "query")
         scope = optional_object(args, "scope")
         ranking = optional_object(args, "ranking")
+        question_type = str(args.get("question_type") or infer_query_type(query))
         max_context_tokens = args.get("max_context_tokens", 2048)
         if not isinstance(max_context_tokens, int) or max_context_tokens <= 0:
             raise MatrixArkError("max_context_tokens must be a positive integer")
@@ -1800,6 +1902,7 @@ class MatrixArkLocalAdapter:
             auxiliary_matches,
             max_context_tokens=max_context_tokens,
             auxiliary_quota=auxiliary_quota,
+            question_type=question_type,
         )
         context_pack_id = stable_hash(f"{query}:{selected}:{now_ms()}")
         context_pack_id_text = str(context_pack_id)
@@ -1811,6 +1914,8 @@ class MatrixArkLocalAdapter:
             "context_pack_id": str(context_pack_id),
             "selected_refs": selected,
             "layer_scores": layer_scores[:24],
+            "question_type": question_type,
+            "packing_policy": f"question_type_aware:{question_type}",
             "query_embedding_model": "matrixark-local-token-hash-v1",
             "recall_policy": {
                 "primary_path": "hybrid dense semantic + sparse lexical",
@@ -1828,9 +1933,7 @@ class MatrixArkLocalAdapter:
             "primary_candidate_count": len(primary_matches),
             "auxiliary_candidate_count": len(auxiliary_matches),
             "used_context_tokens": used_context_tokens,
-            "dropped_refs": {
-                "over_budget": dropped_over_budget,
-            },
+            "dropped_refs": dropped_over_budget,
             "quality_warnings": [],
             "insufficient_context": not selected,
         }
@@ -1843,6 +1946,8 @@ class MatrixArkLocalAdapter:
                 "summary_text": pack_summary,
                 "selected_refs": compact_refs_for_audit(selected),
                 "layer_scores": layer_scores[:24],
+                "question_type": question_type,
+                "packing_policy": pack["packing_policy"],
                 "recall_policy": pack["recall_policy"],
                 "primary_candidate_count": len(primary_matches),
                 "auxiliary_candidate_count": len(auxiliary_matches),

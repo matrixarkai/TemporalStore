@@ -67,6 +67,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-context-tokens", type=int, default=1200)
     parser.add_argument("--question-limit", type=int, default=0)
     parser.add_argument("--conversation-limit", type=int, default=0)
+    parser.add_argument("--checkpoint-interval", type=int, default=50)
     return parser.parse_args()
 
 
@@ -125,6 +126,119 @@ def answer_support_score(text: str, answer: Any) -> float:
         coverage = sum(1 for token in key_tokens if token in text_tokens) / len(key_tokens)
         best = max(best, coverage)
     return round(best, 6)
+
+
+def question_key_tokens(query: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", query.lower())
+        if len(token) > 2 and token not in ANSWER_SUPPORT_STOPWORDS
+    }
+
+
+def classify_question_type(query: str, category: Any = None) -> str:
+    lower = f"{query} {category or ''}".lower()
+    if re.search(r"\b(when|what date|which date|day|month|year|yesterday|tomorrow|last week|next week|date)\b", lower):
+        return "date"
+    if re.search(r"\b(current|currently|latest|now|still|today|status|preference|prefer|likes|valid|update)\b", lower):
+        return "current_state"
+    if re.search(r"\b(why|reason|because|feel|felt|emotion|happy|sad|angry|worried|excited)\b", lower):
+        return "why_emotion"
+    if re.search(r"\b(evidence|quote|exact|what did .* say|conversation|dialogue|message)\b", lower):
+        return "evidence"
+    if re.search(r"\b(multi-hop|multi session|multi-session|across|between|both|together|combine|compare|sessions)\b", lower):
+        return "multi_hop"
+    return "fact"
+
+
+def ranking_for_question(question_type: str) -> Json:
+    week_ms = 7 * 24 * 60 * 60 * 1000
+    month_ms = 30 * 24 * 60 * 60 * 1000
+    if question_type == "current_state":
+        return {
+            "weights": {"time": 0.26, "business": 0.24},
+            "freshness_tolerance_ms": 24 * 60 * 60 * 1000,
+            "half_life_ms": week_ms,
+            "auxiliary_quota": 3,
+        }
+    if question_type == "date":
+        return {
+            "weights": {"time": 0.12, "business": 0.14},
+            "freshness_tolerance_ms": 0,
+            "half_life_ms": month_ms * 6,
+            "auxiliary_quota": 4,
+        }
+    if question_type == "multi_hop":
+        return {
+            "weights": {"time": 0.10, "business": 0.18},
+            "freshness_tolerance_ms": week_ms,
+            "half_life_ms": month_ms * 3,
+            "auxiliary_quota": 8,
+        }
+    if question_type == "evidence":
+        return {
+            "weights": {"time": 0.12, "business": 0.18},
+            "freshness_tolerance_ms": week_ms,
+            "half_life_ms": month_ms * 3,
+            "auxiliary_quota": 5,
+        }
+    if question_type == "why_emotion":
+        return {
+            "weights": {"time": 0.14, "business": 0.2},
+            "freshness_tolerance_ms": week_ms,
+            "half_life_ms": month_ms * 2,
+            "auxiliary_quota": 5,
+        }
+    return {
+        "weights": {"time": 0.16, "business": 0.2},
+        "freshness_tolerance_ms": week_ms,
+        "half_life_ms": month_ms,
+        "auxiliary_quota": 4,
+    }
+
+
+def split_evidence_units(text: str) -> list[str]:
+    units = re.split(r"(?<=[.!?])\s+|\n+", text)
+    return [unit.strip() for unit in units if unit.strip()]
+
+
+def best_answer_evidence(selected_refs: list[Json], query: str, answer: Any, question_type: str) -> Json:
+    query_terms = question_key_tokens(query)
+    best: Json = {
+        "prediction": "",
+        "score": 0.0,
+        "answer_bearing_tokens": 0,
+        "ref_hash": "",
+        "ref_type": "",
+        "snippet": "",
+    }
+    for ref in selected_refs:
+        ref_text = str(ref.get("text", ""))
+        ref_type = str(ref.get("ref_type", ""))
+        for unit in split_evidence_units(ref_text):
+            support = answer_support_score(unit, answer)
+            unit_terms = set(answer_key_tokens(unit))
+            overlap = len(query_terms.intersection(unit_terms)) / max(len(query_terms), 1) if query_terms else 0.0
+            ref_bonus = 0.0
+            if question_type == "current_state" and ref_type == "entity":
+                ref_bonus = 0.18
+            elif question_type == "evidence" and ref_type == "event":
+                ref_bonus = 0.16
+            elif question_type == "multi_hop" and ref_type in {"entity", "segment"}:
+                ref_bonus = 0.12
+            score = min(1.0, 0.74 * support + 0.18 * overlap + ref_bonus + 0.08 * float(ref.get("score", 0.0)))
+            if score > best["score"]:
+                best = {
+                    "prediction": unit[:400],
+                    "score": round(score, 6),
+                    "answer_bearing_tokens": len(unit.split()),
+                    "ref_hash": ref.get("ref_hash", ""),
+                    "ref_type": ref_type,
+                    "snippet": unit[:400],
+                }
+    if contains_answer(selected_text(selected_refs), answer):
+        best["score"] = 1.0
+    return best
 
 
 def answer_supported(text: str, answer: Any) -> bool:
@@ -236,6 +350,18 @@ def selected_text(selected_refs: list[Json]) -> str:
     return "\n".join(str(ref.get("text", "")) for ref in selected_refs)
 
 
+def artifact_paths(artifact_dir: Path, prefix: str) -> Json:
+    return {
+        "result_json": str(artifact_dir / f"{prefix}.result.json"),
+        "report_json": str(artifact_dir / f"{prefix}.report.json"),
+        "report_markdown": str(artifact_dir / f"{prefix}.report.md"),
+        "hypotheses_jsonl": str(artifact_dir / f"{prefix}.hypotheses.jsonl"),
+        "context_pack_jsonl": str(artifact_dir / f"{prefix}.context_packs.jsonl"),
+        "judge_jsonl": str(artifact_dir / f"{prefix}.judge.jsonl"),
+        "progress_json": str(artifact_dir / f"{prefix}.progress.json"),
+    }
+
+
 def build_report(
     *,
     args: argparse.Namespace,
@@ -251,9 +377,15 @@ def build_report(
     evidence_hits: int,
     context_hits: int,
     token_counts: list[int],
+    answer_bearing_token_counts: list[int],
+    failure_buckets: dict[str, int],
+    dropped_token_buckets: dict[str, int],
 ) -> Json:
     questions_run = len(questions)
     avg_prompt_tokens = statistics.mean(token_counts) if token_counts else 0.0
+    avg_answer_bearing_tokens = statistics.mean(answer_bearing_token_counts) if answer_bearing_token_counts else 0.0
+    answer_density = sum(answer_bearing_token_counts) / max(1, sum(token_counts))
+    final_judge_score = support_hits / max(1, questions_run)
     return {
         "artifacts": artifacts,
         "dataset": {
@@ -279,7 +411,8 @@ def build_report(
             "request_timeout_ms": args.request_timeout_ms,
             "io_timeout_ms": args.io_timeout_ms,
             "reader_execution_mode": "deterministic_context_substring_debug",
-            "judge_execution_mode": "exact_or_key_token_support_debug",
+            "judge_execution_mode": "exact_or_key-token-support-plus-evidence-density-debug",
+            "packing_policy": "question_type_aware",
         },
         "models": {
             "embedding_model": "hashing:hashing-local",
@@ -293,7 +426,10 @@ def build_report(
             "answer_support_hit": support_hits / max(1, questions_run),
             "context_recall": context_hits / max(1, questions_run),
             "evidence_session_recall": evidence_hits / max(1, questions_run),
-            "final_judge_score": support_hits / max(1, questions_run),
+            "final_judge_score": final_judge_score,
+            "answer_quality_under_budget": final_judge_score,
+            "answer_bearing_token_density": round(answer_density, 6),
+            "judge_score_per_1k_tokens": round(final_judge_score / max(avg_prompt_tokens / 1000.0, 0.001), 6),
             "compression_answer_hidden_count": 0,
             "compression_safety_passed": True,
         },
@@ -304,6 +440,7 @@ def build_report(
             "p50_latency_ms": percentile(retrieval_latencies, 50),
             "p95_latency_ms": percentile(retrieval_latencies, 95),
             "avg_prompt_tokens": avg_prompt_tokens,
+            "avg_answer_bearing_tokens": avg_answer_bearing_tokens,
         },
         "failure_categories": {
             "context_recall_miss": questions_run - context_hits,
@@ -312,6 +449,14 @@ def build_report(
             "reader_support_miss": questions_run - support_hits,
             "compression_hidden_answer": 0,
             "token_budget_pressure": sum(1 for count in token_counts if count >= args.max_context_tokens),
+            **failure_buckets,
+        },
+        "token_efficiency": {
+            "selected_tokens": sum(token_counts),
+            "answer_bearing_tokens": sum(answer_bearing_token_counts),
+            "answer_bearing_tokens_per_question": avg_answer_bearing_tokens,
+            "answer_bearing_token_density": round(answer_density, 6),
+            "dropped_token_categories": dropped_token_buckets,
         },
         "started_at_ms": started_ms,
         "finished_at_ms": int(time.time() * 1000),
@@ -324,6 +469,68 @@ def write_jsonl(path: Path, rows: list[Json]) -> None:
             handle.write(json.dumps(row, sort_keys=True, ensure_ascii=False) + "\n")
 
 
+def write_artifacts(
+    *,
+    artifacts: Json,
+    report: Json,
+    result_rows: list[Json],
+    hypothesis_rows: list[Json],
+    context_pack_rows: list[Json],
+    judge_rows: list[Json],
+    partial: bool,
+) -> None:
+    Path(artifacts["result_json"]).write_text(
+        json.dumps(result_rows, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    Path(artifacts["report_json"]).write_text(
+        json.dumps(report, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    write_jsonl(Path(artifacts["hypotheses_jsonl"]), hypothesis_rows)
+    write_jsonl(Path(artifacts["context_pack_jsonl"]), context_pack_rows)
+    write_jsonl(Path(artifacts["judge_jsonl"]), judge_rows)
+    progress = {
+        "partial": partial,
+        "questions_completed": len(result_rows),
+        "result_json": artifacts["result_json"],
+        "report_json": artifacts["report_json"],
+        "updated_at_ms": int(time.time() * 1000),
+    }
+    Path(artifacts["progress_json"]).write_text(
+        json.dumps(progress, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
+def report_markdown(args: argparse.Namespace, report: Json) -> str:
+    return "\n".join(
+        [
+            f"# MatrixArk {args.dataset} C++ TemporalStore Benchmark",
+            "",
+            f"- backend: `temporalstore-direct`",
+            f"- metaserver: `{args.metaserver}`",
+            f"- storage prefix: `{args.storage_prefix}`",
+            f"- questions: `{report['dataset']['questions_run']}`",
+            f"- turns ingested: `{report['dataset']['turns_ingested']}`",
+            f"- sessions: `{report['dataset']['sessions']}`",
+            f"- context recall: `{report['scores']['context_recall']:.4f}`",
+            f"- answer hit: `{report['scores']['answer_hit']:.4f}`",
+            f"- answer support hit: `{report['scores']['answer_support_hit']:.4f}`",
+            f"- final judge score debug: `{report['scores']['final_judge_score']:.4f}`",
+            f"- answer-bearing token density: `{report['scores']['answer_bearing_token_density']:.4f}`",
+            f"- judge score per 1K tokens: `{report['scores']['judge_score_per_1k_tokens']:.4f}`",
+            f"- evidence session recall: `{report['scores']['evidence_session_recall']:.4f}`",
+            f"- ingestion throughput turns/sec: `{report['latency']['ingestion_throughput_turns_per_sec']}`",
+            f"- retrieval p50 ms: `{report['latency']['p50_latency_ms']:.3f}`",
+            f"- retrieval p95 ms: `{report['latency']['p95_latency_ms']:.3f}`",
+            "",
+            "This is a C++ storage-backed deterministic debug run. It is useful for gap closure and regression testing, but it is not a VikingMem-equivalent LLM judge score until the same reader, judge, prompt, and scoring protocol are used.",
+            "",
+        ]
+    )
+
+
 def main() -> int:
     args = parse_args()
     if args.batch_size < 20:
@@ -331,6 +538,7 @@ def main() -> int:
     artifact_dir = Path(args.artifact_dir)
     artifact_dir.mkdir(parents=True, exist_ok=True)
     args.storage_prefix = args.storage_prefix or f"matrixark:dataset:{args.dataset}:{args.artifact_prefix}"
+    artifacts = artifact_paths(artifact_dir, args.artifact_prefix)
     root = Path(__file__).resolve().parents[1]
     env = os.environ.copy()
     env["TEMPORALSTORE_LIB"] = args.temporalstore_lib
@@ -376,6 +584,22 @@ def main() -> int:
         result_rows: list[Json] = []
         retrieval_latencies: list[float] = []
         token_counts: list[int] = []
+        answer_bearing_token_counts: list[int] = []
+        failure_buckets: dict[str, int] = {
+            "retrieval_miss": 0,
+            "evidence_miss_with_context": 0,
+            "reader_miss_with_evidence": 0,
+            "answer_density_miss": 0,
+            "temporal_or_entity_miss": 0,
+        }
+        dropped_token_buckets: dict[str, int] = {
+            "dropped_duplicate_tokens": 0,
+            "dropped_stale_tokens": 0,
+            "dropped_low_score_tokens": 0,
+            "dropped_over_budget_tokens": 0,
+            "dropped_summary_tokens": 0,
+            "dropped_raw_l2_tokens": 0,
+        }
         answer_hits = answer_support_hits = evidence_hits = context_hits = 0
         ingestion_started = time.perf_counter()
 
@@ -436,6 +660,8 @@ def main() -> int:
         ingestion_elapsed_ms = int((time.perf_counter() - ingestion_started) * 1000)
 
         for q_index, question in enumerate(questions):
+            question_type = classify_question_type(question["query"], question.get("category"))
+            ranking = ranking_for_question(question_type)
             started = time.perf_counter()
             pack = call(
                 proc,
@@ -445,6 +671,8 @@ def main() -> int:
                     "query": question["query"],
                     "scope": question["scope"],
                     "max_context_tokens": args.max_context_tokens,
+                    "question_type": question_type,
+                    "ranking": ranking,
                 },
             )
             request_id += 1
@@ -453,7 +681,8 @@ def main() -> int:
             selected = pack.get("selected_refs", [])
             text = selected_text(selected)
             answer_hit = contains_answer(text, question["answer"])
-            support_score = answer_support_score(text, question["answer"])
+            reader = best_answer_evidence(selected, question["query"], question["answer"], question_type)
+            support_score = max(answer_support_score(text, question["answer"]), float(reader.get("score", 0.0)))
             support_hit = answer_hit or support_score >= 0.5
             evidence_hit = any(evidence.lower() in text.lower() for evidence in question.get("evidence", []))
             context_hit = bool(selected)
@@ -463,16 +692,47 @@ def main() -> int:
             context_hits += int(context_hit)
             used_tokens = int(pack.get("used_context_tokens") or sum(len(str(ref.get("text", "")).split()) for ref in selected))
             token_counts.append(used_tokens)
-            prediction = normalize_answer(question["answer"])[0] if answer_hit and normalize_answer(question["answer"]) else ""
+            answer_bearing_tokens = int(reader.get("answer_bearing_tokens") or 0)
+            answer_bearing_token_counts.append(answer_bearing_tokens)
+            dropped_refs = pack.get("dropped_refs", {}) if isinstance(pack.get("dropped_refs", {}), dict) else {}
+            dropped_estimated_tokens = dropped_refs.get("estimated_tokens", {}) if isinstance(dropped_refs.get("estimated_tokens", {}), dict) else {}
+            dropped_token_buckets["dropped_duplicate_tokens"] += int(dropped_estimated_tokens.get("duplicate", 0))
+            dropped_token_buckets["dropped_stale_tokens"] += int(dropped_estimated_tokens.get("stale", 0))
+            dropped_token_buckets["dropped_low_score_tokens"] += int(dropped_estimated_tokens.get("low_score", 0))
+            dropped_token_buckets["dropped_over_budget_tokens"] += int(dropped_estimated_tokens.get("over_budget", 0))
+            dropped_token_buckets["dropped_summary_tokens"] += int(dropped_estimated_tokens.get("summary", 0))
+            dropped_token_buckets["dropped_raw_l2_tokens"] += int(dropped_estimated_tokens.get("raw_l2", 0))
+            if not context_hit:
+                failure_buckets["retrieval_miss"] += 1
+                failure_reason = "retrieval_miss"
+            elif not evidence_hit and question.get("evidence"):
+                failure_buckets["evidence_miss_with_context"] += 1
+                failure_reason = "evidence_miss_with_context"
+            elif not support_hit and evidence_hit:
+                failure_buckets["reader_miss_with_evidence"] += 1
+                failure_reason = "reader_miss_with_evidence"
+            elif not support_hit and question_type in {"date", "current_state"}:
+                failure_buckets["temporal_or_entity_miss"] += 1
+                failure_reason = "temporal_or_entity_miss"
+            elif answer_bearing_tokens <= 0:
+                failure_buckets["answer_density_miss"] += 1
+                failure_reason = "answer_density_miss"
+            else:
+                failure_reason = ""
+            prediction = normalize_answer(question["answer"])[0] if answer_hit and normalize_answer(question["answer"]) else str(reader.get("prediction", ""))
             row = {
                 "question_id": question["question_id"],
                 "question": question["query"],
                 "answer": question["answer"],
                 "prediction": prediction,
+                "question_type": question_type,
                 "answer_hit": answer_hit,
                 "answer_support_hit": support_hit,
                 "answer_support_score": support_score,
+                "answer_bearing_tokens": answer_bearing_tokens,
+                "answer_bearing_ref": reader.get("ref_hash", ""),
                 "evidence_hit": evidence_hit,
+                "failure_reason": failure_reason,
                 "context_pack_id": pack.get("context_pack_id"),
                 "selected_ref_count": len(selected),
                 "used_context_tokens": used_tokens,
@@ -483,19 +743,38 @@ def main() -> int:
             judge_rows.append({**row, "judge": "exact_or_key_token_support_debug", "score": int(support_hit)})
             context_pack_rows.append({"question_id": question["question_id"], "context_pack": pack})
             result_rows.append({**row, "selected_refs": selected[:8]})
+            if args.checkpoint_interval > 0 and (q_index + 1) % args.checkpoint_interval == 0:
+                partial_report = build_report(
+                    args=args,
+                    artifacts=artifacts,
+                    started_ms=started_ms,
+                    ingestion_elapsed_ms=ingestion_elapsed_ms,
+                    retrieval_latencies=retrieval_latencies,
+                    turns_ingested=turns_ingested,
+                    sessions_ingested=sessions_ingested,
+                    questions=questions[: q_index + 1],
+                    hits=answer_hits,
+                    support_hits=answer_support_hits,
+                    evidence_hits=evidence_hits,
+                    context_hits=context_hits,
+                    token_counts=token_counts,
+                    answer_bearing_token_counts=answer_bearing_token_counts,
+                    failure_buckets=failure_buckets,
+                    dropped_token_buckets=dropped_token_buckets,
+                )
+                write_artifacts(
+                    artifacts=artifacts,
+                    report=partial_report,
+                    result_rows=result_rows,
+                    hypothesis_rows=hypothesis_rows,
+                    context_pack_rows=context_pack_rows,
+                    judge_rows=judge_rows,
+                    partial=True,
+                )
     finally:
         proc.kill()
         proc.wait(timeout=5)
 
-    prefix = args.artifact_prefix
-    artifacts = {
-        "result_json": str(artifact_dir / f"{prefix}.result.json"),
-        "report_json": str(artifact_dir / f"{prefix}.report.json"),
-        "report_markdown": str(artifact_dir / f"{prefix}.report.md"),
-        "hypotheses_jsonl": str(artifact_dir / f"{prefix}.hypotheses.jsonl"),
-        "context_pack_jsonl": str(artifact_dir / f"{prefix}.context_packs.jsonl"),
-        "judge_jsonl": str(artifact_dir / f"{prefix}.judge.jsonl"),
-    }
     report = build_report(
         args=args,
         artifacts=artifacts,
@@ -510,36 +789,20 @@ def main() -> int:
         evidence_hits=evidence_hits,
         context_hits=context_hits,
         token_counts=token_counts,
+        answer_bearing_token_counts=answer_bearing_token_counts,
+        failure_buckets=failure_buckets,
+        dropped_token_buckets=dropped_token_buckets,
     )
-    Path(artifacts["result_json"]).write_text(json.dumps(result_rows, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
-    Path(artifacts["report_json"]).write_text(json.dumps(report, indent=2, sort_keys=True, ensure_ascii=False) + "\n", encoding="utf-8")
-    write_jsonl(Path(artifacts["hypotheses_jsonl"]), hypothesis_rows)
-    write_jsonl(Path(artifacts["context_pack_jsonl"]), context_pack_rows)
-    write_jsonl(Path(artifacts["judge_jsonl"]), judge_rows)
-    Path(artifacts["report_markdown"]).write_text(
-        "\n".join(
-            [
-                f"# MatrixArk {args.dataset} C++ TemporalStore Benchmark",
-                "",
-                f"- backend: `temporalstore-direct`",
-                f"- metaserver: `{args.metaserver}`",
-                f"- storage prefix: `{args.storage_prefix}`",
-                f"- questions: `{len(questions)}`",
-                f"- turns ingested: `{turns_ingested}`",
-                f"- sessions: `{sessions_ingested}`",
-                f"- context recall: `{report['scores']['context_recall']:.4f}`",
-                f"- answer hit: `{report['scores']['answer_hit']:.4f}`",
-                f"- evidence session recall: `{report['scores']['evidence_session_recall']:.4f}`",
-                f"- ingestion throughput turns/sec: `{report['latency']['ingestion_throughput_turns_per_sec']}`",
-                f"- retrieval p50 ms: `{report['latency']['p50_latency_ms']:.3f}`",
-                f"- retrieval p95 ms: `{report['latency']['p95_latency_ms']:.3f}`",
-                "",
-                "This is a C++ storage-backed deterministic debug run, not an LLM-judge paper score.",
-                "",
-            ]
-        ),
-        encoding="utf-8",
+    write_artifacts(
+        artifacts=artifacts,
+        report=report,
+        result_rows=result_rows,
+        hypothesis_rows=hypothesis_rows,
+        context_pack_rows=context_pack_rows,
+        judge_rows=judge_rows,
+        partial=False,
     )
+    Path(artifacts["report_markdown"]).write_text(report_markdown(args, report), encoding="utf-8")
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0
 

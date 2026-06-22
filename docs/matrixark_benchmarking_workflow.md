@@ -634,3 +634,55 @@ flowchart TD
 5. Make the benchmark report writer include backend, C++ endpoint, storage
    prefix, restart-before-query, and write
    mode in every LOCOMO/LongMemEval report.
+
+## Score-Gap Benchmark Workflow
+
+Use this path when optimizing against VikingMem-style memory quality:
+
+```mermaid
+flowchart TD
+    A["Question"] --> B["Classify question type"]
+    B --> C["Set ranking weights"]
+    C --> D["Retrieve from C++ TemporalStore"]
+    D --> E["Question-type-aware packing"]
+    E --> F["Deterministic reader diagnostics"]
+    F --> G["Token efficiency metrics"]
+    G --> H["Failure bucket"]
+    H --> I["Checkpoint artifacts"]
+```
+
+Default question-type policies:
+
+| Question type | Packing priority |
+|---|---|
+| `date` | session date and exact date-bearing turn |
+| `current_state` | `ContextEntity` first, then corrections and stale blockers |
+| `multi_hop` | diversify across sessions/nodes/entities |
+| `evidence` | raw dialogue/event first |
+| `why_emotion` | answer-bearing reason/emotion sentence first |
+| `fact` | extracted observation/event first |
+
+Every full run should include:
+
+- `result.json`
+- `report.json`
+- `report.md`
+- `hypotheses.jsonl`
+- `context_packs.jsonl`
+- `judge.jsonl`
+- `progress.json`
+
+The `progress.json` file is written during checkpointing. This is important for official LongMemEval_s because the run is long enough that partial artifacts are valuable even when the local machine times out.
+
+Key metrics to inspect before tuning:
+
+- `context_recall`
+- `evidence_session_recall`
+- `answer_support_hit`
+- `final_judge_score`
+- `answer_bearing_token_density`
+- `judge_score_per_1k_tokens`
+- `token_efficiency.dropped_token_categories`
+- failure buckets for retrieval, evidence, reader, temporal/entity, and density misses
+
+Do not compare deterministic debug score directly with VikingMem paper score. Use it to find failures. For paper-style comparison, rerun the same artifacts with the matched OSS/OpenAI-compatible reader and judge.
