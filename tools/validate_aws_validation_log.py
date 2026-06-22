@@ -292,6 +292,9 @@ def validate_context_workflow(job, summary):
     require(parity["pipeline_ready"], f"{job}: context parity report is not ready")
     for field in [
         "cpp_context_models_ready",
+        "cpp_context_model_ids_ready",
+        "cpp_context_timeline_semantics_ready",
+        "cpp_context_validation_limits_ready",
         "openviking_tiers_ready",
         "extraction_stage_ready",
         "retrieval_stage_ready",
@@ -309,6 +312,10 @@ def validate_context_workflow(job, summary):
     require(
         any("OpenViking-style L0/L1/L2" in item for item in summary["parity_evidence"]),
         f"{job}: context parity evidence missing OpenViking tier coverage",
+    )
+    require(
+        any("model ids 9-13" in item for item in summary["parity_evidence"]),
+        f"{job}: context parity evidence missing C++ model id coverage",
     )
 
 

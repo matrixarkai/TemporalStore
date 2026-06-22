@@ -8,8 +8,9 @@ use serde_json::Value;
 use crate::engine::TemporalEngine;
 use crate::http::{post_json_with_options_and_headers, HttpRequestOptions};
 use crate::types::{
-    Command, CommandResponse, ContextAuditRef, ContextEvent, ContextIndexRef, ContextNode,
-    ContextPackAudit, ContextSummaryDirtyMarker, ExecuteRequest, ShardId, Status,
+    context_model_descriptors, Command, CommandResponse, ContextAuditRef, ContextEvent,
+    ContextIndexRef, ContextModelDescriptor, ContextNode, ContextPackAudit,
+    ContextSummaryDirtyMarker, ExecuteRequest, ShardId, Status,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -380,6 +381,7 @@ pub struct ContextInjectReport {
 pub struct ContextWorkflowStateReport {
     pub status: Status,
     pub providers: Vec<ContextModelProviderConfig>,
+    pub context_model_descriptors: Vec<ContextModelDescriptor>,
     pub openviking_model_profiles: Vec<ContextOpenVikingModelProfile>,
     pub openviking_parity_cases: Vec<ContextOpenVikingParityCase>,
     pub openviking_parity_categories: Vec<String>,
@@ -388,6 +390,7 @@ pub struct ContextWorkflowStateReport {
     pub vlm_provider_configured: bool,
     pub vlm_benchmark_proven: bool,
     pub policy: ContextWorkflowPolicy,
+    pub parity: ContextPipelineParityEvidence,
     pub openviking_comparison: String,
     pub supported_routes: Vec<String>,
 }
@@ -446,6 +449,9 @@ pub struct ContextPipelineStageReport {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextPipelineParityEvidence {
     pub cpp_context_models_ready: bool,
+    pub cpp_context_model_ids_ready: bool,
+    pub cpp_context_timeline_semantics_ready: bool,
+    pub cpp_context_validation_limits_ready: bool,
     pub openviking_tiers_ready: bool,
     pub extraction_stage_ready: bool,
     pub retrieval_stage_ready: bool,
@@ -472,6 +478,9 @@ pub fn context_pipeline_parity_evidence() -> ContextPipelineParityEvidence {
     let evidence = vec![
         "C++ ContextNode/Event/IndexRef/PackAudit/SummaryDirty model aliases and protobuf wire encoders are implemented"
             .to_string(),
+        "C++ Context model ids 9-13 are exposed as first-class Rust descriptors".to_string(),
+        "C++ Context timeline fanout, key shapes, range windows, and validation limits are enforced"
+            .to_string(),
         "OpenViking-style L0/L1/L2 tiers are produced during extraction and consumed during retrieval/injection"
             .to_string(),
         "Context extraction persists node, event, index-ref, and dirty-summary commands through TemporalEngine"
@@ -482,6 +491,9 @@ pub fn context_pipeline_parity_evidence() -> ContextPipelineParityEvidence {
     ];
     ContextPipelineParityEvidence {
         cpp_context_models_ready: true,
+        cpp_context_model_ids_ready: true,
+        cpp_context_timeline_semantics_ready: true,
+        cpp_context_validation_limits_ready: true,
         openviking_tiers_ready: true,
         extraction_stage_ready: true,
         retrieval_stage_ready: true,
@@ -817,6 +829,7 @@ pub fn context_workflow_state_report() -> ContextWorkflowStateReport {
     ContextWorkflowStateReport {
         status: Status::ok(),
         providers: default_context_model_providers(),
+        context_model_descriptors: context_model_descriptors(),
         openviking_model_profiles,
         openviking_parity_cases,
         openviking_parity_categories,
@@ -825,6 +838,7 @@ pub fn context_workflow_state_report() -> ContextWorkflowStateReport {
         vlm_provider_configured,
         vlm_benchmark_proven: false,
         policy: ContextWorkflowPolicy::default(),
+        parity: context_pipeline_parity_evidence(),
         openviking_comparison:
             "TemporalStore keeps OpenViking-style L0/L1/L2 hierarchical context, but stores it in ContextNode/Event/Index/Audit models instead of a separate viking:// filesystem."
                 .to_string(),
@@ -3801,6 +3815,23 @@ mod tests {
         assert_eq!(vikingmem_reader.api_key_env, "OPENAI_API_KEY");
 
         let state = context_workflow_state_report();
+        assert_eq!(
+            state
+                .context_model_descriptors
+                .iter()
+                .map(|descriptor| (descriptor.name.as_str(), descriptor.model_id))
+                .collect::<Vec<_>>(),
+            vec![
+                ("ContextNodeModel", 9),
+                ("ContextEventModel", 10),
+                ("ContextIndexModel", 11),
+                ("ContextAuditModel", 12),
+                ("ContextDirtyModel", 13),
+            ]
+        );
+        assert!(state.parity.cpp_context_model_ids_ready);
+        assert!(state.parity.cpp_context_timeline_semantics_ready);
+        assert!(state.parity.cpp_context_validation_limits_ready);
         assert!(state
             .openviking_model_profiles
             .iter()

@@ -173,8 +173,18 @@ AREAS: tuple[ApiModelArea, ...] = (
                 (
                     "ContextNodeModel",
                     "ContextEventModel",
+                    "context_model_descriptors",
+                    "CONTEXT_EVENT_MODEL_ID",
                     "ContextWire",
                     "context_models_round_trip_cpp_wire_payloads_and_type_alias",
+                ),
+            ),
+            RustEvidence(
+                "crates/temporalstore-rust/src/engine.rs",
+                (
+                    "CONTEXT_TIMELINE_FANOUT",
+                    "CONTEXT_MAX_FILTER_VALUES",
+                    "context_models_match_cpp_registration_ids_and_validation_limits",
                 ),
             ),
             RustEvidence(

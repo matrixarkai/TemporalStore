@@ -16,9 +16,9 @@ Current inventory:
 
 ```text
 total cases: 79
-total steps: 166
+total steps: 167
 executable shared behavior cases: 26
-executable shared behavior steps: 106
+executable shared behavior steps: 107
 C++ existing-test parity surface cases: 50
 C++ existing-test parity surface steps: 57
 C++ required source/test/harness paths: 133 unique paths plus 60 Raft path references
@@ -62,7 +62,7 @@ C++ execution should progressively cover every executable case.
 | `risk_family_query_and_delete` | Risk family set/query plus common delete cleanup. |
 | `risk_manager_debug_fol` | Risk set-and-get, first/last FOL selection, manager summary, and debug window report behavior. |
 | `context_node_roundtrip` | Context node upsert/read. |
-| `context_event_index_audit_dirty_models` | Context event, secondary index, prompt-pack audit, and dirty-summary models. |
+| `context_event_index_audit_dirty_models` | Context event, secondary index, prompt-pack audit, dirty-summary models, C++ model IDs 9-13, timeline fanout, and validation limits. |
 | `common_restart_persistence` | String/hash restart-read persistence. |
 | `mixed_model_restart_persistence` | Feature plus Context restart-read persistence in one case. |
 | `common_not_found_and_empty_reads` | Missing string/hash/exists reads and C++ `CommonExpire` not-found status. |
@@ -214,7 +214,7 @@ Yes. Current Rust-local attributed test count is:
 Rust attributed tests: 546
 shared-corpus marked Rust tests: 17
 shared corpus cases: 79
-shared corpus steps: 166
+shared corpus steps: 167
 C++ existing-test surfaces: 133
 ```
 

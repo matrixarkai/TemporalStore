@@ -336,6 +336,61 @@ pub type ContextIndexModel = ContextIndexRef;
 pub type ContextAuditModel = ContextPackAudit;
 pub type ContextDirtyModel = ContextSummaryDirtyMarker;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextModelDescriptor {
+    pub model_id: u8,
+    pub name: String,
+    pub key_family: String,
+    pub page_primitive: String,
+}
+
+pub const CONTEXT_NODE_MODEL_ID: u8 = 9;
+pub const CONTEXT_EVENT_MODEL_ID: u8 = 10;
+pub const CONTEXT_INDEX_MODEL_ID: u8 = 11;
+pub const CONTEXT_AUDIT_MODEL_ID: u8 = 12;
+pub const CONTEXT_DIRTY_MODEL_ID: u8 = 13;
+
+pub fn context_model_descriptors() -> Vec<ContextModelDescriptor> {
+    vec![
+        ContextModelDescriptor {
+            model_id: CONTEXT_NODE_MODEL_ID,
+            name: "ContextNodeModel".to_string(),
+            key_family: "ctx:node".to_string(),
+            page_primitive: "HashOrSet<std::string,std::string>".to_string(),
+        },
+        ContextModelDescriptor {
+            model_id: CONTEXT_EVENT_MODEL_ID,
+            name: "ContextEventModel".to_string(),
+            key_family: "ctx:event".to_string(),
+            page_primitive: "FeatureOrSet".to_string(),
+        },
+        ContextModelDescriptor {
+            model_id: CONTEXT_INDEX_MODEL_ID,
+            name: "ContextIndexModel".to_string(),
+            key_family: "ctxidx".to_string(),
+            page_primitive: "FeatureOrSet".to_string(),
+        },
+        ContextModelDescriptor {
+            model_id: CONTEXT_AUDIT_MODEL_ID,
+            name: "ContextAuditModel".to_string(),
+            key_family: "ctx:audit".to_string(),
+            page_primitive: "FeatureOrSet".to_string(),
+        },
+        ContextModelDescriptor {
+            model_id: CONTEXT_DIRTY_MODEL_ID,
+            name: "ContextDirtyModel".to_string(),
+            key_family: "ctx:dirty".to_string(),
+            page_primitive: "FeatureOrSet".to_string(),
+        },
+    ]
+}
+
+pub fn context_model_descriptor(name: &str) -> Option<ContextModelDescriptor> {
+    context_model_descriptors()
+        .into_iter()
+        .find(|descriptor| descriptor.name == name)
+}
+
 pub trait ContextWire: Sized + Serialize + for<'de> Deserialize<'de> {
     fn encode_cpp_context_value(&self) -> Vec<u8>;
     fn decode_cpp_context_value(bytes: &[u8]) -> Option<Self>;
@@ -1189,6 +1244,30 @@ mod tests {
 
     #[test]
     fn context_models_round_trip_cpp_wire_payloads_and_type_alias() {
+        assert_eq!(
+            context_model_descriptors()
+                .iter()
+                .map(|descriptor| {
+                    (
+                        descriptor.name.as_str(),
+                        descriptor.model_id,
+                        descriptor.key_family.as_str(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                ("ContextNodeModel", 9, "ctx:node"),
+                ("ContextEventModel", 10, "ctx:event"),
+                ("ContextIndexModel", 11, "ctxidx"),
+                ("ContextAuditModel", 12, "ctx:audit"),
+                ("ContextDirtyModel", 13, "ctx:dirty"),
+            ]
+        );
+        assert_eq!(
+            context_model_descriptor("ContextEventModel").map(|descriptor| descriptor.model_id),
+            Some(CONTEXT_EVENT_MODEL_ID)
+        );
+
         let node = ContextNode {
             node_hash: 42,
             parent_hash: 7,

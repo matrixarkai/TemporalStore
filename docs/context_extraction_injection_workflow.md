@@ -149,6 +149,25 @@ The harness verifies:
   OpenViking L0/L1/L2 tiers, extraction, retrieval, injection, index refs, pack audit, dirty
   summary, restart replay, shared-store sync/async replay, Raft reads, and unified corpus evidence
 
+## C++ Context Model Parity
+
+The current C++ TemporalStore context module registers first-class LLM context model names on top of
+existing hash/feature page primitives:
+
+| C++ model | Model id | Rust model descriptor | Key family | Primitive |
+| --- | ---: | --- | --- | --- |
+| `ContextNodeModel` | `9` | `ContextNodeModel` | `ctx:node` | hash/object metadata |
+| `ContextEventModel` | `10` | `ContextEventModel` | `ctx:event` | timestamped feature page |
+| `ContextIndexModel` | `11` | `ContextIndexModel` | `ctxidx` | timestamped feature page |
+| `ContextAuditModel` | `12` | `ContextAuditModel` | `ctx:audit` | timestamped feature page |
+| `ContextDirtyModel` | `13` | `ContextDirtyModel` | `ctx:dirty` | timestamped feature page |
+
+Rust exposes the same model IDs through `context_model_descriptors()`, uses the same object-key
+families, and matches the C++ timeline fanout (`1024 * 1024`) so multiple records in the same
+millisecond are queryable through the same range semantics. Rust also enforces the C++ context
+limits for index names, query limits, filter counts, related-node fanout, audit refs, propagation
+depth, score ranges, timestamp overflow, and bounded payload sizes.
+
 ## Production Readiness
 
 The production readiness gate now tracks this workflow as `context_workflow`.

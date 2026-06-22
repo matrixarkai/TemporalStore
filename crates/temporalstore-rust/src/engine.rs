@@ -26,10 +26,10 @@ use crate::page_store::{
 };
 use crate::types::{
     parse_cpp_feature_filters, BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse,
-    ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit, ContextSummaryDirtyMarker,
-    ContextWire, ExecuteRequest, ExecuteResponse, FeatureFilter, FeatureFilterOp, FeaturePoint,
-    FeatureWritePolicy, IpsSnapshotReport, IpsStats, RiskFamily, RiskFolType, SequenceFeatureRow,
-    SequenceQuerySpec, ShardId, Status, StringSetCondition,
+    ContextAuditRef, ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit,
+    ContextSummaryDirtyMarker, ContextWire, ExecuteRequest, ExecuteResponse, FeatureFilter,
+    FeatureFilterOp, FeaturePoint, FeatureWritePolicy, IpsSnapshotReport, IpsStats, RiskFamily,
+    RiskFolType, SequenceFeatureRow, SequenceQuerySpec, ShardId, Status, StringSetCondition,
 };
 
 #[derive(Debug, Clone)]
@@ -154,8 +154,19 @@ struct AdmissionLimit {
 const FEATURE_ADD_HARD_MAX_SIZE: usize = 100_000;
 const FEATURE_PAGE_MAGIC: &[u8] = b"TSFPG1\n";
 const TIMESTAMPED_KV_PAGE_TARGET_BYTES: usize = 64 * 1024;
-const CONTEXT_TIMELINE_FANOUT: u64 = 1024;
+const CONTEXT_TIMELINE_FANOUT: u64 = 1024 * 1024;
 const CONTEXT_DEFAULT_LIMIT: usize = 100;
+const CONTEXT_MAX_LIMIT: usize = 1000;
+const CONTEXT_MAX_FILTER_VALUES: usize = 32;
+const CONTEXT_MAX_RELATED_NODE_HASHES: usize = 64;
+const CONTEXT_MAX_AUDIT_REFS: usize = 512;
+const CONTEXT_MAX_PROPAGATE_DEPTH: u32 = 8;
+const CONTEXT_MAX_INDEX_NAME_BYTES: usize = 64;
+const CONTEXT_MAX_CANONICAL_NAME_BYTES: usize = 512;
+const CONTEXT_MAX_L0_BYTES: usize = 2048;
+const CONTEXT_MAX_REF_BYTES: usize = 4096;
+const CONTEXT_MAX_EVENT_TEXT_BYTES: usize = 64 * 1024;
+const CONTEXT_MAX_COMPACT_ATTRS_BYTES: usize = 8 * 1024;
 const CONTEXT_NODE_FIELD: &str = "meta";
 const HOT_PAGE_SEGMENT_ID: u64 = u64::MAX;
 static HOT_PAGE_OFFSET: AtomicU64 = AtomicU64::new(1);
@@ -8661,14 +8672,16 @@ fn context_timeline_start(timestamp_ms: u64) -> u64 {
 }
 
 fn context_timeline_end(timestamp_ms: u64) -> u64 {
-    timestamp_ms.saturating_mul(CONTEXT_TIMELINE_FANOUT)
+    timestamp_ms
+        .saturating_mul(CONTEXT_TIMELINE_FANOUT)
+        .saturating_add(CONTEXT_TIMELINE_FANOUT)
 }
 
 fn context_limit(limit: Option<usize>) -> usize {
     limit
         .unwrap_or(CONTEXT_DEFAULT_LIMIT)
         .max(1)
-        .min(FEATURE_ADD_HARD_MAX_SIZE)
+        .min(CONTEXT_MAX_LIMIT)
 }
 
 fn context_bytes<T: ContextWire>(value: &T) -> Vec<u8> {
@@ -9002,7 +9015,7 @@ fn validate_command_preconditions(
         }
         Command::ContextUpsertNode { tenant_hash, node } => {
             validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
-            validate_context_required(node.node_hash != 0, "node_hash is required")?;
+            validate_context_node(node)?;
         }
         Command::ContextGetNode {
             tenant_hash,
@@ -9019,19 +9032,25 @@ fn validate_command_preconditions(
         } => {
             validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
             validate_context_required(*node_hash != 0, "node_hash is required")?;
-            validate_context_required(event.event_time_ms != 0, "event_time_ms is required")?;
-            validate_context_required(event.event_id_hash != 0, "event_id_hash is required")?;
+            validate_context_event(event)?;
         }
         Command::ContextQueryEvents {
             tenant_hash,
             node_hash,
             start_time_ms,
             end_time_ms,
+            limit,
+            kinds,
+            statuses,
+            min_confidence,
+            min_importance,
             ..
         } => {
             validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
             validate_context_required(*node_hash != 0, "node_hash is required")?;
+            validate_context_limit(*limit)?;
             validate_context_range(*start_time_ms, *end_time_ms)?;
+            validate_context_filters(kinds, statuses, *min_confidence, *min_importance)?;
         }
         Command::ContextWriteIndexRef {
             tenant_hash,
@@ -9042,17 +9061,11 @@ fn validate_command_preconditions(
             ..
         } => {
             validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
-            validate_context_required(!index_name.is_empty(), "index_name is required")?;
+            validate_context_index_name(index_name)?;
             validate_context_required(*index_value_hash != 0, "index_value_hash is required")?;
             validate_context_required(*event_time_ms != 0, "event_time_ms is required")?;
-            validate_context_required(
-                index_ref.primary_node_hash != 0,
-                "primary_node_hash is required",
-            )?;
-            validate_context_required(
-                index_ref.primary_event_time_ms != 0,
-                "primary_event_time_ms is required",
-            )?;
+            validate_context_timestamp(*event_time_ms)?;
+            validate_context_index_ref(index_ref)?;
         }
         Command::ContextQueryIndex {
             tenant_hash,
@@ -9060,28 +9073,30 @@ fn validate_command_preconditions(
             index_value_hash,
             start_time_ms,
             end_time_ms,
+            limit,
             ..
         } => {
             validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
-            validate_context_required(!index_name.is_empty(), "index_name is required")?;
+            validate_context_index_name(index_name)?;
             validate_context_required(*index_value_hash != 0, "index_value_hash is required")?;
+            validate_context_limit(*limit)?;
             validate_context_range(*start_time_ms, *end_time_ms)?;
         }
         Command::ContextWritePackAudit { tenant_hash, audit } => {
             validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
-            validate_context_required(audit.session_hash != 0, "session_hash is required")?;
-            validate_context_required(audit.request_time_ms != 0, "request_time_ms is required")?;
-            validate_context_required(!audit.query_id.is_empty(), "query_id is required")?;
+            validate_context_pack_audit(audit)?;
         }
         Command::ContextQueryPackAudit {
             tenant_hash,
             session_hash,
             start_time_ms,
             end_time_ms,
+            limit,
             ..
         } => {
             validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
             validate_context_required(*session_hash != 0, "session_hash is required")?;
+            validate_context_limit(*limit)?;
             validate_context_range(*start_time_ms, *end_time_ms)?;
         }
         Command::ContextMarkSummaryDirty {
@@ -9089,18 +9104,19 @@ fn validate_command_preconditions(
             marker,
         } => {
             validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
-            validate_context_required(marker.node_hash != 0, "node_hash is required")?;
-            validate_context_required(marker.event_time_ms != 0, "event_time_ms is required")?;
+            validate_context_dirty_marker(marker)?;
         }
         Command::ContextQuerySummaryDirty {
             tenant_hash,
             node_hash,
             start_time_ms,
             end_time_ms,
+            limit,
             ..
         } => {
             validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
             validate_context_required(*node_hash != 0, "node_hash is required")?;
+            validate_context_limit(*limit)?;
             validate_context_range(*start_time_ms, *end_time_ms)?;
         }
         _ => {}
@@ -9149,15 +9165,207 @@ fn validate_context_required(ok: bool, message: &'static str) -> Result<(), Stat
     }
 }
 
+fn validate_context_byte_len(
+    name: &'static str,
+    value_len: usize,
+    max_len: usize,
+) -> Result<(), Status> {
+    if value_len <= max_len {
+        Ok(())
+    } else {
+        Err(Status::error(
+            "invalid_argument",
+            format!("{name} is too large"),
+        ))
+    }
+}
+
+fn validate_context_score(name: &'static str, value: f32) -> Result<(), Status> {
+    if value.is_finite() && (0.0..=1.0).contains(&value) {
+        Ok(())
+    } else {
+        Err(Status::error(
+            "invalid_argument",
+            format!("{name} must be in [0, 1]"),
+        ))
+    }
+}
+
+fn validate_context_limit(limit: Option<usize>) -> Result<(), Status> {
+    if limit.unwrap_or_default() <= CONTEXT_MAX_LIMIT {
+        Ok(())
+    } else {
+        Err(Status::error("invalid_argument", "limit exceeds maximum"))
+    }
+}
+
 fn validate_context_range(start_time_ms: u64, end_time_ms: u64) -> Result<(), Status> {
     if end_time_ms > start_time_ms {
-        Ok(())
+        validate_context_timestamp(start_time_ms)?;
+        validate_context_timestamp(end_time_ms)
     } else {
         Err(Status::error(
             "invalid_argument",
             "end_time_ms must be greater than start_time_ms",
         ))
     }
+}
+
+fn validate_context_timestamp(timestamp_ms: u64) -> Result<(), Status> {
+    if timestamp_ms <= u64::MAX / CONTEXT_TIMELINE_FANOUT {
+        Ok(())
+    } else {
+        Err(Status::error(
+            "invalid_argument",
+            "timestamp_ms is too large",
+        ))
+    }
+}
+
+fn validate_context_index_name(index_name: &str) -> Result<(), Status> {
+    validate_context_required(!index_name.is_empty(), "index_name is required")?;
+    validate_context_byte_len("index_name", index_name.len(), CONTEXT_MAX_INDEX_NAME_BYTES)?;
+    if index_name
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+    {
+        Ok(())
+    } else {
+        Err(Status::error(
+            "invalid_argument",
+            "index_name contains invalid characters",
+        ))
+    }
+}
+
+fn validate_context_node(node: &ContextNode) -> Result<(), Status> {
+    validate_context_required(node.node_hash != 0, "node_hash must be non-zero")?;
+    validate_context_required(
+        !node.canonical_name.is_empty(),
+        "canonical_name is required",
+    )?;
+    validate_context_byte_len(
+        "canonical_name",
+        node.canonical_name.len(),
+        CONTEXT_MAX_CANONICAL_NAME_BYTES,
+    )?;
+    validate_context_byte_len("l0", node.l0.len(), CONTEXT_MAX_L0_BYTES)?;
+    validate_context_byte_len("l1_ref", node.l1_ref.len(), CONTEXT_MAX_REF_BYTES)?;
+    validate_context_byte_len(
+        "raw_metadata_ref",
+        node.raw_metadata_ref.len(),
+        CONTEXT_MAX_REF_BYTES,
+    )?;
+    if node.last_event_time_ms != 0 {
+        validate_context_timestamp(node.last_event_time_ms)?;
+    }
+    Ok(())
+}
+
+fn validate_context_event(event: &ContextEvent) -> Result<(), Status> {
+    validate_context_required(
+        event.event_time_ms != 0 && event.event_id_hash != 0,
+        "event_time_ms and event_id_hash must be non-zero",
+    )?;
+    if event.valid_until_ms != 0 && event.valid_until_ms <= event.event_time_ms {
+        return Err(Status::error(
+            "invalid_argument",
+            "valid_until_ms must be greater than event_time_ms",
+        ));
+    }
+    validate_context_timestamp(event.event_time_ms)?;
+    if event.valid_until_ms != 0 {
+        validate_context_timestamp(event.valid_until_ms)?;
+    }
+    validate_context_score("confidence", event.confidence)?;
+    validate_context_score("importance", event.importance)?;
+    validate_context_byte_len("text", event.text.len(), CONTEXT_MAX_EVENT_TEXT_BYTES)?;
+    validate_context_byte_len("source_ref", event.source_ref.len(), CONTEXT_MAX_REF_BYTES)?;
+    if event.related_node_hashes.len() > CONTEXT_MAX_RELATED_NODE_HASHES {
+        return Err(Status::error(
+            "invalid_argument",
+            "related_node_hashes exceeds maximum",
+        ));
+    }
+    validate_context_byte_len(
+        "compact_attrs",
+        event.compact_attrs.len(),
+        CONTEXT_MAX_COMPACT_ATTRS_BYTES,
+    )
+}
+
+fn validate_context_filters(
+    kinds: &[u32],
+    statuses: &[u32],
+    min_confidence: f32,
+    min_importance: f32,
+) -> Result<(), Status> {
+    if kinds.len() > CONTEXT_MAX_FILTER_VALUES || statuses.len() > CONTEXT_MAX_FILTER_VALUES {
+        return Err(Status::error("invalid_argument", "too many filter values"));
+    }
+    validate_context_score("min_confidence", min_confidence)?;
+    validate_context_score("min_importance", min_importance)
+}
+
+fn validate_context_index_ref(index_ref: &ContextIndexRef) -> Result<(), Status> {
+    validate_context_required(
+        index_ref.primary_node_hash != 0
+            && index_ref.primary_event_time_ms != 0
+            && index_ref.event_id_hash != 0,
+        "invalid context index ref",
+    )?;
+    validate_context_timestamp(index_ref.primary_event_time_ms)
+}
+
+fn validate_context_audit_ref(audit_ref: &ContextAuditRef) -> Result<(), Status> {
+    validate_context_required(
+        audit_ref.node_hash != 0 && audit_ref.event_time_ms != 0,
+        "audit ref node_hash and event_time_ms are required",
+    )?;
+    validate_context_timestamp(audit_ref.event_time_ms)?;
+    validate_context_byte_len(
+        "audit ref reason",
+        audit_ref.reason.len(),
+        CONTEXT_MAX_REF_BYTES,
+    )
+}
+
+fn validate_context_pack_audit(audit: &ContextPackAudit) -> Result<(), Status> {
+    validate_context_required(
+        audit.session_hash != 0 && audit.request_time_ms != 0 && !audit.query_id.is_empty(),
+        "session_hash, request_time_ms, and query_id are required",
+    )?;
+    validate_context_byte_len("query_id", audit.query_id.len(), CONTEXT_MAX_REF_BYTES)?;
+    validate_context_timestamp(audit.request_time_ms)?;
+    if audit.selected_refs.len() > CONTEXT_MAX_AUDIT_REFS
+        || audit.blocked_refs.len() > CONTEXT_MAX_AUDIT_REFS
+    {
+        return Err(Status::error(
+            "invalid_argument",
+            "audit refs exceed maximum",
+        ));
+    }
+    for audit_ref in &audit.selected_refs {
+        validate_context_audit_ref(audit_ref)?;
+    }
+    for audit_ref in &audit.blocked_refs {
+        validate_context_audit_ref(audit_ref)?;
+    }
+    Ok(())
+}
+
+fn validate_context_dirty_marker(marker: &ContextSummaryDirtyMarker) -> Result<(), Status> {
+    validate_context_required(
+        marker.node_hash != 0 && marker.event_time_ms != 0,
+        "node_hash and event_time_ms are required",
+    )?;
+    if marker.propagate_depth > CONTEXT_MAX_PROPAGATE_DEPTH {
+        return Err(Status::error(
+            "invalid_argument",
+            "propagate_depth exceeds maximum",
+        ));
+    }
+    validate_context_timestamp(marker.event_time_ms)
 }
 
 fn cached_response(
@@ -9456,6 +9664,150 @@ mod tests {
             recovery.total_page_refs >= 5,
             "context pages should be visible to recovery accounting"
         );
+    }
+
+    // shared-corpus: context_event_index_audit_dirty_models
+    #[test]
+    fn context_models_match_cpp_registration_ids_and_validation_limits() {
+        assert_eq!(CONTEXT_TIMELINE_FANOUT, 1024 * 1024);
+        assert_eq!(
+            context_timeline_end(42) - context_timeline_start(42),
+            CONTEXT_TIMELINE_FANOUT
+        );
+        assert_eq!(
+            crate::types::context_model_descriptors()
+                .iter()
+                .map(|descriptor| (descriptor.name.as_str(), descriptor.model_id))
+                .collect::<Vec<_>>(),
+            vec![
+                ("ContextNodeModel", 9),
+                ("ContextEventModel", 10),
+                ("ContextIndexModel", 11),
+                ("ContextAuditModel", 12),
+                ("ContextDirtyModel", 13),
+            ]
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+
+        let invalid_node = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertNode {
+                tenant_hash: 11,
+                node: ContextNode {
+                    node_hash: 42,
+                    canonical_name: String::new(),
+                    ..ContextNode {
+                        node_hash: 42,
+                        parent_hash: 0,
+                        kind: 0,
+                        canonical_name: "valid".to_string(),
+                        l0: String::new(),
+                        status: 0,
+                        last_event_time_ms: 0,
+                        summary_dirty: false,
+                        l1_ref: String::new(),
+                        raw_metadata_ref: String::new(),
+                    }
+                },
+            },
+        });
+        assert_eq!(invalid_node.status.code, "invalid_argument");
+
+        let invalid_event = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextWriteEvent {
+                tenant_hash: 11,
+                node_hash: 42,
+                event: ContextEvent {
+                    event_id_hash: 5,
+                    event_time_ms: 1_000,
+                    valid_until_ms: 999,
+                    confidence: 1.1,
+                    importance: 0.5,
+                    ..ContextEvent {
+                        event_id_hash: 5,
+                        event_time_ms: 1_000,
+                        kind: 0,
+                        event_type: 0,
+                        actor_hash: 0,
+                        status: 0,
+                        valid_until_ms: 0,
+                        confidence: 0.5,
+                        importance: 0.5,
+                        text: String::new(),
+                        source_ref: String::new(),
+                        related_node_hashes: Vec::new(),
+                        compact_attrs: Vec::new(),
+                    }
+                },
+                first_write_only: false,
+            },
+        });
+        assert_eq!(invalid_event.status.code, "invalid_argument");
+
+        let invalid_index = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextWriteIndexRef {
+                tenant_hash: 11,
+                index_name: "bad index".to_string(),
+                index_value_hash: 77,
+                scope_hash: 0,
+                event_time_ms: 1_000,
+                index_ref: ContextIndexRef {
+                    primary_node_hash: 42,
+                    primary_event_time_ms: 1_000,
+                    event_id_hash: 5,
+                },
+            },
+        });
+        assert_eq!(invalid_index.status.code, "invalid_argument");
+
+        let invalid_audit = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextWritePackAudit {
+                tenant_hash: 11,
+                audit: ContextPackAudit {
+                    query_id: "q".to_string(),
+                    session_hash: 99,
+                    request_time_ms: 2_000,
+                    query_hash: 0,
+                    max_prompt_tokens: 0,
+                    selected_tokens: 0,
+                    selected_refs: vec![
+                        ContextAuditRef {
+                            node_hash: 42,
+                            event_time_ms: 1_000,
+                            reason: "x".to_string(),
+                        };
+                        CONTEXT_MAX_AUDIT_REFS + 1
+                    ],
+                    blocked_refs: Vec::new(),
+                },
+            },
+        });
+        assert_eq!(invalid_audit.status.code, "invalid_argument");
+
+        let invalid_dirty = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextMarkSummaryDirty {
+                tenant_hash: 11,
+                marker: ContextSummaryDirtyMarker {
+                    node_hash: 42,
+                    event_time_ms: 3_000,
+                    reason: 0,
+                    propagate_depth: CONTEXT_MAX_PROPAGATE_DEPTH + 1,
+                },
+            },
+        });
+        assert_eq!(invalid_dirty.status.code, "invalid_argument");
     }
 
     #[test]

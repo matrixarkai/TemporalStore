@@ -1653,6 +1653,39 @@
           }
         },
         {
+          "name": "context_write_event_same_millisecond_fanout",
+          "command": {
+            "kind": "context_write_event",
+            "tenant_hash": 101,
+            "node_hash": 700,
+            "event": {
+              "event_id_hash": 9002,
+              "event_time_ms": 9000,
+              "kind": 3,
+              "type": 4,
+              "actor_hash": 55,
+              "status": 1,
+              "valid_until_ms": 9500,
+              "confidence": 0.8,
+              "importance": 0.6,
+              "text": "second context event in same millisecond",
+              "source_ref": "shared-corpus-second",
+              "related_node_hashes": [
+                700
+              ],
+              "compact_attrs": [
+                4,
+                5
+              ]
+            },
+            "first_write_only": false
+          },
+          "expect": {
+            "kind": "context_object_key",
+            "object_key": "ctx:event:101:700"
+          }
+        },
+        {
           "name": "context_query_event_model",
           "command": {
             "kind": "context_query_events",
@@ -1696,6 +1729,26 @@
                   1,
                   2,
                   3
+                ]
+              },
+              {
+                "event_id_hash": 9002,
+                "event_time_ms": 9000,
+                "kind": 3,
+                "type": 4,
+                "actor_hash": 55,
+                "status": 1,
+                "valid_until_ms": 9500,
+                "confidence": 0.8,
+                "importance": 0.6,
+                "text": "second context event in same millisecond",
+                "source_ref": "shared-corpus-second",
+                "related_node_hashes": [
+                  700
+                ],
+                "compact_attrs": [
+                  4,
+                  5
                 ]
               }
             ]
