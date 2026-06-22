@@ -41,6 +41,12 @@ class MatrixArkMcpServerTest(unittest.TestCase):
                 "matrixark_retrieve",
                 "matrixark_feedback",
                 "matrixark_replay",
+                "matrixark_admin_create_account",
+                "matrixark_admin_create_api_key",
+                "matrixark_admin_rotate_api_key",
+                "matrixark_admin_revoke_api_key",
+                "matrixark_admin_map_sso_user",
+                "matrixark_admin_audit",
             },
         )
         ingest = next(tool for tool in response["result"]["tools"] if tool["name"] == "matrixark_ingest")
@@ -63,6 +69,8 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         self.assertEqual(feedback["inputSchema"]["required"], ["messages"])
         self.assertIn("strongly recommended", feedback["inputSchema"]["properties"]["context_pack_id"]["description"])
         self.assertNotIn("infer", feedback["inputSchema"]["properties"])
+        create_key = next(tool for tool in response["result"]["tools"] if tool["name"] == "matrixark_admin_create_api_key")
+        self.assertIn("api_key", create_key["inputSchema"]["properties"])
 
     def test_hook_captured_ingest_then_retrieve(self):
         ingest = self.call_tool(
@@ -113,6 +121,115 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         event = next(record for record in replay["events"] if record.get("event_id_hash") == ingest["event_id_hash"])
         self.assertTrue(event["summary_text"])
         self.assertEqual(len(event["summary_embedding"]), 32)
+
+    def test_access_management_key_lifecycle_and_session_isolation(self):
+        account = self.call_tool(
+            "matrixark_admin_create_account",
+            {
+                "account_id": "acct_acme",
+                "tenant_id": "tenant_eng",
+                "account_name": "Acme",
+                "tenant_name": "Engineering",
+            },
+        )
+        self.assertEqual(account["status"], "created")
+
+        created_key = self.call_tool(
+            "matrixark_admin_create_api_key",
+            {
+                "account_id": "acct_acme",
+                "tenant_id": "tenant_eng",
+                "scopes": ["context:ingest", "context:retrieve", "context:replay"],
+                "role": "agent_service",
+            },
+        )
+        api_key = created_key["api_key"]
+        self.assertTrue(api_key.startswith("mk_test_"))
+        self.assertNotIn(api_key, self.event_log.read_text())
+
+        ingest = self.call_tool(
+            "matrixark_ingest",
+            {
+                "api_key": api_key,
+                "messages": [{"role": "user", "content": "Alice approved the GPU purchase for Project Orion."}],
+                "scope": {"user_id": "alice", "session_id": "sess-a", "team": "infra"},
+            },
+        )
+        self.assertEqual(ingest["access"]["account_id"], "acct_acme")
+        self.assertEqual(ingest["access"]["tenant_id"], "tenant_eng")
+        replay = self.call_tool("matrixark_replay", {"api_key": api_key, "context_pack_id": "debug", "scope": {"user_id": "alice", "session_id": "sess-a"}})
+        event = next(record for record in replay["events"] if record.get("event_id_hash") == ingest["event_id_hash"])
+        self.assertEqual(event["envelope"]["scope"]["account_id"], "acct_acme")
+        self.assertEqual(event["envelope"]["scope"]["tenant_id"], "tenant_eng")
+        self.assertTrue(event["envelope"]["scope"]["tenant_hash"])
+        self.assertTrue(event["envelope"]["scope"]["user_hash"])
+        self.assertTrue(event["envelope"]["scope"]["session_hash"])
+
+        pack = self.call_tool(
+            "matrixark_retrieve",
+            {
+                "api_key": api_key,
+                "query": "GPU Project Orion approval",
+                "scope": {"user_id": "alice", "session_id": "sess-a"},
+            },
+        )
+        self.assertFalse(pack["insufficient_context"])
+        wrong_session = self.call_tool(
+            "matrixark_retrieve",
+            {
+                "api_key": api_key,
+                "query": "GPU Project Orion approval",
+                "scope": {"user_id": "alice", "session_id": "sess-b"},
+            },
+        )
+        self.assertTrue(wrong_session["insufficient_context"])
+
+        audit = self.call_tool("matrixark_admin_audit", {"account_id": "acct_acme", "tenant_id": "tenant_eng"})
+        self.assertGreaterEqual(audit["count"], 3)
+
+        revoked = self.call_tool("matrixark_admin_revoke_api_key", {"api_key_id": created_key["api_key_id"]})
+        self.assertEqual(revoked["status"], "revoked")
+        error_response = self.server.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 99,
+                "method": "tools/call",
+                "params": {
+                    "name": "matrixark_retrieve",
+                    "arguments": {"api_key": api_key, "query": "GPU", "scope": {"user_id": "alice"}},
+                },
+            }
+        )
+        self.assertIn("error", error_response)
+        self.assertIn("invalid or revoked", error_response["error"]["message"])
+
+    def test_sso_mapping_and_enforced_mode_requires_api_key(self):
+        mapped = self.call_tool(
+            "matrixark_admin_map_sso_user",
+            {
+                "provider": "okta",
+                "external_user_id": "alice@acme.com",
+                "account_id": "acct_acme",
+                "tenant_id": "tenant_eng",
+            },
+        )
+        self.assertEqual(mapped["status"], "mapped")
+        self.assertTrue(mapped["matrixark_user_id"].startswith("mu_"))
+
+        enforced = MatrixArkMcpServer(MatrixArkLocalAdapter(self.event_log), access_mode="enforced")
+        response = enforced.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "matrixark_retrieve",
+                    "arguments": {"query": "anything", "scope": {"user_id": "alice"}},
+                },
+            }
+        )
+        self.assertIn("error", response)
+        self.assertIn("API key is required", response["error"]["message"])
 
     def test_agent_direct_ingest_generates_summary_embedding_and_retrieves_by_layer_score(self):
         ingest = self.call_tool(
@@ -166,7 +283,7 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         self.assertEqual(event["prior_message_count"], 1)
         self.assertGreaterEqual(event["prior_summary_count"], 1)
         replay = self.call_tool("matrixark_replay", {"context_pack_id": "debug"})
-        latest = replay["events"][-1]
+        latest = next(record for record in replay["events"] if record.get("event_id_hash") == event["event_id_hash"])
         self.assertEqual(latest["prior_context"]["summaries"][0]["ref_type"], "session_summary")
         self.assertIn(prior["event_id_hash"], {ref["ref_hash"] for ref in event["prior_refs"] if ref["ref_type"] == "event"})
 
@@ -275,7 +392,7 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         self.assertGreaterEqual(result["prior_summary_count"], 1)
 
         replay = self.call_tool("matrixark_replay", {"context_pack_id": "debug"})
-        feedback_record = replay["events"][-1]
+        feedback_record = next(record for record in replay["events"] if record.get("event_id_hash") == result["event_id_hash"])
         self.assertEqual(feedback_record["prior_context"]["level"], "session")
         self.assertEqual(len(feedback_record["prior_context"]["messages"]), 8)
         self.assertIn("Prior GPU approval context turn 11", feedback_record["prior_context"]["messages"][0]["text"])
@@ -315,7 +432,7 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         self.assertEqual(result["prior_refs"][0]["ref_hash"], ingest["event_id_hash"])
 
         replay = self.call_tool("matrixark_replay", {"context_pack_id": pack["context_pack_id"]})
-        feedback_record = replay["events"][-1]
+        feedback_record = next(record for record in replay["events"] if record.get("event_id_hash") == result["event_id_hash"])
         self.assertEqual(feedback_record["prior_context"]["summaries"][0]["ref_type"], "context_pack")
         self.assertEqual(feedback_record["prior_context"]["messages"], [])
 
