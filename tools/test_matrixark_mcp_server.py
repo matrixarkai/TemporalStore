@@ -118,6 +118,10 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         self.assertIn("context_summary", record_types)
         self.assertIn("context_embedding", record_types)
         self.assertTrue(any(record.get("summary_type") == "session_l0" for record in replay["events"]))
+        self.assertTrue(any(record.get("summary_type") == "node_l0" for record in replay["events"]))
+        self.assertTrue(any(record.get("summary_type") == "node_l1" for record in replay["events"]))
+        self.assertTrue(any(record.get("embedding_type") == "node_l0" for record in replay["events"]))
+        self.assertTrue(any(record.get("embedding_type") == "node_l1" for record in replay["events"]))
         event = next(record for record in replay["events"] if record.get("event_id_hash") == ingest["event_id_hash"])
         self.assertTrue(event["summary_text"])
         self.assertEqual(len(event["summary_embedding"]), 32)
@@ -318,6 +322,22 @@ class MatrixArkMcpServerTest(unittest.TestCase):
                 record.get("record_type") == "context_embedding"
                 and record.get("embedding_type") == "node_l0"
                 and record.get("node_path") == ["company_a", "infra_team", "runbooks", "stream_proxy"]
+                for record in replay["events"]
+            )
+        )
+        self.assertTrue(
+            any(
+                record.get("record_type") == "context_embedding"
+                and record.get("embedding_type") == "node_l1"
+                and record.get("node_path") == ["company_a", "infra_team", "runbooks", "stream_proxy"]
+                for record in replay["events"]
+            )
+        )
+        self.assertTrue(
+            any(
+                record.get("record_type") == "context_summary"
+                and record.get("summary_type") == "node_l1"
+                and "tree-first retrieval" in record.get("summary_text", "")
                 for record in replay["events"]
             )
         )

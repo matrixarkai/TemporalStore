@@ -14,6 +14,12 @@ The primary path is now tree-first, then hybrid at the selected leaves:
 5. Continue layer by layer until selected leaves are reached.
 6. Run event/entity/segment recall only inside those selected leaf subtrees.
 
+Extraction writes both summary levels before retrieval:
+
+- `node_l0`: short folder abstract for cheap layer-by-layer top-K folder choice.
+- `node_l1`: richer node overview for stronger folder scoring and future prompt packing.
+- both levels get `ContextEmbedding` records and are stored in the same TemporalStore-backed record stream.
+
 Leaf recall then combines:
 
 - dense semantic score from stored event/entity/segment embeddings;
