@@ -3544,6 +3544,117 @@ mod tests {
         assert!(!inject.audit.selected_refs.is_empty());
     }
 
+    // shared-corpus: context_benchmark_injection_entity_segment_index
+    #[test]
+    fn context_benchmark_injection_uses_entity_segment_l0_l1_and_secondary_index() {
+        let engine = test_engine();
+        let extract = extract_context(
+            &engine,
+            ContextExtractRequest {
+                shard_id: 1,
+                tenant_hash: 20260622,
+                source_kind: ContextSourceKind::Chat,
+                source_id: "locomo-conv-7-session-3-turn-18".to_string(),
+                title: "Caroline medical appointment update".to_string(),
+                body: "Caroline told Maya on March 12 that her cardiology appointment moved after the museum visit, and Maya should remind her brother Leo before Friday.".to_string(),
+                timestamp_ms: 1_712_300_000_000,
+                provider: ContextModelProviderConfig::default(),
+            },
+        );
+        assert!(extract.status.ok, "{:?}", extract.status);
+
+        let entity: crate::ContextEntity = extract.node.clone();
+        let segment: crate::ContextSegment = extract.event.clone();
+        assert_eq!(entity.node_hash, extract.index_ref.primary_node_hash);
+        assert_eq!(segment.event_id_hash, extract.index_ref.event_id_hash);
+        assert!(entity.l0.contains("Caroline"));
+        assert!(entity.l1_ref.contains("kind=Chat"));
+        assert!(segment
+            .text
+            .contains("cardiology appointment moved after the museum visit"));
+        assert_eq!(segment.related_node_hashes, vec![entity.node_hash]);
+
+        let indexed = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextQueryIndex {
+                tenant_hash: 20260622,
+                index_name: "source".to_string(),
+                index_value_hash: stable_hash64("locomo-conv-7-session-3-turn-18"),
+                scope_hash: 0,
+                start_time_ms: 1_712_299_000_000,
+                end_time_ms: 1_712_301_000_000,
+                limit: Some(4),
+            },
+        });
+        let refs = match indexed.response {
+            CommandResponse::ContextIndexRefs { refs, .. } => refs,
+            other => panic!("unexpected secondary index response: {other:?}"),
+        };
+        assert_eq!(refs, vec![extract.index_ref.clone()]);
+
+        let retrieve = ContextRetrieveRequest {
+            shard_id: 1,
+            tenant_hash: 20260622,
+            node_hashes: vec![refs[0].primary_node_hash],
+            query: "When did Caroline move the cardiology appointment after the museum visit?"
+                .to_string(),
+            start_time_ms: 1_712_299_000_000,
+            end_time_ms: 1_712_301_000_000,
+            max_events: 8,
+            min_confidence: 0.0,
+            min_importance: 0.0,
+            tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
+        };
+        let retrieved = retrieve_context(&engine, retrieve.clone());
+        assert!(retrieved.status.ok, "{:?}", retrieved.status);
+        assert!(retrieved
+            .blocks
+            .iter()
+            .any(|block| { block.tier == ContextTier::L0 && block.text == entity.l0 }));
+        assert!(retrieved
+            .blocks
+            .iter()
+            .any(|block| { block.tier == ContextTier::L1 && block.text == entity.l1_ref }));
+        assert!(retrieved
+            .blocks
+            .iter()
+            .any(|block| { block.tier == ContextTier::L2 && block.text == segment.text }));
+
+        let inject = inject_context(
+            &engine,
+            ContextInjectRequest {
+                retrieve,
+                prompt: "Answer with retrieved TemporalStore memory.".to_string(),
+                session_hash: stable_hash64("locomo-conv-7"),
+                query_id: "locomo-context-entity-segment-index".to_string(),
+                max_prompt_tokens: 192,
+                provider: ContextModelProviderConfig::default(),
+            },
+        );
+        assert!(inject.status.ok, "{:?}", inject.status);
+        assert!(inject
+            .selected_blocks
+            .iter()
+            .any(|block| block.tier == ContextTier::L0));
+        assert!(inject
+            .selected_blocks
+            .iter()
+            .any(|block| block.tier == ContextTier::L1));
+        assert!(inject
+            .selected_blocks
+            .iter()
+            .any(|block| block.tier == ContextTier::L2));
+        assert!(inject.injected_prompt.contains(&entity.l0));
+        assert!(inject.injected_prompt.contains(&entity.l1_ref));
+        assert!(inject.injected_prompt.contains(&segment.text));
+        assert!(inject
+            .audit
+            .selected_refs
+            .iter()
+            .any(|audit| audit.node_hash == entity.node_hash
+                && audit.event_time_ms == segment.event_time_ms));
+    }
+
     // shared-corpus: context_management_ingest_retrieve_pipeline
     #[test]
     fn context_management_ingest_extract_builds_retrieval_pipeline() {

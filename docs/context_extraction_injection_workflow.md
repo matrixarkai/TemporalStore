@@ -28,6 +28,31 @@ The workflow is:
    blocks into a prompt under a token budget.
 7. `audit`: injection persists a `ContextPackAudit` with selected and blocked refs.
 
+## Benchmark Data Flow
+
+LOCOMO, LongMemEval_s, and OpenViking-style benchmark ingestion use the same Rust
+TemporalStore context models as normal production traffic:
+
+1. `ContextEntity` is the public benchmark/pipeline name for the node-level record stored as
+   `ContextNodeModel`. It owns the stable node hash, canonical title, `L0` routing summary, `L1`
+   key-fact summary, last event time, dirty-summary flag, and raw source metadata ref.
+2. `ContextSegment` is the public benchmark/pipeline name for the timestamped evidence segment
+   stored as `ContextEventModel`. It owns the timestamp key, event id hash, source text, source
+   ref, confidence/importance, and related entity node hashes. The page stores timestamp-keyed
+   segment entries; the segment text is not stored separately from the page entry.
+3. `ContextIndexRef` stores secondary indexes such as `source:<source_id_hash> -> entity/segment`.
+   Benchmark replay uses this index to prove a source or conversation turn can route back to the
+   exact timestamped segment before retrieval/injection.
+4. Retrieval materializes `ContextBlock` entries from the models: `L0` and `L1` blocks come from
+   the entity, while `L2` blocks come from matching timestamped segments.
+5. Injection packs the selected L0/L1/L2 blocks into `<context>` and writes `ContextPackAudit`
+   selected refs so benchmark reports can prove the injected evidence came from TemporalStore.
+
+The shared C++/Rust corpus case `context_benchmark_injection_entity_segment_index` exercises this
+flow with a LOCOMO-style conversation turn: extract entity/segment records, query the `source`
+secondary index, retrieve L0/L1/L2 blocks, inject them under a token budget, and verify the audit
+refs point back to the same entity and segment.
+
 ## API
 
 The data-node server exposes:
@@ -156,8 +181,8 @@ existing hash/feature page primitives:
 
 | C++ model | Model id | Rust model descriptor | Key family | Primitive |
 | --- | ---: | --- | --- | --- |
-| `ContextNodeModel` | `9` | `ContextNodeModel` | `ctx:node` | hash/object metadata |
-| `ContextEventModel` | `10` | `ContextEventModel` | `ctx:event` | timestamped feature page |
+| `ContextNodeModel` / `ContextEntity` | `9` | `ContextNodeModel` | `ctx:node` | hash/object metadata, L0/L1 summaries |
+| `ContextEventModel` / `ContextSegment` | `10` | `ContextEventModel` | `ctx:event` | timestamp-keyed segment page |
 | `ContextIndexModel` | `11` | `ContextIndexModel` | `ctxidx` | timestamped feature page |
 | `ContextAuditModel` | `12` | `ContextAuditModel` | `ctx:audit` | timestamped feature page |
 | `ContextDirtyModel` | `13` | `ContextDirtyModel` | `ctx:dirty` | timestamped feature page |

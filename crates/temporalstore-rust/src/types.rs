@@ -332,6 +332,8 @@ pub struct ContextSummaryDirtyMarker {
 
 pub type ContextNodeModel = ContextNode;
 pub type ContextEventModel = ContextEvent;
+pub type ContextEntity = ContextNode;
+pub type ContextSegment = ContextEvent;
 pub type ContextIndexModel = ContextIndexRef;
 pub type ContextAuditModel = ContextPackAudit;
 pub type ContextDirtyModel = ContextSummaryDirtyMarker;
