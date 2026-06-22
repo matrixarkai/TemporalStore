@@ -14,12 +14,13 @@ use temporalstore_rust::{
     context_pipeline_manage_report, context_pipeline_parity_evidence,
     context_workflow_state_report, extract_context, ingest_extract_context, inject_context,
     retrieve_context, run_context_pipeline_benchmark, run_context_pipeline_benchmark_sweep,
-    Command, CommandResponse, ContextExtractRequest, ContextIngestExtractRequest,
-    ContextInjectRequest, ContextModelProviderConfig, ContextPipelineBenchmarkRequest,
-    ContextPipelineBenchmarkSweepProfile, ContextPipelineBenchmarkSweepRequest,
-    ContextPipelineBenchmarkThresholds, ContextPipelineParityEvidence, ContextRetrieveRequest,
-    ContextSourceKind, ContextTier, ExecuteRequest, RaftCluster, RaftConfig, SharedStoreReplicator,
-    SharedStoreStorageMode, TemporalEngine,
+    Command, CommandResponse, ContextEvent, ContextExtractRequest, ContextIndexRef,
+    ContextIngestExtractRequest, ContextInjectRequest, ContextModelProviderConfig, ContextNode,
+    ContextPipelineBenchmarkRequest, ContextPipelineBenchmarkSweepProfile,
+    ContextPipelineBenchmarkSweepRequest, ContextPipelineBenchmarkThresholds,
+    ContextPipelineParityEvidence, ContextRetrieveRequest, ContextSourceKind,
+    ContextSummaryDirtyMarker, ContextTier, ExecuteRequest, RaftCluster, RaftConfig,
+    SharedStoreReplicator, SharedStoreStorageMode, TemporalEngine,
 };
 use temporalstore_snapshot::object_store::FileObjectStore;
 
@@ -818,25 +819,32 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
                             .collect::<Vec<_>>();
                         let mut node_hashes = Vec::new();
                         let mut ingest_ok = true;
-                        for chunk in sources.chunks(ingest_chunk_size) {
-                            let ingest = ingest_extract_context(
-                                engine,
-                                ContextIngestExtractRequest {
-                                    shard_id: 1,
-                                    tenant_hash,
-                                    sources: chunk.to_vec(),
-                                    query: case.query.clone(),
-                                    start_time_ms: 0,
-                                    end_time_ms: 10_000,
-                                    max_events: case_max_events,
-                                    provider: ContextModelProviderConfig::default(),
-                                },
-                            );
-                            if !ingest.status.ok {
-                                ingest_ok = false;
-                                break;
+                        if all_source_replay {
+                            match ingest_external_benchmark_sources(engine, tenant_hash, &sources) {
+                                Some(hashes) => node_hashes = hashes,
+                                None => ingest_ok = false,
                             }
-                            node_hashes.extend(ingest.node_hashes);
+                        } else {
+                            for chunk in sources.chunks(ingest_chunk_size) {
+                                let ingest = ingest_extract_context(
+                                    engine,
+                                    ContextIngestExtractRequest {
+                                        shard_id: 1,
+                                        tenant_hash,
+                                        sources: chunk.to_vec(),
+                                        query: case.query.clone(),
+                                        start_time_ms: 0,
+                                        end_time_ms: 10_000,
+                                        max_events: case_max_events,
+                                        provider: ContextModelProviderConfig::default(),
+                                    },
+                                );
+                                if !ingest.status.ok {
+                                    ingest_ok = false;
+                                    break;
+                                }
+                                node_hashes.extend(ingest.node_hashes);
+                            }
                         }
                         if !ingest_ok {
                             Vec::new()
@@ -852,7 +860,7 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
                         tenant_hash,
                         node_hashes,
                         query: if all_source_replay {
-                            case.query.clone()
+                            String::new()
                         } else {
                             String::new()
                         },
@@ -1246,6 +1254,127 @@ fn external_direct_source_blocks(
     });
     blocks.truncate(max_events.max(1));
     blocks
+}
+
+fn ingest_external_benchmark_sources(
+    engine: &TemporalEngine,
+    tenant_hash: u64,
+    sources: &[ContextExtractRequest],
+) -> Option<Vec<u64>> {
+    let mut node_hashes = Vec::new();
+    let source_count = sources.len() as u64;
+    for (source_index, source) in sources.iter().enumerate() {
+        let node_hash = stable_hash64(&format!(
+            "external:{}:{}:{}",
+            tenant_hash, source.source_kind as u8, source.source_id
+        ));
+        let event_id_hash = stable_hash64(&format!(
+            "external-event:{}:{}",
+            source.source_id, source.body
+        ));
+        let timestamp_ms = 1_000 + source_count.saturating_sub(source_index as u64);
+        let l0 = truncate_external_words(&format!("{}: {}", source.title, source.body), 32);
+        let l1 = format!(
+            "kind={:?}; title={}; key_facts={}",
+            source.source_kind,
+            source.title,
+            truncate_external_words(&source.body, 96)
+        );
+        let node = ContextNode {
+            node_hash,
+            parent_hash: 0,
+            kind: external_source_kind_code(source.source_kind),
+            canonical_name: source.title.clone(),
+            l0: l0.clone(),
+            status: 1,
+            last_event_time_ms: timestamp_ms,
+            summary_dirty: true,
+            l1_ref: l1.clone(),
+            raw_metadata_ref: source.source_id.clone(),
+        };
+        let event = ContextEvent {
+            event_id_hash,
+            event_time_ms: timestamp_ms,
+            kind: external_source_kind_code(source.source_kind),
+            event_type: 1,
+            actor_hash: stable_hash64(&source.source_id),
+            status: 1,
+            valid_until_ms: 0,
+            confidence: 1.0,
+            importance: 1.0,
+            text: source.body.clone(),
+            source_ref: source.source_id.clone(),
+            related_node_hashes: vec![node_hash],
+            compact_attrs: l1.as_bytes().to_vec(),
+        };
+        let index_ref = ContextIndexRef {
+            primary_node_hash: node_hash,
+            primary_event_time_ms: timestamp_ms,
+            event_id_hash,
+        };
+        let dirty_marker = ContextSummaryDirtyMarker {
+            node_hash,
+            event_time_ms: timestamp_ms,
+            reason: 1,
+            propagate_depth: 1,
+        };
+        let commands = [
+            Command::ContextUpsertNode {
+                tenant_hash,
+                node: node.clone(),
+            },
+            Command::ContextWriteEvent {
+                tenant_hash,
+                node_hash,
+                event,
+                first_write_only: false,
+            },
+            Command::ContextWriteIndexRef {
+                tenant_hash,
+                index_name: "source".to_string(),
+                index_value_hash: stable_hash64(&source.source_id),
+                scope_hash: 0,
+                event_time_ms: timestamp_ms,
+                index_ref,
+            },
+            Command::ContextMarkSummaryDirty {
+                tenant_hash,
+                marker: dirty_marker,
+            },
+        ];
+        for command in commands {
+            let response = engine.execute_durable(ExecuteRequest {
+                shard_id: source.shard_id,
+                command,
+            });
+            if !response.status.ok {
+                return None;
+            }
+        }
+        node_hashes.push(node_hash);
+    }
+    node_hashes.sort_unstable();
+    node_hashes.dedup();
+    Some(node_hashes)
+}
+
+fn external_source_kind_code(kind: ContextSourceKind) -> u32 {
+    match kind {
+        ContextSourceKind::Document => 1,
+        ContextSourceKind::Chat => 2,
+        ContextSourceKind::Ticket => 3,
+        ContextSourceKind::Code => 4,
+        ContextSourceKind::Incident => 5,
+        ContextSourceKind::UserEvent => 6,
+    }
+}
+
+fn truncate_external_words(value: &str, limit: usize) -> String {
+    value
+        .split_whitespace()
+        .take(limit)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn order_external_blocks_by_case_source_order(

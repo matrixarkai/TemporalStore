@@ -441,6 +441,46 @@ python3 tools/run_longmemeval_s_full_path.py \
 | Rust/Python rank delta | 0.0 |
 | Threshold violations | 0 |
 
+The official cleaned LongMemEval_s artifact also passes the full all-source Rust TemporalStore
+replay after the external benchmark harness change. This run uses source packing only to reduce
+runtime; `preserves_all_source_text=true`, all 500 cases are replayed, and the Rust/Python Hit@K
+delta is zero.
+
+```bash
+sha256sum /tmp/longmemeval_s_official_cleaned.json
+# d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442
+
+python3 tools/run_longmemeval_s_full_path.py \
+  --input /tmp/longmemeval_s_official_cleaned.json \
+  --threshold-profile longmemeval_full \
+  --reader-mode deterministic \
+  --require-full-rust-temporalstore-replay \
+  --rust-temporalstore-release \
+  --rust-temporalstore-source-limit 0 \
+  --rust-temporalstore-batch-size 16 \
+  --rust-temporalstore-source-pack-size 32 \
+  --rust-temporalstore-timeout-seconds 900 \
+  --rust-temporalstore-score-tolerance 0 \
+  --report /tmp/ts_longmemeval_official_cleaned_full_rust_fixed/result.json \
+  --misses /tmp/ts_longmemeval_official_cleaned_full_rust_fixed/misses.jsonl
+```
+
+| Metric | Result |
+| --- | ---: |
+| Input bytes | 277,383,467 |
+| Scored cases | 500 |
+| Original source records | 246,738 |
+| Packed source records | 7,956 |
+| Source text preserved | `true` |
+| Retrieval/context Hit@K | 0.9580000000 |
+| Reader hit rate | 0.9020000000 |
+| Token reduction | 98.6619247964 |
+| Benchmark threshold passed | `true` |
+| Full Rust replay ready | `true` |
+| Rust/Python Hit@K delta | 0.0 |
+| Rust/Python zero-hit parity | `true` |
+| Batch count | 32 |
+
 ## Live OSS Reader Validation
 
 The live OSS reader validation path exists and fails closed unless a real OpenAI-compatible local
