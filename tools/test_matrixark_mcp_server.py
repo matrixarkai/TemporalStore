@@ -5,7 +5,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools.matrixark_mcp_server import MatrixArkLocalAdapter, MatrixArkMcpServer
+from tools.matrixark_mcp_server import (
+    MatrixArkLocalAdapter,
+    MatrixArkMcpServer,
+    apply_statistical_operator,
+    latest_record,
+    score_recall_candidate,
+)
 
 
 class MatrixArkMcpServerTest(unittest.TestCase):
@@ -694,6 +700,105 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         self.assertNotIn("infer", result)
         self.assertEqual(result["extraction_mode"], "matrixark_internal")
         self.assertEqual(result["classification"], "AMBIGUOUS")
+
+    def test_context_statistical_and_latest_operators(self):
+        records = [
+            {"metadata": {"value": 10}, "updated_at_ms": 1000, "state": "old"},
+            {"metadata": {"value": 25}, "updated_at_ms": 3000, "state": "new"},
+            {"metadata": {"value": 5}, "updated_at_ms": 2000, "state": "middle"},
+        ]
+        self.assertEqual(apply_statistical_operator("COUNT", records), 3)
+        self.assertEqual(apply_statistical_operator("SUM", records), 40)
+        self.assertEqual(apply_statistical_operator("AVG", records), 13.333333)
+        self.assertEqual(apply_statistical_operator("MAX", records), 25)
+        self.assertEqual(latest_record(records)["state"], "new")
+
+    def test_decay_score_and_business_weight_operator(self):
+        scored = score_recall_candidate(
+            {
+                "origin_score": 0.4,
+                "updated_at_ms": 1_000,
+                "event_type": "approval",
+                "metadata": {"business_weight": 1.0},
+            },
+            {
+                "freshness_tolerance_ms": 0,
+                "half_life_ms": 1_000,
+                "weights": {"time": 0.25, "business": 0.35},
+            },
+            reference_time_ms=5_000,
+        )
+        self.assertLess(scored["time_score"], 0.2)
+        self.assertEqual(scored["business_score"], 1.0)
+        self.assertEqual(scored["ranking_formula"], "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi")
+        self.assertGreater(scored["final_score"], 0.4)
+
+    def test_time_compression_is_retrievable_and_non_destructive(self):
+        scope = {"user_id": "alice", "session_id": "operator-window", "team": "infra"}
+        node_path = ["account:acct_dev", "tenant:tenant_dev", "principal:user:alice", "collection:sessions", "session:operator-window"]
+        ingested = []
+        for text in [
+            "Alice approved the old GPU purchase after finance reviewed it.",
+            "The GPU approval budget was 42000 dollars.",
+            "The approval was confirmed by infra lead Sam.",
+        ]:
+            ingested.append(
+                self.call_tool(
+                    "matrixark_ingest",
+                    {
+                        "messages": [{"role": "user", "content": text}],
+                        "scope": scope,
+                        "metadata": {"node_path": node_path, "importance": 0.95, "business_weight": 0.95},
+                    },
+                )
+            )
+        records = self.server.adapter.read_all()
+        event_records = [record for record in records if record.get("record_type") == "context_event"]
+        self.assertEqual(len(event_records), 3)
+        node_hash = ingested[0]["node_hash"]
+        times = [record["envelope"]["ingestion_time_ms"] for record in event_records]
+        compression = self.server.adapter.write_time_compression(
+            scope=scope,
+            node_hash=node_hash,
+            node_path=node_path,
+            source_start_ms=min(times),
+            source_end_ms=max(times),
+            compressed_time_ms=max(times) + 10_000,
+            max_source_events=2,
+            min_importance=0.9,
+        )
+        self.assertEqual(compression["record_type"], "context_compression_event")
+        self.assertEqual(compression["operator"], "TIME_COMPRESS")
+        self.assertEqual(compression["source_event_count"], 2)
+        self.assertTrue(compression["truncated_source_events"])
+        self.assertEqual(len(compression["source_event_ids"]), 2)
+
+        queried = self.server.adapter.query_time_compressions(
+            scope=scope,
+            node_hashes={node_hash},
+            start_time_ms=min(times),
+            end_time_ms=max(times),
+        )
+        self.assertEqual([item["compression_id_hash"] for item in queried], [compression["compression_id_hash"]])
+
+        pack = self.call_tool(
+            "matrixark_retrieve",
+            {
+                "query": "old GPU approval budget finance",
+                "scope": scope,
+                "max_context_tokens": 20,
+                "ranking": {"weights": {"time": 0.05, "business": 0.25}, "auxiliary_quota": 2},
+            },
+        )
+        compression_refs = [ref for ref in pack["selected_refs"] if ref.get("ref_type") == "compression"]
+        self.assertTrue(compression_refs, pack["selected_refs"])
+        self.assertEqual(compression_refs[0]["operator"], "TIME_COMPRESS")
+        self.assertIn("source_event_ids", compression_refs[0])
+
+        replay = self.call_tool("matrixark_replay", {"context_pack_id": "debug"})
+        replay_types = [record.get("record_type") for record in replay["events"]]
+        self.assertEqual(replay_types.count("context_event"), 3)
+        self.assertIn("context_compression_event", replay_types)
 
     def test_initialize_protocol_shape(self):
         response = self.server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize"})

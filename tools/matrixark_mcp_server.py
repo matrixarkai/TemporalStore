@@ -1270,6 +1270,39 @@ def score_recall_candidate(candidate: Json, ranking: Json, *, reference_time_ms:
     }
 
 
+def numeric_field(record: Json, field: str = "value") -> float | None:
+    for source in [record, record.get("metadata", {}), record.get("envelope", {}).get("metadata", {})]:
+        if not isinstance(source, dict) or field not in source:
+            continue
+        try:
+            return float(source[field])
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def apply_statistical_operator(operator: str, records: list[Json], *, field: str = "value") -> float | int | None:
+    values = [value for record in records if (value := numeric_field(record, field)) is not None]
+    op = operator.upper()
+    if op == "COUNT":
+        return len(records)
+    if not values:
+        return None
+    if op == "SUM":
+        return round(sum(values), 6)
+    if op == "AVG":
+        return round(sum(values) / len(values), 6)
+    if op == "MAX":
+        return max(values)
+    raise MatrixArkError(f"unsupported statistical operator: {operator}")
+
+
+def latest_record(records: list[Json], *, time_field: str = "updated_at_ms") -> Json | None:
+    if not records:
+        return None
+    return max(records, key=lambda record: int(record.get(time_field) or 0))
+
+
 def merge_ranked_paths(primary: list[Json], auxiliary: list[Json], *, total_limit: int, auxiliary_quota: int) -> list[Json]:
     selected: list[Json] = []
     seen: set[tuple[str, Any]] = set()
@@ -1297,6 +1330,9 @@ def question_type_ref_boost(candidate: Json, question_type: str) -> float:
     ref_type = str(candidate.get("ref_type", ""))
     text = str(candidate.get("text", "")).lower()
     event_type = str(candidate.get("event_type") or candidate.get("entity_type") or candidate.get("topic") or "").lower()
+    if ref_type == "compression" and question_type in {"fact", "current_state", "multi_hop"}:
+        source_count = len(candidate.get("source_event_ids", []) or [])
+        return 0.32 if source_count >= 2 else 0.18
     if question_type == "current_state":
         if ref_type == "entity":
             return 0.28
@@ -1431,6 +1467,10 @@ def compact_refs_for_audit(refs: list[Json], *, preview_chars: int = 160) -> lis
         "keyword_score",
         "token_estimate",
         "updated_at_ms",
+        "operator",
+        "source_start_ms",
+        "source_end_ms",
+        "source_event_ids",
     ]
     for ref in refs:
         item = {field: ref[field] for field in keep_fields if field in ref}
@@ -2191,6 +2231,107 @@ class MatrixArkLocalAdapter:
             "threshold_messages": threshold,
         }
 
+    def write_time_compression(
+        self,
+        *,
+        scope: Json,
+        node_hash: int,
+        node_path: list[str],
+        source_start_ms: int,
+        source_end_ms: int,
+        compressed_time_ms: int,
+        max_source_events: int = 32,
+        min_confidence: float = 0.0,
+        min_importance: float = 0.0,
+        summary: str = "",
+    ) -> Json:
+        if source_start_ms > source_end_ms:
+            raise MatrixArkError("source_start_ms must be <= source_end_ms")
+        if max_source_events <= 0:
+            raise MatrixArkError("max_source_events must be positive")
+        source_events = []
+        for record in self.read_all():
+            if record.get("record_type") != "context_event":
+                continue
+            if int(record.get("node_hash") or 0) != node_hash:
+                continue
+            event_scope = record.get("envelope", {}).get("scope", {})
+            if not scope_matches(event_scope, scope):
+                continue
+            event_time = int(record.get("envelope", {}).get("ingestion_time_ms") or record.get("updated_at_ms") or 0)
+            if event_time < source_start_ms or event_time > source_end_ms:
+                continue
+            extraction = record.get("internal_extraction", {})
+            confidence = float(extraction.get("confidence", record.get("confidence", 1.0)) or 1.0)
+            importance = float(record.get("envelope", {}).get("metadata", {}).get("importance", record.get("importance", 1.0)) or 1.0)
+            if confidence < min_confidence or importance < min_importance:
+                continue
+            source_events.append(record)
+        source_events.sort(key=lambda record: int(record.get("envelope", {}).get("ingestion_time_ms") or 0))
+        selected = source_events[:max_source_events]
+        if not selected:
+            raise MatrixArkError("no source events matched compression window")
+        truncated = len(source_events) > len(selected)
+        source_event_ids = [int(record["event_id_hash"]) for record in selected]
+        compression_scope = selected[0].get("envelope", {}).get("scope", scope)
+        if not summary:
+            snippets = [summarize_text(str(record.get("text", "")), limit=180) for record in selected[:5]]
+            suffix = " plus additional source events" if truncated else ""
+            summary = (
+                f"Temporal compression window [{source_start_ms}, {source_end_ms}] contains "
+                f"{len(selected)} selected events{suffix}. " + " | ".join(snippets)
+            )
+        compression_id_hash = stable_hash(f"compress:{scope}:{node_hash}:{source_start_ms}:{source_end_ms}:{source_event_ids}")
+        record = {
+            "record_type": "context_compression_event",
+            "compression_id_hash": compression_id_hash,
+            "node_hash": node_hash,
+            "node_path": node_path,
+            "scope": compression_scope,
+            "source_start_ms": source_start_ms,
+            "source_end_ms": source_end_ms,
+            "compressed_time_ms": compressed_time_ms,
+            "summary_text": summarize_text(summary, limit=1200),
+            "source_event_ids": source_event_ids,
+            "source_event_count": len(selected),
+            "truncated_source_events": truncated,
+            "operator": "TIME_COMPRESS",
+            "updated_at_ms": compressed_time_ms,
+        }
+        self.append(record)
+        self.append(
+            {
+                "record_type": "context_embedding",
+                "embedding_type": "compression_summary",
+                "ref_type": "compression",
+                "ref_hash": compression_id_hash,
+                "node_hash": node_hash,
+                "node_path": node_path,
+                "dim": EMBEDDING_DIM,
+                "model": "matrixark-local-token-hash-v1",
+                "vector": embedding_for_text(record["summary_text"]),
+                "scope": compression_scope,
+                "updated_at_ms": compressed_time_ms,
+            }
+        )
+        return record
+
+    def query_time_compressions(
+        self, *, scope: Json, node_hashes: set[int], start_time_ms: int, end_time_ms: int, limit: int = 16
+    ) -> list[Json]:
+        matches = []
+        for record in self.read_all():
+            if record.get("record_type") != "context_compression_event":
+                continue
+            if node_hashes and int(record.get("node_hash") or 0) not in node_hashes:
+                continue
+            if not scope_matches(record.get("scope", {}), scope):
+                continue
+            if int(record.get("source_end_ms") or 0) >= start_time_ms and int(record.get("source_start_ms") or 0) <= end_time_ms:
+                matches.append(record)
+        matches.sort(key=lambda record: (int(record.get("source_end_ms") or 0), int(record.get("compressed_time_ms") or 0)), reverse=True)
+        return matches[:limit]
+
     def retrieve(self, args: Json) -> Json:
         query = require_string(args, "query")
         scope = optional_object(args, "scope")
@@ -2214,6 +2355,7 @@ class MatrixArkLocalAdapter:
         event_embedding_vectors: dict[int, list[float]] = {}
         entity_embedding_vectors: dict[int, list[float]] = {}
         segment_embedding_vectors: dict[int, list[float]] = {}
+        compression_embedding_vectors: dict[int, list[float]] = {}
         index_terms_by_batch: dict[Any, list[str]] = {}
         index_terms_by_node: dict[Any, list[str]] = {}
         node_summary_text_by_hash: dict[int, str] = {}
@@ -2262,6 +2404,8 @@ class MatrixArkLocalAdapter:
                 entity_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
             elif record_type == "context_embedding" and record.get("embedding_type") == "segment_text":
                 segment_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
+            elif record_type == "context_embedding" and record.get("embedding_type") == "compression_summary":
+                compression_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
 
         top_k_per_layer = integer_arg(ranking, "top_k_per_layer", 8, minimum=1)
         max_children_scored_per_parent = integer_arg(ranking, "max_children_scored_per_parent", 10000, minimum=1)
@@ -2280,7 +2424,10 @@ class MatrixArkLocalAdapter:
             path = node_path_tuple(record.get("node_path", []))
             if path and path in selected_paths:
                 return True
-            if path and any(starts_with_path(path, leaf_path) for leaf_path in selected_leaf_paths):
+            if path and any(
+                starts_with_path(path, leaf_path) or starts_with_path(leaf_path, path)
+                for leaf_path in selected_leaf_paths
+            ):
                 return True
             try:
                 return int(record.get("node_hash")) in selected_node_hashes
@@ -2442,6 +2589,55 @@ class MatrixArkLocalAdapter:
             if origin_score > 0:
                 primary_matches.append(score_recall_candidate({**candidate, "recall_path": "primary_hybrid"}, ranking, reference_time_ms=reference_time_ms))
             graph_score = sparse_lexical_score(query_terms, " ".join(record.get("node_path", []) + sorted(index_terms) + [record.get("topic", ""), text]))
+            if graph_score > 0:
+                auxiliary_matches.append(
+                    score_recall_candidate(
+                        {
+                            **candidate,
+                            "recall_path": "auxiliary_keyword_graph",
+                            "origin_score": graph_score,
+                            "keyword_graph_score": graph_score,
+                        },
+                        ranking,
+                        reference_time_ms=reference_time_ms,
+                    )
+                )
+        for record in reversed(records):
+            if record.get("record_type") != "context_compression_event":
+                continue
+            if not scope_matches(record.get("scope", {}), scope):
+                continue
+            if not selected_by_tree(record):
+                continue
+            text = f"TIME_COMPRESS: {record.get('summary_text', '')}"
+            sparse_score = sparse_lexical_score(query_terms, text)
+            keyword_score = len(query_terms.intersection(tokens(text)))
+            compression_hash = int(record.get("compression_id_hash") or 0)
+            embedding_score = cosine(query_embedding, compression_embedding_vectors.get(compression_hash, embedding_for_text(text)))
+            node_score = node_scores.get(record["node_hash"], {}).get("score", 0.0)
+            origin_score = min(1.0, 0.08 + hybrid_origin_score(query_terms, text, embedding_score, node_score))
+            candidate = {
+                "ref_type": "compression",
+                "ref_hash": compression_hash,
+                "node_hash": record["node_hash"],
+                "node_path": record.get("node_path", []),
+                "origin_score": origin_score,
+                "keyword_score": keyword_score,
+                "sparse_score": sparse_score,
+                "embedding_score": embedding_score,
+                "node_score": node_score,
+                "event_type": "time_compress",
+                "operator": "TIME_COMPRESS",
+                "source_event_ids": record.get("source_event_ids", []),
+                "source_start_ms": record.get("source_start_ms"),
+                "source_end_ms": record.get("source_end_ms"),
+                "scope": record.get("scope", {}),
+                "updated_at_ms": record.get("compressed_time_ms", record.get("updated_at_ms", now_ms())),
+                "text": clip_context_text(text),
+            }
+            if origin_score > 0:
+                primary_matches.append(score_recall_candidate({**candidate, "recall_path": "primary_time_compression"}, ranking, reference_time_ms=reference_time_ms))
+            graph_score = sparse_lexical_score(query_terms, " ".join(record.get("node_path", []) + [text, "time_compress"]))
             if graph_score > 0:
                 auxiliary_matches.append(
                     score_recall_candidate(
