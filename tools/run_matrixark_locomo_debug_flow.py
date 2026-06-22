@@ -167,7 +167,23 @@ def run() -> Json:
                 },
             },
         )
-        session_results.append({"name": session["name"], "scope": session["scope"], "ingests": ingests, "commit": commit})
+        summary_refresh = call_tool(
+            server,
+            "matrixark_refresh_summaries",
+            {
+                "scope": session["scope"],
+                "limit": 100,
+            },
+        )
+        session_results.append(
+            {
+                "name": session["name"],
+                "scope": session["scope"],
+                "ingests": ingests,
+                "commit": commit,
+                "summary_refresh": summary_refresh,
+            }
+        )
         for query in session["queries"]:
             pack = call_tool(
                 server,

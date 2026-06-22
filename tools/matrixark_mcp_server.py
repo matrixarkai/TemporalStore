@@ -925,7 +925,18 @@ def infer_entity_field_patches(entity_type: str, value: str, text: str) -> list[
         replace = clean_patch_value(preference.group(1))
         search = clean_patch_value(preference.group(2))
         patches.append(entity_patch(search, replace))
-    if entity_type in {"correction", "preference"} and not patches and value:
+    evolving_entity_types = {
+        "preference",
+        "location",
+        "job_status",
+        "current_plan",
+        "family_profile",
+        "relationship",
+        "approval_state",
+        "correction",
+        "confirmation",
+    }
+    if entity_type in evolving_entity_types and not patches and value:
         patches.append(entity_patch("", summarize_text(value, limit=180)))
     return patches[:3]
 
@@ -950,12 +961,16 @@ def canonical_entity_name(entity_type: str, value: str) -> str:
 
 def dedupe_entities(entities: list[Json]) -> list[Json]:
     seen = set()
+    positions: dict[tuple[Any, str], int] = {}
     out = []
     for entity in entities:
         key = (entity.get("entity_type"), str(entity.get("entity_name", "")).lower())
         if key in seen:
+            if entity.get("entity_name") == entity.get("entity_type"):
+                out[positions[key]] = entity
             continue
         seen.add(key)
+        positions[key] = len(out)
         out.append(entity)
     return out[:12]
 
@@ -1069,7 +1084,7 @@ def sparse_lexical_score(query_terms: set[str], text: str) -> float:
 
 def infer_query_type(query: str) -> str:
     lower = query.lower()
-    if re.search(r"\b(when|what date|which date|day|month|year|yesterday|tomorrow|last week|next week)\b", lower):
+    if re.search(r"\b(when|what date|which date|day|month|year|yesterday|tomorrow|last week|next week|before|after|as of|valid as of)\b", lower):
         return "date"
     if re.search(r"\b(current|currently|latest|now|still|today|valid|status|preference|prefer|likes|where does|where is)\b", lower):
         return "current_state"
@@ -1092,7 +1107,10 @@ def infer_secondary_index_filter_groups(query: str, question_type: str) -> list[
             groups.append(clean)
 
     if re.search(r"\b(where|location|located|moved|moving|live|lives|city|home|staying)\b", lower):
-        add_group(context_index_name("entity_type", "location"))
+        location_terms = [context_index_name("entity_type", "location")]
+        if question_type == "date" or re.search(r"\b(before|after|as of|used to|previously|formerly)\b", lower):
+            location_terms.append(context_index_name("source_type", "message"))
+        add_group(*location_terms)
     if re.search(r"\b(prefer|preference|favorite|like|likes|love|loves)\b", lower):
         add_group(context_index_name("entity_type", "preference"), context_index_name("event_type", "preference_update"))
     if re.search(r"\b(friend|partner|mother|father|sister|brother|wife|husband|manager|teammate|relationship|family|child|children|son|daughter|pet)\b", lower):
@@ -1122,10 +1140,11 @@ def infer_secondary_index_filter_groups(query: str, question_type: str) -> list[
 
 
 def candidate_index_terms(record: Json, index_terms_by_batch: dict[Any, list[str]], index_terms_by_node: dict[Any, list[str]]) -> set[str]:
-    terms = set(index_terms_by_batch.get(record.get("batch_id_hash"), []))
-    terms.update(index_terms_by_node.get(record.get("node_hash"), []))
+    terms: set[str] = set()
     record_type = record.get("record_type")
     if record_type == "context_event":
+        terms.update(index_terms_by_batch.get(record.get("batch_id_hash"), []))
+        terms.update(index_terms_by_node.get(record.get("node_hash"), []))
         extraction = record.get("internal_extraction", {})
         envelope = record.get("envelope", {})
         terms.add(context_index_name("event_type", extraction.get("event_type")))
@@ -1140,9 +1159,11 @@ def candidate_index_terms(record: Json, index_terms_by_batch: dict[Any, list[str
     return {term for term in terms if term}
 
 
-def passes_secondary_index_filters(candidate_terms: set[str], required_groups: list[set[str]]) -> bool:
+def passes_secondary_index_filters(candidate_terms: set[str], required_groups: list[set[str]], *, mode: str = "all_groups") -> bool:
     if not required_groups:
         return True
+    if mode == "any_group":
+        return any(bool(candidate_terms.intersection(group)) for group in required_groups)
     return all(bool(candidate_terms.intersection(group)) for group in required_groups)
 
 
@@ -1343,7 +1364,9 @@ def question_type_ref_boost(candidate: Json, question_type: str) -> float:
     if question_type == "evidence":
         return 0.22 if ref_type == "event" else 0.05 if ref_type == "segment" else 0.0
     if question_type == "date":
-        return 0.18 if re.search(r"\b(20\d{2}|19\d{2}|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", text) else 0.0
+        if ref_type == "event" and re.search(r"\b(20\d{2}|19\d{2}|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|monday|tuesday|wednesday|thursday|friday|saturday|sunday|before|after|on)\b", text):
+            return 0.28
+        return 0.08 if ref_type == "entity" else 0.0
     if question_type == "multi_hop":
         return 0.14 if ref_type in {"entity", "segment"} else 0.04
     if question_type == "why_emotion":
@@ -2681,6 +2704,7 @@ class MatrixArkLocalAdapter:
         ranking = optional_object(args, "ranking")
         question_type = str(args.get("question_type") or infer_query_type(query))
         secondary_index_filter_groups = infer_secondary_index_filter_groups(query, question_type)
+        secondary_index_filter_mode = "any_group" if len(secondary_index_filter_groups) > 1 else "all_groups"
         secondary_index_dropped_count = 0
         secondary_index_matched_count = 0
         max_context_tokens = args.get("max_context_tokens", 2048)
@@ -2794,7 +2818,7 @@ class MatrixArkLocalAdapter:
             if not selected_by_tree(record):
                 continue
             index_terms = candidate_index_terms(record, index_terms_by_batch, index_terms_by_node)
-            if not passes_secondary_index_filters(index_terms, secondary_index_filter_groups):
+            if not passes_secondary_index_filters(index_terms, secondary_index_filter_groups, mode=secondary_index_filter_mode):
                 secondary_index_dropped_count += 1
                 continue
             secondary_index_matched_count += 1
@@ -2847,7 +2871,7 @@ class MatrixArkLocalAdapter:
             if not selected_by_tree(record):
                 continue
             index_terms = candidate_index_terms(record, index_terms_by_batch, index_terms_by_node)
-            if not passes_secondary_index_filters(index_terms, secondary_index_filter_groups):
+            if not passes_secondary_index_filters(index_terms, secondary_index_filter_groups, mode=secondary_index_filter_mode):
                 secondary_index_dropped_count += 1
                 continue
             secondary_index_matched_count += 1
@@ -2898,7 +2922,7 @@ class MatrixArkLocalAdapter:
             if not selected_by_tree(record):
                 continue
             index_terms = candidate_index_terms(record, index_terms_by_batch, index_terms_by_node)
-            if not passes_secondary_index_filters(index_terms, secondary_index_filter_groups):
+            if not passes_secondary_index_filters(index_terms, secondary_index_filter_groups, mode=secondary_index_filter_mode):
                 secondary_index_dropped_count += 1
                 continue
             secondary_index_matched_count += 1
@@ -3036,7 +3060,8 @@ class MatrixArkLocalAdapter:
                     "required_groups": [sorted(group) for group in secondary_index_filter_groups],
                     "matched_candidate_count": secondary_index_matched_count,
                     "dropped_candidate_count": secondary_index_dropped_count,
-                    "mode": "AND across groups, OR within each group",
+                    "mode": "ANY group for multi-intent raw query, otherwise AND across groups; OR within each group",
+                    "effective_mode": secondary_index_filter_mode,
                     "applied_before_embedding_scoring": True,
                 },
                 "primary_path": "tree-first hybrid dense semantic + sparse lexical after secondary-index prefilter",

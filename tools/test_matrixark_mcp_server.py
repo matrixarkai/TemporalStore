@@ -257,6 +257,84 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         self.assertEqual(pack["local_context_policy"]["mode"], "shared_budget_dedupe")
         self.assertGreaterEqual(pack["dropped_refs"]["duplicate"], 1)
 
+    def test_current_state_entity_update_prefers_latest_location(self):
+        scope = {"user_id": "locomo-user", "session_id": "locomo-location"}
+        for text in [
+            "I moved to Seattle today, please remember this location.",
+            "Actually I moved to Austin now for the new infra project.",
+        ]:
+            self.call_tool(
+                "matrixark_ingest",
+                {
+                    "messages": [{"role": "user", "content": text}],
+                    "scope": scope,
+                },
+            )
+
+        commit = self.call_tool(
+            "matrixark_session_commit",
+            {
+                "scope": scope,
+                "force": True,
+                "commit_reason": "hook_boundary",
+            },
+        )
+        self.assertEqual(commit["status"], "committed")
+        self.call_tool("matrixark_refresh_summaries", {"scope": scope})
+
+        pack = self.call_tool(
+            "matrixark_retrieve",
+            {
+                "query": "Where is the user currently located?",
+                "scope": scope,
+                "max_context_tokens": 80,
+            },
+        )
+        location_refs = [
+            ref
+            for ref in pack["selected_refs"]
+            if ref.get("ref_type") == "entity" and ref.get("entity_type") == "location"
+        ]
+        self.assertTrue(location_refs)
+        self.assertIn("Austin", location_refs[0]["text"])
+        self.assertNotIn("Seattle", location_refs[0]["text"])
+
+    def test_temporal_before_query_keeps_raw_dated_event_evidence(self):
+        scope = {"user_id": "locomo-user", "session_id": "locomo-temporal"}
+        for text in [
+            "On March 2 I lived in Seattle.",
+            "On April 10 I moved to Austin.",
+        ]:
+            self.call_tool(
+                "matrixark_ingest",
+                {
+                    "messages": [{"role": "user", "content": text}],
+                    "scope": scope,
+                },
+            )
+        self.call_tool(
+            "matrixark_session_commit",
+            {"scope": scope, "force": True, "commit_reason": "hook_boundary"},
+        )
+        self.call_tool("matrixark_refresh_summaries", {"scope": scope})
+
+        pack = self.call_tool(
+            "matrixark_retrieve",
+            {
+                "query": "Where was the user before April 10?",
+                "scope": scope,
+                "max_context_tokens": 80,
+            },
+        )
+        raw_event_text = "\n".join(
+            ref.get("text", "")
+            for ref in pack["selected_refs"]
+            if ref.get("ref_type") == "event"
+        )
+        self.assertEqual(pack["question_type"], "date")
+        self.assertIn("March 2", raw_event_text)
+        self.assertIn("Seattle", raw_event_text)
+
     def test_access_management_key_lifecycle_and_session_isolation(self):
         account = self.call_tool(
             "matrixark_admin_create_account",
