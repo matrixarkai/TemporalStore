@@ -54,6 +54,42 @@ Latest AWS/test state:
     - TIME_COMPRESS produces source-linked summaries and does not hide benchmark answers;
     - C++ TemporalStore direct backend stores operator definitions, states, and audits.
 
+- Add production hybrid recall for dense, sparse, and auxiliary keyword paths.
+  - Current status: MatrixArk already has MVP hybrid recall:
+    - dense similarity from stored TemporalStore embeddings;
+    - lightweight lexical term-overlap scoring through `sparse_lexical_score`;
+    - node/tree score;
+    - time decay and business weighting;
+    - an auxiliary keyword path using node path, `ContextIndex`, event/entity/segment text, and quota merge.
+  - Gap: this is not yet a production sparse retrieval engine. The current sparse path scans candidate records and computes token overlap; it does not build a real inverted index, BM25 index, SPLADE sparse vector index, or learned sparse retrieval model.
+  - Target design:
+    - add a real sparse index, starting with BM25 or a SPLADE-style sparse vector path;
+    - keep dense embeddings in TemporalStore as the primary semantic recall signal;
+    - keep `ContextIndex` and the keyword graph as the auxiliary path for indirect-memory and entity-keyword questions;
+    - add optional late reranking later, likely outside MVP, after first-stage recall is stable;
+    - expose recall mode/config for `dense_only`, `sparse_only`, `dense_sparse_hybrid`, and `hybrid_plus_keyword`.
+  - Storage model:
+    - `ContextSparseTerm`: term hash, document/ref hash, term frequency, document length, scope/node path, updated time, and optional field name.
+    - `ContextSparseStats`: term document frequency, corpus/document count by tenant/scope, average document length, and version.
+    - Optional future `ContextSparseVector`: sparse dimension ids and weights for SPLADE-style retrieval.
+  - Retrieval path:
+    - apply scope/time/status filters first;
+    - fetch sparse candidates from the sparse index instead of scanning all records;
+    - normalize sparse score into the existing `origin_score` blend;
+    - continue to combine final score as `Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi`;
+    - independently rank auxiliary keyword results and merge them with an explicit quota.
+  - Benchmark plan:
+    - dense-only vs sparse-only vs dense+sparse hybrid vs hybrid+keyword path;
+    - run LOCOMO and LongMemEval-style/official datasets with the same token budgets;
+    - report context recall, evidence-session recall, final judge score, token use, p50/p95 retrieval latency, and failure buckets;
+    - add ablations showing whether the keyword path helps nickname/preference/indirect-memory questions.
+  - Tests:
+    - sparse-only recovers exact-name/nickname/event-type facts that dense-only misses;
+    - dense-only recovers semantic paraphrases that sparse-only misses;
+    - hybrid beats or matches both on mixed benchmark subsets;
+    - hybrid+keyword improves indirect-memory examples without overwhelming primary recall;
+    - C++ TemporalStore direct backend stores sparse terms/stats and returns deterministic sparse candidates.
+
 - Implement a full VikingMem-style Keyword Graph for auxiliary recall.
   - Current status: `docs/matrixark_weighted_multi_path_recall.md` implements an auxiliary keyword path over node path, `ContextIndex`, event type, entity text, and segment topics. This is useful, but it is not yet the full keyword graph described in VikingMem.
   - Target behavior: for indirect-memory questions such as "Do you remember my nickname?", dense semantic matching can fail because the query and the original memory may have low direct similarity. Build a keyword graph where each keyword is connected to associated memories and memory segments.
