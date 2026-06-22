@@ -111,6 +111,10 @@ def archive_paper_comparable_missing_fields(data: dict) -> list[str]:
         missing.append("all_pipelines_use_rust_temporalstore")
     if bool(rust.get("python_only_diagnostic") or data.get("python_only_diagnostic")):
         missing.append("python_only_diagnostic=false")
+    if not bool(rust.get("context_event_ingest_ready") or data.get("rust_temporalstore_context_event_ingest_ready")):
+        missing.append("rust_temporalstore_context_event_ingest_ready")
+    if bool(rust.get("direct_source_scoring") or data.get("rust_temporalstore_direct_source_scoring")):
+        missing.append("rust_temporalstore_direct_source_scoring=false")
     if not bool(rust.get("full_replay_ready") or data.get("rust_temporalstore_full_replay_ready")):
         missing.append("rust_temporalstore_full_replay_ready")
     return missing
@@ -135,6 +139,8 @@ def validate_archive_paper_comparable_contract_examples() -> None:
         "rust_temporalstore_backend": {
             "all_pipelines_use_rust_temporalstore": True,
             "python_only_diagnostic": False,
+            "context_event_ingest_ready": True,
+            "direct_source_scoring": False,
             "full_replay_ready": True,
         },
     }
@@ -153,6 +159,14 @@ def validate_archive_paper_comparable_contract_examples() -> None:
     python_only["rust_temporalstore_backend"]["python_only_diagnostic"] = True
     if "python_only_diagnostic=false" not in archive_paper_comparable_missing_fields(python_only):
         raise SystemExit("Python-only diagnostic archive example must not satisfy paper-comparable contract")
+    direct_scoring = json.loads(json.dumps(base))
+    direct_scoring["rust_temporalstore_backend"]["direct_source_scoring"] = True
+    if "rust_temporalstore_direct_source_scoring=false" not in archive_paper_comparable_missing_fields(direct_scoring):
+        raise SystemExit("direct-source scoring archive example must not satisfy paper-comparable contract")
+    no_rust_ingest = json.loads(json.dumps(base))
+    no_rust_ingest["rust_temporalstore_backend"]["context_event_ingest_ready"] = False
+    if "rust_temporalstore_context_event_ingest_ready" not in archive_paper_comparable_missing_fields(no_rust_ingest):
+        raise SystemExit("archive example without Rust context-event ingest must not satisfy paper-comparable contract")
 
 
 def validate_locomo_latency_gate() -> None:

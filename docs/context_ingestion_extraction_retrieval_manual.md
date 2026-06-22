@@ -58,8 +58,17 @@ accepted benchmark reports must show:
 
 - `all_pipelines_use_rust_temporalstore: true`
 - `rust_temporalstore_backend_ready: true`
+- `rust_temporalstore_context_event_ingest_ready: true`
+- `rust_temporalstore_direct_source_scoring: false`
 - `rust_temporalstore_full_replay_ready: true`
+- `rust_temporalstore_ingested_source_sets` greater than `0`
+- `rust_temporalstore_retrieved_source_sets` greater than `0`
 - `python_only_diagnostic: false`
+
+These fields prove the benchmark path used Rust TemporalStore for ingestion, extraction-style
+context event storage, retrieval, and scoring evidence. Python remains the orchestration and reader
+scoring layer, but a report is not production benchmark evidence if the Rust harness used direct
+source scoring or if the context-event ingest/retrieval counters are missing.
 
 Use the full Rust replay flags for production-scale LOCOMO and LongMemEval_s runs:
 

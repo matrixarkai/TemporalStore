@@ -1052,7 +1052,7 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
         source,
         all_source_replay,
         direct_source_scoring,
-        rust_context_event_ingest: all_source_replay && !direct_source_scoring,
+        rust_context_event_ingest: !direct_source_scoring && !ingested_source_sets.is_empty(),
         ingested_source_sets: ingested_source_sets.len(),
         retrieved_source_sets: retrieved_source_sets.len(),
         total_retrieved_blocks,

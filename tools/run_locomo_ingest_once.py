@@ -455,6 +455,10 @@ def main() -> int:
         rust_backend_report and rust_backend_report.get("rust_temporalstore_full_replay_ready")
     ):
         threshold_violations.append("full_rust_temporalstore_replay_not_ready")
+    if args.require_rust_temporalstore and not (
+        rust_backend_report and rust_backend_report.get("rust_temporalstore_context_event_ingest_ready")
+    ):
+        threshold_violations.append("rust_temporalstore_context_event_ingest_not_used")
 
     category_breakdown = {
         name: {
@@ -517,6 +521,22 @@ def main() -> int:
             rust_backend_report and rust_backend_report.get("rust_temporalstore_backend_ready")
         ),
         "rust_temporalstore_backend_report": rust_backend_report or {},
+        "rust_temporalstore_context_event_ingest_ready": bool(
+            rust_backend_report and rust_backend_report.get("rust_temporalstore_context_event_ingest_ready")
+        ),
+        "rust_temporalstore_direct_source_scoring": bool(
+            rust_backend_report and rust_backend_report.get("rust_temporalstore_direct_source_scoring")
+        ),
+        "rust_temporalstore_ingested_source_sets": int(
+            rust_backend_report.get("rust_temporalstore_ingested_source_sets") or 0
+        )
+        if isinstance(rust_backend_report, dict)
+        else 0,
+        "rust_temporalstore_retrieved_source_sets": int(
+            rust_backend_report.get("rust_temporalstore_retrieved_source_sets") or 0
+        )
+        if isinstance(rust_backend_report, dict)
+        else 0,
         "rust_temporalstore_full_replay_required": args.require_full_rust_temporalstore_replay,
         "rust_temporalstore_full_replay_ready": bool(
             rust_backend_report and rust_backend_report.get("rust_temporalstore_full_replay_ready")
@@ -751,6 +771,12 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
     zero_hit_queries_on_par = rust_zero_hit_queries == python_zero_hit_queries
     effective_tolerance = max(float(args.rust_temporalstore_score_tolerance), 1e-6)
     rank_parity_enforced = not bool(source_packing_report.get("enabled"))
+    all_source_replay_ready = bool(harness.get("external_benchmark_all_source_replay"))
+    direct_source_scoring = bool(harness.get("external_benchmark_direct_source_scoring"))
+    context_event_ingest_ready = bool(harness.get("external_benchmark_rust_context_event_ingest"))
+    ingested_source_sets = int(harness.get("external_benchmark_ingested_source_sets") or 0)
+    retrieved_source_sets = int(harness.get("external_benchmark_retrieved_source_sets") or 0)
+    retrieved_blocks = int(harness.get("external_benchmark_total_retrieved_blocks") or 0)
     score_on_par = (
         hit_at_k_delta <= effective_tolerance
         and (mean_reciprocal_rank_delta <= effective_tolerance or not rank_parity_enforced)
@@ -784,6 +810,11 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
         rust_case_count > 0
         and rust_hit_at_k > 0.0
         and report["rust_vs_python_subset_score"]["on_par"]
+        and context_event_ingest_ready
+        and not direct_source_scoring
+        and ingested_source_sets > 0
+        and retrieved_source_sets > 0
+        and retrieved_blocks > 0
         and str(harness.get("external_benchmark_source") or "") == str(jsonl_path)
     )
     report["rust_temporalstore_full_replay_ready"] = (
@@ -792,7 +823,14 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
         and max_cases == 0
         and int(args.rust_temporalstore_source_limit) == 0
         and rust_case_count == converted_case_count
+        and all_source_replay_ready
     )
+    report["rust_temporalstore_context_event_ingest_ready"] = context_event_ingest_ready
+    report["rust_temporalstore_direct_source_scoring"] = direct_source_scoring
+    report["rust_temporalstore_all_source_replay"] = all_source_replay_ready
+    report["rust_temporalstore_ingested_source_sets"] = ingested_source_sets
+    report["rust_temporalstore_retrieved_source_sets"] = retrieved_source_sets
+    report["rust_temporalstore_total_retrieved_blocks"] = retrieved_blocks
     report["rust_temporalstore_strict_external_ready"] = bool(harness.get("external_benchmark_ready"))
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     if not report["rust_temporalstore_backend_ready"]:
@@ -1097,6 +1135,12 @@ def merge_rust_temporalstore_harnesses(harnesses: list[dict[str, Any]], source: 
     total_hit_count = 0
     total_rr_sum = 0.0
     total_zero_hit = 0
+    total_ingested_source_sets = 0
+    total_retrieved_source_sets = 0
+    total_retrieved_blocks = 0
+    all_source_replay = bool(harnesses)
+    direct_source_scoring = False
+    context_event_ingest = bool(harnesses)
     for harness in harnesses:
         harness_count = int(harness.get("external_benchmark_case_count") or 0)
         harness_hit_rate = float(harness.get("external_benchmark_hit_at_k") or 0.0)
@@ -1105,6 +1149,12 @@ def merge_rust_temporalstore_harnesses(harnesses: list[dict[str, Any]], source: 
         total_hit_count += round(harness_hit_rate * harness_count)
         total_rr_sum += harness_mrr * harness_count
         total_zero_hit += int(harness.get("external_benchmark_zero_hit_queries") or 0)
+        total_ingested_source_sets += int(harness.get("external_benchmark_ingested_source_sets") or 0)
+        total_retrieved_source_sets += int(harness.get("external_benchmark_retrieved_source_sets") or 0)
+        total_retrieved_blocks += int(harness.get("external_benchmark_total_retrieved_blocks") or 0)
+        all_source_replay = all_source_replay and bool(harness.get("external_benchmark_all_source_replay"))
+        direct_source_scoring = direct_source_scoring or bool(harness.get("external_benchmark_direct_source_scoring"))
+        context_event_ingest = context_event_ingest and bool(harness.get("external_benchmark_rust_context_event_ingest"))
         per_query.extend([row for row in harness.get("external_benchmark_per_query") or [] if isinstance(row, dict)])
         for name, row in (harness.get("external_benchmark_category_breakdown") or {}).items():
             if not isinstance(row, dict):
@@ -1153,6 +1203,12 @@ def merge_rust_temporalstore_harnesses(harnesses: list[dict[str, Any]], source: 
         "external_benchmark_min_category_mean_reciprocal_rank": min_category_mrr,
         "external_benchmark_category_zero_hit_queries": sum(row["zero_hit_queries"] for row in category_breakdown.values()),
         "external_benchmark_source": source,
+        "external_benchmark_all_source_replay": all_source_replay,
+        "external_benchmark_direct_source_scoring": direct_source_scoring,
+        "external_benchmark_rust_context_event_ingest": context_event_ingest and total_ingested_source_sets > 0,
+        "external_benchmark_ingested_source_sets": total_ingested_source_sets,
+        "external_benchmark_retrieved_source_sets": total_retrieved_source_sets,
+        "external_benchmark_total_retrieved_blocks": total_retrieved_blocks,
     }
 
 
@@ -1433,6 +1489,10 @@ def paper_comparable_claim_ready(report: dict[str, Any], thresholds: dict[str, A
     if not report.get("all_pipelines_use_rust_temporalstore"):
         return False
     if not report.get("rust_temporalstore_backend_ready"):
+        return False
+    if not report.get("rust_temporalstore_context_event_ingest_ready"):
+        return False
+    if report.get("rust_temporalstore_direct_source_scoring"):
         return False
     if not report.get("rust_temporalstore_full_replay_ready"):
         return False

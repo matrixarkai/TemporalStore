@@ -226,6 +226,14 @@ def main() -> int:
                 "python_only_diagnostic": bool(report.get("python_only_diagnostic")),
                 "rust_temporalstore_backend_required": bool(report.get("rust_temporalstore_backend_required")),
                 "rust_temporalstore_backend_ready": bool(report.get("rust_temporalstore_backend_ready")),
+                "rust_temporalstore_context_event_ingest_ready": bool(
+                    report.get("rust_temporalstore_context_event_ingest_ready")
+                ),
+                "rust_temporalstore_direct_source_scoring": bool(
+                    report.get("rust_temporalstore_direct_source_scoring")
+                ),
+                "rust_temporalstore_ingested_source_sets": report.get("rust_temporalstore_ingested_source_sets"),
+                "rust_temporalstore_retrieved_source_sets": report.get("rust_temporalstore_retrieved_source_sets"),
                 "rust_temporalstore_full_replay_required": bool(
                     report.get("rust_temporalstore_full_replay_required")
                 ),

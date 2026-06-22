@@ -81,6 +81,10 @@ def main() -> int:
             "python_only_diagnostic": bool(report.get("python_only_diagnostic")),
             "required": bool(report.get("rust_temporalstore_backend_required")),
             "ready": bool(report.get("rust_temporalstore_backend_ready")),
+            "context_event_ingest_ready": bool(report.get("rust_temporalstore_context_event_ingest_ready")),
+            "direct_source_scoring": bool(report.get("rust_temporalstore_direct_source_scoring")),
+            "ingested_source_sets": int(report.get("rust_temporalstore_ingested_source_sets") or 0),
+            "retrieved_source_sets": int(report.get("rust_temporalstore_retrieved_source_sets") or 0),
             "full_replay_required": bool(report.get("rust_temporalstore_full_replay_required")),
             "full_replay_ready": bool(report.get("rust_temporalstore_full_replay_ready")),
             "strict_external_ready": bool(

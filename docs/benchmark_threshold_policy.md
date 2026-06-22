@@ -112,6 +112,15 @@ batch index, batch path, completed batches, and stdout/stderr tails. Add
 `--rust-temporalstore-release` for production/full-dataset archives; the default dev build is kept
 for fast local bounded proof.
 
+Rust-backed benchmark evidence must also prove the benchmark sources were ingested into Rust
+TemporalStore context events before retrieval and scoring. Accepted reports therefore require
+`rust_temporalstore_context_event_ingest_ready=true`,
+`rust_temporalstore_direct_source_scoring=false`, positive ingested/retrieved source-set counts, and
+positive retrieved block counts. Packed full replay is allowed only as a runtime optimization: it
+must preserve source text and refs, run `context_workflow_harness`, and emit
+`external_benchmark_rust_context_event_ingest=true` from the Rust harness output. Direct source
+scoring remains diagnostic-only and cannot satisfy production or paper-comparable benchmark gates.
+
 The standalone Rust `context_workflow_harness` built-in external fixture gates pipeline execution
 on complete Hit@K coverage, no zero-hit queries, no missing answer terms, and no missing expected
 refs. It still reports MRR/category MRR for quality tracking, but rank-1 ordering is not required
