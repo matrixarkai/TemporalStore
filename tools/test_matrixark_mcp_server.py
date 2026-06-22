@@ -322,6 +322,75 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         self.assertEqual(auto["events_written"], 0)
         self.assertFalse(auto["raw_events_duplicated"])
 
+    def test_vikingmem_style_twenty_message_session_window_auto_extracts_once(self):
+        scope = {"user_id": "batch-user", "session_id": "vikingmem-threshold-session"}
+        messages = []
+        for index in range(20):
+            if index % 5 == 0:
+                text = f"Message {index}: I prefer Rust for storage services and low latency systems."
+            elif index % 5 == 1:
+                text = f"Message {index}: Alice approved GPU budget item {index} after finance review."
+            elif index % 5 == 2:
+                text = f"Message {index}: I moved to Austin for the infrastructure project."
+            elif index % 5 == 3:
+                text = f"Message {index}: My manager Priya tracks the launch status."
+            else:
+                text = f"Message {index}: The current plan is to finish the benchmark report."
+            messages.append(text)
+
+        results = []
+        for index, text in enumerate(messages):
+            results.append(
+                self.call_tool(
+                    "matrixark_ingest",
+                    {
+                        "messages": [{"role": "user", "content": text}],
+                        "scope": scope,
+                        "auto_batch_extract": True,
+                        "session_buffer_threshold": 20,
+                    },
+                )
+            )
+        for result in results[:-1]:
+            self.assertIsNone(result["auto_batch_extract_result"])
+            self.assertLess(result["session_buffer"]["pending_event_count"], 20)
+        auto = results[-1]["auto_batch_extract_result"]
+        self.assertIsNotNone(auto)
+        self.assertEqual(auto["status"], "committed")
+        self.assertEqual(auto["threshold_messages"], 20)
+        self.assertEqual(auto["events_written"], 0)
+        self.assertEqual(auto["source_event_count"], 20)
+        self.assertFalse(auto["raw_events_duplicated"])
+        self.assertGreaterEqual(auto["entities_written"], 4)
+        self.assertGreaterEqual(auto["segments_written"], 4)
+        self.assertGreaterEqual(auto["indexes_written"], 4)
+
+        replay = self.call_tool("matrixark_replay", {"context_pack_id": "debug"})
+        raw_events = [record for record in replay["events"] if record.get("record_type") == "context_event"]
+        commits = [record for record in replay["events"] if record.get("record_type") == "context_batch_commit"]
+        segments = [record for record in replay["events"] if record.get("record_type") == "context_segment"]
+        entities = [record for record in replay["events"] if record.get("record_type") == "context_entity"]
+        summaries = [record for record in replay["events"] if record.get("record_type") == "context_summary"]
+        indexes = [record for record in replay["events"] if record.get("record_type") == "context_index"]
+        self.assertEqual(len(raw_events), 20)
+        self.assertEqual(len(commits), 1)
+        self.assertTrue(all(segment.get("source_event_ids") for segment in segments))
+        self.assertTrue(all(entity.get("source_event_ids") for entity in entities))
+        self.assertTrue(any(summary.get("summary_type") == "batch_l0" for summary in summaries))
+        self.assertTrue(indexes)
+
+        pack = self.call_tool(
+            "matrixark_retrieve",
+            {
+                "query": "What storage language preference and GPU approval should I remember?",
+                "scope": scope,
+                "max_context_tokens": 80,
+            },
+        )
+        self.assertFalse(pack["insufficient_context"])
+        self.assertTrue({"entity", "segment", "event"}.intersection({ref["ref_type"] for ref in pack["selected_refs"]}))
+        self.assertFalse(pack["recall_policy"]["tree_traversal"]["fallback_to_flat"])
+
     def test_agent_direct_ingest_generates_summary_embedding_and_retrieves_by_layer_score(self):
         ingest = self.call_tool(
             "matrixark_ingest",
