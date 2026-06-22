@@ -2,13 +2,17 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from tools.run_matrixark_dataset_benchmark import (
     dataset_items,
+    judge_answer,
     load_json_or_jsonl,
+    read_answer,
     validate_dataset_shape,
 )
 
@@ -80,6 +84,40 @@ class MatrixArkDatasetBenchmarkLoaderTest(unittest.TestCase):
         self.assertEqual(validation["status"], "invalid")
         self.assertEqual(validation["missing_session_rows"], 1)
         self.assertEqual(validation["missing_question_rows"], 1)
+
+    def test_deterministic_reader_and_judge_work_without_api_key(self):
+        args = SimpleNamespace(
+            reader_provider="deterministic",
+            reader_model="matrixark-context-substring-v1",
+            judge_provider="deterministic",
+            judge_model="matrixark-local-support-v1",
+        )
+        selected = [{"ref_type": "event", "ref_hash": 1, "text": "Alice moved to Austin.", "score": 1.0}]
+        reader = read_answer(args, selected, "Where did Alice move?", "Austin", "fact")
+        self.assertEqual(reader["reader_provider"], "deterministic")
+        judge = judge_answer(
+            args,
+            question={"query": "Where did Alice move?", "answer": "Austin"},
+            prediction=reader["prediction"],
+            context="Alice moved to Austin.",
+            support_score=reader["score"],
+        )
+        self.assertEqual(judge["judge_provider"], "deterministic")
+        self.assertEqual(judge["score"], 1)
+
+    def test_openai_compatible_reader_fails_fast_without_api_key(self):
+        env_name = "MATRIXARK_TEST_MISSING_OPENAI_KEY"
+        os.environ.pop(env_name, None)
+        args = SimpleNamespace(
+            reader_provider="openai-compatible",
+            reader_model="gpt-4o-mini",
+            openai_api_key_env=env_name,
+            openai_base_url="https://api.openai.com/v1",
+            openai_timeout_sec=1,
+        )
+        with self.assertRaises(SystemExit) as raised:
+            read_answer(args, [], "Where did Alice move?", "Austin", "fact")
+        self.assertIn(env_name, str(raised.exception))
 
 
 if __name__ == "__main__":
