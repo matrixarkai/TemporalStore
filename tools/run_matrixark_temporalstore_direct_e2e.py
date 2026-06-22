@@ -68,6 +68,12 @@ def read_record_count(args: argparse.Namespace) -> int:
         max_write_retries=1,
     )
     with Client(options, library_path=args.temporalstore_lib) as client:
+        try:
+            raw_count = client.get_string(f"{args.storage_prefix}:record_count")
+        except Exception:
+            raw_count = ""
+        if raw_count:
+            return max(0, int(raw_count))
         raw = client.get_string(f"{args.storage_prefix}:record_index")
         return len(json.loads(raw))
 

@@ -8,8 +8,175 @@ MatrixArk has validated C++ TemporalStore-backed full runs for:
 
 - LOCOMO full dataset: `locomo10.json`
 - LongMemEval-style HeLa-Mem full copy: `longmemeval_s_helamem.json`
+- Native Linux C++ direct-SDK context E2E, LOCOMO full, and LongMemEval_s official slice on June 21, 2026
 
-The official cleaned LongMemEval_s file is now locally available and parity-eligible, but a full official run still needs to be executed cleanly end to end with C++ TemporalStore.
+The official cleaned LongMemEval_s file is locally available and parity-eligible. A small official LongMemEval_s C++ slice now passes, but the full official file still needs streaming/progress artifact flush and C++ long-run read/write optimization before it is practical as a local blocking command.
+
+## Fresh Native-Linux C++ Run On June 21, 2026
+
+This run was intentionally built and executed from a native WSL/Linux filesystem:
+
+- Native repo: `/root/src/github-services/TemporalStore`
+- Git commit: `d067854`
+- Build output: `/root/src/github-services/TemporalStore/output-ubuntu22/release`
+- C++ binaries used:
+  - `bcache2-metaserver`
+  - `bcache2-server`
+  - `sdk/lib/libbcache2.so`
+- Dataset copies used from native storage:
+  - `/root/matrixark_benchmarks/data/locomo10.json`
+  - `/root/matrixark_benchmarks/data/longmemeval_s_cleaned_official_hf.json`
+
+Local build notes:
+
+- `bcache2-metaserver`, `bcache2-server`, and `libbcache2.so` built successfully in the native clone.
+- The native build required local dependency/link glue for the Ubuntu 22 environment, including BRPC/include shims, system protobuf shared linking for `libbcache2.so`, and inclusion of Byte async runtime for the server link.
+- Those local build shims are not benchmark data and should not be confused with MatrixArk context behavior.
+
+### C++ Direct SDK Context E2E
+
+Command shape:
+
+```bash
+python3 tools/run_matrixark_temporalstore_direct_e2e.py \
+  --metaserver 127.0.0.1:19700 \
+  --namespace matrixark_ns \
+  --table matrixark_table \
+  --temporalstore-lib /root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so \
+  --storage-prefix matrixark:cpp:native_async:e2e:run1 \
+  --report-json /root/matrixark_cpp_native_async_e2e_run1.json
+```
+
+Result:
+
+| Check | Value |
+|---|---:|
+| Status | passed |
+| Backend | `temporalstore-direct` |
+| Stored records | 32 |
+| First retrieval selected refs | 1 |
+| Second retrieval selected refs | 1 |
+| Feedback classification | `CONFIRMATION` |
+| Feedback prior refs | 1 |
+
+This validates the MatrixArk extraction, ingestion, retrieval, feedback, prior-context confirmation, and replayable record persistence path through the native C++ SDK.
+
+### LOCOMO Full Official C++ Run
+
+Run identity:
+
+- Dataset: LOCOMO
+- Dataset file: `/root/matrixark_benchmarks/data/locomo10.json`
+- Artifact prefix: `locomo_cpp_native_async_full_b200_20260621`
+- Artifact directory: `/root/matrixark_benchmarks/artifacts/cpp_native_20260621`
+- Backend: `temporalstore-direct`
+- Metaserver: `127.0.0.1:19800`
+- Storage prefix: `matrixark:bench:locomo:cpp_native_async:full_b200_20260621`
+- Batch size: 200 messages
+- Token budget: 1,200
+- Reader/judge: deterministic debug reader and local exact/key-token support judge
+
+Metrics:
+
+| Metric | Value |
+|---|---:|
+| Questions | 1,986 |
+| Sessions | 272 |
+| Turns ingested | 5,882 |
+| Ingestion elapsed | 22,474 ms |
+| Ingestion throughput | 261.73 turns/sec |
+| Retrieval avg latency | 152.73 ms |
+| Retrieval p50 latency | 162.56 ms |
+| Retrieval p95 latency | 194.04 ms |
+| Avg prompt tokens | 1,199.05 |
+| Context recall | 100.00% |
+| Evidence-session recall | 50.50% |
+| Exact substring answer hit | 17.52% |
+| Debug final judge score | 48.49% |
+| Compression hidden answer count | 0 |
+| Token budget pressure | 856 |
+
+Artifacts:
+
+```text
+/root/matrixark_benchmarks/artifacts/cpp_native_20260621/locomo_cpp_native_async_full_b200_20260621.result.json
+/root/matrixark_benchmarks/artifacts/cpp_native_20260621/locomo_cpp_native_async_full_b200_20260621.report.json
+/root/matrixark_benchmarks/artifacts/cpp_native_20260621/locomo_cpp_native_async_full_b200_20260621.report.md
+/root/matrixark_benchmarks/artifacts/cpp_native_20260621/locomo_cpp_native_async_full_b200_20260621.hypotheses.jsonl
+/root/matrixark_benchmarks/artifacts/cpp_native_20260621/locomo_cpp_native_async_full_b200_20260621.context_packs.jsonl
+/root/matrixark_benchmarks/artifacts/cpp_native_20260621/locomo_cpp_native_async_full_b200_20260621.judge.jsonl
+```
+
+Important operational finding:
+
+- Batch size 20 caused the C++ record-log path to time out or exit during full LOCOMO.
+- Batch size 200 completed the full LOCOMO run cleanly.
+- This matches the intended VikingMem-style logical-session batching direction: fewer larger extraction batches are healthier for C++ storage and produce better long-memory ingestion behavior than many tiny writes.
+
+### Official LongMemEval_s C++ Slice
+
+Run identity:
+
+- Dataset: official cleaned LongMemEval_s
+- Dataset file: `/root/matrixark_benchmarks/data/longmemeval_s_cleaned_official_hf.json`
+- Artifact prefix: `longmemeval_cpp_native_async_slice_20260621`
+- Artifact directory: `/root/matrixark_benchmarks/artifacts/cpp_native_20260621`
+- Backend: `temporalstore-direct`
+- Metaserver: `127.0.0.1:19700`
+- Storage prefix: `matrixark:bench:longmemeval:cpp_native_async:slice_20260621`
+- Batch size: 20 messages
+- Conversation limit: 5
+- Question limit: 100, resulting in 5 questions because the slice contains 5 records
+- Token budget: 1,200
+
+Metrics:
+
+| Metric | Value |
+|---|---:|
+| Questions | 5 |
+| Sessions | 255 |
+| Turns ingested | 2,690 |
+| Ingestion elapsed | 21,108 ms |
+| Ingestion throughput | 127.44 turns/sec |
+| Retrieval avg latency | 187.53 ms |
+| Retrieval p50 latency | 208.66 ms |
+| Retrieval p95 latency | 241.75 ms |
+| Avg prompt tokens | 1,199.60 |
+| Context recall | 100.00% |
+| Evidence-session recall | 80.00% |
+| Exact substring answer hit | 60.00% |
+| Debug final judge score | 60.00% |
+| Compression hidden answer count | 0 |
+| Token budget pressure | 3 |
+
+Artifacts:
+
+```text
+/root/matrixark_benchmarks/artifacts/cpp_native_20260621/longmemeval_cpp_native_async_slice_20260621.result.json
+/root/matrixark_benchmarks/artifacts/cpp_native_20260621/longmemeval_cpp_native_async_slice_20260621.report.json
+/root/matrixark_benchmarks/artifacts/cpp_native_20260621/longmemeval_cpp_native_async_slice_20260621.report.md
+/root/matrixark_benchmarks/artifacts/cpp_native_20260621/longmemeval_cpp_native_async_slice_20260621.hypotheses.jsonl
+/root/matrixark_benchmarks/artifacts/cpp_native_20260621/longmemeval_cpp_native_async_slice_20260621.context_packs.jsonl
+/root/matrixark_benchmarks/artifacts/cpp_native_20260621/longmemeval_cpp_native_async_slice_20260621.judge.jsonl
+```
+
+### Official LongMemEval_s Full-Run Status
+
+Two larger official LongMemEval_s C++ attempts were made:
+
+1. Full official file, batch size 200, no conversation limit.
+   - C++ service stayed alive.
+   - Runner exceeded a 40-minute tool timeout before artifact flush.
+   - Observed C++ server process around 3.8 GB RSS and high CPU while the Python runner waited.
+2. 100-conversation/100-question official slice, batch size 200.
+   - Runner exceeded a 30-minute tool timeout before artifact flush.
+   - No canonical artifacts were emitted because the current runner writes artifacts only at the end.
+
+Current conclusion:
+
+- C++ TemporalStore is validated for MatrixArk direct E2E, full LOCOMO, and official LongMemEval_s slice.
+- Full official LongMemEval_s local parity is not yet a clean blocking test because the benchmark runner needs incremental artifact flushing/progress checkpoints and the C++ direct read/write path needs long-run optimization.
+- Do not compare the deterministic debug reader scores directly with VikingMem paper scores. Paper-style comparison still requires matched dataset, prompt, reader, judge, and scoring protocol.
 
 ## Benchmark Workflow
 
