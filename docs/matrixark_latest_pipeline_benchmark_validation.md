@@ -15,6 +15,7 @@ Validated MatrixArk features:
 - multi-segment memory extraction
 - ContextEvent, ContextEntity, ContextSegment, ContextSummary, ContextEmbedding, ContextIndex, ContextPackAudit
 - async ContextNode L0/L1 summary refresh
+- every refreshed ContextNode prefix has both L0/L1 summaries and L0/L1 embeddings
 - tree-first retrieval using node summary embeddings
 - secondary-index filtering before embedding scoring
 - current-state entity updates with deterministic patching
@@ -38,7 +39,7 @@ PYTHONPATH=. python3 -m unittest \
 Result:
 
 ```text
-Ran 35 tests in 1.210s
+Ran 36 tests in 3.005s
 OK
 ```
 
@@ -156,8 +157,8 @@ Result:
   "hit_rate": 1.0,
   "ingest_mode": "batch",
   "restart_before_query": true,
-  "ingest_latency_ms": {"avg": 609.563, "p50": 408.145, "p95": 810.981},
-  "retrieve_latency_ms": {"avg": 61.156, "p50": 19.973, "p95": 355.669}
+  "ingest_latency_ms": {"avg": 602.725, "p50": 448.481, "p95": 756.969},
+  "retrieve_latency_ms": {"avg": 57.738, "p50": 17.786, "p95": 345.04}
 }
 ```
 
@@ -197,6 +198,7 @@ Result: both require `temporalstore-direct` and canonical artifacts:
 - Evolving entities now generate deterministic patches for location, job/status, plan, family/profile, relationship, approval, confirmation, correction, and preference.
 - Batch extraction de-duplication now keeps the latest canonical entity mention in a batch.
 - LOCOMO debug flow now runs `matrixark_refresh_summaries` before retrieval so tree-first traversal is validated.
+- Regression coverage now asserts all path prefixes for a refreshed node have `node_l0` and `node_l1` summaries and embeddings.
 - Secondary-index filtering no longer lets unrelated entities inherit all batch index terms.
 - Multi-intent raw queries use `any_group` secondary filter mode so questions asking for multiple memory types can retrieve each type.
 - Temporal/date query planning now covers `before`, `after`, `as of`, and `valid as of`.

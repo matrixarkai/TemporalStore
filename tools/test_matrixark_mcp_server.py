@@ -835,6 +835,29 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         self.assertTrue(selected_paths)
         self.assertTrue(all(path[:1] == ["company_a"] for path in selected_paths), selected_paths)
         replay = self.call_tool("matrixark_replay", {"context_pack_id": "debug"})
+        expected_prefixes = [
+            ["company_a"],
+            ["company_a", "infra_team"],
+            ["company_a", "infra_team", "runbooks"],
+            ["company_a", "infra_team", "runbooks", "stream_proxy"],
+        ]
+        summary_pairs = {
+            (tuple(record.get("node_path", [])), record.get("summary_type"))
+            for record in replay["events"]
+            if record.get("record_type") == "context_summary"
+            and record.get("summary_type") in {"node_l0", "node_l1"}
+        }
+        embedding_pairs = {
+            (tuple(record.get("node_path", [])), record.get("embedding_type"))
+            for record in replay["events"]
+            if record.get("record_type") == "context_embedding"
+            and record.get("embedding_type") in {"node_l0", "node_l1"}
+        }
+        for prefix in expected_prefixes:
+            self.assertIn((tuple(prefix), "node_l0"), summary_pairs)
+            self.assertIn((tuple(prefix), "node_l1"), summary_pairs)
+            self.assertIn((tuple(prefix), "node_l0"), embedding_pairs)
+            self.assertIn((tuple(prefix), "node_l1"), embedding_pairs)
         self.assertTrue(
             any(
                 record.get("record_type") == "context_embedding"
