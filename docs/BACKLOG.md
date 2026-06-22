@@ -114,6 +114,10 @@ Latest AWS/test state:
   - Relationship to VectorDB removal:
     - for small/medium scopes, tree-first traversal with L0/L1 node summary embeddings can avoid a separate VectorDB because each layer scores bounded children, then leaf timelines are filtered by time/status;
     - to scale this without a VectorDB at very large tenant scope, MatrixArk needs better multi-layer path construction so candidate children per layer stay bounded and meaningful;
+    - the long-term replacement for global ANN is a parent -> child entity/topic structure: MatrixArk should route context into stable hierarchical `ContextNode` paths such as user/session/topic/entity/business-object, then score only siblings at each layer instead of searching one huge flat candidate pool;
+    - this hierarchy should be created from session-level extraction, resource structure, entity/topic canonicalization, and feedback, not from arbitrary user-defined schemas;
+    - L0/L1 summary embeddings on each parent/child node become the "routing index"; leaf events, entities, segments, and compressed windows become the evidence store;
+    - global ANN can remain an optional escape hatch for poorly organized legacy data, but the target architecture should make it unnecessary for well-ingested MatrixArk context;
     - if paths remain too flat, MatrixArk will need stronger sparse indexes, keyword graph, or external vector/sparse retrieval for recall at scale;
     - therefore multi-layer node/path extraction is not required for MVP, but it is important for the long-term "TemporalStore-only serving store" strategy.
   - Backlog tasks:
