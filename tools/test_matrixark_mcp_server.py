@@ -403,6 +403,67 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         commits = [record for record in replay["events"] if record.get("record_type") == "context_batch_commit"]
         self.assertEqual(len(commits), 1)
 
+    def test_single_message_online_path_then_later_batch_extraction_contract(self):
+        scope = {"user_id": "online-user", "session_id": "online-then-batch"}
+        first = self.call_tool(
+            "matrixark_ingest",
+            {
+                "messages": [{"role": "user", "content": "Alice approved the GPU rollout checklist."}],
+                "scope": scope,
+                "metadata": {"node_path": ["principal:online-user", "collection:sessions", "session:online-then-batch"]},
+            },
+        )
+        replay_after_one = self.call_tool("matrixark_replay", {"context_pack_id": "debug"})
+        record_types_after_one = [record.get("record_type") for record in replay_after_one["events"]]
+
+        self.assertIn("context_event", record_types_after_one)
+        self.assertIn("context_embedding", record_types_after_one)
+        self.assertIn("session_buffer_event", record_types_after_one)
+        self.assertIn("context_summary_dirty", record_types_after_one)
+        self.assertIn("context_summary_refresh_audit", record_types_after_one)
+        self.assertIn("context_summary", record_types_after_one)
+        self.assertTrue(any(record.get("embedding_type") == "event_text" for record in replay_after_one["events"]))
+        self.assertTrue(any(record.get("summary_type") == "node_l0" for record in replay_after_one["events"]))
+        self.assertTrue(any(record.get("summary_type") == "node_l1" for record in replay_after_one["events"]))
+        self.assertTrue(any(record.get("summary_type") == "session_l0" for record in replay_after_one["events"]))
+
+        self.assertNotIn("context_segment", record_types_after_one)
+        self.assertNotIn("context_entity", record_types_after_one)
+        self.assertNotIn("context_index", record_types_after_one)
+        self.assertFalse(any(record.get("summary_type") == "batch_l0" for record in replay_after_one["events"]))
+        self.assertEqual(first["session_buffer"]["pending_event_count"], 1)
+
+        second = self.call_tool(
+            "matrixark_ingest",
+            {
+                "messages": [{"role": "assistant", "content": "Finance also confirmed the rollout budget."}],
+                "scope": scope,
+                "metadata": {"node_path": ["principal:online-user", "collection:sessions", "session:online-then-batch"]},
+            },
+        )
+        self.assertEqual(second["session_buffer"]["pending_event_count"], 2)
+        committed = self.call_tool(
+            "matrixark_session_commit",
+            {
+                "scope": scope,
+                "threshold_messages": 20,
+                "force": True,
+                "metadata": {"node_path": ["principal:online-user", "collection:sessions", "session:online-then-batch"]},
+            },
+        )
+        self.assertEqual(committed["status"], "committed")
+        self.assertEqual(committed["events_written"], 0)
+        self.assertFalse(committed["raw_events_duplicated"])
+        self.assertEqual(set(committed["source_event_ids"]), {first["event_id_hash"], second["event_id_hash"]})
+
+        replay_after_commit = self.call_tool("matrixark_replay", {"context_pack_id": "debug"})
+        record_types_after_commit = [record.get("record_type") for record in replay_after_commit["events"]]
+        self.assertEqual(record_types_after_commit.count("context_event"), 2)
+        self.assertIn("context_segment", record_types_after_commit)
+        self.assertIn("context_entity", record_types_after_commit)
+        self.assertIn("context_index", record_types_after_commit)
+        self.assertTrue(any(record.get("summary_type") == "batch_l0" for record in replay_after_commit["events"]))
+
     def test_ingest_auto_batch_extract_commits_at_threshold(self):
         scope = {"user_id": "bob", "session_id": "thread-auto-buffer"}
         first = self.call_tool(
