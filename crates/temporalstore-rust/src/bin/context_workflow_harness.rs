@@ -558,7 +558,7 @@ fn main() {
         && (external_benchmark.ready || external_benchmark_report_only);
     assert!(
         context_pipeline_ready,
-        "context pipeline readiness failed: parity={} restart={} sync={} async={} raft={} corpus={} management={} ingest_extract={} retrieve={} benchmark={} sweep={} external_benchmark={} retrieve_events={} retrieve_blocks={}",
+        "context pipeline readiness failed: parity={} restart={} sync={} async={} raft={} corpus={} management={} ingest_extract={} retrieve={} benchmark={} sweep={} external_benchmark={} retrieve_events={} retrieve_blocks={} sweep_status={} sweep_message={} sweep_min_hit_at_k={} sweep_min_mrr={} sweep_min_evidence_retention={} sweep_min_token_reduction={} sweep_max_selected_tokens={} sweep_violations={:?}",
         parity.pipeline_ready,
         restart_replay_ready,
         shared_store_sync_ready,
@@ -572,7 +572,15 @@ fn main() {
         benchmark_sweep_ready,
         external_benchmark.ready,
         ingest_retrieve.event_count,
-        ingest_retrieve.blocks.len()
+        ingest_retrieve.blocks.len(),
+        benchmark_sweep.status.code,
+        benchmark_sweep.status.message,
+        benchmark_sweep.min_hit_at_k,
+        benchmark_sweep.min_mean_reciprocal_rank,
+        benchmark_sweep.min_evidence_retention_at_k,
+        benchmark_sweep.min_token_reduction_percent,
+        benchmark_sweep.max_selected_tokens_per_query,
+        benchmark_sweep.threshold_violations
     );
 
     println!(

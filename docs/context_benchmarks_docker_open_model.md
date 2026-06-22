@@ -98,8 +98,7 @@ benchmark thresholds fail. It writes an archive under
 raw reports, misses JSONL files, and `*_paper_comparable_report.json` summaries when
 the corresponding datasets are present and pass.
 
-The local endpoint runner requires Rust TemporalStore by default
-(`TEMPORALSTORE_REQUIRE_RUST_TEMPORALSTORE=1`). It converts benchmark cases to the
+The local endpoint runner requires Rust TemporalStore unconditionally. It converts benchmark cases to the
 Rust context JSONL contract and runs `context_workflow_harness` through a real
 `TemporalEngine` before the Python reader/scorer emits the report. It also compares
 Rust case count, Hit@K, mean reciprocal rank, and zero-hit queries with Python on
@@ -139,14 +138,15 @@ TemporalStore backend evidence, thresholds, p50/p95 latencies, token reduction,
 quality-gate state, and category breakdown. These are the files to archive when
 comparing Rust runs with VikingMem/OpenViking or C++ benchmark outputs.
 
-The local endpoint runner and the LOCOMO/LongMemEval_s full gate commands require
-the Rust TemporalStore backend by default. They invoke the Rust
+The local endpoint runner always requires the Rust TemporalStore backend. The lower-level
+LOCOMO/LongMemEval_s full gate commands also require it unless they are run in an explicitly
+marked local diagnostic mode. Accepted pipeline and benchmark evidence invokes the Rust
 `context_workflow_harness`, compare Rust case count, Hit@K, mean reciprocal rank,
 and zero-hit queries with the Python scorer on the exact converted subset, and
-fail closed unless the parity result is on par. Use
-`--skip-rust-temporalstore --allow-python-only-diagnostic` only for diagnostic Python-only runs;
-those reports are not accepted as Rust-backed benchmark evidence. Production benchmark evidence
-requires `all_pipelines_use_rust_temporalstore=true`.
+fails closed unless the parity result is on par. Production benchmark evidence requires
+`all_pipelines_use_rust_temporalstore=true`,
+`rust_temporalstore_context_event_ingest_ready=true`, and
+`rust_temporalstore_direct_source_scoring=false`.
 
 ## Hugging Face Endpoint Validation
 

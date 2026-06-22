@@ -44,6 +44,10 @@ def main() -> int:
         and bool(report.get("all_pipelines_use_rust_temporalstore"))
         and not bool(report.get("python_only_diagnostic"))
         and bool(report.get("rust_temporalstore_backend_ready"))
+        and bool(report.get("rust_temporalstore_context_event_ingest_ready"))
+        and not bool(report.get("rust_temporalstore_direct_source_scoring"))
+        and int(report.get("rust_temporalstore_ingested_source_sets") or 0) > 0
+        and int(report.get("rust_temporalstore_retrieved_source_sets") or 0) > 0
         and bool(report.get("rust_temporalstore_full_replay_ready"))
         and int(report.get("reader_open_source_calls") or 0) > 0
     )
@@ -173,6 +177,13 @@ def archive_required_fields_ready(report: dict[str, Any], dataset_hash: str, inp
         and input_bytes > 0
         and bool(report.get("input") or report.get("dataset"))
         and all(field in report for field in required_report_fields)
+        and bool(report.get("all_pipelines_use_rust_temporalstore"))
+        and not bool(report.get("python_only_diagnostic"))
+        and bool(report.get("rust_temporalstore_backend_ready"))
+        and bool(report.get("rust_temporalstore_context_event_ingest_ready"))
+        and not bool(report.get("rust_temporalstore_direct_source_scoring"))
+        and int(report.get("rust_temporalstore_ingested_source_sets") or 0) > 0
+        and int(report.get("rust_temporalstore_retrieved_source_sets") or 0) > 0
     )
 
 
