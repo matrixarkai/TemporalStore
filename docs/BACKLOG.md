@@ -17,6 +17,43 @@ Latest AWS/test state:
 
 ## MatrixArk LLM Context Backlog
 
+- Implement a TemporalStore-native ContextOperator suite for event/entity memory.
+  - Current status: MatrixArk already has retrieval-time `DECAY_SCORE` behavior in `tools/matrixark_mcp_server.py`: dense/sparse/node `origin_score` is combined with `time_score` and `business_score` using `Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi`. Defaults are `wtime=0.18` and `wbusi=0.22`, with configurable freshness tolerance, half-life, type weights, and instance-level business weight fields.
+  - Gap: the broader VikingMem-style operator layer is not yet represented as first-class persisted operator definitions, operator execution audits, or async worker outputs in TemporalStore.
+  - Operators to support:
+    - `LATEST`: choose the latest valid state/event for current-state answers.
+    - `VALID_AS_OF`: answer from the state valid at a requested timestamp.
+    - `BLOCK_IF_STALE`: block superseded or expired facts for current-state queries while keeping them replayable for historical questions.
+    - `DECAY_SCORE`: keep the current retrieval-time score formula and add persisted config/audit records.
+    - `COUNT`, `SUM`, `AVG`, `MAX`: deterministic statistical operators over numeric/event fields without LLM calls.
+    - `LLM_MERGE`: optional model-backed synthesis for dedupe, conflict resolution, and natural-language entity state merging.
+    - `TIME_COMPRESS`: async temporal compression over cold event windows into replayable summaries with source ids.
+  - Execution model:
+    - hot ingestion should append events, update cheap indexes, and mark operator work dirty;
+    - deterministic operators (`LATEST`, `COUNT`, `SUM`, `AVG`, `MAX`, `VALID_AS_OF`, `BLOCK_IF_STALE`, `DECAY_SCORE`) can run inline only when bounded and cheap, otherwise in a background worker;
+    - LLM operators (`LLM_MERGE`, `TIME_COMPRESS`) should be async/offline by default because they are expensive, nondeterministic, and can exceed serving deadlines;
+    - query serving should read precomputed entity/operator state first, then fall back to raw events and compressed summaries.
+  - Storage model:
+    - `ContextOperatorDefinition`: operator name, scope, target entity/event type, input fields, output field, freshness policy, and model/provider config if needed.
+    - `ContextOperatorState`: target ref, output value, source refs, valid_from_ms, valid_until_ms, version, confidence, and stale/superseded markers.
+    - `ContextOperatorAudit`: operator run id, dirty marker id, input refs, output ref, latency, model id, token use, fallback reason, and replay metadata.
+  - LLM_MERGE policy:
+    - do not rely on a second LLM call for every event;
+    - prefer one-pass extraction to emit entity patches and apply deterministic approximate patching online;
+    - use `LLM_MERGE` only for complex conflicts, low-confidence patches, or periodic state cleanup;
+    - every merged state must keep raw source events replayable.
+  - TIME_COMPRESS policy:
+    - group old events by node/entity/topic and time window;
+    - write compressed summaries as first-class context records with source ids;
+    - never hide answer-bearing facts in benchmark runs; keep `compression_answer_hidden_count == 0` as a release gate;
+    - physical TTL/pruning of raw events is optional and must be policy-controlled.
+  - Tests:
+    - statistical operators return exact arithmetic without LLM calls;
+    - latest/current-state queries prefer entity/operator state over stale raw events;
+    - LLM_MERGE fallback path preserves raw evidence and audit trail;
+    - TIME_COMPRESS produces source-linked summaries and does not hide benchmark answers;
+    - C++ TemporalStore direct backend stores operator definitions, states, and audits.
+
 - Implement a full VikingMem-style Keyword Graph for auxiliary recall.
   - Current status: `docs/matrixark_weighted_multi_path_recall.md` implements an auxiliary keyword path over node path, `ContextIndex`, event type, entity text, and segment topics. This is useful, but it is not yet the full keyword graph described in VikingMem.
   - Target behavior: for indirect-memory questions such as "Do you remember my nickname?", dense semantic matching can fail because the query and the original memory may have low direct similarity. Build a keyword graph where each keyword is connected to associated memories and memory segments.
