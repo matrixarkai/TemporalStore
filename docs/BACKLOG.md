@@ -17,6 +17,68 @@ Latest AWS/test state:
 
 ## MatrixArk LLM Context Backlog
 
+- Add async `ContextNode` L0/L1 summary refresh as a first-class production pipeline.
+  - Current status:
+    - MatrixArk already writes `ContextSummary` and `ContextEmbedding` records for node/session/batch summaries in the Python/MCP runtime;
+    - retrieval can use L0/L1 summary embeddings for tree-first traversal before leaf event/entity/segment recall;
+    - current node summary generation is still too inline/test-oriented and should be separated into a durable async refresh lane before production scale.
+  - Product goal:
+    - event ingestion must stay lightweight and predictable;
+    - `ContextNode` summaries should improve traversal quality and token density, but missing/stale summaries must not block ingestion or retrieval;
+    - L0/L1 summaries should make the tree filesystem-like for developers while still being stronger than a filesystem because the summaries are temporal, embedded, versioned, filterable, and replayable.
+  - Hot ingestion path:
+    - append `ContextEvent` with primary key based on ingestion time;
+    - write event embedding when an encoder is available;
+    - write general secondary indexes such as `event_type`, `entity_type`, `classification`, `status`, `source_type`, and high-saliency terms;
+    - update cheap `ContextEntity` state only when bounded and deterministic;
+    - write or update a dirty summary marker for the affected leaf node;
+    - never regenerate parent L0/L1 summaries synchronously on every event.
+  - Dirty marker model:
+    - minimal fields: `tenant_hash`, `node_hash`, `dirty_reason`, `first_dirty_at_ms`, `last_event_time_ms`, `changed_ref_count`, `propagate_depth`, `priority`, and `worker_claim_until_ms`;
+    - reasons: `new_event`, `entity_update`, `segment_commit`, `resource_chunk`, `feedback`, `compression`, `manual_rebuild`;
+    - duplicate dirty markers should coalesce by node and reason/window so high-volume sessions do not create write amplification.
+  - Async worker behavior:
+    - poll dirty nodes by priority and age;
+    - batch recent changed refs and bounded prior context;
+    - regenerate leaf `node_l0` first, then `node_l1` only for large/high-value/resource-heavy nodes;
+    - write `ContextSummary(summary_type=node_l0|node_l1)` as a versioned record;
+    - write `ContextEmbedding(ref_type=summary, embedding_type=node_l0|node_l1)`;
+    - mark the processed dirty marker superseded or clear it with an audit record.
+  - Parent propagation:
+    - only propagate dirty state to a bounded number of ancestors;
+    - parent summaries should be rebuilt from child L0 summaries plus selected entity/operator state, not by scanning all raw descendant events;
+    - use debounce windows so a burst of child events triggers one parent refresh;
+    - do not rewrite `ContextChildRef` edges unless a child is created, renamed, archived, or has a meaningful rank/status change.
+  - Fallback behavior during retrieval:
+    - if a child has fresh L0/L1 embeddings, score those first during layer-by-layer traversal;
+    - if summary embedding is missing or stale, fall back to child path terms, `ContextIndex`, recent event/entity embeddings, and sparse lexical score;
+    - record fallback reason in `ContextPackAudit`;
+    - never fail a query only because a summary refresh worker is behind.
+  - Token-budget policy:
+    - prefer current `ContextEntity` state, stale blockers, exact events, and answer-bearing segments before broad summaries for answer construction;
+    - use L0/L1 mostly for traversal and orientation;
+    - include L1 in the prompt only when the question asks for overview/context or when raw evidence would exceed budget.
+  - Observability:
+    - metrics: dirty node count, oldest dirty age, refresh throughput, refresh latency, summary token size, embedding latency, parent propagation count, stale-summary fallback count;
+    - UI should show summary freshness per node, latest L0/L1 text, embedding model/version, source refs, and refresh audit;
+    - benchmark artifacts should report summary-hit rate, summary-stale fallback rate, and candidate children scored per layer.
+  - C++/TemporalStore gap:
+    - add native context APIs for dirty marker upsert/query/claim/complete;
+    - ensure C++ direct SDK and proxy paths can round-trip `ContextSummary`, `ContextEmbedding`, and dirty markers under repeated benchmark ingestion;
+    - keep Python memory, Rust mock/proxy, and C++ direct/proxy behavior identical for summary freshness and fallback semantics.
+  - Tests:
+    - event write marks leaf summary dirty without rewriting ancestors synchronously;
+    - worker refresh writes L0/L1 summary text and embeddings;
+    - parent summary refresh uses child summaries and respects propagation depth;
+    - retrieval falls back correctly when summaries are missing/stale;
+    - repeated events coalesce dirty markers instead of creating unbounded writes;
+    - C++ TemporalStore backend matches Python memory backend for dirty marker and summary records.
+  - Acceptance gates:
+    - ingestion p95 does not materially change when async summaries are enabled;
+    - summary worker lag is observable and bounded in local scale tests;
+    - no benchmark query fails due to missing summaries;
+    - tree-first retrieval improves or matches flat recall under the same token budget.
+
 - Promote secondary-index filtering from MatrixArk runtime into native TemporalStore serving APIs.
   - Current status: MatrixArk now writes general `ContextIndex` terms such as `event_type:*`, `entity_type:*`, `classification:*`, `status:*`, `source_type:*`, and `segment_topic:*`; scope fields such as `team` and `project` remain scope/path isolation fields, not default secondary indexes.
   - Current runtime behavior: retrieval infers conservative AND/OR filter groups from the query, applies them after tree selection and before event/entity/segment scoring, and records matched/dropped candidate counts in `ContextPack` audit metadata.
