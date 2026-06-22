@@ -13,10 +13,11 @@ Codex lifecycle event
 -> command hook
 -> tools/matrixark_codex_hook.py
 -> matrixark_ingest
--> MatrixArk extraction
--> ContextEvent / ContextEntity / ContextSummary / ContextEmbedding / ContextIndex
--> optional matrixark_retrieve
--> ContextPackAudit
+-> raw ContextEvent + SessionBuffer
+-> optional matrixark_retrieve for UserPromptSubmit
+-> matrixark_session_commit on Stop/session boundary
+-> derived ContextEntity / ContextSegment / ContextSummary / ContextEmbedding / ContextIndex
+-> ContextPackAudit / commit audit
 ```
 
 ## 2. Useful Codex Hooks
@@ -32,15 +33,15 @@ Codex lifecycle event
 | PostCompact | capture compacted summary | ingest session/node summary |
 | SubagentStart | track delegated work | optional subtask marker |
 | SubagentStop | capture subagent result | ingest subagent result |
-| Stop | capture final assistant turn signal | ingest final answer / commitments |
+| Stop | capture final assistant turn signal and session boundary | ingest final signal + `matrixark_session_commit` |
 
 Minimum useful MVP:
 
 ```text
 UserPromptSubmit -> ingest + retrieve
 PostToolUse      -> ingest useful tool output summary
-Stop             -> ingest final assistant signal
-PostCompact      -> ingest compacted session summary when available
+Stop             -> ingest final assistant signal + session_commit
+PostCompact      -> ingest compacted session summary + session_commit
 ```
 
 ## 3. What Codex Sends Us
@@ -86,7 +87,14 @@ The hook converts it into a MatrixArk ingest call:
   "metadata": {
     "source":"codex_hook",
     "codex_event":"UserPromptSubmit",
-    "node_path":["codex","deeproute","codex-thread-1","UserPromptSubmit"],
+    "node_path":[
+      "account:acct_codex",
+      "tenant:tenant_codex",
+      "principal:user:deeproute",
+      "collection:sessions",
+      "session:codex-thread-1",
+      "event:UserPromptSubmit"
+    ],
     "raw_hook_payload":{"prompt":"..."}
   },
   "agent_hook": {

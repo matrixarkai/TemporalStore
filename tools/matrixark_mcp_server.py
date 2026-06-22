@@ -37,6 +37,7 @@ DEFAULT_BUSINESS_TYPE_WEIGHTS: Json = {
     "correction": 1.0,
     "approval_budget": 0.95,
     "approval": 0.95,
+    "approval_state": 0.95,
     "budget": 0.9,
     "preference_update": 0.82,
     "plan_update": 0.78,
@@ -860,6 +861,7 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
         ("current_plan", r"\b(?:plan|plans|planning|going to|will)\s+([^.;!?]{2,140})"),
         ("family_profile", r"\b(?:family|child|children|son|daughter|pet|dog|cat)\s+([^.;!?]{0,120})"),
         ("correction", r"\b(?:correction|correct|wrong|instead|updated|changed)\s+([^.;!?]{2,140})"),
+        ("approval_state", r"\b(?:approved|approval)\s+([^.;!?]{2,140})"),
         ("confirmation", r"\b(?:yes|confirmed|approved|correct|looks good)\b([^.;!?]{0,120})"),
     ]
     for entity_type, pattern in patterns:
@@ -1101,6 +1103,7 @@ def infer_secondary_index_filter_groups(query: str, question_type: str) -> list[
     if re.search(r"\b(approval|approved|approve|confirmed|confirmation|budget|purchase|cost|gpu)\b", lower):
         add_group(
             context_index_name("event_type", "confirmation"),
+            context_index_name("entity_type", "approval_state"),
             context_index_name("entity_type", "confirmation"),
             context_index_name("classification", "confirmation"),
             context_index_name("segment_topic", "approval_budget"),

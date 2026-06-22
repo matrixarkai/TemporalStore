@@ -44,6 +44,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--table", default=os.environ.get("MATRIXARK_TEMPORALSTORE_TABLE", "deploy_table"))
     parser.add_argument("--temporalstore-lib", default=os.environ.get("TEMPORALSTORE_LIB", ""))
     parser.add_argument("--storage-prefix", default=os.environ.get("MATRIXARK_TEMPORALSTORE_PREFIX", "matrixark:codex-hook"))
+    parser.add_argument("--session-commit-threshold", type=int, default=int(os.environ.get("MATRIXARK_SESSION_COMMIT_THRESHOLD", "20")))
     parser.add_argument("--repo-root", type=Path, default=root)
     return parser.parse_args()
 
@@ -124,6 +125,21 @@ def hook_type_for_event(event: str) -> str:
     return "before_llm"
 
 
+def should_commit_session(event: str) -> bool:
+    return event in {"Stop", "PostCompact", "SubagentStop"}
+
+
+def codex_node_path(args: argparse.Namespace, event: str) -> list[str]:
+    return [
+        f"account:{args.account_id}",
+        f"tenant:{args.tenant_id}",
+        f"principal:user:{args.user_id}",
+        "collection:sessions",
+        f"session:{args.session_id}",
+        f"event:{event}",
+    ]
+
+
 def call_tool(server: Any, name: str, arguments: Json) -> Json:
     response = server.handle(
         {
@@ -188,7 +204,7 @@ def main() -> int:
                 "source": "codex_hook",
                 "codex_event": args.event,
                 "raw_hook_payload": payload,
-                "node_path": ["codex", args.user_id, args.session_id, args.event],
+                "node_path": codex_node_path(args, args.event),
             },
             "agent_hook": {
                 "source": "codex",
@@ -201,6 +217,27 @@ def main() -> int:
             },
         },
     )
+
+    commit = {}
+    if should_commit_session(args.event):
+        commit = call_tool(
+            server,
+            "matrixark_session_commit",
+            {
+                **common,
+                "threshold_messages": args.session_commit_threshold,
+                "force": True,
+                "agent_hook": {
+                    "source": "codex",
+                    "hook_type": "session_commit",
+                    "hook_id": f"session_commit:{args.event}:{int(time.time() * 1000)}",
+                    "observed_at_ms": int(time.time() * 1000),
+                    "idempotency_key": str(payload.get("id") or payload.get("turn_id") or ""),
+                    "trigger": args.event,
+                    "auto_captured": True,
+                },
+            },
+        )
 
     retrieve = {}
     query = args.query or text[:500]
@@ -226,6 +263,14 @@ def main() -> int:
                     "selected_ref_count": len(retrieve.get("selected_refs", [])) if retrieve else 0,
                     "used_context_tokens": retrieve.get("used_context_tokens", 0) if retrieve else 0,
                 },
+                "session_commit": {
+                    "status": commit.get("status"),
+                    "commit_id_hash": commit.get("commit_id_hash"),
+                    "source_event_count": commit.get("source_event_count", 0),
+                    "segments_written": commit.get("segments_written", 0),
+                    "entities_written": commit.get("entities_written", 0),
+                    "raw_events_duplicated": commit.get("raw_events_duplicated"),
+                } if commit else {},
                 "event_log": str(args.event_log),
             },
             sort_keys=True,

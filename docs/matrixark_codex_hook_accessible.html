@@ -16,10 +16,11 @@ Codex lifecycle event
 -&gt; command hook
 -&gt; tools/matrixark_codex_hook.py
 -&gt; matrixark_ingest
--&gt; MatrixArk extraction
--&gt; ContextEvent / ContextEntity / ContextSummary / ContextEmbedding / ContextIndex
--&gt; optional matrixark_retrieve
--&gt; ContextPackAudit
+-&gt; raw ContextEvent + SessionBuffer
+-&gt; optional matrixark_retrieve for UserPromptSubmit
+-&gt; matrixark_session_commit on Stop/session boundary
+-&gt; derived ContextEntity / ContextSegment / ContextSummary / ContextEmbedding / ContextIndex
+-&gt; ContextPackAudit / commit audit
 ```
 
 ## 2. Useful Codex Hooks
@@ -35,15 +36,15 @@ Codex lifecycle event
 | PostCompact | capture compacted summary | ingest session/node summary |
 | SubagentStart | track delegated work | optional subtask marker |
 | SubagentStop | capture subagent result | ingest subagent result |
-| Stop | capture final assistant turn signal | ingest final answer / commitments |
+| Stop | capture final assistant turn signal and session boundary | ingest final signal + `matrixark_session_commit` |
 
 Minimum useful MVP:
 
 ```text
 UserPromptSubmit -&gt; ingest + retrieve
 PostToolUse      -&gt; ingest useful tool output summary
-Stop             -&gt; ingest final assistant signal
-PostCompact      -&gt; ingest compacted session summary when available
+Stop             -&gt; ingest final assistant signal + session_commit
+PostCompact      -&gt; ingest compacted session summary + session_commit
 ```
 
 ## 3. What Codex Sends Us
@@ -89,7 +90,14 @@ The hook converts it into a MatrixArk ingest call:
   &quot;metadata&quot;: {
     &quot;source&quot;:&quot;codex_hook&quot;,
     &quot;codex_event&quot;:&quot;UserPromptSubmit&quot;,
-    &quot;node_path&quot;:[&quot;codex&quot;,&quot;deeproute&quot;,&quot;codex-thread-1&quot;,&quot;UserPromptSubmit&quot;],
+    &quot;node_path&quot;:[
+      &quot;account:acct_codex&quot;,
+      &quot;tenant:tenant_codex&quot;,
+      &quot;principal:user:deeproute&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:codex-thread-1&quot;,
+      &quot;event:UserPromptSubmit&quot;
+    ],
     &quot;raw_hook_payload&quot;:{&quot;prompt&quot;:&quot;...&quot;}
   },
   &quot;agent_hook&quot;: {
