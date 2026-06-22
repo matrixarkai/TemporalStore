@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MatrixArk Codex Hook Integration</title>
 <style>body{margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#172033;background:#fff}main{max-width:1120px;margin:0 auto;padding:38px 28px 68px}.badge{display:inline-block;background:#ecfdf5;color:#0f766e;border-radius:999px;padding:4px 10px;font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:.04em;margin-bottom:14px}h1{font-size:40px;line-height:1.08;margin:0 0 16px}pre{white-space:pre-wrap;overflow-x:auto;background:#f6f8fb;border:1px solid #dbe3ef;border-radius:8px;padding:18px;font:14px/1.55 Consolas,"SFMono-Regular",monospace;color:#0f172a}</style>
 </head><body><main><span class="badge">Accessible MatrixArk Doc</span><h1>MatrixArk Codex Hook Integration</h1><pre># MatrixArk Codex Hook Integration
@@ -45,6 +45,49 @@ UserPromptSubmit -&gt; ingest + retrieve
 PostToolUse      -&gt; ingest useful tool output summary
 Stop             -&gt; ingest final assistant signal + session_commit
 PostCompact      -&gt; ingest compacted session summary + session_commit
+```
+
+Current hook lifecycle implemented in `tools/matrixark_codex_hook.py`:
+
+```text
+Before LLM:
+  UserPromptSubmit
+  -&gt; matrixark_ingest(user message)
+  -&gt; auto threshold commit if pending &gt;= MATRIXARK_SESSION_COMMIT_THRESHOLD
+  -&gt; matrixark_retrieve(ContextPack)
+
+After LLM / tool:
+  PostToolUse / PreToolUse / PermissionRequest
+  -&gt; matrixark_ingest(tool result or governance signal)
+  -&gt; no retrieval by default
+
+On Stop:
+  Stop / SubagentStop
+  -&gt; matrixark_ingest(assistant/final signal)
+  -&gt; matrixark_session_commit(commit_reason=hook_boundary, force=true)
+
+On PostCompact:
+  PostCompact
+  -&gt; matrixark_ingest(compacted session summary, compacted_session_summary=true)
+  -&gt; matrixark_session_commit(commit_reason=hook_boundary, force=true)
+
+Idle timeout:
+  IdleTimeout / SessionIdle
+  -&gt; no new message required
+  -&gt; matrixark_session_commit(commit_reason=idle_timeout, force=false, idle_timeout_ms=N)
+
+Pending &gt;= 20:
+  UserPromptSubmit with auto_batch_extract=true
+  -&gt; rolling threshold commit
+  -&gt; extracts only the next threshold-sized pending window
+```
+
+Useful knobs:
+
+```text
+MATRIXARK_SESSION_COMMIT_THRESHOLD=20
+MATRIXARK_IDLE_COMMIT_TIMEOUT_MS=600000   # 10 minutes
+MATRIXARK_IDLE_COMMIT_TIMEOUT_MS=1800000  # 30 minutes
 ```
 
 ## 3. What Codex Sends Us
@@ -192,6 +235,11 @@ flush on PostCompact with the compacted summary
 flush every 2-5 minutes for active sessions
 ```
 
+Current hook behavior uses rolling windows: when the threshold is reached, only
+the next threshold-sized uncommitted window is extracted. Later messages remain
+pending for the next threshold, Stop/PostCompact boundary, idle-timeout commit,
+or explicit `matrixark_session_commit`.
+
 ### Option C: Hybrid Production Path
 
 ```text
@@ -260,7 +308,7 @@ If Codex runs on Windows but MatrixArk runs in WSL, use `commandWindows`:
 {
   &quot;type&quot;: &quot;command&quot;,
   &quot;command&quot;: &quot;python3 /root/src/github-services/TemporalStore/tools/matrixark_codex_hook.py --event UserPromptSubmit&quot;,
-  &quot;commandWindows&quot;: &quot;wsl -d Ubuntu -- bash -lc &#x27;cd /root/src/github-services/TemporalStore &amp;&amp; python3 tools/matrixark_codex_hook.py --event UserPromptSubmit --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id deeproute --session-id codex-thread-local&#x27;&quot;,
+  &quot;commandWindows&quot;: &quot;wsl -d Ubuntu -- bash -lc &#39;cd /root/src/github-services/TemporalStore &amp;&amp; python3 tools/matrixark_codex_hook.py --event UserPromptSubmit --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id deeproute --session-id codex-thread-local&#39;&quot;,
   &quot;timeout&quot;: 30
 }
 ```
@@ -283,7 +331,7 @@ python3 tools/matrixark_codex_hook.py \
   --account-id acct_codex \
   --tenant-id tenant_codex \
   --user-id deeproute \
-  --session-id codex-thread-1 &lt;&lt;&#x27;JSON&#x27;
+  --session-id codex-thread-1 &lt;&lt;&#39;JSON&#39;
 {&quot;prompt&quot;:&quot;Remember that Alice approved the GPU purchase for Project Orion.&quot;}
 JSON
 ```
@@ -297,7 +345,7 @@ python3 tools/matrixark_codex_hook.py \
   --account-id acct_codex \
   --tenant-id tenant_codex \
   --user-id deeproute \
-  --session-id codex-thread-1 &lt;&lt;&#x27;JSON&#x27;
+  --session-id codex-thread-1 &lt;&lt;&#39;JSON&#39;
 {&quot;prompt&quot;:&quot;What was approved for Project Orion?&quot;}
 JSON
 ```
@@ -360,3 +408,4 @@ flush to matrixark_batch_extract at &gt;=20 messages or on Stop/PostCompact
 
 This gives MatrixArk both online freshness and VikingMem-style batch memory quality without requiring Codex itself to understand MatrixArk internal data models.
 </pre></main></body></html>
+

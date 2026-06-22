@@ -41,6 +41,36 @@ class MatrixArkCodexHookTest(unittest.TestCase):
         )
         return json.loads(proc.stdout), event_log
 
+    def run_hook_with_extra_args(self, payload, *, event="UserPromptSubmit", event_log=None, extra_args=None):
+        event_log = event_log or Path(self.tmpdir.name) / "codex-hook.jsonl"
+        command = [
+            sys.executable,
+            str(HOOK),
+            "--event",
+            event,
+            "--event-log",
+            str(event_log),
+            "--account-id",
+            "acct_test",
+            "--tenant-id",
+            "tenant_test",
+            "--user-id",
+            "codex-user",
+            "--session-id",
+            "codex-session",
+        ]
+        command.extend(extra_args or [])
+        proc = subprocess.run(
+            command,
+            input=json.dumps(payload),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=str(ROOT),
+            check=True,
+        )
+        return json.loads(proc.stdout), event_log
+
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
 
@@ -62,6 +92,7 @@ class MatrixArkCodexHookTest(unittest.TestCase):
             event_log=event_log,
         )
         self.assertEqual(second["status"], "ok")
+        self.assertTrue(second["lifecycle_stage"]["before_llm_retrieve"])
         self.assertGreaterEqual(second["retrieve"]["selected_ref_count"], 1)
 
         records = [json.loads(line) for line in event_log.read_text().splitlines() if line.strip()]
@@ -90,6 +121,7 @@ class MatrixArkCodexHookTest(unittest.TestCase):
             event_log=event_log,
         )
         self.assertEqual(stop["status"], "ok")
+        self.assertTrue(stop["lifecycle_stage"]["hook_boundary_commit"])
         self.assertEqual(stop["session_commit"]["status"], "committed")
         self.assertEqual(stop["session_commit"]["commit_reason"], "hook_boundary")
         self.assertEqual(stop["session_commit"]["trigger_policy"], "force")
@@ -134,6 +166,63 @@ class MatrixArkCodexHookTest(unittest.TestCase):
         event = next(record for record in records if record.get("record_type") == "context_event")
         self.assertIn("assistant:", event["text"])
         self.assertEqual(event["agent_hook"]["hook_type"], "after_llm")
+
+    def test_postcompact_ingests_compacted_summary_and_commits_window(self):
+        event_log = Path(self.tmpdir.name) / "codex-hook.jsonl"
+        self.run_hook({"prompt": "Remember that the API rollout owner is Priya."}, event_log=event_log)
+        compact, _ = self.run_hook(
+            {"message": "Compacted summary: Priya owns the API rollout and the deadline is Friday."},
+            event="PostCompact",
+            event_log=event_log,
+        )
+        self.assertEqual(compact["status"], "ok")
+        self.assertTrue(compact["lifecycle_stage"]["hook_boundary_commit"])
+        self.assertEqual(compact["session_commit"]["commit_reason"], "hook_boundary")
+
+        records = [json.loads(line) for line in event_log.read_text().splitlines() if line.strip()]
+        compact_event = next(
+            record
+            for record in records
+            if record.get("record_type") == "context_event"
+            and record.get("envelope", {}).get("metadata", {}).get("codex_event") == "PostCompact"
+        )
+        self.assertTrue(compact_event["envelope"]["metadata"]["compacted_session_summary"])
+
+    def test_user_prompt_auto_commits_every_threshold_messages(self):
+        event_log = Path(self.tmpdir.name) / "codex-hook.jsonl"
+        first, _ = self.run_hook_with_extra_args(
+            {"prompt": "Auto threshold turn 0 about Rust memory."},
+            event_log=event_log,
+            extra_args=["--session-commit-threshold", "2"],
+        )
+        self.assertFalse(first["lifecycle_stage"]["auto_threshold_commit"])
+        second, _ = self.run_hook_with_extra_args(
+            {"prompt": "Auto threshold turn 1 about GPU approvals."},
+            event_log=event_log,
+            extra_args=["--session-commit-threshold", "2"],
+        )
+        self.assertTrue(second["lifecycle_stage"]["auto_threshold_commit"])
+        auto = second["ingest"]["auto_batch_extract_result"]
+        self.assertEqual(auto["status"], "committed")
+        self.assertEqual(auto["commit_reason"], "threshold")
+        self.assertEqual(auto["committed_event_count"], 2)
+
+    def test_idle_timeout_hook_commits_without_new_message(self):
+        event_log = Path(self.tmpdir.name) / "codex-hook.jsonl"
+        first, _ = self.run_hook({"prompt": "Idle window should later commit this memory."}, event_log=event_log)
+        self.assertEqual(first["ingest"]["session_buffer"]["pending_event_count"], 1)
+        idle, _ = self.run_hook_with_extra_args(
+            {},
+            event="IdleTimeout",
+            event_log=event_log,
+            extra_args=["--idle-commit-timeout-ms", "0"],
+        )
+        self.assertEqual(idle["status"], "ok")
+        self.assertEqual(idle["ingest"], {})
+        self.assertTrue(idle["lifecycle_stage"]["idle_timeout_commit"])
+        self.assertEqual(idle["session_commit"]["status"], "committed")
+        self.assertEqual(idle["session_commit"]["commit_reason"], "idle_timeout")
+        self.assertEqual(idle["session_commit"]["source_event_count"], 1)
 
 
 if __name__ == "__main__":

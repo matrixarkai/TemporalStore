@@ -45,6 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--temporalstore-lib", default=os.environ.get("TEMPORALSTORE_LIB", ""))
     parser.add_argument("--storage-prefix", default=os.environ.get("MATRIXARK_TEMPORALSTORE_PREFIX", "matrixark:codex-hook"))
     parser.add_argument("--session-commit-threshold", type=int, default=int(os.environ.get("MATRIXARK_SESSION_COMMIT_THRESHOLD", "20")))
+    parser.add_argument("--idle-commit-timeout-ms", type=int, default=int(os.environ.get("MATRIXARK_IDLE_COMMIT_TIMEOUT_MS", "0")))
     parser.add_argument("--repo-root", type=Path, default=root)
     return parser.parse_args()
 
@@ -120,13 +121,23 @@ def hook_type_for_event(event: str) -> str:
         return "before_llm"
     if event in {"PostToolUse", "PreToolUse", "PermissionRequest"}:
         return "tool_result"
+    if event in {"IdleTimeout", "SessionIdle"}:
+        return "session_commit"
     if event in {"Stop", "PostCompact", "SubagentStop"}:
         return "after_llm"
     return "before_llm"
 
 
 def should_commit_session(event: str) -> bool:
-    return event in {"Stop", "PostCompact", "SubagentStop"}
+    return event in {"Stop", "PostCompact", "SubagentStop", "IdleTimeout", "SessionIdle"}
+
+
+def commit_reason_for_event(event: str) -> str:
+    if event in {"IdleTimeout", "SessionIdle"}:
+        return "idle_timeout"
+    if event in {"Stop", "PostCompact", "SubagentStop"}:
+        return "hook_boundary"
+    return "manual_api"
 
 
 def codex_node_path(args: argparse.Namespace, event: str) -> list[str]:
@@ -184,7 +195,7 @@ def main() -> int:
     args = parse_args()
     payload = read_stdin_payload()
     text = payload_text(payload) or args.query
-    if not text:
+    if not text and args.event not in {"IdleTimeout", "SessionIdle"}:
         print(json.dumps({"status": "skipped", "reason": "empty hook payload"}))
         return 0
 
@@ -194,10 +205,9 @@ def main() -> int:
     if args.api_key:
         common["api_key"] = args.api_key
 
-    ingest = call_tool(
-        server,
-        "matrixark_ingest",
-        {
+    ingest = {}
+    if text:
+        ingest_args: Json = {
             **common,
             "messages": [{"role": role_for_event(args.event), "content": text}],
             "metadata": {
@@ -205,6 +215,7 @@ def main() -> int:
                 "codex_event": args.event,
                 "raw_hook_payload": payload,
                 "node_path": codex_node_path(args, args.event),
+                "compacted_session_summary": args.event == "PostCompact",
             },
             "agent_hook": {
                 "source": "codex",
@@ -215,19 +226,26 @@ def main() -> int:
                 "trigger": args.event,
                 "auto_captured": True,
             },
-        },
-    )
+        }
+        if args.event == "UserPromptSubmit":
+            ingest_args["auto_batch_extract"] = True
+            ingest_args["session_buffer_threshold"] = args.session_commit_threshold
+            if args.idle_commit_timeout_ms > 0:
+                ingest_args["idle_commit_timeout_ms"] = args.idle_commit_timeout_ms
+        ingest = call_tool(server, "matrixark_ingest", ingest_args)
 
     commit = {}
     if should_commit_session(args.event):
+        commit_reason = commit_reason_for_event(args.event)
         commit = call_tool(
             server,
             "matrixark_session_commit",
             {
                 **common,
                 "threshold_messages": args.session_commit_threshold,
-                "force": True,
-                "commit_reason": "hook_boundary",
+                "force": commit_reason != "idle_timeout",
+                "commit_reason": commit_reason,
+                **({"idle_timeout_ms": args.idle_commit_timeout_ms} if commit_reason == "idle_timeout" else {}),
                 "agent_hook": {
                     "source": "codex",
                     "hook_type": "session_commit",
@@ -258,6 +276,13 @@ def main() -> int:
             {
                 "status": "ok",
                 "event": args.event,
+                "lifecycle_stage": {
+                    "before_llm_retrieve": args.event == "UserPromptSubmit",
+                    "after_llm_ingest_only": args.event in {"PostToolUse", "PreToolUse", "PermissionRequest"},
+                    "hook_boundary_commit": args.event in {"Stop", "PostCompact", "SubagentStop"},
+                    "idle_timeout_commit": args.event in {"IdleTimeout", "SessionIdle"},
+                    "auto_threshold_commit": bool(ingest.get("auto_batch_extract_result")) if ingest else False,
+                },
                 "ingest": ingest,
                 "retrieve": {
                     "context_pack_id": retrieve.get("context_pack_id"),
