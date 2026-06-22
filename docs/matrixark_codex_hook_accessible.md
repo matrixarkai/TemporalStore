@@ -44,6 +44,49 @@ Stop             -> ingest final assistant signal + session_commit
 PostCompact      -> ingest compacted session summary + session_commit
 ```
 
+Current hook lifecycle implemented in `tools/matrixark_codex_hook.py`:
+
+```text
+Before LLM:
+  UserPromptSubmit
+  -> matrixark_ingest(user message)
+  -> auto threshold commit if pending >= MATRIXARK_SESSION_COMMIT_THRESHOLD
+  -> matrixark_retrieve(ContextPack)
+
+After LLM / tool:
+  PostToolUse / PreToolUse / PermissionRequest
+  -> matrixark_ingest(tool result or governance signal)
+  -> no retrieval by default
+
+On Stop:
+  Stop / SubagentStop
+  -> matrixark_ingest(assistant/final signal)
+  -> matrixark_session_commit(commit_reason=hook_boundary, force=true)
+
+On PostCompact:
+  PostCompact
+  -> matrixark_ingest(compacted session summary, compacted_session_summary=true)
+  -> matrixark_session_commit(commit_reason=hook_boundary, force=true)
+
+Idle timeout:
+  IdleTimeout / SessionIdle
+  -> no new message required
+  -> matrixark_session_commit(commit_reason=idle_timeout, force=false, idle_timeout_ms=N)
+
+Pending >= 20:
+  UserPromptSubmit with auto_batch_extract=true
+  -> rolling threshold commit
+  -> extracts only the next threshold-sized pending window
+```
+
+Useful knobs:
+
+```text
+MATRIXARK_SESSION_COMMIT_THRESHOLD=20
+MATRIXARK_IDLE_COMMIT_TIMEOUT_MS=600000   # 10 minutes
+MATRIXARK_IDLE_COMMIT_TIMEOUT_MS=1800000  # 30 minutes
+```
+
 ## 3. What Codex Sends Us
 
 Codex command hooks send JSON on stdin. Payload fields can vary, so `tools/matrixark_codex_hook.py` is tolerant. It looks for text in:
@@ -188,6 +231,11 @@ flush on Stop if enough useful events accumulated
 flush on PostCompact with the compacted summary
 flush every 2-5 minutes for active sessions
 ```
+
+Current hook behavior uses rolling windows: when the threshold is reached, only
+the next threshold-sized uncommitted window is extracted. Later messages remain
+pending for the next threshold, Stop/PostCompact boundary, idle-timeout commit,
+or explicit `matrixark_session_commit`.
 
 ### Option C: Hybrid Production Path
 
