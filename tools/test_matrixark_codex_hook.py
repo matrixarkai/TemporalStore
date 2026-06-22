@@ -137,11 +137,9 @@ class MatrixArkCodexHookTest(unittest.TestCase):
         self.assertIn("preference", topics)
         self.assertIn("approval_budget", topics)
         self.assertTrue(
-            any(record.get("record_type") == "context_embedding" and record.get("embedding_type") == "node_l0" for record in records)
+            any(record.get("record_type") == "context_summary_dirty" for record in records)
         )
-        self.assertTrue(
-            any(record.get("record_type") == "context_embedding" and record.get("embedding_type") == "node_l1" for record in records)
-        )
+        self.assertFalse(any(record.get("record_type") == "context_summary_refresh_audit" for record in records))
         self.assertTrue(
             all(record.get("source_event_ids") for record in records if record.get("record_type") in {"context_segment", "context_entity"})
         )

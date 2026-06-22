@@ -45,6 +45,7 @@ class MatrixArkMcpServerTest(unittest.TestCase):
                 "matrixark_ingest",
                 "matrixark_batch_extract",
                 "matrixark_session_commit",
+                "matrixark_refresh_summaries",
                 "matrixark_retrieve",
                 "matrixark_feedback",
                 "matrixark_replay",
@@ -76,6 +77,8 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         self.assertEqual(feedback["inputSchema"]["required"], ["messages"])
         self.assertIn("strongly recommended", feedback["inputSchema"]["properties"]["context_pack_id"]["description"])
         self.assertNotIn("infer", feedback["inputSchema"]["properties"])
+        refresh = next(tool for tool in response["result"]["tools"] if tool["name"] == "matrixark_refresh_summaries")
+        self.assertIn("limit", refresh["inputSchema"]["properties"])
         retrieve = next(tool for tool in response["result"]["tools"] if tool["name"] == "matrixark_retrieve")
         self.assertIn("local_context", retrieve["inputSchema"]["properties"])
         self.assertIn("local_context_tokens", retrieve["inputSchema"]["properties"])
@@ -124,19 +127,21 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         self.assertFalse(pack["insufficient_context"])
         self.assertEqual(pack["selected_refs"][0]["ref_hash"], ingest["event_id_hash"])
         self.assertEqual(pack["query_embedding_model"], "matrixark-local-token-hash-v1")
-        self.assertTrue(pack["layer_scores"])
-        self.assertGreater(pack["selected_refs"][0]["node_score"], 0)
+        self.assertFalse(pack["layer_scores"])
+        self.assertTrue(pack["recall_policy"]["tree_traversal"]["fallback_to_flat"])
+        self.assertEqual(pack["recall_policy"]["tree_traversal"]["fallback_reason"], "missing_or_stale_summary_embeddings")
 
         replay = self.call_tool("matrixark_replay", {"context_pack_id": "debug"})
         record_types = [record["record_type"] for record in replay["events"]]
         self.assertIn("context_event", record_types)
         self.assertIn("context_summary", record_types)
         self.assertIn("context_embedding", record_types)
+        self.assertIn("context_summary_dirty", record_types)
         self.assertTrue(any(record.get("summary_type") == "session_l0" for record in replay["events"]))
-        self.assertTrue(any(record.get("summary_type") == "node_l0" for record in replay["events"]))
-        self.assertTrue(any(record.get("summary_type") == "node_l1" for record in replay["events"]))
-        self.assertTrue(any(record.get("embedding_type") == "node_l0" for record in replay["events"]))
-        self.assertTrue(any(record.get("embedding_type") == "node_l1" for record in replay["events"]))
+        self.assertFalse(any(record.get("summary_type") == "node_l0" for record in replay["events"]))
+        self.assertFalse(any(record.get("summary_type") == "node_l1" for record in replay["events"]))
+        self.assertFalse(any(record.get("embedding_type") == "node_l0" for record in replay["events"]))
+        self.assertFalse(any(record.get("embedding_type") == "node_l1" for record in replay["events"]))
         event = next(record for record in replay["events"] if record.get("event_id_hash") == ingest["event_id_hash"])
         self.assertTrue(event["summary_text"])
         self.assertEqual(len(event["summary_embedding"]), 32)
@@ -153,7 +158,8 @@ class MatrixArkMcpServerTest(unittest.TestCase):
             },
         )
         self.assertEqual(ingest["status"], "accepted")
-        self.assertGreaterEqual(ingest["summary_refresh"]["refresh_result"]["refreshed_count"], 1)
+        self.assertEqual(ingest["summary_refresh"]["status"], "dirty_marked")
+        self.assertIsNone(ingest["summary_refresh"]["refresh_result"])
 
         replay = self.call_tool("matrixark_replay", {"context_pack_id": "debug"})
         dirty_records = [
@@ -163,6 +169,12 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         ]
         self.assertTrue(dirty_records)
         self.assertTrue(all(record.get("status") == "pending" for record in dirty_records))
+        self.assertFalse(any(record.get("record_type") == "context_summary_refresh_audit" for record in replay["events"]))
+        self.assertFalse(any(record.get("summary_type") in {"node_l0", "node_l1"} for record in replay["events"]))
+
+        refresh = self.call_tool("matrixark_refresh_summaries", {"scope": {"user_id": "alice", "session_id": "sess-summary"}})
+        self.assertGreaterEqual(refresh["refreshed_count"], 1)
+        replay = self.call_tool("matrixark_replay", {"context_pack_id": "debug"})
 
         refresh_audits = [
             record
@@ -426,12 +438,12 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         self.assertIn("context_embedding", record_types_after_one)
         self.assertIn("session_buffer_event", record_types_after_one)
         self.assertIn("context_summary_dirty", record_types_after_one)
-        self.assertIn("context_summary_refresh_audit", record_types_after_one)
         self.assertIn("context_summary", record_types_after_one)
         self.assertTrue(any(record.get("embedding_type") == "event_text" for record in replay_after_one["events"]))
-        self.assertTrue(any(record.get("summary_type") == "node_l0" for record in replay_after_one["events"]))
-        self.assertTrue(any(record.get("summary_type") == "node_l1" for record in replay_after_one["events"]))
         self.assertTrue(any(record.get("summary_type") == "session_l0" for record in replay_after_one["events"]))
+        self.assertNotIn("context_summary_refresh_audit", record_types_after_one)
+        self.assertFalse(any(record.get("summary_type") == "node_l0" for record in replay_after_one["events"]))
+        self.assertFalse(any(record.get("summary_type") == "node_l1" for record in replay_after_one["events"]))
 
         self.assertNotIn("context_segment", record_types_after_one)
         self.assertNotIn("context_entity", record_types_after_one)
@@ -632,6 +644,8 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         self.assertTrue(any(summary.get("summary_type") == "batch_l0" for summary in summaries))
         self.assertTrue(indexes)
 
+        refresh = self.call_tool("matrixark_refresh_summaries", {"scope": scope})
+        self.assertGreaterEqual(refresh["refreshed_count"], 1)
         pack = self.call_tool(
             "matrixark_retrieve",
             {
@@ -669,6 +683,18 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         self.assertFalse(pack["insufficient_context"])
         self.assertEqual(pack["selected_refs"][0]["ref_hash"], ingest["event_id_hash"])
         self.assertGreater(pack["selected_refs"][0]["embedding_score"], 0)
+        self.assertTrue(pack["recall_policy"]["tree_traversal"]["fallback_to_flat"])
+
+        refresh = self.call_tool("matrixark_refresh_summaries", {"scope": {"session_id": "thread-runbook"}})
+        self.assertGreaterEqual(refresh["refreshed_count"], 1)
+        pack = self.call_tool(
+            "matrixark_retrieve",
+            {
+                "query": "stream proxy rollback restart",
+                "scope": {"session_id": "thread-runbook"},
+                "max_context_tokens": 4,
+            },
+        )
         self.assertTrue(any(score["depth"] >= 3 for score in pack["layer_scores"]))
         traversal = pack["recall_policy"]["tree_traversal"]
         self.assertTrue(traversal["enabled"])
@@ -707,6 +733,11 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         )
         self.assertEqual(decoy["status"], "accepted")
 
+        refresh = self.call_tool(
+            "matrixark_refresh_summaries",
+            {"scope": {"user_id": "alice", "session_id": "bench-tree", "team": "infra_team"}},
+        )
+        self.assertGreaterEqual(refresh["refreshed_count"], 1)
         pack = self.call_tool(
             "matrixark_retrieve",
             {

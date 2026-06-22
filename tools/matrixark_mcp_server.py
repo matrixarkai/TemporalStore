@@ -62,6 +62,7 @@ MATRIXARK_TOOL_SCOPES: dict[str, set[str]] = {
     "matrixark_ingest": {"context:ingest"},
     "matrixark_batch_extract": {"context:ingest"},
     "matrixark_session_commit": {"context:ingest"},
+    "matrixark_refresh_summaries": {"context:ingest"},
     "matrixark_retrieve": {"context:retrieve"},
     "matrixark_feedback": {"context:feedback"},
     "matrixark_replay": {"context:replay"},
@@ -2108,14 +2109,22 @@ class MatrixArkLocalAdapter:
             source_hash=source_hash,
             dirty_reason="new_event",
         )
-        refresh_result = self.refresh_dirty_node_summaries(
-            scope=scope,
-            refreshed_at_ms=updated_at_ms,
-        )
         return {
+            "status": "dirty_marked",
             "dirty_hashes": dirty_hashes,
-            "refresh_result": refresh_result,
+            "refresh_result": None,
+            "async_required": True,
         }
+
+    def refresh_summaries(self, args: Json) -> Json:
+        scope = optional_object(args, "scope")
+        limit = args.get("limit", 64)
+        if not isinstance(limit, int) or limit <= 0:
+            raise MatrixArkError("limit must be a positive integer")
+        refreshed_at_ms = args.get("refreshed_at_ms")
+        if refreshed_at_ms is not None and not isinstance(refreshed_at_ms, int):
+            raise MatrixArkError("refreshed_at_ms must be an integer")
+        return self.refresh_dirty_node_summaries(scope=scope, limit=limit, refreshed_at_ms=refreshed_at_ms)
 
     def ingest(self, args: Json, *, hook: Json | None = None) -> Json:
         envelope = normalize_envelope(args, default_kind="message")
@@ -3020,6 +3029,7 @@ class MatrixArkLocalAdapter:
                     "selected_path_count": len(selected_paths),
                     "selected_leaf_count": len(traversal.get("leaf_paths", [])),
                     "fallback_to_flat": bool(traversal.get("fallback_to_flat")),
+                    "fallback_reason": "missing_or_stale_summary_embeddings" if traversal.get("fallback_to_flat") else "",
                 },
                 "secondary_index_filter": {
                     "enabled": bool(secondary_index_filter_groups),
@@ -3667,6 +3677,23 @@ TOOLS: list[Json] = [
         },
     },
     {
+        "name": "matrixark_refresh_summaries",
+        "description": "Background worker entrypoint: refresh dirty ContextNode L0/L1 summaries and embeddings asynchronously from recent events, entities, segments, and child summaries.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "scope": SCOPE_SCHEMA,
+                "api_key": API_KEY_SCHEMA,
+                "limit": {"type": "integer", "default": 64},
+                "refreshed_at_ms": {
+                    "type": "integer",
+                    "description": "Optional deterministic refresh timestamp for tests/replay.",
+                },
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
         "name": "matrixark_retrieve",
         "description": "Retrieve a token-budgeted MatrixArk context pack for a raw query.",
         "inputSchema": {
@@ -3954,6 +3981,10 @@ class MatrixArkMcpServer:
         if name == "matrixark_session_commit":
             result = self.adapter.session_commit(args, hook=hook)
             self.access.append_audit("context.session_commit", identity, status="ok", details={"commit_id_hash": result.get("commit_id_hash"), "batch_id_hash": result.get("batch_id_hash")})
+            return {**result, "access": args.get("_matrixark_auth", {})}
+        if name == "matrixark_refresh_summaries":
+            result = self.adapter.refresh_summaries(args)
+            self.access.append_audit("context.refresh_summaries", identity, status="ok", details={"refreshed_count": result.get("refreshed_count")})
             return {**result, "access": args.get("_matrixark_auth", {})}
         if name == "matrixark_retrieve":
             result = self.adapter.retrieve(args)
