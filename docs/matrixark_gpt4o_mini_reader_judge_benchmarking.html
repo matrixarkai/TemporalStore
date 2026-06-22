@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MatrixArk GPT-4o Mini Reader/Judge Benchmarking</title>
+  <style>
+    body { font-family: Arial, sans-serif; line-height: 1.55; margin: 32px auto; max-width: 980px; padding: 0 24px; color: #182026; }
+    h1, h2 { color: #102030; }
+    h1 { font-size: 32px; }
+    h2 { border-top: 1px solid #d8dee4; padding-top: 20px; margin-top: 32px; }
+    code, pre { background: #f5f7f9; border: 1px solid #e5e8ec; border-radius: 6px; }
+    code { padding: 2px 5px; }
+    pre { overflow-x: auto; padding: 14px; }
+    a { color: #0b66c3; }
+    .note { background: #fff8df; border: 1px solid #edd38a; border-radius: 8px; padding: 12px 14px; }
+  </style>
+</head>
+<body>
+  <h1>MatrixArk GPT-4o Mini Reader/Judge Benchmarking</h1>
+  <p class="note"><strong>Important:</strong> ChatGPT Free/Plus/Pro access is different from OpenAI API access. There is no guaranteed free GPT-4 API model for benchmarking. API usage normally requires an OpenAI Platform account, API key, and billing or credits.</p>
+
+  <h2>Official References</h2>
+  <ul>
+    <li><a href="https://developers.openai.com/api/docs/quickstart">OpenAI API quickstart</a></li>
+    <li><a href="https://developers.openai.com/api/reference/overview/">OpenAI API authentication overview</a></li>
+    <li><a href="https://developers.openai.com/api/docs/models/gpt-4o-mini">GPT-4o mini model page</a></li>
+    <li><a href="https://openai.com/api/pricing/">OpenAI API pricing</a></li>
+  </ul>
+
+  <h2>Why Use GPT-4o Mini</h2>
+  <pre>retrieval quality = did TemporalStore find the right context?
+reader quality    = did the model turn that context into the right answer?
+judge quality     = did the evaluator score the answer fairly?</pre>
+  <p>Our deterministic reader is useful for CI and debugging, but it is not paper-style benchmark parity. A stronger OpenAI-compatible reader/judge path is needed when comparing with systems that use strong LLM readers or judges.</p>
+
+  <h2>Get An OpenAI API Key</h2>
+  <ol>
+    <li>Open <a href="https://platform.openai.com/">platform.openai.com</a>.</li>
+    <li>Sign in or create an OpenAI Platform account.</li>
+    <li>Go to <strong>Dashboard -&gt; API keys</strong>.</li>
+    <li>Create a new secret key.</li>
+    <li>Copy it once and store it securely.</li>
+    <li>Go to <strong>Billing</strong> and add payment method or credits if required.</li>
+  </ol>
+  <p>Do not commit the key to Git.</p>
+  <pre>export OPENAI_API_KEY="sk-..."</pre>
+  <pre>$env:OPENAI_API_KEY="sk-..."</pre>
+
+  <h2>Recommended Benchmark Env</h2>
+  <pre>export MATRIXARK_READER_PROVIDER=openai
+export MATRIXARK_READER_MODEL=gpt-4o-mini
+export MATRIXARK_JUDGE_PROVIDER=openai
+export MATRIXARK_JUDGE_MODEL=gpt-4o-mini
+export OPENAI_API_KEY="sk-..."</pre>
+
+  <h2>C++ TemporalStore Retrieval Env</h2>
+  <pre>export MATRIXARK_MCP_BACKEND=temporalstore-direct
+export MATRIXARK_TEMPORALSTORE_METASERVER=127.0.0.1:18000
+export MATRIXARK_TEMPORALSTORE_NAMESPACE=deploy_ns
+export MATRIXARK_TEMPORALSTORE_TABLE=deploy_table
+export MATRIXARK_TEMPORALSTORE_PREFIX=matrixark:benchmark:gpt4o-mini</pre>
+
+  <h2>LOCOMO Command Shape</h2>
+  <pre>cd /root/src/github-services/TemporalStore
+
+python3 tools/run_matrixark_dataset_benchmark.py \
+  --dataset locomo \
+  --data-path /root/matrixark_benchmarks/data/locomo10.json \
+  --artifact-dir /root/matrixark_benchmarks/artifacts/gpt4o_mini_reader_judge \
+  --artifact-prefix locomo_cpp_gpt4o_mini_reader_judge_YYYYMMDD \
+  --metaserver 127.0.0.1:18000 \
+  --namespace deploy_ns \
+  --table deploy_table \
+  --storage-prefix matrixark:benchmark:locomo:gpt4o-mini:YYYYMMDD \
+  --batch-size 20 \
+  --max-context-tokens 1200 \
+  --checkpoint-interval 50</pre>
+
+  <h2>LongMemEval_s Command Shape</h2>
+  <pre>cd /root/src/github-services/TemporalStore
+
+python3 tools/run_matrixark_dataset_benchmark.py \
+  --dataset longmemeval_s \
+  --data-path /root/matrixark_benchmarks/data/longmemeval_s_cleaned_official_hf.json \
+  --artifact-dir /root/matrixark_benchmarks/artifacts/gpt4o_mini_reader_judge \
+  --artifact-prefix longmemeval_s_cpp_gpt4o_mini_reader_judge_YYYYMMDD \
+  --metaserver 127.0.0.1:18000 \
+  --namespace deploy_ns \
+  --table deploy_table \
+  --storage-prefix matrixark:benchmark:longmemeval:gpt4o-mini:YYYYMMDD \
+  --batch-size 20 \
+  --max-message-chars 800 \
+  --max-context-tokens 1200 \
+  --checkpoint-interval 50</pre>
+
+  <h2>Required Artifacts</h2>
+  <pre>result.json
+report.json
+report.md
+hypotheses.jsonl
+context_packs.jsonl
+judge.jsonl
+progress.json</pre>
+
+  <h2>Metrics To Watch</h2>
+  <pre>context_recall
+evidence_session_recall
+answer_support_hit
+final_judge_score
+answer_quality_under_budget
+used_context_tokens
+answer_bearing_token_density
+judge_score_per_1k_tokens</pre>
+
+  <h2>Reader/Judge Prompt Policy</h2>
+  <pre>date          -> answer date only, cite exact turn
+current-state -> latest entity state plus stale blocker if relevant
+multi-hop     -> combine evidence across sessions/entities
+why/emotion   -> extract reason or feeling only
+list/name     -> compact list
+fact          -> short direct answer</pre>
+
+  <h2>Current Gap</h2>
+  <p>MatrixArk already has C++ TemporalStore-backed extraction, ingestion, retrieval, ContextPack audit, token-efficiency reporting, and checkpoint artifacts. The main remaining gap vs VikingMem-style reported scores is reader/judge parity.</p>
+  <pre>deterministic reader -> CI/debug only
+gpt-4o-mini reader   -> benchmark-quality answer generation
+gpt-4o-mini judge    -> paper-style scoring path</pre>
+</body>
+</html>
