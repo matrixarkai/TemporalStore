@@ -17,6 +17,45 @@ Latest AWS/test state:
 
 ## MatrixArk LLM Context Backlog
 
+- Keep MVP entity extraction flat, but attach entities to filesystem-like `ContextNode` paths; add multi-layer entity/path extraction later.
+  - Product decision:
+    - OpenViking's public design is clearly hierarchical through a filesystem/context-layer model for resources, memory, and skills;
+    - VikingMem's paper design is clearly event/entity/operator based, with events dynamically updating typed entity state;
+    - neither should be treated as proof that production VikingMem currently extracts arbitrary deep parent/child entity trees from every conversation turn;
+    - MatrixArk should keep v1 simpler: extract flat typed `ContextEntity` records, attach them to the best `ContextNode`, and let the node path carry the hierarchy.
+  - MVP model:
+    - `ContextNode` owns hierarchy: tenant/team/project/topic/segment/business-object;
+    - `ContextEntity` owns evolving state: preference, relationship, location, job/status, current plan, family/profile fact, approval state, budget state;
+    - `ContextEvent` owns raw replayable evidence;
+    - `ContextSegment` can remain segment metadata, but high-value segments should materialize as `ContextNode(node_type=segment)` so they can parent events/entities.
+  - Example:
+    - node path: `company_a/infra_team/project_1/approvals/gpu_purchase`;
+    - entities attached to that node: `approval_status=approved by Alice`, `budget=$42,000`, `owner=infra_team`;
+    - events under that node: raw approval, budget, review, correction, and confirmation turns.
+  - Why not deep entity extraction in MVP:
+    - LLMs can over-create entity nodes and produce inconsistent names such as `GPU purchase`, `GPU request`, and `gpu_purchase_8891`;
+    - deep entity extraction requires canonicalization, merge/dedupe, confidence thresholds, and write-amplification controls;
+    - v1 benchmark and product quality depend more on reliable entity state, temporal validity, replay evidence, and tree-first retrieval than on arbitrary entity nesting.
+  - Future multi-layer extraction target:
+    - extract candidate `node_path` plus flat entities in one pass;
+    - canonicalize node path deterministically against existing `ContextNode` paths before creating new nodes;
+    - allow only bounded node creation per batch/session;
+    - use parent-child `ContextNode` paths for durable hierarchy, not nested JSON inside `ContextEntity`;
+    - attach `ContextEntity` state to the most specific stable node;
+    - materialize high-saliency `ContextSegment` as segment-type nodes when they become useful traversal parents.
+  - Relationship to VectorDB removal:
+    - for small/medium scopes, tree-first traversal with L0/L1 node summary embeddings can avoid a separate VectorDB because each layer scores bounded children, then leaf timelines are filtered by time/status;
+    - to scale this without a VectorDB at very large tenant scope, MatrixArk needs better multi-layer path construction so candidate children per layer stay bounded and meaningful;
+    - if paths remain too flat, MatrixArk will need stronger sparse indexes, keyword graph, or external vector/sparse retrieval for recall at scale;
+    - therefore multi-layer node/path extraction is not required for MVP, but it is important for the long-term "TemporalStore-only serving store" strategy.
+  - Backlog tasks:
+    - add `node_type` to logical node summaries where useful: `folder`, `segment`, `business_object`, `resource`, `session`;
+    - add path-canonicalization tests for equivalent names and aliases;
+    - add max-new-nodes-per-batch and min-confidence thresholds;
+    - add batch extraction output field `candidate_node_path` with `canonical_node_path` after service-side normalization;
+    - update retrieval metrics to report candidate children scored per layer and whether a query fell back to sparse/flat recall because hierarchy was too shallow;
+    - benchmark flat entity state vs multi-layer node/entity state on LOCOMO/LongMemEval update and multi-hop buckets.
+
 - Implement a TemporalStore-native ContextOperator suite for event/entity memory.
   - Current status: MatrixArk already has retrieval-time `DECAY_SCORE` behavior in `tools/matrixark_mcp_server.py`: dense/sparse/node `origin_score` is combined with `time_score` and `business_score` using `Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi`. Defaults are `wtime=0.18` and `wbusi=0.22`, with configurable freshness tolerance, half-life, type weights, and instance-level business weight fields.
   - Gap: the broader VikingMem-style operator layer is not yet represented as first-class persisted operator definitions, operator execution audits, or async worker outputs in TemporalStore.
