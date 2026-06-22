@@ -11,6 +11,11 @@ The distributed TemporalStore Rust crate currently models this with in-process c
 - `ProductionRaftRuntime` wraps data-node Raft runtime/options/timers.
 - `ProductionMetaRaftRuntime` wraps metaserver Raft runtime/options/timers and stale-server detection.
 - `EndToEndWorkflow::new` uses `ReplicationMode::Raft`.
+- `EndToEndWorkflowOptions::default()` uses async storage and async Raft write mode, matching the
+  C++ default shape where async paths are preferred unless the caller explicitly asks for sync.
+- Callers can set `storage_mode = SharedStoreStorageMode::Sync` and
+  `raft_write_mode = RaftWriteMode::Sync` when they need sync-mode behavior surfaced in tests or
+  operational validation.
 - `ReplicationMode::SharedStore` is named, but rejected for the normal write path until it has full semantics.
 
 This is a behavior model, not a production networked Raft implementation yet.

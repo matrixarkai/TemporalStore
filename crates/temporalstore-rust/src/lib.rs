@@ -59,8 +59,9 @@ pub use data_node::{
     StorageLifecycleResponse, StorageLifecycleScheduler,
 };
 pub use e2e::{
-    AsyncStorageJournal, EndToEndWorkflow, KillSwitches, ReplicaReadPolicy, RoutingClient,
-    TemporalStoreClientOptions, WorkflowError, WorkflowProxy,
+    AsyncStorageJournal, EndToEndWorkflow, EndToEndWorkflowOptions, KillSwitches, RaftWriteMode,
+    ReplicaReadPolicy, ReplicationMode, RoutingClient, TemporalStoreClientOptions, WorkflowError,
+    WorkflowProxy,
 };
 pub use engine::{
     cpp_api_golden_corpus_report, cpp_feature_sequence_golden_corpus_report, CppGoldenCaseReport,

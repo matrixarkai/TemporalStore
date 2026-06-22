@@ -33,6 +33,11 @@ The replicated index is the engine's persisted shard index JSON. Page segments a
 
 ## Write/Publish Path
 
+Rust follows the C++ operational default here: shared-store writes use async storage by default.
+`SharedStoreStorageMode::default()` is `Async`, and `SharedStoreReplicator::default_storage_writer`
+queues oplog entries for background flush. Callers that need request-path durability can explicitly
+select `SharedStoreStorageMode::Sync`, which publishes the oplog object before returning.
+
 The primary can publish:
 
 1. `publish_oplog_entry` for each committed mutation command.

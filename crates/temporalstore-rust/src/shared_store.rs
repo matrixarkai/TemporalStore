@@ -100,6 +100,30 @@ pub enum SharedStoreStorageMode {
     Async,
 }
 
+impl Default for SharedStoreStorageMode {
+    fn default() -> Self {
+        Self::Async
+    }
+}
+
+impl SharedStoreStorageMode {
+    pub fn from_sync_flag(sync: bool) -> Self {
+        if sync {
+            Self::Sync
+        } else {
+            Self::Async
+        }
+    }
+
+    pub fn is_sync(self) -> bool {
+        matches!(self, Self::Sync)
+    }
+
+    pub fn is_async(self) -> bool {
+        matches!(self, Self::Async)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SharedStoreWriteReport {
     pub oplog_index: u64,
@@ -227,6 +251,10 @@ where
             next_oplog_index: AtomicU64::new(next_oplog_index.max(1)),
             pending: Mutex::default(),
         }
+    }
+
+    pub fn default_storage_writer(&self, next_oplog_index: u64) -> SharedStoreStorageWriter<O> {
+        self.storage_writer(SharedStoreStorageMode::default(), next_oplog_index)
     }
 
     pub async fn publish_index(
@@ -1082,6 +1110,69 @@ mod tests {
                 actual: 2
             }
         ));
+    }
+
+    // shared-corpus: storage_shared_store_async_replay
+    #[tokio::test]
+    async fn shared_store_defaults_to_async_storage_and_allows_explicit_sync() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
+        let replicator = SharedStoreReplicator::new("cluster-a", store);
+
+        assert_eq!(
+            SharedStoreStorageMode::default(),
+            SharedStoreStorageMode::Async
+        );
+        assert_eq!(
+            SharedStoreStorageMode::from_sync_flag(false),
+            SharedStoreStorageMode::Async
+        );
+        assert_eq!(
+            SharedStoreStorageMode::from_sync_flag(true),
+            SharedStoreStorageMode::Sync
+        );
+
+        let async_writer = replicator.default_storage_writer(1);
+        let async_report = async_writer
+            .write(
+                1,
+                Command::StringSet {
+                    key: "async-default".to_string(),
+                    value: b"queued".to_vec(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            async_report,
+            SharedStoreWriteReport {
+                oplog_index: 1,
+                published: false,
+                queued: true,
+            }
+        );
+        assert_eq!(async_writer.queued_len(), 1);
+
+        let sync_writer = replicator.storage_writer(SharedStoreStorageMode::Sync, 2);
+        let sync_report = sync_writer
+            .write(
+                1,
+                Command::StringSet {
+                    key: "sync-explicit".to_string(),
+                    value: b"published".to_vec(),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            sync_report,
+            SharedStoreWriteReport {
+                oplog_index: 2,
+                published: true,
+                queued: false,
+            }
+        );
+        assert_eq!(sync_writer.queued_len(), 0);
     }
 
     #[tokio::test]

@@ -6,6 +6,7 @@ use thiserror::Error;
 
 use crate::meta::ShardLocation;
 use crate::raft::{MetaCommand, MetaRaftCluster, RaftCluster, RaftError, RaftNodeId};
+use crate::shared_store::SharedStoreStorageMode;
 use crate::types::{Command, CommandResponse, ExecuteRequest, ExecuteResponse, ShardId, Status};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,9 +43,41 @@ impl Default for ReplicationMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RaftWriteMode {
+    Sync,
+    Async,
+}
+
+impl Default for RaftWriteMode {
+    fn default() -> Self {
+        Self::Async
+    }
+}
+
+impl RaftWriteMode {
+    pub fn from_sync_flag(sync: bool) -> Self {
+        if sync {
+            Self::Sync
+        } else {
+            Self::Async
+        }
+    }
+
+    pub fn is_sync(self) -> bool {
+        matches!(self, Self::Sync)
+    }
+
+    pub fn is_async(self) -> bool {
+        matches!(self, Self::Async)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct EndToEndWorkflowOptions {
     pub replication_mode: ReplicationMode,
+    pub storage_mode: SharedStoreStorageMode,
+    pub raft_write_mode: RaftWriteMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -186,6 +219,14 @@ impl EndToEndWorkflow {
         self.options.replication_mode
     }
 
+    pub fn storage_mode(&self) -> SharedStoreStorageMode {
+        self.options.storage_mode
+    }
+
+    pub fn raft_write_mode(&self) -> RaftWriteMode {
+        self.options.raft_write_mode
+    }
+
     pub fn proxy(&self) -> WorkflowProxy {
         WorkflowProxy {
             client: self.client(),
@@ -204,6 +245,8 @@ impl EndToEndWorkflow {
             data: self.data.clone(),
             switches: Arc::clone(&self.switches),
             async_storage: self.async_storage.clone(),
+            storage_mode: self.options.storage_mode,
+            raft_write_mode: self.options.raft_write_mode,
             options,
         }
     }
@@ -273,6 +316,8 @@ pub struct RoutingClient {
     data: RaftCluster,
     switches: Arc<RwLock<KillSwitches>>,
     async_storage: AsyncStorageJournal,
+    storage_mode: SharedStoreStorageMode,
+    raft_write_mode: RaftWriteMode,
     options: TemporalStoreClientOptions,
 }
 
@@ -304,9 +349,10 @@ impl RoutingClient {
             let switches = self.switches.read().expect("kill switch lock poisoned");
             ensure(switches.writes_enabled, "writes")?;
             ensure(switches.replication_enabled, "replication")?;
-            if switches.async_storage_enabled {
+            if self.storage_mode.is_async() && switches.async_storage_enabled {
                 self.async_storage.enqueue(request.clone());
             }
+            let _raft_write_mode = self.raft_write_mode;
             if switches.secondary_promotion_enabled {
                 let _ = self.data.promote_if_leader_down();
             }
@@ -394,10 +440,33 @@ fn is_write(command: &Command) -> bool {
 mod tests {
     use super::*;
 
+    // shared-corpus: storage_data_raft_replication_gtest
     #[test]
     fn e2e_uses_raft_replication_by_default() {
         let workflow = EndToEndWorkflow::new(1, [1, 2, 3]);
         assert_eq!(workflow.replication_mode(), ReplicationMode::Raft);
+        assert_eq!(workflow.storage_mode(), SharedStoreStorageMode::Async);
+        assert_eq!(workflow.raft_write_mode(), RaftWriteMode::Async);
+        assert!(SharedStoreStorageMode::default().is_async());
+        assert!(RaftWriteMode::default().is_async());
+    }
+
+    // shared-corpus: storage_data_raft_replication_gtest
+    #[test]
+    fn e2e_allows_explicit_sync_storage_and_raft_modes() {
+        let workflow = EndToEndWorkflow::with_options(
+            1,
+            [1, 2, 3],
+            EndToEndWorkflowOptions {
+                storage_mode: SharedStoreStorageMode::Sync,
+                raft_write_mode: RaftWriteMode::Sync,
+                ..EndToEndWorkflowOptions::default()
+            },
+        );
+        assert_eq!(workflow.storage_mode(), SharedStoreStorageMode::Sync);
+        assert_eq!(workflow.raft_write_mode(), RaftWriteMode::Sync);
+        assert!(SharedStoreStorageMode::from_sync_flag(true).is_sync());
+        assert!(RaftWriteMode::from_sync_flag(true).is_sync());
     }
 
     #[test]
@@ -408,6 +477,7 @@ mod tests {
             [1, 2, 3],
             EndToEndWorkflowOptions {
                 replication_mode: ReplicationMode::SharedStore,
+                ..EndToEndWorkflowOptions::default()
             },
         );
     }
