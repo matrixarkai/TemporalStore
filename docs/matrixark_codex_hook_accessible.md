@@ -168,14 +168,20 @@ For `UserPromptSubmit`, the hook also calls `matrixark_retrieve` so MatrixArk ca
 For a user prompt, MatrixArk stores:
 
 ```text
-ContextSummary(node_l0) for each node-path prefix
-ContextEmbedding(node_l0) for each node-path prefix
 ContextEmbedding(event_text)
 ContextEvent(raw prompt as replayable evidence)
+ContextSummaryDirty for affected ContextNode prefixes
 ContextSummary(session_l0)
 ContextEmbedding(session_l0)
 ContextPackAudit if retrieval ran
 ```
+
+Node `L0` / `L1` summaries are not regenerated inline on the hot ingest path.
+The summary worker calls `matrixark_refresh_summaries`, reads dirty nodes, and
+writes versioned `ContextSummary(node_l0|node_l1)` plus
+`ContextEmbedding(node_l0|node_l1)` records asynchronously. Retrieval can still
+serve before this worker runs by falling back to event/entity embeddings and
+recent raw events.
 
 For a useful tool result, MatrixArk should store:
 
