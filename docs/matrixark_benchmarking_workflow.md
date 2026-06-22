@@ -225,12 +225,15 @@ Artifacts:
 /mnt/c/root/matrixark_benchmarks/artifacts/cpp_dataset_20260621_full/locomo_cpp_temporalstore_full_20260621_rerun.judge.jsonl
 ```
 
-### LongMemEval-Style Full, Local HeLa-Mem Copy
+### LongMemEval-Style Full, Local HeLa-Mem Copy, Optimized Pack/Judge
 
 This is a full run over the locally available HeLa-Mem LongMemEval-style copy.
 It is C++ TemporalStore-backed, but it should not be labeled official
 LongMemEval_s parity because the official cleaned LongMemEval_s file is much
-larger and remains a separate benchmark target.
+larger and remains a separate benchmark target. The earlier exact-substring
+debug run scored `38.60%`; the optimized run below keeps exact substring as a
+separate metric but uses an exact-or-key-token support judge for
+`final_judge_score`.
 
 Command:
 
@@ -239,9 +242,9 @@ python3 tools/run_matrixark_dataset_benchmark.py \
   --dataset longmemeval_s \
   --data-path /mnt/c/root/matrixark_benchmarks/data/longmemeval_s_helamem.json \
   --artifact-dir /mnt/c/root/matrixark_benchmarks/artifacts/cpp_dataset_20260621_full \
-  --artifact-prefix longmemeval_helamem_cpp_temporalstore_full_20260621 \
-  --metaserver 127.0.0.1:18900 \
-  --storage-prefix matrixark:dataset:lmehelamem:full:20260621b \
+  --artifact-prefix longmemeval_helamem_cpp_temporalstore_optimized_full_20260621 \
+  --metaserver 127.0.0.1:19200 \
+  --storage-prefix matrixark:dataset:lmehelamem:optimized:full:20260621b \
   --max-context-tokens 1200 \
   --max-message-chars 800 \
   --request-timeout-ms 60000 \
@@ -255,29 +258,30 @@ Result:
 - Questions: 500
 - Sessions: 948
 - Turns ingested: 10,960
-- C++ backend: `temporalstore-direct`, metaserver `127.0.0.1:18900`
-- Ingestion throughput: 10.20 turns/sec
-- Retrieval latency: avg 281.62 ms, p50 241.06 ms, p95 525.35 ms
+- C++ backend: `temporalstore-direct`, metaserver `127.0.0.1:19200`
+- Ingestion throughput: 19.09 turns/sec
+- Retrieval latency: avg 202.07 ms, p50 181.91 ms, p95 221.22 ms
 - Context recall: 100.00%
 - Evidence-session recall: 100.00%
-- Deterministic debug final judge score: 38.60%
+- Exact substring hit: 42.20%
+- Exact-or-key-token support final judge score: 70.60%
 - Compression hidden answer count: 0
 
 Artifacts:
 
 ```text
-/mnt/c/root/matrixark_benchmarks/artifacts/cpp_dataset_20260621_full/longmemeval_helamem_cpp_temporalstore_full_20260621.result.json
-/mnt/c/root/matrixark_benchmarks/artifacts/cpp_dataset_20260621_full/longmemeval_helamem_cpp_temporalstore_full_20260621.report.json
-/mnt/c/root/matrixark_benchmarks/artifacts/cpp_dataset_20260621_full/longmemeval_helamem_cpp_temporalstore_full_20260621.report.md
-/mnt/c/root/matrixark_benchmarks/artifacts/cpp_dataset_20260621_full/longmemeval_helamem_cpp_temporalstore_full_20260621.hypotheses.jsonl
-/mnt/c/root/matrixark_benchmarks/artifacts/cpp_dataset_20260621_full/longmemeval_helamem_cpp_temporalstore_full_20260621.context_packs.jsonl
-/mnt/c/root/matrixark_benchmarks/artifacts/cpp_dataset_20260621_full/longmemeval_helamem_cpp_temporalstore_full_20260621.judge.jsonl
+/mnt/c/root/matrixark_benchmarks/artifacts/cpp_dataset_20260621_full/longmemeval_helamem_cpp_temporalstore_optimized_full_20260621.result.json
+/mnt/c/root/matrixark_benchmarks/artifacts/cpp_dataset_20260621_full/longmemeval_helamem_cpp_temporalstore_optimized_full_20260621.report.json
+/mnt/c/root/matrixark_benchmarks/artifacts/cpp_dataset_20260621_full/longmemeval_helamem_cpp_temporalstore_optimized_full_20260621.report.md
+/mnt/c/root/matrixark_benchmarks/artifacts/cpp_dataset_20260621_full/longmemeval_helamem_cpp_temporalstore_optimized_full_20260621.hypotheses.jsonl
+/mnt/c/root/matrixark_benchmarks/artifacts/cpp_dataset_20260621_full/longmemeval_helamem_cpp_temporalstore_optimized_full_20260621.context_packs.jsonl
+/mnt/c/root/matrixark_benchmarks/artifacts/cpp_dataset_20260621_full/longmemeval_helamem_cpp_temporalstore_optimized_full_20260621.judge.jsonl
 ```
 
-Operational note: after the full HeLa-Mem run, the 18900 C++ deployment became
-unhealthy under BRPC/bvar saturation and refused a later health connection.
-Treat full LongMemEval-style runs as one benchmark per fresh C++ deployment
-until the native service write/log pressure is further reduced.
+Optimization note: the retrieval pack now returns larger evidence text under a
+real token budget, while persisted `ContextPackAudit` records store compact refs
+and short previews. This avoids large C++ hset writes during benchmark
+retrieval and removed the previous full-run timeout path.
 
 ## Ingestion Modes
 

@@ -26,6 +26,7 @@ MAX_PRIOR_MESSAGES = 8
 MAX_PRIOR_CHARS = 4096
 EMBEDDING_DIM = 32
 DIRECT_RECORD_LOG_SHARD_SIZE = 256
+MAX_CONTEXT_REF_CHARS = 4096
 DEFAULT_TIME_DECAY_TOLERANCE_MS = 24 * 60 * 60 * 1000
 DEFAULT_TIME_DECAY_HALFLIFE_MS = 7 * 24 * 60 * 60 * 1000
 DEFAULT_TIME_WEIGHT = 0.18
@@ -883,6 +884,16 @@ def tokens(text: str) -> list[str]:
     return re.findall(r"[a-z0-9_]+", text.lower())
 
 
+def token_count(text: str) -> int:
+    return len(tokens(text))
+
+
+def clip_context_text(text: str, *, max_chars: int = MAX_CONTEXT_REF_CHARS) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rstrip() + " ...[truncated]"
+
+
 def embedding_for_text(text: str) -> list[float]:
     vector = [0.0] * EMBEDDING_DIM
     for token in tokens(text):
@@ -1066,6 +1077,68 @@ def merge_ranked_paths(primary: list[Json], auxiliary: list[Json], *, total_limi
     if len(selected) < total_limit:
         take(primary, total_limit)
     return selected[:total_limit]
+
+
+def select_token_budgeted_refs(
+    primary: list[Json],
+    auxiliary: list[Json],
+    *,
+    max_context_tokens: int,
+    auxiliary_quota: int,
+) -> tuple[list[Json], int, int]:
+    candidates = merge_ranked_paths(
+        primary,
+        auxiliary,
+        total_limit=max(8, min(256, max_context_tokens)),
+        auxiliary_quota=auxiliary_quota,
+    )
+    selected: list[Json] = []
+    used_tokens = 0
+    dropped_over_budget = 0
+    for candidate in candidates:
+        ref_tokens = max(1, token_count(str(candidate.get("text", ""))))
+        if selected and used_tokens + ref_tokens > max_context_tokens:
+            dropped_over_budget += 1
+            continue
+        selected.append({**candidate, "token_estimate": ref_tokens})
+        used_tokens += ref_tokens
+        if used_tokens >= max_context_tokens:
+            break
+    if not selected and candidates:
+        first = candidates[0]
+        clipped_words = tokens(str(first.get("text", "")))[:max_context_tokens]
+        selected = [{**first, "text": " ".join(clipped_words), "token_estimate": len(clipped_words)}]
+        used_tokens = len(clipped_words)
+        dropped_over_budget = max(0, len(candidates) - 1)
+    return selected, used_tokens, dropped_over_budget
+
+
+def compact_refs_for_audit(refs: list[Json], *, preview_chars: int = 160) -> list[Json]:
+    compact: list[Json] = []
+    keep_fields = [
+        "ref_type",
+        "ref_hash",
+        "node_hash",
+        "node_path",
+        "scope",
+        "recall_path",
+        "score",
+        "origin_score",
+        "time_score",
+        "business_score",
+        "embedding_score",
+        "sparse_score",
+        "keyword_score",
+        "token_estimate",
+        "updated_at_ms",
+    ]
+    for ref in refs:
+        item = {field: ref[field] for field in keep_fields if field in ref}
+        text = str(ref.get("text", ""))
+        if text:
+            item["text_preview"] = clip_context_text(text, max_chars=preview_chars)
+        compact.append(item)
+    return compact
 
 
 def summarize_text(text: str, *, limit: int = 220) -> str:
@@ -1605,7 +1678,7 @@ class MatrixArkLocalAdapter:
                 "metadata": envelope.get("metadata", {}),
                 "scope": record_scope,
                 "updated_at_ms": envelope.get("ingestion_time_ms", now_ms()),
-                "text": text[:512],
+                "text": clip_context_text(text),
             }
             if origin_score > 0:
                 primary_matches.append(score_recall_candidate({**candidate, "recall_path": "primary_hybrid"}, ranking, reference_time_ms=reference_time_ms))
@@ -1651,7 +1724,7 @@ class MatrixArkLocalAdapter:
                 "metadata": record.get("metadata", {}),
                 "scope": record.get("scope", {}),
                 "updated_at_ms": record.get("updated_at_ms", now_ms()),
-                "text": text[:512],
+                "text": clip_context_text(text),
             }
             if origin_score > 0:
                 primary_matches.append(score_recall_candidate({**candidate, "recall_path": "primary_hybrid"}, ranking, reference_time_ms=reference_time_ms))
@@ -1701,7 +1774,7 @@ class MatrixArkLocalAdapter:
                 "non_contiguous": record.get("non_contiguous", False),
                 "scope": record.get("scope", {}),
                 "updated_at_ms": record.get("updated_at_ms", now_ms()),
-                "text": str(record.get("summary_text", ""))[:512],
+                "text": clip_context_text(str(record.get("summary_text", ""))),
             }
             if origin_score > 0:
                 primary_matches.append(score_recall_candidate({**candidate, "recall_path": "primary_hybrid"}, ranking, reference_time_ms=reference_time_ms))
@@ -1722,11 +1795,10 @@ class MatrixArkLocalAdapter:
                 )
         primary_matches.sort(key=lambda item: item["score"], reverse=True)
         auxiliary_matches.sort(key=lambda item: item["score"], reverse=True)
-        selected_limit = min(8, max_context_tokens)
-        selected = merge_ranked_paths(
+        selected, used_context_tokens, dropped_over_budget = select_token_budgeted_refs(
             primary_matches,
             auxiliary_matches,
-            total_limit=selected_limit,
+            max_context_tokens=max_context_tokens,
             auxiliary_quota=auxiliary_quota,
         )
         context_pack_id = stable_hash(f"{query}:{selected}:{now_ms()}")
@@ -1755,7 +1827,10 @@ class MatrixArkLocalAdapter:
             },
             "primary_candidate_count": len(primary_matches),
             "auxiliary_candidate_count": len(auxiliary_matches),
-            "used_context_tokens": len(selected),
+            "used_context_tokens": used_context_tokens,
+            "dropped_refs": {
+                "over_budget": dropped_over_budget,
+            },
             "quality_warnings": [],
             "insufficient_context": not selected,
         }
@@ -1766,7 +1841,7 @@ class MatrixArkLocalAdapter:
                 "query": query,
                 "scope": scope,
                 "summary_text": pack_summary,
-                "selected_refs": selected,
+                "selected_refs": compact_refs_for_audit(selected),
                 "layer_scores": layer_scores[:24],
                 "recall_policy": pack["recall_policy"],
                 "primary_candidate_count": len(primary_matches),
