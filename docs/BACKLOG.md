@@ -17,6 +17,12 @@ Latest AWS/test state:
 
 ## MatrixArk LLM Context Backlog
 
+- Promote secondary-index filtering from MatrixArk runtime into native TemporalStore serving APIs.
+  - Current status: MatrixArk now writes general `ContextIndex` terms such as `event_type:*`, `entity_type:*`, `classification:*`, `status:*`, `source_type:*`, and `segment_topic:*`; scope fields such as `team` and `project` remain scope/path isolation fields, not default secondary indexes.
+  - Current runtime behavior: retrieval infers conservative AND/OR filter groups from the query, applies them after tree selection and before event/entity/segment scoring, and records matched/dropped candidate counts in `ContextPack` audit metadata.
+  - Native TemporalStore gap: add server-side secondary-index lookup and AND filtering so the store can return candidate refs before MatrixArk reads full records or computes similarity.
+  - Next tasks: expose `QUERY_CONTEXT_INDEX`, index-intersection APIs, and benchmark dense-only vs secondary-prefiltered vs hybrid sparse+index retrieval at tenant scale.
+
 - Keep MVP entity extraction flat, but attach entities to filesystem-like `ContextNode` paths; add multi-layer entity/path extraction later.
   - Product decision:
     - OpenViking's public design is clearly hierarchical through a filesystem/context-layer model for resources, memory, and skills;
