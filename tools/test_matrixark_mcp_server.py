@@ -342,6 +342,62 @@ class MatrixArkMcpServerTest(unittest.TestCase):
             )
         )
 
+    def test_secondary_index_prefilter_uses_general_indexes_before_scoring(self):
+        approval = self.call_tool(
+            "matrixark_batch_extract",
+            {
+                "messages": [
+                    {"role": "user", "content": "Alice approved the GPU purchase after finance reviewed the cost."},
+                    {"role": "assistant", "content": "The approval is valid for Project Phoenix."},
+                ],
+                "scope": {"user_id": "alice", "session_id": "bench-index", "team": "infra_team", "project": "project_1"},
+                "metadata": {"node_path": ["company_a", "infra_team", "project_1", "approvals"]},
+                "threshold_messages": 20,
+                "force": True,
+            },
+        )
+        self.assertEqual(approval["status"], "accepted")
+
+        location = self.call_tool(
+            "matrixark_batch_extract",
+            {
+                "messages": [
+                    {"role": "user", "content": "Alice moved to Seattle and is staying near Lake Union."},
+                    {"role": "assistant", "content": "Remember Alice's current location as Seattle."},
+                ],
+                "scope": {"user_id": "alice", "session_id": "bench-index", "team": "infra_team", "project": "project_1"},
+                "metadata": {"node_path": ["company_a", "people", "alice", "location"]},
+                "threshold_messages": 20,
+                "force": True,
+            },
+        )
+        self.assertEqual(location["status"], "accepted")
+
+        replay = self.call_tool("matrixark_replay", {"context_pack_id": "debug"})
+        index_names = [record.get("index_name") for record in replay["events"] if record.get("record_type") == "context_index"]
+        self.assertIn("entity_type:location", index_names)
+        self.assertIn("event_type:confirmation", index_names)
+        self.assertNotIn("infra_team", index_names)
+        self.assertNotIn("project_1", index_names)
+
+        pack = self.call_tool(
+            "matrixark_retrieve",
+            {
+                "query": "where is Alice located now?",
+                "scope": {"user_id": "alice", "session_id": "bench-index", "team": "infra_team", "project": "project_1"},
+                "max_context_tokens": 40,
+                "ranking": {"top_k_per_layer": 8, "max_children_scored_per_parent": 64},
+            },
+        )
+        self.assertFalse(pack["insufficient_context"])
+        secondary = pack["recall_policy"]["secondary_index_filter"]
+        self.assertTrue(secondary["enabled"])
+        self.assertIn(["entity_type:location"], secondary["required_groups"])
+        self.assertGreater(secondary["dropped_candidate_count"], 0)
+        selected_text = " ".join(ref.get("text", "") for ref in pack["selected_refs"])
+        self.assertIn("Seattle", selected_text)
+        self.assertNotIn("GPU purchase", selected_text)
+
     def test_non_feedback_extraction_uses_same_session_prior_context(self):
         prior = self.call_tool(
             "matrixark_ingest",

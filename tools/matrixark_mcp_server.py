@@ -660,19 +660,21 @@ def one_pass_memory_extraction(envelope: Json, *, prior_context: Json) -> Json:
     segments = intelligent_memory_segments(messages)
     entities = extract_batch_entities(messages, envelope)
     event_type = infer_event_type(batch_text)
-    indexes = ordered_unique(
-        [
-            str(envelope["scope"].get("team", "")),
-            str(envelope["scope"].get("project", "")),
-            event_type,
-        ]
-        + [entity["entity_type"] for entity in entities]
-    )
     classification = "BATCH_MEMORY"
     if any(entity["entity_type"] == "confirmation" for entity in entities):
         classification = "CONFIRMATION"
     elif any(entity["entity_type"] == "correction" for entity in entities):
         classification = "CORRECTION"
+    indexes = ordered_unique(
+        [
+            context_index_name("event_type", event_type),
+            context_index_name("classification", classification),
+            context_index_name("status", "observed"),
+            context_index_name("source_type", envelope.get("kind", "message")),
+        ]
+        + [context_index_name("entity_type", entity["entity_type"]) for entity in entities]
+        + [context_index_name("segment_topic", segment["topic"]) for segment in segments]
+    )
     return {
         "mode": "matrixark_one_pass_schema",
         "schema": ONE_PASS_MEMORY_SCHEMA,
@@ -935,6 +937,17 @@ def ordered_unique(values: list[str]) -> list[str]:
     return out
 
 
+def normalized_index_value(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"[^a-z0-9_.:/-]+", "_", text)
+    return text.strip("_")
+
+
+def context_index_name(kind: str, value: Any) -> str:
+    normalized = normalized_index_value(value)
+    return f"{kind}:{normalized}" if normalized else ""
+
+
 def normalize_envelope(args: Json, *, default_kind: str) -> Json:
     messages = require_messages(args)
     scope = optional_object(args, "scope")
@@ -1031,6 +1044,70 @@ def infer_query_type(query: str) -> str:
     if re.search(r"\b(both|together|across|between|compare|combine|sessions|multi-hop|multi session|multi-session)\b", lower):
         return "multi_hop"
     return "fact"
+
+
+def infer_secondary_index_filter_groups(query: str, question_type: str) -> list[set[str]]:
+    lower = query.lower()
+    groups: list[set[str]] = []
+
+    def add_group(*terms: str) -> None:
+        clean = {term for term in terms if term}
+        if clean and clean not in groups:
+            groups.append(clean)
+
+    if re.search(r"\b(where|location|located|moved|moving|live|lives|city|home|staying)\b", lower):
+        add_group(context_index_name("entity_type", "location"))
+    if re.search(r"\b(prefer|preference|favorite|like|likes|love|loves)\b", lower):
+        add_group(context_index_name("entity_type", "preference"), context_index_name("event_type", "preference_update"))
+    if re.search(r"\b(friend|partner|mother|father|sister|brother|wife|husband|manager|teammate|relationship|family|child|children|son|daughter|pet)\b", lower):
+        add_group(context_index_name("entity_type", "relationship"), context_index_name("entity_type", "family_profile"))
+    if re.search(r"\b(job|role|work|works|position|status|company|employer)\b", lower):
+        add_group(context_index_name("entity_type", "job_status"), context_index_name("event_type", "status_update"))
+    if re.search(r"\b(plan|plans|planning|going to|schedule|next)\b", lower):
+        add_group(context_index_name("entity_type", "current_plan"), context_index_name("event_type", "plan_update"))
+    if re.search(r"\b(approval|approved|approve|confirmed|confirmation|budget|purchase|cost|gpu)\b", lower):
+        add_group(
+            context_index_name("event_type", "confirmation"),
+            context_index_name("entity_type", "confirmation"),
+            context_index_name("classification", "confirmation"),
+            context_index_name("segment_topic", "approval_budget"),
+        )
+    if re.search(r"\b(correction|corrected|wrong|instead|updated|changed)\b", lower):
+        add_group(
+            context_index_name("event_type", "correction"),
+            context_index_name("entity_type", "correction"),
+            context_index_name("classification", "correction"),
+            context_index_name("segment_topic", "correction"),
+        )
+    if question_type == "evidence":
+        add_group(context_index_name("source_type", "message"), context_index_name("source_type", "feedback"))
+    return groups
+
+
+def candidate_index_terms(record: Json, index_terms_by_batch: dict[Any, list[str]], index_terms_by_node: dict[Any, list[str]]) -> set[str]:
+    terms = set(index_terms_by_batch.get(record.get("batch_id_hash"), []))
+    terms.update(index_terms_by_node.get(record.get("node_hash"), []))
+    record_type = record.get("record_type")
+    if record_type == "context_event":
+        extraction = record.get("internal_extraction", {})
+        envelope = record.get("envelope", {})
+        terms.add(context_index_name("event_type", extraction.get("event_type")))
+        terms.add(context_index_name("event_type", infer_event_type(str(record.get("text", "")))))
+        terms.add(context_index_name("classification", extraction.get("classification")))
+        terms.add(context_index_name("status", extraction.get("status") or "observed"))
+        terms.add(context_index_name("source_type", envelope.get("kind") or "message"))
+    elif record_type == "context_entity":
+        terms.add(context_index_name("entity_type", record.get("entity_type")))
+    elif record_type == "context_segment":
+        terms.add(context_index_name("segment_topic", record.get("topic")))
+    return {term for term in terms if term}
+
+
+def passes_secondary_index_filters(candidate_terms: set[str], required_groups: list[set[str]]) -> bool:
+    if not required_groups:
+        return True
+    return all(bool(candidate_terms.intersection(group)) for group in required_groups)
+
 
 
 def hybrid_origin_score(query_terms: set[str], text: str, embedding_score: float, node_score: float) -> float:
@@ -1925,6 +2002,9 @@ class MatrixArkLocalAdapter:
         scope = optional_object(args, "scope")
         ranking = optional_object(args, "ranking")
         question_type = str(args.get("question_type") or infer_query_type(query))
+        secondary_index_filter_groups = infer_secondary_index_filter_groups(query, question_type)
+        secondary_index_dropped_count = 0
+        secondary_index_matched_count = 0
         max_context_tokens = args.get("max_context_tokens", 2048)
         if not isinstance(max_context_tokens, int) or max_context_tokens <= 0:
             raise MatrixArkError("max_context_tokens must be a positive integer")
@@ -1937,9 +2017,9 @@ class MatrixArkLocalAdapter:
         auxiliary_quota = integer_arg(ranking, "auxiliary_quota", 2, minimum=0)
         records = self.read_all()
         node_scores: dict[int, Json] = {}
-        event_embedding_scores: dict[int, float] = {}
-        entity_embedding_scores: dict[int, float] = {}
-        segment_embedding_scores: dict[int, float] = {}
+        event_embedding_vectors: dict[int, list[float]] = {}
+        entity_embedding_vectors: dict[int, list[float]] = {}
+        segment_embedding_vectors: dict[int, list[float]] = {}
         index_terms_by_batch: dict[Any, list[str]] = {}
         index_terms_by_node: dict[Any, list[str]] = {}
         node_summary_text_by_hash: dict[int, str] = {}
@@ -1983,11 +2063,11 @@ class MatrixArkLocalAdapter:
                         "embedding_type": record.get("embedding_type"),
                     }
             elif record_type == "context_embedding" and record.get("embedding_type") == "event_text":
-                event_embedding_scores[record["ref_hash"]] = cosine(query_embedding, record.get("vector", []))
+                event_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
             elif record_type == "context_embedding" and record.get("embedding_type") == "entity_state":
-                entity_embedding_scores[record["ref_hash"]] = cosine(query_embedding, record.get("vector", []))
+                entity_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
             elif record_type == "context_embedding" and record.get("embedding_type") == "segment_text":
-                segment_embedding_scores[record["ref_hash"]] = cosine(query_embedding, record.get("vector", []))
+                segment_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
 
         top_k_per_layer = integer_arg(ranking, "top_k_per_layer", 8, minimum=1)
         max_children_scored_per_parent = integer_arg(ranking, "max_children_scored_per_parent", 10000, minimum=1)
@@ -2028,10 +2108,15 @@ class MatrixArkLocalAdapter:
                 continue
             if not selected_by_tree(record):
                 continue
+            index_terms = candidate_index_terms(record, index_terms_by_batch, index_terms_by_node)
+            if not passes_secondary_index_filters(index_terms, secondary_index_filter_groups):
+                secondary_index_dropped_count += 1
+                continue
+            secondary_index_matched_count += 1
             text = str(record.get("text", ""))
             sparse_score = sparse_lexical_score(query_terms, text)
             keyword_score = len(query_terms.intersection(tokens(text)))
-            embedding_score = event_embedding_scores.get(record["event_id_hash"], 0.0)
+            embedding_score = cosine(query_embedding, event_embedding_vectors.get(record["event_id_hash"], []))
             node_score = node_scores.get(record["node_hash"], {}).get("score", 0.0)
             origin_score = hybrid_origin_score(query_terms, text, embedding_score, node_score)
             extraction = record.get("internal_extraction", {})
@@ -2054,8 +2139,7 @@ class MatrixArkLocalAdapter:
             }
             if origin_score > 0:
                 primary_matches.append(score_recall_candidate({**candidate, "recall_path": "primary_hybrid"}, ranking, reference_time_ms=reference_time_ms))
-            index_terms = index_terms_by_batch.get(record.get("batch_id_hash"), []) + index_terms_by_node.get(record.get("node_hash"), [])
-            graph_text = " ".join(record.get("node_path", []) + index_terms + [event_type, text])
+            graph_text = " ".join(record.get("node_path", []) + sorted(index_terms) + [event_type, text])
             graph_score = sparse_lexical_score(query_terms, graph_text)
             if graph_score > 0:
                 auxiliary_matches.append(
@@ -2077,10 +2161,15 @@ class MatrixArkLocalAdapter:
                 continue
             if not selected_by_tree(record):
                 continue
+            index_terms = candidate_index_terms(record, index_terms_by_batch, index_terms_by_node)
+            if not passes_secondary_index_filters(index_terms, secondary_index_filter_groups):
+                secondary_index_dropped_count += 1
+                continue
+            secondary_index_matched_count += 1
             text = f"{record.get('entity_type', '')}: {record.get('entity_name', '')} = {record.get('state', '')}"
             sparse_score = sparse_lexical_score(query_terms, text)
             keyword_score = len(query_terms.intersection(tokens(text)))
-            embedding_score = entity_embedding_scores.get(record["entity_hash"], 0.0)
+            embedding_score = cosine(query_embedding, entity_embedding_vectors.get(record["entity_hash"], []))
             node_score = node_scores.get(record["node_hash"], {}).get("score", 0.0)
             origin_score = min(1.0, 0.12 + hybrid_origin_score(query_terms, text, embedding_score, node_score))
             candidate = {
@@ -2102,8 +2191,7 @@ class MatrixArkLocalAdapter:
             }
             if origin_score > 0:
                 primary_matches.append(score_recall_candidate({**candidate, "recall_path": "primary_hybrid"}, ranking, reference_time_ms=reference_time_ms))
-            index_terms = index_terms_by_batch.get(record.get("batch_id_hash"), []) + index_terms_by_node.get(record.get("node_hash"), [])
-            graph_score = sparse_lexical_score(query_terms, " ".join(record.get("node_path", []) + index_terms + [text]))
+            graph_score = sparse_lexical_score(query_terms, " ".join(record.get("node_path", []) + sorted(index_terms) + [text]))
             if graph_score > 0:
                 auxiliary_matches.append(
                     score_recall_candidate(
@@ -2124,10 +2212,15 @@ class MatrixArkLocalAdapter:
                 continue
             if not selected_by_tree(record):
                 continue
+            index_terms = candidate_index_terms(record, index_terms_by_batch, index_terms_by_node)
+            if not passes_secondary_index_filters(index_terms, secondary_index_filter_groups):
+                secondary_index_dropped_count += 1
+                continue
+            secondary_index_matched_count += 1
             text = f"{record.get('topic', '')}: {record.get('summary_text', '')}"
             sparse_score = sparse_lexical_score(query_terms, text)
             keyword_score = len(query_terms.intersection(tokens(text)))
-            embedding_score = segment_embedding_scores.get(record["segment_hash"], 0.0)
+            embedding_score = cosine(query_embedding, segment_embedding_vectors.get(record["segment_hash"], []))
             node_score = node_scores.get(record["node_hash"], {}).get("score", 0.0)
             saliency_score = float(record.get("saliency_score", 0.0))
             origin_score = min(
@@ -2154,8 +2247,7 @@ class MatrixArkLocalAdapter:
             }
             if origin_score > 0:
                 primary_matches.append(score_recall_candidate({**candidate, "recall_path": "primary_hybrid"}, ranking, reference_time_ms=reference_time_ms))
-            index_terms = index_terms_by_batch.get(record.get("batch_id_hash"), []) + index_terms_by_node.get(record.get("node_hash"), [])
-            graph_score = sparse_lexical_score(query_terms, " ".join(record.get("node_path", []) + index_terms + [record.get("topic", ""), text]))
+            graph_score = sparse_lexical_score(query_terms, " ".join(record.get("node_path", []) + sorted(index_terms) + [record.get("topic", ""), text]))
             if graph_score > 0:
                 auxiliary_matches.append(
                     score_recall_candidate(
@@ -2202,8 +2294,16 @@ class MatrixArkLocalAdapter:
                     "selected_leaf_count": len(traversal.get("leaf_paths", [])),
                     "fallback_to_flat": bool(traversal.get("fallback_to_flat")),
                 },
-                "primary_path": "tree-first hybrid dense semantic + sparse lexical",
-                "auxiliary_path": "keyword graph inside selected tree",
+                "secondary_index_filter": {
+                    "enabled": bool(secondary_index_filter_groups),
+                    "required_groups": [sorted(group) for group in secondary_index_filter_groups],
+                    "matched_candidate_count": secondary_index_matched_count,
+                    "dropped_candidate_count": secondary_index_dropped_count,
+                    "mode": "AND across groups, OR within each group",
+                    "applied_before_embedding_scoring": True,
+                },
+                "primary_path": "tree-first hybrid dense semantic + sparse lexical after secondary-index prefilter",
+                "auxiliary_path": "keyword graph inside selected tree after secondary-index prefilter",
                 "time_decay": {
                     "freshness_tolerance_ms": ranking.get("freshness_tolerance_ms", DEFAULT_TIME_DECAY_TOLERANCE_MS),
                     "half_life_ms": ranking.get("half_life_ms", DEFAULT_TIME_DECAY_HALFLIFE_MS),
@@ -2231,6 +2331,7 @@ class MatrixArkLocalAdapter:
                 "selected_refs": compact_refs_for_audit(selected),
                 "layer_scores": layer_scores[:24],
                 "tree_traversal": pack["recall_policy"]["tree_traversal"],
+                "secondary_index_filter": pack["recall_policy"]["secondary_index_filter"],
                 "question_type": question_type,
                 "packing_policy": pack["packing_policy"],
                 "recall_policy": pack["recall_policy"],
