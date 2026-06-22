@@ -80,6 +80,10 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         self.assertIn("local_context", retrieve["inputSchema"]["properties"])
         self.assertIn("local_context_tokens", retrieve["inputSchema"]["properties"])
         self.assertIn("shared prompt context budget", retrieve["inputSchema"]["properties"]["max_context_tokens"]["description"])
+        session_commit = next(tool for tool in response["result"]["tools"] if tool["name"] == "matrixark_session_commit")
+        self.assertIn("commit_reason", session_commit["inputSchema"]["properties"])
+        self.assertIn("idle_timeout_ms", session_commit["inputSchema"]["properties"])
+        self.assertIn("idle_commit_timeout_ms", ingest["inputSchema"]["properties"])
         create_key = next(tool for tool in response["result"]["tools"] if tool["name"] == "matrixark_admin_create_api_key")
         self.assertIn("api_key", create_key["inputSchema"]["properties"])
 
@@ -387,6 +391,8 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         self.assertEqual(committed["status"], "committed")
         self.assertEqual(committed["events_written"], 0)
         self.assertFalse(committed["raw_events_duplicated"])
+        self.assertEqual(committed["commit_reason"], "manual_api")
+        self.assertEqual(committed["trigger_policy"], "force")
         self.assertEqual(set(committed["source_event_ids"]), {first["event_id_hash"], second["event_id_hash"]})
         self.assertGreaterEqual(committed["segments_written"], 1)
         self.assertGreaterEqual(committed["entities_written"], 1)
@@ -488,8 +494,86 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         auto = second["auto_batch_extract_result"]
         self.assertIsNotNone(auto)
         self.assertEqual(auto["status"], "committed")
+        self.assertEqual(auto["commit_reason"], "threshold")
+        self.assertEqual(auto["trigger_policy"], "threshold")
         self.assertEqual(auto["events_written"], 0)
         self.assertFalse(auto["raw_events_duplicated"])
+
+    def test_idle_timeout_commit_runs_before_new_message(self):
+        scope = {"user_id": "idle-user", "session_id": "thread-idle-buffer"}
+        first = self.call_tool(
+            "matrixark_ingest",
+            {
+                "messages": [{"role": "user", "content": "Remember that I prefer Rust for services."}],
+                "scope": scope,
+            },
+        )
+        self.assertEqual(first["session_buffer"]["pending_event_count"], 1)
+        second = self.call_tool(
+            "matrixark_ingest",
+            {
+                "messages": [{"role": "user", "content": "New turn after the idle boundary."}],
+                "scope": scope,
+                "idle_commit_timeout_ms": 0,
+            },
+        )
+        idle = second["idle_commit_result"]
+        self.assertIsNotNone(idle)
+        self.assertEqual(idle["status"], "committed")
+        self.assertEqual(idle["commit_reason"], "idle_timeout")
+        self.assertEqual(idle["trigger_policy"], "idle_timeout")
+        self.assertEqual(idle["committed_event_count"], 1)
+        self.assertEqual(idle["source_event_ids"], [first["event_id_hash"]])
+        self.assertEqual(second["session_buffer"]["pending_event_count"], 1)
+
+    def test_rolling_threshold_commit_extracts_only_next_window(self):
+        scope = {"user_id": "rolling-user", "session_id": "thread-rolling-buffer"}
+        ingested = []
+        for index in range(5):
+            ingested.append(
+                self.call_tool(
+                    "matrixark_ingest",
+                    {
+                        "messages": [{"role": "user", "content": f"Rolling memory turn {index} about Rust services."}],
+                        "scope": scope,
+                    },
+                )
+            )
+        first_window = self.call_tool(
+            "matrixark_session_commit",
+            {
+                "scope": scope,
+                "threshold_messages": 2,
+                "force": False,
+                "commit_reason": "threshold",
+            },
+        )
+        self.assertEqual(first_window["status"], "committed")
+        self.assertEqual(first_window["committed_event_count"], 2)
+        self.assertEqual(first_window["source_event_ids"], [item["event_id_hash"] for item in ingested[:2]])
+        second_window = self.call_tool(
+            "matrixark_session_commit",
+            {
+                "scope": scope,
+                "threshold_messages": 2,
+                "force": False,
+                "commit_reason": "threshold",
+            },
+        )
+        self.assertEqual(second_window["status"], "committed")
+        self.assertEqual(second_window["committed_event_count"], 2)
+        self.assertEqual(second_window["source_event_ids"], [item["event_id_hash"] for item in ingested[2:4]])
+        deferred = self.call_tool(
+            "matrixark_session_commit",
+            {
+                "scope": scope,
+                "threshold_messages": 2,
+                "force": False,
+                "commit_reason": "threshold",
+            },
+        )
+        self.assertEqual(deferred["status"], "deferred")
+        self.assertEqual(deferred["pending_event_count"], 1)
 
     def test_vikingmem_style_twenty_message_session_window_auto_extracts_once(self):
         scope = {"user_id": "batch-user", "session_id": "vikingmem-threshold-session"}

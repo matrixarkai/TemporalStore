@@ -91,6 +91,8 @@ class MatrixArkCodexHookTest(unittest.TestCase):
         )
         self.assertEqual(stop["status"], "ok")
         self.assertEqual(stop["session_commit"]["status"], "committed")
+        self.assertEqual(stop["session_commit"]["commit_reason"], "hook_boundary")
+        self.assertEqual(stop["session_commit"]["trigger_policy"], "force")
         self.assertFalse(stop["session_commit"]["raw_events_duplicated"])
         self.assertGreaterEqual(stop["session_commit"]["segments_written"], 3)
         self.assertGreaterEqual(stop["session_commit"]["entities_written"], 3)

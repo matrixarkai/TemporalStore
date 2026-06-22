@@ -1711,15 +1711,17 @@ class MatrixArkLocalAdapter:
     def pending_session_events(self, scope: Json, *, limit: int | None = None) -> list[Json]:
         key = session_buffer_key_from_scope(scope)
         committed: set[int] = set()
-        events: list[Json] = []
-        for record in self.read_all():
+        records = self.read_all()
+        for record in records:
             if record.get("record_type") == "context_batch_commit" and session_buffer_key_from_scope(record.get("scope", {})) == key:
                 for ref in record.get("source_event_ids", []):
                     try:
                         committed.add(int(ref))
                     except (TypeError, ValueError):
                         continue
-            elif record.get("record_type") == "context_event" and session_buffer_key(record.get("envelope", {})) == key:
+        events: list[Json] = []
+        for record in records:
+            if record.get("record_type") == "context_event" and session_buffer_key(record.get("envelope", {})) == key:
                 try:
                     event_hash = int(record.get("event_id_hash"))
                 except (TypeError, ValueError):
@@ -1766,17 +1768,42 @@ class MatrixArkLocalAdapter:
         if not isinstance(threshold, int) or threshold <= 0:
             raise MatrixArkError("threshold_messages must be a positive integer")
         force = bool(args.get("force", True))
+        commit_reason = optional_string(args, "commit_reason") or ("manual_api" if force else "threshold")
+        idle_timeout_ms = args.get("idle_timeout_ms")
+        if idle_timeout_ms is not None and (not isinstance(idle_timeout_ms, int) or idle_timeout_ms < 0):
+            raise MatrixArkError("idle_timeout_ms must be a non-negative integer")
         max_messages = args.get("max_messages")
         if max_messages is not None and (not isinstance(max_messages, int) or max_messages <= 0):
             raise MatrixArkError("max_messages must be a positive integer")
-        pending = self.pending_session_events(scope, limit=max_messages)
-        if len(pending) < threshold and not force:
+        pending_all = self.pending_session_events(scope)
+        pending_event_count = len(pending_all)
+        idle_elapsed_ms = 0
+        idle_ready = False
+        if pending_all and idle_timeout_ms is not None:
+            latest_event_time = max(
+                int(record.get("envelope", {}).get("ingestion_time_ms") or record.get("updated_at_ms") or 0)
+                for record in pending_all
+            )
+            idle_elapsed_ms = max(0, now_ms() - latest_event_time)
+            idle_ready = idle_elapsed_ms >= idle_timeout_ms
+        threshold_ready = pending_event_count >= threshold
+        if not force and not threshold_ready and not idle_ready:
             return {
                 "status": "deferred",
-                "pending_event_count": len(pending),
+                "pending_event_count": pending_event_count,
                 "threshold_messages": threshold,
-                "reason": "session buffer below extraction threshold",
+                "commit_reason": commit_reason,
+                "idle_timeout_ms": idle_timeout_ms,
+                "idle_elapsed_ms": idle_elapsed_ms,
+                "reason": "session buffer below extraction threshold and idle timeout not reached",
             }
+        if max_messages is not None:
+            commit_limit = max_messages
+        elif force or idle_ready:
+            commit_limit = None
+        else:
+            commit_limit = threshold
+        pending = pending_all[:commit_limit] if commit_limit is not None else pending_all
         messages = []
         source_event_ids = []
         for record in pending:
@@ -1786,7 +1813,12 @@ class MatrixArkLocalAdapter:
             messages.append(message)
             source_event_ids.append(record["event_id_hash"])
         if not messages:
-            return {"status": "empty", "pending_event_count": len(pending), "threshold_messages": threshold}
+            return {
+                "status": "empty",
+                "pending_event_count": pending_event_count,
+                "threshold_messages": threshold,
+                "commit_reason": commit_reason,
+            }
         metadata = optional_object(args, "metadata")
         if "node_path" not in metadata:
             metadata = {**metadata, "node_path": self.default_session_node_path(scope)}
@@ -1815,6 +1847,12 @@ class MatrixArkLocalAdapter:
                 "scope": scope,
                 "message_count": len(messages),
                 "threshold_messages": threshold,
+                "commit_reason": commit_reason,
+                "trigger_policy": "force" if force else "idle_timeout" if idle_ready else "threshold",
+                "pending_event_count_before_commit": pending_event_count,
+                "committed_event_count": len(source_event_ids),
+                "idle_timeout_ms": idle_timeout_ms,
+                "idle_elapsed_ms": idle_elapsed_ms,
                 "agent_hook": hook,
                 "created_at_ms": now_ms(),
             }
@@ -1823,8 +1861,13 @@ class MatrixArkLocalAdapter:
             **batch_result,
             "status": "committed",
             "commit_id_hash": commit_id_hash,
-            "pending_event_count": len(pending),
+            "pending_event_count": pending_event_count,
+            "committed_event_count": len(source_event_ids),
             "source_event_ids": source_event_ids,
+            "commit_reason": commit_reason,
+            "trigger_policy": "force" if force else "idle_timeout" if idle_ready else "threshold",
+            "idle_timeout_ms": idle_timeout_ms,
+            "idle_elapsed_ms": idle_elapsed_ms,
             "raw_events_duplicated": False,
         }
 
@@ -2077,6 +2120,23 @@ class MatrixArkLocalAdapter:
     def ingest(self, args: Json, *, hook: Json | None = None) -> Json:
         envelope = normalize_envelope(args, default_kind="message")
         hook = validate_hook(hook)
+        idle_commit_result: Json | None = None
+        idle_commit_timeout_ms = args.get("idle_commit_timeout_ms")
+        if idle_commit_timeout_ms is not None:
+            if not isinstance(idle_commit_timeout_ms, int) or idle_commit_timeout_ms < 0:
+                raise MatrixArkError("idle_commit_timeout_ms must be a non-negative integer")
+            idle_commit_result = self.session_commit(
+                {
+                    "scope": envelope["scope"],
+                    "metadata": envelope["metadata"],
+                    "threshold_messages": args.get("session_buffer_threshold", 20),
+                    "force": False,
+                    "idle_timeout_ms": idle_commit_timeout_ms,
+                    "commit_reason": "idle_timeout",
+                    "skip_prior_context": bool(args.get("skip_prior_context", False)),
+                },
+                hook=hook,
+            )
         prior_records = [] if args.get("skip_prior_context") else self.read_all()
         prior_context = (
             {"level": "", "refs": [], "messages": [], "summaries": [], "char_count": 0, "limit": MAX_PRIOR_MESSAGES}
@@ -2190,6 +2250,8 @@ class MatrixArkLocalAdapter:
                     "metadata": envelope["metadata"],
                     "threshold_messages": session_buffer_threshold,
                     "force": False,
+                    "max_messages": session_buffer_threshold,
+                    "commit_reason": "threshold",
                     "skip_prior_context": bool(args.get("skip_prior_context", False)),
                 },
                 hook=hook,
@@ -2213,6 +2275,7 @@ class MatrixArkLocalAdapter:
                 "threshold_messages": session_buffer_threshold,
                 "auto_batch_extract": auto_batch_extract,
             },
+            "idle_commit_result": idle_commit_result,
             "auto_batch_extract_result": auto_batch_result,
         }
 
@@ -3556,6 +3619,11 @@ TOOLS: list[Json] = [
                     "default": 20,
                     "description": "Pending same-session raw event threshold for automatic one-pass batch extraction.",
                 },
+                "idle_commit_timeout_ms": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Optional idle timeout. If previous pending same-session messages are older than this, MatrixArk commits that window before ingesting the new message.",
+                },
             },
             "additionalProperties": True,
         },
@@ -3580,9 +3648,19 @@ TOOLS: list[Json] = [
                     "default": True,
                     "description": "Force commit even below threshold for session end/task complete hooks.",
                 },
+                "commit_reason": {
+                    "type": "string",
+                    "enum": ["threshold", "hook_boundary", "idle_timeout", "manual_api"],
+                    "description": "Why the session window is being committed.",
+                },
+                "idle_timeout_ms": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Commit when pending messages are below threshold but the session has been idle for at least this long.",
+                },
                 "max_messages": {
                     "type": "integer",
-                    "description": "Optional cap for how many pending raw events to commit in this batch.",
+                    "description": "Optional cap for how many pending raw events to commit in this batch. Threshold/rolling commits default to threshold_messages.",
                 },
             },
             "additionalProperties": True,
