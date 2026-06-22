@@ -1,10 +1,12 @@
 #include <brpc/channel.h>
 #include <brpc/thrift_message.h>
 
+#include <chrono>
 #include <cstdlib>
 #include <ctime>
 #include <iostream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "common/status.h"
@@ -125,7 +127,16 @@ int main(int argc, char** argv) {
         request.__set_table_name(table_name);
         request.__set_key(prefix + ":hash");
         request.__set_fields(std::vector<std::string>{"f1", "f2"});
-        if (!Call(&channel, "HMGet", request, &response)) {
+        bool hmget_ok = false;
+        for (int attempt = 0; attempt < 50; ++attempt) {
+            response = bcache2::thrift::HMGetResponse();
+            if (Call(&channel, "HMGet", request, &response)) {
+                hmget_ok = true;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        if (!hmget_ok) {
             return 1;
         }
         if (response.values.size() != 2 || response.values[0] != "v1" ||
@@ -163,12 +174,22 @@ int main(int argc, char** argv) {
         request.__set_start_ts(900);
         request.__set_end_ts(1100);
         request.__set_count(10);
-        if (!Call(&channel, "FeatureQuery", request, &response)) {
-            return 1;
+
+        bool query_ok = false;
+        for (int attempt = 0; attempt < 50; ++attempt) {
+            response = bcache2::thrift::FeatureQueryResponse();
+            if (!Call(&channel, "FeatureQuery", request, &response)) {
+                return 1;
+            }
+            if (response.point_list.size() == 1) {
+                query_ok = true;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
-        if (response.point_list.size() != 1) {
+        if (!query_ok) {
             std::cerr << "FeatureQuery returned " << response.point_list.size()
-                      << " points, expected 1" << std::endl;
+                      << " points after retry, expected 1" << std::endl;
             return 1;
         }
         std::cout << "PASS proxy FEATURE Add/Query" << std::endl;

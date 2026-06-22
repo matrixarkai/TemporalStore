@@ -76,6 +76,7 @@ class Replicator {
     bool need_update_remote_ = false;
     bool index_log_staged_ = false;
     bool last_loop_made_progress_ = false;
+    bool loop_initialized_ = false;
 
     uint64_t replayed_oplog_num_ = 0;
     uint64_t replayed_index_log_num_ = 0;

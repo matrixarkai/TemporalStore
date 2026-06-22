@@ -17,7 +17,9 @@
 #include "model/hash_model.h"
 #include "model/string_model.h"
 #include "partition/partition.h"
+#include "partition/storage/evicter.h"
 #include "partition/storage/object_manager.h"
+#include "partition/storage/page_store.h"
 #include "partition/storage/slot_context_manager.h"
 #include "partition/storage/storage_manager.h"
 #include "partition/test/cmd.h"
@@ -30,6 +32,9 @@ DECLARE_uint64(storage_dump_slots_per_round);
 DECLARE_uint64(storage_gc_max_slots_per_round);
 DECLARE_uint64(stream_max_blob_size);
 DECLARE_uint64(storage_oplog_delay_dump_length);
+DECLARE_uint64(evicter_max_memory_usage);
+DECLARE_uint64(evict_count_limit);
+DECLARE_uint64(evict_batch_size);
 
 namespace bcache2 {
 namespace partition {
@@ -40,8 +45,9 @@ class PartitionLoadTest : public testing::Test {
         FLAGS_storage_oplog_delay_dump_length = 0;
         FLAGS_enable_blockcache = true;
         FLAGS_blockcache_dram_capacity = 134217728;  // 128 MB
-        FLAGS_blockcache_ssd_capacity = 134217728;   // 128 MB
-
+        FLAGS_blockcache_pmem_capacity = 0;
+        FLAGS_blockcache_ssd_capacity = 0;
+        FLAGS_blockcache_enable_metrics = false;
         bytestore_set_flag("bytestore_client_log_level", "1");
         bytestore_init();
         byte::AsyncThreadPoolOptions tp_options;
@@ -242,6 +248,74 @@ TEST_F(PartitionLoadTest, PageLogWithIndexItem) {
         ASSERT_TRUE(status.ok());
         ASSERT_EQ(value, "value2");
     }
+}
+
+TEST_F(PartitionLoadTest, LoadEvictedObjectChecksBlockCacheBeforePersistentStore) {
+    struct ScopedEvicterFlags {
+        uint64_t max_memory_usage = FLAGS_evicter_max_memory_usage;
+        uint64_t count_limit = FLAGS_evict_count_limit;
+        uint64_t batch_size = FLAGS_evict_batch_size;
+        ~ScopedEvicterFlags() {
+            FLAGS_evicter_max_memory_usage = max_memory_usage;
+            FLAGS_evict_count_limit = count_limit;
+            FLAGS_evict_batch_size = batch_size;
+        }
+    } scoped_evicter_flags;
+
+    FLAGS_evicter_max_memory_usage = 1;  // 1 MB, low enough to force eviction for the object below.
+    FLAGS_evict_count_limit = 10;
+    FLAGS_evict_batch_size = 1;
+
+    constexpr char kKey[] = "key";
+    const std::string kValue(2 * 1024 * 1024, 'v');
+
+    {
+        auto status = PartitionSet(partition_.get(), kKey, kValue);
+        ASSERT_TRUE(status.ok()) << status.ToString();
+    }
+    {
+        BYTE_ASSERT(!partition_->index_->slot_context_manager_->DirtySlotsEmpty());
+        partition_->storage_manager_->ReclaimOpLog();
+        BYTE_ASSERT(partition_->index_->slot_context_manager_->DirtySlotsEmpty());
+    }
+
+    ReloadPartition();
+    auto slot_id = CallHash(kKey);
+    auto slot = partition_->index_->GetSlot(slot_id);
+    ASSERT_TRUE(slot != nullptr);
+    ASSERT_FALSE(slot->InMemory());
+
+    PageStore::ReadPathTestCounters counters;
+    partition_->page_store_->SetReadPathTestCounters(&counters);
+
+    {
+        std::string value;
+        auto status = PartitionGet(partition_.get(), kKey, &value);
+        ASSERT_TRUE(status.ok()) << status.ToString();
+        ASSERT_EQ(kValue, value);
+        EXPECT_EQ(1, counters.blockcache_gets);
+        EXPECT_EQ(0, counters.blockcache_hits);
+        EXPECT_EQ(1, counters.persistent_reads);
+    }
+
+    ASSERT_TRUE(partition_->index_->GetSlot(slot_id)->InMemory());
+
+    auto evict_status = partition_->evicter_->TryEvict();
+    ASSERT_TRUE(evict_status.ok()) << evict_status.ToString();
+    ASSERT_FALSE(partition_->index_->GetSlot(slot_id)->InMemory());
+
+    counters = PageStore::ReadPathTestCounters();
+    {
+        std::string value;
+        auto status = PartitionGet(partition_.get(), kKey, &value);
+        ASSERT_TRUE(status.ok()) << status.ToString();
+        ASSERT_EQ(kValue, value);
+        EXPECT_EQ(1, counters.blockcache_gets);
+        EXPECT_EQ(1, counters.blockcache_hits);
+        EXPECT_EQ(0, counters.persistent_reads);
+    }
+
+    partition_->page_store_->SetReadPathTestCounters(nullptr);
 }
 
 TEST_F(PartitionLoadTest, PageLogWithoutIndexItem) {

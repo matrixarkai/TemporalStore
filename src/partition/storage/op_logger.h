@@ -64,6 +64,7 @@ class OpLogger {
                      uint16_t object_id, uint64_t ttl);
 
     void Commit(Controller* ctrl, Closure<void>* callback);
+    Status AppendReplayedLog(const storage::OpLog& oplog, uint64_t* log_id, uint32_t* log_size);
 
     void Truncate(uint64_t log_id);
 

@@ -91,9 +91,7 @@ void StorageManager::Stop() {
 }
 
 void StorageManager::LoopWorker() {
-    while (stop_sync_.get() == nullptr && !stopped_) {
-        CoSleep(FLAGS_storage_loop_interval_us);
-
+    auto run_once = [this] {
         TimeTracer tracer;
 
         Status status = Prepare();
@@ -101,7 +99,7 @@ void StorageManager::LoopWorker() {
             LOG_WARNING("Prepare Failed")
                 .put("PartitionId", partition_->GetPartitionID())
                 .put("Status", status);
-            continue;
+            return;
         }
         tracer.AddEvent("Prepare");
 
@@ -143,6 +141,28 @@ void StorageManager::LoopWorker() {
             .put("Tracer", tracer.ToString());
         metrics_.loop_qps->get()->Increment();
         metrics_.loop_latency->get()->Set(tracer.TotalSpentUs());
+    };
+
+    if (UNLIKELY(!IsCoContext())) {
+        if (stop_sync_) {
+            stop_sync_->Run();
+            return;
+        }
+        if (!stopped_) {
+            run_once();
+        }
+        if (stop_sync_) {
+            stop_sync_->Run();
+        } else if (!stopped_) {
+            byte::InvokeLaterInCurrentThread(FLAGS_storage_loop_interval_us,
+                                             NewCoClosure(this, &StorageManager::LoopWorker));
+        }
+        return;
+    }
+
+    while (stop_sync_.get() == nullptr && !stopped_) {
+        CoSleep(FLAGS_storage_loop_interval_us);
+        run_once();
     }
 
     if (stop_sync_) {

@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MatrixArk API Reference</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">MatrixArk</p>
+          <h1>API And Schema Reference</h1>
+        </div>
+        <div class="toolbar">
+          <a class="button-link" href="./index.html">Operations Console</a>
+          <a class="button-link" href="./agent-context-envelope.html">Agent Envelope</a>
+        </div>
+      </header>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Boundary</h2>
+            <p>Agents send simple evidence. MatrixArk always extracts. TemporalStore serves the internal model.</p>
+          </div>
+        </div>
+        <div class="doc-grid">
+          <article>
+            <h3>Public Caller Model</h3>
+            <pre><code>messages + scope + metadata + optional hook evidence
+-> MatrixArk extraction
+-> ContextPack returned to agent</code></pre>
+          </article>
+          <article>
+            <h3>Hidden Internal Model</h3>
+            <ul class="doc-list">
+              <li><code>ContextEvent</code>, <code>ContextEntity</code>, <code>ContextIndex</code></li>
+              <li><code>ContextNode</code>, <code>ContextChildRef</code>, <code>ContextSummary</code></li>
+              <li><code>ContextEmbedding</code>, <code>ContextCompressionEvent</code>, <code>ContextPackAudit</code></li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Public APIs</h2>
+            <p>HTTP endpoints are the production contract; MCP tools mirror the same shapes for local and agent integrations.</p>
+          </div>
+        </div>
+        <div class="doc-grid">
+          <article>
+            <h3><code>POST /v1/context/ingest</code></h3>
+            <p>Ingest one message, tool output, business event, or resource description.</p>
+            <pre><code>{
+  "messages": [{"role": "user", "content": "Alice approved the GPU request."}],
+  "scope": {"user_id": "alice", "session_id": "thread-gpu", "team": "infra_team"},
+  "metadata": {"source": "cursor"},
+  "agent_hook": {"hook_type": "before_llm", "auto_captured": true}
+}</code></pre>
+          </article>
+          <article>
+            <h3><code>POST /v1/context/retrieve</code></h3>
+            <p>Return a token-budgeted ContextPack for a raw query.</p>
+            <pre><code>{
+  "query": "What GPU approvals are current?",
+  "scope": {"session_id": "thread-gpu", "team": "infra_team"},
+  "max_context_tokens": 2048,
+  "hints": {"retrieval_timeout_ms": 5000}
+}</code></pre>
+          </article>
+          <article>
+            <h3><code>POST /v1/context/feedback</code></h3>
+            <p>Capture confirmations, corrections, accepted refs, rejected refs, and final answer feedback.</p>
+            <pre><code>{
+  "messages": [{"role": "user", "content": "Yes, that answer is correct."}],
+  "context_pack_id": "pack-thread-gpu",
+  "accepted_refs": [{"ref_type": "event", "ref_hash": 52001}]
+}</code></pre>
+          </article>
+          <article>
+            <h3>Batch, Stream, Resource, Audit, Replay</h3>
+            <ul class="doc-list">
+              <li><code>/v1/context/batch_ingest</code>: per-row success and errors</li>
+              <li><code>/v1/context/stream_ingest</code>: stream, partition, offset, payload</li>
+              <li><code>/v1/context/resource</code>: raw URI, type, parsed chunks, embeddings</li>
+              <li><code>/v1/context/audit/{pack}</code>: selected, blocked, dropped refs</li>
+              <li><code>/v1/context/replay/{pack}</code>: replayable evidence</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Retrieval Timeout Budget</h2>
+            <p>Use separate budgets for model planning and TemporalStore traversal.</p>
+          </div>
+        </div>
+        <div class="doc-grid">
+          <article>
+            <h3>End-to-End Retrieval</h3>
+            <p><code>MATRIXARK_RETRIEVAL_TIMEOUT_MS=5000</code> is the default context retrieval budget.</p>
+            <ul class="doc-list">
+              <li>Includes query understanding and optional LLM extraction</li>
+              <li>Includes query embedding generation</li>
+              <li>Includes TemporalStore traversal, filtering, compression lookup, and packing</li>
+              <li>Can be overridden with <code>hints.retrieval_timeout_ms</code> or <code>hints.context_retrieval_timeout_ms</code></li>
+            </ul>
+          </article>
+          <article>
+            <h3>Traversal Sub-Budget</h3>
+            <p>TemporalStore tree traversal should usually target hundreds of milliseconds, not the full model budget.</p>
+            <ul class="doc-list">
+              <li>Filter children by scope, metadata, and secondary indexes first</li>
+              <li>Score L0/L1 summary embeddings only after filters</li>
+              <li>Pass only the remaining retrieval budget into traversal</li>
+              <li>Keep provider-level timeouts for OSS/OpenAI model calls in production</li>
+            </ul>
+          </article>
+        </div>
+        <div class="doc-grid section-gap">
+          <article>
+            <h3>Timeout Fallback</h3>
+            <p>If the retrieval deadline is reached, MatrixArk returns a normal replayable <code>ContextPack</code> with only context already fetched.</p>
+            <ol class="doc-list">
+              <li>Current <code>ContextEvent</code> records</li>
+              <li>L1 summaries</li>
+              <li>Resource chunks</li>
+              <li>Compressed cold-window summaries</li>
+              <li>Empty pack if no safe context was fetched</li>
+            </ol>
+          </article>
+          <article>
+            <h3>Observability</h3>
+            <p>Prometheus and replay must show where the cutoff happened.</p>
+            <pre><code>matrixark_pipeline_stage_latency_ms{
+  operation="retrieve",
+  stage="hard_timeout",
+  status="timeout"
+}
+
+ContextPackAudit.decision_notes:
+"hard retrieval timeout at query_embedding after 5004.21 ms"</code></pre>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Shared Schemas</h2>
+            <p>Keep these small. Everything else should be inferred, normalized, or validated by MatrixArk.</p>
+          </div>
+        </div>
+        <div class="doc-grid">
+          <article>
+            <h3>Message</h3>
+            <pre><code>{
+  "role": "user | assistant | tool | system",
+  "content": "required text",
+  "name": "optional label",
+  "created_at_ms": 1781500000000
+}</code></pre>
+          </article>
+          <article>
+            <h3>Scope</h3>
+            <pre><code>{
+  "tenant_id": "company-a",
+  "user_id": "alice",
+  "session_id": "thread-123",
+  "team": "infra_team",
+  "project": "project_1"
+}</code></pre>
+          </article>
+          <article>
+            <h3>Metadata</h3>
+            <pre><code>{
+  "source": "cursor",
+  "node_path": ["company_a", "infra_team", "project_1", "approvals"],
+  "reply_to_context_pack_id": "pack-123",
+  "agent_extraction": {"event_type": "approval", "status": "approved"}
+}</code></pre>
+          </article>
+          <article>
+            <h3>Agent Hook</h3>
+            <pre><code>{
+  "source": "matrixark-sdk",
+  "hook_type": "before_llm | after_llm | tool_result | resource_added | feedback | session_commit",
+  "hook_id": "hook-before-gpu",
+  "observed_at_ms": 1781500000000,
+  "idempotency_key": "gpu-approval-1",
+  "auto_captured": true
+}</code></pre>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>MCP Server</h2>
+            <p>The MCP server lets Codex, Cursor-like products, Claude, and vertical agents call MatrixArk as a context provider.</p>
+          </div>
+        </div>
+        <div class="doc-grid">
+          <article>
+            <h3>Run Locally</h3>
+            <pre><code>python3 tools/matrixark_mcp_server.py \
+  --event-log /tmp/matrixark-mcp-events.jsonl</code></pre>
+          </article>
+          <article>
+            <h3>Tools</h3>
+            <ul class="doc-list">
+              <li><code>matrixark_ingest</code>: messages, scope, metadata, hook, resource refs</li>
+              <li><code>matrixark_retrieve</code>: query, scope, max context tokens</li>
+              <li><code>matrixark_feedback</code>: feedback messages, pack id, accepted/rejected refs</li>
+              <li><code>matrixark_replay</code>: context pack id</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Internal TemporalStore APIs</h2>
+            <p>MatrixArk calls these after extraction and planning; customers should not call them directly.</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>API</th>
+                <th>Purpose</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td><code>UPSERT_NODE / GET_NODE</code></td><td>Canonical context tree nodes.</td></tr>
+              <tr><td><code>UPSERT_CHILD_REF / QUERY_CHILDREN</code></td><td>Filesystem-like parent-child traversal.</td></tr>
+              <tr><td><code>WRITE_EVENT / QUERY_EVENTS</code></td><td>Timestamp-keyed context events.</td></tr>
+              <tr><td><code>WRITE_EXTRACTED_EVENT</code></td><td>Event plus default secondary indexes.</td></tr>
+              <tr><td><code>WRITE_INDEX_REF / QUERY_INDEX</code></td><td>Event kind, entity, status, source, and time-bucket indexes.</td></tr>
+              <tr><td><code>UPSERT_ENTITY / QUERY_ENTITIES</code></td><td>Evolving current state derived from events.</td></tr>
+              <tr><td><code>UPSERT_SUMMARY / QUERY_SUMMARIES</code></td><td>L0/L1 and session summaries.</td></tr>
+              <tr><td><code>UPSERT_EMBEDDING / QUERY_EMBEDDINGS</code></td><td>Summary, event, resource, and query-adjacent vectors.</td></tr>
+              <tr><td><code>TRAVERSE_CONTEXT_TREE</code></td><td>Layer-by-layer vector scoring under serving limits.</td></tr>
+              <tr><td><code>WRITE_COMPRESSION_EVENT / QUERY_COMPRESSION_EVENTS</code></td><td>Cold-window temporal summaries.</td></tr>
+              <tr><td><code>WRITE_PACK_AUDIT / QUERY_PACK_AUDIT</code></td><td>Replayable ContextPack evidence.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

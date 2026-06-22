@@ -406,6 +406,9 @@ void StreamBaseImpl::OpenBlobForRead(BlobOpenInfo* open_info) {
 
 Status StreamBaseImpl::GetBlobAndOffset(uint64_t offset, BlobOpenInfo** blob,
                                         uint64_t* blob_offset) {
+    if (UNLIKELY(end_offset_list_.empty() || readable_blobs_.empty())) {
+        return Status::OutOfRange("Stream has no readable blobs");
+    }
     size_t low = 0;
     // TODO(zkwu): just use std
     size_t high = end_offset_list_.size();

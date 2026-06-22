@@ -34,7 +34,7 @@ DECLARE_uint64(index_gc_bytes_threshold);
 DECLARE_uint64(stream_max_blob_size);
 DECLARE_uint64(stream_blob_deletion_min_age);
 DECLARE_uint64(stream_blob_deletion_min_gap);
-DECLARE_uint32(storage_zone_size);
+DECLARE_int32(storage_zone_size);
 DECLARE_double(storage_gc_space_utility_threshold);
 DECLARE_uint64(storage_gc_max_bytes_per_round);
 DECLARE_uint64(storage_gc_max_slots_per_round);
@@ -423,6 +423,15 @@ class PartitionReplicatorTest : public testing::Test {
     FlagsSetter flag_setter_;
     uint32_t load_version = 0;
 };
+
+TEST_F(PartitionReplicatorTest, RejectSecondaryWriteWithoutPinPrimary) {
+    Status status;
+    SetString(&master_, "primary_write_guard_key", "primary_value", &status);
+    ASSERT_TRUE(status.ok()) << status;
+
+    SetString(&slave_, "secondary_write_guard_key", "secondary_value", &status);
+    ASSERT_TRUE(status.IsTopomError()) << status;
+}
 
 TEST_F(PartitionReplicatorTest, SimpleGetSetDelete) {
     // set key

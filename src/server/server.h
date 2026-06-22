@@ -14,6 +14,7 @@
 #include "common/operator_tool.h"
 #include "protocol/host_spec.pb.h"
 #include "protocol/master.pb.h"
+#include "server/service.h"
 #include "server/redis_service.h"
 #include "stream/log_based_env.h"
 
@@ -76,6 +77,7 @@ class Server {
     std::unique_ptr<stream::LogBasedEnv> env_;
     std::unique_ptr<PartitionManager> partition_manager_;
     std::unique_ptr<ServiceImpl> service_;
+    ServerServiceMetrics service_metrics_;
     std::unique_ptr<brpc::Server> server_;
     std::unique_ptr<bcache2::blockcache::BlockCache> blockcache_{nullptr};
     std::shared_ptr<MetricsEnv> metrics_env_;

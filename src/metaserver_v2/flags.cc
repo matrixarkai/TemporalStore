@@ -15,6 +15,8 @@ DEFINE_int32(metaserver_log_file_num, 10, "max file num");
 DEFINE_int32(metaserver_log_file_size, 512 * 1024 * 1024, "max file size");
 DEFINE_string(metaserver_announce_consul_name, "dev.bcache2.dev", "consul name");
 DEFINE_string(metaserver_announce_consul_name_leader, "dev.bcache2.dev_leader", "consul name");
+DEFINE_bool(metaserver_consul_announce_enabled, true, "enable metaserver consul announce");
+BRPC_VALIDATE_GFLAG(metaserver_consul_announce_enabled, brpc::PassValidate);
 
 DEFINE_uint64(metaserver_task_scheduler_interval_ms, 500,
               "task scheduler sleep interval in milliseconds");
@@ -46,6 +48,9 @@ DEFINE_uint64(metaserver_convict_safe_mode_warning_ratio, 5, "ratio of safemode,
 BRPC_VALIDATE_GFLAG(metaserver_convict_safe_mode_warning_ratio, brpc::PassValidate);
 DEFINE_uint64(metaserver_convict_safe_mode_critical_ratio, 8, "ratio of safemode, 1-100");
 BRPC_VALIDATE_GFLAG(metaserver_convict_safe_mode_critical_ratio, brpc::PassValidate);
+DEFINE_bool(metaserver_convict_safe_mode_enabled, true,
+            "enable tag-level safe mode before convicting failed servers");
+BRPC_VALIDATE_GFLAG(metaserver_convict_safe_mode_enabled, brpc::PassValidate);
 DEFINE_bool(metaserver_convict_server_enabled, true,
             "enable freeze partition server and recover partition");
 BRPC_VALIDATE_GFLAG(metaserver_convict_server_enabled, brpc::PassValidate);

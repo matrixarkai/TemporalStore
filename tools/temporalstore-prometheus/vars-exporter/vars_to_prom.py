@@ -19,6 +19,7 @@ METRIC_RE = re.compile(r"^(?P<name>[^{}\s]+)(?:\{(?P<labels>[^}]*)\})?$")
 LABEL_RE = re.compile(r'^\s*([^=\s]+)\s*=\s*(.+?)\s*$')
 VALUE_RE = re.compile(r"^[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?$")
 LABEL_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+ROLE_SUFFIX_RE = re.compile(r"[-_]?\\d+$")
 
 
 def parse_args() -> argparse.Namespace:
@@ -72,6 +73,31 @@ def sanitize_label_name(name: str) -> str:
 
 def escape_label(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\r", "\\r")
+
+
+def source_role(source: str) -> str:
+    normalized = source.strip().lower().replace("-", "_")
+    if not normalized:
+        return "unknown"
+    if normalized.startswith("meta"):
+        return "metaserver"
+    if normalized.startswith("proxy"):
+        return "proxy"
+    if normalized.startswith("client"):
+        return "client"
+    if normalized.startswith("node") or normalized.startswith("server"):
+        return "nodeserver"
+    return ROLE_SUFFIX_RE.sub("", normalized) or normalized
+
+
+def target_labels(source: str, url: str | None = None) -> str:
+    labels = [
+        ("service_role", escape_label(source_role(source))),
+        ("source", escape_label(source)),
+    ]
+    if url is not None:
+        labels.append(("url", escape_label(url)))
+    return ",".join(f'{k}="{v}"' for k, v in labels)
 
 
 def parse_label_text(raw: str):
@@ -140,6 +166,7 @@ def parse_line(line: str, source_label: str):
         return None
 
     labels = parse_label_text(metric_match.group("labels") or "")
+    labels.append(("service_role", escape_label(source_role(source_label))))
     labels.append(("source", escape_label(source_label)))
     labels_str = ",".join(f'{k}="{v}"' for k, v in labels) if labels else ""
     return sanitize_metric_name(name), value, labels_str
@@ -177,17 +204,70 @@ def write_prom(output_dir: Path, output_file: str, samples):
 
 def run_once(targets, interval, output_dir, output_file, timeout):
     all_samples = set()
+    now = time.time()
+    total_errors = 0
+    role_sample_counts = {}
     for source, url in targets:
+        start = time.monotonic()
+        target_sample_count = 0
+        role = source_role(source)
         try:
             for line in scrape_target(source, url, timeout):
                 sample = parse_line(line, source)
                 if sample is not None:
                     all_samples.add(sample)
+                    target_sample_count += 1
         except Exception as exc:
             print(f"[WARN] failed scrape {source} {url}: {exc}", file=sys.stderr)
-            return 1
+            total_errors += 1
+            labels = target_labels(source, url)
+            all_samples.add(
+                (
+                    "temporalstore_vars_exporter_target_up",
+                    0.0,
+                    labels,
+                )
+            )
+            all_samples.add(
+                (
+                    "temporalstore_vars_exporter_target_scrape_errors_total",
+                    1.0,
+                    labels,
+                )
+            )
+            all_samples.add(("temporalstore_service_role_up", 0.0, target_labels(source)))
+            continue
+
+        duration = time.monotonic() - start
+        role_sample_counts[role] = role_sample_counts.get(role, 0) + target_sample_count
+        labels = target_labels(source, url)
+        all_samples.add(("temporalstore_vars_exporter_target_up", 1.0, labels))
+        all_samples.add(
+            ("temporalstore_vars_exporter_target_scrape_duration_seconds", duration, labels)
+        )
+        all_samples.add(
+            ("temporalstore_vars_exporter_target_samples_scraped", target_sample_count, labels)
+        )
+        all_samples.add(
+            ("temporalstore_vars_exporter_target_last_success_timestamp_seconds", now, labels)
+        )
+        all_samples.add(
+            ("temporalstore_vars_exporter_target_scrape_errors_total", 0.0, labels)
+        )
+        all_samples.add(("temporalstore_service_role_up", 1.0, target_labels(source)))
+
+    all_samples.add(("temporalstore_vars_exporter_targets", float(len(targets)), ""))
+    all_samples.add(("temporalstore_vars_exporter_scrape_errors_total", float(total_errors), ""))
+    for role, count in role_sample_counts.items():
+        all_samples.add(
+            (
+                "temporalstore_vars_exporter_role_samples_scraped",
+                float(count),
+                f'service_role="{escape_label(role)}"',
+            )
+        )
     write_prom(Path(output_dir), output_file, all_samples)
-    return 0
+    return 0 if total_errors == 0 else 1
 
 
 def main():

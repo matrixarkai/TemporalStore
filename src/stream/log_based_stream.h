@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <map>
+#include <mutex>
 #include <memory>
 #include <set>
 #include <string>
@@ -48,10 +49,12 @@ class StreamImpl : public Stream {
     void AppendV(std::vector<std::string> data, uint64_t* id) override;
     void Commit(Controller* ctrl, Closure<void>* callback) override;
     void Truncate(uint64_t id) override {
+        std::lock_guard<std::recursive_mutex> lock(stream_mu_);
         incoming_truncated_offset_ =
             std::min(std::max(id, incoming_truncated_offset_), stream_buffer_->Length());
     }
     Stats Stat() override {
+        std::lock_guard<std::recursive_mutex> lock(stream_mu_);
         Stats stats;
         stats.start_record_id = incoming_truncated_offset_;
         stats.usage_bytes = persistent_offset_ - persistent_truncated_offset_;
@@ -126,6 +129,7 @@ class StreamImpl : public Stream {
     void TryAppend(bool aggregate_flush);
     void AppendInternal(Task* task);
     void OnAppendDone(Task* task);
+    void ScheduleSwitchNewBlobToAppend(Task* task);
     void SwitchNewBlobToAppend(Task* task);
     void CleanObsoleteBlobs(
         const google::protobuf::RepeatedPtrField<storage::BlobInfo>& blobs,
@@ -158,6 +162,7 @@ class StreamImpl : public Stream {
     MetricsManager* metrics_manager_ = nullptr;
 
     StreamMetrics metrics_;
+    std::recursive_mutex stream_mu_;
     std::unique_ptr<StreamBuffer<Delimiter>> stream_buffer_;
     RingArray<CommitTask> commit_tasks_{0};
 

@@ -65,7 +65,18 @@ target_link_libraries(bcache2-proxy
     ${BCACHE2_PROXY_LINK_LIBS}
     -Wl,--whole-archive
     $<TARGET_FILE:partition>
-    -Wl,--no-whole-archive)
+    -Wl,--no-whole-archive
+    brpc-static
+    byte
+    byteraft
+    /usr/lib/x86_64-linux-gnu/libleveldb.so
+    /usr/lib/x86_64-linux-gnu/libfmt.so
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    /usr/lib/x86_64-linux-gnu/libabsl_throw_delegate.so
+    /usr/lib/x86_64-linux-gnu/libabsl_time_zone.so
+    /usr/lib/x86_64-linux-gnu/libabsl_raw_logging_internal.so
+    /usr/lib/x86_64-linux-gnu/libabsl_log_severity.so)
 
 if (BCACHE2_BUILD_TESTS)
     add_subdirectory(test)

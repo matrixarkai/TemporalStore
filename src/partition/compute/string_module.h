@@ -29,6 +29,7 @@ class ObjectManager;
 CMD_EXECUTOR_STRING_PREPARE_CTX_DEFAULT(Set, set)
 CMD_EXECUTOR_STRING_EXECUTE(Set, set) {
     LOG_CALL_DEBUG().put("SlotId", ctx->slot_id);
+    const bool object_existed = static_cast<bool>(ctx->object);
     if (!ctx->object) {
         Status status = options.object_manager_->NewObject(
             ctx->slot_id, model::ModelManager::GetModelId<StringModel>(), request->key(),
@@ -38,9 +39,11 @@ CMD_EXECUTOR_STRING_EXECUTE(Set, set) {
     StringModel* model = ctx->object.Model<StringModel>();
     uint64_t ttl = 0;
     // ttl remains
-    Status status = options.object_manager_->GetObjectTtl(ctx->slot_id, request->key(), &ttl);
-    if (!status.ok()) {
-        return status;
+    if (object_existed) {
+        Status status = options.object_manager_->GetObjectTtl(ctx->slot_id, request->key(), &ttl);
+        if (!status.ok()) {
+            return status;
+        }
     }
     model->SetValue(ctx, request->value(), ttl);
 

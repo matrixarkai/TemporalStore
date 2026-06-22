@@ -1,98 +1,1707 @@
 {
-  "updatedAt": "2026-06-07T01:20:00Z",
-  "prometheusUrl": "../temporalstore-vars.prom",
-  "topology": [
-    {
-      "role": "Metaserver, proxy, UI",
-      "instance": "i-05f55360d92c43908",
-      "privateAddress": "10.70.1.161",
-      "purpose": "Control plane, client/test runner, static UI",
-      "status": "running"
+  "cluster": {
+    "name": "aws-scale",
+    "status": "ok",
+    "environment": "AWS test cluster results",
+    "metaservers": 1,
+    "data_nodes": 2
+  },
+  "health": {
+    "metaserver": {
+      "status": "ok",
+      "detail": "1 metaserver used for tests"
     },
-    {
-      "role": "TemporalStore data01",
-      "instance": "i-0cfbef56e86551535",
-      "privateAddress": "10.70.1.214",
-      "purpose": "Primary/replica data service on port 17001",
-      "status": "running"
+    "proxy": {
+      "status": "ok",
+      "detail": "proxy process deployed with UI node"
     },
-    {
-      "role": "TemporalStore data02",
-      "instance": "i-04c93ad8271e5b64a",
-      "privateAddress": "10.70.1.24",
-      "purpose": "Primary/replica data service on port 17002",
-      "status": "running"
+    "exporter": {
+      "status": "pending",
+      "detail": "metrics endpoint pending production wiring"
+    },
+    "data_nodes": {
+      "status": "ok",
+      "detail": "primary + secondary tested"
+    },
+    "efs": {
+      "status": "ok",
+      "detail": "shared file store path tested"
+    },
+    "blockcache": {
+      "status": "ok",
+      "detail": "DRAM + SSD cache enabled in runtime flags"
     }
-  ],
-  "products": [
-    {
-      "id": "temporalstore",
-      "name": "TemporalStore",
-      "href": "./temporalstore.html",
-      "status": "Live metrics wired",
-      "summary": "Online temporal feature engine for high-cardinality windows, filtered event state, long sequence features, and persisted serving.",
-      "tags": ["temporal windows", "risk features", "sequence state", "Prometheus live"]
-    },
-    {
-      "id": "matrixdb",
-      "name": "MatrixDB",
-      "href": "./matrixdb.html",
-      "status": "Observability page ready",
-      "summary": "Multi-tenant KV/profile engine for large online profile objects, hot-key serving, cache-plus-storage, and Redis-compatible access.",
-      "tags": ["multi-tenant", "profile KV", "Redis path", "cache storage"]
-    },
-    {
-      "id": "matrixkv",
-      "name": "MatrixKV",
-      "href": "./matrixkv.html",
-      "status": "Observability page ready",
-      "summary": "Transactional distributed KV service with timestamp coordination, partitioned storage, strong consistency, and release deployment paths.",
-      "tags": ["transaction KV", "TSO", "strong consistency", "partitioned"]
-    }
-  ],
-  "temporalStore": {
-    "latestRun": {
-      "name": "AWS 30-minute service smoke",
-      "runDir": "/var/lib/temporalstore/scale30_20260607T003847Z",
-      "iterations": 1525,
-      "duration": "30 minutes",
-      "table": "aws30m_primary/temporalagg",
-      "notes": "Core modules stayed stable; TemporalAggregate writes currently fail with a response-size check and need follow-up debugging."
-    },
-    "modules": [
-      { "name": "STRING", "result": "1525 pass", "state": "ok" },
-      { "name": "COMMON", "result": "1525 pass", "state": "ok" },
-      { "name": "HASH", "result": "1525 pass", "state": "ok" },
-      { "name": "SET", "result": "1525 pass", "state": "ok" },
-      { "name": "FEATURE", "result": "1525 pass", "state": "ok" },
-      { "name": "IPS", "result": "1525 pass", "state": "ok" },
-      { "name": "RISK", "result": "1525 pass", "state": "ok" },
-      { "name": "TEMPORAL_AGGREGATE", "result": "blocked by response-size check", "state": "bad" }
-    ],
-    "issues": [
-      "TemporalAggregate secondary replay/read visibility must be fixed before aggregate secondary reads are trusted.",
-      "Two-replica table creation currently hits Missing condition info in one path.",
-      "Prometheus scrape is live for TemporalStore; MatrixDB and MatrixKV need their own target registration."
-    ],
-    "kpis": [
-      { "label": "Topology", "value": "1 meta + 2 data", "hint": "Current AWS reuse cluster" },
-      { "label": "Stable modules", "value": "7 of 8", "hint": "Latest 30-minute service smoke" },
-      { "label": "Prometheus sources", "value": "3", "hint": "metaserver, data01, data02" },
-      { "label": "Exporter interval", "value": "5s", "hint": "vars-to-Prometheus bridge" }
+  },
+  "runtime_config": {
+    "profile": "low-latency EFS replay",
+    "storage_zone_size": "256 MB",
+    "stream_max_blob_size": "256 MB",
+    "storage_async": "false",
+    "storage_oplog_delay_dump_length": "0",
+    "replicator_out_of_sync_s": "120",
+    "replicator_loop_interval_us": "1000",
+    "replicator_max_oplog_per_loop": "20000",
+    "replicator_max_indexlog_per_loop": "20000",
+    "replicator_update_remote_interval_ms": "20",
+    "enable_blockcache": "true",
+    "blockcache_dram_capacity": "64 MB",
+    "blockcache_ssd_capacity": "2 GB",
+    "blockcache_ssd_instance_only": "true",
+    "modes": [
+      {
+        "name": "low-latency",
+        "oplog_batch": "1 ms / 256 KB",
+        "replay_loop": "1 ms",
+        "use": "secondary visibility and read-after-replay tests"
+      },
+      {
+        "name": "default",
+        "oplog_batch": "2 ms / 512 KB",
+        "replay_loop": "1-5 ms",
+        "use": "balanced online serving"
+      },
+      {
+        "name": "throughput",
+        "oplog_batch": "5 ms / 1 MB",
+        "replay_loop": "5 ms",
+        "use": "high-throughput ingest"
+      },
+      {
+        "name": "batch ingest",
+        "oplog_batch": "10-50 ms / 4 MB",
+        "replay_loop": "10 ms",
+        "use": "offline or backfill load"
+      }
     ]
   },
-  "productDetails": {
-    "matrixdb": [
-      { "title": "Multi-tenant control", "body": "Designed around tenant and namespace isolation so profile serving can scale without mixing ownership or quota signals." },
-      { "title": "Large online profiles", "body": "Targets profile objects, hot keys, and cache-plus-storage access patterns where simple in-memory-only caching becomes expensive." },
-      { "title": "Protocol flexibility", "body": "The observation page tracks Redis-compatible and direct service paths separately so migration issues are visible." },
-      { "title": "Placement health", "body": "Shard placement, rebalance state, failover, and storage movement are the first-class runtime signals to wire." }
+  "nodes": [
+    {
+      "name": "meta-01",
+      "role": "metaserver + proxy + UI",
+      "status": "ok",
+      "endpoint": "10.70.1.79:17000",
+      "cpu": "t3.small / 2 vCPU",
+      "memory": "2 GB",
+      "storage": "root EBS",
+      "replay": "n/a"
+    },
+    {
+      "name": "data-01",
+      "role": "primary",
+      "status": "ok",
+      "endpoint": "10.70.1.163:17001",
+      "cpu": "c7i.large / 2 vCPU",
+      "memory": "4 GB",
+      "storage": "EFS + 10 GB gp3 SSD cache",
+      "replay": "writer"
+    },
+    {
+      "name": "data-02",
+      "role": "secondary",
+      "status": "ok",
+      "endpoint": "10.70.1.202:17002",
+      "cpu": "c7i.large / 2 vCPU",
+      "memory": "4 GB",
+      "storage": "EFS + 10 GB gp3 SSD cache",
+      "replay": "forced-secondary lag tested"
+    }
+  ],
+  "replication": {
+    "mode": "shared file store replay",
+    "secondary_lag_ms": "0 ms at first poll in 10k-feature AWS lag sweep",
+    "replay_source": "EFS shared file store",
+    "visibility": "10k / 10k visible",
+    "lag_matrix": [
+      {
+        "threads": "2",
+        "visible": "10,000 / 10,000",
+        "missing": "0",
+        "p99_lag": "0 ms",
+        "max_lag": "0 ms"
+      },
+      {
+        "threads": "4",
+        "visible": "10,000 / 10,000",
+        "missing": "0",
+        "p99_lag": "0 ms",
+        "max_lag": "0 ms"
+      },
+      {
+        "threads": "8",
+        "visible": "10,000 / 10,000",
+        "missing": "0",
+        "p99_lag": "0 ms",
+        "max_lag": "0 ms"
+      },
+      {
+        "threads": "16",
+        "visible": "10,000 / 10,000",
+        "missing": "0",
+        "p99_lag": "0 ms",
+        "max_lag": "0 ms"
+      },
+      {
+        "threads": "64 overload",
+        "visible": "10,000 / 10,000",
+        "missing": "0",
+        "p99_lag": "4586 ms",
+        "max_lag": "4932 ms"
+      }
+    ]
+  },
+  "scale_tests": [
+    {
+      "name": "Low-thread normal concurrency",
+      "status": "passed",
+      "write_qps": "382 STRING / 388 aggregate",
+      "read_p50_ms": "0.486 STRING / 0.426 aggregate",
+      "read_p99_ms": "16.246 STRING / 3.219 aggregate",
+      "secondary_lag_ms": "not measured in low-thread overlap",
+      "threads": "4 + 4 concurrent client threads",
+      "result_dir": "/var/lib/temporalstore/low-thread-concurrent-sweep-20260604_221854",
+      "workload": "recommended 2-vCPU range: concurrent STRING and TemporalAggregate writes/reads"
+    },
+    {
+      "name": "Forced-secondary replay",
+      "status": "passed",
+      "write_qps": "n/a",
+      "read_p50_ms": "n/a",
+      "read_p99_ms": "n/a",
+      "secondary_lag_ms": "0 at first poll",
+      "threads": "2 threads",
+      "result_dir": "/var/lib/temporalstore/aws-scale-results-20260604_203821",
+      "workload": "10k features x 12 buckets, 120k writes visible after EFS replay"
+    },
+    {
+      "name": "64-thread overload",
+      "status": "warning",
+      "write_qps": "3613 STRING / 3644 aggregate",
+      "read_p50_ms": "8.185 STRING / 3.109 aggregate",
+      "read_p99_ms": "22.660 STRING / 15.175 aggregate",
+      "secondary_lag_ms": "not measured in overlap run",
+      "threads": "64 + 64 concurrent client threads",
+      "result_dir": "/var/lib/temporalstore/concurrent-overload-20260604_214508",
+      "workload": "overload ceiling: concurrent STRING and TemporalAggregate writes/reads on 2-vCPU data nodes"
+    }
+  ],
+  "scale_matrix": [
+    {
+      "workload": "low-thread concurrent string+aggregate",
+      "threads": "1",
+      "features": "1,200",
+      "writes": "12k string + 14.4k aggregate",
+      "write_qps": "87 string / 88 aggregate",
+      "write_p99": "23.073 ms string / 22.787 ms aggregate",
+      "read_qps": "389 string / 2553 aggregate",
+      "read_p99": "13.067 ms string / 0.764 ms aggregate",
+      "errors": "0"
+    },
+    {
+      "workload": "low-thread concurrent string+aggregate",
+      "threads": "2",
+      "features": "1,200",
+      "writes": "12k string + 14.4k aggregate",
+      "write_qps": "178 string / 180 aggregate",
+      "write_p99": "22.461 ms string / 22.523 ms aggregate",
+      "read_qps": "754 string / 4918 aggregate",
+      "read_p99": "16.245 ms string / 0.855 ms aggregate",
+      "errors": "0"
+    },
+    {
+      "workload": "low-thread concurrent string+aggregate",
+      "threads": "4",
+      "features": "1,200",
+      "writes": "12k string + 14.4k aggregate",
+      "write_qps": "382 string / 388 aggregate",
+      "write_p99": "19.725 ms string / 19.850 ms aggregate",
+      "read_qps": "1386 string / 6250 aggregate",
+      "read_p99": "16.246 ms string / 3.219 ms aggregate",
+      "errors": "0"
+    },
+    {
+      "workload": "low-thread concurrent string+aggregate",
+      "threads": "8",
+      "features": "1,200",
+      "writes": "12k string + 14.4k aggregate",
+      "write_qps": "605 string / 581 aggregate",
+      "write_p99": "30.072 ms string / 29.541 ms aggregate",
+      "read_qps": "1640 string / 12371 aggregate",
+      "read_p99": "22.273 ms string / 1.583 ms aggregate",
+      "errors": "0"
+    },
+    {
+      "workload": "primary aggregate",
+      "threads": "4",
+      "features": "10,000",
+      "writes": "120,000",
+      "write_qps": "355",
+      "write_p99": "22.1 ms",
+      "read_qps": "9451",
+      "read_p99": "1.0 ms",
+      "errors": "0"
+    },
+    {
+      "workload": "default read aggregate",
+      "threads": "4",
+      "features": "10,000",
+      "writes": "120,000",
+      "write_qps": "346",
+      "write_p99": "22.6 ms",
+      "read_qps": "7656",
+      "read_p99": "3.7 ms",
+      "errors": "0"
+    },
+    {
+      "workload": "primary aggregate",
+      "threads": "8",
+      "features": "10,000",
+      "writes": "120,000",
+      "write_qps": "707",
+      "write_p99": "21.4 ms",
+      "read_qps": "12953",
+      "read_p99": "3.4 ms",
+      "errors": "0"
+    },
+    {
+      "workload": "default read aggregate",
+      "threads": "8",
+      "features": "10,000",
+      "writes": "120,000",
+      "write_qps": "723",
+      "write_p99": "21.4 ms",
+      "read_qps": "19120",
+      "read_p99": "1.0 ms",
+      "errors": "0"
+    },
+    {
+      "workload": "primary aggregate",
+      "threads": "16",
+      "features": "10,000",
+      "writes": "120,000",
+      "write_qps": "1300",
+      "write_p99": "21.9 ms",
+      "read_qps": "11494",
+      "read_p99": "8.1 ms",
+      "errors": "0"
+    },
+    {
+      "workload": "default read aggregate",
+      "threads": "16",
+      "features": "10,000",
+      "writes": "120,000",
+      "write_qps": "1308",
+      "write_p99": "23.8 ms",
+      "read_qps": "20833",
+      "read_p99": "4.5 ms",
+      "errors": "0"
+    },
+    {
+      "workload": "concurrent string+aggregate",
+      "threads": "32",
+      "features": "2,000",
+      "writes": "20k string + 24k aggregate",
+      "write_qps": "2006 string / 1988 aggregate",
+      "write_p99": "24.250 ms string / 24.628 ms aggregate",
+      "read_qps": "4863 string / 18867 aggregate",
+      "read_p99": "21.983 ms string / 5.027 ms aggregate",
+      "errors": "0"
+    },
+    {
+      "workload": "concurrent string+aggregate",
+      "threads": "64",
+      "features": "2,000",
+      "writes": "20k string + 24k aggregate",
+      "write_qps": "3613 string / 3644 aggregate",
+      "write_p99": "27.585 ms string / 27.173 ms aggregate",
+      "read_qps": "7024 string / 13793 aggregate",
+      "read_p99": "22.660 ms string / 15.175 ms aggregate",
+      "errors": "0"
+    }
+  ],
+  "module_tests": [
+    {
+      "module": "TemporalAggregate",
+      "test": "high-cardinality window aggregate",
+      "status": "passed",
+      "write_path": "direct SDK",
+      "read_path": "primary + replica-eligible",
+      "latency": "primary p99 5.773 ms, secondary p99 4.070 ms in current AWS run",
+      "notes": "count/sum/min/max aggregation; 10k-feature lag sweep also passed"
+    },
+    {
+      "module": "Feature",
+      "test": "module ingest/query",
+      "status": "passed",
+      "write_path": "direct SDK",
+      "read_path": "primary",
+      "latency": "module smoke passed",
+      "notes": "profile-like feature object; proxy FeatureQuery still needs debug"
+    },
+    {
+      "module": "IPS",
+      "test": "risk/frequency cap sample",
+      "status": "passed",
+      "write_path": "direct SDK",
+      "read_path": "primary",
+      "latency": "module smoke passed",
+      "notes": "slot/table/action dimensions"
+    },
+    {
+      "module": "STRING",
+      "test": "SET/GET baseline",
+      "status": "passed",
+      "write_path": "direct SDK and proxy",
+      "read_path": "primary and replica-eligible",
+      "latency": "primary get p99 3.566 ms, secondary get p99 1.055 ms",
+      "notes": "plain KV baseline; proxy STRING passed"
+    }
+  ],
+  "data_models": [
+    {
+      "name": "TemporalAggregate",
+      "status": "passed",
+      "use_case": "high-cardinality temporal counters, filtered risk features, frequency caps, and arbitrary window feature serving",
+      "write_shape": "INCR(key, metric, dimensions, timestamp_ms, bucket_width_ms, value, op)",
+      "query_shape": "QUERY(key, metric, dimensions, start_ms, end_ms, bucket_width_ms, op)",
+      "storage_shape": "bucketed aggregate state grouped inside an entity object",
+      "consistency": "primary writes; secondary replay via shared file store",
+      "test_status": "1k feature scale passed; 10k-feature lag sweep passed"
+    },
+    {
+      "name": "Sequence Feature",
+      "status": "passed",
+      "use_case": "long behavior history, recent actions, user journeys, and filtered event windows for inference features",
+      "write_shape": "APPEND(key, timestamp_ms, fields)",
+      "query_shape": "SCAN(key, start_ms, end_ms, filters, limit/order)",
+      "storage_shape": "time-ordered rows per entity with filterable fields",
+      "consistency": "primary writes; replica reads after replay",
+      "test_status": "16 keys x 1000 rows/key latency test passed"
+    },
+    {
+      "name": "Feature/Profile",
+      "status": "pending",
+      "use_case": "latest profile feature blobs, multi-field user/device profile, and model-serving feature bundles",
+      "write_shape": "UPSERT(key, feature_group, fields, timestamp/version)",
+      "query_shape": "GET(key, feature_group, selected_fields)",
+      "storage_shape": "structured feature object with multiple fields",
+      "consistency": "primary write path expected; secondary validation pending",
+      "test_status": "module smoke passed"
+    },
+    {
+      "name": "IPS",
+      "status": "passed",
+      "use_case": "risk/frequency-cap style state keyed by uid, slot, table, and action type",
+      "write_shape": "UPSERT/INCR(uid, slot, table, action_type, timestamp/value)",
+      "query_shape": "GET/SCAN(uid, slot, table, action_type, window/filter)",
+      "storage_shape": "business-specific indexed state for risk and serving",
+      "consistency": "implementation details need deeper test coverage",
+      "test_status": "module smoke passed"
+    },
+    {
+      "name": "Hash / Wide KV",
+      "status": "pending",
+      "use_case": "many subkeys under one entity, reducing object count for profile-like serving",
+      "write_shape": "HMSET(key, subkey, value)",
+      "query_shape": "HMGET(key, subkeys)",
+      "storage_shape": "one object with many subkeys/fields",
+      "consistency": "primary write path expected; subkey TTL remains a known gap",
+      "test_status": "coverage pending"
+    },
+    {
+      "name": "STRING",
+      "status": "passed",
+      "use_case": "plain KV baseline, cache compatibility, and simple Redis-like SET/GET",
+      "write_shape": "SET(key, value)",
+      "query_shape": "GET(key)",
+      "storage_shape": "single serialized value per key",
+      "consistency": "primary write; replica-eligible read after replay",
+      "test_status": "20k primary and secondary SET/GET scale passed"
+    }
+  ],
+  "diagnostics": {
+    "last_result_dir": "/var/lib/temporalstore/low-thread-concurrent-sweep-20260604_221854",
+    "release_build": "ready before AWS teardown",
+    "proxy_sdk": "deployed with metaserver node",
+    "direct_sdk": "used for aggregate scale tests"
+  },
+  "products": [
+    {
+      "name": "TemporalStore",
+      "role": "temporal feature serving",
+      "status": "ok",
+      "summary": "Primary product view with temporal aggregate, sequence, string, replication, EFS, and blockcache test coverage.",
+      "topology": "1 meta + 2 data",
+      "endpoint": "17000 meta / 17001-17003 data",
+      "latest_test": "low-thread and 10k aggregate AWS runs"
+    },
+    {
+      "name": "MatrixKV",
+      "role": "transactional KV baseline",
+      "status": "ok",
+      "summary": "MatrixKV services are deployed on the shared cluster and scale-tested through the meta/client node.",
+      "topology": "kvmaster + tso + proxy + 2 partitionserver nodes",
+      "endpoint": "26010 master / 26020 tso / 26030 proxy",
+      "latest_test": "read 3.5k QPS at 4 threads, write 753 QPS at 4 threads"
+    },
+    {
+      "name": "MatrixDB",
+      "role": "wide KV / Redis API candidate",
+      "status": "warning",
+      "summary": "MatrixDB master, proxy, and datanodes are running; Redis RESP compatibility still needs endpoint or mode confirmation.",
+      "topology": "1 master + 1 proxy + 2 datanodes",
+      "endpoint": "19074 master / 19077 control / 19078 data",
+      "latest_test": "redis-cli PING timed out on 19078"
+    }
+  ],
+  "product_services": [
+    {
+      "product": "TemporalStore",
+      "service": "metaserver",
+      "node": "meta-01",
+      "status": "running",
+      "ports": "17000",
+      "role": "metadata and placement",
+      "latest_signal": "active on meta node"
+    },
+    {
+      "product": "TemporalStore",
+      "service": "data server",
+      "node": "meta-01 / data nodes",
+      "status": "running",
+      "ports": "17001-17003",
+      "role": "primary/secondary partitions",
+      "latest_signal": "scale and replay tests documented"
+    },
+    {
+      "product": "MatrixKV",
+      "service": "kvmaster",
+      "node": "meta-01",
+      "status": "running",
+      "ports": "26010, 26011, 26012",
+      "role": "metadata / scheduling",
+      "latest_signal": "systemd active, process listening"
+    },
+    {
+      "product": "MatrixKV",
+      "service": "tso",
+      "node": "meta-01",
+      "status": "running",
+      "ports": "26020, 26021, 26022",
+      "role": "timestamp oracle",
+      "latest_signal": "process listening, occasional 50ms timeout warnings under load"
+    },
+    {
+      "product": "MatrixKV",
+      "service": "kvproxy",
+      "node": "meta-01",
+      "status": "running",
+      "ports": "26030",
+      "role": "client proxy",
+      "latest_signal": "process listening; systemd unit stale/inactive but process alive"
+    },
+    {
+      "product": "MatrixKV",
+      "service": "partitionserver",
+      "node": "data-01 / data-02",
+      "status": "running",
+      "ports": "26040+",
+      "role": "data partitions",
+      "latest_signal": "read/mixed/write scale tests passed"
+    },
+    {
+      "product": "MatrixDB",
+      "service": "master",
+      "node": "meta-01",
+      "status": "running",
+      "ports": "19074, 19075, 19076, 19084, 19094",
+      "role": "metadata and raft control",
+      "latest_signal": "ListDatanode reports both datanodes normal"
+    },
+    {
+      "product": "MatrixDB",
+      "service": "proxy",
+      "node": "meta-01",
+      "status": "running",
+      "ports": "19077, 19078",
+      "role": "client/control proxy",
+      "latest_signal": "listening but Redis RESP PING timed out"
+    },
+    {
+      "product": "MatrixDB",
+      "service": "datanode",
+      "node": "data-01 / data-02",
+      "status": "running",
+      "ports": "19078-19080, 19088-19089",
+      "role": "storage nodes",
+      "latest_signal": "registered normal with master"
+    }
+  ],
+  "MatrixKV_scale": {
+    "read_qps": "3545 at 4 threads",
+    "read_p95": "1.910 ms at 4 threads",
+    "mixed_qps": "1187 at 4 threads",
+    "write_qps": "753 at 4 threads",
+    "write_p95": "7.408 ms at 4 threads",
+    "open_issue": "write/mixed client can print PASS then segfault during cleanup"
+  },
+  "MatrixDB_api": {
+    "master": "running",
+    "proxy": "running",
+    "datanodes": "2 normal",
+    "resp_endpoint": "127.0.0.1:19078 tested",
+    "redis_ping": "timeout after 30s",
+    "next_step": "confirm Redis-compatible endpoint or enable RESP mode"
+  },
+  "context_ops": {
+    "status": "ready",
+    "kpis": [
+      {
+        "label": "Unified cases",
+        "value": "33",
+        "note": "context, SDK, cache, storage, raft"
+      },
+      {
+        "label": "Context latency budget",
+        "value": "50 ms",
+        "note": "tree traversal target"
+      },
+      {
+        "label": "Prompt budget",
+        "value": "48 tokens",
+        "note": "exact event + chunk parity case"
+      },
+      {
+        "label": "Serving store",
+        "value": "TemporalStore",
+        "note": "events, nodes, indexes, embeddings"
+      },
+      {
+        "label": "OSS models",
+        "value": "local first",
+        "note": "embedding, rerank, extraction, VLM"
+      }
     ],
-    "matrixkv": [
-      { "title": "Strong consistency path", "body": "Tracks transaction commits, timestamp allocation, partition state, and leader health for correctness-first KV workloads." },
-      { "title": "Partitioned serving", "body": "Observability should separate master, timestamp service, proxy, and partition-server signals." },
-      { "title": "Release packaging", "body": "Client and server packages should expose dependency loading and direct SDK/proxy readiness." },
-      { "title": "Scale tests", "body": "Read/write latency, retry pressure, and CPU should be collected under fixed concurrency levels for each node type." }
+    "flow": [
+      {
+        "name": "Raw input",
+        "status": "ready",
+        "detail": "query, event, feedback, .md/.txt/.pdf resource"
+      },
+      {
+        "name": "Extraction",
+        "status": "ready",
+        "detail": "intent, time window, filters, event type, status"
+      },
+      {
+        "name": "Ingestion",
+        "status": "ready",
+        "detail": "node chain, child refs, event, index, embedding, dirty marker"
+      },
+      {
+        "name": "Retrieval",
+        "status": "ready",
+        "detail": "bounded tree traversal, filters, chunks, context pack"
+      },
+      {
+        "name": "Replay",
+        "status": "ready",
+        "detail": "pack audit and post-answer feedback become future context"
+      }
+    ],
+    "data_plane": [
+      {
+        "label": "Context Nodes",
+        "value": "7 visible",
+        "detail": "tenant/team/project/collection/resource/chunk topology with hashes and parent refs",
+        "evidence": "ContextNode + ChildRef",
+        "status": "ready"
+      },
+      {
+        "label": "Events",
+        "value": "4 writes",
+        "detail": "timestamped event leaves, feedback events, incident facts, and approval facts",
+        "evidence": "ContextEvent",
+        "status": "passed"
+      },
+      {
+        "label": "Extractions",
+        "value": "2 lanes",
+        "detail": "raw query/event/resource text into event type, status, filters, and time hints",
+        "evidence": "rules + optional LLM",
+        "status": "passed"
+      },
+      {
+        "label": "Ingestions",
+        "value": "6 paths",
+        "detail": "raw event, resource, feedback, API, stream, and batch ingestion paths",
+        "evidence": "idempotency + offsets",
+        "status": "passed"
+      },
+      {
+        "label": "Resources",
+        "value": "3 lanes",
+        "detail": "markdown/text/pdf chunks, raw_uri refs, resource filters, and chunk embeddings",
+        "evidence": "ResourceChunk + embedding",
+        "status": "passed"
+      },
+      {
+        "label": "Feedback",
+        "value": "1 path",
+        "detail": "final answer confirmation becomes future retrievable memory",
+        "evidence": "feedback ContextEvent",
+        "status": "passed"
+      },
+      {
+        "label": "Summaries",
+        "value": "1 compression lane",
+        "detail": "dirty summary markers, non-destructive time compression, source event audit",
+        "evidence": "ContextCompressionEvent",
+        "status": "passed"
+      },
+      {
+        "label": "Context Packs",
+        "value": "60 / 70",
+        "detail": "token-budgeted events, chunks, filters, replay metadata, and pack audit",
+        "evidence": "ContextPackAudit",
+        "status": "passed"
+      }
+    ],
+    "tests": [
+      {
+        "name": "Raw event extraction",
+        "status": "passed",
+        "workload": "Dana approved security review 15555 for project_1",
+        "write_qps": "1 event",
+        "read_p50_ms": "intent parsed",
+        "read_p99_ms": "index written",
+        "secondary_lag_ms": "dirty L0 marker",
+        "threads": "tenant 1001",
+        "result_dir": "context_raw_extraction_query_pipeline"
+      },
+      {
+        "name": "Resource chunk recall",
+        "status": "passed",
+        "workload": "Markdown runbook chunks with source refs and embeddings",
+        "write_qps": "2 chunks",
+        "read_p50_ms": "topK=1",
+        "read_p99_ms": "citation returned",
+        "secondary_lag_ms": "TemporalStore embedding",
+        "threads": "resource markdown",
+        "result_dir": "context_resource_ingestion_chunk_query"
+      },
+      {
+        "name": "Feedback replay",
+        "status": "passed",
+        "workload": "Final LLM answer confirmation is stored as future memory",
+        "write_qps": "1 feedback event",
+        "read_p50_ms": "queryable",
+        "read_p99_ms": "pack-audited",
+        "secondary_lag_ms": "replayable",
+        "threads": "query 77015555",
+        "result_dir": "context_resource_event_feedback_loop"
+      },
+      {
+        "name": "Budget parity",
+        "status": "passed",
+        "workload": "Event-first then resource-chunk packing at 47/48 token boundary",
+        "write_qps": "0 writes",
+        "read_p50_ms": "24 tokens",
+        "read_p99_ms": "48 tokens",
+        "secondary_lag_ms": "C++ + Rust",
+        "threads": "query 77027771",
+        "result_dir": "context_pack_token_budget_parity"
+      },
+      {
+        "name": "Layered resource parsing",
+        "status": "passed",
+        "workload": "PDF-style L0/L1/L2 chunks with source refs, type filters, extracted fact, and pack retrieval",
+        "write_qps": "3 chunks",
+        "read_p50_ms": "L0 abstract",
+        "read_p99_ms": "60 tokens",
+        "secondary_lag_ms": "C++ + Rust",
+        "threads": "resource pdf",
+        "result_dir": "context_layered_resource_parsing_pipeline"
+      }
+    ],
+    "pipeline": [
+      {
+        "step": "ingest_raw_event",
+        "input": "raw_text + tenant/team/project hints",
+        "writes": "ContextNode, ChildRef, ContextEvent, IndexRef, Embedding, DirtyMarker",
+        "query": "status=approved AND project=project_1",
+        "output": "event 992003",
+        "status": "passed"
+      },
+      {
+        "step": "ingest_resource",
+        "input": "raw_uri + markdown chunks",
+        "writes": "resource node, chunk refs, chunk embeddings",
+        "query": "vector + raw_uri filter",
+        "output": "chunk 10016661",
+        "status": "passed"
+      },
+      {
+        "step": "retrieve_with_resources",
+        "input": "raw query + vector + token budget",
+        "writes": "ContextPackAudit",
+        "query": "tree traversal + event filters + chunk recall",
+        "output": "events 992003/992010 + chunk 10016661",
+        "status": "passed"
+      },
+      {
+        "step": "ingest_feedback",
+        "input": "final answer feedback + query id",
+        "writes": "feedback ContextEvent",
+        "query": "future memory lookup",
+        "output": "event 992004",
+        "status": "passed"
+      },
+      {
+        "step": "budgeted_pack",
+        "input": "raw query + time/filter hints + max_prompt_tokens",
+        "writes": "optional ContextPackAudit",
+        "query": "event first, then chunk if tokens fit",
+        "output": "47 tokens => event only; 48 tokens => event + chunk",
+        "status": "passed"
+      },
+      {
+        "step": "parse_layered_resource",
+        "input": "pdf raw_uri + L0/L1/L2 page chunks",
+        "writes": "resource node, chunk embeddings, raw_uri ref, extracted incident event",
+        "query": "resource_type=pdf AND raw_uri=incident_77.pdf",
+        "output": "chunk 10029901 + event 994020",
+        "status": "passed"
+      },
+      {
+        "step": "batch_ingest_x8",
+        "input": "8 raw events + per-event hints",
+        "writes": "8 ContextEvents, 8 leaf embeddings, status indexes",
+        "query": "approval, incident, cost, rejected security filters",
+        "output": "8 extracted events + 3 retrieval packs",
+        "status": "passed"
+      },
+      {
+        "step": "api_stream_batch_ingest",
+        "input": "API idempotency key + stream offsets + batch items",
+        "writes": "shared extraction path into ContextEvent and indexes",
+        "query": "API approval, stream incident, batch cost, compressed window",
+        "output": "7 accepted events + duplicate API key and stream offsets skipped",
+        "status": "passed"
+      },
+      {
+        "step": "time_compression",
+        "input": "older event ids + source time window",
+        "writes": "ContextCompressionEvent summary",
+        "query": "time range returns compression id 77001",
+        "output": "fresh raw events stay queryable; older window has summary",
+        "status": "passed"
+      },
+      {
+        "step": "parity_gates_x8",
+        "input": "API, stream, batch, resource, retrieve, token budget, compression",
+        "writes": "one TemporalStore-only resource chunk for tenant 3003",
+        "query": "context_assert_parity_gates over existing corpus state",
+        "output": "8 parity gates passed with duplicate stream event absent",
+        "status": "passed"
+      },
+      {
+        "step": "parity_gates_x9",
+        "input": "API retry, stream replay, batch, resource, retrieve, compression sources",
+        "writes": "no duplicate API/stream events; compression source ids retained",
+        "query": "context_nine_ingestion_compression_parity_gates",
+        "output": "9 parity gates passed with source events 996001, 996004, 996007",
+        "status": "passed"
+      },
+      {
+        "step": "model_config_parity_x10",
+        "input": "raw query + configured embedding/reranker/provider + traversal controls",
+        "writes": "no serving writes; validates model/config draft against TemporalStore retrieval evidence",
+        "query": "context_ten_model_config_parity_gates",
+        "output": "10 parity gates passed with same pack events, compression, chunk, and model/provider config",
+        "status": "passed"
+      }
+    ],
+    "e2e_parity_runs": [
+      {
+        "run": "Raw query to pack",
+        "covers": "query extraction, traversal, filters, token budget",
+        "evidence": "context_resource_feedback_second_query_pipeline",
+        "output": "events + resource chunk returned under prompt budget",
+        "status": "passed"
+      },
+      {
+        "run": "API idempotency",
+        "covers": "idempotency key, event extraction, duplicate retry skip",
+        "evidence": "context_stream_batch_api_ingestion_compression",
+        "output": "API event 996001 accepted; duplicate 996088 absent",
+        "status": "passed"
+      },
+      {
+        "run": "Stream replay checkpoint",
+        "covers": "partition offset checkpoint, replay skip, next offset accept",
+        "evidence": "context_stream_batch_api_ingestion_compression",
+        "output": "offset 12 skipped on replay; offset 13 produced 996007",
+        "status": "passed"
+      },
+      {
+        "run": "Batch ingest x8",
+        "covers": "approval, incident, cost, rejected security filters",
+        "evidence": "context_batch_extraction_query_ingestion_x8",
+        "output": "8 extracted events and 3 retrieval packs",
+        "status": "passed"
+      },
+      {
+        "run": "Resource parsing",
+        "covers": "markdown/text/pdf chunks, source refs, embeddings",
+        "evidence": "context_layered_resource_parsing_pipeline",
+        "output": "PDF chunk 10029901 and event 994020",
+        "status": "passed"
+      },
+      {
+        "run": "Feedback memory",
+        "covers": "final answer confirmation and future retrieval",
+        "evidence": "context_resource_event_feedback_loop",
+        "output": "feedback event 994011 is replayable",
+        "status": "passed"
+      },
+      {
+        "run": "Temporal compression",
+        "covers": "older window summary without hiding fresh events",
+        "evidence": "context_stream_batch_api_ingestion_compression",
+        "output": "compression id 77001 returned",
+        "status": "passed"
+      },
+      {
+        "run": "Compression source audit",
+        "covers": "source event ids survive compression for replay and governance",
+        "evidence": "context_nine_ingestion_compression_parity_gates",
+        "output": "source events 996001, 996004, 996007 retained",
+        "status": "passed"
+      },
+      {
+        "run": "Model/config parity",
+        "covers": "configured local OSS model roles, provider choice, traversal controls, and pack audit",
+        "evidence": "context_ten_model_config_parity_gates",
+        "output": "query embedding, reranker, provider, top-k, token budget, events, compression, and chunk all match",
+        "status": "passed"
+      },
+      {
+        "run": "C++ module parity",
+        "covers": "registered context models, child refs, embeddings, summaries",
+        "evidence": "context_module_test --gtest_brief=1",
+        "output": "7 context module tests passed",
+        "status": "passed"
+      }
+    ],
+    "request_builder": [
+      {
+        "name": "Ingest",
+        "method": "POST",
+        "path": "/v1/context/ingest_raw_event",
+        "body": "raw_text, tenant_hash, hints {team, project, leaf_node_hash, event_time_ms}"
+      },
+      {
+        "name": "Batch",
+        "method": "POST",
+        "path": "/v1/context/batch_ingest",
+        "body": "tenant_hash, events[] {raw_text, hints}"
+      },
+      {
+        "name": "Stream",
+        "method": "POST",
+        "path": "/v1/context/stream_ingest",
+        "body": "stream_name, partition, offset, raw_text, hints"
+      },
+      {
+        "name": "Retrieve",
+        "method": "POST",
+        "path": "/v1/context/retrieve_with_resources",
+        "body": "raw_query, query_vector, root_node_hash, time window, max_prompt_tokens"
+      },
+      {
+        "name": "Feedback",
+        "method": "POST",
+        "path": "/v1/context/ingest_feedback",
+        "body": "query_id_hash, final answer feedback, node_hash, confidence, importance"
+      },
+      {
+        "name": "Query intent",
+        "method": "POST",
+        "path": "/v1/context/extract_query",
+        "body": "raw_query, hints {team, project, time_window}, optional agent intent"
+      },
+      {
+        "name": "Resource",
+        "method": "POST",
+        "path": "/v1/context/ingest_resource",
+        "body": "raw_uri, resource_type, chunks {text, vector, layer}"
+      }
+    ],
+    "query_workbench": {
+      "raw_query": "What confirmed context says incident INC-77 rollback is stable and what runbook supports it?",
+      "query_id": "77027771",
+      "route": "tenant 1001 / infra_team / project_1",
+      "intent": [
+        {
+          "label": "event_type",
+          "value": "incident_update"
+        },
+        {
+          "label": "type",
+          "value": "confirmation"
+        },
+        {
+          "label": "time_window",
+          "value": "latest"
+        },
+        {
+          "label": "resource",
+          "value": "incident_77.txt"
+        }
+      ],
+      "controls": [
+        {
+          "label": "root_node_hash",
+          "value": "1001300"
+        },
+        {
+          "label": "top_k_per_depth",
+          "value": "1"
+        },
+        {
+          "label": "max_depth",
+          "value": "2"
+        },
+        {
+          "label": "max_candidate_nodes",
+          "value": "3"
+        },
+        {
+          "label": "max_prompt_tokens",
+          "value": "48"
+        }
+      ],
+      "filters": [
+        "team=infra_team",
+        "project=project_1",
+        "type=confirmation",
+        "min_confidence>=95",
+        "min_importance>=80",
+        "time=1781509150000..1781509300000"
+      ],
+      "result": {
+        "events": [
+          "994011 user confirmation",
+          "994020 PDF abstract fact"
+        ],
+        "chunks": [
+          "10029901 incident_77.pdf#page=1:L0"
+        ],
+        "tokens": "60 / 70"
+      }
+    },
+    "config": [
+      {
+        "group": "Extraction",
+        "items": [
+          {
+            "label": "Default parser",
+            "value": "rules first"
+          },
+          {
+            "label": "OSS embedding",
+            "value": "all-MiniLM-L6-v2 / bge-small"
+          },
+          {
+            "label": "Optional LLM",
+            "value": "Qwen/Llama/Mistral provider hook"
+          },
+          {
+            "label": "Accepted hints",
+            "value": "team, project, time_window, token budget"
+          }
+        ]
+      },
+      {
+        "group": "Traversal",
+        "items": [
+          {
+            "label": "max_depth",
+            "value": "6 default / 2 in parity case"
+          },
+          {
+            "label": "top_k_per_depth",
+            "value": "1-5"
+          },
+          {
+            "label": "max_children_scored",
+            "value": "128 per parent"
+          },
+          {
+            "label": "candidate cap",
+            "value": "24 nodes"
+          }
+        ]
+      },
+      {
+        "group": "Resources",
+        "items": [
+          {
+            "label": "types",
+            "value": ".md, .txt, .pdf"
+          },
+          {
+            "label": "raw bytes",
+            "value": "raw_uri reference"
+          },
+          {
+            "label": "stored data",
+            "value": "L0/L1/L2 chunks, embeddings"
+          },
+          {
+            "label": "filters",
+            "value": "raw_uri, resource_type"
+          }
+        ]
+      },
+      {
+        "group": "Summaries",
+        "items": [
+          {
+            "label": "L0",
+            "value": "required for traversal"
+          },
+          {
+            "label": "L1",
+            "value": "optional overview"
+          },
+          {
+            "label": "refresh",
+            "value": "async dirty marker"
+          },
+          {
+            "label": "compression",
+            "value": "non-destructive time-window summary"
+          }
+        ]
+      }
+    ],
+    "model_registry": [
+      {
+        "role": "Query embedding",
+        "default_model": "sentence-transformers/all-MiniLM-L6-v2",
+        "alternatives": "BAAI/bge-small-en-v1.5, intfloat/e5-small-v2",
+        "runtime": "CPU default",
+        "io": "raw query -> normalized vector",
+        "use": "tree traversal and chunk recall"
+      },
+      {
+        "role": "Resource embedding",
+        "default_model": "sentence-transformers/all-MiniLM-L6-v2",
+        "alternatives": "BAAI/bge-base-en-v1.5, mixedbread-ai/mxbai-embed-large-v1",
+        "runtime": "CPU or small GPU",
+        "io": "L0/L1/L2 chunks -> vectors",
+        "use": "source-ref chunk recall"
+      },
+      {
+        "role": "Reranker",
+        "default_model": "BAAI/bge-reranker-base",
+        "alternatives": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+        "runtime": "optional CPU/GPU",
+        "io": "query + candidate text -> relevance score",
+        "use": "final pack ordering after TemporalStore filters"
+      },
+      {
+        "role": "Extraction LLM",
+        "default_model": "Qwen2.5-7B-Instruct",
+        "alternatives": "Llama-3.1-8B-Instruct, Mistral-7B-Instruct",
+        "runtime": "GPU recommended, rules fallback",
+        "io": "raw event/query -> event_type, status, time, filters",
+        "use": "schema-light customer input"
+      },
+      {
+        "role": "Summary LLM",
+        "default_model": "Qwen2.5-7B-Instruct",
+        "alternatives": "Phi-3.5-mini-instruct, Llama-3.2-3B-Instruct",
+        "runtime": "async worker",
+        "io": "events/chunks -> L0/L1 summaries",
+        "use": "refresh dirty summaries without blocking writes"
+      },
+      {
+        "role": "PDF/VLM parser",
+        "default_model": "Qwen2-VL-7B-Instruct",
+        "alternatives": "InternVL2.5, LLaVA-Next",
+        "runtime": "optional GPU",
+        "io": "page image/table/chart -> text facts + source refs",
+        "use": "multimodal documents beyond text extraction"
+      }
+    ],
+    "tree": [
+      {
+        "depth": 0,
+        "label": "company_a",
+        "meta": "tenant root"
+      },
+      {
+        "depth": 1,
+        "label": "infra_team",
+        "meta": "scope hash"
+      },
+      {
+        "depth": 2,
+        "label": "project_1",
+        "meta": "project filter"
+      },
+      {
+        "depth": 3,
+        "label": "approvals",
+        "meta": "collection"
+      },
+      {
+        "depth": 4,
+        "label": "security_review_15555",
+        "meta": "leaf event/entity"
+      },
+      {
+        "depth": 4,
+        "label": "security_review_runbook",
+        "meta": "resource node"
+      },
+      {
+        "depth": 4,
+        "label": "incident_inc_77_resolved",
+        "meta": "confirmed incident leaf"
+      },
+      {
+        "depth": 4,
+        "label": "incident_77_runbook",
+        "meta": "resource chunks"
+      },
+      {
+        "depth": 4,
+        "label": "incident_77_postmortem",
+        "meta": "pdf L0/L1/L2 chunks"
+      }
+    ],
+    "pack": {
+      "query": "What confirmed PDF context supports incident INC-77 stable rollback?",
+      "selected_tokens": "60 / 70",
+      "events": [
+        "994011 user-confirmed final answer",
+        "994020 PDF abstract fact"
+      ],
+      "chunks": [
+        "10029901 incident_77.pdf#page=1:L0"
+      ],
+      "filters": [
+        "team=infra_team",
+        "project=project_1",
+        "type=confirmation",
+        "resource_type=pdf"
+      ]
+    },
+    "alerts": [
+      {
+        "label": "Traversal deadline",
+        "value": "ok",
+        "detail": "top_k_per_depth=1, max_candidate_nodes=3"
+      },
+      {
+        "label": "Dirty summaries",
+        "value": "watch",
+        "detail": "async L0 refresh pending after ingest"
+      },
+      {
+        "label": "Token budget",
+        "value": "ok",
+        "detail": "event + chunk pack below budget"
+      },
+      {
+        "label": "Embedding model",
+        "value": "local",
+        "detail": "all-MiniLM-L6-v2 compatible test vectors"
+      },
+      {
+        "label": "Reranker",
+        "value": "optional",
+        "detail": "bge-reranker-base after TemporalStore candidate filtering"
+      }
+    ],
+    "audit": [
+      {
+        "label": "Last query id",
+        "value": "77027771"
+      },
+      {
+        "label": "Selected events",
+        "value": "994011, 994020"
+      },
+      {
+        "label": "Selected chunks",
+        "value": "10029901"
+      },
+      {
+        "label": "Feedback memory",
+        "value": "994011"
+      },
+      {
+        "label": "Parity gate",
+        "value": "C++ + Rust unified"
+      }
+    ],
+    "operators": [
+      {
+        "name": "Extract Query",
+        "status": "ready",
+        "command": "context_extract_query",
+        "detail": "derive intent, status, time window, and filters from raw query and hints"
+      },
+      {
+        "name": "Traverse Tree",
+        "status": "ready",
+        "command": "context_retrieve",
+        "detail": "score child summaries layer by layer before querying leaf timelines"
+      },
+      {
+        "name": "Ingest Resource",
+        "status": "ready",
+        "command": "context_ingest_resource",
+        "detail": "parse markdown, text, and PDF pages into L0/L1/L2-style chunks with source refs"
+      },
+      {
+        "name": "Pack Replay",
+        "status": "ready",
+        "command": "context_retrieve_with_resources",
+        "detail": "assemble events and chunks under prompt budget and write audit metadata"
+      },
+      {
+        "name": "Feedback Hook",
+        "status": "ready",
+        "command": "context_ingest_feedback",
+        "detail": "store final answer confirmation as future retrievable memory"
+      },
+      {
+        "name": "Summary Worker",
+        "status": "watch",
+        "command": "context_query_dirty",
+        "detail": "refresh L0/L1 summaries asynchronously after lightweight writes"
+      }
+    ],
+    "safeguards": [
+      {
+        "label": "Customer input",
+        "value": "raw query + hints",
+        "detail": "schema complexity stays service-side"
+      },
+      {
+        "label": "Tenant boundary",
+        "value": "tenant_hash",
+        "detail": "all tree, event, chunk, and audit records scoped"
+      },
+      {
+        "label": "Serving threshold",
+        "value": "bounded",
+        "detail": "depth, children, candidates, and token budget capped"
+      },
+      {
+        "label": "Historical data",
+        "value": "queryable",
+        "detail": "old events can remain raw or compressed by time window"
+      },
+      {
+        "label": "Model choice",
+        "value": "pluggable",
+        "detail": "OSS local default, provider hook for hosted models"
+      },
+      {
+        "label": "Model isolation",
+        "value": "config driven",
+        "detail": "tenant can pin OSS model family and runtime class"
+      }
+    ],
+    "runbook": [
+      {
+        "label": "Run unified tests",
+        "value": "bash tools/run_rust_unified_tests.sh"
+      },
+      {
+        "label": "Validate corpus",
+        "value": "python3 tools/run_temporalstore_unified_tests.py --validate-only"
+      },
+      {
+        "label": "Run C++ contract",
+        "value": "tools/run_cpp_unified_context_contract.sh sdk/unified/temporalstore_unified_corpus.json"
+      },
+      {
+        "label": "Refresh health",
+        "value": "python3 tools/temporalstore-monitoring-ui/render_health_from_results.py"
+      },
+      {
+        "label": "Serve locally",
+        "value": "python3 -m http.server 8080 -d tools/temporalstore-monitoring-ui"
+      }
+    ],
+    "topology": {
+      "summary": "TemporalStore node graph with idempotent child refs and compact parent metadata",
+      "selected_path": [
+        "1001000",
+        "1001100",
+        "1001200",
+        "1001300",
+        "10029900"
+      ],
+      "nodes": [
+        {
+          "id": "1001000",
+          "parent": "",
+          "label": "company_a",
+          "type": "tenant root",
+          "depth": 0,
+          "child_count": 1,
+          "updated_at_ms": "1781500000100",
+          "status": "scope",
+          "score": "-",
+          "metadata": {
+            "object_key": "ctx:node:1001:1001000",
+            "model": "ContextNode",
+            "tenant_hash": "1001",
+            "scope": "tenant",
+            "child_ref_key": "ctx:child:1001:1001000",
+            "summary": "L0 tenant routing root"
+          }
+        },
+        {
+          "id": "1001100",
+          "parent": "1001000",
+          "label": "infra_team",
+          "type": "team",
+          "depth": 1,
+          "child_count": 1,
+          "updated_at_ms": "1781500000200",
+          "status": "scope",
+          "score": "-",
+          "metadata": {
+            "object_key": "ctx:node:1001:1001100",
+            "model": "ContextNode",
+            "parent_ref": "ctx:child:1001:1001000 -> 1001100",
+            "scope_hash": "infra_team",
+            "child_ref_key": "ctx:child:1001:1001100",
+            "serving_filter": "team=infra_team"
+          }
+        },
+        {
+          "id": "1001200",
+          "parent": "1001100",
+          "label": "project_1",
+          "type": "project",
+          "depth": 2,
+          "child_count": 1,
+          "updated_at_ms": "1781500000300",
+          "status": "scope",
+          "score": "-",
+          "metadata": {
+            "object_key": "ctx:node:1001:1001200",
+            "model": "ContextNode",
+            "parent_ref": "ctx:child:1001:1001100 -> 1001200",
+            "scope_hash": "project_1",
+            "child_ref_key": "ctx:child:1001:1001200",
+            "serving_filter": "project=project_1"
+          }
+        },
+        {
+          "id": "1001300",
+          "parent": "1001200",
+          "label": "approvals",
+          "type": "collection",
+          "depth": 3,
+          "child_count": 5,
+          "updated_at_ms": "1781500000500",
+          "status": "parent updated",
+          "score": "0.96",
+          "metadata": {
+            "object_key": "ctx:node:1001:1001300",
+            "model": "ContextNode",
+            "child_ref_key": "ctx:child:1001:1001300",
+            "embedding_ref": "ctx:emb:1001:1001300",
+            "query_role": "collection selected by L0 score before leaf timeline query"
+          }
+        },
+        {
+          "id": "10018891",
+          "parent": "1001300",
+          "label": "gpu_purchase_request_8891",
+          "type": "event leaf",
+          "depth": 4,
+          "child_count": 0,
+          "updated_at_ms": "1781500000500",
+          "status": "deduped child ref",
+          "score": "0.92",
+          "metadata": {
+            "object_key": "ctx:node:1001:10018891",
+            "model": "ContextNode + ContextEvent",
+            "parent_ref": "ctx:child:1001:1001300 -> 10018891",
+            "event_key": "ctx:event:1001:10018891",
+            "idempotency": "same child_hash updates latest ref without duplicate edge",
+            "summary_dirty": "ctx:dirty:1001:10018891"
+          }
+        },
+        {
+          "id": "10029900",
+          "parent": "1001300",
+          "label": "incident_77_postmortem",
+          "type": "pdf resource",
+          "depth": 4,
+          "child_count": 3,
+          "updated_at_ms": "1781509300000",
+          "status": "selected",
+          "score": "0.98",
+          "metadata": {
+            "object_key": "ctx:node:1001:10029900",
+            "model": "ContextNode + resource chunks",
+            "raw_uri": "incident_77.pdf",
+            "resource_type": "pdf",
+            "child_ref_key": "ctx:child:1001:10029900",
+            "embedding_ref": "ctx:emb:1001:10029900"
+          }
+        },
+        {
+          "id": "10029901",
+          "parent": "10029900",
+          "label": "incident_77.pdf#page=1:L0",
+          "type": "chunk",
+          "depth": 5,
+          "child_count": 0,
+          "updated_at_ms": "1781509300000",
+          "status": "packed",
+          "score": "0.94",
+          "metadata": {
+            "object_key": "ctx:resource:1001:10029901",
+            "model": "ResourceChunk + ContextEmbedding",
+            "embedding_ref": "ctx:emb:1001:10029901",
+            "pack_role": "selected citation chunk"
+          }
+        }
+      ]
+    },
+    "filesystem": [
+      {
+        "path": "/company_a",
+        "node_hash": "1001000",
+        "model": "ContextNode",
+        "storage": "ctx:node + ctx:child",
+        "children": "infra_team",
+        "events": "0",
+        "summary": "tenant L0 fresh",
+        "status": "ready"
+      },
+      {
+        "path": "/company_a/infra_team/project_1/approvals",
+        "node_hash": "1001300",
+        "model": "ContextNode + ContextSummary",
+        "storage": "ctx:node, ctx:child, ctx:emb",
+        "children": "5",
+        "events": "approval refs",
+        "summary": "collection L0 score 0.96",
+        "status": "selected"
+      },
+      {
+        "path": "/company_a/infra_team/project_1/approvals/gpu_purchase_request_8891",
+        "node_hash": "10018891",
+        "model": "ContextNode + ContextEvent + ContextEntity",
+        "storage": "ctx:event, ctx:entity, ctxidx",
+        "children": "0",
+        "events": "991001",
+        "summary": "dirty marker queued",
+        "status": "deduped child ref"
+      },
+      {
+        "path": "/company_a/infra_team/project_1/approvals/incident_77_postmortem",
+        "node_hash": "10029900",
+        "model": "ContextNode + ResourceChunk",
+        "storage": "ctx:resource, ctx:emb",
+        "children": "3 chunks",
+        "events": "994020 extracted",
+        "summary": "L0/L1 resource ready",
+        "status": "packed"
+      }
+    ],
+    "observations": [
+      {
+        "label": "Node traversal",
+        "value": "7 nodes",
+        "detail": "selected path /company_a/infra_team/project_1/approvals/incident_77_postmortem",
+        "status": "ready"
+      },
+      {
+        "label": "Event freshness",
+        "value": "fresh + compressed",
+        "detail": "raw confirmations remain queryable; old windows retain source event ids",
+        "status": "passed"
+      },
+      {
+        "label": "Index health",
+        "value": "AND filters",
+        "detail": "status + event_type + project refs intersect before timeline reads",
+        "status": "passed"
+      },
+      {
+        "label": "Summary lag",
+        "value": "watch",
+        "detail": "dirty markers are visible; L0 refresh runs asynchronously",
+        "status": "watch"
+      },
+      {
+        "label": "Token pressure",
+        "value": "60 / 70",
+        "detail": "event and resource chunk fit the context pack budget",
+        "status": "passed"
+      },
+      {
+        "label": "Replay audit",
+        "value": "query 77027771",
+        "detail": "selected events, chunks, filters, and pack refs are replayable",
+        "status": "ready"
+      }
+    ],
+    "readiness_gates": [
+      {
+        "label": "Contract parity",
+        "value": "pass",
+        "severity": "blocker",
+        "owner": "runtime",
+        "evidence": "context_nine_ingestion_compression_parity_gates",
+        "detail": "C++ and Rust unified corpus agree on API idempotency, stream replay, batch, resource, token, compression, and source-audit behavior"
+      },
+      {
+        "label": "Tenant isolation",
+        "value": "pass",
+        "severity": "blocker",
+        "owner": "storage",
+        "evidence": "context object keys include tenant_hash",
+        "detail": "tenant_hash scopes nodes, child refs, embeddings, events, resources, and audits"
+      },
+      {
+        "label": "Latency budgets",
+        "value": "pass",
+        "severity": "blocker",
+        "owner": "serving",
+        "evidence": "Traversal controls cap depth, fanout, candidates, and deadline",
+        "detail": "max_depth, top_k_per_depth, max_children_scored, candidates, and deadline are bounded"
+      },
+      {
+        "label": "Token budgets",
+        "value": "pass",
+        "severity": "high",
+        "owner": "packing",
+        "evidence": "context_pack_token_budget_parity",
+        "detail": "context pack excludes chunks that would exceed max_prompt_tokens"
+      },
+      {
+        "label": "Idempotent writes",
+        "value": "pass",
+        "severity": "high",
+        "owner": "ingestion",
+        "evidence": "retry child-ref corpus checks",
+        "detail": "retrying child refs preserves a single unique edge"
+      },
+      {
+        "label": "Async summaries",
+        "value": "pass",
+        "severity": "high",
+        "owner": "workers",
+        "evidence": "dirty marker without synchronous parent summary writes",
+        "detail": "event writes stay lightweight and summary refresh remains dirty-marker driven"
+      },
+      {
+        "label": "Replay audit",
+        "value": "pass",
+        "severity": "medium",
+        "owner": "governance",
+        "evidence": "ContextPackAudit selected refs and query id",
+        "detail": "selected events, chunks, blocked refs, and prompt budget are replayable by query id"
+      },
+      {
+        "label": "Local model fallback",
+        "value": "pass",
+        "severity": "medium",
+        "owner": "model-runtime",
+        "evidence": "OSS embedding registry and rules-first extraction",
+        "detail": "OSS embeddings and rule extraction keep Docker/local validation independent of hosted models"
+      }
+    ],
+    "ui_readiness_gates": [
+      {
+        "label": "Accessible controls",
+        "value": "pass",
+        "severity": "blocker",
+        "owner": "frontend",
+        "evidence": "native button, table, details, and summary controls",
+        "detail": "refresh, topology metadata, tables, and disclosure controls use browser-native accessible elements"
+      },
+      {
+        "label": "Responsive layout",
+        "value": "pass",
+        "severity": "blocker",
+        "owner": "frontend",
+        "evidence": "@media breakpoints collapse grids below tablet width",
+        "detail": "context panels, query workbench, topology, pack columns, model cards, and operators reflow on narrow screens"
+      },
+      {
+        "label": "Overflow guard",
+        "value": "pass",
+        "severity": "blocker",
+        "owner": "frontend",
+        "evidence": "browser check confirms scrollWidth <= clientWidth",
+        "detail": "long hashes, model names, evidence commands, and source refs wrap inside their containers"
+      },
+      {
+        "label": "Empty state safety",
+        "value": "pass",
+        "severity": "high",
+        "owner": "frontend",
+        "evidence": "renderers use fallback arrays and text placeholders",
+        "detail": "missing health fields render as empty sections or '-' instead of throwing"
+      },
+      {
+        "label": "Refresh resilience",
+        "value": "pass",
+        "severity": "high",
+        "owner": "frontend",
+        "evidence": "health fetch has fallbackHealth and status pill updates",
+        "detail": "dashboard stays usable when health.json cannot be fetched or is partially absent"
+      },
+      {
+        "label": "Evidence visibility",
+        "value": "pass",
+        "severity": "high",
+        "owner": "ops",
+        "evidence": "owner/severity/evidence rendered under every readiness gate",
+        "detail": "operators can see who owns each gate and which command or signal proves it"
+      },
+      {
+        "label": "Deterministic fixture",
+        "value": "pass",
+        "severity": "medium",
+        "owner": "qa",
+        "evidence": "health.json is validated by unit tests and json.tool",
+        "detail": "local UI, browser check, and CI-style tests render the same fixture payload"
+      },
+      {
+        "label": "Actionable runbook",
+        "value": "pass",
+        "severity": "medium",
+        "owner": "ops",
+        "evidence": "Runbook panel links commands for corpus, C++ contract, Rust unified, and local serve",
+        "detail": "the UI exposes the exact commands operators need to reproduce readiness signals"
+      },
+      {
+        "label": "Ten-lane parity",
+        "value": "pass",
+        "severity": "medium",
+        "owner": "qa",
+        "evidence": "context_ten_model_config_parity_gates",
+        "detail": "end-to-end parity table renders API, stream, batch, resource, feedback, compression, audit, model/config, and C++ lanes"
+      }
     ]
   }
 }

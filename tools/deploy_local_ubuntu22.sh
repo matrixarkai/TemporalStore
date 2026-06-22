@@ -18,8 +18,26 @@ MS_PORT_STEP="${MS_PORT_STEP:-30}"
 SERVER_PORT="${SERVER_PORT:-18001}"
 SERVER_COUNT="${SERVER_COUNT:-1}"
 REPLICA_COUNT="${REPLICA_COUNT:-${SERVER_COUNT}}"
+SERVER_EXTRA_FLAGS="${SERVER_EXTRA_FLAGS:-}"
+METASERVER_EXTRA_FLAGS="${METASERVER_EXTRA_FLAGS:-}"
 
 action="${1:-start}"
+
+kill_matching_processes() {
+  local pattern="$1"
+  local signal="${2:-TERM}"
+  local self="$$"
+  local pids
+  pids="$(ps -eo pid=,args= | awk -v pat="${pattern}" -v self="${self}" '
+    $1 != self && index($0, pat) > 0 {
+      print $1
+    }
+  ' || true)"
+  while read -r pid; do
+    [[ -n "${pid}" ]] || continue
+    kill "-${signal}" "${pid}" >/dev/null 2>&1 || true
+  done <<< "${pids}"
+}
 
 stop_deploy() {
   if [[ -f "${DEPLOY_DIR}/launcher.pid" ]]; then
@@ -39,11 +57,11 @@ stop_deploy() {
     [[ -f "${pid_file}" ]] || continue
     kill "$(cat "${pid_file}")" >/dev/null 2>&1 || true
   done
-  pkill -f "bcache2-metaserver.*metaserver_cluster_name=${CLUSTER_NAME}" >/dev/null 2>&1 || true
-  pkill -f "bcache2-server.*cluster_name=${CLUSTER_NAME}" >/dev/null 2>&1 || true
+  kill_matching_processes "bcache2-metaserver --metaserver_cluster_name=${CLUSTER_NAME}"
+  kill_matching_processes "bcache2-server --cluster_name=${CLUSTER_NAME}"
   sleep 0.5
-  pkill -9 -f "bcache2-metaserver.*metaserver_cluster_name=${CLUSTER_NAME}" >/dev/null 2>&1 || true
-  pkill -9 -f "bcache2-server.*cluster_name=${CLUSTER_NAME}" >/dev/null 2>&1 || true
+  kill_matching_processes "bcache2-metaserver --metaserver_cluster_name=${CLUSTER_NAME}" KILL
+  kill_matching_processes "bcache2-server --cluster_name=${CLUSTER_NAME}" KILL
 }
 
 post_json() {
@@ -90,6 +108,8 @@ start_deploy() {
     SERVER_PORT="${SERVER_PORT}" \
     SERVER_COUNT="${SERVER_COUNT}" \
     REPLICA_COUNT="${REPLICA_COUNT}" \
+    SERVER_EXTRA_FLAGS="${SERVER_EXTRA_FLAGS}" \
+    METASERVER_EXTRA_FLAGS="${METASERVER_EXTRA_FLAGS}" \
     bash "${ROOT}/tools/smoke_ubuntu22.sh" \
     > "${DEPLOY_DIR}/launcher.log" \
     2>&1 &

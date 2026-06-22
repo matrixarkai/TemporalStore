@@ -790,7 +790,8 @@ void StateMachine::FreezePartition(const PartitionPtr& partition, int64_t ts) {
     CHECK(pset) << this;
     Table* table = pset->GetTable();
     CHECK(table) << this;
-    if (NeedRecoverPartition(partition)) {
+    if (NeedRecoverPartition(partition) &&
+        table->GetElectionPolicy() == ElectionPolicy::PROMOTE_DERIVED) {
         const PartitionRole role = partition->GetRole();
         LOG_WARNING("partition need recover")
             .put("partition", *partition)

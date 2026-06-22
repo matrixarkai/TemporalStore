@@ -6,11 +6,23 @@ Open `index.html` directly in a browser, or deploy the folder behind Nginx on th
 metaserver node. The UI reads `/health.json`; when live health data is unavailable
 it renders a safe pending-state sample.
 
+On the MatrixArk test server, both public paths should serve this same console:
+
+- `/monitoring/`
+- `/observation/`
+
 Covered views:
 
 - Cluster overview
 - Node level monitoring
 - Partition and replica topology
+- LLM context extraction, ingestion, retrieval, feedback, and replay operations
+- Query workbench for intent, filters, traversal controls, token budget, and pack output
+- Context tree traversal, token-budgeted pack preview, and resource chunk citations
+- Context runtime configuration for extraction, traversal, resources, and summaries
+- Open-source model registry for embeddings, reranking, extraction, summaries, and VLM/document parsing
+- Operator console for query extraction, tree traversal, resource ingestion, pack replay, feedback, and summary refresh
+- Agent Context Envelope page for the minimal message/hook payload MatrixArk expects from AI agents
 - Diagnostics and trace samples
 - Workload testing status
 - Dynamic runtime config values
@@ -26,6 +38,21 @@ Expected optional fields in `health.json`:
 - `replication`: replay mode, source, secondary lag, visibility
 - `scale_tests`: workload, QPS, p50, p99, secondary lag
 - `module_tests`: module coverage for direct/proxy paths and latency
+- `context_ops`: status, KPIs, pipeline stages, test cards, request builder entries,
+  query workbench, config groups, tree nodes, context-pack events/chunks/filters,
+  open-source model registry, operator rows, safeguards, alerts, audit rows, and runbook steps
+
+Local context UI smoke test:
+
+```bash
+python3 -m http.server 8080 -d tools/temporalstore-monitoring-ui
+```
+
+Then open `http://127.0.0.1:8080/`. The same page also works as a static
+`file://` page; in that mode it renders the built-in offline context sample.
+
+The AI agent context envelope is available at
+`http://127.0.0.1:8080/agent-context-envelope.html`.
 
 Generate `health.json` from a result directory:
 

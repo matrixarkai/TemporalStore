@@ -83,7 +83,19 @@ set(BCACHE2_METASERVER_LINK_LIBS metaserver)
 if (TARGET absl_hashtablez_sampler)
     list(APPEND BCACHE2_METASERVER_LINK_LIBS absl_hashtablez_sampler)
 endif()
-target_link_libraries(bcache2-metaserver ${BCACHE2_METASERVER_LINK_LIBS})
+target_link_libraries(bcache2-metaserver
+    ${BCACHE2_METASERVER_LINK_LIBS}
+    brpc-static
+    byte
+    byteraft
+    /usr/lib/x86_64-linux-gnu/libleveldb.so
+    /usr/lib/x86_64-linux-gnu/libfmt.so
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    /usr/lib/x86_64-linux-gnu/libabsl_throw_delegate.so
+    /usr/lib/x86_64-linux-gnu/libabsl_time_zone.so
+    /usr/lib/x86_64-linux-gnu/libabsl_raw_logging_internal.so
+    /usr/lib/x86_64-linux-gnu/libabsl_log_severity.so)
 
 list(APPEND FE_SRC
     fe/api_gateway.cc
@@ -108,7 +120,19 @@ set(BCACHE2_METASERVER_FE_LINK_LIBS metaserver_fe)
 if (TARGET absl_hashtablez_sampler)
     list(APPEND BCACHE2_METASERVER_FE_LINK_LIBS absl_hashtablez_sampler)
 endif()
-target_link_libraries(bcache2-metaserver-fe ${BCACHE2_METASERVER_FE_LINK_LIBS})
+target_link_libraries(bcache2-metaserver-fe
+    ${BCACHE2_METASERVER_FE_LINK_LIBS}
+    brpc-static
+    byte
+    byteraft
+    /usr/lib/x86_64-linux-gnu/libleveldb.so
+    /usr/lib/x86_64-linux-gnu/libfmt.so
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    /usr/lib/x86_64-linux-gnu/libabsl_throw_delegate.so
+    /usr/lib/x86_64-linux-gnu/libabsl_time_zone.so
+    /usr/lib/x86_64-linux-gnu/libabsl_raw_logging_internal.so
+    /usr/lib/x86_64-linux-gnu/libabsl_log_severity.so)
 
 if (BCACHE2_BUILD_TESTS)
     file(GLOB TEST_FILES "test/*_test.cc")

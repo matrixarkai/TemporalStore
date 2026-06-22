@@ -57,7 +57,8 @@ bool IsSameHost(const Endpoint& lhs, const Endpoint& rhs) {
 butil::EndPoint ToBRpcEndpoint(const Endpoint& ep) {
     butil::EndPoint result;
     int rc;
-    if (ep.addr_family() == Endpoint::ADDR_V4) {
+    if (ep.addr_family() == Endpoint::ADDR_V4 ||
+        (ep.addr_family() == Endpoint::ADDR_DUAL_STACK && !ep.ip4().empty())) {
         rc = butil::str2endpoint(ep.ip4().c_str(), ep.port(), &result);
     } else {
         rc = butil::str2endpoint(ep.ip6().c_str(), ep.port(), &result);
@@ -306,6 +307,7 @@ TableInfo Request2Info(const metaserver::AddTableRequest& req) {
         *info.mutable_partition_units() = req.partition_units();
     }
     info.set_partition_unit_relation(req.partition_unit_relation());
+    info.set_election_policy(req.election_policy());
     if (req.has_quota()) {
         *info.mutable_quota() = req.quota();
     }

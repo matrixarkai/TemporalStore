@@ -3,6 +3,7 @@
 #include "model/model_manager.h"
 
 #include "model/dummy_model.h"
+#include "model/context_model.h"
 #include "model/feature_model.h"
 #include "model/hash_model.h"
 #include "model/ips_model.h"
@@ -26,6 +27,16 @@ REGISTER_MODEL(IpsModel, 5);
 REGISTER_MODEL(RawModel, 6);
 REGISTER_MODEL(RiskHashModel, 7);
 REGISTER_MODEL(CPCModel, 8);
+REGISTER_MODEL(ContextNodeModel, 9);
+REGISTER_MODEL(ContextEventModel, 10);
+REGISTER_MODEL(ContextIndexModel, 11);
+REGISTER_MODEL(ContextAuditModel, 12);
+REGISTER_MODEL(ContextDirtyModel, 13);
+REGISTER_MODEL(ContextChildModel, 14);
+REGISTER_MODEL(ContextEmbeddingModel, 15);
+REGISTER_MODEL(ContextSummaryModel, 16);
+REGISTER_MODEL(ContextCompressionModel, 17);
+REGISTER_MODEL(ContextEntityModel, 18);
 REGISTER_MODEL(DummyModel, 127);
 
 }  // namespace model

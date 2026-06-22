@@ -132,12 +132,46 @@ Full direct SDK smoke test:
 
 ```bash
 RUN_PYTHON_SDK=1 RUN_GO_SDK=1 RUN_JAVA_SDK=1 RUN_RUST_SDK=1 \
+  RUN_UNIFIED_TESTS=1 \
   TEMPORALSTORE_PYTHON_LIB=/path/to/libbcache2.so \
   tools/run_sdk_smoke_ubuntu22.sh
 ```
 
-This validates C++, C, Python, Go, Java, and Rust against a real local
-metaserver/server cluster.
+This validates the selected language SDKs against a real local metaserver/server
+cluster. The legacy C++ and C customer examples are opt-in with
+`RUN_CUSTOMER_EXAMPLES=1`; shared behavior should live in the unified corpus.
+
+Enable the shared C++/Rust unified corpus tests through the same runner. The
+default corpus lives at `sdk/unified/temporalstore_unified_corpus.json`; the C++
+hook validates the corpus contract and the Rust proxy integration test executes
+the same SDK cases. The corpus also lists existing C++ multi-layer cache,
+storage, and RAFT gates as `existing_test` steps so they share one test
+inventory.
+
+```bash
+tools/run_rust_unified_tests.sh
+```
+
+To include this in the full direct SDK smoke run:
+
+```bash
+RUN_RUST_SDK=1 RUN_UNIFIED_TESTS=1 tools/run_sdk_smoke_ubuntu22.sh
+```
+
+Use `RUST_UNIFIED_VALIDATE_ONLY=1` for a fast schema/contract validation pass.
+Use `TS_CPP_UNIFIED_NATIVE_CMD='...'` when the unified run should also execute a
+full C++ corpus command; the command string can reference `{corpus}` and
+`{cpp_repo}`. Use `RUST_UNIFIED_CORPUS=/path/to/corpus.json` to test an
+alternate corpus.
+
+To execute the existing C++ cache/storage/RAFT runners listed in the corpus:
+
+```bash
+TS_CPP_UNIFIED_RUN_EXISTING=1 tools/run_rust_unified_tests.sh
+```
+
+This path is intentionally opt-in because it includes heavier smoke and stress
+tests.
 
 ## Proxy SDK API
 

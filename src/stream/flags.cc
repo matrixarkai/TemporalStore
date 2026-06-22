@@ -10,7 +10,24 @@ DEFINE_uint64(stream_blob_switch_retry_interval_us, 1000000UL,
 
 DEFINE_int32(store_fiu_hang_interval_ms, 1, "hang interval ms");
 
-// aggregate flush Flags, default 300ms, 3872byte=4096-24-200
-DEFINE_bool(stream_aggregate_flush, false, "stream aggregate flush");
-DEFINE_uint64(stream_aggregate_flush_loop_interval_ms, 300, "aggregate flush loop interval ms");
-DEFINE_uint64(stream_aggregate_flush_batch_size_byte, 3872, "aggregate flush batch size byte");
+// Aggregate flush batches oplog writes by size or time, whichever comes first.
+// Profiles:
+//   default      : 2ms  or 512KB
+//   low_latency  : 1ms  or 256KB
+//   throughput   : 5ms  or 1MB
+//   batch_ingest : 50ms or 4MB
+//   custom       : use stream_aggregate_flush_loop_interval_ms and
+//                  stream_aggregate_flush_batch_size_byte directly
+DEFINE_bool(stream_aggregate_flush, true, "stream aggregate flush");
+DEFINE_string(stream_aggregate_flush_profile, "default",
+              "aggregate flush profile: default, low_latency, throughput, batch_ingest, custom");
+DEFINE_uint64(stream_aggregate_flush_loop_interval_ms, 2, "aggregate flush loop interval ms");
+DEFINE_uint64(stream_aggregate_flush_batch_size_byte, 512 * 1024,
+              "aggregate flush batch size byte");
+
+static bool ValidateStreamAggregateFlushProfile(const char*, const std::string& value) {
+    return value == "default" || value == "low_latency" || value == "throughput" ||
+           value == "batch_ingest" || value == "custom";
+}
+
+DEFINE_validator(stream_aggregate_flush_profile, &ValidateStreamAggregateFlushProfile);

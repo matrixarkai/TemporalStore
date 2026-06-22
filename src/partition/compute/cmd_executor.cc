@@ -68,6 +68,9 @@ Status CmdExecutor::PrepareCmd(uint16_t module_id, uint64_t function_id) {
     auto cmd_metrics = metrics_.cmd_metrics_[module_id][function_id].get();
     switch (cmd->flag) {
     case CmdRwFlag::kWrite:
+        if (partition_->IsApplyingDataRaftEntry()) {
+            break;
+        }
         if (partition_->Readonly()) {
             return Status::PermissionDenied("Readonly partition");
         }

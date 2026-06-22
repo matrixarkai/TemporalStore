@@ -6,6 +6,8 @@ enum Function {
     DEL_OBJECT = 0;
     EXPIRE = 1;
     TTL = 2;
+    EXISTS = 3;
+    PERSIST = 4;
 }
 
 message DelObjectRequest {
@@ -29,4 +31,18 @@ message TtlRequest {
 
 message TtlResponse {
     uint64 ttl_ms = 1;
+}
+
+message ExistsRequest {
+    string key = 1;
+}
+
+message ExistsResponse {
+}
+
+message PersistRequest {
+    string key = 1;
+}
+
+message PersistResponse {
 }

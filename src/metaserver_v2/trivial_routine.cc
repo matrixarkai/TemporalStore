@@ -20,6 +20,9 @@ void TrivialRoutine::DoLoop() {
 }
 
 void TrivialRoutine::ConsulAnnounce() {
+    if (!FLAGS_metaserver_consul_announce_enabled) {
+        return;
+    }
     auto membership = raft_server_->GetMembership();
     auto iter = std::find(membership.begin(), membership.end(), raft_server_->GetNodeId());
     if (iter == membership.end()) {

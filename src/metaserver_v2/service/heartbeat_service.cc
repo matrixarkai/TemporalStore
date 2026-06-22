@@ -38,8 +38,10 @@ void HeartbeatServiceImpl::ServerHeartbeat(google::protobuf::RpcController* cont
 
     if (server->GetState() == ServerState::SERVER_FROZEN) {
         *response->mutable_status() = Status::ResourceFrozen("server frozen").ToRpcStatus();
-        if (server->GetInfo().freeze_reason() == FreezeServerReason::CONVICT &&
-            FLAGS_metaserver_forbid_auto_register_for_convict_server) {
+        const FreezeServerReason freeze_reason = server->GetInfo().freeze_reason();
+        if (freeze_reason == FreezeServerReason::MAINTAIN ||
+            (freeze_reason == FreezeServerReason::CONVICT &&
+             FLAGS_metaserver_forbid_auto_register_for_convict_server)) {
             response->set_forbid_auto_register(true);
         }
     }

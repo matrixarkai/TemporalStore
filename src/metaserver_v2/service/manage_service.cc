@@ -344,8 +344,10 @@ void ManageServiceImpl::AddTable(google::protobuf::RpcController* controller,
     }
     AUDIT_LOG_ANCHOR(WARNING);
 
-    // Note: hard code temporarily
-    clone_req.set_election_policy(ElectionPolicy::PROMOTE_DERIVED);
+    // Preserve the requested election policy. The old hard-coded PROMOTE_DERIVED
+    // path is correct for shared-store anti-entropy recovery, but Raft data-node
+    // replication must keep one stable replica group and promote an existing
+    // secondary instead of creating/freeze-rotating derived partitions.
 
     if (metabase_->GetNamespaceManager()->GetTableIdCursor() == kMaxTableId - 1) {
         *response->mutable_status() =

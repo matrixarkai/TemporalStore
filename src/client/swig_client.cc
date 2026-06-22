@@ -246,6 +246,9 @@ class ClientImpl : public Client {
         client_options.meta_fetch_timeout_ms = options_.meta_fetch_timeout_ms;
         client_options.master_consul = master_consul;
         client_options.master_addr = master_addr;
+        if (schema == "tcp://") {
+            client_options.af = client::AddressFamily::kIp4;
+        }
         if (options_.pin_primary) {
             client_options.partition_pick_opts.policy =
                 client::PartitionPickOptions::Policy::kPrimary;

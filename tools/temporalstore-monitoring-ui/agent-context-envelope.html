@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MatrixArk Agent Context Envelope</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">MatrixArk</p>
+          <h1>Agent Context Envelope</h1>
+        </div>
+        <div class="toolbar">
+          <a class="button-link" href="./matrixark-api-reference.html">API Reference</a>
+          <a class="button-link" href="./index.html">Operations Console</a>
+        </div>
+      </header>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Public Agent Contract</h2>
+            <p>Simple Zep/Mem0-style input for agents and hook integrations; TemporalStore schemas stay internal.</p>
+          </div>
+        </div>
+        <div class="doc-grid">
+          <article>
+            <h3>Minimal Ingest</h3>
+            <pre><code>{
+  "messages": [
+    {"role": "user", "content": "Alice approved the GPU request."}
+  ]
+}</code></pre>
+          </article>
+          <article>
+            <h3>Required</h3>
+            <ul class="doc-list">
+              <li><code>matrixark_ingest</code>: <code>messages[].role</code>, <code>messages[].content</code></li>
+              <li><code>matrixark_retrieve</code>: <code>query</code></li>
+              <li><code>matrixark_feedback</code>: <code>messages[].role</code>, <code>messages[].content</code></li>
+              <li><code>matrixark_replay</code>: <code>context_pack_id</code></li>
+            </ul>
+          </article>
+        </div>
+        <div class="doc-grid section-gap">
+          <article>
+            <h3>Recommended Envelope</h3>
+            <pre><code>{
+  "messages": [
+    {
+      "role": "user",
+      "content": "Alice approved the GPU request.",
+      "name": "Alice",
+      "created_at_ms": 1781500000000
+    }
+  ],
+  "scope": {
+    "user_id": "alice",
+    "session_id": "agent-session-scale-1",
+    "team": "infra_team",
+    "project": "project_1"
+  },
+  "metadata": {
+    "source": "cursor",
+    "node_path": ["company_a", "infra_team", "project_1", "approvals"]
+  }
+}</code></pre>
+          </article>
+          <article>
+            <h3>Optional Quality Hints</h3>
+            <ul class="doc-list">
+              <li><code>scope.user_id</code>: optional user memory scope</li>
+              <li><code>scope.session_id</code>: optional thread/run scope</li>
+              <li>Send either one as the minimum useful scope; send both when available</li>
+              <li><code>scope.team/project</code>: routing and filtering hints</li>
+              <li><code>metadata.source</code>: source label</li>
+              <li><code>metadata.node_path</code>: optional tree/path hint</li>
+              <li><code>metadata.agent_extraction</code>: optional host-provided extraction hints</li>
+              <li><code>agent_hook</code>: only for auto-captured host hooks</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Extraction Policy</h2>
+            <p>MatrixArk always extracts and canonicalizes; callers do not toggle the internal pipeline.</p>
+          </div>
+        </div>
+        <div class="doc-grid">
+          <article>
+            <h3>Caller Contract</h3>
+            <p>Agents send messages, scope, metadata, and hook evidence. They can include optional extraction hints, but MatrixArk still validates and normalizes them.</p>
+          </article>
+          <article>
+            <h3>Internal Work</h3>
+            <p>MatrixArk chooses deterministic extraction, OSS models, OpenAI/provider models, or agent hints, then writes its own TemporalStore ContextEvent, Entity, Index, Summary, Embedding, and Audit records.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Retrieve And Feedback</h2>
+            <p>Keep calls small; add context-pack refs only when the agent has them.</p>
+          </div>
+        </div>
+        <div class="doc-grid">
+          <article>
+            <h3>Retrieve</h3>
+            <pre><code>{
+  "query": "what GPU approvals are current?"
+}</code></pre>
+            <ul class="doc-list">
+              <li><code>scope</code>: optional filter/scope hint</li>
+              <li><code>max_context_tokens</code>: optional, defaults to <code>2048</code></li>
+            </ul>
+          </article>
+          <article>
+            <h3>Feedback</h3>
+            <pre><code>{
+  "messages": [
+    {"role": "user", "content": "Yes, that answer is correct."}
+  ]
+}</code></pre>
+            <ul class="doc-list">
+              <li><code>context_pack_id</code>: optional but best for reliable inference</li>
+              <li><code>accepted_refs</code>, <code>rejected_refs</code>: optional evidence</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Scope Policy</h2>
+            <p>User id or session id is enough to start; both together give the best memory and thread grouping.</p>
+          </div>
+        </div>
+        <div class="doc-grid">
+          <article>
+            <h3>Preferred</h3>
+            <p>Agents send both <code>user_id</code> and <code>session_id</code>. MatrixArk can combine long-term user memory with precise same-thread grouping for query understanding, confirmation detection, feedback memory, and context extraction.</p>
+          </article>
+          <article>
+            <h3>Fallback</h3>
+            <p>If only <code>session_id</code> is present, MatrixArk uses thread/run memory. If only <code>user_id</code> is present, MatrixArk uses user-level memory and warns when it is used for confirmation/correction inference.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Internal Model Boundary</h2>
+            <p>Agents send Mem0-style messages and scope. MatrixArk owns extraction and serving schemas.</p>
+          </div>
+        </div>
+        <div class="doc-grid">
+          <article>
+            <h3>Agent Sends</h3>
+            <ul class="doc-list">
+              <li><code>messages</code>: chat, tool, resource, or feedback text</li>
+              <li><code>scope</code>: <code>user_id</code>, <code>session_id</code>, team/project hints</li>
+              <li><code>metadata</code>: source, node hints, reply/context-pack references</li>
+              <li><code>agent_hook</code>: optional lifecycle evidence from host integrations</li>
+            </ul>
+          </article>
+          <article>
+            <h3>MatrixArk Writes</h3>
+            <ul class="doc-list">
+              <li><code>ContextEvent</code>, <code>ContextEntity</code>, <code>ContextIndex</code></li>
+              <li><code>ContextSummary</code> and summary embeddings</li>
+              <li><code>ContextCompressionEvent</code> for cold windows</li>
+              <li><code>ContextPackAudit</code> for replay and token-budget evidence</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Hook Capture Option</h2>
+            <p>Host-agent hooks let MatrixArk capture events automatically instead of relying on the LLM agent to call ingest tools.</p>
+          </div>
+        </div>
+        <div class="doc-grid">
+          <article>
+            <h3>Hook Types</h3>
+            <ul class="doc-list">
+              <li><code>before_llm</code>: user query and local-context hints before the model call</li>
+              <li><code>after_llm</code>: final answer, selected refs, rejected refs, commitments</li>
+              <li><code>tool_result</code>: tool input/output, status, and source refs</li>
+              <li><code>resource_added</code>: uploaded file, URL, PDF, markdown, or runbook ref</li>
+              <li><code>feedback</code>: confirmation, correction, rating, or explicit rejection</li>
+              <li><code>session_commit</code>: end-of-thread batch commit</li>
+            </ul>
+          </article>
+          <article>
+            <h3>Hook Metadata</h3>
+            <pre><code>{
+  "agent_hook": {
+    "source": "matrixark-sdk",
+    "hook_type": "before_llm",
+    "hook_id": "hook-before-gpu",
+    "observed_at_ms": 1781500000000,
+    "idempotency_key": "gpu-approval-1",
+    "trigger": "user_message",
+    "auto_captured": true
+  }
+}</code></pre>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Confirmation Rule</h2>
+            <p>Short messages need prior context before they can become durable confirmation memory.</p>
+          </div>
+        </div>
+        <div class="doc-grid">
+          <article>
+            <h3>Strong Confirmation</h3>
+            <ul class="doc-list">
+              <li><code>context_pack_id</code></li>
+              <li><code>metadata.reply_to_context_pack_id</code></li>
+              <li><code>accepted_refs</code> or <code>rejected_refs</code></li>
+              <li>assistant answer included in the same message batch</li>
+              <li>previous thread messages in the same session</li>
+              <li>previous user-level messages only as a weaker fallback</li>
+            </ul>
+          </article>
+          <article>
+            <h3>Ambiguous</h3>
+            <pre><code>{"messages": [{"role": "user", "content": "yes"}]}</code></pre>
+            <p>MatrixArk should classify this as ambiguous or noise unless the current session has a previous ContextPack or assistant answer to attach it to.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Prior Context For Extraction</h2>
+            <p>MatrixArk passes a small replayable context window to any extraction, not the whole thread.</p>
+          </div>
+        </div>
+        <div class="doc-grid">
+          <article>
+            <h3>Lookup Order</h3>
+            <ul class="doc-list">
+              <li>Use explicit <code>context_pack_id</code>: ContextPack summary plus refs first</li>
+              <li>Otherwise use the same context node's session summary before raw events</li>
+              <li>Otherwise use same-user summaries/entity state before raw events with a warning</li>
+              <li>Normal extraction can proceed alone; short feedback stays ambiguous</li>
+            </ul>
+          </article>
+          <article>
+            <h3>Replay Evidence</h3>
+            <ul class="doc-list">
+              <li><code>prior_refs</code>: previous event refs used by extraction</li>
+              <li><code>prior_summary_count</code>: pack/session summaries included before raw messages</li>
+              <li><code>prior_message_count</code>: number of prior events included</li>
+              <li><code>prior_context</code>: explicit, session, user, or empty</li>
+              <li>Raw prior text is capped to the extraction budget</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>End-To-End Pipeline</h2>
+            <p>Both direct agent messages and hook-captured events use the same serving path.</p>
+          </div>
+        </div>
+        <div class="doc-grid">
+          <article>
+            <h3>Ingestion</h3>
+            <ul class="doc-list">
+              <li>Normalize envelope from MCP/API or host-agent hook</li>
+              <li>Pull bounded prior context when it exists</li>
+              <li>Write ContextSummary-style node summaries</li>
+              <li>Write ContextEmbedding-style node and event embeddings</li>
+              <li>Write the replayable ContextEvent last</li>
+            </ul>
+          </article>
+          <article>
+            <h3>Retrieval</h3>
+            <ul class="doc-list">
+              <li>Encode the raw query into an embedding</li>
+              <li>Score node summary embeddings per path layer</li>
+              <li>Score event embeddings plus keyword overlap</li>
+              <li>Return selected refs, <code>layer_scores</code>, and replay evidence</li>
+              <li>The MVP uses deterministic local embeddings; production swaps in configured model encoders</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

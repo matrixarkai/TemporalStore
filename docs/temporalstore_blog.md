@@ -12,7 +12,7 @@ That architecture works, but it is expensive to operate and hard to change. Ever
 
 TemporalStore is designed around a different idea: keep high-cardinality temporal state close to the online serving engine. Instead of treating storage as a passive key-value cache, TemporalStore can store structured temporal objects and execute small, bounded computations inside the serving path.
 
-The first strong use case is online feature serving for risk, fraud, ads, recommendation, and personalization workloads.
+The first strong use case is online feature serving for risk, fraud, ads, recommendation, and personalization workloads. The same design also has a natural AI-serving extension: store the fast-changing context, session, retrieval, cache-metadata, and serving-stat state around GPU inference systems.
 
 ## The Workload
 
@@ -78,6 +78,72 @@ HashObject(device_123)[failed_login_count|60000|country=US&result=failed|0000000
 ```
 
 The actual implementation uses length-prefixed field parts, a separator byte, sorted dimensions, and fixed-width bucket ids so the fields can be scanned by range.
+
+## Aggregate Windows vs Sequence Windows
+
+TemporalAggregate is optimized for scalar aggregate answers, not for returning raw event lists.
+
+Good TemporalAggregate queries look like:
+
+```text
+user_id -> count purchases in last 5 minutes
+device_id + country -> failed logins in last 30 minutes
+merchant_id -> max chargeback score in last 7 days
+campaign_id:user_id -> sum impressions in last hour
+```
+
+The result is one small value per metric/window, such as `count=12` or `max_score=0.93`. Query latency stays low because the server scans compact bucket cells and folds them with `COUNT`, `SUM`, `MIN`, or `MAX`. It does not scan or return every raw event.
+
+Long behavior-history queries are different:
+
+```text
+user_id -> last 100 clicked item ids
+user_id -> all ad exposures in a window with action/campaign filters
+device_id -> timestamped login attempts with country and result fields
+```
+
+Those should use the Sequence/Feature model. Sequence-style queries return rows or points, so latency and response size depend on how many rows match the window and filters. TemporalAggregate and Sequence can live in the same cluster, but they serve different shapes:
+
+```text
+TemporalAggregate -> fast scalar window values
+Sequence Feature  -> bounded lists / rows / behavior history
+```
+
+## AI Context And GPU-Serving Metadata
+
+TemporalStore is not a GPU compute engine today, and it should not initially compete with GPU memory managers inside vLLM, SGLang, TensorRT-LLM, or LMCache. Those systems own tensor layout, device memory, pinned CPU memory, block scheduling, and attention-cache APIs.
+
+The better first AI use case is the online state around GPU serving:
+
+```text
+session_id -> recent user/agent/tool timeline
+user_id -> long-lived preference and memory events
+tenant + model + prefix_hash -> KV-cache object metadata and reuse score
+request_id -> token count, latency, routing, retry, and cost state
+doc_chunk_id -> embedding version, source file, timestamp, and retrieval metadata
+model + tenant + route -> rolling p95 latency and error counters
+```
+
+This state has the same shape as the feature-serving workloads TemporalStore is built for:
+
+- high-cardinality keys
+- many small writes
+- bounded time-window reads
+- structured context objects
+- hot/cold serving tiers
+- persistence beyond process memory
+
+That suggests several future AI-specific data models:
+
+| Model | What It Stores | Example |
+|---|---|---|
+| `SessionMemory` | timestamped conversation, tool, and observation events | build prompt context for an agent session |
+| `KVCacheIndex` | prefix hashes, token ranges, cache object refs, TTL, reuse stats | find whether an LLM prefix can reuse remote cache |
+| `EmbeddingMetadata` | chunk ids, embedding version, source pointer, freshness | pair with Milvus/Viking/vector DB |
+| `GPUServingAggregate` | model/tenant/route counters and latency windows | autoscaling, throttling, cost control |
+| `TensorBlockRef` | tensor-block metadata and storage locations | later cache coordination, not raw GPU ownership |
+
+The product boundary matters. TemporalStore should store metadata, context timelines, indexes, counters, and references. Raw KV-cache tensors are large and model-layout-specific; they should remain in the inference/cache layer unless a user proves they need TemporalStore to own that payload. A credible AI roadmap starts with context and cache metadata, then integrates with LMCache-style systems before attempting raw tensor-block storage.
 
 ## How Ingestion Works
 

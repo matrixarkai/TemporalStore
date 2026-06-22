@@ -215,7 +215,7 @@ void ConvictRoutine::InterpretServerForOneRound() {
         } else {
             ds = DamageSeverity::kNormal;
         }
-        if (ds != DamageSeverity::kNormal) {
+        if (ds != DamageSeverity::kNormal && FLAGS_metaserver_convict_safe_mode_enabled) {
             server_in_safe_mode[tag] = ds;
             g_metrics->EmitStore("server_damage_severity", static_cast<int>(ds), {{"tag", tag}});
             LOG_WARNING("server reach tag safe mode")
@@ -231,7 +231,7 @@ void ConvictRoutine::InterpretServerForOneRound() {
             eps.push_back(iter->GetEndpoint());
         }
         ds = server_damage_estimator_.Estimate(eps);
-        if (ds != DamageSeverity::kNormal) {
+        if (ds != DamageSeverity::kNormal && FLAGS_metaserver_convict_safe_mode_enabled) {
             server_in_safe_mode[tag] = ds;
             g_metrics->EmitStore("server_damage_severity", static_cast<int>(ds), {{"tag", tag}});
             LOG_WARNING("server reach tag safe mode by histogram")

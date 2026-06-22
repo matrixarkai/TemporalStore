@@ -6,6 +6,9 @@ enum Function {
     SET = 0;
     SETEX = 1;
     GET = 2;
+    APPEND = 3;
+    STRLEN = 4;
+    INCRBY = 5;
 }
 
 message SetRequest {
@@ -33,4 +36,30 @@ message GetRequest {
 
 message GetResponse {
     bytes value = 1;
+}
+
+message AppendRequest {
+    bytes key = 1;
+    bytes value = 2;
+}
+
+message AppendResponse {
+    uint64 len = 1;
+}
+
+message StrlenRequest {
+    bytes key = 1;
+}
+
+message StrlenResponse {
+    uint64 len = 1;
+}
+
+message IncrByRequest {
+    bytes key = 1;
+    int64 increment = 2;
+}
+
+message IncrByResponse {
+    int64 value = 1;
 }

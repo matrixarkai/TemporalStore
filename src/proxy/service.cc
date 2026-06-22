@@ -37,6 +37,64 @@
 namespace bcache2 {
 namespace proxy {
 
+
+Status Bcache2ThriftService::CheckAccountScope(const std::string& namespace_name) const {
+    if (!FLAGS_proxy_ingestion_enforce_account) {
+        return Status::OK();
+    }
+    if (FLAGS_proxy_ingestion_account.empty()) {
+        return Status::FailedPrecondition("proxy ingestion account enforcement is enabled without an account");
+    }
+    if (namespace_name != FLAGS_proxy_ingestion_account) {
+        return Status::PermissionDenied("proxy ingestion namespace is not allowed for this account");
+    }
+    return Status::OK();
+}
+
+bool Bcache2ThriftService::IsWriteMethod(const std::string& method_name) const {
+    return method_name == "Set" || method_name == "HMSet" || method_name == "FeatureAdd" ||
+           method_name == "RiskHset" || method_name == "RiskFolSet" ||
+           method_name == "RiskCPCSet" || method_name == "RiskManager";
+}
+
+namespace {
+
+bool TryAcquireCounter(std::atomic<uint64_t>* counter, uint64_t limit) {
+    if (limit == 0) {
+        counter->fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+    uint64_t current = counter->load(std::memory_order_relaxed);
+    while (current < limit) {
+        if (counter->compare_exchange_weak(current, current + 1, std::memory_order_acquire,
+                                           std::memory_order_relaxed)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+}  // namespace
+
+Status Bcache2ThriftService::TryAcquireIngestRequest(bool is_write) {
+    if (!TryAcquireCounter(&inflight_requests_, FLAGS_proxy_ingestion_max_inflight)) {
+        return Status::ResourceExhausted("proxy ingestion inflight quota exceeded");
+    }
+    if (is_write &&
+        !TryAcquireCounter(&inflight_write_requests_, FLAGS_proxy_ingestion_max_write_inflight)) {
+        inflight_requests_.fetch_sub(1, std::memory_order_release);
+        return Status::ResourceExhausted("proxy write ingestion inflight quota exceeded");
+    }
+    return Status::OK();
+}
+
+void Bcache2ThriftService::ReleaseIngestRequest(bool is_write) {
+    if (is_write) {
+        inflight_write_requests_.fetch_sub(1, std::memory_order_release);
+    }
+    inflight_requests_.fetch_sub(1, std::memory_order_release);
+}
+
 bool Bcache2ThriftService::ParseBaseThrift(butil::IOBuf* source, const std::string& method_name,
                                            uint32_t* body_len) {
     // parse buffered thrift msg
@@ -47,7 +105,7 @@ bool Bcache2ThriftService::ParseBaseThrift(butil::IOBuf* source, const std::stri
     // skip header
     size_t shift = 12 + method_name.size();
     uint8_t* ob_buf = buf.get() + shift;
-    auto in_buffer = apache::thrift::stdcxx::make_shared<apache::thrift::transport::TMemoryBuffer>(
+    auto in_buffer = std::make_shared<apache::thrift::transport::TMemoryBuffer>(
         ob_buf, source->size() - shift, ::apache::thrift::transport::TMemoryBuffer::OBSERVE);
     apache::thrift::protocol::TBinaryProtocolT<apache::thrift::transport::TMemoryBuffer> iprot(
         in_buffer);

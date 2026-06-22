@@ -13,6 +13,7 @@
 #include "common/controller.h"
 #include "common/sync_closure.h"
 #include "extension/feature/interface.pb.h"
+#include "extension/hash/interface.pb.h"
 #include "extension/ips/interface.pb.h"
 #include "extension/modules.pb.h"
 #include "extension/risk/interface.pb.h"
@@ -391,7 +392,12 @@ Status TemporalStoreClient::HSet(const std::string& key, const std::string& fiel
     RETURN_IF_STATUS_ERROR(ValidateSize(key.size(), impl_->options.max_key_bytes, "key"));
     RETURN_IF_STATUS_ERROR(ValidateSize(field.size(), impl_->options.max_key_bytes, "field"));
     RETURN_IF_STATUS_ERROR(ValidateSize(value.size(), impl_->options.max_value_bytes, "value"));
-    return impl_->WithRetry(true, [&]() { return impl_->table->HSet(key, field, value); });
+    ::bcache2::hash2::SetRequest request;
+    request.set_key(key);
+    request.set_field(field);
+    request.set_value(value);
+    ::bcache2::hash2::SetResponse response;
+    return impl_->ExecuteRaw(Module::HASH, ::bcache2::hash2::SET, key, request, &response, true);
 }
 
 Status TemporalStoreClient::HGet(const std::string& key, const std::string& field,
@@ -402,7 +408,17 @@ Status TemporalStoreClient::HGet(const std::string& key, const std::string& fiel
     RETURN_IF_STATUS_ERROR(ValidateSize(key.size(), impl_->options.max_key_bytes, "key"));
     RETURN_IF_STATUS_ERROR(ValidateSize(field.size(), impl_->options.max_key_bytes, "field"));
     RETURN_IF_STATUS_ERROR(ValidateOutput(value, "value"));
-    return impl_->WithRetry(false, [&]() { return impl_->table->HGet(key, field, value); });
+    ::bcache2::hash2::GetRequest request;
+    request.set_key(key);
+    request.set_field(field);
+    ::bcache2::hash2::GetResponse response;
+    RETURN_IF_STATUS_ERROR(
+        impl_->ExecuteRaw(Module::HASH, ::bcache2::hash2::GET, key, request, &response, false));
+    if (!response.exist()) {
+        return Status::NotFound("hash field not found");
+    }
+    *value = response.value();
+    return Status::OK();
 }
 
 Status TemporalStoreClient::HDel(const std::string& key, const std::string& field) {
@@ -411,7 +427,11 @@ Status TemporalStoreClient::HDel(const std::string& key, const std::string& fiel
     RETURN_IF_STATUS_ERROR(ValidateNotEmpty(field, "field"));
     RETURN_IF_STATUS_ERROR(ValidateSize(key.size(), impl_->options.max_key_bytes, "key"));
     RETURN_IF_STATUS_ERROR(ValidateSize(field.size(), impl_->options.max_key_bytes, "field"));
-    return impl_->WithRetry(true, [&]() { return impl_->table->HDel(key, field); });
+    ::bcache2::hash2::DelRequest request;
+    request.set_key(key);
+    request.set_field(field);
+    ::bcache2::hash2::DelResponse response;
+    return impl_->ExecuteRaw(Module::HASH, ::bcache2::hash2::DEL, key, request, &response, true);
 }
 
 Status TemporalStoreClient::SAdd(const std::string& key, const std::string& member) {
@@ -421,7 +441,7 @@ Status TemporalStoreClient::SAdd(const std::string& key, const std::string& memb
     RETURN_IF_STATUS_ERROR(ValidateSize(member.size(), impl_->options.max_value_bytes, "member"));
     set::SAddRequest request;
     request.set_key(key);
-    request.set_member(member);
+    request.add_members(member);
     set::SAddResponse response;
     return impl_->ExecuteRaw(Module::SET, set::SADD, key, request, &response, true);
 }

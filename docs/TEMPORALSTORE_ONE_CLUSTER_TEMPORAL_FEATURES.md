@@ -1,6 +1,6 @@
 # TemporalStore One-Cluster Architecture
 
-TemporalStore's product direction is one online serving cluster for several feature-serving patterns that usually require separate systems:
+TemporalStore's product direction is an online serving feature store: one online cluster for ordinary latest-feature lookup plus the temporal feature patterns that usually require separate systems.
 
 - latest profile lookup
 - high-cardinality temporal aggregation
@@ -8,8 +8,9 @@ TemporalStore's product direction is one online serving cluster for several feat
 - frequency caps
 - long sequence features
 - persisted online state with hot/cold serving
+- AI context, session memory, and GPU-serving metadata
 
-The goal is not to replace every offline system. Training data, replay data, audits, and large analytical joins still belong in an offline lake, warehouse, or offline feature store. The goal is to remove unnecessary online fragmentation: one online cluster should serve the feature state that production traffic needs now.
+The goal is not to replace every offline system. Training data, replay data, audits, and large analytical joins still belong in an offline lake, warehouse, or offline feature store. The goal is to remove unnecessary online fragmentation: one online feature store should serve the feature state that production traffic needs now, including both latest values and high-cardinality temporal state.
 
 ## Why One Cluster
 
@@ -105,8 +106,76 @@ TemporalStore should support multiple online-serving models in the same cluster.
 | Risk / Frequency Cap | bounded counters by entity and dimension | `campaign_id:user_id -> impressions in last hour` |
 | Sequence Feature | timestamped behavior rows | `user_id -> recent clicked item ids` |
 | Large Object / Page-backed State | objects that may outgrow memory | long profile blobs or cold sequence pages |
+| AI Context / GPU Metadata | session memory, prefix/cache refs, retrieval state | `tenant:model:prefix_hash -> cache location and reuse stats` |
 
-This is the key product claim: the user should not need a different online store for every feature shape.
+This is the key product claim: the user should not need a different online store for every feature shape. TemporalStore should be usable as the default online serving feature store, while temporal windows, filtered aggregates, distinct state, sequences, and risk/frequency features are the product wedge that makes it different from a plain online KV/cache.
+
+## Choosing Aggregate vs Sequence
+
+TemporalAggregate should be used when the serving answer is a scalar value over a time window:
+
+```text
+count, sum, min, max
+```
+
+Examples:
+
+```text
+user_id -> count purchases in last 5 min
+device_id + country -> failed logins in last 30 min
+card_id -> max transaction amount in last 24 h
+merchant_id -> sum chargeback amount in last 7 d
+ip + account_id -> count signup attempts in last 10 min
+```
+
+In these cases, repeated events collapse into bucket cells. A query scans bucket cells for the requested window and exact dimensions, then folds them into one answer. The query cost is proportional to the number of buckets and matching dimension combinations, not the number of raw events that originally arrived.
+
+Sequence Feature should be used when the serving answer is a list of timestamped rows:
+
+```text
+user_id -> last clicked item ids
+user_id -> ad exposure history with campaign/action filters
+device_id -> login-attempt rows for investigation
+```
+
+Sequence queries can support richer row filtering and return many points, but they are naturally more expensive than scalar aggregate queries because the result itself may be large. This is the clean product boundary: TemporalAggregate is for low-latency online counters and numerical windows; Sequence is for bounded behavior history and row/list retrieval.
+
+## AI And GPU-Serving State
+
+TemporalStore should not be positioned first as a GPU compute engine or a raw tensor database. The stronger near-term role is GPU-adjacent state serving: the online state layer around LLM inference, agent systems, retrieval, and GPU cache orchestration.
+
+Good near-term AI/GPU-serving data includes:
+
+```text
+tenant + model + prefix_hash -> remote KV-cache object metadata
+session_id -> recent conversation/tool/memory timeline
+user_id -> long-lived preference and interaction memory
+request_id -> token count, latency, routing, and retry state
+doc_chunk_id -> embedding version, source file, timestamp, and retrieval metadata
+model + tenant + route -> rolling p95 latency / error / cost counters
+```
+
+These fit TemporalStore because they are high-cardinality, frequently updated, time-sensitive, and often queried by bounded windows or exact keys.
+
+Possible AI-oriented data models:
+
+| Model | What It Stores | First Use |
+|---|---|---|
+| `SessionMemory` | timestamped user/agent/tool events | prompt-context assembly and audit |
+| `KVCacheIndex` | prefix hashes, token ranges, cache-object refs, TTL, reuse stats | LMCache/vLLM/SGLang cache lookup metadata |
+| `EmbeddingMetadata` | chunk ids, embedding version, source pointer, freshness | pair with Milvus/Viking/vector DB |
+| `GPUServingAggregate` | per-model/tenant/window counters and latencies | autoscaling, throttling, cost controls |
+| `TensorBlockRef` | tensor/block metadata and storage location | later-stage cache coordination |
+
+The important boundary: TemporalStore can store **metadata, indexes, timelines, counters, and object references** for GPU-serving systems. It should not initially store raw GPU KV-cache tensors as the primary payload. Raw KV-cache tensors are large, model-layout-specific, and tightly coupled to GPU memory managers in systems such as vLLM, SGLang, TensorRT-LLM, and LMCache. TemporalStore can integrate below or beside those systems as a durable/control-plane state layer, while the inference engine keeps ownership of device memory, pinned CPU memory, tensor layout, and block scheduling.
+
+That gives a realistic AI roadmap:
+
+```text
+Phase 1: AI context/session memory and serving aggregates
+Phase 2: KV-cache metadata/index integration with LMCache-style systems
+Phase 3: optional tensor-block reference model, if real users need it
+```
 
 ## TemporalAggregate Write Path
 

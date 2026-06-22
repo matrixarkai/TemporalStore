@@ -16,10 +16,18 @@ namespace blockcache {
 
 class BlockCacheTest : public testing::Test {
  public:
-    void SetUp() override {}
+    void SetUp() override {
+        FLAGS_blockcache_dram_capacity = 8 * 1024 * 1024;
+        FLAGS_blockcache_pmem_capacity = 0;
+        FLAGS_blockcache_ssd_capacity = 0;
+        FLAGS_blockcache_dram_replacement_policy = "SLRU";
+        FLAGS_blockcache_enable_metrics = false;
+    }
     void TearDown() override {
         LOG_DEBUG("BlockCacheTest TearDown called.");
-        auto stop_status = blockcache_->Stop();
+        if (blockcache_ != nullptr) {
+            auto stop_status = blockcache_->Stop();
+        }
         blockcache_.reset();
     }
 

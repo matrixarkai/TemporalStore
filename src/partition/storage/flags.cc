@@ -1,12 +1,18 @@
 // Copyright (c) 2022-present, ByteDance Inc. All rights reserved.
 
 #include <gflags/gflags.h>
+#include <string>
 
 #include "brpc/reloadable_flags.h"
 
 static bool ValidateZoneSize(const char* flagname, int32_t value) {
     (void)flagname;
     return value >= 0;
+}
+
+static bool ValidateDataReplicationMode(const char* flagname, const std::string& value) {
+    (void)flagname;
+    return value == "shared_store" || value == "primary_pull" || value == "raft_consensus";
 }
 
 DEFINE_uint64(storage_loop_interval_us, 30000, "storage loop interval in us");
@@ -30,9 +36,16 @@ BRPC_VALIDATE_GFLAG(storage_enable_index_gc, brpc::PassValidate);
 DEFINE_uint64(storage_dump_index_meta_oplog_gap, 1 * 1024 * 1024,
               "oplog gap in bytes to dump index meta");
 BRPC_VALIDATE_GFLAG(storage_dump_index_meta_oplog_gap, brpc::PassValidate);
-DEFINE_bool(storage_async, true, "async write storage");
+DEFINE_bool(storage_async, false, "async write storage");
 BRPC_VALIDATE_GFLAG(storage_async, brpc::PassValidate);
 DEFINE_bool(partition_commit_oplog, true, "commit oplog after execute cmd finish");
+DEFINE_string(data_replication_mode, "shared_store",
+              "data-node replication mode: shared_store, primary_pull, or raft_consensus. "
+              "shared_store preserves the existing shared stream/object-store replay path; "
+              "primary_pull uses remote primary stream reads for secondary catch-up; "
+              "raft_consensus uses Byteraft for quorum replication, transport, WAL, and "
+              "snapshots.");
+DEFINE_validator(data_replication_mode, ValidateDataReplicationMode);
 DEFINE_uint64(expirer_scan_slots_per_round, 5, "scan slots for expirer in each round");
 BRPC_VALIDATE_GFLAG(expirer_scan_slots_per_round, brpc::PassValidate);
 DEFINE_uint64(expirer_scan_in_memory_slots_per_round, 100,

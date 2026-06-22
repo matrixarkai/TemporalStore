@@ -16,6 +16,7 @@ DECLARE_int32(metaserver_log_file_size);
 
 DECLARE_string(metaserver_announce_consul_name);
 DECLARE_string(metaserver_announce_consul_name_leader);
+DECLARE_bool(metaserver_consul_announce_enabled);
 
 DECLARE_uint64(metaserver_task_scheduler_interval_ms);
 DECLARE_uint64(metaserver_task_scheduler_max_inflight);
@@ -30,6 +31,7 @@ DECLARE_double(metaserver_phi_failure_threshold);
 DECLARE_uint64(metaserver_phi_interpret_pause_time_us);
 DECLARE_uint64(metaserver_convict_safe_mode_warning_ratio);
 DECLARE_uint64(metaserver_convict_safe_mode_critical_ratio);
+DECLARE_bool(metaserver_convict_safe_mode_enabled);
 DECLARE_bool(metaserver_convict_server_enabled);
 DECLARE_bool(metaserver_convict_force_for_orphan_partition);
 DECLARE_bool(metaserver_convict_proxy_enabled);

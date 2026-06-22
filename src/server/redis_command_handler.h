@@ -45,6 +45,57 @@ class RedisCommand {
         kPauseWrite,
         kFlushAll,
         kPartition,
+        kGet,
+        kSet,
+        kSetNx,
+        kSetEx,
+        kPSetEx,
+        kGetSet,
+        kGetDel,
+        kMGet,
+        kMSet,
+        kDel,
+        kExists,
+        kExpire,
+        kPExpire,
+        kTtl,
+        kPTtl,
+        kPersist,
+        kAppend,
+        kStrlen,
+        kIncrBy,
+        kHSet,
+        kHGet,
+        kHMGet,
+        kHDel,
+        kHExists,
+        kHLen,
+        kHGetAll,
+        kHIncrBy,
+        kSAdd,
+        kSRem,
+        kSMembers,
+        kSCard,
+        kSIsMember,
+        kLPush,
+        kRPush,
+        kLPop,
+        kRPop,
+        kLLen,
+        kLIndex,
+        kLRange,
+        kLTrim,
+        kZAdd,
+        kZRem,
+        kZCard,
+        kZScore,
+        kZRank,
+        kZRevRank,
+        kZRange,
+        kZRevRange,
+        kZRangeByScore,
+        kZCount,
+        kUnsupported,
     };
 
     enum CmdFlag {
@@ -106,9 +157,9 @@ class RedisCommandHandler : public brpc::RedisCommandHandler {
     RedisCommandHandler(const RedisCommand& command, RedisServiceImpl* redis_service,
                         std::function<void(RedisCommandHandler*, RedisClientContext*)> handler);
 
-    brpc::RedisCommandHandler::Result Run(const std::vector<const char*>& args,
-                                          brpc::RedisReply* output,
-                                          bool /*flush_batched*/) override;
+    brpc::RedisCommandHandlerResult Run(const std::vector<butil::StringPiece>& args,
+                                        brpc::RedisReply* output,
+                                        bool /*flush_batched*/) override;
 
     // each function down below handles a command
     void Ping(RedisClientContext* c);
@@ -120,6 +171,57 @@ class RedisCommandHandler : public brpc::RedisCommandHandler {
     void PartitionLoad(RedisClientContext* c);
     void PartitionUnload(RedisClientContext* c);
     void Auth(RedisClientContext* c);
+    void Get(RedisClientContext* c);
+    void Set(RedisClientContext* c);
+    void SetNx(RedisClientContext* c);
+    void SetEx(RedisClientContext* c);
+    void PSetEx(RedisClientContext* c);
+    void GetSet(RedisClientContext* c);
+    void GetDel(RedisClientContext* c);
+    void MGet(RedisClientContext* c);
+    void MSet(RedisClientContext* c);
+    void Del(RedisClientContext* c);
+    void Exists(RedisClientContext* c);
+    void Expire(RedisClientContext* c);
+    void PExpire(RedisClientContext* c);
+    void Ttl(RedisClientContext* c);
+    void PTtl(RedisClientContext* c);
+    void Persist(RedisClientContext* c);
+    void Append(RedisClientContext* c);
+    void Strlen(RedisClientContext* c);
+    void IncrBy(RedisClientContext* c);
+    void HSet(RedisClientContext* c);
+    void HGet(RedisClientContext* c);
+    void HMGet(RedisClientContext* c);
+    void HDel(RedisClientContext* c);
+    void HExists(RedisClientContext* c);
+    void HLen(RedisClientContext* c);
+    void HGetAll(RedisClientContext* c);
+    void HIncrBy(RedisClientContext* c);
+    void SAdd(RedisClientContext* c);
+    void SRem(RedisClientContext* c);
+    void SMembers(RedisClientContext* c);
+    void SCard(RedisClientContext* c);
+    void SIsMember(RedisClientContext* c);
+    void LPush(RedisClientContext* c);
+    void RPush(RedisClientContext* c);
+    void LPop(RedisClientContext* c);
+    void RPop(RedisClientContext* c);
+    void LLen(RedisClientContext* c);
+    void LIndex(RedisClientContext* c);
+    void LRange(RedisClientContext* c);
+    void LTrim(RedisClientContext* c);
+    void ZAdd(RedisClientContext* c);
+    void ZRem(RedisClientContext* c);
+    void ZCard(RedisClientContext* c);
+    void ZScore(RedisClientContext* c);
+    void ZRank(RedisClientContext* c);
+    void ZRevRank(RedisClientContext* c);
+    void ZRange(RedisClientContext* c);
+    void ZRevRange(RedisClientContext* c);
+    void ZRangeByScore(RedisClientContext* c);
+    void ZCount(RedisClientContext* c);
+    void Unsupported(RedisClientContext* c);
 
  private:
     RedisCommand command_;

@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <numeric>
 #include <random>
 #include <string>
@@ -37,6 +38,47 @@ struct Summary {
     int64_t max_us = 0;
     int64_t total_ms = 0;
 };
+
+enum class ReadMode {
+    kPrimary,
+    kDefault,
+    kSecondary,
+};
+
+struct QueryDiagnostics {
+    std::atomic<int> rpc_or_parse_errors{0};
+    std::atomic<int> no_value{0};
+    std::atomic<int> wrong_value{0};
+    std::atomic<int> wrong_bucket_count{0};
+    std::mutex sample_mu;
+    std::vector<std::string> samples;
+};
+
+ReadMode ParseReadMode(const char* value, bool pin_primary_reads) {
+    if (value == nullptr) {
+        return pin_primary_reads ? ReadMode::kPrimary : ReadMode::kDefault;
+    }
+    const std::string mode(value);
+    if (mode == "primary") {
+        return ReadMode::kPrimary;
+    }
+    if (mode == "secondary" || mode == "force_secondary" || mode == "force-secondary") {
+        return ReadMode::kSecondary;
+    }
+    return ReadMode::kDefault;
+}
+
+const char* ReadModeName(ReadMode mode) {
+    switch (mode) {
+        case ReadMode::kPrimary:
+            return "primary";
+        case ReadMode::kSecondary:
+            return "secondary";
+        case ReadMode::kDefault:
+        default:
+            return "default";
+    }
+}
 
 int64_t Percentile(const std::vector<int64_t>& sorted, double pct) {
     if (sorted.empty()) {
@@ -79,7 +121,7 @@ void PrintSummary(const Summary& s, int keys, int features, int buckets, int dim
 
 bool OpenTable(const std::string& metaserver, const std::string& idc,
                const std::string& namespace_name, const std::string& table_name,
-               bool pin_primary, std::unique_ptr<bcache2::client::Client>* client,
+               ReadMode read_mode, std::unique_ptr<bcache2::client::Client>* client,
                std::unique_ptr<bcache2::client::Table>* table,
                bcache2::client::TableCore** table_core) {
     bcache2::client::ClientOptions client_options;
@@ -89,9 +131,13 @@ bool OpenTable(const std::string& metaserver, const std::string& idc,
     client_options.host = "127.0.0.1";
     client_options.psm = "temporal.aggregate.scale.benchmark";
     client_options.log_level = bcache2::client::LogLevel::kWarning;
-    if (pin_primary) {
+    if (read_mode == ReadMode::kPrimary) {
         client_options.partition_pick_opts.policy =
             bcache2::client::PartitionPickOptions::Policy::kPrimary;
+    } else if (read_mode == ReadMode::kSecondary) {
+        client_options.partition_pick_opts.policy =
+            bcache2::client::PartitionPickOptions::Policy::kVdcAffinity;
+        client_options.partition_pick_opts.affinity_vdc = "force-secondary-read";
     }
 
     bcache2::client::Client* raw_client = nullptr;
@@ -122,7 +168,8 @@ bool OpenTable(const std::string& metaserver, const std::string& idc,
 
 template <typename Request, typename Response>
 bool ExecuteRaw(bcache2::client::TableCore* table, uint16_t module_id, uint16_t function_id,
-                const std::string& partition_key, const Request& request, Response* response) {
+                const std::string& partition_key, const Request& request, Response* response,
+                std::string* error = nullptr) {
     bcache2::client::TableCore::Request raw_request;
     bcache2::client::TableCore::Response raw_response;
     bcache2::Controller ctrl;
@@ -135,6 +182,9 @@ bool ExecuteRaw(bcache2::client::TableCore* table, uint16_t module_id, uint16_t 
 
     std::string request_bytes;
     if (!request.SerializeToString(&request_bytes)) {
+        if (error != nullptr) {
+            *error = "serialize_failed";
+        }
         return false;
     }
     raw_request.input.set_request_bytes(std::move(request_bytes));
@@ -143,9 +193,38 @@ bool ExecuteRaw(bcache2::client::TableCore* table, uint16_t module_id, uint16_t 
                    bcache2::client::RequestOptions());
     sync.Wait();
     if (!ctrl.status().ok()) {
+        if (error != nullptr) {
+            *error = ctrl.status().ToString();
+        }
         return false;
     }
-    return response->ParseFromString(raw_response.output->response_bytes());
+    if (!response->ParseFromString(raw_response.output->response_bytes())) {
+        if (error != nullptr) {
+            *error = "parse_failed";
+        }
+        return false;
+    }
+    return true;
+}
+
+void AddSample(QueryDiagnostics* diag, const std::string& sample) {
+    std::lock_guard<std::mutex> lock(diag->sample_mu);
+    if (diag->samples.size() < 12) {
+        diag->samples.push_back(sample);
+    }
+}
+
+void PrintQueryDiagnostics(const QueryDiagnostics& diag) {
+    std::cout << "query_diagnostics,rpc_or_parse_errors,no_value,wrong_value,wrong_bucket_count"
+              << std::endl;
+    std::cout << "query_diagnostics," << diag.rpc_or_parse_errors.load() << ","
+              << diag.no_value.load() << "," << diag.wrong_value.load() << ","
+              << diag.wrong_bucket_count.load() << std::endl;
+    std::cout << "query_diagnostic_samples,count" << std::endl;
+    std::cout << "query_diagnostic_samples," << diag.samples.size() << std::endl;
+    for (const auto& sample : diag.samples) {
+        std::cout << "query_diagnostic_sample," << sample << std::endl;
+    }
 }
 
 void FillDimensions(int feature_idx, int dimension_count,
@@ -232,11 +311,12 @@ Summary RunParallel(const std::string& phase, int ops, int threads, Fn fn) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc < 5 || argc > 13) {
+    if (argc < 5 || argc > 14) {
         std::cout << "usage: " << argv[0]
                   << " <metaserver_host:port> <idc> <namespace> <table> [features=1000]"
                      " [keys=100] [buckets=12] [threads=16] [pin_primary_reads=1]"
                      " [dimension_count=2] [replica_wait_ms=5000] [bucket_width_ms=60000]"
+                     " [read_mode=primary|default|secondary]"
                   << std::endl;
         return 2;
     }
@@ -253,6 +333,7 @@ int main(int argc, char** argv) {
     const int dimension_count = argc > 10 ? std::atoi(argv[10]) : 2;
     const int replica_wait_ms = argc > 11 ? std::atoi(argv[11]) : 5000;
     const uint64_t bucket_width_ms = argc > 12 ? std::strtoull(argv[12], nullptr, 10) : 60000;
+    const ReadMode read_mode = ParseReadMode(argc > 13 ? argv[13] : nullptr, pin_primary_reads);
 
     if (features <= 0 || keys <= 0 || buckets <= 0 || threads <= 0 || bucket_width_ms == 0) {
         std::cerr << "features, keys, buckets, threads, and bucket_width_ms must be positive"
@@ -263,7 +344,7 @@ int main(int argc, char** argv) {
     std::unique_ptr<bcache2::client::Client> write_client;
     std::unique_ptr<bcache2::client::Table> write_table_holder;
     bcache2::client::TableCore* write_table = nullptr;
-    if (!OpenTable(metaserver, idc, namespace_name, table_name, true, &write_client,
+    if (!OpenTable(metaserver, idc, namespace_name, table_name, ReadMode::kPrimary, &write_client,
                    &write_table_holder, &write_table)) {
         return 1;
     }
@@ -271,7 +352,7 @@ int main(int argc, char** argv) {
     std::unique_ptr<bcache2::client::Client> read_client;
     std::unique_ptr<bcache2::client::Table> read_table_holder;
     bcache2::client::TableCore* read_table = nullptr;
-    if (!OpenTable(metaserver, idc, namespace_name, table_name, pin_primary_reads, &read_client,
+    if (!OpenTable(metaserver, idc, namespace_name, table_name, read_mode, &read_client,
                    &read_table_holder, &read_table)) {
         return 1;
     }
@@ -292,6 +373,7 @@ int main(int argc, char** argv) {
     std::cout << "buckets=" << buckets << std::endl;
     std::cout << "dimensions=" << dimension_count << std::endl;
     std::cout << "pin_primary_reads=" << (pin_primary_reads ? 1 : 0) << std::endl;
+    std::cout << "read_mode=" << ReadModeName(read_mode) << std::endl;
 
     const int ingest_ops = features * buckets;
     Summary ingest = RunParallel("temporal_aggregate_incr", ingest_ops, threads, [&](int i) {
@@ -314,10 +396,11 @@ int main(int argc, char** argv) {
     });
     PrintSummary(ingest, keys, features, buckets, dimension_count);
 
-    if (!pin_primary_reads) {
+    if (read_mode != ReadMode::kPrimary) {
         std::this_thread::sleep_for(std::chrono::milliseconds(replica_wait_ms));
     }
 
+    QueryDiagnostics query_diag;
     Summary query = RunParallel("temporal_aggregate_query", features, threads, [&](int feature_idx) {
         const std::string key = prefix + ":entity:" + std::to_string(feature_idx % keys);
         const std::string metric = "feature_" + std::to_string(feature_idx);
@@ -330,20 +413,51 @@ int main(int argc, char** argv) {
         request.set_bucket_width_ms(bucket_width_ms);
         request.set_op(bcache2::temporal_aggregate::COUNT);
         bcache2::temporal_aggregate::QueryResponse response;
-        return ExecuteRaw(read_table, bcache2::Module::TEMPORAL_AGGREGATE,
-                          bcache2::temporal_aggregate::QUERY, key, request, &response) &&
-               response.has_value() && response.value() == buckets &&
-               response.buckets_size() == buckets;
+        std::string error;
+        if (!ExecuteRaw(read_table, bcache2::Module::TEMPORAL_AGGREGATE,
+                        bcache2::temporal_aggregate::QUERY, key, request, &response, &error)) {
+            query_diag.rpc_or_parse_errors.fetch_add(1);
+            AddSample(&query_diag, "feature=" + std::to_string(feature_idx) + ",key=" + key +
+                                       ",metric=" + metric + ",error=" + error);
+            return false;
+        }
+        if (!response.has_value()) {
+            query_diag.no_value.fetch_add(1);
+            AddSample(&query_diag, "feature=" + std::to_string(feature_idx) + ",key=" + key +
+                                       ",metric=" + metric + ",has_value=0,buckets=" +
+                                       std::to_string(response.buckets_size()));
+            return false;
+        }
+        if (response.value() != buckets) {
+            query_diag.wrong_value.fetch_add(1);
+            AddSample(&query_diag, "feature=" + std::to_string(feature_idx) + ",key=" + key +
+                                       ",metric=" + metric + ",value=" +
+                                       std::to_string(response.value()) + ",expected=" +
+                                       std::to_string(buckets) + ",buckets=" +
+                                       std::to_string(response.buckets_size()));
+            return false;
+        }
+        if (response.buckets_size() != buckets) {
+            query_diag.wrong_bucket_count.fetch_add(1);
+            AddSample(&query_diag, "feature=" + std::to_string(feature_idx) + ",key=" + key +
+                                       ",metric=" + metric + ",value=" +
+                                       std::to_string(response.value()) + ",bucket_count=" +
+                                       std::to_string(response.buckets_size()) + ",expected=" +
+                                       std::to_string(buckets));
+            return false;
+        }
+        return true;
     });
     PrintSummary(query, keys, features, buckets, dimension_count);
+    PrintQueryDiagnostics(query_diag);
 
-    if (!pin_primary_reads) {
+    if (read_mode != ReadMode::kPrimary) {
         int attempts = 0;
         int64_t lag_ms = 0;
         std::unique_ptr<bcache2::client::Client> lag_client;
         std::unique_ptr<bcache2::client::Table> lag_table_holder;
         bcache2::client::TableCore* lag_table = nullptr;
-        if (!OpenTable(metaserver, idc, namespace_name, table_name, false, &lag_client,
+        if (!OpenTable(metaserver, idc, namespace_name, table_name, read_mode, &lag_client,
                        &lag_table_holder, &lag_table)) {
             return 1;
         }

@@ -29,6 +29,7 @@ int ftruncate(int fd, off_t length);
 #endif
 
 #include "common/controller.h"
+#include "common/coclosure.h"
 #include "common/fiu_local.h"
 #include "common/function_closure.h"
 #include "common/scoped_invoker.h"
@@ -199,7 +200,7 @@ void File::Append(Controller* ctrl, const void* data, size_t size, Closure<void>
     FILE_STORE_FAULT_INJECT("store/file/io/fail/append", "Append", pathname_);
 
     done.Release();
-    byte::AsyncThread* thread = byte::GetCurrentThread();
+    byte::AsyncThread* thread = IsCoContext() ? byte::GetCurrentThread() : nullptr;
     auto func = [this, ctrl, data, size, callback, thread] {
         ScopedInvoker done(callback, thread);
         FILE_STORE_FAULT_INJECT("store/file/io/hang/append", "Append", pathname_);
@@ -243,7 +244,7 @@ void File::Read(Controller* ctrl, size_t offset, void* data, size_t size, Closur
     FILE_STORE_FAULT_INJECT("store/file/io/fail/read", "Read", pathname_);
 
     done.Release();
-    byte::AsyncThread* thread = byte::GetCurrentThread();
+    byte::AsyncThread* thread = IsCoContext() ? byte::GetCurrentThread() : nullptr;
     auto func = [this, ctrl, offset, data, size, callback, thread] {
         ScopedInvoker done(callback, thread);
         FILE_STORE_FAULT_INJECT("store/file/io/hang/read", "Read", pathname_);

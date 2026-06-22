@@ -65,6 +65,12 @@ class PageStore {
         std::string stream_uri_pattern;
     };
 
+    struct ReadPathTestCounters {
+        uint64_t blockcache_gets = 0;
+        uint64_t blockcache_hits = 0;
+        uint64_t persistent_reads = 0;
+    };
+
     PageStore(Partition* partition, Index* index, stream::Env* env, MetricsManager* metrics_manager,
               StoreRepPolicy rep_policy, uint64_t partition_id,
               blockcache::BlockCache* blockcache);
@@ -85,6 +91,9 @@ class PageStore {
     void Commit(Controller* ctrl, Closure<void>* callback);
 
     void ReadPage(Controller* ctrl, PageIndex index, PageInfo* page_info, Closure<void>* callback);
+    void SetReadPathTestCounters(ReadPathTestCounters* counters) {
+        read_path_test_counters_ = counters;
+    }
 
     void UpdateConfig(const Config& config) {
         rep_policy_.MergeFrom(config.stream_config().store_rep_policy());
@@ -153,6 +162,7 @@ class PageStore {
     uint32_t writing_zone_id_ = 0;                      // target zone to write
 
     PageStoreMetrics metrics_;
+    ReadPathTestCounters* read_path_test_counters_ = nullptr;
 
     DISALLOW_COPY_AND_ASSIGN(PageStore);
 };

@@ -25,6 +25,15 @@ PROTOBUF_VERSION="3.2.0"
 PROTOBUF_PREFIX="${PROTOBUF_PREFIX:-${DEPS_DIR}/protobuf-${PROTOBUF_VERSION}}"
 ENABLE_MTCACHE="${ENABLE_MTCACHE:-OFF}"
 ENABLE_MTCACHE_SSD_CACHE="${ENABLE_MTCACHE_SSD_CACHE:-OFF}"
+BRPC_WITH_GLOG="${BRPC_WITH_GLOG:-}"
+MTCACHE_THIRDPARTY_ROOT="${MTCACHE_THIRDPARTY_ROOT:-}"
+MTCACHE_CMAKE_COMPAT_DIR="${MTCACHE_CMAKE_COMPAT_DIR:-${ROOT}/cmake/compat}"
+BCACHE2_BUILD_TESTS="${BCACHE2_BUILD_TESTS:-OFF}"
+BUILD_TARGETS="${BUILD_TARGETS:-}"
+OBJECT_STORE_COMPAT_INCLUDE_DIR="${OBJECT_STORE_COMPAT_INCLUDE_DIR:-}"
+BYTESTORE_COMPAT_INCLUDE_DIR="${BYTESTORE_COMPAT_INCLUDE_DIR:-}"
+BRPC_STATIC_LIBRARY="${BRPC_STATIC_LIBRARY:-}"
+EXTRA_CMAKE_ARGS="${EXTRA_CMAKE_ARGS:-}"
 
 require_tool() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -37,6 +46,24 @@ require_tool() {
 for tool in cmake gcc g++ make git; do
   require_tool "${tool}"
 done
+
+prepare_link_shims() {
+  local shim_dir="${ROOT}/.local/link-shims"
+  mkdir -p "${shim_dir}"
+
+  if [[ ! -f "${shim_dir}/libco.a" ]]; then
+    rm -f "${shim_dir}/empty.o"
+    ar rcs "${shim_dir}/libco.a"
+  fi
+  if [[ ! -f "${shim_dir}/libabsl_flat_hash_map.a" ]]; then
+    ar rcs "${shim_dir}/libabsl_flat_hash_map.a"
+  fi
+  if [[ -f "/usr/lib/x86_64-linux-gnu/liblz4.a" ]]; then
+    ln -sfn "/usr/lib/x86_64-linux-gnu/liblz4.a" "${shim_dir}/liblz4_static.a"
+  fi
+}
+
+prepare_link_shims
 
 build_protobuf() {
   local pb_src="${ROOT}/dependencies/byte/thirdparty/protobuf/cmake"
@@ -87,9 +114,37 @@ else
 fi
 
 if [[ "${ENABLE_MTCACHE}" == "ON" ]]; then
+  BRPC_WITH_GLOG="${BRPC_WITH_GLOG:-ON}"
   export ENABLE_MTCACHE_SSD_CACHE
   bash "${ROOT}/tools/prepare_mtcache_ubuntu22.sh"
-  export CMAKE_PREFIX_PATH="${ROOT}/thirdparty/mtcache/third_party/install:${CMAKE_PREFIX_PATH:-}"
+  MTCACHE_THIRDPARTY_ROOT="${MTCACHE_THIRDPARTY_ROOT:-${ROOT}/thirdparty/mtcache/third_party/install}"
+  export CMAKE_PREFIX_PATH="${MTCACHE_CMAKE_COMPAT_DIR}:${MTCACHE_THIRDPARTY_ROOT}:${CMAKE_PREFIX_PATH:-}"
+  if [[ -n "${BRPC_STATIC_LIBRARY}" ]]; then
+    BRPC_STATIC_LIBRARY="$(BRPC_STATIC_LIBRARY="${BRPC_STATIC_LIBRARY}" \
+      bash "${ROOT}/tools/prepare_brpc_mtcache_ubuntu22.sh")"
+  fi
+fi
+BRPC_WITH_GLOG="${BRPC_WITH_GLOG:-OFF}"
+
+declare -a COMPAT_ARGS=()
+if [[ -n "${MTCACHE_THIRDPARTY_ROOT}" ]]; then
+  COMPAT_ARGS+=(-DMTCACHE_THIRDPARTY_ROOT="${MTCACHE_THIRDPARTY_ROOT}")
+fi
+if [[ "${ENABLE_MTCACHE}" == "ON" && -d "${MTCACHE_CMAKE_COMPAT_DIR}/boost_iostreams-1.74.0" ]]; then
+  COMPAT_ARGS+=(-Dboost_iostreams_DIR="${MTCACHE_CMAKE_COMPAT_DIR}/boost_iostreams-1.74.0")
+fi
+if [[ -n "${OBJECT_STORE_COMPAT_INCLUDE_DIR}" ]]; then
+  COMPAT_ARGS+=(-DOBJECT_STORE_COMPAT_INCLUDE_DIR="${OBJECT_STORE_COMPAT_INCLUDE_DIR}")
+fi
+if [[ -n "${BYTESTORE_COMPAT_INCLUDE_DIR}" ]]; then
+  COMPAT_ARGS+=(-DBYTESTORE_COMPAT_INCLUDE_DIR="${BYTESTORE_COMPAT_INCLUDE_DIR}")
+fi
+if [[ -n "${BRPC_STATIC_LIBRARY}" ]]; then
+  COMPAT_ARGS+=(-DBRPC_STATIC_LIBRARY="${BRPC_STATIC_LIBRARY}")
+fi
+if [[ -n "${EXTRA_CMAKE_ARGS}" ]]; then
+  # shellcheck disable=SC2206
+  COMPAT_ARGS+=(${EXTRA_CMAKE_ARGS})
 fi
 
 echo "Using $(gcc --version | head -1)"
@@ -99,6 +154,10 @@ echo "Using $(protoc --version)"
 echo "Build type: ${BUILD_TYPE}"
 echo "Build dir: ${BUILD_DIR}"
 echo "Output dir: ${OUTPUT_DIR}"
+echo "BCACHE2 build tests: ${BCACHE2_BUILD_TESTS}"
+if [[ -n "${BUILD_TARGETS}" ]]; then
+  echo "Build targets: ${BUILD_TARGETS}"
+fi
 
 cmake -S "${ROOT}" -B "${BUILD_DIR}" \
   -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
@@ -108,9 +167,9 @@ cmake -S "${ROOT}" -B "${BUILD_DIR}" \
   -DENABLE_MTCACHE_SSD_CACHE="${ENABLE_MTCACHE_SSD_CACHE}" \
   -DENABLE_BRPC_PROFILE=ON \
   -DBYTE_BUILD_TESTS=OFF \
-  -DBCACHE2_BUILD_TESTS=OFF \
+  -DBCACHE2_BUILD_TESTS="${BCACHE2_BUILD_TESTS}" \
   -DWITH_GLOG=OFF \
-  -DBRPC_WITH_GLOG=OFF \
+  -DBRPC_WITH_GLOG="${BRPC_WITH_GLOG}" \
   -DBRPC_WITH_THRIFT=ON \
   -DBRPC_BUILD_SHARED=OFF \
   -DBRPC_BUILD_TOOLS=OFF \
@@ -121,6 +180,12 @@ cmake -S "${ROOT}" -B "${BUILD_DIR}" \
   -DBoost_USE_STATIC_LIBS=ON \
   -DOPENSSL_USE_STATIC_LIBS=OFF \
   -DOPENSSL_SSL_LIBRARY=/usr/lib/x86_64-linux-gnu/libssl.so \
-  -DOPENSSL_CRYPTO_LIBRARY=/usr/lib/x86_64-linux-gnu/libcrypto.so
+  -DOPENSSL_CRYPTO_LIBRARY=/usr/lib/x86_64-linux-gnu/libcrypto.so \
+  "${COMPAT_ARGS[@]}"
 
-cmake --build "${BUILD_DIR}" --parallel "${JOBS}"
+if [[ -n "${BUILD_TARGETS}" ]]; then
+  read -r -a targets <<< "${BUILD_TARGETS}"
+  cmake --build "${BUILD_DIR}" --parallel "${JOBS}" --target "${targets[@]}"
+else
+  cmake --build "${BUILD_DIR}" --parallel "${JOBS}"
+fi

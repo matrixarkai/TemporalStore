@@ -44,7 +44,13 @@ class StreamBuffer {
         size_t left_size = size;
         size_t buffer_index = ring_datas_.FrontIndex();
         size_t buffer_pos = start_ - real_start_;
+        while (buffer_index < ring_datas_.RearIndex() &&
+               buffer_pos >= ring_datas_[buffer_index].size()) {
+            buffer_pos -= ring_datas_[buffer_index].size();
+            buffer_index++;
+        }
         while (left_size > 0) {
+            BYTE_ASSERT(buffer_index < ring_datas_.RearIndex());
             BYTE_ASSERT(buffer_pos < ring_datas_[buffer_index].size());
             size_t buffer_size = std::min(left_size, ring_datas_[buffer_index].size() - buffer_pos);
             memcpy(reinterpret_cast<char*>(data) + size - left_size,
@@ -55,6 +61,32 @@ class StreamBuffer {
             buffer_pos = 0;
         }
         BYTE_ASSERT(left_size == 0);
+    }
+
+    bool CanReadFront(size_t size) const {
+        if (start_ + size > length_ || start_ < real_start_) {
+            return false;
+        }
+        size_t left_size = size;
+        size_t buffer_index = ring_datas_.FrontIndex();
+        size_t buffer_pos = start_ - real_start_;
+        while (buffer_index < ring_datas_.RearIndex() &&
+               buffer_pos >= ring_datas_[buffer_index].size()) {
+            buffer_pos -= ring_datas_[buffer_index].size();
+            buffer_index++;
+        }
+        while (left_size > 0) {
+            if (buffer_index >= ring_datas_.RearIndex() ||
+                buffer_pos >= ring_datas_[buffer_index].size()) {
+                return false;
+            }
+            const size_t buffer_size =
+                std::min(left_size, ring_datas_[buffer_index].size() - buffer_pos);
+            left_size -= buffer_size;
+            buffer_index++;
+            buffer_pos = 0;
+        }
+        return true;
     }
 
     void PushDelimiter(Delimiter delimiter) {

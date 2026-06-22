@@ -5,14 +5,18 @@ package bcache2.set;
 enum Function {
     SADD = 0;
     SMEMBERS = 1;
+    SREM = 2;
+    SCARD = 3;
+    SISMEMBER = 4;
 }
 
 message SAddRequest {
     string key = 1;
-    string member = 2;
+    repeated string members = 2;
 }
 
 message SAddResponse {
+    uint64 added = 1;
 }
 
 message SMembersRequest {
@@ -21,4 +25,30 @@ message SMembersRequest {
 
 message SMembersResponse {
     repeated string members = 1;
+}
+
+message SRemRequest {
+    string key = 1;
+    repeated string members = 2;
+}
+
+message SRemResponse {
+    uint64 removed = 1;
+}
+
+message SCardRequest {
+    string key = 1;
+}
+
+message SCardResponse {
+    uint64 len = 1;
+}
+
+message SIsMemberRequest {
+    string key = 1;
+    string member = 2;
+}
+
+message SIsMemberResponse {
+    bool exist = 1;
 }

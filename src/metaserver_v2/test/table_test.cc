@@ -259,6 +259,70 @@ TEST_F(TableTest, CurdTest) {
     }
 }
 
+TEST_F(TableTest, PromoteSecondaryWhenPrimaryFrozen) {
+    int64_t now = butil::gettimeofday_s();
+    Status status;
+    auto mgr = PrepareNsMgr();
+    ASSERT_TRUE(mgr.get() != nullptr);
+
+    TableInfo info = MockTableInfo();
+    info.set_partition_set_num(1);
+    info.set_election_policy(ElectionPolicy::PROMOTE_SECONDARY);
+    TablePtr table = std::make_shared<Table>(info);
+    status = mgr->AddTable(table);
+    ASSERT_TRUE(status.ok()) << status;
+
+    for (auto partition : table->GetAllPartitions()) {
+        partition->FinishCreating(now);
+        partition->FinishLoading();
+        auto pset = partition->GetPartitionSet();
+        pset->FinishCreatingPartition(partition);
+        if (pset->GetState() == PartitionSetState::PSET_NORMAL) {
+            pset->GetTable()->FinishCreatingPartitionSet(pset->GetId());
+        }
+    }
+    ASSERT_EQ(table->GetState(), TableState::TABLE_NORMAL);
+
+    auto pset = table->GetAllPartitionSets().front();
+    for (const auto& unit : info.partition_units()) {
+        PartitionPtr old_primary = pset->GetPrimary(unit.id());
+        ASSERT_NE(old_primary.get(), nullptr);
+        const uint64_t old_primary_id = old_primary->GetId();
+        MembershipInfo before = pset->GetMembershipInfo();
+        uint64_t before_term = 0;
+        for (const auto& munit : before.units()) {
+            if (munit.partition_unit_id() == unit.id()) {
+                before_term = munit.election_term();
+                break;
+            }
+        }
+
+        status = pset->Freeze(old_primary, table->GetElectionPolicy());
+        ASSERT_TRUE(status.ok()) << status;
+
+        PartitionPtr new_primary = pset->GetPrimary(unit.id());
+        ASSERT_NE(new_primary.get(), nullptr);
+        ASSERT_NE(new_primary->GetId(), old_primary_id);
+        ASSERT_EQ(new_primary->GetRole(), PartitionRole::PARTITION_ROLE_PRIMARY);
+        ASSERT_EQ(new_primary->GetState(), PartitionState::P_NORMAL);
+        ASSERT_EQ(old_primary->GetState(), PartitionState::P_FREEZING);
+        ASSERT_EQ(old_primary->GetRole(), PartitionRole::PARTITION_ROLE_SECONDARY);
+
+        MembershipInfo after = pset->GetMembershipInfo();
+        bool checked = false;
+        for (const auto& munit : after.units()) {
+            if (munit.partition_unit_id() != unit.id()) {
+                continue;
+            }
+            ASSERT_EQ(munit.primary_id(), new_primary->GetId());
+            ASSERT_EQ(munit.election_term(), before_term + 1);
+            checked = true;
+            break;
+        }
+        ASSERT_TRUE(checked);
+    }
+}
+
 TEST_F(TableTest, PartitionLocMutPlanTest) {
     const size_t count = 3;
     PartitionUnit unit;

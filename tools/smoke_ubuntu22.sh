@@ -22,7 +22,10 @@ KEEP_RUNNING="${KEEP_RUNNING:-0}"
 METASERVER_LOG_LEVEL="${METASERVER_LOG_LEVEL:-2}"
 SERVER_LOG_LEVEL="${SERVER_LOG_LEVEL:-2}"
 SERVER_EXTRA_FLAGS="${SERVER_EXTRA_FLAGS:-}"
+METASERVER_EXTRA_FLAGS="${METASERVER_EXTRA_FLAGS:-}"
 STORAGE_POOL_URI="${STORAGE_POOL_URI:-file://${SMOKE_DIR}/storage/}"
+TABLE_ELECTION_POLICY="${TABLE_ELECTION_POLICY:-PROMOTE_DERIVED}"
+TABLE_PARTITION_UNIT_RELATION="${TABLE_PARTITION_UNIT_RELATION:-ANTI_ENTROPY}"
 REPLICATOR_OUT_OF_SYNC_S="${TEMPORALSTORE_REPLICATOR_OUT_OF_SYNC_S}"
 
 if (( REPLICA_COUNT > SERVER_COUNT )); then
@@ -53,13 +56,34 @@ mkdir -p "${SMOKE_DIR}"
 
 cleanup() {
   local status=$?
+  local pids=()
   for pid_file in "${SMOKE_DIR}"/server*.pid; do
     [[ -f "${pid_file}" ]] || continue
-    kill "$(cat "${pid_file}")" >/dev/null 2>&1 || true
+    pids+=("$(cat "${pid_file}")")
   done
   for pid_file in "${SMOKE_DIR}"/metaserver*.pid; do
     [[ -f "${pid_file}" ]] || continue
-    kill "$(cat "${pid_file}")" >/dev/null 2>&1 || true
+    pids+=("$(cat "${pid_file}")")
+  done
+  for pid in "${pids[@]}"; do
+    [[ -n "${pid}" ]] || continue
+    kill "${pid}" >/dev/null 2>&1 || true
+  done
+  for _ in $(seq 1 20); do
+    local alive=0
+    for pid in "${pids[@]}"; do
+      [[ -n "${pid}" ]] || continue
+      if kill -0 "${pid}" >/dev/null 2>&1; then
+        alive=1
+        break
+      fi
+    done
+    [[ "${alive}" == "0" ]] && break
+    sleep 0.25
+  done
+  for pid in "${pids[@]}"; do
+    [[ -n "${pid}" ]] || continue
+    kill -9 "${pid}" >/dev/null 2>&1 || true
   done
   wait >/dev/null 2>&1 || true
   return "${status}"
@@ -112,7 +136,7 @@ import sys
 path, expr = sys.argv[1], sys.argv[2]
 with open(path, "r", encoding="utf-8") as fh:
     data = json.load(fh)
-if eval(expr, {"__builtins__": {"len": len}}, {"data": data}):
+if eval(expr, {"__builtins__": {"all": all, "any": any, "len": len}}, {"data": data}):
     sys.exit(0)
 sys.exit(1)
 PY
@@ -129,6 +153,22 @@ PY
   return 1
 }
 
+preflight_port() {
+  local port="$1"
+  python3 - "${port}" <<'PY'
+import socket
+import sys
+
+port = int(sys.argv[1])
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind(("127.0.0.1", port))
+    except OSError as exc:
+        raise SystemExit(f"port {port} is not free: {exc}")
+PY
+}
+
 request_id="{\"cluster_name\":\"${CLUSTER_NAME}\",\"operator_name\":\"smoke\"}"
 id_body="{\"id\":${request_id}}"
 raft_peers=""
@@ -137,6 +177,14 @@ for i in $(seq 1 "${META_COUNT}"); do
     raft_peers="${raft_peers},"
   fi
   raft_peers="${raft_peers}${i},127.0.0.1:$((MS_RAFT_PORT + i - 1)),127.0.0.1:$((MS_SNAPSHOT_PORT + i - 1)),0"
+done
+
+for i in $(seq 1 "${META_COUNT}"); do
+  ms_port=$((MS_PORT + (i - 1) * MS_PORT_STEP))
+  preflight_port "${ms_port}"
+  preflight_port "$((ms_port - 1000))"
+  preflight_port "$((MS_RAFT_PORT + i - 1))"
+  preflight_port "$((MS_SNAPSHOT_PORT + i - 1))"
 done
 
 for i in $(seq 1 "${META_COUNT}"); do
@@ -157,7 +205,9 @@ for i in $(seq 1 "${META_COUNT}"); do
     --metaserver_balance_routine_interval_ms=3000 \
     --metaserver_placement_host_deduplicate=false \
     --metaserver_forbid_auto_register_for_convict_server=false \
+    --metaserver_consul_announce_enabled=false \
     --metaserver_log_level="${METASERVER_LOG_LEVEL}" \
+    ${METASERVER_EXTRA_FLAGS} \
     > "${ms_dir}/stdout" \
     2> "${ms_dir}/stderr" &
   echo "$!" > "${SMOKE_DIR}/metaserver${i}.pid"
@@ -342,7 +392,8 @@ post_json \
         \"primary_prefer\": {\"vregion\": \"vregion\", \"vdc\": \"vdc1\", \"vau\": \"vau1\"}
       }
     ],
-    \"partition_unit_relation\": \"ANTI_ENTROPY\",
+    \"partition_unit_relation\": \"${TABLE_PARTITION_UNIT_RELATION}\",
+    \"election_policy\": \"${TABLE_ELECTION_POLICY}\",
     \"quota\": {\"ops_read\": 1000},
     \"config\": {}
   }" \
@@ -373,8 +424,16 @@ wait_for_json_field \
   "${leader_port}" \
   "QueryService/ListPartition" \
   "{\"id\":${request_id},\"read_stale\":false,\"namespace_name\":\"${NAMESPACE_NAME}\",\"table_name\":\"${TABLE_NAME}\"}" \
-  "len(data.get('info', [])) >= 1 and len(data.get('info', [{}])[0].get('partition_info', [])) >= ${REPLICA_COUNT}" \
+  "len(data.get('info', [])) >= 1 and len(data.get('info', [{}])[0].get('partition_info', [])) >= ${REPLICA_COUNT} and all(p.get('role') in ('PARTITION_ROLE_PRIMARY', 'PARTITION_ROLE_SECONDARY') and p.get('state', 'P_NORMAL') == 'P_NORMAL' for p in data.get('info', [{}])[0].get('partition_info', []))" \
   "${partition_json}" \
+  90
+
+wait_for_json_field \
+  "${leader_port}" \
+  "QueryService/ListTable" \
+  "{\"id\":${request_id},\"read_stale\":false,\"namespace_name\":\"${NAMESPACE_NAME}\",\"table_name\":\"${TABLE_NAME}\"}" \
+  "len(data.get('tables', [])) >= 1 and data.get('tables', [{}])[0].get('state', 'TABLE_NORMAL') == 'TABLE_NORMAL'" \
+  "${table_json}" \
   90
 
 echo "TemporalStore Ubuntu smoke test passed"

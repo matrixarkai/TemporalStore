@@ -10,9 +10,23 @@ if (CYGWIN)
 else()
     add_library(bcache2-shared SHARED ${HDRS} ${SRCS})
 endif()
+target_link_directories(bcache2-shared PRIVATE /root/src/cmake-glue/lib)
 target_link_libraries(bcache2-shared
     common
-    bcache2_proto)
+    bcache2_proto
+    -Wl,--whole-archive
+    brpc-static
+    -Wl,--no-whole-archive
+    byte
+    byteraft
+    /usr/lib/x86_64-linux-gnu/libleveldb.so
+    /usr/lib/x86_64-linux-gnu/libfmt.so
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    /usr/lib/x86_64-linux-gnu/libabsl_throw_delegate.so
+    /usr/lib/x86_64-linux-gnu/libabsl_time_zone.so
+    /usr/lib/x86_64-linux-gnu/libabsl_raw_logging_internal.so
+    /usr/lib/x86_64-linux-gnu/libabsl_log_severity.so)
 set_target_properties(bcache2-shared PROPERTIES
                       LINKER_LANGUAGE CXX
                       CXX_STANDARD 17
