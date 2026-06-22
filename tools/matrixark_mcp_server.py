@@ -1750,24 +1750,154 @@ class MatrixArkLocalAdapter:
             "raw_events_duplicated": False,
         }
 
-    def append_node_summary_embeddings(
+    def node_summary_source_records(
+        self,
+        *,
+        records: list[Json],
+        node_path: list[str],
+        scope: Json,
+        max_events: int = 8,
+        max_child_summaries: int = 8,
+    ) -> tuple[list[Json], list[Json]]:
+        prefix = node_path_tuple(node_path)
+        child_summaries: list[Json] = []
+        events: list[Json] = []
+        seen_summary_keys: set[tuple[int, str]] = set()
+        for record in reversed(records):
+            if not scope_matches(record.get("scope", record.get("envelope", {}).get("scope", {})), scope):
+                continue
+            record_path = node_path_tuple(record.get("node_path", []))
+            if not record_path or not starts_with_path(record_path, prefix):
+                continue
+            if record.get("record_type") == "context_summary" and record.get("summary_type") in {"node_l0", "node_l1", "batch_l0", "session_l0"}:
+                if len(child_summaries) >= max_child_summaries:
+                    continue
+                try:
+                    node_hash = int(record.get("node_hash"))
+                except (TypeError, ValueError):
+                    continue
+                key = (node_hash, str(record.get("summary_type", "")))
+                if key in seen_summary_keys:
+                    continue
+                if node_path_tuple(record.get("node_path", [])) == prefix:
+                    continue
+                seen_summary_keys.add(key)
+                child_summaries.append(record)
+            elif record.get("record_type") == "context_event":
+                if len(events) >= max_events:
+                    continue
+                events.append(record)
+        return list(reversed(events[:max_events])), list(reversed(child_summaries[:max_child_summaries]))
+
+    def mark_node_summary_dirty(
         self,
         *,
         node_path: list[str],
-        source_text: str,
         scope: Json,
         updated_at_ms: int,
+        source_ref_type: str,
         source_hash_field: str,
         source_hash: int,
-    ) -> None:
-        for depth, prefix in enumerate(node_prefixes(node_path), start=1):
-            prefix_hash = stable_hash("/".join(prefix))
-            prefix_label = " / ".join(prefix)
+        dirty_reason: str = "new_event",
+        propagate_depth: int | None = None,
+    ) -> list[int]:
+        prefixes = node_prefixes(node_path)
+        if propagate_depth is not None and propagate_depth >= 0:
+            prefixes = prefixes[max(0, len(prefixes) - propagate_depth - 1) :]
+        dirty_hashes: list[int] = []
+        for depth, prefix in enumerate(prefixes, start=1):
+            node_hash = stable_hash("/".join(prefix))
+            dirty_hash = stable_hash(
+                f"summary_dirty:{node_hash}:{dirty_reason}:{source_ref_type}:{source_hash}:{updated_at_ms}"
+            )
+            dirty_hashes.append(dirty_hash)
+            self.append(
+                {
+                    "record_type": "context_summary_dirty",
+                    "dirty_hash": dirty_hash,
+                    "node_hash": node_hash,
+                    "node_path": prefix,
+                    "depth": len(prefix),
+                    "dirty_reason": dirty_reason,
+                    "source_ref_type": source_ref_type,
+                    source_hash_field: source_hash,
+                    "changed_ref_count": 1,
+                    "propagate_depth": propagate_depth if propagate_depth is not None else len(node_path),
+                    "scope": scope,
+                    "status": "pending",
+                    "created_at_ms": updated_at_ms,
+                    "updated_at_ms": updated_at_ms,
+                }
+            )
+        return dirty_hashes
+
+    def refresh_dirty_node_summaries(
+        self,
+        *,
+        scope: Json,
+        limit: int = 64,
+        refreshed_at_ms: int | None = None,
+    ) -> Json:
+        refreshed_at_ms = refreshed_at_ms or now_ms()
+        records = self.read_all()
+        completed_dirty_hashes = {
+            int(record.get("dirty_hash"))
+            for record in records
+            if record.get("record_type") == "context_summary_refresh_audit"
+            and record.get("status") == "refreshed"
+            and record.get("dirty_hash") is not None
+        }
+        pending_by_node: dict[int, Json] = {}
+        for record in records:
+            if record.get("record_type") != "context_summary_dirty":
+                continue
+            if not scope_matches(record.get("scope", {}), scope):
+                continue
+            try:
+                dirty_hash = int(record.get("dirty_hash"))
+                node_hash = int(record.get("node_hash"))
+            except (TypeError, ValueError):
+                continue
+            if dirty_hash in completed_dirty_hashes:
+                continue
+            current = pending_by_node.get(node_hash)
+            if current is None or int(record.get("updated_at_ms") or 0) >= int(current.get("updated_at_ms") or 0):
+                pending_by_node[node_hash] = record
+        refreshed = []
+        for dirty in sorted(pending_by_node.values(), key=lambda item: int(item.get("updated_at_ms") or 0))[:limit]:
+            node_path = [str(part) for part in dirty.get("node_path", [])]
+            if not node_path:
+                continue
+            node_hash = int(dirty["node_hash"])
+            events, child_summaries = self.node_summary_source_records(
+                records=records,
+                node_path=node_path,
+                scope=dirty.get("scope", scope),
+            )
+            event_texts = [str(record.get("text", "")) for record in events if record.get("text")]
+            child_summary_texts = [
+                str(record.get("summary_text", ""))
+                for record in child_summaries
+                if record.get("summary_text")
+            ]
+            source_text = " ".join(child_summary_texts + event_texts)
+            if not source_text:
+                source_text = " ".join(node_path)
+            prefix_label = " / ".join(node_path)
             l0_summary = summarize_text(f"{prefix_label} :: {source_text}", limit=220)
             l1_summary = summarize_text(
                 f"Context node {prefix_label}. Overview: {source_text}. "
                 f"This node belongs to path {prefix_label} and should be used for tree-first retrieval before leaf event/entity recall.",
                 limit=1200,
+            )
+            source_event_ids = [int(record["event_id_hash"]) for record in events if record.get("event_id_hash") is not None]
+            source_summary_hashes = [
+                int(record.get("summary_hash") or record.get("node_hash"))
+                for record in child_summaries
+                if record.get("summary_hash") is not None or record.get("node_hash") is not None
+            ]
+            version_hash = stable_hash(
+                f"summary_version:{node_hash}:{dirty.get('dirty_hash')}:{source_event_ids}:{source_summary_hashes}:{refreshed_at_ms}"
             )
             for level, summary_text, embedding_type in [
                 ("node_l0", l0_summary, "node_l0"),
@@ -1777,13 +1907,16 @@ class MatrixArkLocalAdapter:
                     {
                         "record_type": "context_summary",
                         "summary_type": level,
-                        "node_hash": prefix_hash,
-                        "node_path": prefix,
-                        "depth": depth,
+                        "summary_version_hash": version_hash,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "depth": len(node_path),
                         "summary_text": summary_text,
-                        source_hash_field: source_hash,
-                        "scope": scope,
-                        "updated_at_ms": updated_at_ms,
+                        "source_event_ids": source_event_ids,
+                        "source_summary_hashes": source_summary_hashes,
+                        "dirty_hash": dirty.get("dirty_hash"),
+                        "scope": dirty.get("scope", scope),
+                        "updated_at_ms": refreshed_at_ms,
                     }
                 )
                 self.append(
@@ -1791,18 +1924,77 @@ class MatrixArkLocalAdapter:
                         "record_type": "context_embedding",
                         "embedding_type": embedding_type,
                         "ref_type": "node",
-                        "ref_hash": prefix_hash,
-                        "node_hash": prefix_hash,
-                        "node_path": prefix,
-                        "depth": depth,
+                        "ref_hash": node_hash,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "depth": len(node_path),
                         "dim": EMBEDDING_DIM,
                         "model": "matrixark-local-token-hash-v1",
                         "vector": embedding_for_text(summary_text),
-                        source_hash_field: source_hash,
-                        "scope": scope,
-                        "updated_at_ms": updated_at_ms,
+                        "summary_version_hash": version_hash,
+                        "dirty_hash": dirty.get("dirty_hash"),
+                        "scope": dirty.get("scope", scope),
+                        "updated_at_ms": refreshed_at_ms,
                     }
                 )
+            self.append(
+                {
+                    "record_type": "context_summary_refresh_audit",
+                    "dirty_hash": dirty.get("dirty_hash"),
+                    "node_hash": node_hash,
+                    "node_path": node_path,
+                    "summary_version_hash": version_hash,
+                    "source_event_ids": source_event_ids,
+                    "source_summary_hashes": source_summary_hashes,
+                    "status": "refreshed",
+                    "worker": "matrixark-local-async-summary-worker",
+                    "refreshed_at_ms": refreshed_at_ms,
+                    "scope": dirty.get("scope", scope),
+                }
+            )
+            refreshed.append(
+                {
+                    "dirty_hash": dirty.get("dirty_hash"),
+                    "node_hash": node_hash,
+                    "node_path": node_path,
+                    "summary_version_hash": version_hash,
+                    "source_event_count": len(source_event_ids),
+                    "source_summary_count": len(source_summary_hashes),
+                }
+            )
+        return {
+            "status": "ok",
+            "refreshed_count": len(refreshed),
+            "refreshed": refreshed,
+        }
+
+    def append_node_summary_embeddings(
+        self,
+        *,
+        node_path: list[str],
+        source_text: str,
+        scope: Json,
+        updated_at_ms: int,
+        source_hash_field: str,
+        source_hash: int,
+    ) -> Json:
+        dirty_hashes = self.mark_node_summary_dirty(
+            node_path=node_path,
+            scope=scope,
+            updated_at_ms=updated_at_ms,
+            source_ref_type=source_hash_field.removeprefix("source_").removesuffix("_hash"),
+            source_hash_field=source_hash_field,
+            source_hash=source_hash,
+            dirty_reason="new_event",
+        )
+        refresh_result = self.refresh_dirty_node_summaries(
+            scope=scope,
+            refreshed_at_ms=updated_at_ms,
+        )
+        return {
+            "dirty_hashes": dirty_hashes,
+            "refresh_result": refresh_result,
+        }
 
     def ingest(self, args: Json, *, hook: Json | None = None) -> Json:
         envelope = normalize_envelope(args, default_kind="message")
@@ -1831,14 +2023,6 @@ class MatrixArkLocalAdapter:
         summary_text = summarize_text(text)
         event_embedding = embedding_for_text(text)
         summary_embedding = embedding_for_text(" ".join(node_path + [summary_text]))
-        self.append_node_summary_embeddings(
-            node_path=node_path,
-            source_text=text,
-            scope=envelope["scope"],
-            updated_at_ms=envelope["ingestion_time_ms"],
-            source_hash_field="source_event_hash",
-            source_hash=event_id_hash,
-        )
         session_key_parts = [str(part) for part in context_node_key(envelope)]
         if any(session_key_parts):
             session_summary_source = " ".join(
@@ -1907,6 +2091,14 @@ class MatrixArkLocalAdapter:
         }
         self.append(record)
         self.append_session_buffer_event(envelope=envelope, event_id_hash=event_id_hash, node_hash=node_hash, node_path=node_path, hook=hook)
+        summary_refresh = self.append_node_summary_embeddings(
+            node_path=node_path,
+            source_text=text,
+            scope=envelope["scope"],
+            updated_at_ms=envelope["ingestion_time_ms"],
+            source_hash_field="source_event_hash",
+            source_hash=event_id_hash,
+        )
         pending_event_count = len(self.pending_session_events(envelope["scope"]))
         auto_batch_result: Json | None = None
         auto_batch_extract = bool(args.get("auto_batch_extract", False))
@@ -1936,6 +2128,7 @@ class MatrixArkLocalAdapter:
             "prior_message_count": extraction.get("prior_message_count", 0),
             "prior_summary_count": extraction.get("prior_summary_count", 0),
             "quality_warning": extraction.get("quality_warning", ""),
+            "summary_refresh": summary_refresh,
             "session_buffer": {
                 "buffer_key": list(session_buffer_key(envelope)),
                 "pending_event_count": pending_event_count,
@@ -1981,15 +2174,6 @@ class MatrixArkLocalAdapter:
         node_path = normalized_node_path(envelope, node_hint)
         node_hash = stable_hash("/".join(node_path))
         batch_summary = extraction["batch_summary"]
-
-        self.append_node_summary_embeddings(
-            node_path=node_path,
-            source_text=batch_summary,
-            scope=envelope["scope"],
-            updated_at_ms=envelope["ingestion_time_ms"],
-            source_hash_field="source_batch_hash",
-            source_hash=batch_id_hash,
-        )
 
         event_hashes: list[int] = list(source_event_ids) if derive_from_existing_events else []
         if not derive_from_existing_events:
@@ -2212,6 +2396,14 @@ class MatrixArkLocalAdapter:
                 "created_at_ms": now_ms(),
             }
         )
+        summary_refresh = self.append_node_summary_embeddings(
+            node_path=node_path,
+            source_text=batch_summary,
+            scope=envelope["scope"],
+            updated_at_ms=envelope["ingestion_time_ms"],
+            source_hash_field="source_batch_hash",
+            source_hash=batch_id_hash,
+        )
         return {
             "status": "accepted",
             "mode": extraction["mode"],
@@ -2226,6 +2418,7 @@ class MatrixArkLocalAdapter:
             "entities_written": len(entity_hashes),
             "segments_written": len(segment_hashes),
             "summary_hash": summary_hash,
+            "summary_refresh": summary_refresh,
             "indexes_written": len(extraction["indexes"]),
             "one_pass": True,
             "threshold_messages": threshold,

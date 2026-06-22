@@ -133,6 +133,64 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         self.assertTrue(event["summary_text"])
         self.assertEqual(len(event["summary_embedding"]), 32)
 
+    def test_ingest_marks_dirty_and_async_refresh_writes_versioned_node_summaries(self):
+        ingest = self.call_tool(
+            "matrixark_ingest",
+            {
+                "messages": [
+                    {"role": "user", "content": "Alice approved the GPU request after finance review."}
+                ],
+                "scope": {"user_id": "alice", "session_id": "sess-summary"},
+                "metadata": {"node_path": ["user:alice", "topic:approvals", "entity:gpu_request"]},
+            },
+        )
+        self.assertEqual(ingest["status"], "accepted")
+        self.assertGreaterEqual(ingest["summary_refresh"]["refresh_result"]["refreshed_count"], 1)
+
+        replay = self.call_tool("matrixark_replay", {"context_pack_id": "debug"})
+        dirty_records = [
+            record
+            for record in replay["events"]
+            if record.get("record_type") == "context_summary_dirty"
+        ]
+        self.assertTrue(dirty_records)
+        self.assertTrue(all(record.get("status") == "pending" for record in dirty_records))
+
+        refresh_audits = [
+            record
+            for record in replay["events"]
+            if record.get("record_type") == "context_summary_refresh_audit"
+        ]
+        self.assertTrue(refresh_audits)
+        self.assertTrue(all(record.get("status") == "refreshed" for record in refresh_audits))
+
+        refreshed_version_hashes = {
+            record["summary_version_hash"]
+            for record in refresh_audits
+            if record.get("summary_version_hash")
+        }
+        versioned_summaries = [
+            record
+            for record in replay["events"]
+            if record.get("record_type") == "context_summary"
+            and record.get("summary_type") in {"node_l0", "node_l1"}
+            and record.get("summary_version_hash") in refreshed_version_hashes
+        ]
+        self.assertTrue(versioned_summaries)
+        self.assertTrue(
+            any(ingest["event_id_hash"] in record.get("source_event_ids", []) for record in versioned_summaries)
+        )
+
+        versioned_embeddings = [
+            record
+            for record in replay["events"]
+            if record.get("record_type") == "context_embedding"
+            and record.get("embedding_type") in {"node_l0", "node_l1"}
+            and record.get("summary_version_hash") in refreshed_version_hashes
+        ]
+        self.assertTrue(versioned_embeddings)
+        self.assertTrue(all(len(record.get("vector", [])) == 32 for record in versioned_embeddings))
+
     def test_access_management_key_lifecycle_and_session_isolation(self):
         account = self.call_tool(
             "matrixark_admin_create_account",
