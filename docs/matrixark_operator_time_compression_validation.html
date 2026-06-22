@@ -1,0 +1,229 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>MatrixArk Operators And Time Compression Validation</title>
+<style>body{font-family:Inter,Arial,sans-serif;max-width:1100px;margin:32px auto;padding:0 24px;line-height:1.5}pre{background:#111827;color:#e5e7eb;padding:16px;border-radius:8px;overflow:auto}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}table{border-collapse:collapse;width:100%}td,th{border:1px solid #d1d5db;padding:8px;text-align:left}th{background:#f3f4f6}</style></head><body><pre># MatrixArk Operators And Time Compression Validation
+
+This doc records the local validation for MatrixArk context operators and time compression.
+The test uses the Python MatrixArk runtime with TemporalStore-shaped records. C++ TemporalStore already has native `COMPRESS_EVENTS`, `WRITE_COMPRESSION_EVENT`, `QUERY_COMPRESSION_EVENTS`, and `QUERY_NODE_CONTEXT` tests; this run proves the MatrixArk extraction/retrieval path can also use compressed windows in a ContextPack.
+
+## Command
+
+```bash
+PYTHONPATH=. python3 tools/run_matrixark_operator_compression_test.py
+PYTHONPATH=. python3 -m unittest tools.test_matrixark_mcp_server
+```
+
+## Result
+
+```json
+{
+  &quot;compression_query_count&quot;: 1,
+  &quot;record_counts&quot;: {
+    &quot;context_compression_event&quot;: 1,
+    &quot;context_embedding&quot;: 37,
+    &quot;context_event&quot;: 3,
+    &quot;context_pack_audit&quot;: 1,
+    &quot;context_summary&quot;: 33,
+    &quot;matrixark_audit_log&quot;: 4,
+    &quot;session_buffer_event&quot;: 3
+  },
+  &quot;statistical&quot;: {
+    &quot;AVG&quot;: 13.333333,
+    &quot;COUNT&quot;: 3,
+    &quot;MAX&quot;: 25.0,
+    &quot;SUM&quot;: 40.0
+  },
+  &quot;status&quot;: &quot;passed&quot;
+}
+```
+
+## Operators Covered
+
+| Operator | Status | Notes |
+| --- | --- | --- |
+| `COUNT` | Passed | Counts records: `3`. |
+| `SUM` | Passed | Sums numeric values: `40.0`. |
+| `AVG` | Passed | Averages numeric values: `13.333333`. |
+| `MAX` | Passed | Max numeric value: `25.0`. |
+| `LATEST` | Passed | Latest record chosen by `updated_at_ms`: `new`. |
+| `DECAY_SCORE` | Passed | Emits `origin_score`, `time_score`, `business_score`, `final_score`, and formula. |
+| `LLM_MERGE` | Covered | Entity update tests cover deterministic field patches and `ContextEntity` merge/update audit; production LLM merge remains provider-backed. |
+| `TIME_COMPRESS` | Passed | Writes a source-linked compressed window and retrieval selects it in a tight ContextPack. |
+| `VALID_AS_OF` | Covered in C++ | `QuerySummaries` / `QueryNodeContext` tests select summaries as of a timestamp. |
+| `BLOCK_IF_STALE` | Policy covered | Stale-blocker packing policy is present; destructive pruning is not enabled in MVP. |
+
+## TIME_COMPRESS Debug Data
+
+```json
+{
+  &quot;compression_id_hash&quot;: 8849697440636724129,
+  &quot;selected_in_context_pack&quot;: true,
+  &quot;selected_ref&quot;: {
+    &quot;business_score&quot;: 0.5,
+    &quot;embedding_score&quot;: 0.499999,
+    &quot;event_type&quot;: &quot;time_compress&quot;,
+    &quot;final_score&quot;: 0.827226,
+    &quot;keyword_score&quot;: 5,
+    &quot;node_hash&quot;: 9049490510714952373,
+    &quot;node_path&quot;: [
+      &quot;account:acct_dev&quot;,
+      &quot;tenant:tenant_dev&quot;,
+      &quot;principal:user:alice&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:operator-window&quot;
+    ],
+    &quot;node_score&quot;: 0.785048,
+    &quot;operator&quot;: &quot;TIME_COMPRESS&quot;,
+    &quot;origin_score&quot;: 0.9317519999999999,
+    &quot;packing_policy&quot;: &quot;fact&quot;,
+    &quot;packing_score&quot;: 1.0,
+    &quot;ranking_formula&quot;: &quot;Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi&quot;,
+    &quot;recall_path&quot;: &quot;primary_time_compression&quot;,
+    &quot;ref_hash&quot;: 8849697440636724129,
+    &quot;ref_type&quot;: &quot;compression&quot;,
+    &quot;scope&quot;: {
+      &quot;account_id&quot;: &quot;acct_dev&quot;,
+      &quot;session_hash&quot;: 7101050098322077057,
+      &quot;session_id&quot;: &quot;operator-window&quot;,
+      &quot;team&quot;: &quot;infra&quot;,
+      &quot;tenant_hash&quot;: 5019518775864453950,
+      &quot;tenant_id&quot;: &quot;tenant_dev&quot;,
+      &quot;user_hash&quot;: 4964277056467908383,
+      &quot;user_id&quot;: &quot;alice&quot;
+    },
+    &quot;score&quot;: 0.827226,
+    &quot;source_end_ms&quot;: 1782119740794,
+    &quot;source_event_ids&quot;: [
+      1264545819372063038,
+      6457433297074149587
+    ],
+    &quot;source_start_ms&quot;: 1782119740784,
+    &quot;sparse_score&quot;: 1.0,
+    &quot;text&quot;: &quot;TIME_COMPRESS: Temporal compression window [1782119740784, 1782119740794] contains 2 selected events plus additional source events. user: Alice approved the old GPU purchase after finance reviewed it. | user: The GPU approval budget was 42000 dollars.&quot;,
+    &quot;time_score&quot;: 1.0,
+    &quot;token_estimate&quot;: 33,
+    &quot;updated_at_ms&quot;: 1782119750794
+  },
+  &quot;source_event_count&quot;: 2,
+  &quot;source_event_ids&quot;: [
+    1264545819372063038,
+    6457433297074149587
+  ],
+  &quot;truncated_source_events&quot;: true
+}
+```
+
+Key checks:
+
+- Compression is non-destructive: raw `context_event` records remain in replay.
+- The compression record stores `source_event_ids` for audit and replay.
+- Retrieval treats the compressed summary as `ref_type = compression`.
+- Packing boosts source-linked compression summaries when they cover multiple source events, so old/cold windows can save tokens.
+
+## Selected ContextPack
+
+```json
+{
+  &quot;recall_policy&quot;: {
+    &quot;auxiliary_path&quot;: &quot;keyword graph inside selected tree after secondary-index prefilter&quot;,
+    &quot;auxiliary_quota&quot;: 2,
+    &quot;primary_path&quot;: &quot;tree-first hybrid dense semantic + sparse lexical after secondary-index prefilter&quot;,
+    &quot;secondary_index_filter&quot;: {
+      &quot;applied_before_embedding_scoring&quot;: true,
+      &quot;dropped_candidate_count&quot;: 1,
+      &quot;enabled&quot;: true,
+      &quot;matched_candidate_count&quot;: 2,
+      &quot;mode&quot;: &quot;AND across groups, OR within each group&quot;,
+      &quot;required_groups&quot;: [
+        [
+          &quot;classification:confirmation&quot;,
+          &quot;entity_type:approval_state&quot;,
+          &quot;entity_type:confirmation&quot;,
+          &quot;event_type:confirmation&quot;,
+          &quot;segment_topic:approval_budget&quot;
+        ]
+      ]
+    },
+    &quot;time_decay&quot;: {
+      &quot;freshness_tolerance_ms&quot;: 86400000,
+      &quot;half_life_ms&quot;: 604800000
+    },
+    &quot;tree_traversal&quot;: {
+      &quot;enabled&quot;: true,
+      &quot;fallback_to_flat&quot;: false,
+      &quot;max_children_scored_per_parent&quot;: 10000,
+      &quot;selected_leaf_count&quot;: 1,
+      &quot;selected_node_count&quot;: 5,
+      &quot;selected_path_count&quot;: 5,
+      &quot;summary_embeddings&quot;: [
+        &quot;node_l0&quot;,
+        &quot;node_l1&quot;
+      ],
+      &quot;top_k_per_layer&quot;: 8
+    },
+    &quot;weights&quot;: {
+      &quot;business&quot;: 0.25,
+      &quot;time&quot;: 0.05
+    }
+  },
+  &quot;selected_refs&quot;: [
+    {
+      &quot;business_score&quot;: 0.5,
+      &quot;embedding_score&quot;: 0.499999,
+      &quot;event_type&quot;: &quot;time_compress&quot;,
+      &quot;final_score&quot;: 0.827226,
+      &quot;keyword_score&quot;: 5,
+      &quot;node_hash&quot;: 9049490510714952373,
+      &quot;node_path&quot;: [
+        &quot;account:acct_dev&quot;,
+        &quot;tenant:tenant_dev&quot;,
+        &quot;principal:user:alice&quot;,
+        &quot;collection:sessions&quot;,
+        &quot;session:operator-window&quot;
+      ],
+      &quot;node_score&quot;: 0.785048,
+      &quot;operator&quot;: &quot;TIME_COMPRESS&quot;,
+      &quot;origin_score&quot;: 0.9317519999999999,
+      &quot;packing_policy&quot;: &quot;fact&quot;,
+      &quot;packing_score&quot;: 1.0,
+      &quot;ranking_formula&quot;: &quot;Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi&quot;,
+      &quot;recall_path&quot;: &quot;primary_time_compression&quot;,
+      &quot;ref_hash&quot;: 8849697440636724129,
+      &quot;ref_type&quot;: &quot;compression&quot;,
+      &quot;scope&quot;: {
+        &quot;account_id&quot;: &quot;acct_dev&quot;,
+        &quot;session_hash&quot;: 7101050098322077057,
+        &quot;session_id&quot;: &quot;operator-window&quot;,
+        &quot;team&quot;: &quot;infra&quot;,
+        &quot;tenant_hash&quot;: 5019518775864453950,
+        &quot;tenant_id&quot;: &quot;tenant_dev&quot;,
+        &quot;user_hash&quot;: 4964277056467908383,
+        &quot;user_id&quot;: &quot;alice&quot;
+      },
+      &quot;score&quot;: 0.827226,
+      &quot;source_end_ms&quot;: 1782119740794,
+      &quot;source_event_ids&quot;: [
+        1264545819372063038,
+        6457433297074149587
+      ],
+      &quot;source_start_ms&quot;: 1782119740784,
+      &quot;sparse_score&quot;: 1.0,
+      &quot;text&quot;: &quot;TIME_COMPRESS: Temporal compression window [1782119740784, 1782119740794] contains 2 selected events plus additional source events. user: Alice approved the old GPU purchase after finance reviewed it. | user: The GPU approval budget was 42000 dollars.&quot;,
+      &quot;time_score&quot;: 1.0,
+      &quot;token_estimate&quot;: 33,
+      &quot;updated_at_ms&quot;: 1782119750794
+    }
+  ],
+  &quot;used_context_tokens&quot;: 33
+}
+```
+
+## C++ TemporalStore Coverage
+
+Native C++ coverage lives in `src/extension/context/test.cc`:
+
+- `TreeEmbeddingSummaryAndCompressionRoundTrip`
+- `TemporalCompressionBuildsReplayableSummaryWithoutDeletingSources`
+- decayed event query tests using `decay_half_life_ms`, `min_decayed_score`, and `rank_by_decayed_score`
+
+Those tests prove the storage-side records and time-window query semantics. This MatrixArk validation proves the application-side retrieval and token-packing path can consume the compressed records.
+</pre></body></html>
