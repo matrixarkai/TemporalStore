@@ -227,6 +227,7 @@ def main() -> int:
                 **common,
                 "threshold_messages": args.session_commit_threshold,
                 "force": True,
+                "commit_reason": "hook_boundary",
                 "agent_hook": {
                     "source": "codex",
                     "hook_type": "session_commit",
@@ -266,7 +267,9 @@ def main() -> int:
                 "session_commit": {
                     "status": commit.get("status"),
                     "commit_id_hash": commit.get("commit_id_hash"),
-                    "source_event_count": commit.get("source_event_count", 0),
+                    "commit_reason": commit.get("commit_reason"),
+                    "trigger_policy": commit.get("trigger_policy"),
+                    "source_event_count": commit.get("committed_event_count", len(commit.get("source_event_ids", []))),
                     "segments_written": commit.get("segments_written", 0),
                     "entities_written": commit.get("entities_written", 0),
                     "raw_events_duplicated": commit.get("raw_events_duplicated"),
