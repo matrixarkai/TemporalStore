@@ -1359,6 +1359,66 @@ def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float,
     return (boosted, token_efficiency, score)
 
 
+def context_text_hashes(text: str) -> set[int]:
+    compact = " ".join(str(text).split())
+    variants = {compact[:512]}
+    without_role = re.sub(r"^(user|assistant|tool|system):\s*", "", compact, flags=re.IGNORECASE)
+    variants.add(without_role[:512])
+    tokenized = tokens(compact)
+    if tokenized:
+        variants.add(" ".join(tokenized)[:512])
+        if tokenized[0] in {"user", "assistant", "tool", "system"}:
+            variants.add(" ".join(tokenized[1:])[:512])
+    return {stable_hash(variant) for variant in variants if variant}
+
+
+def local_context_budget(args: Json) -> Json:
+    raw_items = args.get("local_context", [])
+    if raw_items is None:
+        raw_items = []
+    if not isinstance(raw_items, list):
+        raise MatrixArkError("local_context must be an array")
+    items: list[Json] = []
+    text_hashes: set[int] = set()
+    token_total = 0
+    for index, item in enumerate(raw_items):
+        if isinstance(item, str):
+            text = item
+            source = f"local:{index}"
+            ref_type = "local_context"
+        elif isinstance(item, dict):
+            text = str(item.get("text") or item.get("content") or "")
+            source = str(item.get("source") or item.get("ref") or f"local:{index}")
+            ref_type = str(item.get("ref_type") or "local_context")
+        else:
+            raise MatrixArkError("local_context items must be strings or objects")
+        text = clip_context_text(text)
+        if not text:
+            continue
+        item_tokens = token_count(text)
+        token_total += item_tokens
+        text_hashes.update(context_text_hashes(text))
+        items.append(
+            {
+                "ref_type": ref_type,
+                "source": source,
+                "text": text,
+                "token_estimate": item_tokens,
+                "text_hash": stable_hash(text[:512]),
+            }
+        )
+    explicit_tokens = args.get("local_context_tokens")
+    if explicit_tokens is not None:
+        if not isinstance(explicit_tokens, int) or explicit_tokens < 0:
+            raise MatrixArkError("local_context_tokens must be a non-negative integer")
+        token_total = max(token_total, explicit_tokens)
+    return {
+        "items": items,
+        "token_estimate": token_total,
+        "text_hashes": text_hashes,
+    }
+
+
 def diversify_for_question_type(candidates: list[Json], question_type: str, *, total_limit: int) -> list[Json]:
     if question_type != "multi_hop":
         return candidates[:total_limit]
@@ -1385,7 +1445,11 @@ def select_token_budgeted_refs(
     max_context_tokens: int,
     auxiliary_quota: int,
     question_type: str = "fact",
+    reserved_tokens: int = 0,
+    duplicate_text_hashes: set[int] | None = None,
 ) -> tuple[list[Json], int, Json]:
+    duplicate_text_hashes = duplicate_text_hashes or set()
+    remote_budget = max(0, max_context_tokens - max(0, reserved_tokens))
     candidates = merge_ranked_paths(
         primary,
         auxiliary,
@@ -1415,6 +1479,11 @@ def select_token_budgeted_refs(
     seen_text_hashes: set[int] = set()
     for candidate in candidates:
         ref_tokens = max(1, token_count(str(candidate.get("text", ""))))
+        candidate_text_hashes = context_text_hashes(str(candidate.get("text", "")))
+        if candidate_text_hashes.intersection(duplicate_text_hashes):
+            dropped["duplicate"] += 1
+            dropped["estimated_tokens"]["duplicate"] += ref_tokens
+            continue
         text_hash = stable_hash(str(candidate.get("text", ""))[:512])
         if text_hash in seen_text_hashes:
             dropped["duplicate"] += 1
@@ -1424,7 +1493,7 @@ def select_token_budgeted_refs(
             dropped["low_score"] += 1
             dropped["estimated_tokens"]["low_score"] += ref_tokens
             continue
-        if selected and used_tokens + ref_tokens > max_context_tokens:
+        if remote_budget <= 0 or (selected and used_tokens + ref_tokens > remote_budget):
             dropped["over_budget"] += 1
             dropped["estimated_tokens"]["over_budget"] += ref_tokens
             continue
@@ -1438,11 +1507,20 @@ def select_token_budgeted_refs(
             }
         )
         used_tokens += ref_tokens
-        if used_tokens >= max_context_tokens:
+        if used_tokens >= remote_budget:
             break
-    if not selected and candidates:
-        first = candidates[0]
-        clipped_words = tokens(str(first.get("text", "")))[:max_context_tokens]
+    if not selected and candidates and remote_budget > 0:
+        first = next(
+            (
+                candidate
+                for candidate in candidates
+                if not context_text_hashes(str(candidate.get("text", ""))).intersection(duplicate_text_hashes)
+            ),
+            None,
+        )
+        if first is None:
+            return selected, used_tokens, dropped
+        clipped_words = tokens(str(first.get("text", "")))[:remote_budget]
         selected = [{**first, "text": " ".join(clipped_words), "token_estimate": len(clipped_words)}]
         used_tokens = len(clipped_words)
         dropped["over_budget"] = max(0, len(candidates) - 1)
@@ -2536,6 +2614,7 @@ class MatrixArkLocalAdapter:
         max_context_tokens = args.get("max_context_tokens", 2048)
         if not isinstance(max_context_tokens, int) or max_context_tokens <= 0:
             raise MatrixArkError("max_context_tokens must be a positive integer")
+        local_budget = local_context_budget(args)
         query_terms = {term for term in tokens(query) if len(term) > 2}
         query_embedding = embedding_for_text(query)
         raw_reference_time_ms = args.get("reference_time_ms", now_ms())
@@ -2852,6 +2931,8 @@ class MatrixArkLocalAdapter:
             max_context_tokens=max_context_tokens,
             auxiliary_quota=auxiliary_quota,
             question_type=question_type,
+            reserved_tokens=local_budget["token_estimate"],
+            duplicate_text_hashes=local_budget["text_hashes"],
         )
         context_pack_id = stable_hash(f"{query}:{selected}:{now_ms()}")
         context_pack_id_text = str(context_pack_id)
@@ -2900,6 +2981,17 @@ class MatrixArkLocalAdapter:
             "primary_candidate_count": len(primary_matches),
             "auxiliary_candidate_count": len(auxiliary_matches),
             "used_context_tokens": used_context_tokens,
+            "used_remote_context_tokens": used_context_tokens,
+            "used_local_context_tokens": local_budget["token_estimate"],
+            "total_prompt_context_tokens": used_context_tokens + local_budget["token_estimate"],
+            "remote_context_budget_tokens": max(0, max_context_tokens - local_budget["token_estimate"]),
+            "local_context_policy": {
+                "mode": "shared_budget_dedupe",
+                "local_context_count": len(local_budget["items"]),
+                "local_context_tokens": local_budget["token_estimate"],
+                "dedupe_remote_against_local": True,
+                "remote_is_additive_only_within_remaining_budget": True,
+            },
             "dropped_refs": dropped_over_budget,
             "quality_warnings": [],
             "insufficient_context": not selected,
@@ -2918,6 +3010,11 @@ class MatrixArkLocalAdapter:
                 "question_type": question_type,
                 "packing_policy": pack["packing_policy"],
                 "recall_policy": pack["recall_policy"],
+                "local_context_policy": pack["local_context_policy"],
+                "used_local_context_tokens": pack["used_local_context_tokens"],
+                "used_remote_context_tokens": pack["used_remote_context_tokens"],
+                "total_prompt_context_tokens": pack["total_prompt_context_tokens"],
+                "remote_context_budget_tokens": pack["remote_context_budget_tokens"],
                 "primary_candidate_count": len(primary_matches),
                 "auxiliary_candidate_count": len(auxiliary_matches),
                 "created_at_ms": now_ms(),
@@ -3504,7 +3601,32 @@ TOOLS: list[Json] = [
                 "max_context_tokens": {
                     "type": "integer",
                     "default": 2048,
-                    "description": "Optional prompt context budget. Defaults to 2048.",
+                    "description": "Optional shared prompt context budget for local plus MatrixArk remote context. Defaults to 2048.",
+                },
+                "local_context": {
+                    "type": "array",
+                    "description": "Optional local context already selected by Codex/Cursor, such as file snippets, open-buffer summaries, or tool output. MatrixArk dedupes remote refs against this and only fills the remaining budget.",
+                    "items": {
+                        "oneOf": [
+                            {"type": "string"},
+                            {
+                                "type": "object",
+                                "properties": {
+                                    "text": {"type": "string"},
+                                    "content": {"type": "string"},
+                                    "source": {"type": "string"},
+                                    "ref": {"type": "string"},
+                                    "ref_type": {"type": "string"},
+                                },
+                                "additionalProperties": True,
+                            },
+                        ]
+                    },
+                },
+                "local_context_tokens": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Optional token count for local context when the caller already counted it. MatrixArk reserves at least this many tokens before adding remote refs.",
                 },
                 "reference_time_ms": {
                     "type": "integer",
