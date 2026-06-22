@@ -62,22 +62,89 @@ Latest AWS/test state:
     - time decay and business weighting;
     - an auxiliary keyword path using node path, `ContextIndex`, event/entity/segment text, and quota merge.
   - Gap: this is not yet a production sparse retrieval engine. The current sparse path scans candidate records and computes token overlap; it does not build a real inverted index, BM25 index, SPLADE sparse vector index, or learned sparse retrieval model.
+  - Why this matters:
+    - dense embeddings are strong for paraphrase and semantic similarity, but exact names, nicknames, IDs, ticket numbers, file paths, API names, product codes, dates, and rare business terms are often better served by sparse retrieval;
+    - VikingMem-style benchmark questions can include indirect or exact lexical hooks, so dense-only recall can miss answer-bearing turns even when the context exists;
+    - large enterprise context cannot rely on scanning every event/entity/segment at query time, even if tree traversal keeps candidate sets smaller than a flat VectorDB/RAG layout;
+    - sparse-first retrieval gives MatrixArk a high-precision path before dense scoring, while still keeping TemporalStore as the only serving store.
   - Target design:
-    - add a real sparse index, starting with BM25 or a SPLADE-style sparse vector path;
+    - add a real sparse index, starting with BM25 for MVP and leaving SPLADE-style sparse vectors as the learned sparse follow-up;
+    - support sparse-first retrieval for exact/rare-term queries, then dense reranking over the sparse candidates;
     - keep dense embeddings in TemporalStore as the primary semantic recall signal;
     - keep `ContextIndex` and the keyword graph as the auxiliary path for indirect-memory and entity-keyword questions;
     - add optional late reranking later, likely outside MVP, after first-stage recall is stable;
     - expose recall mode/config for `dense_only`, `sparse_only`, `dense_sparse_hybrid`, and `hybrid_plus_keyword`.
+  - Retrieval modes:
+    - `dense_only`: tree/L0/L1 summary embedding traversal plus event/entity/segment dense scoring;
+    - `sparse_only`: BM25/SPLADE candidates only, useful for exact-name and deterministic regression tests;
+    - `sparse_first_dense_rerank`: BM25/SPLADE candidate generation, then dense score and time/business priors;
+    - `dense_sparse_hybrid`: independent dense and sparse candidate pools merged by quota;
+    - `hybrid_plus_keyword`: primary dense+sparse pool plus auxiliary keyword graph expansion;
+    - `tree_first_hybrid`: layer-by-layer `ContextNode` traversal using L0/L1 summary embeddings, then sparse/dense recall only inside selected subtrees.
   - Storage model:
     - `ContextSparseTerm`: term hash, document/ref hash, term frequency, document length, scope/node path, updated time, and optional field name.
     - `ContextSparseStats`: term document frequency, corpus/document count by tenant/scope, average document length, and version.
     - Optional future `ContextSparseVector`: sparse dimension ids and weights for SPLADE-style retrieval.
+  - Minimal fields for `ContextSparseTerm`:
+    - `tenant_hash`;
+    - `term_hash`;
+    - `ref_hash`;
+    - `ref_type` (`event`, `entity`, `segment`, `summary`, `resource_chunk`);
+    - `node_hash`;
+    - `field` (`text`, `summary`, `entity_state`, `path`, `metadata`);
+    - `tf`;
+    - `doc_len`;
+    - `updated_at_ms`.
+  - Minimal fields for `ContextSparseStats`:
+    - `tenant_hash`;
+    - `term_hash`;
+    - `df`;
+    - `doc_count`;
+    - `avg_doc_len`;
+    - `version`.
+  - SPLADE follow-up fields:
+    - `ref_hash`;
+    - `model_id`;
+    - `sparse_dim_ids`;
+    - `sparse_weights`;
+    - `top_n_terms`;
+    - `quantization`;
+    - `updated_at_ms`.
+  - Ingestion path:
+    - tokenize normalized event/entity/segment/summary text;
+    - write `ContextSparseTerm` rows for high-value fields only, not every arbitrary payload field;
+    - update `ContextSparseStats` asynchronously or in bounded mini-batches to avoid write amplification;
+    - use stop-word filtering, stemming/normalization, and tenant-local term dictionaries;
+    - cap per-record indexed terms so long resources do not explode the index;
+    - for resources, index chunk summaries and selected answer-bearing spans first, not full raw L2 content by default.
   - Retrieval path:
     - apply scope/time/status filters first;
     - fetch sparse candidates from the sparse index instead of scanning all records;
+    - compute BM25 with tenant/scope-local `df`, `doc_count`, and `avg_doc_len`;
+    - for SPLADE, dot product the query sparse vector against `ContextSparseVector` candidates;
     - normalize sparse score into the existing `origin_score` blend;
+    - merge with dense node/tree traversal candidates by explicit quota, not one flat unbounded list;
     - continue to combine final score as `Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi`;
     - independently rank auxiliary keyword results and merge them with an explicit quota.
+  - Default first implementation:
+    - implement BM25 first because it is deterministic, cheap, explainable, and testable without GPU/model dependencies;
+    - store BM25 term postings in TemporalStore using hash/table records;
+    - use current dense embeddings for semantic recall;
+    - keep SPLADE behind a feature flag until model download/runtime and storage overhead are measured.
+  - Scale thresholds:
+    - if selected subtree has fewer than a bounded number of candidate records, exact dense scoring remains acceptable;
+    - if selected subtree or tenant scope exceeds the threshold, use BM25 sparse-first or hybrid candidate generation;
+    - candidate limits should be config-driven: `sparse_top_k`, `dense_top_k`, `keyword_top_k`, `final_top_k`, and `deadline_ms`.
+  - Query planning:
+    - exact identifiers, names, file paths, API names, dates, and quoted phrases should raise the sparse quota;
+    - vague semantic questions should raise the dense quota;
+    - "remember my nickname" and similar indirect-memory questions should raise the keyword-graph quota;
+    - current-state questions should consult `ContextEntity`/operator state before raw event sparse search.
+  - Observability:
+    - record per-path candidate counts, selected refs, dropped refs, score distributions, and latency;
+    - report dense-only vs sparse-only vs hybrid hit deltas in benchmark artifacts;
+    - add counters for sparse index freshness lag and postings scanned per query;
+    - expose why a candidate was selected: dense, sparse, keyword, time, business, entity-state, or stale-blocker.
   - Benchmark plan:
     - dense-only vs sparse-only vs dense+sparse hybrid vs hybrid+keyword path;
     - run LOCOMO and LongMemEval-style/official datasets with the same token budgets;
@@ -89,6 +156,12 @@ Latest AWS/test state:
     - hybrid beats or matches both on mixed benchmark subsets;
     - hybrid+keyword improves indirect-memory examples without overwhelming primary recall;
     - C++ TemporalStore direct backend stores sparse terms/stats and returns deterministic sparse candidates.
+  - Acceptance gates:
+    - no full-record sparse scan for large tenant scopes;
+    - sparse index writes are idempotent for repeated ingestion;
+    - BM25 scores are deterministic between Python memory and C++ TemporalStore direct backend;
+    - sparse-first retrieval improves exact/rare-term benchmark buckets without reducing broad semantic recall;
+    - benchmark report includes path-level recall and token-efficiency metrics for dense, sparse, hybrid, and keyword paths.
 
 - Implement a full VikingMem-style Keyword Graph for auxiliary recall.
   - Current status: `docs/matrixark_weighted_multi_path_recall.md` implements an auxiliary keyword path over node path, `ContextIndex`, event type, entity text, and segment topics. This is useful, but it is not yet the full keyword graph described in VikingMem.
