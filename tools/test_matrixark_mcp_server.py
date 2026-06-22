@@ -37,6 +37,7 @@ class MatrixArkMcpServerTest(unittest.TestCase):
             names,
             {
                 "matrixark_ingest",
+                "matrixark_batch_extract",
                 "matrixark_retrieve",
                 "matrixark_feedback",
                 "matrixark_replay",
