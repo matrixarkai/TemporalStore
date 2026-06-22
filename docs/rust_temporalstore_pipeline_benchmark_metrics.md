@@ -20,6 +20,12 @@ Current evidence gates require:
 The endpoint benchmark runner also now forces `--require-rust-temporalstore`; it no longer exposes a
 Python-only benchmark evidence mode.
 
+Repeat benchmark runs now also keep the default Rust harness build cache under the repository
+target tree (`target/temporalstore-context-benchmark`) instead of `/tmp`. This avoids losing the
+release harness between long LOCOMO/LongMemEval_s replays on machines where `/tmp` is periodically
+cleaned or reset. Callers can still override this with `CARGO_TARGET_DIR` when they intentionally
+want a different cache location.
+
 ## Fresh Local Rust Pipeline Validation
 
 Command:
@@ -51,6 +57,20 @@ Result:
 This validates the Rust-native context workflow gate: ingestion/extraction, retrieval, injection,
 management APIs, shared-store sync/async replay, Raft read path, benchmark sweep, and external
 benchmark fixture.
+
+The same gate was also run from a Ubuntu-native checkout at
+`/home/vj/temporalstore-rust-native`, copied from the Windows worktree to avoid the mounted-folder
+build penalty. Validation passed with:
+
+```bash
+cd /home/vj/temporalstore-rust-native
+cargo check -p temporalstore-rust --bin context_workflow_harness
+cargo run -p temporalstore-rust --bin context_workflow_harness \
+  > /tmp/temporalstore-context-workflow-validation-native.log
+python3 tools/validate_aws_validation_log.py \
+  --job temporalstore-context-workflow-validation \
+  --log /tmp/temporalstore-context-workflow-validation-native.log
+```
 
 ## Fresh Strict Rust Benchmark Fixture
 
@@ -91,6 +111,11 @@ scoring off.
 | `rust_temporalstore_full_replay_ready` | `true` |
 | `rust_temporalstore_ingested_source_sets` | `2` |
 | `rust_temporalstore_retrieved_source_sets` | `2` |
+
+This fixture was rerun from the Ubuntu-native checkout with explicit Rust TemporalStore full replay.
+The native run passed with `Hit@K=1.0`, `reader_hit_rate=1.0`,
+`all_pipelines_use_rust_temporalstore=true`, `rust_temporalstore_backend_ready=true`, and
+`rust_temporalstore_full_replay_ready=true`.
 
 ## Archived Full Dataset Metrics
 
@@ -154,3 +179,7 @@ OpenAI-style endpoint, real model calls, and archived output showing:
 - full Rust TemporalStore replay ready
 - no Python-only diagnostic mode
 
+`OPENAI_API_KEY` or an OpenAI-compatible `TEMPORALSTORE_READER_BASE_URL` is intentionally not stored
+in this repository. Without one of those configured, live GPT-4o-mini/OpenViking-compatible reader
+runs must fail closed; deterministic-reader metrics remain engineering evidence rather than a
+paper-comparable VikingMem score.

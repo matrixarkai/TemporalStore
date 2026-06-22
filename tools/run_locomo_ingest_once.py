@@ -672,7 +672,10 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
             else "0",
             "TEMPORALSTORE_CONTEXT_BENCHMARK_DIRECT_SOURCE_SCORING": "0",
             "TEMPORALSTORE_CONTEXT_BENCHMARK_SELECTED_ID_LIMIT": "128",
-            "CARGO_TARGET_DIR": env.get("CARGO_TARGET_DIR", "/tmp/temporalstore-context-benchmark-target"),
+            "CARGO_TARGET_DIR": env.get(
+                "CARGO_TARGET_DIR",
+                str(repo / "target" / "temporalstore-context-benchmark"),
+            ),
         }
     )
     command, build_report = prepare_rust_temporalstore_harness_command(
