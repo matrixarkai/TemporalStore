@@ -1,5 +1,9 @@
 # Unified Test Case Inventory
 
+See [`rust_vs_cpp_temporalstore_parity_report.md`](rust_vs_cpp_temporalstore_parity_report.md) for
+the current subsystem-level Rust-vs-C++ evidence map and the readiness evidence fields that these
+shared cases feed.
+
 ## Summary
 
 The canonical shared test corpus is stored in the Rust repo first:

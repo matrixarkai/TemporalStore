@@ -1,5 +1,10 @@
 # Rust TemporalStore LOCOMO And LongMemEval Benchmark Metrics
 
+The broader Rust-vs-C++ TemporalStore parity status is summarized in
+[`rust_vs_cpp_temporalstore_parity_report.md`](rust_vs_cpp_temporalstore_parity_report.md). This
+page is the benchmark-specific evidence for the Rust TemporalStore ingestion, context storage,
+retrieval, and replay path.
+
 ## Summary
 
 Rust TemporalStore was used as the benchmark ingestion, context event storage, retrieval, and replay

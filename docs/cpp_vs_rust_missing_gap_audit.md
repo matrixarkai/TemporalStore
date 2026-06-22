@@ -1,5 +1,9 @@
 # C++ TemporalStore Vs Rust Missing Gap Audit
 
+For the current top-level evidence map across storage/cache, Raft, client/proxy, data-node,
+metaserver, ingestion, Context benchmarks, and ops/scale readiness, see
+[`rust_vs_cpp_temporalstore_parity_report.md`](rust_vs_cpp_temporalstore_parity_report.md).
+
 ## Bottom Line
 
 The Rust code now covers the local correctness skeleton for TemporalStore-style serving:

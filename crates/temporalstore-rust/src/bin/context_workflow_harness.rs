@@ -2236,6 +2236,7 @@ fn now_ms() -> u128 {
 mod tests {
     use super::*;
 
+    // shared-corpus: context_benchmark_full_dataset_gates
     #[test]
     fn packed_external_sources_use_rust_context_event_ingest_and_score_refs() {
         let root = std::env::temp_dir().join(format!(

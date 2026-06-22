@@ -1,5 +1,10 @@
 # Unified C++ And Rust TemporalStore Testing
 
+The consolidated Rust-vs-C++ parity status is tracked in
+[`rust_vs_cpp_temporalstore_parity_report.md`](rust_vs_cpp_temporalstore_parity_report.md). That
+page is the top-level evidence map for storage/cache, Raft, client/proxy, data-node, metaserver,
+ingestion, Context/VikingMem benchmarks, and ops/scale readiness.
+
 The shared compatibility contract lives in:
 
 `compat/unified_temporalstore_cases.json`

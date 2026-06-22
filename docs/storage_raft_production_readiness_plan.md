@@ -1,5 +1,9 @@
 # Storage And Raft Production Readiness Plan
 
+This page is the detailed storage/Raft evidence plan. The consolidated Rust-vs-C++ parity status
+across all subsystems is tracked in
+[`rust_vs_cpp_temporalstore_parity_report.md`](rust_vs_cpp_temporalstore_parity_report.md).
+
 ## Summary
 
 This page turns the storage/Raft production-readiness order into an executable local gate:
