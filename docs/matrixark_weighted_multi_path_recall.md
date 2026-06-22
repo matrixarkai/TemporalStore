@@ -5,13 +5,22 @@ TemporalStore as the serving store.
 
 ## Primary Path
 
-The primary path does hybrid retrieval over MatrixArk records:
+The primary path is now tree-first, then hybrid at the selected leaves:
 
-- dense semantic score from stored embeddings
-- sparse lexical score from query token overlap
-- node/tree score from TemporalStore context-node embeddings
+1. Encode the raw query.
+2. Start from the matching tenant/session/team tree roots.
+3. Score child `ContextNode` folders with L0/L1 summary embeddings plus sparse path/summary terms.
+4. Keep `top_k_per_layer` children for each selected parent.
+5. Continue layer by layer until selected leaves are reached.
+6. Run event/entity/segment recall only inside those selected leaf subtrees.
 
-Those are normalized into `Sorigin`.
+Leaf recall then combines:
+
+- dense semantic score from stored event/entity/segment embeddings;
+- sparse lexical score from query token overlap;
+- node/tree score from the selected L0/L1 summary path.
+
+Those are normalized into `Sorigin`. This is intentionally different from a flat RAG scan: MatrixArk should not score every event first and merely use node score as a bonus. Folder selection comes first.
 
 ## Time And Business Priors
 
@@ -78,10 +87,14 @@ fallback.
       "confirmation": 1.0,
       "dialogue_batch": 0.2
     },
+    "top_k_per_layer": 8,
+    "max_children_scored_per_parent": 10000,
     "auxiliary_quota": 2
   }
 }
 ```
+
+The response `recall_policy.tree_traversal` records whether tree traversal ran, `top_k_per_layer`, `max_children_scored_per_parent`, selected node/path counts, and whether the runtime had to fall back to flat recall because no node summaries existed.
 
 Each selected ref now includes:
 
