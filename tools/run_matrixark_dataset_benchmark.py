@@ -9,6 +9,8 @@ import statistics
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +70,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--question-limit", type=int, default=0)
     parser.add_argument("--conversation-limit", type=int, default=0)
     parser.add_argument("--checkpoint-interval", type=int, default=50)
+    parser.add_argument("--reader-provider", choices=["deterministic", "openai-compatible"], default="deterministic")
+    parser.add_argument("--judge-provider", choices=["deterministic", "openai-compatible"], default="deterministic")
+    parser.add_argument("--reader-model", default="matrixark-context-substring-v1")
+    parser.add_argument("--judge-model", default="matrixark-local-support-v1")
+    parser.add_argument("--openai-base-url", default=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"))
+    parser.add_argument("--openai-api-key-env", default="OPENAI_API_KEY")
+    parser.add_argument("--openai-timeout-sec", type=int, default=60)
     parser.add_argument(
         "--validate-dataset-only",
         action="store_true",
@@ -244,6 +253,131 @@ def best_answer_evidence(selected_refs: list[Json], query: str, answer: Any, que
     if contains_answer(selected_text(selected_refs), answer):
         best["score"] = 1.0
     return best
+
+
+def require_openai_compatible_key(args: argparse.Namespace) -> str:
+    api_key = os.environ.get(args.openai_api_key_env, "")
+    if not api_key:
+        raise SystemExit(
+            f"{args.openai_api_key_env} is required when reader/judge provider is openai-compatible"
+        )
+    return api_key
+
+
+def openai_compatible_chat(args: argparse.Namespace, *, model: str, messages: list[Json]) -> str:
+    api_key = require_openai_compatible_key(args)
+    base_url = args.openai_base_url.rstrip("/")
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": 0,
+    }
+    request = urllib.request.Request(
+        f"{base_url}/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=args.openai_timeout_sec) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"OpenAI-compatible call failed HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"OpenAI-compatible call failed: {exc}") from exc
+    return str(body["choices"][0]["message"]["content"]).strip()
+
+
+def read_answer(args: argparse.Namespace, selected_refs: list[Json], query: str, answer: Any, question_type: str) -> Json:
+    if args.reader_provider == "deterministic":
+        return {
+            **best_answer_evidence(selected_refs, query, answer, question_type),
+            "reader_provider": "deterministic",
+            "reader_model": args.reader_model,
+        }
+    context = selected_text(selected_refs)[:12000]
+    prediction = openai_compatible_chat(
+        args,
+        model=args.reader_model,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Answer the benchmark question using only the provided context. "
+                    "Return a concise answer. If the context is insufficient, answer UNKNOWN."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"Question type: {question_type}\nQuestion: {query}\n\nContext:\n{context}",
+            },
+        ],
+    )
+    return {
+        "prediction": prediction[:800],
+        "score": answer_support_score(prediction, answer),
+        "answer_bearing_tokens": len(prediction.split()),
+        "ref_hash": "",
+        "ref_type": "reader",
+        "snippet": prediction[:400],
+        "reader_provider": "openai-compatible",
+        "reader_model": args.reader_model,
+    }
+
+
+def judge_answer(args: argparse.Namespace, *, question: Json, prediction: str, context: str, support_score: float) -> Json:
+    if args.judge_provider == "deterministic":
+        score = int(contains_answer(prediction + "\n" + context, question["answer"]) or support_score >= 0.5)
+        return {
+            "judge": "exact_or_key_token_support_debug",
+            "judge_provider": "deterministic",
+            "judge_model": args.judge_model,
+            "score": score,
+            "rationale": "exact substring or key-token support",
+        }
+    gold = json.dumps(question["answer"], ensure_ascii=False)
+    content = openai_compatible_chat(
+        args,
+        model=args.judge_model,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are a strict benchmark judge. Return only JSON with keys "
+                    "score and rationale. score must be 1 if the prediction correctly "
+                    "answers the gold answer, otherwise 0."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Question: {question['query']}\n"
+                    f"Gold answer: {gold}\n"
+                    f"Prediction: {prediction}\n"
+                    f"Retrieved context:\n{context[:12000]}"
+                ),
+            },
+        ],
+    )
+    match = re.search(r"\{.*\}", content, flags=re.DOTALL)
+    try:
+        parsed = json.loads(match.group(0) if match else content)
+        score = 1 if int(parsed.get("score", 0)) else 0
+        rationale = str(parsed.get("rationale", ""))[:500]
+    except Exception:
+        score = 1 if re.search(r"\b(score\s*[:=]?\s*)?1\b|\btrue\b|\bcorrect\b", content.lower()) else 0
+        rationale = content[:500]
+    return {
+        "judge": "openai_compatible_llm",
+        "judge_provider": "openai-compatible",
+        "judge_model": args.judge_model,
+        "score": score,
+        "rationale": rationale,
+    }
 
 
 def answer_supported(text: str, answer: Any) -> bool:
@@ -552,16 +686,16 @@ def build_report(
             "max_message_chars": args.max_message_chars,
             "request_timeout_ms": args.request_timeout_ms,
             "io_timeout_ms": args.io_timeout_ms,
-            "reader_execution_mode": "deterministic_context_substring_debug",
-            "judge_execution_mode": "exact_or_key-token-support-plus-evidence-density-debug",
+            "reader_execution_mode": args.reader_provider,
+            "judge_execution_mode": args.judge_provider,
             "packing_policy": "question_type_aware",
         },
         "models": {
             "embedding_model": "hashing:hashing-local",
-            "reader_provider": "deterministic-context",
-            "reader_model": "matrixark-context-substring-v1",
-            "judge_provider": "exact-or-key-token-support",
-            "judge_model": "matrixark-local-support-v1",
+            "reader_provider": args.reader_provider,
+            "reader_model": args.reader_model,
+            "judge_provider": args.judge_provider,
+            "judge_model": args.judge_model,
         },
         "scores": {
             "answer_hit": hits / max(1, questions_run),
@@ -666,8 +800,10 @@ def report_markdown(args: argparse.Namespace, report: Json) -> str:
             f"- ingestion throughput turns/sec: `{report['latency']['ingestion_throughput_turns_per_sec']}`",
             f"- retrieval p50 ms: `{report['latency']['p50_latency_ms']:.3f}`",
             f"- retrieval p95 ms: `{report['latency']['p95_latency_ms']:.3f}`",
+            f"- reader: `{report['models']['reader_provider']}:{report['models']['reader_model']}`",
+            f"- judge: `{report['models']['judge_provider']}:{report['models']['judge_model']}`",
             "",
-            "This is a C++ storage-backed deterministic debug run. It is useful for gap closure and regression testing, but it is not a VikingMem-equivalent LLM judge score until the same reader, judge, prompt, and scoring protocol are used.",
+            "MatrixArk scores should be compared separately from VikingMem paper numbers until the same dataset, reader, judge, prompt, and scoring protocol are used.",
             "",
         ]
     )
@@ -830,9 +966,21 @@ def main() -> int:
             selected = pack.get("selected_refs", [])
             text = selected_text(selected)
             answer_hit = contains_answer(text, question["answer"])
-            reader = best_answer_evidence(selected, question["query"], question["answer"], question_type)
-            support_score = max(answer_support_score(text, question["answer"]), float(reader.get("score", 0.0)))
-            support_hit = answer_hit or support_score >= 0.5
+            reader = read_answer(args, selected, question["query"], question["answer"], question_type)
+            prediction = str(reader.get("prediction", ""))
+            support_score = max(
+                answer_support_score(text, question["answer"]),
+                answer_support_score(prediction, question["answer"]),
+                float(reader.get("score", 0.0)),
+            )
+            judge = judge_answer(
+                args,
+                question=question,
+                prediction=prediction,
+                context=text,
+                support_score=support_score,
+            )
+            support_hit = bool(int(judge.get("score", 0)))
             evidence_hit = any(evidence.lower() in text.lower() for evidence in question.get("evidence", []))
             context_hit = bool(selected)
             answer_hits += int(answer_hit)
@@ -868,7 +1016,8 @@ def main() -> int:
                 failure_reason = "answer_density_miss"
             else:
                 failure_reason = ""
-            prediction = normalize_answer(question["answer"])[0] if answer_hit and normalize_answer(question["answer"]) else str(reader.get("prediction", ""))
+            if args.reader_provider == "deterministic" and answer_hit and normalize_answer(question["answer"]):
+                prediction = normalize_answer(question["answer"])[0]
             row = {
                 "question_id": question["question_id"],
                 "question": question["query"],
@@ -880,6 +1029,8 @@ def main() -> int:
                 "answer_support_score": support_score,
                 "answer_bearing_tokens": answer_bearing_tokens,
                 "answer_bearing_ref": reader.get("ref_hash", ""),
+                "reader_provider": reader.get("reader_provider", args.reader_provider),
+                "reader_model": reader.get("reader_model", args.reader_model),
                 "evidence_hit": evidence_hit,
                 "failure_reason": failure_reason,
                 "context_pack_id": pack.get("context_pack_id"),
@@ -889,7 +1040,7 @@ def main() -> int:
                 "category": question.get("category"),
             }
             hypothesis_rows.append(row)
-            judge_rows.append({**row, "judge": "exact_or_key_token_support_debug", "score": int(support_hit)})
+            judge_rows.append({**row, **judge})
             context_pack_rows.append({"question_id": question["question_id"], "context_pack": pack})
             result_rows.append({**row, "selected_refs": selected[:8]})
             if args.checkpoint_interval > 0 and (q_index + 1) % args.checkpoint_interval == 0:
