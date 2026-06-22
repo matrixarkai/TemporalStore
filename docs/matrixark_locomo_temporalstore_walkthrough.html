@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MatrixArk LOCOMO Benchmark Walkthrough</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #172033;
+      --muted: #586174;
+      --line: #dbe3ef;
+      --soft: #f6f8fb;
+      --accent: #0f766e;
+      --accent2: #a16207;
+      --code: #0f172a;
+    }
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: #fff;
+      line-height: 1.55;
+    }
+    main {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 40px 28px 64px;
+    }
+    h1 {
+      font-size: clamp(30px, 4vw, 48px);
+      line-height: 1.04;
+      letter-spacing: 0;
+      margin: 0 0 14px;
+    }
+    h2 {
+      border-top: 1px solid var(--line);
+      padding-top: 28px;
+      margin-top: 34px;
+      font-size: 24px;
+    }
+    h3 { margin-top: 28px; font-size: 19px; }
+    p, li { font-size: 16px; }
+    .lede {
+      max-width: 820px;
+      color: var(--muted);
+      font-size: 18px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+      gap: 14px;
+      margin: 18px 0;
+    }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+      background: var(--soft);
+    }
+    .tag {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: #ecfdf5;
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 16px 0 24px;
+      font-size: 14px;
+    }
+    th, td {
+      border: 1px solid var(--line);
+      padding: 10px 12px;
+      vertical-align: top;
+    }
+    th { background: var(--soft); text-align: left; }
+    pre {
+      overflow-x: auto;
+      background: #0f172a;
+      color: #e5e7eb;
+      border-radius: 8px;
+      padding: 16px;
+      font-size: 13px;
+    }
+    code {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      color: var(--code);
+      background: #eef2f7;
+      padding: 1px 4px;
+      border-radius: 4px;
+    }
+    pre code { color: inherit; background: transparent; padding: 0; }
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 10px;
+      margin: 18px 0;
+    }
+    .step {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fff;
+      position: relative;
+      min-height: 74px;
+    }
+    .step strong { display: block; color: var(--accent); margin-bottom: 4px; }
+    .callout {
+      border-left: 4px solid var(--accent2);
+      background: #fff7ed;
+      padding: 14px 16px;
+      margin: 18px 0;
+    }
+  </style>
+</head>
+<body>
+<main>
+  <span class="tag">MatrixArk Benchmark Doc</span>
+  <h1>LOCOMO Benchmark Workflow: C++ TemporalStore vs Python Memory</h1>
+  <p class="lede">This walkthrough shows how LOCOMO conversations become MatrixArk context records, how retrieval builds a ContextPack, and what differs when the same pipeline uses Python memory versus C++ TemporalStore as the storage boundary.</p>
+
+  <h2>What LOCOMO Tests</h2>
+  <div class="grid">
+    <div class="card"><strong>Single-hop</strong><br>One turn contains the answer.</div>
+    <div class="card"><strong>Multi-hop</strong><br>The answer requires combining multiple turns or sessions.</div>
+    <div class="card"><strong>Temporal</strong><br>Questions depend on dates, before/after, or current/latest state.</div>
+    <div class="card"><strong>Updates</strong><br>Newer facts supersede older facts while old evidence remains replayable.</div>
+  </div>
+
+  <h2>End-To-End Workflow</h2>
+  <div class="flow">
+    <div class="step"><strong>1. Load</strong>LOCOMO JSON sessions and QA.</div>
+    <div class="step"><strong>2. Batch</strong>Session turns become message batches.</div>
+    <div class="step"><strong>3. Extract</strong>One pass emits events, entities, summaries, indexes, segments.</div>
+    <div class="step"><strong>4. Store</strong>Python memory or C++ TemporalStore record log.</div>
+    <div class="step"><strong>5. Retrieve</strong>Dense, sparse, keyword, time-decay recall.</div>
+    <div class="step"><strong>6. Pack</strong>Question-type token-budgeted ContextPack.</div>
+    <div class="step"><strong>7. Judge</strong>Deterministic, OSS, or OpenAI-compatible reader/judge.</div>
+  </div>
+
+  <h2>Python Memory vs C++ TemporalStore</h2>
+  <table>
+    <tr><th>Area</th><th>Python Memory</th><th>C++ TemporalStore</th></tr>
+    <tr><td>Purpose</td><td>Fast dev, CI, logical debugging.</td><td>Production storage validation and benchmark parity.</td></tr>
+    <tr><td>Storage</td><td>In-process / JSONL-style records.</td><td>Native C++ TemporalStore SDK/proxy-backed record log.</td></tr>
+    <tr><td>Data shape</td><td>MatrixArk logical records.</td><td>The same records serialized into TemporalStore hash fields.</td></tr>
+    <tr><td>Expected score</td><td>Baseline for logical retrieval behavior.</td><td>Should be on par when read/write parity is clean.</td></tr>
+  </table>
+
+  <pre><code>{storage_prefix}:record_count
+  -> total MatrixArk logical records
+
+{storage_prefix}:records:000000
+  HSET 00000000000000000000 -> JSON(context_event)
+  HSET 00000000000000000001 -> JSON(context_embedding)
+  HSET 00000000000000000002 -> JSON(context_entity)</code></pre>
+
+  <h2>Example A: Approval And Budget</h2>
+  <pre><code>Session date: 2026-06-01
+User: Alice says the GPU purchase request needs finance review.
+Assistant: Bob says the requested budget is $42,000.
+User: Alice approved the GPU purchase after finance review.
+
+Question: Who approved the GPU purchase?
+Answer: Alice.</code></pre>
+  <p>MatrixArk writes <code>ContextEvent</code> records for each turn, <code>ContextIndex</code> terms for approval/budget keywords, <code>ContextSummary</code> for the batch L0 summary, <code>ContextEmbedding</code> for event and summary scoring, and a <code>ContextSegment</code> for the coherent approval topic. Retrieval promotes the exact approval event through lexical score, dense score, node summary score, and time decay.</p>
+
+  <h2>Example B: Preference Supersession</h2>
+  <pre><code>Session date: 2026-06-03
+User: I prefer Python for dashboards.
+
+Session date: 2026-06-12
+User: Actually, I prefer Rust for low-latency storage work now.
+
+Question: What language does the user currently prefer for low-latency storage?
+Answer: Rust.</code></pre>
+  <p>MatrixArk writes old and new events, then updates a <code>ContextEntity</code> of type <code>preference</code>. The old Python preference remains replayable but becomes stale for current-state questions. The pack should include the Rust entity state first and the stale blocker only if useful.</p>
+
+  <h2>Example C: Temporal Location</h2>
+  <pre><code>Session date: 2026-03-02
+User: I moved to Seattle today.
+
+Session date: 2026-04-10
+User: I moved to Austin for the new infra project.
+
+Question: Where was the user before April 10?
+Answer: Seattle.</code></pre>
+  <p>The query planner recognizes a historical before-date question. It should retrieve the Seattle event as the answer and may include Austin as the boundary event. For current-state questions, the location entity would answer Austin first.</p>
+
+  <h2>Injected Data Models</h2>
+  <table>
+    <tr><th>Model</th><th>When Written</th><th>Benchmark Role</th></tr>
+    <tr><td><code>ContextEvent</code></td><td>Every message or extracted memory event.</td><td>Raw replay evidence and event timeline.</td></tr>
+    <tr><td><code>ContextEntity</code></td><td>Durable evolving facts such as preference, location, relationship, status, plan.</td><td>Answers current-state and update questions before raw scans.</td></tr>
+    <tr><td><code>ContextSummary</code></td><td>Batch/session/node L0 or L1 summary.</td><td>Tree/node scoring and token-efficient recall.</td></tr>
+    <tr><td><code>ContextEmbedding</code></td><td>Event, entity, segment, and summary embeddings.</td><td>Exact scoring inside TemporalStore-backed record set without a separate VectorDB.</td></tr>
+    <tr><td><code>ContextIndex</code></td><td>Event type, scope, entity type, and keyword terms.</td><td>Filtering, lexical fallback, and keyword-path recall.</td></tr>
+    <tr><td><code>ContextSegment</code></td><td>High-saliency coherent topic segment.</td><td>Answer-dense evidence instead of noisy raw chunks.</td></tr>
+    <tr><td><code>ContextCompressionEvent</code></td><td>Old/cold time-window summary.</td><td>Compression with replayable source refs and safety gate.</td></tr>
+    <tr><td><code>ContextPackAudit</code></td><td>Every retrieval.</td><td>Replay selected/dropped refs, token accounting, and score debugging.</td></tr>
+  </table>
+
+  <h2>Recall And Packing</h2>
+  <pre><code>Sfinal = (1 - wtime - wbusi) * Sorigin + wtime * Stime + wbusi * Sbusi</code></pre>
+  <p><code>Sorigin</code> combines dense similarity, sparse lexical score, node score, and segment signals. <code>Stime</code> applies freshness and decay. <code>Sbusi</code> boosts important event types or instance-level business priority.</p>
+  <ul>
+    <li>Date questions: session date plus exact turn.</li>
+    <li>Fact questions: extracted observation first.</li>
+    <li>Evidence questions: raw dialogue first.</li>
+    <li>Multi-hop questions: multiple sessions/entities.</li>
+    <li>Current-state questions: entity state plus stale blockers.</li>
+  </ul>
+
+  <h2>Run Commands</h2>
+  <pre><code>cd /root/src/github-services/TemporalStore
+PYTHONPATH=. python3 tools/test_matrixark_mcp_server.py
+PYTHONPATH=. python3 tools/test_matrixark_batch_memory.py
+
+PYTHONPATH=. python3 tools/run_matrixark_dataset_benchmark.py \
+  --dataset locomo \
+  --input /path/to/locomo.json \
+  --backend temporalstore-direct \
+  --storage-prefix locomo_cpp_full \
+  --reader deterministic \
+  --max-context-tokens 2000 \
+  --output-dir artifacts/matrixark_benchmarks/locomo_cpp</code></pre>
+
+  <div class="callout">
+    <strong>Takeaway:</strong> Python memory proves the MatrixArk logic quickly. C++ TemporalStore proves the same logical context records survive the production storage boundary. The target is identical benchmark behavior while TemporalStore remains the single serving store for events, entities, summaries, indexes, embeddings, compression, and context-pack audits.
+  </div>
+</main>
+</body>
+</html>
