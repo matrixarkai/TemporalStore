@@ -52,7 +52,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--artifact-dir", required=True)
     parser.add_argument("--artifact-prefix", required=True)
     parser.add_argument("--backend", choices=["temporalstore-direct"], default="temporalstore-direct")
-    parser.add_argument("--metaserver", default="127.0.0.1:18300")
+    parser.add_argument("--metaserver", default="127.0.0.1:18000")
     parser.add_argument("--namespace", default="deploy_ns")
     parser.add_argument("--table", default="deploy_table")
     parser.add_argument(
@@ -68,6 +68,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--question-limit", type=int, default=0)
     parser.add_argument("--conversation-limit", type=int, default=0)
     parser.add_argument("--checkpoint-interval", type=int, default=50)
+    parser.add_argument(
+        "--validate-dataset-only",
+        action="store_true",
+        help="Load and normalize the dataset, print counts, and exit without starting C++ TemporalStore.",
+    )
     return parser.parse_args()
 
 
@@ -264,8 +269,84 @@ def bounded_text(value: Any, limit: int) -> str:
     return text[:limit] + " ...[truncated]"
 
 
+def first_list_value(data: Json, keys: list[str]) -> list[Any] | None:
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, list):
+            return value
+    return None
+
+
+def load_json_or_jsonl(path: str) -> Any:
+    source = Path(path)
+    if source.suffix.lower() == ".jsonl":
+        rows = []
+        with source.open(encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if line:
+                    rows.append(json.loads(line))
+        return rows
+    return json.load(source.open(encoding="utf-8"))
+
+
+def dataset_items(raw: Any, dataset: str) -> list[Json]:
+    if isinstance(raw, list):
+        items = raw
+    elif isinstance(raw, dict):
+        if dataset == "locomo":
+            items = first_list_value(raw, ["data", "examples", "items", "locomo", "conversations", "test", "validation", "train"])
+        else:
+            items = first_list_value(raw, ["data", "examples", "items", "longmemeval_s", "longmemeval", "test", "validation", "train"])
+    else:
+        items = None
+    if not isinstance(items, list):
+        raise SystemExit(
+            f"{dataset} dataset must be a JSON array, JSONL file, or an object wrapping an array under a known key"
+        )
+    normalized = [item for item in items if isinstance(item, dict)]
+    if not normalized:
+        raise SystemExit(f"{dataset} dataset has no object rows")
+    return normalized
+
+
+def locomo_conversation(item: Json) -> Json:
+    for key in ["conversation", "conversations", "sessions", "dialogue", "dialogs"]:
+        value = item.get(key)
+        if isinstance(value, dict):
+            return value
+    raise SystemExit("LOCOMO row is missing conversation/sessions object")
+
+
+def locomo_qa_rows(item: Json) -> list[Json]:
+    for key in ["qa", "qas", "questions", "question_answer", "question_answers"]:
+        value = item.get(key)
+        if isinstance(value, list):
+            return [row for row in value if isinstance(row, dict)]
+    if "question" in item:
+        return [item]
+    return []
+
+
+def turn_text(turn: Any) -> str:
+    if isinstance(turn, str):
+        return turn
+    if not isinstance(turn, dict):
+        return str(turn)
+    for key in ["text", "content", "message", "utterance", "value"]:
+        if key in turn:
+            return str(turn.get(key, ""))
+    return json.dumps(turn, sort_keys=True, ensure_ascii=False)
+
+
+def turn_speaker(turn: Any, default: str = "speaker") -> str:
+    if not isinstance(turn, dict):
+        return default
+    return str(turn.get("speaker") or turn.get("role") or turn.get("author") or default)
+
+
 def locomo_sessions(item: Json, item_index: int) -> list[Json]:
-    conversation = item["conversation"]
+    conversation = locomo_conversation(item)
     sessions = []
     for key, turns in conversation.items():
         if not key.startswith("session_") or key.endswith("_date_time") or not isinstance(turns, list):
@@ -274,11 +355,11 @@ def locomo_sessions(item: Json, item_index: int) -> list[Json]:
         date_text = str(conversation.get(f"{key}_date_time", ""))
         messages = []
         for turn in turns:
-            speaker = str(turn.get("speaker", "speaker"))
-            dia_id = str(turn.get("dia_id", ""))
-            text = str(turn.get("text", ""))
+            speaker = turn_speaker(turn)
+            dia_id = str(turn.get("dia_id", "")) if isinstance(turn, dict) else ""
+            text = turn_text(turn)
             content = f"{dia_id} [{date_text}] {speaker}: {text}".strip()
-            if turn.get("blip_caption"):
+            if isinstance(turn, dict) and turn.get("blip_caption"):
                 content += f" Image: {turn['blip_caption']}"
             messages.append({"role": "user" if len(messages) % 2 == 0 else "assistant", "content": content})
         if messages:
@@ -290,12 +371,30 @@ def locomo_sessions(item: Json, item_index: int) -> list[Json]:
                     "node_path": ["locomo", str(item.get("sample_id", item_index)), key],
                 }
             )
+    if sessions:
+        return sessions
+    for s_index, turns in enumerate(conversation.get("sessions", []) if isinstance(conversation.get("sessions"), list) else []):
+        if not isinstance(turns, list):
+            continue
+        messages = []
+        for turn in turns:
+            speaker = turn_speaker(turn)
+            messages.append({"role": "user" if speaker.lower() not in {"assistant", "ai"} else "assistant", "content": turn_text(turn)})
+        if messages:
+            sessions.append(
+                {
+                    "session_id": f"locomo-{item_index}-session-{s_index}",
+                    "date": "",
+                    "messages": messages,
+                    "node_path": ["locomo", str(item.get("sample_id", item_index)), f"session_{s_index}"],
+                }
+            )
     return sessions
 
 
 def locomo_questions(item: Json, item_index: int) -> list[Json]:
     out = []
-    for q_index, qa in enumerate(item.get("qa", [])):
+    for q_index, qa in enumerate(locomo_qa_rows(item)):
         out.append(
             {
                 "question_id": f"locomo-{item_index}-{q_index}",
@@ -311,16 +410,30 @@ def locomo_questions(item: Json, item_index: int) -> list[Json]:
 
 def longmemeval_sessions(item: Json, item_index: int, *, max_message_chars: int) -> list[Json]:
     sessions = []
-    dates = item.get("haystack_dates", [])
-    ids = item.get("haystack_session_ids", [])
-    for s_index, turns in enumerate(item.get("haystack_sessions", [])):
+    session_rows = (
+        item.get("haystack_sessions")
+        or item.get("sessions")
+        or item.get("conversation_sessions")
+        or item.get("haystack")
+        or []
+    )
+    if isinstance(session_rows, dict):
+        session_rows = list(session_rows.values())
+    dates = item.get("haystack_dates") or item.get("session_dates") or []
+    ids = item.get("haystack_session_ids") or item.get("session_ids") or []
+    for s_index, turns in enumerate(session_rows):
         session_id = str(ids[s_index] if s_index < len(ids) else f"session-{s_index}")
         date_text = str(dates[s_index] if s_index < len(dates) else "")
         messages = []
+        if isinstance(turns, dict):
+            session_id = str(turns.get("session_id") or turns.get("id") or session_id)
+            date_text = str(turns.get("date") or turns.get("timestamp") or date_text)
+            turns = turns.get("messages") or turns.get("turns") or turns.get("dialogue") or []
         for turn_index, turn in enumerate(turns):
-            role = turn.get("role") if turn.get("role") in {"user", "assistant", "tool", "system"} else "user"
-            content = f"{session_id} turn:{turn_index} [{date_text}] {bounded_text(turn.get('content', ''), max_message_chars)}"
-            if turn.get("has_answer"):
+            role_value = turn.get("role") if isinstance(turn, dict) else ""
+            role = role_value if role_value in {"user", "assistant", "tool", "system"} else "user"
+            content = f"{session_id} turn:{turn_index} [{date_text}] {bounded_text(turn_text(turn), max_message_chars)}"
+            if isinstance(turn, dict) and turn.get("has_answer"):
                 content += " [has_answer=true]"
             messages.append({"role": role, "content": content})
         if messages:
@@ -338,11 +451,40 @@ def longmemeval_sessions(item: Json, item_index: int, *, max_message_chars: int)
 def longmemeval_question(item: Json, item_index: int) -> Json:
     return {
         "question_id": str(item.get("question_id", f"lme-{item_index}")),
-        "query": str(item.get("question", "")),
-        "answer": item.get("answer"),
-        "evidence": [str(value) for value in item.get("answer_session_ids", [])],
-        "category": item.get("question_type", ""),
+        "query": str(item.get("question") or item.get("query") or item.get("instruction") or ""),
+        "answer": item.get("answer") or item.get("answers") or item.get("target"),
+        "evidence": [str(value) for value in (item.get("answer_session_ids") or item.get("evidence_session_ids") or item.get("evidence") or [])],
+        "category": item.get("question_type") or item.get("category") or "",
         "scope": {"user_id": f"longmemeval-{item_index}"},
+    }
+
+
+def validate_dataset_shape(items: list[Json], dataset: str, *, max_message_chars: int) -> Json:
+    conversations = sessions = turns = questions = 0
+    missing_sessions = missing_questions = 0
+    for item_index, item in enumerate(items):
+        if dataset == "locomo":
+            item_sessions = locomo_sessions(item, item_index)
+            item_questions = locomo_questions(item, item_index)
+        else:
+            item_sessions = longmemeval_sessions(item, item_index, max_message_chars=max_message_chars)
+            item_questions = [longmemeval_question(item, item_index)]
+        conversations += 1
+        sessions += len(item_sessions)
+        turns += sum(len(session["messages"]) for session in item_sessions)
+        questions += len([question for question in item_questions if question.get("query")])
+        missing_sessions += int(not item_sessions)
+        missing_questions += int(not item_questions or not any(question.get("query") for question in item_questions))
+    return {
+        "dataset": dataset,
+        "items": len(items),
+        "conversations": conversations,
+        "sessions": sessions,
+        "turns": turns,
+        "questions": questions,
+        "missing_session_rows": missing_sessions,
+        "missing_question_rows": missing_questions,
+        "status": "ok" if sessions > 0 and questions > 0 else "invalid",
     }
 
 
@@ -540,6 +682,14 @@ def main() -> int:
     args.storage_prefix = args.storage_prefix or f"matrixark:dataset:{args.dataset}:{args.artifact_prefix}"
     artifacts = artifact_paths(artifact_dir, args.artifact_prefix)
     root = Path(__file__).resolve().parents[1]
+    raw_data = load_json_or_jsonl(args.data_path)
+    normalized_items = dataset_items(raw_data, args.dataset)
+    dataset_validation = validate_dataset_shape(normalized_items, args.dataset, max_message_chars=args.max_message_chars)
+    if dataset_validation["status"] != "ok":
+        raise SystemExit(f"invalid {args.dataset} dataset shape: {json.dumps(dataset_validation, sort_keys=True)}")
+    if args.validate_dataset_only:
+        print(json.dumps(dataset_validation, indent=2, sort_keys=True))
+        return 0
     env = os.environ.copy()
     env["TEMPORALSTORE_LIB"] = args.temporalstore_lib
     env["PYTHONPATH"] = str(root / "sdk" / "python") + os.pathsep + env.get("PYTHONPATH", "")
@@ -603,9 +753,8 @@ def main() -> int:
         answer_hits = answer_support_hits = evidence_hits = context_hits = 0
         ingestion_started = time.perf_counter()
 
-        data = json.load(open(args.data_path, encoding="utf-8"))
         if args.dataset == "locomo":
-            items = data[: args.conversation_limit or None]
+            items = normalized_items[: args.conversation_limit or None]
             for item_index, item in enumerate(items):
                 scope_base = {"user_id": f"locomo-{item_index}", "team": "locomo"}
                 for session in locomo_sessions(item, item_index):
@@ -629,7 +778,7 @@ def main() -> int:
                     sessions_ingested += 1
                 questions.extend(locomo_questions(item, item_index))
         else:
-            items = data
+            items = normalized_items
             for item_index, item in enumerate(items):
                 if args.conversation_limit and item_index >= args.conversation_limit:
                     break
