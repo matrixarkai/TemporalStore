@@ -1,0 +1,1051 @@
+{
+  "cases": [
+    {
+      "name": "context_tree_event_pack_replay",
+      "shard_id": 1,
+      "steps": [
+        {
+          "command": {
+            "kind": "context_upsert_node",
+            "record": {
+              "child_count": 0,
+              "node_hash": 100,
+              "parent_hash": 0,
+              "tenant_hash": 42,
+              "updated_at_ms": 1782000000000
+            }
+          },
+          "name": "upsert_root"
+        },
+        {
+          "command": {
+            "kind": "context_upsert_node",
+            "record": {
+              "child_count": 0,
+              "node_hash": 200,
+              "parent_hash": 100,
+              "tenant_hash": 42,
+              "updated_at_ms": 1782000000000
+            }
+          },
+          "name": "upsert_approval"
+        },
+        {
+          "command": {
+            "kind": "context_upsert_child_ref",
+            "record": {
+              "child_hash": 200,
+              "parent_hash": 100,
+              "tenant_hash": 42,
+              "updated_at_ms": 1782000000001
+            }
+          },
+          "name": "child_ref"
+        },
+        {
+          "command": {
+            "expect_child_hashes": [
+              200
+            ],
+            "kind": "context_query_children",
+            "parent_hash": 100,
+            "tenant_hash": 42
+          },
+          "name": "query_children"
+        },
+        {
+          "command": {
+            "kind": "context_upsert_embedding",
+            "record": {
+              "embedding_type": "node_l0",
+              "node_hash": 200,
+              "tenant_hash": 42,
+              "vector": [
+                1.0,
+                0.0
+              ]
+            }
+          },
+          "name": "embed_approval"
+        },
+        {
+          "command": {
+            "kind": "context_write_event",
+            "record": {
+              "confidence": 95,
+              "event_id_hash": 1001,
+              "event_time_ms": 1782000001000,
+              "event_type": "approval_confirmation",
+              "importance": 90,
+              "node_hash": 200,
+              "payload": "Alice approved GPU budget",
+              "project": "p1",
+              "status": "approved",
+              "team": "infra",
+              "tenant_hash": 42,
+              "token_estimate": 1
+            }
+          },
+          "name": "write_event"
+        },
+        {
+          "command": {
+            "kind": "context_upsert_entity",
+            "record": {
+              "confidence": 95,
+              "entity_hash": 6100,
+              "entity_type": 1,
+              "event_type": "approval_confirmation",
+              "name": "approval state",
+              "node_hash": 200,
+              "project": "p1",
+              "source_event_hashes": [
+                1001
+              ],
+              "status": "approved",
+              "team": "infra",
+              "tenant_hash": 42,
+              "token_estimate": 1,
+              "updated_at_ms": 1782000001000,
+              "valid_from_ms": 1782000001000,
+              "value": "GPU budget approved"
+            }
+          },
+          "name": "upsert_entity"
+        },
+        {
+          "command": {
+            "entity_hashes": [
+              6100
+            ],
+            "expect_entity_hashes": [
+              6100
+            ],
+            "kind": "context_query_entities",
+            "node_hash": 200,
+            "tenant_hash": 42
+          },
+          "name": "query_entity"
+        },
+        {
+          "command": {
+            "end_time_ms": 1782000009999,
+            "expect_event_ids": [
+              1001
+            ],
+            "filters": {
+              "event_type": "approval_confirmation",
+              "project": "p1",
+              "status": "approved",
+              "team": "infra"
+            },
+            "kind": "context_query_events",
+            "limit": 10,
+            "node_hash": 200,
+            "start_time_ms": 1782000000000,
+            "tenant_hash": 42
+          },
+          "name": "query_events"
+        },
+        {
+          "command": {
+            "kind": "context_write_index_ref",
+            "record": {
+              "event_id_hash": 1001,
+              "event_time_ms": 1782000001000,
+              "index_name": "event_type",
+              "index_value": "approval_confirmation",
+              "node_hash": 200,
+              "scope_hash": 777,
+              "tenant_hash": 42
+            }
+          },
+          "name": "write_index_ref"
+        },
+        {
+          "command": {
+            "end_time_ms": 1782000010000,
+            "expect_event_ids": [
+              1001
+            ],
+            "index_name": "event_type",
+            "index_value": "approval_confirmation",
+            "kind": "context_query_index",
+            "limit": 10,
+            "scope_hash": 777,
+            "start_time_ms": 1782000000000,
+            "tenant_hash": 42
+          },
+          "name": "query_index_ref"
+        },
+        {
+          "command": {
+            "expect_node_hashes": [
+              200
+            ],
+            "kind": "context_traverse_tree",
+            "max_candidate_nodes": 4,
+            "max_depth": 2,
+            "query_vector": [
+              1.0,
+              0.0
+            ],
+            "root_node_hash": 100,
+            "tenant_hash": 42,
+            "top_k_per_depth": 2
+          },
+          "name": "traverse"
+        },
+        {
+          "command": {
+            "candidate_node_hashes": [
+              200
+            ],
+            "expect_event_ids": [
+              1001
+            ],
+            "kind": "context_build_pack",
+            "max_prompt_tokens": 4,
+            "query_id_hash": 7100,
+            "query_text": "approved approval",
+            "tenant_hash": 42
+          },
+          "name": "build_pack"
+        },
+        {
+          "command": {
+            "kind": "context_write_pack_audit",
+            "record": {
+              "query_id_hash": 7001,
+              "tenant_hash": 42
+            }
+          },
+          "name": "write_pack_audit"
+        },
+        {
+          "command": {
+            "expect_count": 1,
+            "kind": "context_query_pack_audit",
+            "query_id_hash": 7001,
+            "tenant_hash": 42
+          },
+          "name": "query_pack_audit"
+        }
+      ]
+    },
+    {
+      "name": "context_raw_extraction_query_pipeline",
+      "shard_id": 2,
+      "steps": [
+        {
+          "command": {
+            "endpoint": "/v1/context/ingest",
+            "expect_created": true,
+            "expect_event_id_hash": 996001,
+            "expect_leaf_node_hash": 200,
+            "hints": {
+              "entity_hash": 6001,
+              "entity_name": "GPU purchase",
+              "entity_type": 1,
+              "entity_value": "approved",
+              "event_id_hash": 996001,
+              "event_time_ms": 1782000002000,
+              "leaf_node_hash": 200,
+              "parent_hash": 100,
+              "project": "p1",
+              "scope_hash": 501,
+              "team": "infra",
+              "token_estimate": 1
+            },
+            "idempotency_key": "api-1",
+            "kind": "context_api_ingest_raw_event",
+            "raw_text": "Alice approved the GPU purchase.",
+            "tenant_hash": 42
+          },
+          "name": "api_ingest"
+        },
+        {
+          "command": {
+            "endpoint": "/v1/context/ingest",
+            "expect_created": false,
+            "expect_event_id_hash": 996002,
+            "expect_leaf_node_hash": 200,
+            "hints": {
+              "event_id_hash": 996002,
+              "event_time_ms": 1782000002001,
+              "leaf_node_hash": 200,
+              "parent_hash": 100,
+              "project": "p1",
+              "scope_hash": 501,
+              "team": "infra"
+            },
+            "idempotency_key": "api-1",
+            "kind": "context_api_ingest_raw_event",
+            "raw_text": "Alice approved the GPU purchase duplicate.",
+            "tenant_hash": 42
+          },
+          "name": "api_duplicate"
+        },
+        {
+          "command": {
+            "expect_intent": {
+              "event_type": "approval_confirmation",
+              "status": "approved"
+            },
+            "expect_query_plan": {
+              "filters": {
+                "event_type": "approval_confirmation",
+                "status": "approved"
+              },
+              "source": "rules_fallback"
+            },
+            "hints": {
+              "project": "p1",
+              "team": "infra"
+            },
+            "kind": "context_extract_query",
+            "raw_query": "What approvals are approved?",
+            "tenant_hash": 42
+          },
+          "name": "extract_query"
+        }
+      ]
+    },
+    {
+      "name": "context_incident_time_aware_pipeline",
+      "shard_id": 3,
+      "steps": [
+        {
+          "command": {
+            "kind": "context_upsert_node",
+            "record": {
+              "child_count": 0,
+              "node_hash": 201,
+              "parent_hash": 100,
+              "tenant_hash": 42,
+              "updated_at_ms": 1782000000000
+            }
+          },
+          "name": "upsert_incident"
+        },
+        {
+          "command": {
+            "kind": "context_upsert_child_ref",
+            "record": {
+              "child_hash": 201,
+              "parent_hash": 100,
+              "tenant_hash": 42,
+              "updated_at_ms": 1782000000002
+            }
+          },
+          "name": "child_incident"
+        },
+        {
+          "command": {
+            "kind": "context_upsert_embedding",
+            "record": {
+              "embedding_type": "node_l0",
+              "node_hash": 201,
+              "tenant_hash": 42,
+              "vector": [
+                0.0,
+                1.0
+              ]
+            }
+          },
+          "name": "embed_incident"
+        },
+        {
+          "command": {
+            "kind": "context_write_event",
+            "record": {
+              "confidence": 95,
+              "event_id_hash": 2001,
+              "event_time_ms": 1782000003000,
+              "event_type": "incident_update",
+              "importance": 90,
+              "node_hash": 201,
+              "payload": "Incident update: stream proxy recovered",
+              "project": "p1",
+              "status": "observed",
+              "team": "infra",
+              "tenant_hash": 42,
+              "token_estimate": 2
+            }
+          },
+          "name": "write_incident"
+        },
+        {
+          "command": {
+            "end_time_ms": 1782000003500,
+            "expect_event_ids": [
+              2001
+            ],
+            "filters": {
+              "event_type": "incident_update"
+            },
+            "kind": "context_query_events",
+            "limit": 5,
+            "node_hash": 201,
+            "start_time_ms": 1782000002500,
+            "tenant_hash": 42
+          },
+          "name": "query_incident_window"
+        }
+      ]
+    },
+    {
+      "name": "context_resource_feedback_second_query_pipeline",
+      "shard_id": 4,
+      "steps": [
+        {
+          "command": {
+            "chunks": [
+              {
+                "chunk_hash": 3001,
+                "source_ref": "runbook.md#approval",
+                "text": "GPU approvals approved require finance review.",
+                "token_estimate": 2,
+                "vector": [
+                  1.0,
+                  0.0
+                ]
+              }
+            ],
+            "expect_chunk_hashes": [
+              3001
+            ],
+            "hints": {
+              "parent_hash": 100,
+              "resource_hash": 300
+            },
+            "kind": "context_ingest_resource",
+            "raw_uri": "file:///runbook.md",
+            "resource_type": "markdown",
+            "tenant_hash": 42
+          },
+          "name": "ingest_resource"
+        },
+        {
+          "command": {
+            "expect_chunk_hashes": [
+              3001
+            ],
+            "filters": {
+              "raw_uri": "file:///runbook.md",
+              "resource_type": "markdown",
+              "source_ref": "runbook.md#approval"
+            },
+            "kind": "context_query_resource_chunks",
+            "query_vector": [
+              1.0,
+              0.0
+            ],
+            "tenant_hash": 42,
+            "top_k": 1
+          },
+          "name": "query_resource"
+        },
+        {
+          "command": {
+            "expect_event_ids": [
+              4000
+            ],
+            "hints": {
+              "entity_hash": 6002,
+              "entity_name": "approval policy",
+              "entity_type": 1,
+              "entity_value": "finance review required",
+              "event_id_base_hash": 4000,
+              "event_time_ms": 1782000004000,
+              "event_type": "approval_confirmation",
+              "node_hash": 200,
+              "project": "p1",
+              "team": "infra",
+              "token_estimate": 1
+            },
+            "kind": "context_extract_resource_events",
+            "raw_uri": "file:///runbook.md",
+            "resource_type": "markdown",
+            "source_chunk_hashes": [
+              3001
+            ],
+            "tenant_hash": 42
+          },
+          "name": "extract_resource_event"
+        },
+        {
+          "command": {
+            "expect_event_id_hash": 5001,
+            "expect_extracted": {
+              "classification": "CONFIRMATION"
+            },
+            "feedback_text": "confirmed approved answer",
+            "hints": {
+              "entity_hash": 6003,
+              "entity_name": "feedback",
+              "entity_type": 1,
+              "entity_value": "confirmed",
+              "event_id_hash": 5001,
+              "event_time_ms": 1782000005000,
+              "project": "p1",
+              "team": "infra",
+              "token_estimate": 1
+            },
+            "kind": "context_ingest_feedback",
+            "node_hash": 200,
+            "query_id_hash": 7002,
+            "tenant_hash": 42
+          },
+          "name": "feedback"
+        },
+        {
+          "command": {
+            "expect_chunk_hashes": [
+              3001
+            ],
+            "expect_entity_hashes": [
+              6001,
+              6002,
+              6003,
+              6100
+            ],
+            "expect_event_ids": [
+              1001,
+              996001,
+              4000,
+              5001
+            ],
+            "expect_selected_tokens_eq": 10,
+            "hints": {
+              "project": "p1",
+              "team": "infra"
+            },
+            "include_entities": true,
+            "include_summaries": false,
+            "kind": "context_retrieve_with_resources",
+            "max_prompt_tokens": 10,
+            "query_vector": [
+              1.0,
+              0.0
+            ],
+            "raw_query": "approved approval with runbook",
+            "resource_filters": {
+              "raw_uri": "file:///runbook.md",
+              "resource_type": "markdown",
+              "source_ref": "runbook.md#approval"
+            },
+            "resource_top_k": 1,
+            "root_node_hash": 100,
+            "tenant_hash": 42
+          },
+          "name": "retrieve_resources"
+        }
+      ]
+    },
+    {
+      "name": "context_pack_token_budget_parity",
+      "shard_id": 5,
+      "steps": [
+        {
+          "command": {
+            "expect_context_pack_sections": [
+              "current_state"
+            ],
+            "expect_event_ids": [
+              1001,
+              996001
+            ],
+            "expect_query_understanding_source": "rules_fallback",
+            "expect_selected_tokens_eq": 2,
+            "expect_staleness_policy": "algorithmic_freshness_v1",
+            "hints": {
+              "project": "p1",
+              "team": "infra"
+            },
+            "kind": "context_retrieve",
+            "max_prompt_tokens": 2,
+            "query_vector": [
+              1.0,
+              0.0
+            ],
+            "raw_query": "approved approval",
+            "root_node_hash": 100,
+            "tenant_hash": 42
+          },
+          "name": "retrieve_budget"
+        }
+      ]
+    },
+    {
+      "name": "context_layered_resource_parsing_pipeline",
+      "shard_id": 6,
+      "steps": [
+        {
+          "command": {
+            "kind": "context_upsert_summary",
+            "record": {
+              "node_hash": 200,
+              "summary_text": "Approval node summary",
+              "summary_type": "node_l0",
+              "tenant_hash": 42,
+              "updated_at_ms": 1782000006000
+            }
+          },
+          "name": "summary"
+        },
+        {
+          "command": {
+            "kind": "context_upsert_embedding",
+            "record": {
+              "embedding_type": "node_l0",
+              "node_hash": 200,
+              "tenant_hash": 42,
+              "vector": [
+                1.0,
+                0.0
+              ]
+            }
+          },
+          "name": "summary_embedding"
+        },
+        {
+          "command": {
+            "expect_ref_hashes": [
+              200
+            ],
+            "kind": "context_assert_summary_embeddings",
+            "node_hashes": [
+              200
+            ],
+            "tenant_hash": 42
+          },
+          "name": "assert_summary_embedding"
+        },
+        {
+          "command": {
+            "expect_count": 1,
+            "kind": "context_query_summaries",
+            "node_hash": 200,
+            "tenant_hash": 42
+          },
+          "name": "query_summary"
+        },
+        {
+          "command": {
+            "kind": "context_mark_summary_dirty",
+            "record": {
+              "node_hash": 200,
+              "reason": "new_event",
+              "tenant_hash": 42
+            }
+          },
+          "name": "dirty"
+        },
+        {
+          "command": {
+            "expect_count": 1,
+            "kind": "context_query_dirty",
+            "node_hash": 200,
+            "tenant_hash": 42
+          },
+          "name": "query_dirty"
+        }
+      ]
+    },
+    {
+      "name": "context_batch_extraction_query_ingestion_x8",
+      "shard_id": 7,
+      "steps": [
+        {
+          "command": {
+            "events": [
+              {
+                "hints": {
+                  "event_id_hash": 996004,
+                  "event_time_ms": 1782000007000,
+                  "leaf_node_hash": 200,
+                  "parent_hash": 100,
+                  "project": "p1",
+                  "scope_hash": 501,
+                  "team": "infra",
+                  "token_estimate": 1
+                },
+                "raw_text": "Bob approved network budget."
+              },
+              {
+                "hints": {
+                  "event_id_hash": 996005,
+                  "event_time_ms": 1782000007001,
+                  "event_type": "incident_update",
+                  "leaf_node_hash": 201,
+                  "parent_hash": 100,
+                  "project": "p1",
+                  "scope_hash": 501,
+                  "team": "infra",
+                  "token_estimate": 1
+                },
+                "raw_text": "Incident followup observed."
+              }
+            ],
+            "expect_event_ids": [
+              996004,
+              996005
+            ],
+            "expect_leaf_node_hashes": [
+              200,
+              201
+            ],
+            "kind": "context_batch_ingest_raw_events",
+            "tenant_hash": 42
+          },
+          "name": "batch_ingest"
+        },
+        {
+          "command": {
+            "end_time_ms": 1782000010000,
+            "expect_event_ids": [
+              996001,
+              996004
+            ],
+            "filters": [
+              {
+                "index_name": "status",
+                "index_value": "approved"
+              },
+              {
+                "index_name": "event_type",
+                "index_value": "approval_confirmation"
+              }
+            ],
+            "kind": "context_query_index_and",
+            "limit": 10,
+            "scope_hash": 501,
+            "start_time_ms": 1782000000000,
+            "tenant_hash": 42
+          },
+          "name": "query_index_and"
+        }
+      ]
+    },
+    {
+      "name": "context_stream_batch_api_ingestion_compression",
+      "shard_id": 8,
+      "steps": [
+        {
+          "command": {
+            "events": [
+              {
+                "hints": {
+                  "event_id_hash": 996007,
+                  "event_time_ms": 1782000008000,
+                  "leaf_node_hash": 200,
+                  "parent_hash": 100,
+                  "project": "p1",
+                  "scope_hash": 501,
+                  "team": "infra",
+                  "token_estimate": 1
+                },
+                "offset": 1,
+                "partition": 0,
+                "raw_text": "Carol approved storage request."
+              },
+              {
+                "hints": {
+                  "event_id_hash": 996008,
+                  "event_time_ms": 1782000008001,
+                  "leaf_node_hash": 200,
+                  "parent_hash": 100,
+                  "project": "p1",
+                  "scope_hash": 501,
+                  "team": "infra",
+                  "token_estimate": 1
+                },
+                "offset": 1,
+                "partition": 0,
+                "raw_text": "duplicate offset approved."
+              }
+            ],
+            "expect_committed_offsets": [
+              1
+            ],
+            "expect_event_ids": [
+              996007
+            ],
+            "kind": "context_stream_ingest_raw_events",
+            "stream_name": "agent-events",
+            "tenant_hash": 42
+          },
+          "name": "stream_ingest"
+        },
+        {
+          "command": {
+            "kind": "context_write_compression",
+            "record": {
+              "compressed_summary": "Older approvals summarized.",
+              "compressed_time_ms": 1782000009000,
+              "compression_id_hash": 9001,
+              "node_hash": 200,
+              "source_end_ms": 1782000008000,
+              "source_event_ids": [
+                1001,
+                996001
+              ],
+              "source_start_ms": 1782000000000,
+              "tenant_hash": 42
+            }
+          },
+          "name": "compression"
+        },
+        {
+          "command": {
+            "end_time_ms": 1782000010000,
+            "expect_compression_ids": [
+              9001
+            ],
+            "expect_compression_source_event_ids": [
+              1001,
+              996001
+            ],
+            "expect_count": 1,
+            "kind": "context_query_compression",
+            "node_hash": 200,
+            "start_time_ms": 1782000000000,
+            "tenant_hash": 42
+          },
+          "name": "query_compression"
+        }
+      ]
+    },
+    {
+      "name": "context_eight_parity_gates",
+      "shard_id": 9,
+      "steps": [
+        {
+          "command": {
+            "approval_node_hash": 200,
+            "end_time_ms": 1782000010000,
+            "expect_absent_event_ids": [
+              996002,
+              996008
+            ],
+            "expect_api_event_ids": [
+              996001
+            ],
+            "expect_batch_event_ids": [
+              996004
+            ],
+            "expect_child_count_gte": 3,
+            "expect_compression_ids": [
+              9001
+            ],
+            "expect_passed_gates": 8,
+            "expect_resource_chunk_any": [
+              3001
+            ],
+            "expect_retrieve_event_ids": [
+              1001,
+              996001,
+              4000,
+              5001
+            ],
+            "expect_selected_tokens_eq": 4,
+            "expect_stream_event_ids": [
+              996007
+            ],
+            "hints": {
+              "project": "p1",
+              "team": "infra"
+            },
+            "kind": "context_assert_parity_gates",
+            "max_prompt_tokens": 4,
+            "query_vector": [
+              1.0,
+              0.0
+            ],
+            "raw_query": "approved approval",
+            "root_node_hash": 100,
+            "start_time_ms": 1782000000000,
+            "tenant_hash": 42
+          },
+          "name": "assert_8"
+        }
+      ]
+    },
+    {
+      "name": "context_nine_ingestion_compression_parity_gates",
+      "shard_id": 10,
+      "steps": [
+        {
+          "command": {
+            "approval_node_hash": 200,
+            "end_time_ms": 1782000010000,
+            "expect_absent_event_ids": [
+              996002,
+              996008
+            ],
+            "expect_api_event_ids": [
+              996001
+            ],
+            "expect_batch_event_ids": [
+              996004
+            ],
+            "expect_child_count_gte": 3,
+            "expect_compression_ids": [
+              9001
+            ],
+            "expect_compression_source_event_ids": [
+              1001,
+              996001
+            ],
+            "expect_passed_gates": 9,
+            "expect_resource_chunk_any": [
+              3001
+            ],
+            "expect_retrieve_event_ids": [
+              1001,
+              996001,
+              4000,
+              5001
+            ],
+            "expect_selected_tokens_eq": 4,
+            "expect_stream_event_ids": [
+              996007
+            ],
+            "hints": {
+              "project": "p1",
+              "team": "infra"
+            },
+            "kind": "context_assert_parity_gates",
+            "max_prompt_tokens": 4,
+            "query_vector": [
+              1.0,
+              0.0
+            ],
+            "raw_query": "approved approval",
+            "root_node_hash": 100,
+            "start_time_ms": 1782000000000,
+            "tenant_hash": 42
+          },
+          "name": "assert_9"
+        }
+      ]
+    },
+    {
+      "name": "context_ten_model_config_parity_gates",
+      "shard_id": 11,
+      "steps": [
+        {
+          "command": {
+            "approval_node_hash": 200,
+            "end_time_ms": 1782000010000,
+            "expect_absent_event_ids": [
+              996002,
+              996008
+            ],
+            "expect_api_event_ids": [
+              996001
+            ],
+            "expect_batch_event_ids": [
+              996004
+            ],
+            "expect_child_count_gte": 3,
+            "expect_compression_ids": [
+              9001
+            ],
+            "expect_compression_source_event_ids": [
+              1001,
+              996001
+            ],
+            "expect_passed_gates": 10,
+            "expect_resource_chunk_any": [
+              3001
+            ],
+            "expect_retrieve_event_ids": [
+              1001,
+              996001,
+              4000,
+              5001
+            ],
+            "expect_selected_tokens_eq": 4,
+            "expect_stream_event_ids": [
+              996007
+            ],
+            "hints": {
+              "project": "p1",
+              "provider": "local OSS",
+              "query_embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+              "reranker_model": "BAAI/bge-reranker-base",
+              "team": "infra"
+            },
+            "kind": "context_assert_parity_gates",
+            "max_prompt_tokens": 4,
+            "query_vector": [
+              1.0,
+              0.0
+            ],
+            "raw_query": "approved approval",
+            "root_node_hash": 100,
+            "start_time_ms": 1782000000000,
+            "tenant_hash": 42
+          },
+          "name": "assert_10"
+        }
+      ]
+    }
+  ],
+  "coverage": {
+    "required_case_names": [
+      "context_tree_event_pack_replay",
+      "context_raw_extraction_query_pipeline",
+      "context_incident_time_aware_pipeline",
+      "context_resource_feedback_second_query_pipeline",
+      "context_pack_token_budget_parity",
+      "context_layered_resource_parsing_pipeline",
+      "context_batch_extraction_query_ingestion_x8",
+      "context_stream_batch_api_ingestion_compression",
+      "context_eight_parity_gates",
+      "context_nine_ingestion_compression_parity_gates",
+      "context_ten_model_config_parity_gates"
+    ],
+    "required_command_kinds": [
+      "context_api_ingest_raw_event",
+      "context_assert_parity_gates",
+      "context_assert_summary_embeddings",
+      "context_batch_ingest_raw_events",
+      "context_build_pack",
+      "context_extract_query",
+      "context_extract_resource_events",
+      "context_ingest_feedback",
+      "context_ingest_resource",
+      "context_mark_summary_dirty",
+      "context_query_children",
+      "context_query_compression",
+      "context_query_dirty",
+      "context_query_entities",
+      "context_query_events",
+      "context_query_index",
+      "context_query_index_and",
+      "context_query_pack_audit",
+      "context_query_resource_chunks",
+      "context_query_summaries",
+      "context_retrieve",
+      "context_retrieve_with_resources",
+      "context_stream_ingest_raw_events",
+      "context_traverse_tree",
+      "context_upsert_child_ref",
+      "context_upsert_embedding",
+      "context_upsert_entity",
+      "context_upsert_node",
+      "context_upsert_summary",
+      "context_write_compression",
+      "context_write_event",
+      "context_write_index_ref",
+      "context_write_pack_audit"
+    ],
+    "required_raft_case_names": [],
+    "required_response_kinds": []
+  },
+  "name": "temporalstore-cpp-rust-context-parity",
+  "schema_version": 1
+}
