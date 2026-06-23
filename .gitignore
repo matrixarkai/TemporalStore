@@ -1,5 +1,9 @@
 target/
 .local/
+build-ubuntu22/
+output/
+target-rust-bench/
+thirdparty/
 .terraform/
 *.tfstate
 *.tfstate.*
