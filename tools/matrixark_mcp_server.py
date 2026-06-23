@@ -4341,6 +4341,7 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
         self._index_cache: list[str] | None = None
         self._records_cache: list[Json] | None = None
         self._legacy_index_mode = False
+        self._records_lock = threading.RLock()
 
 
 

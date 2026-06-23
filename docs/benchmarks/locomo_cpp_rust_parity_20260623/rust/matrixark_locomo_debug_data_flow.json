@@ -1,0 +1,4895 @@
+{
+  "backend": "temporalstore-rust",
+  "dataset_note": "LOCOMO-style sample conversations; no official LOCOMO dataset file was present in this repo at run time.",
+  "embedding_model": "matrixark-local-token-hash-v1",
+  "embedding_provider": "hash",
+  "event_log": "",
+  "metaserver": "127.0.0.1:18000",
+  "model_counts": {
+    "context_batch_commit": 3,
+    "context_child_ref": 3,
+    "context_embedding": 54,
+    "context_entity": 9,
+    "context_entity_update_audit": 9,
+    "context_event": 12,
+    "context_extraction_audit": 3,
+    "context_index": 24,
+    "context_node": 6,
+    "context_pack_audit": 9,
+    "context_segment": 6,
+    "context_summary": 27,
+    "context_summary_dirty": 30,
+    "context_summary_refresh_audit": 6,
+    "matrixark_audit_log": 27,
+    "session_buffer_event": 12
+  },
+  "namespace": "deploy_ns",
+  "queries": [
+    {
+      "context_pack_id": "4435848104495747422",
+      "insufficient_context": false,
+      "query": "Where is the user currently located?",
+      "question_type": "current_state",
+      "recall_policy": {
+        "auxiliary_path": "keyword graph inside selected tree after secondary-index prefilter",
+        "auxiliary_quota": 2,
+        "primary_path": "tree-first hybrid dense semantic + sparse lexical after secondary-index prefilter",
+        "secondary_index_filter": {
+          "applied_before_embedding_scoring": true,
+          "dropped_candidate_count": 5,
+          "effective_mode": "all_groups",
+          "enabled": true,
+          "matched_candidate_count": 5,
+          "mode": "ANY group for multi-intent raw query, otherwise AND across groups; OR within each group",
+          "required_groups": [
+            [
+              "entity_type:location"
+            ]
+          ]
+        },
+        "time_decay": {
+          "freshness_tolerance_ms": 86400000,
+          "half_life_ms": 604800000
+        },
+        "tree_traversal": {
+          "enabled": true,
+          "fallback_reason": "",
+          "fallback_to_flat": false,
+          "max_children_scored_per_parent": 10000,
+          "selected_leaf_count": 1,
+          "selected_node_count": 2,
+          "selected_path_count": 2,
+          "summary_embeddings": [
+            "node_l0",
+            "node_l1"
+          ],
+          "top_k_per_layer": 8
+        },
+        "weights": {
+          "business": 0.22,
+          "time": 0.18
+        }
+      },
+      "selected_refs": [
+        {
+          "business_score": 0.7,
+          "embedding_score": 0.353553,
+          "entity_name": "location",
+          "entity_type": "location",
+          "final_score": 0.719987,
+          "keyword_score": 1,
+          "metadata": {},
+          "node_hash": 1226958135442153109,
+          "node_path": [
+            "user:locomo_user_a",
+            "session:locomo_a"
+          ],
+          "node_score": 0.621674,
+          "origin_score": 0.643311,
+          "packing_policy": "current_state",
+          "packing_score": 0.999987,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 1639419467397175869,
+          "ref_type": "entity",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 3285681314429281761,
+            "session_id": "locomo_a",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 7261150912785192867,
+            "user_id": "locomo_user_a"
+          },
+          "score": 0.719987,
+          "sparse_score": 0.2,
+          "text": "location: location = Austin now for the new infra project",
+          "time_score": 1.0,
+          "token_estimate": 9,
+          "updated_at_ms": 1782247598433
+        },
+        {
+          "business_score": 0.5,
+          "embedding_score": 0.447213,
+          "event_type": "NEW_EVENT",
+          "final_score": 0.66144,
+          "keyword_score": 2,
+          "metadata": {
+            "message_index": 1,
+            "source": "locomo_debug"
+          },
+          "node_hash": 1226958135442153109,
+          "node_path": [
+            "user:locomo_user_a",
+            "session:locomo_a"
+          ],
+          "node_score": 0.621674,
+          "origin_score": 0.619067,
+          "packing_policy": "current_state",
+          "packing_score": 0.66144,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 4001704437148736921,
+          "ref_type": "event",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 3285681314429281761,
+            "session_id": "locomo_a",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 7261150912785192867,
+            "user_id": "locomo_user_a"
+          },
+          "score": 0.66144,
+          "sparse_score": 0.4,
+          "text": "user: Actually I moved to Austin now for the new infra project.",
+          "time_score": 1.0,
+          "token_estimate": 12,
+          "updated_at_ms": 1782247598251
+        },
+        {
+          "business_score": 0.5,
+          "embedding_score": 0.27735,
+          "event_type": "NEW_EVENT",
+          "final_score": 0.633413,
+          "keyword_score": 2,
+          "metadata": {
+            "message_index": 3,
+            "source": "locomo_debug"
+          },
+          "node_hash": 1226958135442153109,
+          "node_path": [
+            "user:locomo_user_a",
+            "session:locomo_a"
+          ],
+          "node_score": 0.621674,
+          "origin_score": 0.572355,
+          "packing_policy": "current_state",
+          "packing_score": 0.633413,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 1430717481940834111,
+          "ref_type": "event",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 3285681314429281761,
+            "session_id": "locomo_a",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 7261150912785192867,
+            "user_id": "locomo_user_a"
+          },
+          "score": 0.633413,
+          "sparse_score": 0.4,
+          "text": "user: Alice approved the GPU purchase after finance reviewed the budget.",
+          "time_score": 1.0,
+          "token_estimate": 11,
+          "updated_at_ms": 1782247598371
+        },
+        {
+          "business_score": 0.5,
+          "embedding_score": 0.235702,
+          "event_type": "NEW_EVENT",
+          "final_score": 0.584541,
+          "keyword_score": 1,
+          "metadata": {
+            "message_index": 0,
+            "source": "locomo_debug"
+          },
+          "node_hash": 1226958135442153109,
+          "node_path": [
+            "user:locomo_user_a",
+            "session:locomo_a"
+          ],
+          "node_score": 0.621674,
+          "origin_score": 0.490902,
+          "packing_policy": "current_state",
+          "packing_score": 0.584541,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 6986223805810000967,
+          "ref_type": "event",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 3285681314429281761,
+            "session_id": "locomo_a",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 7261150912785192867,
+            "user_id": "locomo_user_a"
+          },
+          "score": 0.584541,
+          "sparse_score": 0.2,
+          "text": "user: I moved to Seattle today, please remember this location.",
+          "time_score": 1.0,
+          "token_estimate": 10,
+          "updated_at_ms": 1782247598113
+        },
+        {
+          "business_score": 0.5,
+          "embedding_score": 0.166666,
+          "event_type": "NEW_EVENT",
+          "final_score": 0.57315,
+          "keyword_score": 1,
+          "metadata": {
+            "message_index": 2,
+            "source": "locomo_debug"
+          },
+          "node_hash": 1226958135442153109,
+          "node_path": [
+            "user:locomo_user_a",
+            "session:locomo_a"
+          ],
+          "node_score": 0.621674,
+          "origin_score": 0.471917,
+          "packing_policy": "current_state",
+          "packing_score": 0.57315,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 8582078450952077150,
+          "ref_type": "event",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 3285681314429281761,
+            "session_id": "locomo_a",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 7261150912785192867,
+            "user_id": "locomo_user_a"
+          },
+          "score": 0.57315,
+          "sparse_score": 0.2,
+          "text": "user: I prefer Rust for low latency storage engines.",
+          "time_score": 1.0,
+          "token_estimate": 9,
+          "updated_at_ms": 1782247598313
+        }
+      ],
+      "session": "conversation_a_location_preference_approval",
+      "used_context_tokens": 51
+    },
+    {
+      "context_pack_id": "4804936604499105156",
+      "insufficient_context": false,
+      "query": "What does the user prefer for low latency storage?",
+      "question_type": "current_state",
+      "recall_policy": {
+        "auxiliary_path": "keyword graph inside selected tree after secondary-index prefilter",
+        "auxiliary_quota": 2,
+        "primary_path": "tree-first hybrid dense semantic + sparse lexical after secondary-index prefilter",
+        "secondary_index_filter": {
+          "applied_before_embedding_scoring": true,
+          "dropped_candidate_count": 5,
+          "effective_mode": "all_groups",
+          "enabled": true,
+          "matched_candidate_count": 5,
+          "mode": "ANY group for multi-intent raw query, otherwise AND across groups; OR within each group",
+          "required_groups": [
+            [
+              "entity_type:preference",
+              "event_type:preference_update"
+            ]
+          ]
+        },
+        "time_decay": {
+          "freshness_tolerance_ms": 86400000,
+          "half_life_ms": 604800000
+        },
+        "tree_traversal": {
+          "enabled": true,
+          "fallback_reason": "",
+          "fallback_to_flat": false,
+          "max_children_scored_per_parent": 10000,
+          "selected_leaf_count": 1,
+          "selected_node_count": 2,
+          "selected_path_count": 2,
+          "summary_embeddings": [
+            "node_l0",
+            "node_l1"
+          ],
+          "top_k_per_layer": 8
+        },
+        "weights": {
+          "business": 0.22,
+          "time": 0.18
+        }
+      },
+      "selected_refs": [
+        {
+          "business_score": 0.75,
+          "embedding_score": 0.503951,
+          "entity_name": "preference",
+          "entity_type": "preference",
+          "final_score": 0.808072,
+          "keyword_score": 4,
+          "metadata": {},
+          "node_hash": 1226958135442153109,
+          "node_path": [
+            "user:locomo_user_a",
+            "session:locomo_a"
+          ],
+          "node_score": 0.652899,
+          "origin_score": 0.771787,
+          "packing_policy": "current_state",
+          "packing_score": 1.0,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 4368207921958537161,
+          "ref_type": "entity",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 3285681314429281761,
+            "session_id": "locomo_a",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 7261150912785192867,
+            "user_id": "locomo_user_a"
+          },
+          "score": 0.808072,
+          "sparse_score": 0.4444444444444444,
+          "text": "preference: preference = Rust for low latency storage engines",
+          "time_score": 1.0,
+          "token_estimate": 8,
+          "updated_at_ms": 1782247598433
+        },
+        {
+          "business_score": 0.5,
+          "embedding_score": 0.666665,
+          "event_type": "NEW_EVENT",
+          "final_score": 0.754587,
+          "keyword_score": 6,
+          "metadata": {
+            "message_index": 2,
+            "source": "locomo_debug"
+          },
+          "node_hash": 1226958135442153109,
+          "node_path": [
+            "user:locomo_user_a",
+            "session:locomo_a"
+          ],
+          "node_score": 0.652899,
+          "origin_score": 0.774311,
+          "packing_policy": "current_state",
+          "packing_score": 0.754587,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 8582078450952077150,
+          "ref_type": "event",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 3285681314429281761,
+            "session_id": "locomo_a",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 7261150912785192867,
+            "user_id": "locomo_user_a"
+          },
+          "score": 0.754587,
+          "sparse_score": 0.6666666666666666,
+          "text": "user: I prefer Rust for low latency storage engines.",
+          "time_score": 1.0,
+          "token_estimate": 9,
+          "updated_at_ms": 1782247598313
+        },
+        {
+          "business_score": 0.5,
+          "embedding_score": 0.447213,
+          "event_type": "NEW_EVENT",
+          "final_score": 0.648377,
+          "keyword_score": 3,
+          "metadata": {
+            "message_index": 1,
+            "source": "locomo_debug"
+          },
+          "node_hash": 1226958135442153109,
+          "node_path": [
+            "user:locomo_user_a",
+            "session:locomo_a"
+          ],
+          "node_score": 0.652899,
+          "origin_score": 0.597295,
+          "packing_policy": "current_state",
+          "packing_score": 0.648377,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 4001704437148736921,
+          "ref_type": "event",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 3285681314429281761,
+            "session_id": "locomo_a",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 7261150912785192867,
+            "user_id": "locomo_user_a"
+          },
+          "score": 0.648377,
+          "sparse_score": 0.3333333333333333,
+          "text": "user: Actually I moved to Austin now for the new infra project.",
+          "time_score": 1.0,
+          "token_estimate": 12,
+          "updated_at_ms": 1782247598251
+        },
+        {
+          "business_score": 0.5,
+          "embedding_score": 0.27735,
+          "event_type": "NEW_EVENT",
+          "final_score": 0.597016,
+          "keyword_score": 2,
+          "metadata": {
+            "message_index": 3,
+            "source": "locomo_debug"
+          },
+          "node_hash": 1226958135442153109,
+          "node_path": [
+            "user:locomo_user_a",
+            "session:locomo_a"
+          ],
+          "node_score": 0.652899,
+          "origin_score": 0.511694,
+          "packing_policy": "current_state",
+          "packing_score": 0.597016,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 1430717481940834111,
+          "ref_type": "event",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 3285681314429281761,
+            "session_id": "locomo_a",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 7261150912785192867,
+            "user_id": "locomo_user_a"
+          },
+          "score": 0.597016,
+          "sparse_score": 0.2222222222222222,
+          "text": "user: Alice approved the GPU purchase after finance reviewed the budget.",
+          "time_score": 1.0,
+          "token_estimate": 11,
+          "updated_at_ms": 1782247598371
+        },
+        {
+          "business_score": 0.5,
+          "embedding_score": 0.157135,
+          "event_type": "NEW_EVENT",
+          "final_score": 0.553848,
+          "keyword_score": 1,
+          "metadata": {
+            "message_index": 0,
+            "source": "locomo_debug"
+          },
+          "node_hash": 1226958135442153109,
+          "node_path": [
+            "user:locomo_user_a",
+            "session:locomo_a"
+          ],
+          "node_score": 0.652899,
+          "origin_score": 0.439746,
+          "packing_policy": "current_state",
+          "packing_score": 0.553848,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 6986223805810000967,
+          "ref_type": "event",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 3285681314429281761,
+            "session_id": "locomo_a",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 7261150912785192867,
+            "user_id": "locomo_user_a"
+          },
+          "score": 0.553848,
+          "sparse_score": 0.1111111111111111,
+          "text": "user: I moved to Seattle today, please remember this location.",
+          "time_score": 1.0,
+          "token_estimate": 10,
+          "updated_at_ms": 1782247598113
+        }
+      ],
+      "session": "conversation_a_location_preference_approval",
+      "used_context_tokens": 50
+    },
+    {
+      "context_pack_id": "7672764889602455169",
+      "insufficient_context": false,
+      "query": "Who approved the GPU purchase?",
+      "question_type": "fact",
+      "recall_policy": {
+        "auxiliary_path": "keyword graph inside selected tree after secondary-index prefilter",
+        "auxiliary_quota": 2,
+        "primary_path": "tree-first hybrid dense semantic + sparse lexical after secondary-index prefilter",
+        "secondary_index_filter": {
+          "applied_before_embedding_scoring": true,
+          "dropped_candidate_count": 4,
+          "effective_mode": "all_groups",
+          "enabled": true,
+          "matched_candidate_count": 6,
+          "mode": "ANY group for multi-intent raw query, otherwise AND across groups; OR within each group",
+          "required_groups": [
+            [
+              "classification:confirmation",
+              "entity_type:approval_state",
+              "entity_type:confirmation",
+              "event_type:confirmation",
+              "segment_topic:approval_budget"
+            ]
+          ]
+        },
+        "time_decay": {
+          "freshness_tolerance_ms": 86400000,
+          "half_life_ms": 604800000
+        },
+        "tree_traversal": {
+          "enabled": true,
+          "fallback_reason": "",
+          "fallback_to_flat": false,
+          "max_children_scored_per_parent": 10000,
+          "selected_leaf_count": 1,
+          "selected_node_count": 2,
+          "selected_path_count": 2,
+          "summary_embeddings": [
+            "node_l0",
+            "node_l1"
+          ],
+          "top_k_per_layer": 8
+        },
+        "weights": {
+          "business": 0.22,
+          "time": 0.18
+        }
+      },
+      "selected_refs": [
+        {
+          "business_score": 0.95,
+          "embedding_score": 0.496139,
+          "entity_name": "the GPU purchase after finance reviewed the budget",
+          "entity_type": "approval_state",
+          "final_score": 0.878533,
+          "keyword_score": 3,
+          "metadata": {},
+          "node_hash": 1226958135442153109,
+          "node_path": [
+            "user:locomo_user_a",
+            "session:locomo_a"
+          ],
+          "node_score": 0.489021,
+          "origin_score": 0.815889,
+          "packing_policy": "fact",
+          "packing_score": 1.0,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 2639207394552949247,
+          "ref_type": "entity",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 3285681314429281761,
+            "session_id": "locomo_a",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 7261150912785192867,
+            "user_id": "locomo_user_a"
+          },
+          "score": 0.878533,
+          "sparse_score": 0.6,
+          "text": "approval_state: the GPU purchase after finance reviewed the budget = the GPU purchase after finance reviewed the budget",
+          "time_score": 1.0,
+          "token_estimate": 17,
+          "updated_at_ms": 1782247598433
+        },
+        {
+          "business_score": 0.5,
+          "embedding_score": 0.620174,
+          "event_type": "NEW_EVENT",
+          "final_score": 0.769999,
+          "keyword_score": 4,
+          "metadata": {
+            "message_index": 3,
+            "source": "locomo_debug"
+          },
+          "node_hash": 1226958135442153109,
+          "node_path": [
+            "user:locomo_user_a",
+            "session:locomo_a"
+          ],
+          "node_score": 0.489021,
+          "origin_score": 0.799999,
+          "packing_policy": "fact",
+          "packing_score": 0.909999,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 1430717481940834111,
+          "ref_type": "event",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 3285681314429281761,
+            "session_id": "locomo_a",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 7261150912785192867,
+            "user_id": "locomo_user_a"
+          },
+          "score": 0.769999,
+          "sparse_score": 0.8,
+          "text": "user: Alice approved the GPU purchase after finance reviewed the budget.",
+          "time_score": 1.0,
+          "token_estimate": 11,
+          "updated_at_ms": 1782247598371
+        },
+        {
+          "business_score": 0.95,
+          "coordinate_tuples": [
+            [
+              3,
+              3
+            ]
+          ],
+          "embedding_score": 0.447214,
+          "final_score": 0.859596,
+          "keyword_score": 4,
+          "node_hash": 1226958135442153109,
+          "node_path": [
+            "user:locomo_user_a",
+            "session:locomo_a"
+          ],
+          "node_score": 0.489021,
+          "non_contiguous": false,
+          "origin_score": 0.7843262499999999,
+          "packing_policy": "fact",
+          "packing_score": 0.889596,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 8098460866500653552,
+          "ref_type": "segment",
+          "saliency_score": 0.8,
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 3285681314429281761,
+            "session_id": "locomo_a",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 7261150912785192867,
+            "user_id": "locomo_user_a"
+          },
+          "score": 0.859596,
+          "sparse_score": 0.8,
+          "text": "3: Alice approved the GPU purchase after finance reviewed the budget.",
+          "time_score": 1.0,
+          "token_estimate": 11,
+          "topic": "approval_budget",
+          "updated_at_ms": 1782247598433
+        },
+        {
+          "business_score": 0.5,
+          "embedding_score": 0.1,
+          "event_type": "NEW_EVENT",
+          "final_score": 0.558171,
+          "keyword_score": 1,
+          "metadata": {
+            "message_index": 1,
+            "source": "locomo_debug"
+          },
+          "node_hash": 1226958135442153109,
+          "node_path": [
+            "user:locomo_user_a",
+            "session:locomo_a"
+          ],
+          "node_score": 0.489021,
+          "origin_score": 0.446951,
+          "packing_policy": "fact",
+          "packing_score": 0.698171,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 4001704437148736921,
+          "ref_type": "event",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 3285681314429281761,
+            "session_id": "locomo_a",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 7261150912785192867,
+            "user_id": "locomo_user_a"
+          },
+          "score": 0.558171,
+          "sparse_score": 0.2,
+          "text": "user: Actually I moved to Austin now for the new infra project.",
+          "time_score": 1.0,
+          "token_estimate": 12,
+          "updated_at_ms": 1782247598251
+        },
+        {
+          "business_score": 0.5,
+          "embedding_score": 0.149071,
+          "event_type": "NEW_EVENT",
+          "final_score": 0.524268,
+          "keyword_score": 0,
+          "metadata": {
+            "message_index": 2,
+            "source": "locomo_debug"
+          },
+          "node_hash": 1226958135442153109,
+          "node_path": [
+            "user:locomo_user_a",
+            "session:locomo_a"
+          ],
+          "node_score": 0.489021,
+          "origin_score": 0.390446,
+          "packing_policy": "fact",
+          "packing_score": 0.664268,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 8582078450952077150,
+          "ref_type": "event",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 3285681314429281761,
+            "session_id": "locomo_a",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 7261150912785192867,
+            "user_id": "locomo_user_a"
+          },
+          "score": 0.524268,
+          "sparse_score": 0.0,
+          "text": "user: I prefer Rust for low latency storage engines.",
+          "time_score": 1.0,
+          "token_estimate": 9,
+          "updated_at_ms": 1782247598313
+        }
+      ],
+      "session": "conversation_a_location_preference_approval",
+      "used_context_tokens": 70
+    },
+    {
+      "context_pack_id": "3988278020429610446",
+      "insufficient_context": false,
+      "query": "Who is the user's manager?",
+      "question_type": "fact",
+      "recall_policy": {
+        "auxiliary_path": "keyword graph inside selected tree after secondary-index prefilter",
+        "auxiliary_quota": 2,
+        "primary_path": "tree-first hybrid dense semantic + sparse lexical after secondary-index prefilter",
+        "secondary_index_filter": {
+          "applied_before_embedding_scoring": true,
+          "dropped_candidate_count": 3,
+          "effective_mode": "all_groups",
+          "enabled": true,
+          "matched_candidate_count": 6,
+          "mode": "ANY group for multi-intent raw query, otherwise AND across groups; OR within each group",
+          "required_groups": [
+            [
+              "entity_type:family_profile",
+              "entity_type:relationship"
+            ]
+          ]
+        },
+        "time_decay": {
+          "freshness_tolerance_ms": 86400000,
+          "half_life_ms": 604800000
+        },
+        "tree_traversal": {
+          "enabled": true,
+          "fallback_reason": "",
+          "fallback_to_flat": false,
+          "max_children_scored_per_parent": 10000,
+          "selected_leaf_count": 1,
+          "selected_node_count": 2,
+          "selected_path_count": 2,
+          "summary_embeddings": [
+            "node_l0",
+            "node_l1"
+          ],
+          "top_k_per_layer": 8
+        },
+        "weights": {
+          "business": 0.22,
+          "time": 0.18
+        }
+      },
+      "selected_refs": [
+        {
+          "business_score": 0.5,
+          "embedding_score": 0.645497,
+          "event_type": "NEW_EVENT",
+          "final_score": 0.772085,
+          "keyword_score": 3,
+          "metadata": {
+            "message_index": 0,
+            "source": "locomo_debug"
+          },
+          "node_hash": 8016836484261499701,
+          "node_path": [
+            "user:locomo_user_b",
+            "session:locomo_b"
+          ],
+          "node_score": 0.769267,
+          "origin_score": 0.803475,
+          "packing_policy": "fact",
+          "packing_score": 0.912085,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 1608460803197866279,
+          "ref_type": "event",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 5917501693145881287,
+            "session_id": "locomo_b",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 2208467320901051803,
+            "user_id": "locomo_user_b"
+          },
+          "score": 0.772085,
+          "sparse_score": 0.75,
+          "text": "user: My manager Priya is helping with the launch plan.",
+          "time_score": 1.0,
+          "token_estimate": 10,
+          "updated_at_ms": 1782247598820
+        },
+        {
+          "business_score": 0.74,
+          "embedding_score": 0.158114,
+          "entity_name": "Priya is helping with the launch plan",
+          "entity_type": "relationship",
+          "final_score": 0.711467,
+          "keyword_score": 1,
+          "metadata": {},
+          "node_hash": 8016836484261499701,
+          "node_path": [
+            "user:locomo_user_b",
+            "session:locomo_b"
+          ],
+          "node_score": 0.769267,
+          "origin_score": 0.614445,
+          "packing_policy": "fact",
+          "packing_score": 0.851467,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 6491685851751749674,
+          "ref_type": "entity",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 5917501693145881287,
+            "session_id": "locomo_b",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 2208467320901051803,
+            "user_id": "locomo_user_b"
+          },
+          "score": 0.711467,
+          "sparse_score": 0.25,
+          "text": "relationship: Priya is helping with the launch plan = Priya is helping with the launch plan",
+          "time_score": 1.0,
+          "token_estimate": 15,
+          "updated_at_ms": 1782247599102
+        },
+        {
+          "business_score": 0.5,
+          "embedding_score": 0.105409,
+          "event_type": "NEW_EVENT",
+          "final_score": 0.630471,
+          "keyword_score": 2,
+          "metadata": {
+            "message_index": 3,
+            "source": "locomo_debug"
+          },
+          "node_hash": 8016836484261499701,
+          "node_path": [
+            "user:locomo_user_b",
+            "session:locomo_b"
+          ],
+          "node_score": 0.769267,
+          "origin_score": 0.567451,
+          "packing_policy": "fact",
+          "packing_score": 0.770471,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 5846931346106514131,
+          "ref_type": "event",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 5917501693145881287,
+            "session_id": "locomo_b",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 2208467320901051803,
+            "user_id": "locomo_user_b"
+          },
+          "score": 0.630471,
+          "sparse_score": 0.5,
+          "text": "user: I plan to visit Berlin next month for the conference.",
+          "time_score": 1.0,
+          "token_estimate": 11,
+          "updated_at_ms": 1782247599045
+        },
+        {
+          "business_score": 0.72,
+          "embedding_score": 0.0,
+          "entity_name": "family_profile",
+          "entity_type": "family_profile",
+          "final_score": 0.628478,
+          "keyword_score": 0,
+          "metadata": {},
+          "node_hash": 8016836484261499701,
+          "node_path": [
+            "user:locomo_user_b",
+            "session:locomo_b"
+          ],
+          "node_score": 0.769267,
+          "origin_score": 0.483463,
+          "packing_policy": "fact",
+          "packing_score": 0.768478,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 615315919857288100,
+          "ref_type": "entity",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 5917501693145881287,
+            "session_id": "locomo_b",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 2208467320901051803,
+            "user_id": "locomo_user_b"
+          },
+          "score": 0.628478,
+          "sparse_score": 0.0,
+          "text": "family_profile: family_profile = has a dog named Mochi",
+          "time_score": 1.0,
+          "token_estimate": 7,
+          "updated_at_ms": 1782247599102
+        },
+        {
+          "business_score": 0.5,
+          "embedding_score": 0.387298,
+          "event_type": "NEW_EVENT",
+          "final_score": 0.624482,
+          "keyword_score": 1,
+          "metadata": {
+            "message_index": 2,
+            "source": "locomo_debug"
+          },
+          "node_hash": 8016836484261499701,
+          "node_path": [
+            "user:locomo_user_b",
+            "session:locomo_b"
+          ],
+          "node_score": 0.769267,
+          "origin_score": 0.55747,
+          "packing_policy": "fact",
+          "packing_score": 0.764482,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 2181881515329574653,
+          "ref_type": "event",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 5917501693145881287,
+            "session_id": "locomo_b",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 2208467320901051803,
+            "user_id": "locomo_user_b"
+          },
+          "score": 0.624482,
+          "sparse_score": 0.25,
+          "text": "user: My job role is storage infrastructure lead.",
+          "time_score": 1.0,
+          "token_estimate": 8,
+          "updated_at_ms": 1782247598981
+        }
+      ],
+      "session": "conversation_b_relationship_family_job",
+      "used_context_tokens": 59
+    },
+    {
+      "context_pack_id": "5794630090979807071",
+      "insufficient_context": false,
+      "query": "What pet is in the user's family?",
+      "question_type": "fact",
+      "recall_policy": {
+        "auxiliary_path": "keyword graph inside selected tree after secondary-index prefilter",
+        "auxiliary_quota": 2,
+        "primary_path": "tree-first hybrid dense semantic + sparse lexical after secondary-index prefilter",
+        "secondary_index_filter": {
+          "applied_before_embedding_scoring": true,
+          "dropped_candidate_count": 3,
+          "effective_mode": "all_groups",
+          "enabled": true,
+          "matched_candidate_count": 6,
+          "mode": "ANY group for multi-intent raw query, otherwise AND across groups; OR within each group",
+          "required_groups": [
+            [
+              "entity_type:family_profile",
+              "entity_type:relationship"
+            ]
+          ]
+        },
+        "time_decay": {
+          "freshness_tolerance_ms": 86400000,
+          "half_life_ms": 604800000
+        },
+        "tree_traversal": {
+          "enabled": true,
+          "fallback_reason": "",
+          "fallback_to_flat": false,
+          "max_children_scored_per_parent": 10000,
+          "selected_leaf_count": 1,
+          "selected_node_count": 2,
+          "selected_path_count": 2,
+          "summary_embeddings": [
+            "node_l0",
+            "node_l1"
+          ],
+          "top_k_per_layer": 8
+        },
+        "weights": {
+          "business": 0.22,
+          "time": 0.18
+        }
+      },
+      "selected_refs": [
+        {
+          "business_score": 0.74,
+          "embedding_score": 0.158114,
+          "entity_name": "Priya is helping with the launch plan",
+          "entity_type": "relationship",
+          "final_score": 0.701094,
+          "keyword_score": 1,
+          "metadata": {},
+          "node_hash": 8016836484261499701,
+          "node_path": [
+            "user:locomo_user_b",
+            "session:locomo_b"
+          ],
+          "node_score": 0.773518,
+          "origin_score": 0.5971569999999999,
+          "packing_policy": "fact",
+          "packing_score": 0.841094,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 6491685851751749674,
+          "ref_type": "entity",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 5917501693145881287,
+            "session_id": "locomo_b",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 2208467320901051803,
+            "user_id": "locomo_user_b"
+          },
+          "score": 0.701094,
+          "sparse_score": 0.2,
+          "text": "relationship: Priya is helping with the launch plan = Priya is helping with the launch plan",
+          "time_score": 1.0,
+          "token_estimate": 15,
+          "updated_at_ms": 1782247599102
+        },
+        {
+          "business_score": 0.5,
+          "embedding_score": 0.387298,
+          "event_type": "NEW_EVENT",
+          "final_score": 0.65611,
+          "keyword_score": 2,
+          "metadata": {
+            "message_index": 0,
+            "source": "locomo_debug"
+          },
+          "node_hash": 8016836484261499701,
+          "node_path": [
+            "user:locomo_user_b",
+            "session:locomo_b"
+          ],
+          "node_score": 0.773518,
+          "origin_score": 0.610183,
+          "packing_policy": "fact",
+          "packing_score": 0.79611,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 1608460803197866279,
+          "ref_type": "event",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 5917501693145881287,
+            "session_id": "locomo_b",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 2208467320901051803,
+            "user_id": "locomo_user_b"
+          },
+          "score": 0.65611,
+          "sparse_score": 0.4,
+          "text": "user: My manager Priya is helping with the launch plan.",
+          "time_score": 1.0,
+          "token_estimate": 10,
+          "updated_at_ms": 1782247598820
+        },
+        {
+          "business_score": 0.72,
+          "embedding_score": 0.129099,
+          "entity_name": "family_profile",
+          "entity_type": "family_profile",
+          "final_score": 0.649907,
+          "keyword_score": 0,
+          "metadata": {},
+          "node_hash": 8016836484261499701,
+          "node_path": [
+            "user:locomo_user_b",
+            "session:locomo_b"
+          ],
+          "node_score": 0.773518,
+          "origin_score": 0.5191779999999999,
+          "packing_policy": "fact",
+          "packing_score": 0.789907,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 615315919857288100,
+          "ref_type": "entity",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 5917501693145881287,
+            "session_id": "locomo_b",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 2208467320901051803,
+            "user_id": "locomo_user_b"
+          },
+          "score": 0.649907,
+          "sparse_score": 0.0,
+          "text": "family_profile: family_profile = has a dog named Mochi",
+          "time_score": 1.0,
+          "token_estimate": 7,
+          "updated_at_ms": 1782247599102
+        },
+        {
+          "business_score": 0.5,
+          "embedding_score": 0.33541,
+          "event_type": "NEW_EVENT",
+          "final_score": 0.647548,
+          "keyword_score": 2,
+          "metadata": {
+            "message_index": 1,
+            "source": "locomo_debug"
+          },
+          "node_hash": 8016836484261499701,
+          "node_path": [
+            "user:locomo_user_b",
+            "session:locomo_b"
+          ],
+          "node_score": 0.773518,
+          "origin_score": 0.595914,
+          "packing_policy": "fact",
+          "packing_score": 0.787548,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 6535590578240304985,
+          "ref_type": "event",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 5917501693145881287,
+            "session_id": "locomo_b",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 2208467320901051803,
+            "user_id": "locomo_user_b"
+          },
+          "score": 0.647548,
+          "sparse_score": 0.4,
+          "text": "user: My family has a dog named Mochi.",
+          "time_score": 1.0,
+          "token_estimate": 8,
+          "updated_at_ms": 1782247598909
+        },
+        {
+          "business_score": 0.5,
+          "embedding_score": 0.210818,
+          "event_type": "NEW_EVENT",
+          "final_score": 0.626991,
+          "keyword_score": 2,
+          "metadata": {
+            "message_index": 3,
+            "source": "locomo_debug"
+          },
+          "node_hash": 8016836484261499701,
+          "node_path": [
+            "user:locomo_user_b",
+            "session:locomo_b"
+          ],
+          "node_score": 0.773518,
+          "origin_score": 0.561651,
+          "packing_policy": "fact",
+          "packing_score": 0.766991,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 5846931346106514131,
+          "ref_type": "event",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 5917501693145881287,
+            "session_id": "locomo_b",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 2208467320901051803,
+            "user_id": "locomo_user_b"
+          },
+          "score": 0.626991,
+          "sparse_score": 0.4,
+          "text": "user: I plan to visit Berlin next month for the conference.",
+          "time_score": 1.0,
+          "token_estimate": 11,
+          "updated_at_ms": 1782247599045
+        }
+      ],
+      "session": "conversation_b_relationship_family_job",
+      "used_context_tokens": 59
+    },
+    {
+      "context_pack_id": "234674525583990417",
+      "insufficient_context": false,
+      "query": "What is the user's current job role?",
+      "question_type": "current_state",
+      "recall_policy": {
+        "auxiliary_path": "keyword graph inside selected tree after secondary-index prefilter",
+        "auxiliary_quota": 2,
+        "primary_path": "tree-first hybrid dense semantic + sparse lexical after secondary-index prefilter",
+        "secondary_index_filter": {
+          "applied_before_embedding_scoring": true,
+          "dropped_candidate_count": 4,
+          "effective_mode": "all_groups",
+          "enabled": true,
+          "matched_candidate_count": 5,
+          "mode": "ANY group for multi-intent raw query, otherwise AND across groups; OR within each group",
+          "required_groups": [
+            [
+              "entity_type:job_status",
+              "event_type:status_update"
+            ]
+          ]
+        },
+        "time_decay": {
+          "freshness_tolerance_ms": 86400000,
+          "half_life_ms": 604800000
+        },
+        "tree_traversal": {
+          "enabled": true,
+          "fallback_reason": "",
+          "fallback_to_flat": false,
+          "max_children_scored_per_parent": 10000,
+          "selected_leaf_count": 1,
+          "selected_node_count": 2,
+          "selected_path_count": 2,
+          "summary_embeddings": [
+            "node_l0",
+            "node_l1"
+          ],
+          "top_k_per_layer": 8
+        },
+        "weights": {
+          "business": 0.22,
+          "time": 0.18
+        }
+      },
+      "selected_refs": [
+        {
+          "business_score": 0.76,
+          "embedding_score": 0.387298,
+          "entity_name": "job_status",
+          "entity_type": "job_status",
+          "final_score": 0.733181,
+          "keyword_score": 1,
+          "metadata": {},
+          "node_hash": 8016836484261499701,
+          "node_path": [
+            "user:locomo_user_b",
+            "session:locomo_b"
+          ],
+          "node_score": 0.669206,
+          "origin_score": 0.643301,
+          "packing_policy": "current_state",
+          "packing_score": 1.0,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 3401292816335826860,
+          "ref_type": "entity",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 5917501693145881287,
+            "session_id": "locomo_b",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 2208467320901051803,
+            "user_id": "locomo_user_b"
+          },
+          "score": 0.733181,
+          "sparse_score": 0.16666666666666666,
+          "text": "job_status: job_status = role is storage infrastructure lead",
+          "time_score": 1.0,
+          "token_estimate": 7,
+          "updated_at_ms": 1782247599102
+        },
+        {
+          "business_score": 0.5,
+          "embedding_score": 0.645497,
+          "event_type": "NEW_EVENT",
+          "final_score": 0.716583,
+          "keyword_score": 3,
+          "metadata": {
+            "message_index": 2,
+            "source": "locomo_debug"
+          },
+          "node_hash": 8016836484261499701,
+          "node_path": [
+            "user:locomo_user_b",
+            "session:locomo_b"
+          ],
+          "node_score": 0.669206,
+          "origin_score": 0.710972,
+          "packing_policy": "current_state",
+          "packing_score": 0.716583,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 2181881515329574653,
+          "ref_type": "event",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 5917501693145881287,
+            "session_id": "locomo_b",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 2208467320901051803,
+            "user_id": "locomo_user_b"
+          },
+          "score": 0.716583,
+          "sparse_score": 0.5,
+          "text": "user: My job role is storage infrastructure lead.",
+          "time_score": 1.0,
+          "token_estimate": 8,
+          "updated_at_ms": 1782247598981
+        },
+        {
+          "business_score": 0.5,
+          "embedding_score": 0.516398,
+          "event_type": "NEW_EVENT",
+          "final_score": 0.660282,
+          "keyword_score": 2,
+          "metadata": {
+            "message_index": 0,
+            "source": "locomo_debug"
+          },
+          "node_hash": 8016836484261499701,
+          "node_path": [
+            "user:locomo_user_b",
+            "session:locomo_b"
+          ],
+          "node_score": 0.669206,
+          "origin_score": 0.617136,
+          "packing_policy": "current_state",
+          "packing_score": 0.660282,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 1608460803197866279,
+          "ref_type": "event",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 5917501693145881287,
+            "session_id": "locomo_b",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 2208467320901051803,
+            "user_id": "locomo_user_b"
+          },
+          "score": 0.660282,
+          "sparse_score": 0.3333333333333333,
+          "text": "user: My manager Priya is helping with the launch plan.",
+          "time_score": 1.0,
+          "token_estimate": 10,
+          "updated_at_ms": 1782247598820
+        },
+        {
+          "business_score": 0.5,
+          "embedding_score": 0.223607,
+          "event_type": "NEW_EVENT",
+          "final_score": 0.576972,
+          "keyword_score": 1,
+          "metadata": {
+            "message_index": 1,
+            "source": "locomo_debug"
+          },
+          "node_hash": 8016836484261499701,
+          "node_path": [
+            "user:locomo_user_b",
+            "session:locomo_b"
+          ],
+          "node_score": 0.669206,
+          "origin_score": 0.478286,
+          "packing_policy": "current_state",
+          "packing_score": 0.576972,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 6535590578240304985,
+          "ref_type": "event",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 5917501693145881287,
+            "session_id": "locomo_b",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 2208467320901051803,
+            "user_id": "locomo_user_b"
+          },
+          "score": 0.576972,
+          "sparse_score": 0.16666666666666666,
+          "text": "user: My family has a dog named Mochi.",
+          "time_score": 1.0,
+          "token_estimate": 8,
+          "updated_at_ms": 1782247598909
+        },
+        {
+          "business_score": 0.5,
+          "embedding_score": 0.0,
+          "event_type": "NEW_EVENT",
+          "final_score": 0.575076,
+          "keyword_score": 2,
+          "metadata": {
+            "message_index": 3,
+            "source": "locomo_debug"
+          },
+          "node_hash": 8016836484261499701,
+          "node_path": [
+            "user:locomo_user_b",
+            "session:locomo_b"
+          ],
+          "node_score": 0.669206,
+          "origin_score": 0.475127,
+          "packing_policy": "current_state",
+          "packing_score": 0.575076,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 5846931346106514131,
+          "ref_type": "event",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 5917501693145881287,
+            "session_id": "locomo_b",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 2208467320901051803,
+            "user_id": "locomo_user_b"
+          },
+          "score": 0.575076,
+          "sparse_score": 0.3333333333333333,
+          "text": "user: I plan to visit Berlin next month for the conference.",
+          "time_score": 1.0,
+          "token_estimate": 11,
+          "updated_at_ms": 1782247599045
+        }
+      ],
+      "session": "conversation_b_relationship_family_job",
+      "used_context_tokens": 44
+    },
+    {
+      "context_pack_id": "1566527650575662429",
+      "insufficient_context": false,
+      "query": "Where is the user currently located?",
+      "question_type": "current_state",
+      "recall_policy": {
+        "auxiliary_path": "keyword graph inside selected tree after secondary-index prefilter",
+        "auxiliary_quota": 2,
+        "primary_path": "tree-first hybrid dense semantic + sparse lexical after secondary-index prefilter",
+        "secondary_index_filter": {
+          "applied_before_embedding_scoring": true,
+          "dropped_candidate_count": 3,
+          "effective_mode": "all_groups",
+          "enabled": true,
+          "matched_candidate_count": 5,
+          "mode": "ANY group for multi-intent raw query, otherwise AND across groups; OR within each group",
+          "required_groups": [
+            [
+              "entity_type:location"
+            ]
+          ]
+        },
+        "time_decay": {
+          "freshness_tolerance_ms": 86400000,
+          "half_life_ms": 604800000
+        },
+        "tree_traversal": {
+          "enabled": true,
+          "fallback_reason": "",
+          "fallback_to_flat": false,
+          "max_children_scored_per_parent": 10000,
+          "selected_leaf_count": 1,
+          "selected_node_count": 2,
+          "selected_path_count": 2,
+          "summary_embeddings": [
+            "node_l0",
+            "node_l1"
+          ],
+          "top_k_per_layer": 8
+        },
+        "weights": {
+          "business": 0.22,
+          "time": 0.18
+        }
+      },
+      "selected_refs": [
+        {
+          "business_score": 0.7,
+          "embedding_score": 0.0,
+          "entity_name": "location",
+          "entity_type": "location",
+          "final_score": 0.617421,
+          "keyword_score": 0,
+          "metadata": {},
+          "node_hash": 4664759118317631097,
+          "node_path": [
+            "user:locomo_user_c",
+            "session:locomo_c"
+          ],
+          "node_score": 0.547364,
+          "origin_score": 0.472368,
+          "packing_policy": "current_state",
+          "packing_score": 0.897421,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 4393558289296873974,
+          "ref_type": "entity",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 8019234670253070902,
+            "session_id": "locomo_c",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 4747539727692377410,
+            "user_id": "locomo_user_c"
+          },
+          "score": 0.617421,
+          "sparse_score": 0.0,
+          "text": "location: location = Austin",
+          "time_score": 1.0,
+          "token_estimate": 3,
+          "updated_at_ms": 1782247599714
+        },
+        {
+          "business_score": 0.5,
+          "embedding_score": 0.353553,
+          "event_type": "NEW_EVENT",
+          "final_score": 0.601757,
+          "keyword_score": 1,
+          "metadata": {
+            "message_index": 0,
+            "source": "locomo_debug"
+          },
+          "node_hash": 4664759118317631097,
+          "node_path": [
+            "user:locomo_user_c",
+            "session:locomo_c"
+          ],
+          "node_score": 0.547364,
+          "origin_score": 0.519595,
+          "packing_policy": "current_state",
+          "packing_score": 0.601757,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 1299255405821071493,
+          "ref_type": "event",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 8019234670253070902,
+            "session_id": "locomo_c",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 4747539727692377410,
+            "user_id": "locomo_user_c"
+          },
+          "score": 0.601757,
+          "sparse_score": 0.2,
+          "text": "user: On March 2 I lived in Seattle.",
+          "time_score": 1.0,
+          "token_estimate": 8,
+          "updated_at_ms": 1782247599455
+        },
+        {
+          "business_score": 0.5,
+          "embedding_score": 0.27735,
+          "event_type": "NEW_EVENT",
+          "final_score": 0.589183,
+          "keyword_score": 1,
+          "metadata": {
+            "message_index": 3,
+            "source": "locomo_debug"
+          },
+          "node_hash": 4664759118317631097,
+          "node_path": [
+            "user:locomo_user_c",
+            "session:locomo_c"
+          ],
+          "node_score": 0.547364,
+          "origin_score": 0.498639,
+          "packing_policy": "current_state",
+          "packing_score": 0.589183,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 2019390737801545451,
+          "ref_type": "event",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 8019234670253070902,
+            "session_id": "locomo_c",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 4747539727692377410,
+            "user_id": "locomo_user_c"
+          },
+          "score": 0.589183,
+          "sparse_score": 0.2,
+          "text": "user: Actually I now prefer Rust for backend services.",
+          "time_score": 1.0,
+          "token_estimate": 9,
+          "updated_at_ms": 1782247599654
+        },
+        {
+          "business_score": 0.5,
+          "embedding_score": 0.188982,
+          "event_type": "NEW_EVENT",
+          "final_score": 0.574603,
+          "keyword_score": 1,
+          "metadata": {
+            "message_index": 2,
+            "source": "locomo_debug"
+          },
+          "node_hash": 4664759118317631097,
+          "node_path": [
+            "user:locomo_user_c",
+            "session:locomo_c"
+          ],
+          "node_score": 0.547364,
+          "origin_score": 0.474338,
+          "packing_policy": "current_state",
+          "packing_score": 0.574603,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 7728857116146083458,
+          "ref_type": "event",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 8019234670253070902,
+            "session_id": "locomo_c",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 4747539727692377410,
+            "user_id": "locomo_user_c"
+          },
+          "score": 0.574603,
+          "sparse_score": 0.2,
+          "text": "user: I liked Python for dashboards before.",
+          "time_score": 1.0,
+          "token_estimate": 7,
+          "updated_at_ms": 1782247599591
+        },
+        {
+          "business_score": 0.5,
+          "embedding_score": 0.144338,
+          "event_type": "NEW_EVENT",
+          "final_score": 0.567237,
+          "keyword_score": 1,
+          "metadata": {
+            "message_index": 1,
+            "source": "locomo_debug"
+          },
+          "node_hash": 4664759118317631097,
+          "node_path": [
+            "user:locomo_user_c",
+            "session:locomo_c"
+          ],
+          "node_score": 0.547364,
+          "origin_score": 0.462061,
+          "packing_policy": "current_state",
+          "packing_score": 0.567237,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 4766492176302446322,
+          "ref_type": "event",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 8019234670253070902,
+            "session_id": "locomo_c",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 4747539727692377410,
+            "user_id": "locomo_user_c"
+          },
+          "score": 0.567237,
+          "sparse_score": 0.2,
+          "text": "user: On April 10 I moved to Austin.",
+          "time_score": 1.0,
+          "token_estimate": 8,
+          "updated_at_ms": 1782247599535
+        }
+      ],
+      "session": "conversation_c_temporal_update",
+      "used_context_tokens": 35
+    },
+    {
+      "context_pack_id": "2892706847421666102",
+      "insufficient_context": false,
+      "query": "What language does the user currently prefer?",
+      "question_type": "current_state",
+      "recall_policy": {
+        "auxiliary_path": "keyword graph inside selected tree after secondary-index prefilter",
+        "auxiliary_quota": 2,
+        "primary_path": "tree-first hybrid dense semantic + sparse lexical after secondary-index prefilter",
+        "secondary_index_filter": {
+          "applied_before_embedding_scoring": true,
+          "dropped_candidate_count": 3,
+          "effective_mode": "all_groups",
+          "enabled": true,
+          "matched_candidate_count": 5,
+          "mode": "ANY group for multi-intent raw query, otherwise AND across groups; OR within each group",
+          "required_groups": [
+            [
+              "entity_type:preference",
+              "event_type:preference_update"
+            ]
+          ]
+        },
+        "time_decay": {
+          "freshness_tolerance_ms": 86400000,
+          "half_life_ms": 604800000
+        },
+        "tree_traversal": {
+          "enabled": true,
+          "fallback_reason": "",
+          "fallback_to_flat": false,
+          "max_children_scored_per_parent": 10000,
+          "selected_leaf_count": 1,
+          "selected_node_count": 2,
+          "selected_path_count": 2,
+          "summary_embeddings": [
+            "node_l0",
+            "node_l1"
+          ],
+          "top_k_per_layer": 8
+        },
+        "weights": {
+          "business": 0.22,
+          "time": 0.18
+        }
+      },
+      "selected_refs": [
+        {
+          "business_score": 0.75,
+          "embedding_score": 0.0,
+          "entity_name": "preference",
+          "entity_type": "preference",
+          "final_score": 0.625609,
+          "keyword_score": 0,
+          "metadata": {},
+          "node_hash": 4664759118317631097,
+          "node_path": [
+            "user:locomo_user_c",
+            "session:locomo_c"
+          ],
+          "node_score": 0.453618,
+          "origin_score": 0.467681,
+          "packing_policy": "current_state",
+          "packing_score": 0.905609,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 8048610667407445074,
+          "ref_type": "entity",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 8019234670253070902,
+            "session_id": "locomo_c",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 4747539727692377410,
+            "user_id": "locomo_user_c"
+          },
+          "score": 0.625609,
+          "sparse_score": 0.0,
+          "text": "preference: preference = Rust for backend services",
+          "time_score": 1.0,
+          "token_estimate": 6,
+          "updated_at_ms": 1782247599714
+        },
+        {
+          "business_score": 0.5,
+          "embedding_score": 0.104828,
+          "event_type": "NEW_EVENT",
+          "final_score": 0.575905,
+          "keyword_score": 2,
+          "metadata": {
+            "message_index": 3,
+            "source": "locomo_debug"
+          },
+          "node_hash": 4664759118317631097,
+          "node_path": [
+            "user:locomo_user_c",
+            "session:locomo_c"
+          ],
+          "node_score": 0.453618,
+          "origin_score": 0.476509,
+          "packing_policy": "current_state",
+          "packing_score": 0.575905,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 2019390737801545451,
+          "ref_type": "event",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 8019234670253070902,
+            "session_id": "locomo_c",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 4747539727692377410,
+            "user_id": "locomo_user_c"
+          },
+          "score": 0.575905,
+          "sparse_score": 0.2857142857142857,
+          "text": "user: Actually I now prefer Rust for backend services.",
+          "time_score": 1.0,
+          "token_estimate": 9,
+          "updated_at_ms": 1782247599654
+        },
+        {
+          "business_score": 0.5,
+          "embedding_score": 0.109109,
+          "event_type": "NEW_EVENT",
+          "final_score": 0.546612,
+          "keyword_score": 1,
+          "metadata": {
+            "message_index": 1,
+            "source": "locomo_debug"
+          },
+          "node_hash": 4664759118317631097,
+          "node_path": [
+            "user:locomo_user_c",
+            "session:locomo_c"
+          ],
+          "node_score": 0.453618,
+          "origin_score": 0.427686,
+          "packing_policy": "current_state",
+          "packing_score": 0.546612,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 4766492176302446322,
+          "ref_type": "event",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 8019234670253070902,
+            "session_id": "locomo_c",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 4747539727692377410,
+            "user_id": "locomo_user_c"
+          },
+          "score": 0.546612,
+          "sparse_score": 0.14285714285714285,
+          "text": "user: On April 10 I moved to Austin.",
+          "time_score": 1.0,
+          "token_estimate": 8,
+          "updated_at_ms": 1782247599535
+        },
+        {
+          "business_score": 0.5,
+          "embedding_score": 0.0,
+          "event_type": "NEW_EVENT",
+          "final_score": 0.528609,
+          "keyword_score": 1,
+          "metadata": {
+            "message_index": 2,
+            "source": "locomo_debug"
+          },
+          "node_hash": 4664759118317631097,
+          "node_path": [
+            "user:locomo_user_c",
+            "session:locomo_c"
+          ],
+          "node_score": 0.453618,
+          "origin_score": 0.397681,
+          "packing_policy": "current_state",
+          "packing_score": 0.528609,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 7728857116146083458,
+          "ref_type": "event",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 8019234670253070902,
+            "session_id": "locomo_c",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 4747539727692377410,
+            "user_id": "locomo_user_c"
+          },
+          "score": 0.528609,
+          "sparse_score": 0.14285714285714285,
+          "text": "user: I liked Python for dashboards before.",
+          "time_score": 1.0,
+          "token_estimate": 7,
+          "updated_at_ms": 1782247599591
+        },
+        {
+          "business_score": 0.5,
+          "embedding_score": 0.0,
+          "event_type": "NEW_EVENT",
+          "final_score": 0.528609,
+          "keyword_score": 1,
+          "metadata": {
+            "message_index": 0,
+            "source": "locomo_debug"
+          },
+          "node_hash": 4664759118317631097,
+          "node_path": [
+            "user:locomo_user_c",
+            "session:locomo_c"
+          ],
+          "node_score": 0.453618,
+          "origin_score": 0.397681,
+          "packing_policy": "current_state",
+          "packing_score": 0.528609,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 1299255405821071493,
+          "ref_type": "event",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 8019234670253070902,
+            "session_id": "locomo_c",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 4747539727692377410,
+            "user_id": "locomo_user_c"
+          },
+          "score": 0.528609,
+          "sparse_score": 0.14285714285714285,
+          "text": "user: On March 2 I lived in Seattle.",
+          "time_score": 1.0,
+          "token_estimate": 8,
+          "updated_at_ms": 1782247599455
+        }
+      ],
+      "session": "conversation_c_temporal_update",
+      "used_context_tokens": 38
+    },
+    {
+      "context_pack_id": "8605734539003174923",
+      "insufficient_context": false,
+      "query": "Where was the user before April 10?",
+      "question_type": "date",
+      "recall_policy": {
+        "auxiliary_path": "keyword graph inside selected tree after secondary-index prefilter",
+        "auxiliary_quota": 2,
+        "primary_path": "tree-first hybrid dense semantic + sparse lexical after secondary-index prefilter",
+        "secondary_index_filter": {
+          "applied_before_embedding_scoring": true,
+          "dropped_candidate_count": 3,
+          "effective_mode": "all_groups",
+          "enabled": true,
+          "matched_candidate_count": 5,
+          "mode": "ANY group for multi-intent raw query, otherwise AND across groups; OR within each group",
+          "required_groups": [
+            [
+              "entity_type:location",
+              "source_type:message"
+            ]
+          ]
+        },
+        "time_decay": {
+          "freshness_tolerance_ms": 86400000,
+          "half_life_ms": 604800000
+        },
+        "tree_traversal": {
+          "enabled": true,
+          "fallback_reason": "",
+          "fallback_to_flat": false,
+          "max_children_scored_per_parent": 10000,
+          "selected_leaf_count": 1,
+          "selected_node_count": 2,
+          "selected_path_count": 2,
+          "summary_embeddings": [
+            "node_l0",
+            "node_l1"
+          ],
+          "top_k_per_layer": 8
+        },
+        "weights": {
+          "business": 0.22,
+          "time": 0.18
+        }
+      },
+      "selected_refs": [
+        {
+          "business_score": 0.5,
+          "embedding_score": 0.481125,
+          "event_type": "NEW_EVENT",
+          "final_score": 0.653139,
+          "keyword_score": 2,
+          "metadata": {
+            "message_index": 1,
+            "source": "locomo_debug"
+          },
+          "node_hash": 4664759118317631097,
+          "node_path": [
+            "user:locomo_user_c",
+            "session:locomo_c"
+          ],
+          "node_score": 0.625109,
+          "origin_score": 0.605231,
+          "packing_policy": "date",
+          "packing_score": 0.933139,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 4766492176302446322,
+          "ref_type": "event",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 8019234670253070902,
+            "session_id": "locomo_c",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 4747539727692377410,
+            "user_id": "locomo_user_c"
+          },
+          "score": 0.653139,
+          "sparse_score": 0.3333333333333333,
+          "text": "user: On April 10 I moved to Austin.",
+          "time_score": 1.0,
+          "token_estimate": 8,
+          "updated_at_ms": 1782247599535
+        },
+        {
+          "business_score": 0.5,
+          "embedding_score": 0.251976,
+          "event_type": "NEW_EVENT",
+          "final_score": 0.61533,
+          "keyword_score": 2,
+          "metadata": {
+            "message_index": 2,
+            "source": "locomo_debug"
+          },
+          "node_hash": 4664759118317631097,
+          "node_path": [
+            "user:locomo_user_c",
+            "session:locomo_c"
+          ],
+          "node_score": 0.625109,
+          "origin_score": 0.542216,
+          "packing_policy": "date",
+          "packing_score": 0.89533,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 7728857116146083458,
+          "ref_type": "event",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 8019234670253070902,
+            "session_id": "locomo_c",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 4747539727692377410,
+            "user_id": "locomo_user_c"
+          },
+          "score": 0.61533,
+          "sparse_score": 0.3333333333333333,
+          "text": "user: I liked Python for dashboards before.",
+          "time_score": 1.0,
+          "token_estimate": 7,
+          "updated_at_ms": 1782247599591
+        },
+        {
+          "business_score": 0.5,
+          "embedding_score": 0.117851,
+          "event_type": "NEW_EVENT",
+          "final_score": 0.558199,
+          "keyword_score": 1,
+          "metadata": {
+            "message_index": 0,
+            "source": "locomo_debug"
+          },
+          "node_hash": 4664759118317631097,
+          "node_path": [
+            "user:locomo_user_c",
+            "session:locomo_c"
+          ],
+          "node_score": 0.625109,
+          "origin_score": 0.446998,
+          "packing_policy": "date",
+          "packing_score": 0.838199,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 1299255405821071493,
+          "ref_type": "event",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 8019234670253070902,
+            "session_id": "locomo_c",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 4747539727692377410,
+            "user_id": "locomo_user_c"
+          },
+          "score": 0.558199,
+          "sparse_score": 0.16666666666666666,
+          "text": "user: On March 2 I lived in Seattle.",
+          "time_score": 1.0,
+          "token_estimate": 8,
+          "updated_at_ms": 1782247599455
+        },
+        {
+          "business_score": 0.7,
+          "embedding_score": 0.0,
+          "entity_name": "location",
+          "entity_type": "location",
+          "final_score": 0.619753,
+          "keyword_score": 0,
+          "metadata": {},
+          "node_hash": 4664759118317631097,
+          "node_path": [
+            "user:locomo_user_c",
+            "session:locomo_c"
+          ],
+          "node_score": 0.625109,
+          "origin_score": 0.476255,
+          "packing_policy": "date",
+          "packing_score": 0.699753,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 4393558289296873974,
+          "ref_type": "entity",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 8019234670253070902,
+            "session_id": "locomo_c",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 4747539727692377410,
+            "user_id": "locomo_user_c"
+          },
+          "score": 0.619753,
+          "sparse_score": 0.0,
+          "text": "location: location = Austin",
+          "time_score": 1.0,
+          "token_estimate": 3,
+          "updated_at_ms": 1782247599714
+        },
+        {
+          "business_score": 0.5,
+          "embedding_score": 0.09245,
+          "event_type": "NEW_EVENT",
+          "final_score": 0.554008,
+          "keyword_score": 1,
+          "metadata": {
+            "message_index": 3,
+            "source": "locomo_debug"
+          },
+          "node_hash": 4664759118317631097,
+          "node_path": [
+            "user:locomo_user_c",
+            "session:locomo_c"
+          ],
+          "node_score": 0.625109,
+          "origin_score": 0.440013,
+          "packing_policy": "date",
+          "packing_score": 0.554008,
+          "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+          "recall_path": "primary_hybrid",
+          "ref_hash": 2019390737801545451,
+          "ref_type": "event",
+          "scope": {
+            "account_id": "acct_locomo_debug",
+            "session_hash": 8019234670253070902,
+            "session_id": "locomo_c",
+            "tenant_hash": 1996897688857295741,
+            "tenant_id": "tenant_memory",
+            "user_hash": 4747539727692377410,
+            "user_id": "locomo_user_c"
+          },
+          "score": 0.554008,
+          "sparse_score": 0.16666666666666666,
+          "text": "user: Actually I now prefer Rust for backend services.",
+          "time_score": 1.0,
+          "token_estimate": 9,
+          "updated_at_ms": 1782247599654
+        }
+      ],
+      "session": "conversation_c_temporal_update",
+      "used_context_tokens": 35
+    }
+  ],
+  "records_by_model": {
+    "context_batch_commit": [
+      {
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_batch_commit",
+        "source_event_ids": [
+          6986223805810000967,
+          4001704437148736921,
+          8582078450952077150,
+          1430717481940834111
+        ]
+      },
+      {
+        "node_hash": 8016836484261499701,
+        "node_path": [
+          "user:locomo_user_b",
+          "session:locomo_b"
+        ],
+        "record_type": "context_batch_commit",
+        "source_event_ids": [
+          1608460803197866279,
+          6535590578240304985,
+          2181881515329574653,
+          5846931346106514131
+        ]
+      },
+      {
+        "node_hash": 4664759118317631097,
+        "node_path": [
+          "user:locomo_user_c",
+          "session:locomo_c"
+        ],
+        "record_type": "context_batch_commit",
+        "source_event_ids": [
+          1299255405821071493,
+          4766492176302446322,
+          7728857116146083458,
+          2019390737801545451
+        ]
+      }
+    ],
+    "context_embedding": [
+      {
+        "embedding_type": "session_l0",
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_embedding",
+        "vector_dim": 32,
+        "vector_preview": [
+          0.235702,
+          0.0,
+          0.0,
+          0.0,
+          0.235702,
+          0.0
+        ]
+      },
+      {
+        "embedding_type": "event_text",
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_embedding",
+        "vector_dim": 32,
+        "vector_preview": [
+          0.235702,
+          0.0,
+          0.0,
+          0.0,
+          0.235702,
+          0.0
+        ]
+      },
+      {
+        "embedding_type": "session_l0",
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_embedding",
+        "vector_dim": 32,
+        "vector_preview": [
+          0.192847,
+          0.0,
+          0.0,
+          0.0,
+          0.385695,
+          0.0
+        ]
+      },
+      {
+        "embedding_type": "event_text",
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_embedding",
+        "vector_dim": 32,
+        "vector_preview": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.67082,
+          0.0
+        ]
+      },
+      {
+        "embedding_type": "session_l0",
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_embedding",
+        "vector_dim": 32,
+        "vector_preview": [
+          0.192748,
+          0.0,
+          0.0,
+          -0.032125,
+          0.385496,
+          0.0
+        ]
+      },
+      {
+        "embedding_type": "event_text",
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_embedding",
+        "vector_dim": 32,
+        "vector_preview": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.333333,
+          0.0
+        ]
+      },
+      {
+        "embedding_type": "session_l0",
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_embedding",
+        "vector_dim": 32,
+        "vector_preview": [
+          0.192748,
+          0.0,
+          0.0,
+          -0.032125,
+          0.385496,
+          0.0
+        ]
+      },
+      {
+        "embedding_type": "event_text",
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_embedding",
+        "vector_dim": 32,
+        "vector_preview": [
+          0.0,
+          0.0,
+          0.0,
+          -0.27735,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "embedding_type": "entity_state",
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_embedding",
+        "vector_dim": 32,
+        "vector_preview": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "embedding_type": "entity_state",
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_embedding",
+        "vector_dim": 32,
+        "vector_preview": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.353553,
+          0.0
+        ]
+      },
+      {
+        "embedding_type": "entity_state",
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_embedding",
+        "vector_dim": 32,
+        "vector_preview": [
+          0.0,
+          0.27735,
+          0.0,
+          -0.27735,
+          -0.27735,
+          0.0
+        ]
+      },
+      {
+        "embedding_type": "segment_text",
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_embedding",
+        "vector_dim": 32,
+        "vector_preview": [
+          0.0,
+          0.0,
+          0.0,
+          -0.25,
+          -0.25,
+          0.0
+        ]
+      },
+      {
+        "embedding_type": "segment_text",
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_embedding",
+        "vector_dim": 32,
+        "vector_preview": [
+          0.137361,
+          0.0,
+          0.0,
+          0.0,
+          0.274721,
+          0.0
+        ]
+      },
+      {
+        "embedding_type": "segment_text",
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_embedding",
+        "vector_dim": 32,
+        "vector_preview": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      {
+        "embedding_type": "batch_l0",
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_embedding",
+        "vector_dim": 32,
+        "vector_preview": [
+          0.093659,
+          0.093659,
+          0.0,
+          -0.093659,
+          0.561951,
+          0.0
+        ]
+      },
+      {
+        "embedding_type": "node_l0",
+        "node_hash": 1400509432320306660,
+        "node_path": [
+          "user:locomo_user_a"
+        ],
+        "record_type": "context_embedding",
+        "vector_dim": 32,
+        "vector_preview": [
+          0.224231,
+          0.0,
+          0.0,
+          0.0,
+          0.373718,
+          0.0
+        ]
+      },
+      {
+        "embedding_type": "node_l1",
+        "node_hash": 1400509432320306660,
+        "node_path": [
+          "user:locomo_user_a"
+        ],
+        "record_type": "context_embedding",
+        "vector_dim": 32,
+        "vector_preview": [
+          0.136966,
+          0.0,
+          -0.019567,
+          -0.0587,
+          0.469596,
+          0.0
+        ]
+      },
+      {
+        "embedding_type": "node_l0",
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_embedding",
+        "vector_dim": 32,
+        "vector_preview": [
+          0.099504,
+          0.099504,
+          0.0,
+          0.0,
+          0.597022,
+          0.0
+        ]
+      },
+      {
+        "embedding_type": "node_l1",
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_embedding",
+        "vector_dim": 32,
+        "vector_preview": [
+          0.0,
+          0.151186,
+          -0.075593,
+          -0.075593,
+          0.52915,
+          0.0
+        ]
+      },
+      {
+        "embedding_type": "session_l0",
+        "node_hash": 8016836484261499701,
+        "node_path": [
+          "user:locomo_user_b",
+          "session:locomo_b"
+        ],
+        "record_type": "context_embedding",
+        "vector_dim": 32,
+        "vector_preview": [
+          0.0,
+          0.0,
+          0.0,
+          0.408248,
+          0.408248,
+          0.0
+        ]
+      }
+    ],
+    "context_entity": [
+      {
+        "entity_hash": 4368207921958537161,
+        "entity_name": "preference",
+        "entity_type": "preference",
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "previous_state": "",
+        "record_type": "context_entity",
+        "source_event_ids": [
+          6986223805810000967,
+          4001704437148736921,
+          8582078450952077150,
+          1430717481940834111
+        ],
+        "source_refs": [
+          "6986223805810000967",
+          "4001704437148736921",
+          "8582078450952077150",
+          "1430717481940834111"
+        ],
+        "state": "Rust for low latency storage engines"
+      },
+      {
+        "entity_hash": 1639419467397175869,
+        "entity_name": "location",
+        "entity_type": "location",
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "previous_state": "",
+        "record_type": "context_entity",
+        "source_event_ids": [
+          6986223805810000967,
+          4001704437148736921,
+          8582078450952077150,
+          1430717481940834111
+        ],
+        "source_refs": [
+          "6986223805810000967",
+          "4001704437148736921",
+          "8582078450952077150",
+          "1430717481940834111"
+        ],
+        "state": "Austin now for the new infra project"
+      },
+      {
+        "entity_hash": 2639207394552949247,
+        "entity_name": "the GPU purchase after finance reviewed the budget",
+        "entity_type": "approval_state",
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "previous_state": "",
+        "record_type": "context_entity",
+        "source_event_ids": [
+          6986223805810000967,
+          4001704437148736921,
+          8582078450952077150,
+          1430717481940834111
+        ],
+        "source_refs": [
+          "6986223805810000967",
+          "4001704437148736921",
+          "8582078450952077150",
+          "1430717481940834111"
+        ],
+        "state": "the GPU purchase after finance reviewed the budget"
+      },
+      {
+        "entity_hash": 6491685851751749674,
+        "entity_name": "Priya is helping with the launch plan",
+        "entity_type": "relationship",
+        "node_hash": 8016836484261499701,
+        "node_path": [
+          "user:locomo_user_b",
+          "session:locomo_b"
+        ],
+        "previous_state": "",
+        "record_type": "context_entity",
+        "source_event_ids": [
+          1608460803197866279,
+          6535590578240304985,
+          2181881515329574653,
+          5846931346106514131
+        ],
+        "source_refs": [
+          "1608460803197866279",
+          "6535590578240304985",
+          "2181881515329574653",
+          "5846931346106514131"
+        ],
+        "state": "Priya is helping with the launch plan"
+      },
+      {
+        "entity_hash": 3401292816335826860,
+        "entity_name": "job_status",
+        "entity_type": "job_status",
+        "node_hash": 8016836484261499701,
+        "node_path": [
+          "user:locomo_user_b",
+          "session:locomo_b"
+        ],
+        "previous_state": "",
+        "record_type": "context_entity",
+        "source_event_ids": [
+          1608460803197866279,
+          6535590578240304985,
+          2181881515329574653,
+          5846931346106514131
+        ],
+        "source_refs": [
+          "1608460803197866279",
+          "6535590578240304985",
+          "2181881515329574653",
+          "5846931346106514131"
+        ],
+        "state": "role is storage infrastructure lead"
+      },
+      {
+        "entity_hash": 6580215612133735141,
+        "entity_name": "current_plan",
+        "entity_type": "current_plan",
+        "node_hash": 8016836484261499701,
+        "node_path": [
+          "user:locomo_user_b",
+          "session:locomo_b"
+        ],
+        "previous_state": "",
+        "record_type": "context_entity",
+        "source_event_ids": [
+          1608460803197866279,
+          6535590578240304985,
+          2181881515329574653,
+          5846931346106514131
+        ],
+        "source_refs": [
+          "1608460803197866279",
+          "6535590578240304985",
+          "2181881515329574653",
+          "5846931346106514131"
+        ],
+        "state": "to visit Berlin next month for the conference"
+      },
+      {
+        "entity_hash": 615315919857288100,
+        "entity_name": "family_profile",
+        "entity_type": "family_profile",
+        "node_hash": 8016836484261499701,
+        "node_path": [
+          "user:locomo_user_b",
+          "session:locomo_b"
+        ],
+        "previous_state": "",
+        "record_type": "context_entity",
+        "source_event_ids": [
+          1608460803197866279,
+          6535590578240304985,
+          2181881515329574653,
+          5846931346106514131
+        ],
+        "source_refs": [
+          "1608460803197866279",
+          "6535590578240304985",
+          "2181881515329574653",
+          "5846931346106514131"
+        ],
+        "state": "has a dog named Mochi"
+      },
+      {
+        "entity_hash": 8048610667407445074,
+        "entity_name": "preference",
+        "entity_type": "preference",
+        "node_hash": 4664759118317631097,
+        "node_path": [
+          "user:locomo_user_c",
+          "session:locomo_c"
+        ],
+        "previous_state": "",
+        "record_type": "context_entity",
+        "source_event_ids": [
+          1299255405821071493,
+          4766492176302446322,
+          7728857116146083458,
+          2019390737801545451
+        ],
+        "source_refs": [
+          "1299255405821071493",
+          "4766492176302446322",
+          "7728857116146083458",
+          "2019390737801545451"
+        ],
+        "state": "Rust for backend services"
+      },
+      {
+        "entity_hash": 4393558289296873974,
+        "entity_name": "location",
+        "entity_type": "location",
+        "node_hash": 4664759118317631097,
+        "node_path": [
+          "user:locomo_user_c",
+          "session:locomo_c"
+        ],
+        "previous_state": "",
+        "record_type": "context_entity",
+        "source_event_ids": [
+          1299255405821071493,
+          4766492176302446322,
+          7728857116146083458,
+          2019390737801545451
+        ],
+        "source_refs": [
+          "1299255405821071493",
+          "4766492176302446322",
+          "7728857116146083458",
+          "2019390737801545451"
+        ],
+        "state": "Austin"
+      }
+    ],
+    "context_event": [
+      {
+        "event_id_hash": 6986223805810000967,
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_event",
+        "summary_text": "user: I moved to Seattle today, please remember this location.",
+        "text": "user: I moved to Seattle today, please remember this location."
+      },
+      {
+        "event_id_hash": 4001704437148736921,
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_event",
+        "summary_text": "user: Actually I moved to Austin now for the new infra project.",
+        "text": "user: Actually I moved to Austin now for the new infra project."
+      },
+      {
+        "event_id_hash": 8582078450952077150,
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_event",
+        "summary_text": "user: I prefer Rust for low latency storage engines.",
+        "text": "user: I prefer Rust for low latency storage engines."
+      },
+      {
+        "event_id_hash": 1430717481940834111,
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_event",
+        "summary_text": "user: Alice approved the GPU purchase after finance reviewed the budget.",
+        "text": "user: Alice approved the GPU purchase after finance reviewed the budget."
+      },
+      {
+        "event_id_hash": 1608460803197866279,
+        "node_hash": 8016836484261499701,
+        "node_path": [
+          "user:locomo_user_b",
+          "session:locomo_b"
+        ],
+        "record_type": "context_event",
+        "summary_text": "user: My manager Priya is helping with the launch plan.",
+        "text": "user: My manager Priya is helping with the launch plan."
+      },
+      {
+        "event_id_hash": 6535590578240304985,
+        "node_hash": 8016836484261499701,
+        "node_path": [
+          "user:locomo_user_b",
+          "session:locomo_b"
+        ],
+        "record_type": "context_event",
+        "summary_text": "user: My family has a dog named Mochi.",
+        "text": "user: My family has a dog named Mochi."
+      },
+      {
+        "event_id_hash": 2181881515329574653,
+        "node_hash": 8016836484261499701,
+        "node_path": [
+          "user:locomo_user_b",
+          "session:locomo_b"
+        ],
+        "record_type": "context_event",
+        "summary_text": "user: My job role is storage infrastructure lead.",
+        "text": "user: My job role is storage infrastructure lead."
+      },
+      {
+        "event_id_hash": 5846931346106514131,
+        "node_hash": 8016836484261499701,
+        "node_path": [
+          "user:locomo_user_b",
+          "session:locomo_b"
+        ],
+        "record_type": "context_event",
+        "summary_text": "user: I plan to visit Berlin next month for the conference.",
+        "text": "user: I plan to visit Berlin next month for the conference."
+      },
+      {
+        "event_id_hash": 1299255405821071493,
+        "node_hash": 4664759118317631097,
+        "node_path": [
+          "user:locomo_user_c",
+          "session:locomo_c"
+        ],
+        "record_type": "context_event",
+        "summary_text": "user: On March 2 I lived in Seattle.",
+        "text": "user: On March 2 I lived in Seattle."
+      },
+      {
+        "event_id_hash": 4766492176302446322,
+        "node_hash": 4664759118317631097,
+        "node_path": [
+          "user:locomo_user_c",
+          "session:locomo_c"
+        ],
+        "record_type": "context_event",
+        "summary_text": "user: On April 10 I moved to Austin.",
+        "text": "user: On April 10 I moved to Austin."
+      },
+      {
+        "event_id_hash": 7728857116146083458,
+        "node_hash": 4664759118317631097,
+        "node_path": [
+          "user:locomo_user_c",
+          "session:locomo_c"
+        ],
+        "record_type": "context_event",
+        "summary_text": "user: I liked Python for dashboards before.",
+        "text": "user: I liked Python for dashboards before."
+      },
+      {
+        "event_id_hash": 2019390737801545451,
+        "node_hash": 4664759118317631097,
+        "node_path": [
+          "user:locomo_user_c",
+          "session:locomo_c"
+        ],
+        "record_type": "context_event",
+        "summary_text": "user: Actually I now prefer Rust for backend services.",
+        "text": "user: Actually I now prefer Rust for backend services."
+      }
+    ],
+    "context_index": [
+      {
+        "index_name": "event_type:confirmation",
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_index"
+      },
+      {
+        "index_name": "classification:batch_memory",
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_index"
+      },
+      {
+        "index_name": "status:observed",
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_index"
+      },
+      {
+        "index_name": "source_type:message",
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_index"
+      },
+      {
+        "index_name": "entity_type:preference",
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_index"
+      },
+      {
+        "index_name": "entity_type:location",
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_index"
+      },
+      {
+        "index_name": "entity_type:approval_state",
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_index"
+      },
+      {
+        "index_name": "segment_topic:approval_budget",
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_index"
+      },
+      {
+        "index_name": "event_type:plan_update",
+        "node_hash": 8016836484261499701,
+        "node_path": [
+          "user:locomo_user_b",
+          "session:locomo_b"
+        ],
+        "record_type": "context_index"
+      },
+      {
+        "index_name": "classification:batch_memory",
+        "node_hash": 8016836484261499701,
+        "node_path": [
+          "user:locomo_user_b",
+          "session:locomo_b"
+        ],
+        "record_type": "context_index"
+      },
+      {
+        "index_name": "status:observed",
+        "node_hash": 8016836484261499701,
+        "node_path": [
+          "user:locomo_user_b",
+          "session:locomo_b"
+        ],
+        "record_type": "context_index"
+      },
+      {
+        "index_name": "source_type:message",
+        "node_hash": 8016836484261499701,
+        "node_path": [
+          "user:locomo_user_b",
+          "session:locomo_b"
+        ],
+        "record_type": "context_index"
+      },
+      {
+        "index_name": "entity_type:relationship",
+        "node_hash": 8016836484261499701,
+        "node_path": [
+          "user:locomo_user_b",
+          "session:locomo_b"
+        ],
+        "record_type": "context_index"
+      },
+      {
+        "index_name": "entity_type:job_status",
+        "node_hash": 8016836484261499701,
+        "node_path": [
+          "user:locomo_user_b",
+          "session:locomo_b"
+        ],
+        "record_type": "context_index"
+      },
+      {
+        "index_name": "entity_type:current_plan",
+        "node_hash": 8016836484261499701,
+        "node_path": [
+          "user:locomo_user_b",
+          "session:locomo_b"
+        ],
+        "record_type": "context_index"
+      },
+      {
+        "index_name": "entity_type:family_profile",
+        "node_hash": 8016836484261499701,
+        "node_path": [
+          "user:locomo_user_b",
+          "session:locomo_b"
+        ],
+        "record_type": "context_index"
+      },
+      {
+        "index_name": "event_type:preference_update",
+        "node_hash": 4664759118317631097,
+        "node_path": [
+          "user:locomo_user_c",
+          "session:locomo_c"
+        ],
+        "record_type": "context_index"
+      },
+      {
+        "index_name": "classification:batch_memory",
+        "node_hash": 4664759118317631097,
+        "node_path": [
+          "user:locomo_user_c",
+          "session:locomo_c"
+        ],
+        "record_type": "context_index"
+      },
+      {
+        "index_name": "status:observed",
+        "node_hash": 4664759118317631097,
+        "node_path": [
+          "user:locomo_user_c",
+          "session:locomo_c"
+        ],
+        "record_type": "context_index"
+      },
+      {
+        "index_name": "source_type:message",
+        "node_hash": 4664759118317631097,
+        "node_path": [
+          "user:locomo_user_c",
+          "session:locomo_c"
+        ],
+        "record_type": "context_index"
+      },
+      {
+        "index_name": "entity_type:preference",
+        "node_hash": 4664759118317631097,
+        "node_path": [
+          "user:locomo_user_c",
+          "session:locomo_c"
+        ],
+        "record_type": "context_index"
+      },
+      {
+        "index_name": "entity_type:location",
+        "node_hash": 4664759118317631097,
+        "node_path": [
+          "user:locomo_user_c",
+          "session:locomo_c"
+        ],
+        "record_type": "context_index"
+      },
+      {
+        "index_name": "segment_topic:preference",
+        "node_hash": 4664759118317631097,
+        "node_path": [
+          "user:locomo_user_c",
+          "session:locomo_c"
+        ],
+        "record_type": "context_index"
+      },
+      {
+        "index_name": "segment_topic:location",
+        "node_hash": 4664759118317631097,
+        "node_path": [
+          "user:locomo_user_c",
+          "session:locomo_c"
+        ],
+        "record_type": "context_index"
+      }
+    ],
+    "context_pack_audit": [
+      {
+        "record_type": "context_pack_audit",
+        "summary_text": "location: location = Austin now for the new infra project user: Actually I moved to Austin now for the new infra project. user: Alice approved the GPU purchase after finance reviewed the budget. user: I moved to Seattle today, please remember this location. user: I prefer Rust for low latency storage engines."
+      },
+      {
+        "record_type": "context_pack_audit",
+        "summary_text": "preference: preference = Rust for low latency storage engines user: I prefer Rust for low latency storage engines. user: Actually I moved to Austin now for the new infra project. user: Alice approved the GPU purchase after finance reviewed the budget. user: I moved to Seattle today, please remember this location."
+      },
+      {
+        "record_type": "context_pack_audit",
+        "summary_text": "approval_state: the GPU purchase after finance reviewed the budget = the GPU purchase after finance reviewed the budget user: Alice approved the GPU purchase after finance reviewed the budget. 3: Alice approved the GPU purchase after finance reviewed the budget. user: Actually I moved to Austin now for the new infra project. user: I prefer Rust for low latency storage engines. user: I moved to Seattle today, please remember this location."
+      },
+      {
+        "record_type": "context_pack_audit",
+        "summary_text": "user: My manager Priya is helping with the launch plan. relationship: Priya is helping with the launch plan = Priya is helping with the launch plan user: I plan to visit Berlin next month for the conference. family_profile: family_profile = has a dog named Mochi user: My job role is storage infrastructure lead. user: My family has a dog named Mochi."
+      },
+      {
+        "record_type": "context_pack_audit",
+        "summary_text": "relationship: Priya is helping with the launch plan = Priya is helping with the launch plan user: My manager Priya is helping with the launch plan. family_profile: family_profile = has a dog named Mochi user: My family has a dog named Mochi. user: I plan to visit Berlin next month for the conference. user: My job role is storage infrastructure lead."
+      },
+      {
+        "record_type": "context_pack_audit",
+        "summary_text": "job_status: job_status = role is storage infrastructure lead user: My job role is storage infrastructure lead. user: My manager Priya is helping with the launch plan. user: My family has a dog named Mochi. user: I plan to visit Berlin next month for the conference."
+      },
+      {
+        "record_type": "context_pack_audit",
+        "summary_text": "location: location = Austin user: On March 2 I lived in Seattle. user: Actually I now prefer Rust for backend services. user: I liked Python for dashboards before. user: On April 10 I moved to Austin."
+      },
+      {
+        "record_type": "context_pack_audit",
+        "summary_text": "preference: preference = Rust for backend services user: Actually I now prefer Rust for backend services. user: On April 10 I moved to Austin. user: I liked Python for dashboards before. user: On March 2 I lived in Seattle."
+      },
+      {
+        "record_type": "context_pack_audit",
+        "summary_text": "user: On April 10 I moved to Austin. user: I liked Python for dashboards before. user: On March 2 I lived in Seattle. location: location = Austin user: Actually I now prefer Rust for backend services."
+      }
+    ],
+    "context_segment": [
+      {
+        "coordinate_tuples": [
+          [
+            3,
+            3
+          ]
+        ],
+        "message_indexes": [
+          3
+        ],
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_segment",
+        "segment_hash": 8098460866500653552,
+        "source_event_ids": [
+          1430717481940834111
+        ],
+        "summary_text": "3: Alice approved the GPU purchase after finance reviewed the budget.",
+        "text": "3: Alice approved the GPU purchase after finance reviewed the budget.",
+        "topic": "approval_budget"
+      },
+      {
+        "coordinate_tuples": [
+          [
+            0,
+            1
+          ]
+        ],
+        "message_indexes": [
+          0,
+          1
+        ],
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_segment",
+        "segment_hash": 9108363320442791939,
+        "source_event_ids": [
+          6986223805810000967,
+          4001704437148736921
+        ],
+        "summary_text": "0: I moved to Seattle today, please remember this location. 1: Actually I moved to Austin now for the new infra project.",
+        "text": "0: I moved to Seattle today, please remember this location.\n1: Actually I moved to Austin now for the new infra project.",
+        "topic": "location"
+      },
+      {
+        "coordinate_tuples": [
+          [
+            2,
+            2
+          ]
+        ],
+        "message_indexes": [
+          2
+        ],
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_segment",
+        "segment_hash": 4100622468733392093,
+        "source_event_ids": [
+          8582078450952077150
+        ],
+        "summary_text": "2: I prefer Rust for low latency storage engines.",
+        "text": "2: I prefer Rust for low latency storage engines.",
+        "topic": "preference"
+      },
+      {
+        "coordinate_tuples": [
+          [
+            0,
+            0
+          ],
+          [
+            3,
+            3
+          ]
+        ],
+        "message_indexes": [
+          0,
+          3
+        ],
+        "node_hash": 8016836484261499701,
+        "node_path": [
+          "user:locomo_user_b",
+          "session:locomo_b"
+        ],
+        "record_type": "context_segment",
+        "segment_hash": 5648799942396182361,
+        "source_event_ids": [
+          1608460803197866279,
+          5846931346106514131
+        ],
+        "summary_text": "0: My manager Priya is helping with the launch plan. 3: I plan to visit Berlin next month for the conference.",
+        "text": "0: My manager Priya is helping with the launch plan.\n3: I plan to visit Berlin next month for the conference.",
+        "topic": "plan_status"
+      },
+      {
+        "coordinate_tuples": [
+          [
+            3,
+            3
+          ]
+        ],
+        "message_indexes": [
+          3
+        ],
+        "node_hash": 4664759118317631097,
+        "node_path": [
+          "user:locomo_user_c",
+          "session:locomo_c"
+        ],
+        "record_type": "context_segment",
+        "segment_hash": 4730223480069593223,
+        "source_event_ids": [
+          2019390737801545451
+        ],
+        "summary_text": "3: Actually I now prefer Rust for backend services.",
+        "text": "3: Actually I now prefer Rust for backend services.",
+        "topic": "preference"
+      },
+      {
+        "coordinate_tuples": [
+          [
+            1,
+            1
+          ]
+        ],
+        "message_indexes": [
+          1
+        ],
+        "node_hash": 4664759118317631097,
+        "node_path": [
+          "user:locomo_user_c",
+          "session:locomo_c"
+        ],
+        "record_type": "context_segment",
+        "segment_hash": 2763539849862229191,
+        "source_event_ids": [
+          4766492176302446322
+        ],
+        "summary_text": "1: On April 10 I moved to Austin.",
+        "text": "1: On April 10 I moved to Austin.",
+        "topic": "location"
+      }
+    ],
+    "context_summary": [
+      {
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_summary",
+        "summary_hash": 2962234381734522119,
+        "summary_text": "user: I moved to Seattle today, please remember this location.",
+        "summary_type": "session_l0"
+      },
+      {
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_summary",
+        "summary_hash": 2962234381734522119,
+        "summary_text": "user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: Actually I moved to Austin now for the new infra project.",
+        "summary_type": "session_l0"
+      },
+      {
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_summary",
+        "summary_hash": 2962234381734522119,
+        "summary_text": "user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: Actually I moved to Austin now for the new infra project. user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: Actually I moved to Austin now for the new infra project. use...",
+        "summary_type": "session_l0"
+      },
+      {
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_summary",
+        "summary_hash": 2962234381734522119,
+        "summary_text": "user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: Actually I moved to Austin now for the new infra project. user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: Actually I moved to Austin now for the new infra project. use...",
+        "summary_type": "session_l0"
+      },
+      {
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_summary",
+        "source_event_ids": [
+          6986223805810000967,
+          4001704437148736921,
+          8582078450952077150,
+          1430717481940834111
+        ],
+        "summary_hash": 6405851539890652769,
+        "summary_text": "user: I moved to Seattle today, please remember this location. user: Actually I moved to Austin now for the new infra project. user: I prefer Rust for low latency storage engines. user: Alice approved the GPU purchase after finance reviewed the budget.",
+        "summary_type": "batch_l0"
+      },
+      {
+        "node_hash": 1400509432320306660,
+        "node_path": [
+          "user:locomo_user_a"
+        ],
+        "record_type": "context_summary",
+        "source_event_ids": [
+          6986223805810000967,
+          4001704437148736921,
+          8582078450952077150,
+          1430717481940834111
+        ],
+        "summary_text": "user:locomo_user_a :: user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: ...",
+        "summary_type": "node_l0"
+      },
+      {
+        "node_hash": 1400509432320306660,
+        "node_path": [
+          "user:locomo_user_a"
+        ],
+        "record_type": "context_summary",
+        "source_event_ids": [
+          6986223805810000967,
+          4001704437148736921,
+          8582078450952077150,
+          1430717481940834111
+        ],
+        "summary_text": "Context node user:locomo_user_a. Overview: user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: Actually I moved to Austin now for the new infra project. user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: Actually I moved to Austin now for the new infra project. use... user: I moved to Seattle today, please remember this location. user: Actually I moved to Austin now for the new infra project. user: I prefer Rust for low latency storage engines. user: Alice approved the GPU purchase after finance reviewed the budget. user: I moved to Seattle today, please remember this location. user: Actually I moved to Austin now for the new infra project. user: I prefer Rust for low latency storage engines. user: Alice approved the GPU purchase after finance reviewed the budget.. This node belongs to path user:locomo_user_a and should be used for tree-first retrieval before leaf event/entity recall.",
+        "summary_type": "node_l1"
+      },
+      {
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_summary",
+        "source_event_ids": [
+          6986223805810000967,
+          4001704437148736921,
+          8582078450952077150,
+          1430717481940834111
+        ],
+        "summary_text": "user:locomo_user_a / session:locomo_a :: user: I moved to Seattle today, please remember this location. user: Actually I moved to Austin now for the new infra project. user: I prefer Rust for low latency storage engin...",
+        "summary_type": "node_l0"
+      },
+      {
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "context_summary",
+        "source_event_ids": [
+          6986223805810000967,
+          4001704437148736921,
+          8582078450952077150,
+          1430717481940834111
+        ],
+        "summary_text": "Context node user:locomo_user_a / session:locomo_a. Overview: user: I moved to Seattle today, please remember this location. user: Actually I moved to Austin now for the new infra project. user: I prefer Rust for low latency storage engines. user: Alice approved the GPU purchase after finance reviewed the budget.. This node belongs to path user:locomo_user_a / session:locomo_a and should be used for tree-first retrieval before leaf event/entity recall.",
+        "summary_type": "node_l1"
+      },
+      {
+        "node_hash": 8016836484261499701,
+        "node_path": [
+          "user:locomo_user_b",
+          "session:locomo_b"
+        ],
+        "record_type": "context_summary",
+        "summary_hash": 165260480146054573,
+        "summary_text": "user: My manager Priya is helping with the launch plan.",
+        "summary_type": "session_l0"
+      },
+      {
+        "node_hash": 8016836484261499701,
+        "node_path": [
+          "user:locomo_user_b",
+          "session:locomo_b"
+        ],
+        "record_type": "context_summary",
+        "summary_hash": 165260480146054573,
+        "summary_text": "user: My manager Priya is helping with the launch plan. user: My manager Priya is helping with the launch plan. user: My manager Priya is helping with the launch plan. user: My family has a dog named Mochi.",
+        "summary_type": "session_l0"
+      },
+      {
+        "node_hash": 8016836484261499701,
+        "node_path": [
+          "user:locomo_user_b",
+          "session:locomo_b"
+        ],
+        "record_type": "context_summary",
+        "summary_hash": 165260480146054573,
+        "summary_text": "user: My manager Priya is helping with the launch plan. user: My manager Priya is helping with the launch plan. user: My manager Priya is helping with the launch plan. user: My family has a dog named Mochi. user: My manager Priya is helping with the launch plan. user: My manager Priya is helping with the launch plan. user: My manager Priya is helping with the launch plan. user: My family has a dog named Mochi. user: My family has a dog named Mochi. user: My manager Priya is helping with the launch plan. ...",
+        "summary_type": "session_l0"
+      },
+      {
+        "node_hash": 8016836484261499701,
+        "node_path": [
+          "user:locomo_user_b",
+          "session:locomo_b"
+        ],
+        "record_type": "context_summary",
+        "summary_hash": 165260480146054573,
+        "summary_text": "user: My manager Priya is helping with the launch plan. user: My manager Priya is helping with the launch plan. user: My manager Priya is helping with the launch plan. user: My family has a dog named Mochi. user: My manager Priya is helping with the launch plan. user: My manager Priya is helping with the launch plan. user: My manager Priya is helping with the launch plan. user: My family has a dog named Mochi. user: My family has a dog named Mochi. user: My manager Priya is helping with the launch plan. ...",
+        "summary_type": "session_l0"
+      },
+      {
+        "node_hash": 8016836484261499701,
+        "node_path": [
+          "user:locomo_user_b",
+          "session:locomo_b"
+        ],
+        "record_type": "context_summary",
+        "source_event_ids": [
+          1608460803197866279,
+          6535590578240304985,
+          2181881515329574653,
+          5846931346106514131
+        ],
+        "summary_hash": 7898015069221460593,
+        "summary_text": "user: My manager Priya is helping with the launch plan. user: My family has a dog named Mochi. user: My job role is storage infrastructure lead. user: I plan to visit Berlin next month for the conference.",
+        "summary_type": "batch_l0"
+      },
+      {
+        "node_hash": 4856627695467181539,
+        "node_path": [
+          "user:locomo_user_b"
+        ],
+        "record_type": "context_summary",
+        "source_event_ids": [
+          1608460803197866279,
+          6535590578240304985,
+          2181881515329574653,
+          5846931346106514131
+        ],
+        "summary_text": "user:locomo_user_b :: user: My manager Priya is helping with the launch plan. user: My manager Priya is helping with the launch plan. user: My manager Priya is helping with the launch plan. user: My family has a dog n...",
+        "summary_type": "node_l0"
+      },
+      {
+        "node_hash": 4856627695467181539,
+        "node_path": [
+          "user:locomo_user_b"
+        ],
+        "record_type": "context_summary",
+        "source_event_ids": [
+          1608460803197866279,
+          6535590578240304985,
+          2181881515329574653,
+          5846931346106514131
+        ],
+        "summary_text": "Context node user:locomo_user_b. Overview: user: My manager Priya is helping with the launch plan. user: My manager Priya is helping with the launch plan. user: My manager Priya is helping with the launch plan. user: My family has a dog named Mochi. user: My manager Priya is helping with the launch plan. user: My manager Priya is helping with the launch plan. user: My manager Priya is helping with the launch plan. user: My family has a dog named Mochi. user: My family has a dog named Mochi. user: My manager Priya is helping with the launch plan. ... user: My manager Priya is helping with the launch plan. user: My family has a dog named Mochi. user: My job role is storage infrastructure lead. user: I plan to visit Berlin next month for the conference. user: My manager Priya is helping with the launch plan. user: My family has a dog named Mochi. user: My job role is storage infrastructure lead. user: I plan to visit Berlin next month for the conference.. This node belongs to path user:locomo_user_b and should be used for tree-first retrieval before leaf event/entity recall.",
+        "summary_type": "node_l1"
+      },
+      {
+        "node_hash": 8016836484261499701,
+        "node_path": [
+          "user:locomo_user_b",
+          "session:locomo_b"
+        ],
+        "record_type": "context_summary",
+        "source_event_ids": [
+          1608460803197866279,
+          6535590578240304985,
+          2181881515329574653,
+          5846931346106514131
+        ],
+        "summary_text": "user:locomo_user_b / session:locomo_b :: user: My manager Priya is helping with the launch plan. user: My family has a dog named Mochi. user: My job role is storage infrastructure lead. user: I plan to visit Berlin ne...",
+        "summary_type": "node_l0"
+      },
+      {
+        "node_hash": 8016836484261499701,
+        "node_path": [
+          "user:locomo_user_b",
+          "session:locomo_b"
+        ],
+        "record_type": "context_summary",
+        "source_event_ids": [
+          1608460803197866279,
+          6535590578240304985,
+          2181881515329574653,
+          5846931346106514131
+        ],
+        "summary_text": "Context node user:locomo_user_b / session:locomo_b. Overview: user: My manager Priya is helping with the launch plan. user: My family has a dog named Mochi. user: My job role is storage infrastructure lead. user: I plan to visit Berlin next month for the conference.. This node belongs to path user:locomo_user_b / session:locomo_b and should be used for tree-first retrieval before leaf event/entity recall.",
+        "summary_type": "node_l1"
+      },
+      {
+        "node_hash": 4664759118317631097,
+        "node_path": [
+          "user:locomo_user_c",
+          "session:locomo_c"
+        ],
+        "record_type": "context_summary",
+        "summary_hash": 432637146151229606,
+        "summary_text": "user: On March 2 I lived in Seattle.",
+        "summary_type": "session_l0"
+      },
+      {
+        "node_hash": 4664759118317631097,
+        "node_path": [
+          "user:locomo_user_c",
+          "session:locomo_c"
+        ],
+        "record_type": "context_summary",
+        "summary_hash": 432637146151229606,
+        "summary_text": "user: On March 2 I lived in Seattle. user: On March 2 I lived in Seattle. user: On March 2 I lived in Seattle. user: On April 10 I moved to Austin.",
+        "summary_type": "session_l0"
+      }
+    ],
+    "session_buffer_event": [
+      {
+        "event_id_hash": 6986223805810000967,
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "session_buffer_event"
+      },
+      {
+        "event_id_hash": 4001704437148736921,
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "session_buffer_event"
+      },
+      {
+        "event_id_hash": 8582078450952077150,
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "session_buffer_event"
+      },
+      {
+        "event_id_hash": 1430717481940834111,
+        "node_hash": 1226958135442153109,
+        "node_path": [
+          "user:locomo_user_a",
+          "session:locomo_a"
+        ],
+        "record_type": "session_buffer_event"
+      },
+      {
+        "event_id_hash": 1608460803197866279,
+        "node_hash": 8016836484261499701,
+        "node_path": [
+          "user:locomo_user_b",
+          "session:locomo_b"
+        ],
+        "record_type": "session_buffer_event"
+      },
+      {
+        "event_id_hash": 6535590578240304985,
+        "node_hash": 8016836484261499701,
+        "node_path": [
+          "user:locomo_user_b",
+          "session:locomo_b"
+        ],
+        "record_type": "session_buffer_event"
+      },
+      {
+        "event_id_hash": 2181881515329574653,
+        "node_hash": 8016836484261499701,
+        "node_path": [
+          "user:locomo_user_b",
+          "session:locomo_b"
+        ],
+        "record_type": "session_buffer_event"
+      },
+      {
+        "event_id_hash": 5846931346106514131,
+        "node_hash": 8016836484261499701,
+        "node_path": [
+          "user:locomo_user_b",
+          "session:locomo_b"
+        ],
+        "record_type": "session_buffer_event"
+      },
+      {
+        "event_id_hash": 1299255405821071493,
+        "node_hash": 4664759118317631097,
+        "node_path": [
+          "user:locomo_user_c",
+          "session:locomo_c"
+        ],
+        "record_type": "session_buffer_event"
+      },
+      {
+        "event_id_hash": 4766492176302446322,
+        "node_hash": 4664759118317631097,
+        "node_path": [
+          "user:locomo_user_c",
+          "session:locomo_c"
+        ],
+        "record_type": "session_buffer_event"
+      },
+      {
+        "event_id_hash": 7728857116146083458,
+        "node_hash": 4664759118317631097,
+        "node_path": [
+          "user:locomo_user_c",
+          "session:locomo_c"
+        ],
+        "record_type": "session_buffer_event"
+      },
+      {
+        "event_id_hash": 2019390737801545451,
+        "node_hash": 4664759118317631097,
+        "node_path": [
+          "user:locomo_user_c",
+          "session:locomo_c"
+        ],
+        "record_type": "session_buffer_event"
+      }
+    ]
+  },
+  "segment_provider": "deterministic unless batch calls specify segment_provider=oss",
+  "sessions": [
+    {
+      "commit": {
+        "access": {
+          "account_id": "acct_locomo_debug",
+          "api_key_id": "dev",
+          "mode": "dev",
+          "role": "dev_admin",
+          "tenant_id": "tenant_memory"
+        },
+        "batch_id_hash": 3205656450267844717,
+        "classification": "BATCH_MEMORY",
+        "commit_id_hash": 2080380072282676431,
+        "commit_reason": "manual_api",
+        "committed_event_count": 4,
+        "entities_written": 3,
+        "events_written": 0,
+        "idle_elapsed_ms": 0,
+        "idle_timeout_ms": null,
+        "indexes_written": 8,
+        "message_count": 4,
+        "mode": "matrixark_one_pass_schema",
+        "node_hash": 1226958135442153109,
+        "node_materialization": {
+          "child_refs_created": 0,
+          "node_hashes": [
+            1400509432320306660,
+            1226958135442153109
+          ],
+          "nodes_created": 0
+        },
+        "one_pass": true,
+        "pending_event_count": 4,
+        "raw_events_duplicated": false,
+        "segment_provider": {
+          "execution_mode": "rules",
+          "fallback_used": false,
+          "model": "matrixark-local-segmentation-v1",
+          "provider": "deterministic"
+        },
+        "segments_written": 3,
+        "source_event_count": 4,
+        "source_event_ids": [
+          6986223805810000967,
+          4001704437148736921,
+          8582078450952077150,
+          1430717481940834111
+        ],
+        "status": "committed",
+        "summary_hash": 6405851539890652769,
+        "summary_refresh": {
+          "async_required": true,
+          "dirty_hashes": [
+            2324422016324137205,
+            5249271849483577274
+          ],
+          "refresh_result": null,
+          "status": "dirty_marked"
+        },
+        "threshold_messages": 20,
+        "token_count_estimate": 42,
+        "trigger_policy": "force"
+      },
+      "ingests": [
+        {
+          "access": {
+            "account_id": "acct_locomo_debug",
+            "api_key_id": "dev",
+            "mode": "dev",
+            "role": "dev_admin",
+            "tenant_id": "tenant_memory"
+          },
+          "auto_batch_extract_result": null,
+          "classification": "NEW_EVENT",
+          "event_id_hash": 6986223805810000967,
+          "extraction_mode": "matrixark_internal",
+          "hook_captured": true,
+          "idle_commit_result": null,
+          "node_hash": 1226958135442153109,
+          "node_materialization": {
+            "child_refs_created": 1,
+            "node_hashes": [
+              1400509432320306660,
+              1226958135442153109
+            ],
+            "nodes_created": 2
+          },
+          "prior_context": "",
+          "prior_message_count": 0,
+          "prior_refs": [],
+          "prior_summary_count": 0,
+          "quality_warning": "",
+          "session_buffer": {
+            "auto_batch_extract": false,
+            "buffer_key": [
+              "acct_locomo_debug",
+              "tenant_memory",
+              "locomo_user_a",
+              "locomo_a"
+            ],
+            "pending_event_count": 1,
+            "threshold_messages": 20
+          },
+          "status": "accepted",
+          "summary_refresh": {
+            "async_required": true,
+            "dirty_hashes": [
+              5359925962075953716,
+              5608695815478668337
+            ],
+            "refresh_result": null,
+            "status": "dirty_marked"
+          }
+        },
+        {
+          "access": {
+            "account_id": "acct_locomo_debug",
+            "api_key_id": "dev",
+            "mode": "dev",
+            "role": "dev_admin",
+            "tenant_id": "tenant_memory"
+          },
+          "auto_batch_extract_result": null,
+          "classification": "NEW_EVENT",
+          "event_id_hash": 4001704437148736921,
+          "extraction_mode": "matrixark_internal",
+          "hook_captured": true,
+          "idle_commit_result": null,
+          "node_hash": 1226958135442153109,
+          "node_materialization": {
+            "child_refs_created": 0,
+            "node_hashes": [
+              1400509432320306660,
+              1226958135442153109
+            ],
+            "nodes_created": 0
+          },
+          "prior_context": "session",
+          "prior_message_count": 1,
+          "prior_refs": [
+            {
+              "node_hash": 1226958135442153109,
+              "ref_hash": 2962234381734522119,
+              "ref_type": "session_summary"
+            },
+            {
+              "node_hash": 1226958135442153109,
+              "ref_hash": 1226958135442153109,
+              "ref_type": "summary"
+            },
+            {
+              "node_hash": 1226958135442153109,
+              "ref_hash": 6986223805810000967,
+              "ref_type": "event"
+            }
+          ],
+          "prior_summary_count": 2,
+          "quality_warning": "",
+          "session_buffer": {
+            "auto_batch_extract": false,
+            "buffer_key": [
+              "acct_locomo_debug",
+              "tenant_memory",
+              "locomo_user_a",
+              "locomo_a"
+            ],
+            "pending_event_count": 2,
+            "threshold_messages": 20
+          },
+          "status": "accepted",
+          "summary_refresh": {
+            "async_required": true,
+            "dirty_hashes": [
+              2924527728895955137,
+              4058493632682027460
+            ],
+            "refresh_result": null,
+            "status": "dirty_marked"
+          }
+        },
+        {
+          "access": {
+            "account_id": "acct_locomo_debug",
+            "api_key_id": "dev",
+            "mode": "dev",
+            "role": "dev_admin",
+            "tenant_id": "tenant_memory"
+          },
+          "auto_batch_extract_result": null,
+          "classification": "NEW_EVENT",
+          "event_id_hash": 8582078450952077150,
+          "extraction_mode": "matrixark_internal",
+          "hook_captured": true,
+          "idle_commit_result": null,
+          "node_hash": 1226958135442153109,
+          "node_materialization": {
+            "child_refs_created": 0,
+            "node_hashes": [
+              1400509432320306660,
+              1226958135442153109
+            ],
+            "nodes_created": 0
+          },
+          "prior_context": "session",
+          "prior_message_count": 2,
+          "prior_refs": [
+            {
+              "node_hash": 1226958135442153109,
+              "ref_hash": 2962234381734522119,
+              "ref_type": "session_summary"
+            },
+            {
+              "node_hash": 1226958135442153109,
+              "ref_hash": 1226958135442153109,
+              "ref_type": "summary"
+            },
+            {
+              "node_hash": 1226958135442153109,
+              "ref_hash": 4001704437148736921,
+              "ref_type": "event"
+            },
+            {
+              "node_hash": 1226958135442153109,
+              "ref_hash": 6986223805810000967,
+              "ref_type": "event"
+            }
+          ],
+          "prior_summary_count": 2,
+          "quality_warning": "",
+          "session_buffer": {
+            "auto_batch_extract": false,
+            "buffer_key": [
+              "acct_locomo_debug",
+              "tenant_memory",
+              "locomo_user_a",
+              "locomo_a"
+            ],
+            "pending_event_count": 3,
+            "threshold_messages": 20
+          },
+          "status": "accepted",
+          "summary_refresh": {
+            "async_required": true,
+            "dirty_hashes": [
+              7804813158160687400,
+              2720821037682170686
+            ],
+            "refresh_result": null,
+            "status": "dirty_marked"
+          }
+        },
+        {
+          "access": {
+            "account_id": "acct_locomo_debug",
+            "api_key_id": "dev",
+            "mode": "dev",
+            "role": "dev_admin",
+            "tenant_id": "tenant_memory"
+          },
+          "auto_batch_extract_result": null,
+          "classification": "NEW_EVENT",
+          "event_id_hash": 1430717481940834111,
+          "extraction_mode": "matrixark_internal",
+          "hook_captured": true,
+          "idle_commit_result": null,
+          "node_hash": 1226958135442153109,
+          "node_materialization": {
+            "child_refs_created": 0,
+            "node_hashes": [
+              1400509432320306660,
+              1226958135442153109
+            ],
+            "nodes_created": 0
+          },
+          "prior_context": "session",
+          "prior_message_count": 3,
+          "prior_refs": [
+            {
+              "node_hash": 1226958135442153109,
+              "ref_hash": 2962234381734522119,
+              "ref_type": "session_summary"
+            },
+            {
+              "node_hash": 1226958135442153109,
+              "ref_hash": 1226958135442153109,
+              "ref_type": "summary"
+            },
+            {
+              "node_hash": 1226958135442153109,
+              "ref_hash": 8582078450952077150,
+              "ref_type": "event"
+            },
+            {
+              "node_hash": 1226958135442153109,
+              "ref_hash": 4001704437148736921,
+              "ref_type": "event"
+            },
+            {
+              "node_hash": 1226958135442153109,
+              "ref_hash": 6986223805810000967,
+              "ref_type": "event"
+            }
+          ],
+          "prior_summary_count": 2,
+          "quality_warning": "",
+          "session_buffer": {
+            "auto_batch_extract": false,
+            "buffer_key": [
+              "acct_locomo_debug",
+              "tenant_memory",
+              "locomo_user_a",
+              "locomo_a"
+            ],
+            "pending_event_count": 4,
+            "threshold_messages": 20
+          },
+          "status": "accepted",
+          "summary_refresh": {
+            "async_required": true,
+            "dirty_hashes": [
+              4569955958112053512,
+              8924472312529274545
+            ],
+            "refresh_result": null,
+            "status": "dirty_marked"
+          }
+        }
+      ],
+      "name": "conversation_a_location_preference_approval",
+      "scope": {
+        "account_id": "acct_locomo_debug",
+        "session_id": "locomo_a",
+        "tenant_id": "tenant_memory",
+        "user_id": "locomo_user_a"
+      },
+      "summary_refresh": {
+        "access": {
+          "account_id": "acct_locomo_debug",
+          "api_key_id": "dev",
+          "mode": "dev",
+          "role": "dev_admin",
+          "tenant_id": "tenant_memory"
+        },
+        "refreshed": [
+          {
+            "dirty_hash": 2324422016324137205,
+            "node_hash": 1400509432320306660,
+            "node_path": [
+              "user:locomo_user_a"
+            ],
+            "source_event_count": 4,
+            "source_summary_count": 2,
+            "summary_version_hash": 5149269917895621001
+          },
+          {
+            "dirty_hash": 5249271849483577274,
+            "node_hash": 1226958135442153109,
+            "node_path": [
+              "user:locomo_user_a",
+              "session:locomo_a"
+            ],
+            "source_event_count": 4,
+            "source_summary_count": 0,
+            "summary_version_hash": 9158375070612993048
+          }
+        ],
+        "refreshed_count": 2,
+        "status": "ok"
+      }
+    },
+    {
+      "commit": {
+        "access": {
+          "account_id": "acct_locomo_debug",
+          "api_key_id": "dev",
+          "mode": "dev",
+          "role": "dev_admin",
+          "tenant_id": "tenant_memory"
+        },
+        "batch_id_hash": 3232117728647850943,
+        "classification": "BATCH_MEMORY",
+        "commit_id_hash": 1902197000581246111,
+        "commit_reason": "manual_api",
+        "committed_event_count": 4,
+        "entities_written": 4,
+        "events_written": 0,
+        "idle_elapsed_ms": 0,
+        "idle_timeout_ms": null,
+        "indexes_written": 8,
+        "message_count": 4,
+        "mode": "matrixark_one_pass_schema",
+        "node_hash": 8016836484261499701,
+        "node_materialization": {
+          "child_refs_created": 0,
+          "node_hashes": [
+            4856627695467181539,
+            8016836484261499701
+          ],
+          "nodes_created": 0
+        },
+        "one_pass": true,
+        "pending_event_count": 4,
+        "raw_events_duplicated": false,
+        "segment_provider": {
+          "execution_mode": "rules",
+          "fallback_used": false,
+          "model": "matrixark-local-segmentation-v1",
+          "provider": "deterministic"
+        },
+        "segments_written": 1,
+        "source_event_count": 4,
+        "source_event_ids": [
+          1608460803197866279,
+          6535590578240304985,
+          2181881515329574653,
+          5846931346106514131
+        ],
+        "status": "committed",
+        "summary_hash": 7898015069221460593,
+        "summary_refresh": {
+          "async_required": true,
+          "dirty_hashes": [
+            2932698270328246638,
+            5591155558316290594
+          ],
+          "refresh_result": null,
+          "status": "dirty_marked"
+        },
+        "threshold_messages": 20,
+        "token_count_estimate": 37,
+        "trigger_policy": "force"
+      },
+      "ingests": [
+        {
+          "access": {
+            "account_id": "acct_locomo_debug",
+            "api_key_id": "dev",
+            "mode": "dev",
+            "role": "dev_admin",
+            "tenant_id": "tenant_memory"
+          },
+          "auto_batch_extract_result": null,
+          "classification": "NEW_EVENT",
+          "event_id_hash": 1608460803197866279,
+          "extraction_mode": "matrixark_internal",
+          "hook_captured": true,
+          "idle_commit_result": null,
+          "node_hash": 8016836484261499701,
+          "node_materialization": {
+            "child_refs_created": 1,
+            "node_hashes": [
+              4856627695467181539,
+              8016836484261499701
+            ],
+            "nodes_created": 2
+          },
+          "prior_context": "",
+          "prior_message_count": 0,
+          "prior_refs": [],
+          "prior_summary_count": 0,
+          "quality_warning": "",
+          "session_buffer": {
+            "auto_batch_extract": false,
+            "buffer_key": [
+              "acct_locomo_debug",
+              "tenant_memory",
+              "locomo_user_b",
+              "locomo_b"
+            ],
+            "pending_event_count": 1,
+            "threshold_messages": 20
+          },
+          "status": "accepted",
+          "summary_refresh": {
+            "async_required": true,
+            "dirty_hashes": [
+              236520421662293150,
+              8998514011573916689
+            ],
+            "refresh_result": null,
+            "status": "dirty_marked"
+          }
+        },
+        {
+          "access": {
+            "account_id": "acct_locomo_debug",
+            "api_key_id": "dev",
+            "mode": "dev",
+            "role": "dev_admin",
+            "tenant_id": "tenant_memory"
+          },
+          "auto_batch_extract_result": null,
+          "classification": "NEW_EVENT",
+          "event_id_hash": 6535590578240304985,
+          "extraction_mode": "matrixark_internal",
+          "hook_captured": true,
+          "idle_commit_result": null,
+          "node_hash": 8016836484261499701,
+          "node_materialization": {
+            "child_refs_created": 0,
+            "node_hashes": [
+              4856627695467181539,
+              8016836484261499701
+            ],
+            "nodes_created": 0
+          },
+          "prior_context": "session",
+          "prior_message_count": 1,
+          "prior_refs": [
+            {
+              "node_hash": 8016836484261499701,
+              "ref_hash": 165260480146054573,
+              "ref_type": "session_summary"
+            },
+            {
+              "node_hash": 8016836484261499701,
+              "ref_hash": 8016836484261499701,
+              "ref_type": "summary"
+            },
+            {
+              "node_hash": 8016836484261499701,
+              "ref_hash": 1608460803197866279,
+              "ref_type": "event"
+            }
+          ],
+          "prior_summary_count": 2,
+          "quality_warning": "",
+          "session_buffer": {
+            "auto_batch_extract": false,
+            "buffer_key": [
+              "acct_locomo_debug",
+              "tenant_memory",
+              "locomo_user_b",
+              "locomo_b"
+            ],
+            "pending_event_count": 2,
+            "threshold_messages": 20
+          },
+          "status": "accepted",
+          "summary_refresh": {
+            "async_required": true,
+            "dirty_hashes": [
+              9006137147760525270,
+              7812745986809583154
+            ],
+            "refresh_result": null,
+            "status": "dirty_marked"
+          }
+        },
+        {
+          "access": {
+            "account_id": "acct_locomo_debug",
+            "api_key_id": "dev",
+            "mode": "dev",
+            "role": "dev_admin",
+            "tenant_id": "tenant_memory"
+          },
+          "auto_batch_extract_result": null,
+          "classification": "NEW_EVENT",
+          "event_id_hash": 2181881515329574653,
+          "extraction_mode": "matrixark_internal",
+          "hook_captured": true,
+          "idle_commit_result": null,
+          "node_hash": 8016836484261499701,
+          "node_materialization": {
+            "child_refs_created": 0,
+            "node_hashes": [
+              4856627695467181539,
+              8016836484261499701
+            ],
+            "nodes_created": 0
+          },
+          "prior_context": "session",
+          "prior_message_count": 2,
+          "prior_refs": [
+            {
+              "node_hash": 8016836484261499701,
+              "ref_hash": 165260480146054573,
+              "ref_type": "session_summary"
+            },
+            {
+              "node_hash": 8016836484261499701,
+              "ref_hash": 8016836484261499701,
+              "ref_type": "summary"
+            },
+            {
+              "node_hash": 8016836484261499701,
+              "ref_hash": 6535590578240304985,
+              "ref_type": "event"
+            },
+            {
+              "node_hash": 8016836484261499701,
+              "ref_hash": 1608460803197866279,
+              "ref_type": "event"
+            }
+          ],
+          "prior_summary_count": 2,
+          "quality_warning": "",
+          "session_buffer": {
+            "auto_batch_extract": false,
+            "buffer_key": [
+              "acct_locomo_debug",
+              "tenant_memory",
+              "locomo_user_b",
+              "locomo_b"
+            ],
+            "pending_event_count": 3,
+            "threshold_messages": 20
+          },
+          "status": "accepted",
+          "summary_refresh": {
+            "async_required": true,
+            "dirty_hashes": [
+              7192912666101923953,
+              2939735216740727633
+            ],
+            "refresh_result": null,
+            "status": "dirty_marked"
+          }
+        },
+        {
+          "access": {
+            "account_id": "acct_locomo_debug",
+            "api_key_id": "dev",
+            "mode": "dev",
+            "role": "dev_admin",
+            "tenant_id": "tenant_memory"
+          },
+          "auto_batch_extract_result": null,
+          "classification": "NEW_EVENT",
+          "event_id_hash": 5846931346106514131,
+          "extraction_mode": "matrixark_internal",
+          "hook_captured": true,
+          "idle_commit_result": null,
+          "node_hash": 8016836484261499701,
+          "node_materialization": {
+            "child_refs_created": 0,
+            "node_hashes": [
+              4856627695467181539,
+              8016836484261499701
+            ],
+            "nodes_created": 0
+          },
+          "prior_context": "session",
+          "prior_message_count": 3,
+          "prior_refs": [
+            {
+              "node_hash": 8016836484261499701,
+              "ref_hash": 165260480146054573,
+              "ref_type": "session_summary"
+            },
+            {
+              "node_hash": 8016836484261499701,
+              "ref_hash": 8016836484261499701,
+              "ref_type": "summary"
+            },
+            {
+              "node_hash": 8016836484261499701,
+              "ref_hash": 2181881515329574653,
+              "ref_type": "event"
+            },
+            {
+              "node_hash": 8016836484261499701,
+              "ref_hash": 6535590578240304985,
+              "ref_type": "event"
+            },
+            {
+              "node_hash": 8016836484261499701,
+              "ref_hash": 1608460803197866279,
+              "ref_type": "event"
+            }
+          ],
+          "prior_summary_count": 2,
+          "quality_warning": "",
+          "session_buffer": {
+            "auto_batch_extract": false,
+            "buffer_key": [
+              "acct_locomo_debug",
+              "tenant_memory",
+              "locomo_user_b",
+              "locomo_b"
+            ],
+            "pending_event_count": 4,
+            "threshold_messages": 20
+          },
+          "status": "accepted",
+          "summary_refresh": {
+            "async_required": true,
+            "dirty_hashes": [
+              4635454864249880157,
+              8166327321889735337
+            ],
+            "refresh_result": null,
+            "status": "dirty_marked"
+          }
+        }
+      ],
+      "name": "conversation_b_relationship_family_job",
+      "scope": {
+        "account_id": "acct_locomo_debug",
+        "session_id": "locomo_b",
+        "tenant_id": "tenant_memory",
+        "user_id": "locomo_user_b"
+      },
+      "summary_refresh": {
+        "access": {
+          "account_id": "acct_locomo_debug",
+          "api_key_id": "dev",
+          "mode": "dev",
+          "role": "dev_admin",
+          "tenant_id": "tenant_memory"
+        },
+        "refreshed": [
+          {
+            "dirty_hash": 2932698270328246638,
+            "node_hash": 4856627695467181539,
+            "node_path": [
+              "user:locomo_user_b"
+            ],
+            "source_event_count": 4,
+            "source_summary_count": 2,
+            "summary_version_hash": 4981826863732646554
+          },
+          {
+            "dirty_hash": 5591155558316290594,
+            "node_hash": 8016836484261499701,
+            "node_path": [
+              "user:locomo_user_b",
+              "session:locomo_b"
+            ],
+            "source_event_count": 4,
+            "source_summary_count": 0,
+            "summary_version_hash": 7359586358419859604
+          }
+        ],
+        "refreshed_count": 2,
+        "status": "ok"
+      }
+    },
+    {
+      "commit": {
+        "access": {
+          "account_id": "acct_locomo_debug",
+          "api_key_id": "dev",
+          "mode": "dev",
+          "role": "dev_admin",
+          "tenant_id": "tenant_memory"
+        },
+        "batch_id_hash": 3488916655425034346,
+        "classification": "BATCH_MEMORY",
+        "commit_id_hash": 4311111165309368506,
+        "commit_reason": "manual_api",
+        "committed_event_count": 4,
+        "entities_written": 2,
+        "events_written": 0,
+        "idle_elapsed_ms": 0,
+        "idle_timeout_ms": null,
+        "indexes_written": 8,
+        "message_count": 4,
+        "mode": "matrixark_one_pass_schema",
+        "node_hash": 4664759118317631097,
+        "node_materialization": {
+          "child_refs_created": 0,
+          "node_hashes": [
+            698026846685615141,
+            4664759118317631097
+          ],
+          "nodes_created": 0
+        },
+        "one_pass": true,
+        "pending_event_count": 4,
+        "raw_events_duplicated": false,
+        "segment_provider": {
+          "execution_mode": "rules",
+          "fallback_used": false,
+          "model": "matrixark-local-segmentation-v1",
+          "provider": "deterministic"
+        },
+        "segments_written": 2,
+        "source_event_count": 4,
+        "source_event_ids": [
+          1299255405821071493,
+          4766492176302446322,
+          7728857116146083458,
+          2019390737801545451
+        ],
+        "status": "committed",
+        "summary_hash": 7622641577332214850,
+        "summary_refresh": {
+          "async_required": true,
+          "dirty_hashes": [
+            1134771634143717337,
+            1701920084996884412
+          ],
+          "refresh_result": null,
+          "status": "dirty_marked"
+        },
+        "threshold_messages": 20,
+        "token_count_estimate": 32,
+        "trigger_policy": "force"
+      },
+      "ingests": [
+        {
+          "access": {
+            "account_id": "acct_locomo_debug",
+            "api_key_id": "dev",
+            "mode": "dev",
+            "role": "dev_admin",
+            "tenant_id": "tenant_memory"
+          },
+          "auto_batch_extract_result": null,
+          "classification": "NEW_EVENT",
+          "event_id_hash": 1299255405821071493,
+          "extraction_mode": "matrixark_internal",
+          "hook_captured": true,
+          "idle_commit_result": null,
+          "node_hash": 4664759118317631097,
+          "node_materialization": {
+            "child_refs_created": 1,
+            "node_hashes": [
+              698026846685615141,
+              4664759118317631097
+            ],
+            "nodes_created": 2
+          },
+          "prior_context": "",
+          "prior_message_count": 0,
+          "prior_refs": [],
+          "prior_summary_count": 0,
+          "quality_warning": "",
+          "session_buffer": {
+            "auto_batch_extract": false,
+            "buffer_key": [
+              "acct_locomo_debug",
+              "tenant_memory",
+              "locomo_user_c",
+              "locomo_c"
+            ],
+            "pending_event_count": 1,
+            "threshold_messages": 20
+          },
+          "status": "accepted",
+          "summary_refresh": {
+            "async_required": true,
+            "dirty_hashes": [
+              3659170772957576266,
+              4227861099115842329
+            ],
+            "refresh_result": null,
+            "status": "dirty_marked"
+          }
+        },
+        {
+          "access": {
+            "account_id": "acct_locomo_debug",
+            "api_key_id": "dev",
+            "mode": "dev",
+            "role": "dev_admin",
+            "tenant_id": "tenant_memory"
+          },
+          "auto_batch_extract_result": null,
+          "classification": "NEW_EVENT",
+          "event_id_hash": 4766492176302446322,
+          "extraction_mode": "matrixark_internal",
+          "hook_captured": true,
+          "idle_commit_result": null,
+          "node_hash": 4664759118317631097,
+          "node_materialization": {
+            "child_refs_created": 0,
+            "node_hashes": [
+              698026846685615141,
+              4664759118317631097
+            ],
+            "nodes_created": 0
+          },
+          "prior_context": "session",
+          "prior_message_count": 1,
+          "prior_refs": [
+            {
+              "node_hash": 4664759118317631097,
+              "ref_hash": 432637146151229606,
+              "ref_type": "session_summary"
+            },
+            {
+              "node_hash": 4664759118317631097,
+              "ref_hash": 4664759118317631097,
+              "ref_type": "summary"
+            },
+            {
+              "node_hash": 4664759118317631097,
+              "ref_hash": 1299255405821071493,
+              "ref_type": "event"
+            }
+          ],
+          "prior_summary_count": 2,
+          "quality_warning": "",
+          "session_buffer": {
+            "auto_batch_extract": false,
+            "buffer_key": [
+              "acct_locomo_debug",
+              "tenant_memory",
+              "locomo_user_c",
+              "locomo_c"
+            ],
+            "pending_event_count": 2,
+            "threshold_messages": 20
+          },
+          "status": "accepted",
+          "summary_refresh": {
+            "async_required": true,
+            "dirty_hashes": [
+              8058037113951765271,
+              1796176422895370129
+            ],
+            "refresh_result": null,
+            "status": "dirty_marked"
+          }
+        },
+        {
+          "access": {
+            "account_id": "acct_locomo_debug",
+            "api_key_id": "dev",
+            "mode": "dev",
+            "role": "dev_admin",
+            "tenant_id": "tenant_memory"
+          },
+          "auto_batch_extract_result": null,
+          "classification": "NEW_EVENT",
+          "event_id_hash": 7728857116146083458,
+          "extraction_mode": "matrixark_internal",
+          "hook_captured": true,
+          "idle_commit_result": null,
+          "node_hash": 4664759118317631097,
+          "node_materialization": {
+            "child_refs_created": 0,
+            "node_hashes": [
+              698026846685615141,
+              4664759118317631097
+            ],
+            "nodes_created": 0
+          },
+          "prior_context": "session",
+          "prior_message_count": 2,
+          "prior_refs": [
+            {
+              "node_hash": 4664759118317631097,
+              "ref_hash": 432637146151229606,
+              "ref_type": "session_summary"
+            },
+            {
+              "node_hash": 4664759118317631097,
+              "ref_hash": 4664759118317631097,
+              "ref_type": "summary"
+            },
+            {
+              "node_hash": 4664759118317631097,
+              "ref_hash": 4766492176302446322,
+              "ref_type": "event"
+            },
+            {
+              "node_hash": 4664759118317631097,
+              "ref_hash": 1299255405821071493,
+              "ref_type": "event"
+            }
+          ],
+          "prior_summary_count": 2,
+          "quality_warning": "",
+          "session_buffer": {
+            "auto_batch_extract": false,
+            "buffer_key": [
+              "acct_locomo_debug",
+              "tenant_memory",
+              "locomo_user_c",
+              "locomo_c"
+            ],
+            "pending_event_count": 3,
+            "threshold_messages": 20
+          },
+          "status": "accepted",
+          "summary_refresh": {
+            "async_required": true,
+            "dirty_hashes": [
+              3290242533655004866,
+              1143920421553286471
+            ],
+            "refresh_result": null,
+            "status": "dirty_marked"
+          }
+        },
+        {
+          "access": {
+            "account_id": "acct_locomo_debug",
+            "api_key_id": "dev",
+            "mode": "dev",
+            "role": "dev_admin",
+            "tenant_id": "tenant_memory"
+          },
+          "auto_batch_extract_result": null,
+          "classification": "NEW_EVENT",
+          "event_id_hash": 2019390737801545451,
+          "extraction_mode": "matrixark_internal",
+          "hook_captured": true,
+          "idle_commit_result": null,
+          "node_hash": 4664759118317631097,
+          "node_materialization": {
+            "child_refs_created": 0,
+            "node_hashes": [
+              698026846685615141,
+              4664759118317631097
+            ],
+            "nodes_created": 0
+          },
+          "prior_context": "session",
+          "prior_message_count": 3,
+          "prior_refs": [
+            {
+              "node_hash": 4664759118317631097,
+              "ref_hash": 432637146151229606,
+              "ref_type": "session_summary"
+            },
+            {
+              "node_hash": 4664759118317631097,
+              "ref_hash": 4664759118317631097,
+              "ref_type": "summary"
+            },
+            {
+              "node_hash": 4664759118317631097,
+              "ref_hash": 7728857116146083458,
+              "ref_type": "event"
+            },
+            {
+              "node_hash": 4664759118317631097,
+              "ref_hash": 4766492176302446322,
+              "ref_type": "event"
+            },
+            {
+              "node_hash": 4664759118317631097,
+              "ref_hash": 1299255405821071493,
+              "ref_type": "event"
+            }
+          ],
+          "prior_summary_count": 2,
+          "quality_warning": "",
+          "session_buffer": {
+            "auto_batch_extract": false,
+            "buffer_key": [
+              "acct_locomo_debug",
+              "tenant_memory",
+              "locomo_user_c",
+              "locomo_c"
+            ],
+            "pending_event_count": 4,
+            "threshold_messages": 20
+          },
+          "status": "accepted",
+          "summary_refresh": {
+            "async_required": true,
+            "dirty_hashes": [
+              3810560637865916428,
+              740251934280629116
+            ],
+            "refresh_result": null,
+            "status": "dirty_marked"
+          }
+        }
+      ],
+      "name": "conversation_c_temporal_update",
+      "scope": {
+        "account_id": "acct_locomo_debug",
+        "session_id": "locomo_c",
+        "tenant_id": "tenant_memory",
+        "user_id": "locomo_user_c"
+      },
+      "summary_refresh": {
+        "access": {
+          "account_id": "acct_locomo_debug",
+          "api_key_id": "dev",
+          "mode": "dev",
+          "role": "dev_admin",
+          "tenant_id": "tenant_memory"
+        },
+        "refreshed": [
+          {
+            "dirty_hash": 1134771634143717337,
+            "node_hash": 698026846685615141,
+            "node_path": [
+              "user:locomo_user_c"
+            ],
+            "source_event_count": 4,
+            "source_summary_count": 2,
+            "summary_version_hash": 6348333135350661483
+          },
+          {
+            "dirty_hash": 1701920084996884412,
+            "node_hash": 4664759118317631097,
+            "node_path": [
+              "user:locomo_user_c",
+              "session:locomo_c"
+            ],
+            "source_event_count": 4,
+            "source_summary_count": 0,
+            "summary_version_hash": 7721612701159280512
+          }
+        ],
+        "refreshed_count": 2,
+        "status": "ok"
+      }
+    }
+  ],
+  "storage_prefix": "matrixark:locomo:parity:rust:20260623c",
+  "table": "deploy_table"
+}

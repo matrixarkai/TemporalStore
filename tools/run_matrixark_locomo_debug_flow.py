@@ -9,7 +9,12 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from tools.matrixark_mcp_server import MatrixArkLocalAdapter, MatrixArkMcpServer
+from tools.matrixark_mcp_server import (
+    MatrixArkLocalAdapter,
+    MatrixArkMcpServer,
+    MatrixArkTemporalStoreDirectAdapter,
+    MatrixArkTemporalStoreRustAdapter,
+)
 
 Json = dict[str, Any]
 
@@ -80,21 +85,61 @@ def compact_records(records: list[Json], record_type: str, limit: int = 12) -> l
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run LOCOMO-style MatrixArk debug flow and persist data-model artifacts.")
+    parser.add_argument(
+        "--backend",
+        choices=["local", "temporalstore-direct", "temporalstore-rust"],
+        default=os.environ.get("MATRIXARK_MCP_BACKEND", "local"),
+        help="Storage backend for the LOCOMO flow.",
+    )
     parser.add_argument("--artifact-dir", default="", help="Directory for JSONL/JSON/Markdown/HTML artifacts.")
     parser.add_argument("--event-log", default="", help="Explicit event-log JSONL path.")
+    parser.add_argument("--storage-prefix", default=os.environ.get("MATRIXARK_TEMPORALSTORE_PREFIX", "matrixark:locomo:debug"))
+    parser.add_argument("--metaserver", default=os.environ.get("MATRIXARK_TEMPORALSTORE_METASERVER", "127.0.0.1:18000"))
+    parser.add_argument("--namespace", default=os.environ.get("MATRIXARK_TEMPORALSTORE_NAMESPACE", "deploy_ns"))
+    parser.add_argument("--table", default=os.environ.get("MATRIXARK_TEMPORALSTORE_TABLE", "deploy_table"))
+    parser.add_argument("--temporalstore-lib", default=os.environ.get("TEMPORALSTORE_LIB", ""))
+    parser.add_argument("--rust-cli", default=os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_CLI", ""))
+    parser.add_argument("--request-timeout-ms", type=int, default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS", "20000")))
+    parser.add_argument("--io-timeout-ms", type=int, default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS", "20000")))
     return parser.parse_args()
 
 
-def run(artifact_dir: Path | None = None, event_log_path: str = "") -> Json:
+def make_adapter(args: argparse.Namespace, event_log: Path) -> MatrixArkLocalAdapter:
+    if args.backend == "temporalstore-direct":
+        return MatrixArkTemporalStoreDirectAdapter(
+            metaserver=args.metaserver,
+            namespace=args.namespace,
+            table=args.table,
+            library_path=args.temporalstore_lib,
+            storage_prefix=args.storage_prefix,
+            request_timeout_ms=args.request_timeout_ms,
+            io_timeout_ms=args.io_timeout_ms,
+        )
+    if args.backend == "temporalstore-rust":
+        return MatrixArkTemporalStoreRustAdapter(
+            rust_cli=args.rust_cli,
+            metaserver=args.metaserver,
+            namespace=args.namespace,
+            table=args.table,
+            storage_prefix=args.storage_prefix,
+            request_timeout_ms=args.request_timeout_ms,
+            io_timeout_ms=args.io_timeout_ms,
+        )
+    return MatrixArkLocalAdapter(event_log)
+
+
+def run(args: argparse.Namespace, artifact_dir: Path | None = None, event_log_path: str = "") -> Json:
     tmpdir = None
     if artifact_dir is not None:
         artifact_dir.mkdir(parents=True, exist_ok=True)
-        event_log = Path(event_log_path) if event_log_path else artifact_dir / "matrixark_locomo_debug_event_log.jsonl"
-        event_log.unlink(missing_ok=True)
+        event_log = Path(event_log_path) if event_log_path else artifact_dir / f"matrixark_locomo_debug_{args.backend}_event_log.jsonl"
+        if args.backend == "local":
+            event_log.unlink(missing_ok=True)
     else:
         tmpdir = tempfile.TemporaryDirectory()
         event_log = Path(event_log_path) if event_log_path else Path(tmpdir.name) / "matrixark-locomo-debug.jsonl"
-    server = MatrixArkMcpServer(MatrixArkLocalAdapter(event_log))
+    adapter = make_adapter(args, event_log)
+    server = MatrixArkMcpServer(adapter)
 
     sessions = [
         {
@@ -219,10 +264,15 @@ def run(artifact_dir: Path | None = None, event_log_path: str = "") -> Json:
                 }
             )
 
-    records = [json.loads(line) for line in event_log.read_text().splitlines() if line.strip()]
+    records = adapter.read_all()
     debug = {
         "dataset_note": "LOCOMO-style sample conversations; no official LOCOMO dataset file was present in this repo at run time.",
-        "event_log": str(event_log),
+        "backend": args.backend,
+        "event_log": str(event_log) if args.backend == "local" else "",
+        "storage_prefix": args.storage_prefix if args.backend != "local" else "",
+        "metaserver": args.metaserver if args.backend != "local" else "",
+        "namespace": args.namespace if args.backend != "local" else "",
+        "table": args.table if args.backend != "local" else "",
         "embedding_provider": os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic"),
         "embedding_model": os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH") or os.environ.get("MATRIXARK_EMBEDDING_MODEL", "matrixark-local-token-hash-v1"),
         "segment_provider": "deterministic unless batch calls specify segment_provider=oss",
@@ -257,7 +307,9 @@ def write_artifacts(debug: Json, artifact_dir: Path) -> None:
     lines = [
         "# MatrixArk LOCOMO Debug Data Flow",
         "",
+        f"Backend: `{debug.get('backend')}`",
         f"Event log: `{debug['event_log']}`",
+        f"Storage prefix: `{debug.get('storage_prefix')}`",
         f"Embedding provider: `{debug['embedding_provider']}`",
         f"Embedding model: `{debug['embedding_model']}`",
         "",
@@ -299,4 +351,4 @@ def write_artifacts(debug: Json, artifact_dir: Path) -> None:
 if __name__ == "__main__":
     args = parse_args()
     artifact_dir = Path(args.artifact_dir) if args.artifact_dir else None
-    print(json.dumps(run(artifact_dir=artifact_dir, event_log_path=args.event_log), indent=2, sort_keys=True))
+    print(json.dumps(run(args, artifact_dir=artifact_dir, event_log_path=args.event_log), indent=2, sort_keys=True))

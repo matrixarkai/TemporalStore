@@ -1,0 +1,51 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>MatrixArk LOCOMO C++ Rust Parity Metrics</title>
+<style>
+body{font-family:Inter,Segoe UI,Arial,sans-serif;max-width:1120px;margin:32px auto;padding:0 24px;color:#172033;line-height:1.5}
+table{border-collapse:collapse;width:100%;margin:16px 0}
+td,th{border:1px solid #d8dee9;padding:8px;text-align:left}
+th{background:#f4f7fb}
+pre{background:#f5f7fb;padding:16px;border-radius:8px;overflow:auto}
+code{background:#edf1f7;padding:2px 4px;border-radius:4px}
+h1,h2{color:#0f172a}
+</style>
+<h1>MatrixArk LOCOMO C++ vs Rust TemporalStore Parity Metrics - 2026-06-23</h1>
+<h2>Result</h2>
+<p>The same LOCOMO-style MatrixArk extraction, ingestion, session commit, async summary refresh, and layer-by-layer retrieval flow now runs through C++ and Rust TemporalStore backends.</p>
+<table>
+<tr><th>Metric</th><th>C++ TemporalStore</th><th>Rust TemporalStore</th></tr>
+<tr><td>elapsed seconds</td><td>2.44</td><td>2.16</td></tr>
+<tr><td>total records</td><td>192</td><td>192</td></tr>
+<tr><td>ContextNode</td><td>6</td><td>6</td></tr>
+<tr><td>ContextChildRef</td><td>3</td><td>3</td></tr>
+<tr><td>ContextEvent</td><td>12</td><td>12</td></tr>
+<tr><td>SessionBufferEvent</td><td>12</td><td>12</td></tr>
+<tr><td>ContextBatchCommit</td><td>3</td><td>3</td></tr>
+<tr><td>ContextSegment</td><td>6</td><td>6</td></tr>
+<tr><td>ContextEntity</td><td>9</td><td>9</td></tr>
+<tr><td>ContextIndex</td><td>24</td><td>24</td></tr>
+<tr><td>ContextSummary</td><td>27</td><td>27</td></tr>
+<tr><td>ContextEmbedding</td><td>54</td><td>54</td></tr>
+<tr><td>ContextPackAudit</td><td>9</td><td>9</td></tr>
+<tr><td>retrieval queries</td><td>9</td><td>9</td></tr>
+<tr><td>selected refs total</td><td>45</td><td>45</td></tr>
+<tr><td>used context tokens total</td><td>441</td><td>441</td></tr>
+<tr><td>tree traversal fallback</td><td>none</td><td>none</td></tr>
+</table>
+<p><strong>Conclusion:</strong> logical feature parity is clean on the completed LOCOMO-style flow. Full official LOCOMO benchmark parity is still blocked by large batch write timeouts in the current direct storage path.</p>
+<h2>Official LOCOMO Dataset Status</h2>
+<p>The local official file validates: <code>/root/matrixark_benchmarks/data/locomo10.json</code>, 10 conversations, 272 sessions, 5,882 turns, and 1,986 questions.</p>
+<table>
+<tr><th>Attempt</th><th>Backend</th><th>Scope</th><th>Timeout</th><th>Elapsed before failure</th><th>Failure</th></tr>
+<tr><td>official q100</td><td>C++</td><td>all conversations ingested</td><td>60s</td><td>178.1s</td><td>C++ server request timeout during hset</td></tr>
+<tr><td>official conv2 q100</td><td>C++</td><td>first 2 conversations</td><td>120s</td><td>270.99s</td><td>C++ server request timeout during hset</td></tr>
+<tr><td>official conv2 q100</td><td>Rust</td><td>first 2 conversations</td><td>120s</td><td>140.87s</td><td>Rust CLI returned the same server-side hset timeout</td></tr>
+</table>
+<h2>Next Gap</h2>
+<ol>
+<li>Push batch extraction record writes into fewer native C++/Rust batch operations.</li>
+<li>Avoid one hset RPC per logical MatrixArk record during large session extraction.</li>
+<li>Add checkpointed official LOCOMO runs after each ingestion chunk.</li>
+<li>Rerun full official LOCOMO on both backends and compare context recall, final judge score, token density, p50/p95 retrieval latency, and failure buckets.</li>
+</ol>
