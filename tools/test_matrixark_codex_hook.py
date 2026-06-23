@@ -134,8 +134,8 @@ class MatrixArkCodexHookTest(unittest.TestCase):
         self.assertEqual(len(raw_events), 5)
         topics = {record.get("topic") for record in records if record.get("record_type") == "context_segment"}
         self.assertIn("location", topics)
-        self.assertIn("preference", topics)
-        self.assertIn("approval_budget", topics)
+        self.assertTrue({"preference", "preference_update"}.intersection(topics))
+        self.assertTrue({"approval_budget", "confirmation"}.intersection(topics))
         self.assertTrue(
             any(record.get("record_type") == "context_summary_dirty" for record in records)
         )

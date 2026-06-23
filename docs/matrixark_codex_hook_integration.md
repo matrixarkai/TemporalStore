@@ -38,7 +38,49 @@ matrixark_retrieve   # for UserPromptSubmit or explicit --query
 
 The raw hook payload is stored in metadata for replay.
 
-## Local E2E Test
+## C++ Always Mode
+
+For this repo, Codex hooks should use the C++ TemporalStore path by default:
+
+```bash
+/root/src/github-services/TemporalStore/tools/matrixark_codex_cpp_hook.sh \
+  --event UserPromptSubmit \
+  --account-id acct_codex \
+  --tenant-id tenant_codex \
+  --user-id deeproute \
+  --session-id codex-thread-local
+```
+
+The launcher sets:
+
+```text
+MATRIXARK_MCP_BACKEND=temporalstore-direct
+MATRIXARK_TEMPORALSTORE_METASERVER=127.0.0.1:18000
+MATRIXARK_TEMPORALSTORE_NAMESPACE=deploy_ns
+MATRIXARK_TEMPORALSTORE_TABLE=deploy_table
+MATRIXARK_TEMPORALSTORE_PREFIX=matrixark:codex-hook
+TEMPORALSTORE_LIB=/root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so
+MATRIXARK_EMBEDDING_PROVIDER=oss
+MATRIXARK_REQUIRE_OSS_EMBEDDINGS=1
+MATRIXARK_UNDERSTANDING_PROVIDER=oss_encoder
+MATRIXARK_REQUIRE_OSS_UNDERSTANDING=1
+```
+
+That means Codex prompts, tool events, stop events, session commits, extraction,
+retrieval, summaries, entities, segments, indexes, embeddings, and ContextPack
+audits all go through the MatrixArk direct adapter backed by the live C++
+TemporalStore SDK.
+
+Validation report:
+
+- [matrixark_codex_cpp_hook_e2e.md](matrixark_codex_cpp_hook_e2e.md)
+- [matrixark_codex_cpp_hook_e2e.html](matrixark_codex_cpp_hook_e2e.html)
+- [matrixark_codex_cpp_hook_e2e.json](matrixark_codex_cpp_hook_e2e.json)
+
+## Local JSONL E2E Test
+
+This mode remains useful for unit tests and debugging, but it is not the
+preferred MatrixArk-on-Codex path.
 
 From the TemporalStore repo:
 

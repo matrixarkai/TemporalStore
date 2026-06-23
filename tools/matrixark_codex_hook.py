@@ -44,6 +44,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--table", default=os.environ.get("MATRIXARK_TEMPORALSTORE_TABLE", "deploy_table"))
     parser.add_argument("--temporalstore-lib", default=os.environ.get("TEMPORALSTORE_LIB", ""))
     parser.add_argument("--storage-prefix", default=os.environ.get("MATRIXARK_TEMPORALSTORE_PREFIX", "matrixark:codex-hook"))
+    parser.add_argument("--request-timeout-ms", type=int, default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS", "60000")))
+    parser.add_argument("--io-timeout-ms", type=int, default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS", "60000")))
     parser.add_argument("--session-commit-threshold", type=int, default=int(os.environ.get("MATRIXARK_SESSION_COMMIT_THRESHOLD", "20")))
     parser.add_argument("--idle-commit-timeout-ms", type=int, default=int(os.environ.get("MATRIXARK_IDLE_COMMIT_TIMEOUT_MS", "0")))
     parser.add_argument("--repo-root", type=Path, default=root)
@@ -174,6 +176,8 @@ def build_server(args: argparse.Namespace):
             table=args.table,
             library_path=args.temporalstore_lib or None,
             storage_prefix=args.storage_prefix,
+            request_timeout_ms=args.request_timeout_ms,
+            io_timeout_ms=args.io_timeout_ms,
         )
     else:
         adapter = MatrixArkLocalAdapter(args.event_log)
@@ -210,6 +214,8 @@ def main() -> int:
         ingest_args: Json = {
             **common,
             "messages": [{"role": role_for_event(args.event), "content": text}],
+            "understanding_provider": "oss_encoder",
+            "segment_provider": "oss_encoder",
             "metadata": {
                 "source": "codex_hook",
                 "codex_event": args.event,
@@ -245,6 +251,8 @@ def main() -> int:
                 "threshold_messages": args.session_commit_threshold,
                 "force": commit_reason != "idle_timeout",
                 "commit_reason": commit_reason,
+                "understanding_provider": "oss_encoder",
+                "segment_provider": "oss_encoder",
                 **({"idle_timeout_ms": args.idle_commit_timeout_ms} if commit_reason == "idle_timeout" else {}),
                 "agent_hook": {
                     "source": "codex",

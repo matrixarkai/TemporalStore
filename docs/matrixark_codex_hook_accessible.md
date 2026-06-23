@@ -20,6 +20,20 @@ Codex lifecycle event
 -> ContextPackAudit / commit audit
 ```
 
+For this local integration, use the C++ launcher:
+
+```bash
+/root/src/github-services/TemporalStore/tools/matrixark_codex_cpp_hook.sh
+```
+
+It forces `MATRIXARK_MCP_BACKEND=temporalstore-direct`, requires OSS
+embeddings and OSS encoder understanding, and writes all MatrixArk records
+through the live C++ TemporalStore SDK. The latest validation report is:
+
+```text
+docs/matrixark_codex_cpp_hook_e2e.html
+```
+
 ## 2. Useful Codex Hooks
 
 | Hook | MatrixArk use | Recommended MVP behavior |
