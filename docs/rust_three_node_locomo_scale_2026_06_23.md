@@ -18,6 +18,42 @@ serves LOCOMO queries through three external data-node processes, so this eviden
 be read as combined pipeline plus three-node scale validation, not as a single distributed
 LOCOMO service benchmark.
 
+## Combined Gate Rerun
+
+After the first manual run, a repeatable combined gate was added:
+
+```bash
+python3 tools/run_three_node_locomo_scale_gate.py \
+  --worktree /tmp/temporalstore-rust-scale \
+  --input /mnt/c/root/matrixark_benchmarks/data/locomo10.json \
+  --out-dir benchmark_reports/three_node_locomo_scale_gate_20260623 \
+  --skip-build \
+  --nodes 3 \
+  --shared-store-flush-every 25 \
+  --locomo-timeout-seconds 2400 \
+  --report benchmark_reports/three_node_locomo_scale_gate_20260623/combined_gate.json
+```
+
+Combined report:
+
+- `/tmp/temporalstore-rust-scale/benchmark_reports/three_node_locomo_scale_gate_20260623/combined_gate.json`
+- schema: `temporalstore_three_node_locomo_scale_gate_v1`
+- ready: `true`
+- blockers: `[]`
+- elapsed: `497.17 s`
+
+The combined gate fails closed unless all of the following are true:
+
+- LOCOMO uses Rust TemporalStore and full Rust replay.
+- LOCOMO is not a Python-only diagnostic.
+- LOCOMO full threshold passes.
+- three-data-node scale replication is healthy.
+- Raft max replica lag is `0`.
+- sync shared-store lag is `0`.
+- async shared-store lag is bounded by `flush_every - 1`.
+- secondary replication failover, OpenRaft process rollout, multi-process log-store validation,
+  restart recovery, and applied-fence validation all pass.
+
 ## Commands
 
 Build:
@@ -101,6 +137,21 @@ python3 tools/run_locomo_90_hit_rate.py \
 | Reader mode | deterministic |
 | Live OSS reader calls | 0 |
 
+Latest combined gate rerun metrics:
+
+| Metric | Value |
+| --- | ---: |
+| Hit@K | 0.9474708171 |
+| Reader hit rate | 0.8767833982 |
+| MRR | 0.5273212064 |
+| Token reduction | 83.7139817097% |
+| Retrieval p95 | 32.080 ms |
+| Reader p95 | 12.653 ms |
+| Zero-hit queries | 81 |
+| Rust source sets ingested | 10 |
+| Rust source sets retrieved | 10 |
+| Rust retrieved blocks | 186,606 |
+
 Source packing preserved all source text while reducing replay rows:
 
 | Metric | Value |
@@ -144,12 +195,31 @@ Category breakdown:
 | Max Raft replica lag | 0 |
 | Replication healthy | true |
 
+Latest combined gate rerun:
+
+| Metric | Value |
+| --- | ---: |
+| Final voters | 2, 3, 4 |
+| Commit index | 1258 |
+| Failovers | 3 |
+| Scale events | 2 |
+| Write throughput | 9.0100 ops/s |
+| Max Raft replica lag | 0 |
+| Replication healthy | true |
+
 Raft latency:
 
 | Metric | p50 | p95 | p99 | Max | Samples |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Write | 45.725 ms | 60.685 ms | 70.587 ms | 286.877 ms | 1254 |
 | Replica read | 4.382 ms | 12.037 ms | 12.037 ms | 12.457 ms | 14 |
+
+Latest combined gate rerun latency:
+
+| Metric | p50 | p95 | p99 | Max | Samples |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Write | 41.473 ms | 55.843 ms | 60.049 ms | 284.159 ms | 1254 |
+| Replica read | 3.948 ms | 11.988 ms | 11.988 ms | 13.130 ms | 14 |
 
 The SLO report marked the local multi-node scale evidence ready with:
 
@@ -181,6 +251,17 @@ The scale harness compared sync and async shared-store paths:
 The async max lag of 24 is expected with `--shared-store-flush-every 25`; it remained bounded
 below the flush interval and did not block the LOCOMO Rust pipeline or the three-data-node
 scale harness.
+
+Latest combined gate rerun shared-store metrics:
+
+| Metric | Sync | Async |
+| --- | ---: | ---: |
+| Primary write p50 | 14.611 ms | 14.161 ms |
+| Primary write p95 | 18.628 ms | 18.168 ms |
+| Replica read p50 | 3.435 ms | 3.345 ms |
+| Replica read p95 | 4.418 ms | 3.809 ms |
+| Max lag | 0 | 24 |
+| Lag bound | 0 | 24 |
 
 The dedicated secondary replication harness passed these checks:
 
