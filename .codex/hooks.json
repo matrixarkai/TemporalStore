@@ -1,0 +1,57 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/root/src/github-services/TemporalStore/tools/matrixark_codex_cpp_hook.sh --event UserPromptSubmit --account-id acct_codex --tenant-id tenant_codex --user-id deeproute --session-id codex-thread-local",
+            "commandWindows": "powershell -ExecutionPolicy Bypass -File \"\\\\wsl.localhost\\Ubuntu2204Deeproute\\root\\src\\github-services\\TemporalStore\\tools\\matrixark_codex_cpp_hook.ps1\" --event UserPromptSubmit --account-id acct_codex --tenant-id tenant_codex --user-id deeproute --session-id codex-thread-local",
+            "timeout": 90,
+            "statusMessage": "MatrixArk C++: ingest prompt and retrieve context"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|apply_patch|Edit|Write|mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/root/src/github-services/TemporalStore/tools/matrixark_codex_cpp_hook.sh --event PostToolUse --account-id acct_codex --tenant-id tenant_codex --user-id deeproute --session-id codex-thread-local",
+            "commandWindows": "powershell -ExecutionPolicy Bypass -File \"\\\\wsl.localhost\\Ubuntu2204Deeproute\\root\\src\\github-services\\TemporalStore\\tools\\matrixark_codex_cpp_hook.ps1\" --event PostToolUse --account-id acct_codex --tenant-id tenant_codex --user-id deeproute --session-id codex-thread-local",
+            "timeout": 90,
+            "statusMessage": "MatrixArk C++: ingest tool result"
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/root/src/github-services/TemporalStore/tools/matrixark_codex_cpp_hook.sh --event PostCompact --account-id acct_codex --tenant-id tenant_codex --user-id deeproute --session-id codex-thread-local",
+            "commandWindows": "powershell -ExecutionPolicy Bypass -File \"\\\\wsl.localhost\\Ubuntu2204Deeproute\\root\\src\\github-services\\TemporalStore\\tools\\matrixark_codex_cpp_hook.ps1\" --event PostCompact --account-id acct_codex --tenant-id tenant_codex --user-id deeproute --session-id codex-thread-local",
+            "timeout": 90,
+            "statusMessage": "MatrixArk C++: ingest compacted context"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/root/src/github-services/TemporalStore/tools/matrixark_codex_cpp_hook.sh --event Stop --account-id acct_codex --tenant-id tenant_codex --user-id deeproute --session-id codex-thread-local",
+            "commandWindows": "powershell -ExecutionPolicy Bypass -File \"\\\\wsl.localhost\\Ubuntu2204Deeproute\\root\\src\\github-services\\TemporalStore\\tools\\matrixark_codex_cpp_hook.ps1\" --event Stop --account-id acct_codex --tenant-id tenant_codex --user-id deeproute --session-id codex-thread-local",
+            "timeout": 90,
+            "statusMessage": "MatrixArk C++: commit Codex session memory"
+          }
+        ]
+      }
+    ]
+  }
+}
