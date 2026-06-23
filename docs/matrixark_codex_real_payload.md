@@ -32,18 +32,26 @@ The hook parser also accepts variants such as `user_prompt`, `input`, `text`, `m
 
 For `Stop` and `PostCompact`, the useful field is usually a message or compacted summary text. For `PostToolUse`, the payload is tool-related text/JSON.
 
-## Scope Comes From Hook Config
+## Scope Comes From Hook Config And Session Derivation
 
-`account_id`, `tenant_id`, `user_id`, and `session_id` are not reliably provided by Codex as a clean MatrixArk schema. In our local setup they come from `.codex/hooks.json` command arguments:
+`account_id`, `tenant_id`, and `user_id` are not reliably provided by Codex as a clean MatrixArk schema. In our local setup they come from `.codex/hooks.json` command arguments:
 
 ```text
 --account-id acct_codex
 --tenant-id tenant_codex
 --user-id deeproute
---session-id codex-thread-local
 ```
 
-So MatrixArk receives those values because our hook config supplies them, not because Codex naturally emits that schema.
+`session_id` is different. The hook now derives it dynamically:
+
+```text
+1. explicit --session-id or MATRIXARK_SESSION_ID
+2. raw payload fields such as session_id, thread_id, conversation_id, transcript_id
+3. raw payload path fields such as transcript_path, conversation_path, thread_path
+4. persisted local fallback state under MATRIXARK_CODEX_SESSION_STATE_DIR
+```
+
+So MatrixArk receives access-control scope from hook config, while session scope can follow the Codex thread when Codex exposes a thread/conversation id.
 
 ## What The Hook Sends To MatrixArk
 
@@ -56,13 +64,14 @@ The hook converts raw Codex input into:
     "account_id": "acct_codex",
     "tenant_id": "tenant_codex",
     "user_id": "deeproute",
-    "session_id": "codex-thread-local",
+    "session_id": "codex:thread-abc",
     "team": "codex",
     "project": "local"
   },
   "metadata": {
     "source": "codex_hook",
     "codex_event": "UserPromptSubmit",
+    "codex_session_id_source": "payload_field",
     "raw_hook_payload": {"prompt": "..."}
   },
   "agent_hook": {

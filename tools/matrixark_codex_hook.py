@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -34,7 +36,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--account-id", default=os.environ.get("MATRIXARK_ACCOUNT_ID", "acct_codex"))
     parser.add_argument("--tenant-id", default=os.environ.get("MATRIXARK_TENANT_ID", "tenant_codex"))
     parser.add_argument("--user-id", default=os.environ.get("MATRIXARK_USER_ID", os.environ.get("USERNAME", "codex_user")))
-    parser.add_argument("--session-id", default=os.environ.get("MATRIXARK_SESSION_ID", "codex_session"))
+    parser.add_argument("--session-id", default=os.environ.get("MATRIXARK_SESSION_ID"))
+    parser.add_argument(
+        "--session-state-dir",
+        type=Path,
+        default=Path(os.environ.get("MATRIXARK_CODEX_SESSION_STATE_DIR", "/tmp/matrixark-codex-sessions")),
+        help="Directory used for the fallback generated Codex hook session id.",
+    )
     parser.add_argument("--team", default=os.environ.get("MATRIXARK_TEAM", "codex"))
     parser.add_argument("--project", default=os.environ.get("MATRIXARK_PROJECT", "local"))
     parser.add_argument("--query", default="")
@@ -76,6 +84,93 @@ def first_string_at(payload: Json, paths: list[list[str]]) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return ""
+
+
+def stable_short_hash(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
+
+
+def payload_session_candidate(payload: Json) -> tuple[str, str]:
+    direct = first_string_at(
+        payload,
+        [
+            ["session_id"],
+            ["sessionId"],
+            ["codex_session_id"],
+            ["thread_id"],
+            ["threadId"],
+            ["conversation_id"],
+            ["conversationId"],
+            ["transcript_id"],
+            ["transcriptId"],
+            ["run", "session_id"],
+            ["run", "thread_id"],
+            ["params", "session_id"],
+            ["params", "thread_id"],
+            ["turn", "session_id"],
+            ["turn", "thread_id"],
+            ["metadata", "session_id"],
+            ["metadata", "thread_id"],
+        ],
+    )
+    if direct:
+        return f"codex:{direct}", "payload_field"
+
+    path_value = first_string_at(
+        payload,
+        [
+            ["transcript_path"],
+            ["transcriptPath"],
+            ["conversation_path"],
+            ["conversationPath"],
+            ["thread_path"],
+            ["threadPath"],
+            ["log_path"],
+            ["logPath"],
+        ],
+    )
+    if path_value:
+        return f"codex:path:{stable_short_hash(path_value)}", "payload_path_hash"
+
+    return "", ""
+
+
+def workspace_fingerprint(payload: Json, args: argparse.Namespace) -> str:
+    workspace = first_string_at(
+        payload,
+        [
+            ["workspace_root"],
+            ["workspaceRoot"],
+            ["cwd"],
+            ["params", "cwd"],
+            ["metadata", "cwd"],
+        ],
+    )
+    if not workspace:
+        workspace = str(args.repo_root)
+    seed = "|".join([args.account_id, args.tenant_id, args.user_id, workspace])
+    return stable_short_hash(seed)
+
+
+def generated_session_id(payload: Json, args: argparse.Namespace) -> tuple[str, str]:
+    args.session_state_dir.mkdir(parents=True, exist_ok=True)
+    state_file = args.session_state_dir / f"{workspace_fingerprint(payload, args)}.session"
+    if state_file.exists():
+        existing = state_file.read_text(encoding="utf-8").strip()
+        if existing:
+            return existing, "state_file"
+    value = f"codex:local:{uuid.uuid4().hex[:16]}"
+    state_file.write_text(value + "\n", encoding="utf-8")
+    return value, "state_file_created"
+
+
+def resolve_session_id(payload: Json, args: argparse.Namespace) -> tuple[str, str]:
+    if args.session_id:
+        return args.session_id, "explicit"
+    candidate, source = payload_session_candidate(payload)
+    if candidate:
+        return candidate, source
+    return generated_session_id(payload, args)
 
 
 def payload_text(payload: Json) -> str:
@@ -189,6 +284,8 @@ def scope_from_args(args: argparse.Namespace) -> Json:
 def main() -> int:
     args = parse_args()
     payload = read_stdin_payload()
+    resolved_session_id, session_id_source = resolve_session_id(payload, args)
+    args.session_id = resolved_session_id
     text = payload_text(payload) or args.query
     if not text and args.event not in {"IdleTimeout", "SessionIdle"}:
         print(json.dumps({"status": "skipped", "reason": "empty hook payload"}))
@@ -212,6 +309,7 @@ def main() -> int:
                 "codex_event": args.event,
                 "raw_hook_payload": payload,
                 "compacted_session_summary": args.event == "PostCompact",
+                "codex_session_id_source": session_id_source,
             },
             "agent_hook": {
                 "source": "codex",
@@ -221,6 +319,7 @@ def main() -> int:
                 "idempotency_key": str(payload.get("id") or payload.get("turn_id") or ""),
                 "trigger": args.event,
                 "auto_captured": True,
+                "session_id_source": session_id_source,
             },
         }
         if args.event == "UserPromptSubmit":
@@ -252,6 +351,7 @@ def main() -> int:
                     "idempotency_key": str(payload.get("id") or payload.get("turn_id") or ""),
                     "trigger": args.event,
                     "auto_captured": True,
+                    "session_id_source": session_id_source,
                 },
             },
         )
@@ -274,6 +374,8 @@ def main() -> int:
             {
                 "status": "ok",
                 "event": args.event,
+                "session_id": args.session_id,
+                "session_id_source": session_id_source,
                 "lifecycle_stage": {
                     "before_llm_retrieve": args.event == "UserPromptSubmit",
                     "after_llm_ingest_only": args.event in {"PostToolUse", "PreToolUse", "PermissionRequest"},
