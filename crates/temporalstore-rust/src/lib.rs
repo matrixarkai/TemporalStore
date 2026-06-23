@@ -174,8 +174,9 @@ pub use types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ContextAuditModel,
     ContextAuditRef, ContextChildModel, ContextChildRef, ContextCompressionEvent,
     ContextCompressionModel, ContextDirtyModel, ContextEmbedding, ContextEmbeddingModel,
-    ContextEntity, ContextEvent, ContextEventModel, ContextIndexModel, ContextIndexRef,
-    ContextNode, ContextNodeModel, ContextPackAudit, ContextSegment, ContextSummary,
-    ContextSummaryDirtyMarker, ContextSummaryModel, ContextTraversedNode, ContextWire,
-    ExecuteRequest, ExecuteResponse, FeaturePoint, IpsSnapshotReport, IpsStats, ShardId, Status,
+    ContextEntity, ContextEvent, ContextEventModel, ContextExtractedEventIndexes,
+    ContextIndexModel, ContextIndexRef, ContextNode, ContextNodeModel, ContextPackAudit,
+    ContextSegment, ContextSummary, ContextSummaryDirtyMarker, ContextSummaryModel,
+    ContextTraversedNode, ContextWire, ExecuteRequest, ExecuteResponse, FeaturePoint,
+    InternalContextIndex, IpsSnapshotReport, IpsStats, ShardId, Status,
 };

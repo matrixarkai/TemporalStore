@@ -140,6 +140,7 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `context_openviking_blocks_provider_switches` | Rust-executable/C++-static gate for OpenViking-style context blocks and open-source text/VLM provider switching. |
 | `context_injection_prompt_pack_ordering` | Rust-executable/C++-static gate for prompt-pack ordering and selected-ref audit ordering. |
 | `context_benchmark_injection_entity_segment_index` | Rust-executable/C++-static gate for ContextEntity/ContextSegment benchmark injection, source secondary-index lookup, L0/L1/L2 prompt blocks, and selected-ref audit coverage. |
+| `context_extracted_event_default_index_fanout` | Rust-executable/C++-static gate translated from C++ `WRITE_EXTRACTED_EVENT` debug tests; default internal indexes fan out and disabled indexes do not return refs. |
 | `context_tree_embedding_summary_compression` | Rust-executable/C++-static gate translated from C++ tree/embedding/summary/compression round-trip behavior. |
 | `context_temporal_compression_replayable_summary` | Rust-executable/C++-static gate translated from C++ temporal compression behavior; compression must not delete source events. |
 | `context_benchmark_fixture_gates` | Shared C++/Rust benchmark contract for LOCOMO-style and LongMemEval_s fixture gates using MatrixArk/VikingMem report fields. |

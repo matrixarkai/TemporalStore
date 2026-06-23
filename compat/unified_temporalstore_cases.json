@@ -4111,6 +4111,28 @@
       ]
     },
     {
+      "name": "context_extracted_event_default_index_fanout",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "context_extracted_event_default_index_fanout_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_context_pipeline_parity",
+            "mode": "rust_executable_cxx_static",
+            "description": "Shared C++/Rust Context case translated from C++ WRITE_EXTRACTED_EVENT debug tests: an extracted event writes event_kind, entity, status, source, and event_time_bucket internal indexes, and disabled indexes are not queryable.",
+            "required_paths": [
+              "docs/rust_context_pipeline_debug_trace.md",
+              "docs/rust_vs_cpp_temporalstore_parity_report.md"
+            ],
+            "cpp_reference": "/root/src/github-services/TemporalStore/src/extension/context/test.cc",
+            "rust_runner": "cargo test -p temporalstore-rust context_models_match_cpp_keys_timeline_pages_and_filters --lib -- --test-threads=1",
+            "rust_validator": "tools/run_context_workflow_local.sh"
+          }
+        }
+      ]
+    },
+    {
       "name": "context_tree_embedding_summary_compression",
       "shard_id": 1,
       "steps": [

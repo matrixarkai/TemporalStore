@@ -27,11 +27,11 @@ use crate::page_store::{
 use crate::types::{
     parse_cpp_feature_filters, BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse,
     ContextAuditRef, ContextChildRef, ContextCompressionEvent, ContextEmbedding, ContextEntity,
-    ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit, ContextSummary,
-    ContextSummaryDirtyMarker, ContextTraversedNode, ContextWire, ExecuteRequest, ExecuteResponse,
-    FeatureFilter, FeatureFilterOp, FeaturePoint, FeatureWritePolicy, IpsSnapshotReport, IpsStats,
-    RiskFamily, RiskFolType, SequenceFeatureRow, SequenceQuerySpec, ShardId, Status,
-    StringSetCondition,
+    ContextEvent, ContextExtractedEventIndexes, ContextIndexRef, ContextNode, ContextPackAudit,
+    ContextSummary, ContextSummaryDirtyMarker, ContextTraversedNode, ContextWire, ExecuteRequest,
+    ExecuteResponse, FeatureFilter, FeatureFilterOp, FeaturePoint, FeatureWritePolicy,
+    InternalContextIndex, IpsSnapshotReport, IpsStats, RiskFamily, RiskFolType, SequenceFeatureRow,
+    SequenceQuerySpec, ShardId, Status, StringSetCondition,
 };
 
 #[derive(Debug, Clone)]
@@ -6900,6 +6900,115 @@ fn execute_on_shard(
             invalidate_record_all(cache, shard_id, &object_key);
             CommandResponse::ContextObjectKey { object_key }
         }
+        Command::ContextWriteExtractedEvent {
+            tenant_hash,
+            node_hash,
+            event,
+            indexes,
+            first_write_only,
+        } => {
+            let event_object_key = context_event_key(tenant_hash, node_hash);
+            let event_timeline_key = context_timeline_key(event.event_time_ms, event.event_id_hash);
+            let event_series = shard
+                .context_events
+                .entry(event_object_key.clone())
+                .or_default();
+            if !(first_write_only && event_series.contains_key(&event_timeline_key)) {
+                let value = context_bytes(&event);
+                let routing_slot =
+                    page_routing_slot(&event_object_key, start_routing_slot, end_routing_slot);
+                if let Ok(addresses) = append_timestamped_kv_pages(
+                    cache,
+                    page_store,
+                    shard_id,
+                    "context_event",
+                    &event_object_key,
+                    vec![FeaturePoint {
+                        timestamp_ms: event_timeline_key,
+                        value,
+                    }],
+                    routing_slot,
+                    async_storage,
+                ) {
+                    for (timestamp_ms, address) in addresses {
+                        event_series.insert(timestamp_ms, address);
+                        mutated = true;
+                    }
+                }
+            }
+            invalidate_record_all(cache, shard_id, &event_object_key);
+
+            let index_ref = ContextIndexRef {
+                primary_node_hash: node_hash,
+                primary_event_time_ms: event.event_time_ms,
+                event_id_hash: event.event_id_hash,
+            };
+            let mut index_object_keys = Vec::new();
+            let mut write_default_index =
+                |index_name: &str, value_hash: u64, index_time_ms: u64| {
+                    if value_hash == 0 || index_time_ms == 0 {
+                        return;
+                    }
+                    let object_key =
+                        context_index_key(tenant_hash, index_name, value_hash, indexes.scope_hash);
+                    let timeline_key = context_timeline_key(index_time_ms, index_ref.event_id_hash);
+                    let value = context_bytes(&index_ref);
+                    let routing_slot =
+                        page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
+                    if let Ok(addresses) = append_timestamped_kv_pages(
+                        cache,
+                        page_store,
+                        shard_id,
+                        "context_index",
+                        &object_key,
+                        vec![FeaturePoint {
+                            timestamp_ms: timeline_key,
+                            value,
+                        }],
+                        routing_slot,
+                        async_storage,
+                    ) {
+                        let series = shard.context_indexes.entry(object_key.clone()).or_default();
+                        for (timestamp_ms, address) in addresses {
+                            series.insert(timestamp_ms, address);
+                            mutated = true;
+                        }
+                        invalidate_record_all(cache, shard_id, &object_key);
+                        index_object_keys.push(object_key);
+                    }
+                };
+
+            if !context_index_disabled(&indexes, InternalContextIndex::EventKind) {
+                write_default_index(
+                    "event_kind",
+                    context_event_kind_hash(&event),
+                    event.event_time_ms,
+                );
+            }
+            if !context_index_disabled(&indexes, InternalContextIndex::Status) {
+                write_default_index("status", indexes.status_hash, event.event_time_ms);
+            }
+            if !context_index_disabled(&indexes, InternalContextIndex::Source) {
+                write_default_index("source", indexes.source_hash, event.event_time_ms);
+            }
+            if !context_index_disabled(&indexes, InternalContextIndex::EventTimeBucket) {
+                write_default_index(
+                    "event_time_bucket",
+                    indexes.event_time_bucket_ms,
+                    indexes.event_time_bucket_ms,
+                );
+            }
+            if !context_index_disabled(&indexes, InternalContextIndex::Entity) {
+                for entity_hash in &indexes.entity_hashes {
+                    write_default_index("entity", *entity_hash, event.event_time_ms);
+                }
+            }
+            CommandResponse::ContextExtractedEventWrite {
+                event_object_key,
+                written_index_count: index_object_keys.len(),
+                index_object_keys,
+            }
+        }
         Command::ContextQueryEvents {
             tenant_hash,
             node_hash,
@@ -9300,6 +9409,21 @@ fn context_index_key(
     format!("ctxidx:{tenant_hash}:{index_name}:{index_value_hash}:{scope_hash}")
 }
 
+fn context_index_disabled(
+    indexes: &ContextExtractedEventIndexes,
+    index: InternalContextIndex,
+) -> bool {
+    indexes.disabled_indexes.contains(&index)
+}
+
+fn context_event_kind_hash(event: &ContextEvent) -> u64 {
+    u64::from(if event.event_type != 0 {
+        event.event_type
+    } else {
+        event.kind
+    })
+}
+
 fn context_audit_key(tenant_hash: u64, session_hash: u64) -> String {
     format!("ctx:audit:{tenant_hash}:{session_hash}")
 }
@@ -9452,6 +9576,71 @@ fn command_object_keys(command: &Command) -> Vec<String> {
             node_hash,
             ..
         } => vec![context_event_key(*tenant_hash, *node_hash)],
+        Command::ContextWriteExtractedEvent {
+            tenant_hash,
+            node_hash,
+            event,
+            indexes,
+            ..
+        } => {
+            let mut keys = vec![context_event_key(*tenant_hash, *node_hash)];
+            if !context_index_disabled(indexes, InternalContextIndex::EventKind) {
+                keys.push(context_index_key(
+                    *tenant_hash,
+                    "event_kind",
+                    context_event_kind_hash(event),
+                    indexes.scope_hash,
+                ));
+            }
+            if !context_index_disabled(indexes, InternalContextIndex::Status)
+                && indexes.status_hash != 0
+            {
+                keys.push(context_index_key(
+                    *tenant_hash,
+                    "status",
+                    indexes.status_hash,
+                    indexes.scope_hash,
+                ));
+            }
+            if !context_index_disabled(indexes, InternalContextIndex::Source)
+                && indexes.source_hash != 0
+            {
+                keys.push(context_index_key(
+                    *tenant_hash,
+                    "source",
+                    indexes.source_hash,
+                    indexes.scope_hash,
+                ));
+            }
+            if !context_index_disabled(indexes, InternalContextIndex::EventTimeBucket)
+                && indexes.event_time_bucket_ms != 0
+            {
+                keys.push(context_index_key(
+                    *tenant_hash,
+                    "event_time_bucket",
+                    indexes.event_time_bucket_ms,
+                    indexes.scope_hash,
+                ));
+            }
+            if !context_index_disabled(indexes, InternalContextIndex::Entity) {
+                keys.extend(
+                    indexes
+                        .entity_hashes
+                        .iter()
+                        .copied()
+                        .filter(|hash| *hash != 0)
+                        .map(|entity_hash| {
+                            context_index_key(
+                                *tenant_hash,
+                                "entity",
+                                entity_hash,
+                                indexes.scope_hash,
+                            )
+                        }),
+                );
+            }
+            keys
+        }
         Command::ContextWriteIndexRef {
             tenant_hash,
             index_name,
@@ -9581,6 +9770,7 @@ fn is_write_command(command: &Command) -> bool {
             | Command::RiskFolSet { .. }
             | Command::ContextUpsertNode { .. }
             | Command::ContextWriteEvent { .. }
+            | Command::ContextWriteExtractedEvent { .. }
             | Command::ContextWriteIndexRef { .. }
             | Command::ContextWritePackAudit { .. }
             | Command::ContextMarkSummaryDirty { .. }
@@ -9750,6 +9940,18 @@ fn validate_command_preconditions(
             validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
             validate_context_required(*node_hash != 0, "node_hash is required")?;
             validate_context_event(event)?;
+        }
+        Command::ContextWriteExtractedEvent {
+            tenant_hash,
+            node_hash,
+            event,
+            indexes,
+            ..
+        } => {
+            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
+            validate_context_required(*node_hash != 0, "node_hash is required")?;
+            validate_context_event(event)?;
+            validate_context_extracted_indexes(event, indexes)?;
         }
         Command::ContextQueryEvents {
             tenant_hash,
@@ -10215,6 +10417,37 @@ fn validate_context_index_ref(index_ref: &ContextIndexRef) -> Result<(), Status>
         "invalid context index ref",
     )?;
     validate_context_timestamp(index_ref.primary_event_time_ms)
+}
+
+fn validate_context_extracted_indexes(
+    event: &ContextEvent,
+    indexes: &ContextExtractedEventIndexes,
+) -> Result<(), Status> {
+    if !context_index_disabled(indexes, InternalContextIndex::EventKind) {
+        validate_context_required(
+            context_event_kind_hash(event) != 0,
+            "event kind is required",
+        )?;
+    }
+    if !context_index_disabled(indexes, InternalContextIndex::Status) {
+        validate_context_required(indexes.status_hash != 0, "status_hash is required")?;
+    }
+    if !context_index_disabled(indexes, InternalContextIndex::Source) {
+        validate_context_required(indexes.source_hash != 0, "source_hash is required")?;
+    }
+    if !context_index_disabled(indexes, InternalContextIndex::EventTimeBucket) {
+        validate_context_required(
+            indexes.event_time_bucket_ms != 0,
+            "event_time_bucket_ms is required",
+        )?;
+        validate_context_timestamp(indexes.event_time_bucket_ms)?;
+    }
+    if !context_index_disabled(indexes, InternalContextIndex::Entity) {
+        for entity_hash in &indexes.entity_hashes {
+            validate_context_required(*entity_hash != 0, "entity_hashes cannot contain zero")?;
+        }
+    }
+    Ok(())
 }
 
 fn validate_context_audit_ref(audit_ref: &ContextAuditRef) -> Result<(), Status> {
@@ -10913,6 +11146,136 @@ mod tests {
         assert!(matches!(
             index_query.response,
             CommandResponse::ContextIndexRefs { refs, .. } if refs == vec![index_ref]
+        ));
+
+        let extracted_event = ContextEvent {
+            event_id_hash: 445,
+            event_time_ms: 1_781_500_000_000,
+            kind: 7,
+            event_type: 7,
+            actor_hash: 0,
+            status: 1,
+            valid_until_ms: 0,
+            confidence: 0.96,
+            importance: 0.88,
+            text: "Finance confirmed the Project 1 GPU purchase approval.".to_string(),
+            source_ref: "cursor://701".to_string(),
+            related_node_hashes: vec![42],
+            compact_attrs: Vec::new(),
+        };
+        let extracted = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextWriteExtractedEvent {
+                tenant_hash: 11,
+                node_hash: 42,
+                event: extracted_event.clone(),
+                indexes: ContextExtractedEventIndexes {
+                    scope_hash: 3001,
+                    entity_hashes: vec![501, 502],
+                    status_hash: 601,
+                    source_hash: 701,
+                    event_time_bucket_ms: 1_781_500_000_000,
+                    disabled_indexes: Vec::new(),
+                },
+                first_write_only: true,
+            },
+        });
+        assert!(matches!(
+            extracted.response,
+            CommandResponse::ContextExtractedEventWrite {
+                ref event_object_key,
+                written_index_count: 6,
+                ref index_object_keys,
+            } if event_object_key == "ctx:event:11:42" && index_object_keys.len() == 6
+        ));
+        for (index_name, value_hash, start_time_ms, end_time_ms) in [
+            ("event_kind", 7, 1_781_499_999_999, 1_781_500_000_001),
+            ("entity", 501, 1_781_499_999_999, 1_781_500_000_001),
+            ("entity", 502, 1_781_499_999_999, 1_781_500_000_001),
+            ("status", 601, 1_781_499_999_999, 1_781_500_000_001),
+            ("source", 701, 1_781_499_999_999, 1_781_500_000_001),
+            (
+                "event_time_bucket",
+                1_781_500_000_000,
+                1_781_499_999_999,
+                1_781_500_000_001,
+            ),
+        ] {
+            let query = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextQueryIndex {
+                    tenant_hash: 11,
+                    index_name: index_name.to_string(),
+                    index_value_hash: value_hash,
+                    scope_hash: 3001,
+                    start_time_ms,
+                    end_time_ms,
+                    limit: Some(10),
+                },
+            });
+            assert!(matches!(
+                query.response,
+                CommandResponse::ContextIndexRefs { refs, .. }
+                    if refs.len() == 1
+                        && refs[0].primary_node_hash == 42
+                        && refs[0].primary_event_time_ms == extracted_event.event_time_ms
+                        && refs[0].event_id_hash == extracted_event.event_id_hash
+            ));
+        }
+
+        let disabled_source = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextWriteExtractedEvent {
+                tenant_hash: 11,
+                node_hash: 43,
+                event: ContextEvent {
+                    event_id_hash: 446,
+                    event_time_ms: 1_781_500_000_010,
+                    kind: 8,
+                    event_type: 8,
+                    actor_hash: 0,
+                    status: 1,
+                    valid_until_ms: 0,
+                    confidence: 0.9,
+                    importance: 0.8,
+                    text: "A low-noise event that should not be source-indexed.".to_string(),
+                    source_ref: "cursor://701".to_string(),
+                    related_node_hashes: vec![43],
+                    compact_attrs: Vec::new(),
+                },
+                indexes: ContextExtractedEventIndexes {
+                    scope_hash: 3001,
+                    entity_hashes: Vec::new(),
+                    status_hash: 602,
+                    source_hash: 701,
+                    event_time_bucket_ms: 1_781_500_000_000,
+                    disabled_indexes: vec![InternalContextIndex::Source],
+                },
+                first_write_only: false,
+            },
+        });
+        assert!(matches!(
+            disabled_source.response,
+            CommandResponse::ContextExtractedEventWrite {
+                written_index_count: 3,
+                ..
+            }
+        ));
+        let disabled_source_query = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextQueryIndex {
+                tenant_hash: 11,
+                index_name: "source".to_string(),
+                index_value_hash: 701,
+                scope_hash: 3001,
+                start_time_ms: 1_781_500_000_009,
+                end_time_ms: 1_781_500_000_011,
+                limit: Some(10),
+            },
+        });
+        assert!(matches!(
+            disabled_source_query.response,
+            CommandResponse::ContextIndexRefs { refs, .. } if refs.is_empty()
         ));
 
         let audit = ContextPackAudit {

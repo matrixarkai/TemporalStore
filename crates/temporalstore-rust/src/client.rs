@@ -3795,6 +3795,7 @@ fn command_key(command: &Command) -> Option<&str> {
         | Command::ContextUpsertNode { .. }
         | Command::ContextGetNode { .. }
         | Command::ContextWriteEvent { .. }
+        | Command::ContextWriteExtractedEvent { .. }
         | Command::ContextQueryEvents { .. }
         | Command::ContextWriteIndexRef { .. }
         | Command::ContextQueryIndex { .. }
@@ -3835,6 +3836,11 @@ fn context_command_key(command: &Command) -> Option<String> {
             node_hash,
         } => Some(context_node_key(*tenant_hash, *node_hash)),
         Command::ContextWriteEvent {
+            tenant_hash,
+            node_hash,
+            ..
+        }
+        | Command::ContextWriteExtractedEvent {
             tenant_hash,
             node_hash,
             ..

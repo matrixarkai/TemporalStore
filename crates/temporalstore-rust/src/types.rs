@@ -295,6 +295,32 @@ pub struct ContextIndexRef {
     pub event_id_hash: u64,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum InternalContextIndex {
+    EventKind,
+    Entity,
+    Status,
+    Source,
+    EventTimeBucket,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ContextExtractedEventIndexes {
+    #[serde(default)]
+    pub scope_hash: u64,
+    #[serde(default)]
+    pub entity_hashes: Vec<u64>,
+    #[serde(default)]
+    pub status_hash: u64,
+    #[serde(default)]
+    pub source_hash: u64,
+    #[serde(default)]
+    pub event_time_bucket_ms: u64,
+    #[serde(default)]
+    pub disabled_indexes: Vec<InternalContextIndex>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContextAuditRef {
     pub node_hash: u64,
@@ -1316,6 +1342,15 @@ pub enum Command {
         #[serde(default)]
         first_write_only: bool,
     },
+    ContextWriteExtractedEvent {
+        tenant_hash: u64,
+        node_hash: u64,
+        event: ContextEvent,
+        #[serde(default)]
+        indexes: ContextExtractedEventIndexes,
+        #[serde(default)]
+        first_write_only: bool,
+    },
     ContextQueryEvents {
         tenant_hash: u64,
         node_hash: u64,
@@ -1604,6 +1639,11 @@ pub enum CommandResponse {
     },
     ContextObjectKey {
         object_key: String,
+    },
+    ContextExtractedEventWrite {
+        event_object_key: String,
+        index_object_keys: Vec<String>,
+        written_index_count: usize,
     },
     ContextEvents {
         object_key: String,

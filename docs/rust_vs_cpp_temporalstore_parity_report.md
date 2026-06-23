@@ -46,6 +46,10 @@ contract:
   directly: extract a LOCOMO-style turn, write entity/segment/index records, query the source
   secondary index, retrieve L0/L1/L2 blocks, inject them into `<context>`, and verify
   `ContextPackAudit` selected refs.
+- `context_extracted_event_default_index_fanout` now translates the C++
+  `WRITE_EXTRACTED_EVENT` debug tests: Rust writes the event and fans out default internal
+  `event_kind`, `entity`, `status`, `source`, and `event_time_bucket` indexes, while disabled
+  indexes do not return query refs.
 - Packed LOCOMO full-source replay no longer fails Rust ingestion on oversized packed source
   titles. The harness compacts node metadata to C++/Rust Context validation limits while preserving
   full segment text and source refs for retrieval scoring.
@@ -61,13 +65,13 @@ current Rust implementation:
 | `ContextCompressionModel` | model id `17`, `WRITE_COMPRESSION_EVENT`, `QUERY_COMPRESSION_EVENTS`, `COMPRESS_EVENTS` | Implemented as `ContextCompressionEvent`, direct write/query, and deterministic source-event compression. |
 | `ContextEntityModel` | model id `18`, `UPSERT_ENTITY`, `GET_ENTITY`, `QUERY_ENTITIES` | Implemented as Rust `ContextEntity` plus `ContextUpsertEntity`, `ContextGetEntity`, and `ContextQueryEntities`; covered by translated C++ round-trip and validation tests. |
 | Integrated node context | `QUERY_NODE_CONTEXT` returns node, latest summary, and cold-window compression summaries | Implemented as `ContextQueryNodeContext`. |
-| Extracted event fanout | `WRITE_EXTRACTED_EVENT` writes events plus internal indexes for entity/status/source/time bucket | Rust writes event plus source index in the benchmark workflow, but does not yet expose the full C++ extracted-index fanout. |
+| Extracted event fanout | `WRITE_EXTRACTED_EVENT` writes events plus internal indexes for entity/status/source/time bucket | Implemented as Rust `ContextWriteExtractedEvent` with default `event_kind`, `entity`, `status`, `source`, and `event_time_bucket` fanout plus disabled-index support. |
 
 So the honest current state is: Rust is benchmark-compatible for recent Context ingestion/retrieval
-evidence and shared corpus validation, but it is not yet C++ feature-complete for the newest
-Context storage models. The next parity slice should add Rust-native `WRITE_EXTRACTED_EVENT`
-fanout for entity/status/source/time-bucket internal indexes and convert more C++ static gates into
-native executable shared cases.
+evidence and shared corpus validation, and the newest C++ Context storage/debug models now have
+Rust-native equivalents through `ContextWriteExtractedEvent`, entity, child, embedding, summary,
+compression, and node-context commands. Remaining parity work is mostly broader executable C++
+runner coverage, live-reader benchmark evidence, and deployment-scale production gates.
 
 ## Readiness Evidence Fields
 
@@ -118,7 +122,6 @@ They are not VikingMem paper-comparable until a live reader endpoint run succeed
 - Live GPT-4o-mini/OpenAI-compatible reader evidence for VikingMem-comparable benchmark claims.
 - Native C++ execution for many shared corpus cases that are currently C++ static surface gates,
   including the recent ContextEntity/ContextSegment benchmark-injection contract.
-- Rust implementation of C++ `WRITE_EXTRACTED_EVENT` default/disabled internal-index fanout.
 - Continued migration of Rust-local product tests into the shared corpus.
 - Any future live ByteStore/S3 requirement, if brought back into scope, needs separate follower-cursor
   and Raft-snapshot retention evidence.

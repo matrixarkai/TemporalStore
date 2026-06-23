@@ -181,6 +181,28 @@ Command::ContextWriteEvent { first_write_only: false }
 
 Purpose: secondary lookup from source or extracted attributes back to the primary event timeline.
 
+Rust also mirrors the C++ `WRITE_EXTRACTED_EVENT` debug flow. A single
+`ContextWriteExtractedEvent` call writes the event and fans out default internal indexes:
+
+```json
+{
+  "event_object_key": "ctx:event:<tenant_hash>:<node_hash>",
+  "written_indexes": [
+    "event_kind",
+    "entity",
+    "status",
+    "source",
+    "event_time_bucket"
+  ],
+  "disabled_indexes": [
+    "source"
+  ]
+}
+```
+
+The translated C++ test verifies six index writes for an event with two entity hashes, and verifies
+that a disabled source index returns zero refs when queried.
+
 For the benchmark replay, Rust writes a source secondary index:
 
 ```json
@@ -317,6 +339,7 @@ answer-term match.
 | Batched ingestion plus extraction | `ingest_extract_context` |
 | Durable node write | `Command::ContextUpsertNode` |
 | Durable timestamped segment write | `Command::ContextWriteEvent` |
+| Durable extracted-event fanout | `Command::ContextWriteExtractedEvent` |
 | Durable secondary index write | `Command::ContextWriteIndexRef` |
 | Dirty summary marker | `Command::ContextMarkSummaryDirty` |
 | Retrieval | `retrieve_context` |

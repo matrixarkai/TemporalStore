@@ -213,6 +213,7 @@ fn response_kind(response: &CommandResponse) -> &'static str {
         CommandResponse::IpsSnapshotReport { .. } => "ips_snapshot_report",
         CommandResponse::ContextNode { .. } => "context_node",
         CommandResponse::ContextObjectKey { .. } => "context_object_key",
+        CommandResponse::ContextExtractedEventWrite { .. } => "context_extracted_event_write",
         CommandResponse::ContextEvents { .. } => "context_events",
         CommandResponse::ContextIndexRefs { .. } => "context_index_refs",
         CommandResponse::ContextPackAudits { .. } => "context_pack_audits",

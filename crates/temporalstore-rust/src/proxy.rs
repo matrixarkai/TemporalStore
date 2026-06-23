@@ -1731,6 +1731,7 @@ fn proxy_command_is_write(command: &Command) -> bool {
             | Command::RiskFolSet { .. }
             | Command::ContextUpsertNode { .. }
             | Command::ContextWriteEvent { .. }
+            | Command::ContextWriteExtractedEvent { .. }
             | Command::ContextWriteIndexRef { .. }
             | Command::ContextWritePackAudit { .. }
             | Command::ContextMarkSummaryDirty { .. }
@@ -1805,6 +1806,7 @@ fn proxy_command_key(command: &Command) -> Option<&str> {
         | Command::ContextUpsertNode { .. }
         | Command::ContextGetNode { .. }
         | Command::ContextWriteEvent { .. }
+        | Command::ContextWriteExtractedEvent { .. }
         | Command::ContextQueryEvents { .. }
         | Command::ContextWriteIndexRef { .. }
         | Command::ContextQueryIndex { .. }
@@ -1841,6 +1843,11 @@ fn proxy_command_routing_key(command: &Command) -> Option<String> {
                 node_hash,
             } => Some(format!("ctx:node:{tenant_hash}:{node_hash}")),
             Command::ContextWriteEvent {
+                tenant_hash,
+                node_hash,
+                ..
+            }
+            | Command::ContextWriteExtractedEvent {
                 tenant_hash,
                 node_hash,
                 ..
