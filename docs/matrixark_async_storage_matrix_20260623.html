@@ -1,0 +1,76 @@
+<html><head><meta charset="utf-8"><title>MatrixArk Async Storage Matrix</title><style>body{font-family:Arial,sans-serif;max-width:1120px;margin:32px auto;line-height:1.45;color:#17202a}table{border-collapse:collapse;width:100%;font-size:14px}td,th{border:1px solid #d0d7de;padding:6px 8px;text-align:left}th{background:#f6f8fa}code{background:#f6f8fa;padding:2px 4px;border-radius:4px}pre{background:#f6f8fa;padding:12px;overflow:auto;white-space:pre-wrap}</style></head><body>
+<h1>MatrixArk Async Storage Multi-Node Benchmark Matrix - 2026-06-23</h1>
+
+<h2>Purpose</h2>
+
+<p>This run follows the staged plan for high-throughput MatrixArk context ingestion on C++ TemporalStore:</p>
+
+<p>1. async storage plus three data nodes, no data Raft;</p>
+<p>2. async storage plus sharded MatrixArk prefixes;</p>
+<p>3. async storage plus larger record bundles as the current native-batch stand-in;</p>
+<p>4. Raft storage gate after non-Raft throughput is stable.</p>
+
+<p>Async oplog remains the recommended high-throughput context-ingestion setting. Raft is treated as the HA/correctness profile, not the first throughput tuning knob.</p>
+
+<p>Result root: `/tmp/matrixark-async-storage-matrix-20260623_161434`</p>
+
+<h2>Results</h2>
+
+<table>
+<tr><th>Case</th><th>Status</th><th>Questions</th><th>Turns</th><th>Throughput turns/sec</th><th>p50 retrieval ms</th><th>p95 retrieval ms</th><th>Context recall</th><th>Judge score</th><th>Compression hidden</th><th>Artifacts</th></tr>
+<tr><td>locomo_async_3node</td><td>completed</td><td>100</td><td>5882</td><td>638.24</td><td>92.36</td><td>225.14</td><td>1.0000</td><td>0.6200</td><td>0</td><td>/tmp/matrixark-async-storage-matrix-20260623_161434/locomo_async_3node</td></tr>
+<tr><td>locomo_async_3node_shard0</td><td>completed</td><td>40</td><td>5882</td><td>620.14</td><td>160.63</td><td>220.92</td><td>1.0000</td><td>0.5750</td><td>0</td><td>/tmp/matrixark-async-storage-matrix-20260623_161434/locomo_async_3node_shard0</td></tr>
+<tr><td>locomo_async_3node_shard1</td><td>completed</td><td>40</td><td>5882</td><td>600.14</td><td>101.07</td><td>231.25</td><td>1.0000</td><td>0.5750</td><td>0</td><td>/tmp/matrixark-async-storage-matrix-20260623_161434/locomo_async_3node_shard1</td></tr>
+<tr><td>locomo_async_3node_batch_bundle</td><td>completed</td><td>100</td><td>5882</td><td>566.88</td><td>97.85</td><td>233.27</td><td>1.0000</td><td>0.6200</td><td>0</td><td>/tmp/matrixark-async-storage-matrix-20260623_161434/locomo_async_3node_batch_bundle</td></tr>
+<tr><td>raft_storage_gate</td><td>not_run_missing_binary</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td>/tmp/matrixark-async-storage-matrix-20260623_161434/raft_storage_gate</td></tr>
+</table>
+
+<h2>What This Proves</h2>
+
+<p>&bull; The C++ TemporalStore direct SDK path can run MatrixArk LOCOMO extraction, ingestion, retrieval, packing, and audit against a three-data-node async deployment.</p>
+<p>&bull; The 3-node async q100 LOCOMO run completed all 5,882 turns with 638.24 turns/sec ingestion throughput, 92.36 ms p50 retrieval, and 225.14 ms p95 retrieval.</p>
+<p>&bull; Sharded prefixes completed cleanly in two independent q40 runs. This is the right direction for reducing hot-prefix pressure and making future partition-aware routing straightforward.</p>
+<p>&bull; The larger record-bundle case completed q100 and demonstrates the current batch-append stand-in. Native server-side batch append is still the better long-term storage API.</p>
+<p>&bull; The Raft gate did not run in this environment because the `replication_smoke_example` binary is missing from the current release build tree. That is a build-artifact gap, not a failed Raft correctness result.</p>
+
+<h2>LongMemEval Follow-Up</h2>
+
+<p>The same three-data-node async deployment also completed a LongMemEval_s q20/all-session slice:</p>
+
+<table>
+<tr><th>Dataset</th><th>Questions</th><th>Sessions</th><th>Turns</th><th>Throughput turns/sec</th><th>p50 retrieval ms</th><th>p95 retrieval ms</th><th>Context recall</th><th>Judge score</th><th>Compression hidden</th></tr>
+<tr><td>LongMemEval_s</td><td>20</td><td>980</td><td>10135</td><td>154.83</td><td>295.69</td><td>483.56</td><td>1.0000</td><td>0.6000</td><td>0</td></tr>
+</table>
+
+<p>Artifacts are under `/tmp/matrixark-async-storage-longmem-q20-3node-/longmemeval_s_async_3node`. The prior one-node q100 LongMemEval run dropped the local server connection; this q20 result confirms the multi-node async shape is viable and should be scaled next to q50/q100 with prefix sharding and native batch append.</p>
+
+<h2>Next Steps</h2>
+
+<p>1. Build or restore `replication_smoke_example` and rerun the Raft storage gate.</p>
+<p>2. Add a native MatrixArk append-batch API in C++ so bundles become one server-side append instead of hash-field bundles.</p>
+<p>3. Repeat LongMemEval slices with the same 3-node async settings.</p>
+<p>4. Add partition-aware prefix sharding once the C++ context APIs expose routing hints.</p>
+
+<h2>Reproduce</h2>
+
+<pre><code>
+cd /root/src/github-services/TemporalStore
+
+BUILD_TYPE=Release \
+
+DATASET=locomo \
+
+DATA_PATH=/root/matrixark_benchmarks/data/locomo10.json \
+
+QUESTION_LIMIT=100 \
+
+BATCH_SIZE=40 \
+
+SHARD_COUNT=2 SHARD_QUESTION_LIMIT=40 RAFT_OPS=500 RAFT_THREAD_LIST=1 \
+
+RUN_3NODE=1 RUN_SHARDED=1 RUN_BATCH=1 RUN_RAFT=1 \
+
+bash tools/run_matrixark_async_storage_matrix.sh
+
+</code></pre>
+</body></html>

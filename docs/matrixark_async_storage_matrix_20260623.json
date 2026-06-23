@@ -1,0 +1,80 @@
+{
+  "generated_at": "2026-06-23T23:18:04.805796+00:00",
+  "result_root": "/tmp/matrixark-async-storage-matrix-20260623_161434",
+  "summaries": [
+    {
+      "answer_support_hit": 0.62,
+      "artifact_dir": "/tmp/matrixark-async-storage-matrix-20260623_161434/locomo_async_3node",
+      "compression_answer_hidden_count": 0,
+      "context_recall": 1.0,
+      "dataset": "locomo",
+      "final_judge_score": 0.62,
+      "ingestion_elapsed_ms": 9216,
+      "name": "locomo_async_3node",
+      "p50_retrieval_ms": 92.36127798794769,
+      "p95_retrieval_ms": 225.14019400114194,
+      "questions": 100,
+      "sessions": 272,
+      "status": "completed",
+      "throughput_turns_per_sec": 638.238,
+      "turns": 5882
+    },
+    {
+      "answer_support_hit": 0.575,
+      "artifact_dir": "/tmp/matrixark-async-storage-matrix-20260623_161434/locomo_async_3node_shard0",
+      "compression_answer_hidden_count": 0,
+      "context_recall": 1.0,
+      "dataset": "locomo",
+      "final_judge_score": 0.575,
+      "ingestion_elapsed_ms": 9485,
+      "name": "locomo_async_3node_shard0",
+      "p50_retrieval_ms": 160.6268860050477,
+      "p95_retrieval_ms": 220.9233189933002,
+      "questions": 40,
+      "sessions": 272,
+      "status": "completed",
+      "throughput_turns_per_sec": 620.137,
+      "turns": 5882
+    },
+    {
+      "answer_support_hit": 0.575,
+      "artifact_dir": "/tmp/matrixark-async-storage-matrix-20260623_161434/locomo_async_3node_shard1",
+      "compression_answer_hidden_count": 0,
+      "context_recall": 1.0,
+      "dataset": "locomo",
+      "final_judge_score": 0.575,
+      "ingestion_elapsed_ms": 9801,
+      "name": "locomo_async_3node_shard1",
+      "p50_retrieval_ms": 101.07071499805897,
+      "p95_retrieval_ms": 231.25286199501716,
+      "questions": 40,
+      "sessions": 272,
+      "status": "completed",
+      "throughput_turns_per_sec": 600.143,
+      "turns": 5882
+    },
+    {
+      "answer_support_hit": 0.62,
+      "artifact_dir": "/tmp/matrixark-async-storage-matrix-20260623_161434/locomo_async_3node_batch_bundle",
+      "compression_answer_hidden_count": 0,
+      "context_recall": 1.0,
+      "dataset": "locomo",
+      "final_judge_score": 0.62,
+      "ingestion_elapsed_ms": 10376,
+      "name": "locomo_async_3node_batch_bundle",
+      "p50_retrieval_ms": 97.84553499775939,
+      "p95_retrieval_ms": 233.26588101917878,
+      "questions": 100,
+      "sessions": 272,
+      "status": "completed",
+      "throughput_turns_per_sec": 566.885,
+      "turns": 5882
+    },
+    {
+      "artifact_dir": "/tmp/matrixark-async-storage-matrix-20260623_161434/raft_storage_gate",
+      "name": "raft_storage_gate",
+      "note": "missing executable: /root/src/github-services/TemporalStore/build-ubuntu22/release/src/client/example/replication_smoke_example",
+      "status": "not_run_missing_binary"
+    }
+  ]
+}

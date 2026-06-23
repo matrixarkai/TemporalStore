@@ -1,0 +1,23 @@
+{
+  "generated_at": "2026-06-23T23:19:39.724670+00:00",
+  "result_root": "/tmp/matrixark-async-storage-longmem-q20-3node-",
+  "summaries": [
+    {
+      "answer_support_hit": 0.6,
+      "artifact_dir": "/tmp/matrixark-async-storage-longmem-q20-3node-/longmemeval_s_async_3node",
+      "compression_answer_hidden_count": 0,
+      "context_recall": 1.0,
+      "dataset": "longmemeval_s",
+      "final_judge_score": 0.6,
+      "ingestion_elapsed_ms": 65459,
+      "name": "longmemeval_s_async_3node",
+      "p50_retrieval_ms": 295.68719599046744,
+      "p95_retrieval_ms": 483.56308799702674,
+      "questions": 20,
+      "sessions": 980,
+      "status": "completed",
+      "throughput_turns_per_sec": 154.83,
+      "turns": 10135
+    }
+  ]
+}
