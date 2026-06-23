@@ -51,12 +51,20 @@ const apiKeyForm = document.querySelector(".access-form");
 const updateApiKeyPayload = () => {
   if (!apiKeyPayload || !apiKeyForm) return;
   const checkedScopes = Array.from(apiKeyForm.querySelectorAll('input[type="checkbox"]:checked')).map((item) => item.value);
+  const scopeProfiles = {
+    agent_hook: ["context:ingest", "context:retrieve", "context:feedback"],
+    session_batch_extractor: ["context:ingest", "context:replay"],
+    resource_skill_ingestor: ["resource:ingest", "context:ingest"],
+    tenant_admin: ["admin:account", "admin:user", "admin:api_key", "admin:audit"],
+  };
+  const role = document.querySelector("#request-role")?.value || "agent_service";
+  const recommendedScopes = scopeProfiles[role] || checkedScopes;
   const payload = {
     account_id: document.querySelector("#request-account")?.value || "acct_acme",
     tenant_id: document.querySelector("#request-tenant")?.value || "tenant_prod",
-    role: document.querySelector("#request-role")?.value || "agent_service",
-    display_name: `${document.querySelector("#request-role")?.value || "agent_service"} key`,
-    scopes: checkedScopes,
+    role,
+    display_name: `${role} key`,
+    scopes: recommendedScopes,
     allowed_user_ids: [document.querySelector("#request-user")?.value || "alice"].filter(Boolean),
     allowed_session_ids: [document.querySelector("#request-session")?.value || ""].filter(Boolean),
     expires_at_ms: 4102444800000,

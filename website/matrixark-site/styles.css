@@ -1440,3 +1440,34 @@ th {
     grid-template-columns: 1fr;
   }
 }
+
+
+.reference-section {
+  background: #eef5f8;
+}
+
+.access-reference-grid {
+  max-width: 1180px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.access-reference-grid article {
+  min-height: 210px;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--white);
+}
+
+.access-reference-grid h3 {
+  margin-top: 0;
+}
+
+@media (max-width: 1040px) {
+  .access-reference-grid {
+    grid-template-columns: 1fr;
+  }
+}

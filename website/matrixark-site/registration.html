@@ -111,6 +111,9 @@
               <select id="request-role">
                 <option value="agent_service">Agent service</option>
                 <option value="mcp_server">MCP server</option>
+                <option value="agent_hook">Agent hook</option>
+                <option value="session_batch_extractor">Session batch extractor</option>
+                <option value="resource_skill_ingestor">Resource / skill ingestor</option>
                 <option value="batch_ingestor">Batch ingestor</option>
                 <option value="tenant_admin">Tenant admin</option>
               </select>
@@ -136,6 +139,32 @@
               <div><strong>Offboarding</strong><span>disable user or revoke key</span></div>
             </div>
           </aside>
+        </div>
+      </section>
+
+      <section class="section access-section reference-section">
+        <div class="section-heading">
+          <p class="eyebrow">OpenViking/VikingMem lessons</p>
+          <h2>Registration is designed for agent context systems, not only ordinary API access.</h2>
+          <p>OpenViking shows why agents need organized memories, resources, and skills instead of flat chunks. VikingMem shows why long-running applications need session batches, event/entity memory, operators, temporal compression, and time-aware recall. MatrixArk keeps the caller surface simple while adding account, user, session, and key governance around those flows.</p>
+        </div>
+        <div class="access-reference-grid">
+          <article>
+            <h3>Agent hook keys</h3>
+            <p>Issue scoped keys for Codex/Cursor hooks that send one message at a time, retrieve ContextPacks before the LLM call, and ingest assistant/tool output after the call.</p>
+          </article>
+          <article>
+            <h3>Session batch keys</h3>
+            <p>Issue batch-ingestion keys for VikingMem-style session windows, rolling commits, idle-time commits, and one-pass extraction across 20-message logical batches.</p>
+          </article>
+          <article>
+            <h3>Resource and skill keys</h3>
+            <p>Issue resource-ingestion keys for OpenViking-style files, runbooks, skills, and operational knowledge, then let MatrixArk attach L0/L1 summaries and TemporalStore indexes.</p>
+          </article>
+          <article>
+            <h3>Governance keys</h3>
+            <p>Issue admin keys separately for account status, user lifecycle, key rotation, SSO mapping, audit replay, and emergency tenant disablement.</p>
+          </article>
         </div>
       </section>
 
@@ -172,7 +201,7 @@
         </div>
         <div class="contact-panel">
           <strong>Apply now</strong>
-          <p>Cloud subscription for end users and teams. Local/open-source TemporalStore setup for developers and on-prem enterprise pilots.</p>
+          <p>Cloud subscription for end users and teams. Local/open-source TemporalStore setup for developers and on-prem enterprise pilots. API-key roles can follow the OpenViking/VikingMem pattern: hook, retrieval, resource ingestion, session batch extraction, feedback, replay, and admin governance.</p>
           <a class="button primary" href="mailto:founders@matrixark.ai?subject=MatrixArk%20API%20key%20request">founders@matrixark.ai</a>
         </div>
       </section>
