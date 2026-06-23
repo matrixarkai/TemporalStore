@@ -966,6 +966,46 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         self.assertEqual(deferred["status"], "deferred")
         self.assertEqual(deferred["pending_event_count"], 1)
 
+    def test_segment_detection_keeps_generic_business_facts(self):
+        scope = {"user_id": "segment-user", "session_id": "business-segment-session"}
+        result = self.call_tool(
+            "matrixark_batch_extract",
+            {
+                "messages": [
+                    {"role": "user", "content": "Hi"},
+                    {"role": "user", "content": "The launch checklist requires two reviewers before release."},
+                    {"role": "assistant", "content": "For the game algorithm, minimax scores moves for an opponent."},
+                    {"role": "user", "content": "Priya owns the launch decision and the deadline is Friday."},
+                    {"role": "assistant", "content": "Thanks"},
+                ],
+                "scope": scope,
+                "threshold_messages": 1,
+            },
+        )
+        self.assertIn(result["status"], {"accepted", "committed"})
+        self.assertGreaterEqual(result["segments_written"], 2)
+
+        replay = self.call_tool("matrixark_replay", {"context_pack_id": "debug"})
+        segments = [record for record in replay["events"] if record.get("record_type") == "context_segment"]
+        task_segments = [segment for segment in segments if segment.get("topic") == "task_decision"]
+        self.assertTrue(task_segments)
+        task_text = " ".join(segment.get("text", "") for segment in task_segments)
+        self.assertIn("requires two reviewers", task_text)
+        self.assertIn("deadline is Friday", task_text)
+        self.assertTrue(all(segment.get("source_event_ids") for segment in task_segments))
+
+        pack = self.call_tool(
+            "matrixark_retrieve",
+            {
+                "query": "Who owns the launch checklist and what review is required?",
+                "scope": scope,
+                "max_context_tokens": 80,
+            },
+        )
+        self.assertFalse(pack["insufficient_context"])
+        selected_topics = {ref.get("topic") for ref in pack["selected_refs"] if ref.get("ref_type") == "segment"}
+        self.assertIn("task_decision", selected_topics)
+
     def test_vikingmem_style_twenty_message_session_window_auto_extracts_once(self):
         scope = {"user_id": "batch-user", "session_id": "vikingmem-threshold-session"}
         messages = []
