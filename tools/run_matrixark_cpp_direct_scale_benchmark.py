@@ -6,6 +6,7 @@ import json
 import os
 import statistics
 import subprocess
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -44,6 +45,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--storage-prefix", default=f"matrixark:cpp:scale:{int(time.time() * 1000)}")
     parser.add_argument("--request-timeout-ms", type=int, default=60000)
     parser.add_argument("--io-timeout-ms", type=int, default=60000)
+    parser.add_argument("--retrieval-deadline-ms", type=int, default=int(os.environ.get("MATRIXARK_RETRIEVAL_TIMEOUT_MS", "0") or "0"))
+    parser.add_argument("--disable-service-pool", action="store_true")
     parser.add_argument("--artifact-dir", default=".local/context-debug/cpp-direct-scale")
     parser.add_argument("--report-json", default="")
     return parser.parse_args()
@@ -95,6 +98,23 @@ def service(args: argparse.Namespace, prefix: str) -> MatrixArkMcpServer:
         io_timeout_ms=args.io_timeout_ms,
     )
     return MatrixArkMcpServer(adapter)
+
+
+class ThreadLocalServicePool:
+    def __init__(self, args: argparse.Namespace) -> None:
+        self.args = args
+        self.local = threading.local()
+
+    def get(self, prefix: str) -> MatrixArkMcpServer:
+        cache = getattr(self.local, "servers", None)
+        if cache is None:
+            cache = {}
+            self.local.servers = cache
+        server = cache.get(prefix)
+        if server is None:
+            server = service(self.args, prefix)
+            cache[prefix] = server
+        return server
 
 
 def generated_messages(op_index: int, batch_size: int) -> list[Json]:
@@ -160,8 +180,8 @@ def ingest_op(args: argparse.Namespace, op_index: int) -> Json:
     }
 
 
-def retrieve_op(args: argparse.Namespace, ingest_result: Json, op_index: int) -> Json:
-    server = service(args, str(ingest_result["storage_prefix"]))
+def retrieve_op(args: argparse.Namespace, ingest_result: Json, op_index: int, pool: ThreadLocalServicePool | None = None) -> Json:
+    server = pool.get(str(ingest_result["storage_prefix"])) if pool is not None else service(args, str(ingest_result["storage_prefix"]))
     topic = ["approval", "preference", "location", "role", "plan"][op_index % 5]
     query = {
         "approval": "Who approved the GPU budget and what amount is current?",
@@ -182,7 +202,9 @@ def retrieve_op(args: argparse.Namespace, ingest_result: Json, op_index: int) ->
                 "top_k_per_layer": 8,
                 "max_children_scored_per_parent": 10000,
                 "auxiliary_quota": 4,
+                "deadline_ms": args.retrieval_deadline_ms,
             },
+            "deadline_ms": args.retrieval_deadline_ms,
         },
     )
     latency_ms = (time.perf_counter() - started) * 1000.0
@@ -197,6 +219,8 @@ def retrieve_op(args: argparse.Namespace, ingest_result: Json, op_index: int) ->
         "total_prompt_context_tokens": pack.get("total_prompt_context_tokens", 0),
         "question_type": pack.get("question_type", ""),
         "insufficient_context": pack.get("insufficient_context", False),
+        "partial_context_pack": bool(pack.get("partial_context_pack")),
+        "quality_warnings": pack.get("quality_warnings", []),
     }
 
 
@@ -266,6 +290,10 @@ def write_report(report: Json, artifact_dir: Path) -> None:
         f"- retrieve QPS: `{report['retrieve']['qps']}`",
         f"- ingest errors: `{len(report['ingest']['errors'])}`",
         f"- retrieve errors: `{len(report['retrieve']['errors'])}`",
+        f"- service pool: `{report['optimizations']['service_pool']}`",
+        f"- direct record cache: `{report['optimizations']['direct_record_cache']}`",
+        f"- embedding vector cache: `{report['optimizations']['embedding_vector_cache']}`",
+        f"- retrieval deadline ms: `{report['optimizations']['retrieval_deadline_ms']}`",
         "",
         "## Latency",
         "",
@@ -279,6 +307,8 @@ def write_report(report: Json, artifact_dir: Path) -> None:
         "- Retrieve operation = new process-local adapter reads the persisted C++ TemporalStore prefix and runs tree/summary/index/event retrieval into a ContextPack.",
         "- Each ingest worker uses its own storage prefix. This avoids the current Python append-log count key becoming a write serialization artifact and gives a cleaner C++ storage + MatrixArk pipeline cap.",
         "- This is not raw C++ engine QPS. It includes Python orchestration and OSS embedding/query-understanding work.",
+        "- Optimized mode reuses thread-local MatrixArk services/adapters and uses a C++ direct-record cache keyed by `record_count` watermark.",
+        "- Native C++ context API pushdown is still a separate C++ API task; this runner exercises the current direct SDK storage boundary.",
         "",
         "## C++ Service Snapshot",
         "",
@@ -335,8 +365,9 @@ def main() -> int:
     )
     retrieve_inputs = ingest_results or []
     if retrieve_inputs:
+        retrieve_pool = None if args.disable_service_pool else ThreadLocalServicePool(args)
         def retrieve_by_index(index: int) -> Json:
-            return retrieve_op(args, retrieve_inputs[index % len(retrieve_inputs)], index)
+            return retrieve_op(args, retrieve_inputs[index % len(retrieve_inputs)], index, retrieve_pool)
         retrieve_results, retrieve_errors, retrieve_elapsed = run_phase(
             args.retrieve_ops,
             args.retrieve_concurrency,
@@ -358,6 +389,13 @@ def main() -> int:
         "embedding_provider": os.environ.get("MATRIXARK_EMBEDDING_PROVIDER"),
         "embedding_model": os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH") or os.environ.get("MATRIXARK_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"),
         "understanding_provider": os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER"),
+        "optimizations": {
+            "service_pool": not args.disable_service_pool,
+            "direct_record_cache": True,
+            "embedding_vector_cache": True,
+            "retrieval_deadline_ms": args.retrieval_deadline_ms,
+            "native_context_api_pushdown": "not_yet: Python direct adapter still performs MatrixArk tree/index scoring",
+        },
         "model_warmup_ms": model_warmup_ms,
         "process_snapshot_before": process_before,
         "process_snapshot_after": process_snapshot(),
