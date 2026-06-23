@@ -797,10 +797,12 @@ def semantic_saliency_score(text: str) -> float:
     score = 0.2
     if re.search(r"\b(recursion|base case|merge sort|algorithm|complexity|efficiency|dynamic programming|graph|game)\b", lower):
         score += 0.55
-    if re.search(r"\b(prefer|favorite|approved|budget|plan|correction|instead|current|remember|important|moved|moving|located|location|live|lives|staying)\b", lower):
+    if re.search(r"\b(prefer|favorite|approved|budget|plan|correction|instead|current|remember|important|moved|moving|located|location|live|lives|staying|deadline|owner|owns|reviewer|checklist|decision|decided|require|requires|required|incident|runbook|alert|outage|rollback|metric|latency|p95|p99|sla|policy|risk|blocked|blocker)\b", lower):
         score += 0.45
-    if re.search(r"\b(is|means|because|therefore|warning|avoid|must|should|cannot|can)\b", lower):
+    if re.search(r"\b(is|means|because|therefore|warning|avoid|must|should|cannot|can|require|requires|required|blocked|blocker)\b", lower):
         score += 0.2
+    if re.search(r"\b(\d{2,}|monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december)\b", lower):
+        score += 0.1
     if len(tokens(text)) >= 8:
         score += 0.15
     return min(score, 1.0)
@@ -814,6 +816,9 @@ def infer_segment_topic(text: str) -> str:
         ("preference", ["prefer", "favorite", "likes", "loves"]),
         ("location", ["moved", "moving", "located", "location", "live", "lives", "staying"]),
         ("approval_budget", ["approved", "approval", "budget", "cost", "purchase"]),
+        ("incident_runbook", ["incident", "runbook", "alert", "outage", "rollback", "postmortem"]),
+        ("task_decision", ["decision", "decided", "owner", "owns", "deadline", "checklist", "reviewer", "require", "requires", "required"]),
+        ("metric_sla", ["metric", "latency", "p95", "p99", "qps", "sla", "error rate"]),
         ("plan_status", ["plan", "current", "status", "going to", "will"]),
         ("correction", ["correction", "instead", "wrong", "changed", "updated"]),
     ]

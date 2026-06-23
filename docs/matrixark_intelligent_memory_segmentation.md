@@ -38,7 +38,11 @@ Phase 2: event-centric partitioning
 ```
 
 The production extractor can emit these tuples directly from GPT-4o-mini/OSS.
-The local implementation uses deterministic topic and saliency rules for tests.
+The local implementation uses deterministic topic and saliency rules for tests,
+but it is deliberately not limited to a few demo topics: it keeps generic
+business/resource facts such as owners, deadlines, reviewer requirements,
+runbooks, incidents, and metrics so useful context is not pruned just because it
+is outside the original keyword set.
 
 ## Record Shape
 
