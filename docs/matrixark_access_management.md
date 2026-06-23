@@ -47,9 +47,11 @@ stricter and is strongly recommended for enterprise deployments.
 ## Account, Tenant, User, Session
 
 - `account_id`: assigned by MatrixArk or the enterprise control plane. It is the
-  commercial and governance boundary.
+  commercial and governance boundary. The newest account record controls whether
+  context APIs are allowed.
 - `tenant_id`: assigned by MatrixArk or the enterprise control plane. It is the
-  deployment/workspace boundary under an account.
+  deployment/workspace boundary under an account. The newest tenant record can
+  disable one workspace without disabling the whole account.
 - `user_id`: usually comes from the customer app, Codex/Cursor-like hook, or SSO
   mapping. MatrixArk does not invent it during normal context ingestion.
 - `session_id`: usually comes from the agent thread/run. If it is missing,
@@ -82,6 +84,8 @@ Policy:
   `session_id`; omitted or different values are rejected before TemporalStore is
   touched.
 - `expires_at_ms` must be a future Unix timestamp in milliseconds.
+- API key scopes are validated against MatrixArk's known context/admin scopes;
+  unknown scopes are rejected at creation time.
 - Rotated keys preserve scopes, role, display name, user allow-list, session
   allow-list, and expiry.
 - Disabled users are blocked for API-key-authenticated context calls even if the
@@ -121,6 +125,8 @@ A tenant admin API key can manage users and keys only inside its own
 | Tool | Purpose |
 |---|---|
 | `matrixark_admin_create_account` | Create account and default tenant records. |
+| `matrixark_admin_update_account` | Update account/tenant metadata or active/disabled status. |
+| `matrixark_admin_list_accounts` | List visible account/tenant metadata. |
 | `matrixark_admin_create_user` | Register a MatrixArk user under an account/tenant. |
 | `matrixark_admin_update_user` | Update user metadata or disable/enable a user. |
 | `matrixark_admin_list_users` | List user metadata for an account/tenant. |
@@ -157,6 +163,24 @@ matrixark_replay
 - Scoped MatrixArk API keys are required for context and admin operations.
 - Revoked or expired keys stop working immediately because the newest
   append-only key state is authoritative.
+
+## Account And Tenant Status Enforcement
+
+Accounts and tenants are append-only records. The newest record is authoritative.
+A disabled account or tenant blocks API-key-authenticated context operations,
+but admin operations can still inspect or repair metadata.
+
+```json
+{
+  "account_id": "acct_acme",
+  "tenant_id": "tenant_eng",
+  "account_status": "active",
+  "tenant_status": "disabled"
+}
+```
+
+This gives enterprises a coarse off switch for a customer, environment,
+workspace, department, or regulated tenant without deleting historical context.
 
 ## User Status Enforcement
 
@@ -251,7 +275,8 @@ changing TemporalStore data models.
 
 1. Create one account per customer or business unit.
 2. Create one tenant per environment/workspace, such as `prod`, `staging`, or a
-   regulated department.
+   regulated department. Disable a tenant for isolation incidents; disable an
+   account for full customer suspension.
 3. Register users from the customer app or SSO provider.
 4. Issue separate API keys for hooks, MCP servers, batch ingestion, and admin
    automation.
