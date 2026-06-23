@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
+import html
 import json
+import os
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -75,9 +78,22 @@ def compact_records(records: list[Json], record_type: str, limit: int = 12) -> l
     return out
 
 
-def run() -> Json:
-    tmpdir = tempfile.TemporaryDirectory()
-    event_log = Path(tmpdir.name) / "matrixark-locomo-debug.jsonl"
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run LOCOMO-style MatrixArk debug flow and persist data-model artifacts.")
+    parser.add_argument("--artifact-dir", default="", help="Directory for JSONL/JSON/Markdown/HTML artifacts.")
+    parser.add_argument("--event-log", default="", help="Explicit event-log JSONL path.")
+    return parser.parse_args()
+
+
+def run(artifact_dir: Path | None = None, event_log_path: str = "") -> Json:
+    tmpdir = None
+    if artifact_dir is not None:
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        event_log = Path(event_log_path) if event_log_path else artifact_dir / "matrixark_locomo_debug_event_log.jsonl"
+        event_log.unlink(missing_ok=True)
+    else:
+        tmpdir = tempfile.TemporaryDirectory()
+        event_log = Path(event_log_path) if event_log_path else Path(tmpdir.name) / "matrixark-locomo-debug.jsonl"
     server = MatrixArkMcpServer(MatrixArkLocalAdapter(event_log))
 
     sessions = [
@@ -207,6 +223,9 @@ def run() -> Json:
     debug = {
         "dataset_note": "LOCOMO-style sample conversations; no official LOCOMO dataset file was present in this repo at run time.",
         "event_log": str(event_log),
+        "embedding_provider": os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic"),
+        "embedding_model": os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH") or os.environ.get("MATRIXARK_EMBEDDING_MODEL", "matrixark-local-token-hash-v1"),
+        "segment_provider": "deterministic unless batch calls specify segment_provider=oss",
         "model_counts": model_counts(records),
         "sessions": session_results,
         "queries": query_results,
@@ -222,9 +241,62 @@ def run() -> Json:
             "context_pack_audit": compact_records(records, "context_pack_audit", 20),
         },
     }
-    tmpdir.cleanup()
+    if artifact_dir is not None:
+        write_artifacts(debug, artifact_dir)
+    if tmpdir is not None:
+        tmpdir.cleanup()
     return debug
 
 
+
+def write_artifacts(debug: Json, artifact_dir: Path) -> None:
+    json_path = artifact_dir / "matrixark_locomo_debug_data_flow.json"
+    md_path = artifact_dir / "matrixark_locomo_debug_data_flow.md"
+    html_path = artifact_dir / "matrixark_locomo_debug_data_flow.html"
+    json_path.write_text(json.dumps(debug, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    lines = [
+        "# MatrixArk LOCOMO Debug Data Flow",
+        "",
+        f"Event log: `{debug['event_log']}`",
+        f"Embedding provider: `{debug['embedding_provider']}`",
+        f"Embedding model: `{debug['embedding_model']}`",
+        "",
+        "## Data Model Counts",
+        "",
+    ]
+    for key, value in debug.get("model_counts", {}).items():
+        lines.append(f"- `{key}`: {value}")
+    lines.extend(["", "## Retrieval Queries", ""])
+    for query in debug.get("queries", []):
+        lines.append(f"### {query['query']}")
+        lines.append(f"- session: `{query['session']}`")
+        lines.append(f"- question_type: `{query.get('question_type')}`")
+        lines.append(f"- context_pack_id: `{query.get('context_pack_id')}`")
+        lines.append(f"- used_context_tokens: `{query.get('used_context_tokens')}`")
+        tree = query.get("recall_policy", {}).get("tree_traversal", {})
+        lines.append(f"- tree traversal: selected_nodes={tree.get('selected_node_count')} selected_paths={tree.get('selected_path_count')} fallback={tree.get('fallback_to_flat')}")
+        lines.append("- selected refs:")
+        for ref in query.get("selected_refs", []):
+            lines.append(f"  - `{ref.get('ref_type')}` score={ref.get('score')} node={ref.get('node_path')} text={str(ref.get('text', ''))[:180]}")
+        lines.append("")
+    lines.extend(["", "## Compact Records By Model", ""])
+    for model, rows in debug.get("records_by_model", {}).items():
+        lines.append(f"### {model}")
+        lines.append("```json")
+        lines.append(json.dumps(rows, indent=2, sort_keys=True))
+        lines.append("```")
+        lines.append("")
+    md = "\n".join(lines)
+    md_path.write_text(md + "\n", encoding="utf-8")
+    html_path.write_text(
+        "<!doctype html><meta charset='utf-8'><title>MatrixArk LOCOMO Debug Data Flow</title>"
+        "<style>body{font-family:Inter,Segoe UI,Arial,sans-serif;max-width:1180px;margin:32px auto;padding:0 24px;line-height:1.45;color:#172033}pre{background:#f5f7fb;padding:16px;overflow:auto;border-radius:8px}code{background:#edf1f7;padding:2px 4px;border-radius:4px}h1,h2,h3{color:#0f172a}</style>"
+        + "<pre>" + html.escape(md) + "</pre>",
+        encoding="utf-8",
+    )
+
+
 if __name__ == "__main__":
-    print(json.dumps(run(), indent=2, sort_keys=True))
+    args = parse_args()
+    artifact_dir = Path(args.artifact_dir) if args.artifact_dir else None
+    print(json.dumps(run(artifact_dir=artifact_dir, event_log_path=args.event_log), indent=2, sort_keys=True))
