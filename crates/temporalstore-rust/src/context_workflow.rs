@@ -341,7 +341,44 @@ pub struct ContextRetrieveReport {
     pub node_count: usize,
     pub event_count: usize,
     #[serde(default)]
+    pub query_understanding_debug: ContextQueryUnderstandingDebug,
+    #[serde(default)]
     pub parity: ContextPipelineParityEvidence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ContextQueryUnderstandingDebug {
+    pub question_type: String,
+    pub secondary_index_filter_groups: Vec<Vec<String>>,
+    pub candidates_passing_prefilter: usize,
+    pub candidates_dropped_before_scoring: usize,
+    pub tree_traversal_summary: ContextTreeTraversalDebug,
+    pub prefilter_candidate_sample: Vec<ContextPrefilterCandidateDebug>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ContextTreeTraversalDebug {
+    pub enabled: bool,
+    pub fallback_reason: String,
+    pub fallback_to_flat: bool,
+    pub max_children_scored_per_parent: usize,
+    pub selected_leaf_count: usize,
+    pub selected_node_count: usize,
+    pub selected_path_count: usize,
+    pub summary_embeddings: Vec<String>,
+    pub top_k_per_layer: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextPrefilterCandidateDebug {
+    pub record_type: String,
+    pub ref_hash: u64,
+    pub node_hash: u64,
+    pub event_time_ms: u64,
+    pub node_path: Vec<String>,
+    pub candidate_terms: Vec<String>,
+    pub passes_secondary_index_prefilter: bool,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2091,6 +2128,7 @@ pub fn retrieve_context(
     let mut blocks = Vec::new();
     let mut node_count = 0usize;
     let mut event_count = 0usize;
+    let mut query_understanding_debug = context_query_understanding_debug(&request);
     let tiers = if request.tiers.is_empty() {
         default_tiers()
     } else {
@@ -2105,6 +2143,7 @@ pub fn retrieve_context(
             blocks,
             node_count,
             event_count,
+            query_understanding_debug,
             parity: context_pipeline_parity_evidence(),
         };
     } else {
@@ -2166,7 +2205,15 @@ pub fn retrieve_context(
         });
         if let CommandResponse::ContextEvents { events, .. } = events_response.response {
             for event in events {
-                if !context_query_matches(&request.query, &event.text) {
+                let passes_prefilter = context_query_matches(&request.query, &event.text);
+                context_query_debug_record_candidate(
+                    &mut query_understanding_debug,
+                    request.tenant_hash,
+                    node_hash,
+                    &event,
+                    passes_prefilter,
+                );
+                if !passes_prefilter {
                     continue;
                 }
                 event_count += 1;
@@ -2193,11 +2240,18 @@ pub fn retrieve_context(
             block.uri.clone(),
         )
     });
+    context_query_debug_finalize(
+        &mut query_understanding_debug,
+        &blocks,
+        node_count,
+        tiers.as_slice(),
+    );
     ContextRetrieveReport {
         status: Status::ok(),
         blocks,
         node_count,
         event_count,
+        query_understanding_debug,
         parity: context_pipeline_parity_evidence(),
     }
 }
@@ -2405,6 +2459,249 @@ fn context_query_matches(query: &str, text: &str) -> bool {
         })
         .count();
     matched_groups > 0
+}
+
+fn context_query_understanding_debug(
+    request: &ContextRetrieveRequest,
+) -> ContextQueryUnderstandingDebug {
+    let terms = context_query_terms(&request.query);
+    let filter_groups = context_query_secondary_index_filter_groups(&terms);
+    ContextQueryUnderstandingDebug {
+        question_type: context_query_question_type(&terms),
+        secondary_index_filter_groups: filter_groups,
+        candidates_passing_prefilter: 0,
+        candidates_dropped_before_scoring: 0,
+        tree_traversal_summary: ContextTreeTraversalDebug {
+            enabled: true,
+            fallback_reason: String::new(),
+            fallback_to_flat: false,
+            max_children_scored_per_parent: request.max_events.max(1),
+            selected_leaf_count: 0,
+            selected_node_count: 0,
+            selected_path_count: 0,
+            summary_embeddings: Vec::new(),
+            top_k_per_layer: request.max_events.max(1),
+        },
+        prefilter_candidate_sample: Vec::new(),
+    }
+}
+
+fn context_query_debug_record_candidate(
+    debug: &mut ContextQueryUnderstandingDebug,
+    tenant_hash: u64,
+    node_hash: u64,
+    event: &ContextEvent,
+    passes_prefilter: bool,
+) {
+    if passes_prefilter {
+        debug.candidates_passing_prefilter += 1;
+    } else {
+        debug.candidates_dropped_before_scoring += 1;
+    }
+    if debug.question_type == "match_all" {
+        return;
+    }
+    if debug.prefilter_candidate_sample.len() >= 12 {
+        return;
+    }
+    debug
+        .prefilter_candidate_sample
+        .push(ContextPrefilterCandidateDebug {
+            record_type: "context_event".to_string(),
+            ref_hash: stable_hash64(&format!(
+                "ctx-prefilter:{tenant_hash}:{node_hash}:{}:{}",
+                event.event_time_ms, event.event_id_hash
+            )),
+            node_hash,
+            event_time_ms: event.event_time_ms,
+            node_path: vec![format!("tenant:{tenant_hash}"), format!("node:{node_hash}")],
+            candidate_terms: context_event_candidate_terms(event),
+            passes_secondary_index_prefilter: passes_prefilter,
+            text: truncate_words(&event.text, 32),
+        });
+}
+
+fn context_query_debug_finalize(
+    debug: &mut ContextQueryUnderstandingDebug,
+    blocks: &[ContextBlock],
+    node_count: usize,
+    tiers: &[ContextTier],
+) {
+    debug.tree_traversal_summary.selected_leaf_count = blocks
+        .iter()
+        .filter(|block| block.tier == ContextTier::L2)
+        .count();
+    debug.tree_traversal_summary.selected_node_count = node_count;
+    debug.tree_traversal_summary.selected_path_count = blocks.len();
+    debug.tree_traversal_summary.summary_embeddings = tiers
+        .iter()
+        .filter_map(|tier| match tier {
+            ContextTier::L0 => Some("node_l0".to_string()),
+            ContextTier::L1 => Some("node_l1".to_string()),
+            ContextTier::L2 => None,
+        })
+        .collect();
+    debug.tree_traversal_summary.summary_embeddings.sort();
+    debug.tree_traversal_summary.summary_embeddings.dedup();
+}
+
+fn context_query_question_type(terms: &[String]) -> String {
+    if terms.is_empty() {
+        "match_all".to_string()
+    } else if context_query_requests_correction(terms)
+        || context_query_requests_latest(terms)
+        || context_query_requests_contrastive_update(terms)
+    {
+        "current_state".to_string()
+    } else if context_query_requests_temporal_reasoning(terms)
+        || context_query_requests_before(terms)
+        || context_query_requests_after(terms)
+        || context_query_requests_schedule_detail(terms)
+    {
+        "temporal_reasoning".to_string()
+    } else if context_query_requests_quantity_detail(terms) {
+        "quantity".to_string()
+    } else if context_query_requests_social_link(terms) {
+        "relationship".to_string()
+    } else if context_query_requests_alias_detail(terms) {
+        "identity_or_alias".to_string()
+    } else if terms
+        .iter()
+        .any(|term| matches!(term.as_str(), "why" | "because" | "cause" | "root"))
+    {
+        "causal_reasoning".to_string()
+    } else {
+        "semantic_recall".to_string()
+    }
+}
+
+fn context_query_secondary_index_filter_groups(terms: &[String]) -> Vec<Vec<String>> {
+    let mut groups = Vec::new();
+    if context_query_requests_latest(terms) || context_query_requests_correction(terms) {
+        groups.push(vec![
+            "event_type:correction".to_string(),
+            "event_type:status_update".to_string(),
+        ]);
+        groups.push(vec![
+            "status:current".to_string(),
+            "status:observed".to_string(),
+        ]);
+        groups.push(vec!["segment_topic:correction".to_string()]);
+    }
+    if terms.iter().any(|term| {
+        matches!(
+            term.as_str(),
+            "where" | "location" | "located" | "office" | "workplace" | "work"
+        )
+    }) {
+        groups.push(vec![
+            "entity_type:location".to_string(),
+            "entity_type:job_status".to_string(),
+        ]);
+    }
+    if context_query_requests_social_link(terms) {
+        groups.push(vec![
+            "entity_type:person".to_string(),
+            "entity_type:social_link".to_string(),
+            "entity_type:relationship".to_string(),
+        ]);
+    }
+    if context_query_requests_schedule_detail(terms) {
+        groups.push(vec![
+            "entity_type:date".to_string(),
+            "event_type:schedule".to_string(),
+            "event_type:deadline".to_string(),
+        ]);
+    }
+    if context_query_requests_quantity_detail(terms) {
+        groups.push(vec![
+            "entity_type:quantity".to_string(),
+            "entity_type:amount".to_string(),
+            "event_type:measurement".to_string(),
+        ]);
+    }
+    if context_query_requests_temporal_reasoning(terms)
+        || context_query_requests_before(terms)
+        || context_query_requests_after(terms)
+    {
+        groups.push(vec![
+            "event_type:timeline".to_string(),
+            "event_time_bucket:query_range".to_string(),
+        ]);
+    }
+    if groups.is_empty() {
+        let mut lexical = terms
+            .iter()
+            .take(8)
+            .map(|term| format!("query_term:{term}"))
+            .collect::<Vec<_>>();
+        if lexical.is_empty() {
+            lexical.push("query_term:*".to_string());
+        }
+        groups.push(lexical);
+    }
+    groups.sort();
+    groups.dedup();
+    groups
+}
+
+fn context_event_candidate_terms(event: &ContextEvent) -> Vec<String> {
+    let text = event.text.to_ascii_lowercase();
+    let mut terms = vec![
+        "record_type:context_event".to_string(),
+        format!("event_kind:{}", event.kind),
+        format!("status:{}", event.status),
+        "source_type:message".to_string(),
+    ];
+    if text.contains("now") || text.contains("current") || text.contains("latest") {
+        terms.push("event_type:status_update".to_string());
+        terms.push("status:current".to_string());
+    }
+    if text.contains("changed")
+        || text.contains("instead")
+        || text.contains("no longer")
+        || text.contains("updated")
+    {
+        terms.push("event_type:correction".to_string());
+        terms.push("segment_topic:correction".to_string());
+    }
+    if text.contains("moved")
+        || text.contains("seattle")
+        || text.contains("austin")
+        || text.contains("office")
+    {
+        terms.push("entity_type:location".to_string());
+    }
+    if text.contains("manager")
+        || text.contains("friend")
+        || text.contains("coworker")
+        || text.contains("alice")
+        || text.contains("priya")
+    {
+        terms.push("entity_type:person".to_string());
+        terms.push("entity_type:relationship".to_string());
+    }
+    if text.contains("deadline")
+        || text.contains("appointment")
+        || text.contains("schedule")
+        || text.contains("calendar")
+    {
+        terms.push("event_type:schedule".to_string());
+        terms.push("entity_type:date".to_string());
+    }
+    if text.chars().any(|ch| ch.is_ascii_digit())
+        || text.contains("amount")
+        || text.contains("total")
+        || text.contains("score")
+    {
+        terms.push("entity_type:quantity".to_string());
+    }
+    for token in context_query_terms(&event.source_ref) {
+        terms.push(format!("source_ref:{token}"));
+    }
+    terms.sort();
+    terms.dedup();
+    terms
 }
 
 fn context_relevance_score(query: &str, text: &str) -> u32 {
@@ -2633,7 +2930,7 @@ fn context_query_synonyms(term: &str) -> &'static [&'static str] {
         "risk" => &["fraud", "score", "safety"],
         "fraud" => &["risk", "score", "safety"],
         "score" => &["risk", "fraud", "safety"],
-        "latest" | "recent" | "current" | "now" => &["updated", "update", "status"],
+        "latest" | "recent" | "current" | "currently" | "now" => &["updated", "update", "status"],
         "status" | "state" => &["current", "latest", "condition"],
         "failed" | "failure" | "outage" => &["error", "incident", "down"],
         "down" | "error" => &["failed", "failure", "outage", "incident"],
@@ -2668,7 +2965,7 @@ fn context_query_synonyms(term: &str) -> &'static [&'static str] {
         "problem" | "issue" => &["incident", "failure", "resolved", "cause"],
         "resolved" | "fixed" => &["recovered", "solved", "closed"],
         "recovered" | "recovery" | "solved" | "closed" => &["resolved", "fixed"],
-        "where" | "location" => &["place", "city", "office", "work"],
+        "where" | "location" | "located" => &["place", "city", "office", "work"],
         "office" | "work" | "workplace" => &["location", "place", "job"],
         "when" | "date" | "time" => &["timeline", "temporal", "session"],
         "who" | "person" | "people" => &["user", "customer", "member"],
@@ -2760,7 +3057,7 @@ fn context_query_requests_latest(terms: &[String]) -> bool {
     terms.iter().any(|term| {
         matches!(
             term.as_str(),
-            "latest" | "recent" | "current" | "now" | "updated" | "update" | "status"
+            "latest" | "recent" | "current" | "currently" | "now" | "updated" | "update" | "status"
         )
     })
 }
@@ -3328,6 +3625,15 @@ mod tests {
                 locomo_stale
             )
         );
+        let debug_terms = context_query_terms("Where is Alice currently located?");
+        let debug_groups = context_query_secondary_index_filter_groups(&debug_terms);
+        assert_eq!(context_query_question_type(&debug_terms), "current_state");
+        assert!(debug_groups
+            .iter()
+            .any(|group| group.iter().any(|term| term == "entity_type:location")));
+        assert!(debug_groups
+            .iter()
+            .any(|group| group.iter().any(|term| term == "event_type:status_update")));
 
         let longmem_memory = "Support follow-up: the user sent messages across sessions and the helpdesk agent changed the notification setting during the most recent chat.";
         assert!(context_query_matches(

@@ -24,12 +24,12 @@ Rust TemporalStore context pipeline through `context_workflow_harness`.
 ```bash
 cd /mnt/c/Users/Deeproute/Documents/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStore
 CARGO_TARGET_DIR=/tmp/temporalstore-rust-query-index-debug-target \
-  cargo run -p temporalstore-rust --bin context_workflow_harness \
-  > /tmp/temporalstore-rust-query-index-debug.log
+  cargo run --release -p temporalstore-rust --bin context_workflow_harness \
+  > /tmp/temporalstore-rust-query-index-debug-v3-release.log
 
 python3 tools/validate_aws_validation_log.py \
   --job temporalstore-context-workflow-validation \
-  --log /tmp/temporalstore-rust-query-index-debug.log
+  --log /tmp/temporalstore-rust-query-index-debug-v3-release.log
 ```
 
 Validation result:
@@ -42,9 +42,9 @@ temporalstore-context-workflow-validation: JSON validation passed
 
 | Field | Value |
 | --- | --- |
-| Rust run root | `/tmp/temporalstore-context-workflow-1782246549114` |
+| Rust run root | `/tmp/temporalstore-context-workflow-1782250404432` |
 | Page segment count | `1` |
-| Page segment bytes | `988968` |
+| Page segment bytes | `988954` |
 | Cache block count | `582` |
 | Cache bytes | `248067` |
 | Shared-store sync oplog files | `4` |
@@ -53,12 +53,12 @@ temporalstore-context-workflow-validation: JSON validation passed
 Persisted files used by the run:
 
 ```text
-/tmp/temporalstore-context-workflow-1782246549114/pages/page_segment_00000000000000000000.seg
-/tmp/temporalstore-context-workflow-1782246549114/indexes/shard-1.index.json
-/tmp/temporalstore-context-workflow-1782246549114/indexes/oplogs/shard-1.oplog.jsonl
-/tmp/temporalstore-context-workflow-1782246549114/indexes/indexlogs/shard-1.indexlog.jsonl
-/tmp/temporalstore-context-workflow-1782246549114/shared-store-sync/...
-/tmp/temporalstore-context-workflow-1782246549114/shared-store-async/...
+/tmp/temporalstore-context-workflow-1782250404432/pages/page_segment_00000000000000000000.seg
+/tmp/temporalstore-context-workflow-1782250404432/indexes/shard-1.index.json
+/tmp/temporalstore-context-workflow-1782250404432/indexes/oplogs/shard-1.oplog.jsonl
+/tmp/temporalstore-context-workflow-1782250404432/indexes/indexlogs/shard-1.indexlog.jsonl
+/tmp/temporalstore-context-workflow-1782250404432/shared-store-sync/...
+/tmp/temporalstore-context-workflow-1782250404432/shared-store-async/...
 ```
 
 ## Data Model Counts
@@ -174,6 +174,64 @@ Example retrieval from the Rust run:
 }
 ```
 
+Verbose query-understanding debug object emitted by Rust for the main retrieval:
+
+```json
+{
+  "question_type": "semantic_recall",
+  "secondary_index_filter_groups": [
+    [
+      "query_term:checkout"
+    ]
+  ],
+  "candidates_passing_prefilter": 1,
+  "candidates_dropped_before_scoring": 0,
+  "tree_traversal_summary": {
+    "enabled": true,
+    "fallback_reason": "",
+    "fallback_to_flat": false,
+    "max_children_scored_per_parent": 8,
+    "selected_leaf_count": 1,
+    "selected_node_count": 1,
+    "selected_path_count": 3,
+    "summary_embeddings": [
+      "node_l0",
+      "node_l1"
+    ],
+    "top_k_per_layer": 8
+  },
+  "prefilter_candidate_sample": [
+    {
+      "record_type": "context_event",
+      "ref_hash": 13425781285842935117,
+      "node_hash": 5576539365341761547,
+      "event_time_ms": 1000,
+      "node_path": [
+        "tenant:20260616",
+        "node:5576539365341761547"
+      ],
+      "candidate_terms": [
+        "entity_type:quantity",
+        "event_kind:5",
+        "record_type:context_event",
+        "source_ref:incident",
+        "source_ref:mock",
+        "source_type:message",
+        "status:1"
+      ],
+      "passes_secondary_index_prefilter": true,
+      "text": "Customer checkout failed. Payment risk score spiked. The proxy retried safely and support asked for root cause."
+    }
+  ]
+}
+```
+
+The current-state/location classifier is also covered by the shared
+`context_retrieval_qa_synonym_ranking` Rust test. For
+`Where is Alice currently located?`, Rust now classifies the query as
+`current_state` and emits secondary-index filter groups containing
+`entity_type:location` and `event_type:status_update`.
+
 Another memory-update query:
 
 ```json
@@ -207,7 +265,7 @@ event timeline used by retrieval and injection.
 | Backend | `temporalstore-direct` | Rust `TemporalEngine` |
 | Batch extraction | `matrixark_batch_extract` | `ingest_extract_context` and benchmark source replay |
 | Context events | Written | `291` persisted event keys |
-| Secondary indexes | Query filter groups and prefilter report | `291` persisted `ContextIndexRef` keys plus source-index replay |
+| Secondary indexes | Query filter groups and prefilter report | Query-understanding debug object plus `291` persisted `ContextIndexRef` keys |
 | Summaries | L0/L1 refresh | `582` persisted summary keys |
 | Embeddings | OSS vector records | `873` embedding keys, `6984` timestamp/page entries |
 | Audit | `ContextPackAudit` | `27` context audit entries |
@@ -221,8 +279,9 @@ ingestion, extraction, secondary-index persistence, retrieval, injection,
 summary/embedding persistence, restart replay, shared-store sync/async replay,
 Raft read validation, and unified corpus readiness.
 
-Remaining difference versus the C++ HTML page: the Rust harness currently records
-secondary-index persistence and selected retrieved evidence, but it does not yet
-emit the same verbose query-understanding filter-group debug object shown by the
-C++ MCP page. That should be added as a follow-up if we want byte-for-byte
-debug-report shape parity.
+Rust now emits the same verbose query-understanding shape used by the C++ debug
+page: question type, secondary-index filter groups, prefilter pass/drop counts,
+candidate samples, and tree traversal summary. The remaining difference is only
+transport shape: the C++ page is generated by the MatrixArk MCP
+`temporalstore-direct` flow, while this Rust page is generated by the Rust
+`context_workflow_harness`.

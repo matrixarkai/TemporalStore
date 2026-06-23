@@ -41,8 +41,9 @@ pub use context_workflow::{
     ContextPipelineBenchmarkSweepProfile, ContextPipelineBenchmarkSweepReport,
     ContextPipelineBenchmarkSweepRequest, ContextPipelineBenchmarkThresholds,
     ContextPipelineManageReport, ContextPipelineParityEvidence, ContextPipelineStageReport,
-    ContextProviderKind, ContextRetrieveReport, ContextRetrieveRequest, ContextSourceKind,
-    ContextTier, ContextWorkflowStateReport,
+    ContextPrefilterCandidateDebug, ContextProviderKind, ContextQueryUnderstandingDebug,
+    ContextRetrieveReport, ContextRetrieveRequest, ContextSourceKind, ContextTier,
+    ContextTreeTraversalDebug, ContextWorkflowStateReport,
 };
 pub use control::{
     CheckedBatchExecuteRequest, CheckedBatchExecuteResponse, CheckedExecuteRequest,

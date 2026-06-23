@@ -33,6 +33,7 @@ struct ContextWorkflowHarnessSummary {
     root: String,
     extraction_ok: bool,
     retrieve_block_count: usize,
+    query_understanding_debug: Value,
     selected_block_count: usize,
     blocked_block_count: usize,
     audit_selected_ref_count: usize,
@@ -193,6 +194,7 @@ struct ExternalContextBenchmarkQueryReport {
     selected_source_ids: Vec<String>,
     zero_hit: bool,
     retrieval_ms: u128,
+    query_understanding_debug: Value,
 }
 
 #[derive(Debug, Serialize)]
@@ -593,6 +595,8 @@ fn main() {
             root: root.display().to_string(),
             extraction_ok: extract.status.ok,
             retrieve_block_count: retrieve.blocks.len(),
+            query_understanding_debug: serde_json::to_value(&retrieve.query_understanding_debug)
+                .expect("query understanding debug should serialize"),
             selected_block_count: inject.selected_blocks.len(),
             blocked_block_count: inject.blocked_blocks.len(),
             audit_selected_ref_count: inject.audit.selected_refs.len(),
@@ -953,6 +957,7 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
             selected_source_ids,
             zero_hit: hit_rank.is_none(),
             retrieval_ms,
+            query_understanding_debug: Value::Null,
         });
         matched_expected_terms += matched_terms;
         matched_expected_refs += matched_refs;
