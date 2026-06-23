@@ -2382,6 +2382,74 @@ class MatrixArkLocalAdapter:
             f"session:{session_id}",
         ]
 
+    def ensure_context_node_path(self, *, node_path: list[str], scope: Json, updated_at_ms: int) -> Json:
+        prefixes = node_prefixes(node_path)
+        if not prefixes:
+            return {"nodes_created": 0, "child_refs_created": 0, "node_hashes": []}
+
+        records = self.read_all()
+        existing_nodes = {
+            int(record.get("node_hash"))
+            for record in records
+            if record.get("record_type") == "context_node" and record.get("node_hash") is not None
+        }
+        existing_child_refs = {
+            int(record.get("child_ref_hash"))
+            for record in records
+            if record.get("record_type") == "context_child_ref" and record.get("child_ref_hash") is not None
+        }
+        node_hashes: list[int] = []
+        nodes_created = 0
+        child_refs_created = 0
+        for prefix in prefixes:
+            node_hash = stable_hash("/".join(prefix))
+            node_hashes.append(node_hash)
+            parent_path = prefix[:-1]
+            parent_hash = stable_hash("/".join(parent_path)) if parent_path else 0
+            if node_hash not in existing_nodes:
+                self.append(
+                    {
+                        "record_type": "context_node",
+                        "node_hash": node_hash,
+                        "parent_hash": parent_hash,
+                        "node_name": prefix[-1],
+                        "node_path": prefix,
+                        "depth": len(prefix),
+                        "scope": scope,
+                        "status": "active",
+                        "created_at_ms": updated_at_ms,
+                        "updated_at_ms": updated_at_ms,
+                    }
+                )
+                existing_nodes.add(node_hash)
+                nodes_created += 1
+            if parent_path:
+                child_ref_hash = stable_hash(f"child:{parent_hash}:{node_hash}")
+                if child_ref_hash not in existing_child_refs:
+                    self.append(
+                        {
+                            "record_type": "context_child_ref",
+                            "child_ref_hash": child_ref_hash,
+                            "parent_hash": parent_hash,
+                            "child_hash": node_hash,
+                            "child_name": prefix[-1],
+                            "parent_path": parent_path,
+                            "child_path": prefix,
+                            "depth": len(prefix),
+                            "scope": scope,
+                            "status": "active",
+                            "created_at_ms": updated_at_ms,
+                            "updated_at_ms": updated_at_ms,
+                        }
+                    )
+                    existing_child_refs.add(child_ref_hash)
+                    child_refs_created += 1
+        return {
+            "nodes_created": nodes_created,
+            "child_refs_created": child_refs_created,
+            "node_hashes": node_hashes,
+        }
+
     def session_commit(self, args: Json, *, hook: Json | None = None) -> Json:
         scope = optional_object(args, "scope")
         threshold = args.get("threshold_messages", 20)
@@ -2793,6 +2861,11 @@ class MatrixArkLocalAdapter:
         ]
         node_path = normalized_node_path(envelope, node_hint)
         node_hash = stable_hash("/".join(node_path))
+        node_materialization = self.ensure_context_node_path(
+            node_path=node_path,
+            scope=envelope["scope"],
+            updated_at_ms=envelope["ingestion_time_ms"],
+        )
         summary_text = summarize_text(text)
         event_embedding = embedding_for_text(text)
         summary_embedding = embedding_for_text(" ".join(node_path + [summary_text]))
@@ -2911,6 +2984,7 @@ class MatrixArkLocalAdapter:
             "prior_summary_count": extraction.get("prior_summary_count", 0),
             "quality_warning": extraction.get("quality_warning", ""),
             "summary_refresh": summary_refresh,
+            "node_materialization": node_materialization,
             "session_buffer": {
                 "buffer_key": list(session_buffer_key(envelope)),
                 "pending_event_count": pending_event_count,
@@ -2956,6 +3030,11 @@ class MatrixArkLocalAdapter:
         ]
         node_path = normalized_node_path(envelope, node_hint)
         node_hash = stable_hash("/".join(node_path))
+        node_materialization = self.ensure_context_node_path(
+            node_path=node_path,
+            scope=envelope["scope"],
+            updated_at_ms=envelope["ingestion_time_ms"],
+        )
         batch_summary = extraction["batch_summary"]
 
         event_hashes: list[int] = list(source_event_ids) if derive_from_existing_events else []
@@ -3203,6 +3282,7 @@ class MatrixArkLocalAdapter:
             "segments_written": len(segment_hashes),
             "summary_hash": summary_hash,
             "summary_refresh": summary_refresh,
+            "node_materialization": node_materialization,
             "indexes_written": len(extraction["indexes"]),
             "one_pass": True,
             "threshold_messages": threshold,

@@ -149,6 +149,8 @@ class MatrixArkMcpServerTest(unittest.TestCase):
 
         replay = self.call_tool("matrixark_replay", {"context_pack_id": "debug"})
         record_types = [record["record_type"] for record in replay["events"]]
+        self.assertIn("context_node", record_types)
+        self.assertIn("context_child_ref", record_types)
         self.assertIn("context_event", record_types)
         self.assertIn("context_summary", record_types)
         self.assertIn("context_embedding", record_types)
@@ -161,6 +163,24 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         event = next(record for record in replay["events"] if record.get("event_id_hash") == ingest["event_id_hash"])
         self.assertTrue(event["summary_text"])
         self.assertEqual(len(event["summary_embedding"]), 32)
+        self.assertEqual(ingest["node_materialization"]["nodes_created"], 4)
+        self.assertEqual(ingest["node_materialization"]["child_refs_created"], 3)
+        nodes = [record for record in replay["events"] if record.get("record_type") == "context_node"]
+        child_refs = [record for record in replay["events"] if record.get("record_type") == "context_child_ref"]
+        self.assertEqual(len(nodes), 4)
+        self.assertEqual(len(child_refs), 3)
+        self.assertTrue(any(record.get("node_path") == ["company_a", "infra_team", "project_1", "approvals"] for record in nodes))
+
+        second_ingest = self.call_tool(
+            "matrixark_ingest",
+            {
+                "messages": [{"role": "user", "content": "Bob confirmed the same GPU request."}],
+                "scope": {"team": "infra_team", "project": "project_1"},
+                "metadata": {"node_path": ["company_a", "infra_team", "project_1", "approvals"]},
+            },
+        )
+        self.assertEqual(second_ingest["node_materialization"]["nodes_created"], 0)
+        self.assertEqual(second_ingest["node_materialization"]["child_refs_created"], 0)
 
     def test_ingest_marks_dirty_and_async_refresh_writes_versioned_node_summaries(self):
         ingest = self.call_tool(
@@ -814,6 +834,8 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         replay_after_one = self.call_tool("matrixark_replay", {"context_pack_id": "debug"})
         record_types_after_one = [record.get("record_type") for record in replay_after_one["events"]]
 
+        self.assertIn("context_node", record_types_after_one)
+        self.assertIn("context_child_ref", record_types_after_one)
         self.assertIn("context_event", record_types_after_one)
         self.assertIn("context_embedding", record_types_after_one)
         self.assertIn("session_buffer_event", record_types_after_one)
@@ -861,6 +883,8 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         self.assertIn("context_entity", record_types_after_commit)
         self.assertIn("context_index", record_types_after_commit)
         self.assertTrue(any(record.get("summary_type") == "batch_l0" for record in replay_after_commit["events"]))
+        self.assertEqual(committed["node_materialization"]["nodes_created"], 0)
+        self.assertEqual(committed["node_materialization"]["child_refs_created"], 0)
 
     def test_ingest_auto_batch_extract_commits_at_threshold(self):
         scope = {"user_id": "bob", "session_id": "thread-auto-buffer"}
