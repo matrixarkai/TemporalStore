@@ -42,6 +42,10 @@ MAX_PRIOR_CHARS = 4096
 EMBEDDING_DIM = 32
 DIRECT_RECORD_LOG_SHARD_SIZE = 256
 DIRECT_RECORD_BUNDLE_MAX_BYTES = int(os.environ.get("MATRIXARK_DIRECT_RECORD_BUNDLE_MAX_BYTES", "65536"))
+DIRECT_WRITE_RETRIES = int(os.environ.get("MATRIXARK_DIRECT_WRITE_RETRIES", "3"))
+DIRECT_WRITE_BACKOFF_MS = int(os.environ.get("MATRIXARK_DIRECT_WRITE_BACKOFF_MS", "25"))
+DIRECT_WRITE_THROTTLE_MS = int(os.environ.get("MATRIXARK_DIRECT_WRITE_THROTTLE_MS", "0"))
+DIRECT_AUDIT_MODE = os.environ.get("MATRIXARK_DIRECT_AUDIT_MODE", "buffered").strip().lower()
 DIRECT_AUDIT_BUFFER_MAX_RECORDS = int(os.environ.get("MATRIXARK_DIRECT_AUDIT_BUFFER_MAX_RECORDS", "128"))
 DIRECT_AUDIT_FLUSH_INTERVAL_MS = int(os.environ.get("MATRIXARK_DIRECT_AUDIT_FLUSH_INTERVAL_MS", "1000"))
 MAX_CONTEXT_REF_CHARS = 4096
@@ -4075,8 +4079,14 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         self._audit_buffer: list[Json] = []
         self._audit_flusher_started = False
         self._audit_flush_failures = 0
+        if DIRECT_AUDIT_MODE not in {"buffered", "deferred", "drop", "sync"}:
+            raise MatrixArkError("MATRIXARK_DIRECT_AUDIT_MODE must be buffered, deferred, drop, or sync")
+        self._audit_mode = DIRECT_AUDIT_MODE
         self._audit_buffer_max_records = max(1, DIRECT_AUDIT_BUFFER_MAX_RECORDS)
         self._audit_flush_interval_s = max(0.05, DIRECT_AUDIT_FLUSH_INTERVAL_MS / 1000.0)
+        self._write_retries = max(0, DIRECT_WRITE_RETRIES)
+        self._write_backoff_s = max(0.0, DIRECT_WRITE_BACKOFF_MS / 1000.0)
+        self._write_throttle_s = max(0.0, DIRECT_WRITE_THROTTLE_MS / 1000.0)
 
     def __post_init__(self) -> None:
         # Direct adapter does not use the inherited JSONL path.
@@ -4130,9 +4140,9 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                         f"{record.get('record_type', 'record')}:"
                         f"{stable_hash(json.dumps(record, sort_keys=True))}"
                     )
-                    self._client.hset(self._record_hash_key, record_id, payload)
+                    self._hset_with_backoff(self._record_hash_key, record_id, payload)
                     self._index_cache.append(record_id)
-                self._client.put_string(self._index_key, json.dumps(self._index_cache, separators=(",", ":")))
+                self._put_string_with_backoff(self._index_key, json.dumps(self._index_cache, separators=(",", ":")))
                 self._records_cache.extend(records)
                 self._put_direct_record_cache(len(self._records_cache), self._records_cache)
                 return
@@ -4143,22 +4153,53 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 payload_value: Json
                 payload_value = bundle[0] if len(bundle) == 1 else {"record_bundle": bundle}
                 payload = json.dumps(payload_value, sort_keys=True, separators=(",", ":"))
-                self._client.hset(record_key, record_id, payload)
+                self._hset_with_backoff(record_key, record_id, payload)
                 sequence += 1
-            self._client.put_string(self._count_key, str(sequence))
+            self._put_string_with_backoff(self._count_key, str(sequence))
             self._entry_count_cache = sequence
             self._records_cache.extend(records)
             self._put_direct_record_cache(self._entry_count_cache, self._records_cache)
 
     def append_audit(self, record: Json) -> None:
+        if self._audit_mode == "drop":
+            _mcp_debug_log("matrixark audit record dropped by MATRIXARK_DIRECT_AUDIT_MODE=drop")
+            return
+        if self._audit_mode == "sync":
+            self.append(record)
+            return
         with self._audit_lock:
             self._audit_buffer.append(record)
-            self._ensure_audit_flusher_locked()
+            if self._audit_mode == "buffered":
+                self._ensure_audit_flusher_locked()
             max_pending = self._audit_buffer_max_records * 4
             if len(self._audit_buffer) > max_pending:
                 dropped = len(self._audit_buffer) - max_pending
                 self._audit_buffer = self._audit_buffer[-max_pending:]
                 _mcp_debug_log(f"matrixark audit buffer dropped {dropped} oldest records after flush lag")
+
+    def _hset_with_backoff(self, key: str, field: str, value: str) -> None:
+        self._write_with_backoff(lambda: self._client.hset(key, field, value), op="hset")
+        if self._write_throttle_s > 0:
+            time.sleep(self._write_throttle_s)
+
+    def _put_string_with_backoff(self, key: str, value: str) -> None:
+        self._write_with_backoff(lambda: self._client.put_string(key, value), op="put_string")
+        if self._write_throttle_s > 0:
+            time.sleep(self._write_throttle_s)
+
+    def _write_with_backoff(self, fn: Any, *, op: str) -> None:
+        attempt = 0
+        while True:
+            try:
+                fn()
+                return
+            except Exception:
+                if attempt >= self._write_retries:
+                    raise
+                sleep_s = self._write_backoff_s * (2**attempt)
+                if sleep_s > 0:
+                    time.sleep(sleep_s)
+                attempt += 1
 
     def flush_audits(self) -> None:
         with self._audit_lock:
@@ -4449,8 +4490,14 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
         self._audit_buffer: list[Json] = []
         self._audit_flusher_started = False
         self._audit_flush_failures = 0
+        if DIRECT_AUDIT_MODE not in {"buffered", "deferred", "drop", "sync"}:
+            raise MatrixArkError("MATRIXARK_DIRECT_AUDIT_MODE must be buffered, deferred, drop, or sync")
+        self._audit_mode = DIRECT_AUDIT_MODE
         self._audit_buffer_max_records = max(1, DIRECT_AUDIT_BUFFER_MAX_RECORDS)
         self._audit_flush_interval_s = max(0.05, DIRECT_AUDIT_FLUSH_INTERVAL_MS / 1000.0)
+        self._write_retries = max(0, DIRECT_WRITE_RETRIES)
+        self._write_backoff_s = max(0.0, DIRECT_WRITE_BACKOFF_MS / 1000.0)
+        self._write_throttle_s = max(0.0, DIRECT_WRITE_THROTTLE_MS / 1000.0)
 
 
 

@@ -12,6 +12,7 @@ class FakeTemporalStoreClient:
         self.hashes: dict[str, dict[str, str]] = {}
         self.hsets: list[tuple[str, str, str]] = []
         self.puts: list[tuple[str, str]] = []
+        self.fail_next_hsets = 0
 
     def get_string(self, key: str) -> str:
         if key not in self.strings:
@@ -23,6 +24,9 @@ class FakeTemporalStoreClient:
         self.puts.append((key, value))
 
     def hset(self, key: str, field: str, value: str) -> None:
+        if self.fail_next_hsets:
+            self.fail_next_hsets -= 1
+            raise RuntimeError("transient hset failure")
         self.hashes.setdefault(key, {})[field] = value
         self.hsets.append((key, field, value))
 
@@ -45,6 +49,16 @@ def make_adapter(client: FakeTemporalStoreClient, prefix: str) -> MatrixArkTempo
     adapter._legacy_index_mode = False
     import threading
     adapter._records_lock = threading.RLock()
+    adapter._audit_lock = threading.RLock()
+    adapter._audit_buffer = []
+    adapter._audit_flusher_started = False
+    adapter._audit_flush_failures = 0
+    adapter._audit_mode = "deferred"
+    adapter._audit_buffer_max_records = 128
+    adapter._audit_flush_interval_s = 1.0
+    adapter._write_retries = 3
+    adapter._write_backoff_s = 0.0
+    adapter._write_throttle_s = 0.0
     return adapter
 
 
@@ -127,11 +141,53 @@ def test_read_all_singleflight_cache_avoids_duplicate_prefix_loads() -> None:
     assert getattr(client, "hget_count", 0) == hget_count_after_first
 
 
+def test_append_many_bundles_expand_without_logical_side_effects() -> None:
+    client = FakeTemporalStoreClient()
+    adapter = make_adapter(client, "matrixark:bundle")
+    adapter._shard_size = 32
+    records = [{"record_type": "context_event", "text": f"event-{index}"} for index in range(8)]
+
+    adapter.append_many(records)
+
+    assert client.strings["matrixark:bundle:record_count"] == "1"
+    assert len(client.hsets) == 1
+    assert [record["text"] for record in adapter.read_all()] == [record["text"] for record in records]
+    fresh_reader = make_adapter(client, "matrixark:bundle")
+    assert [record["text"] for record in fresh_reader.read_all()] == [record["text"] for record in records]
+
+
+def test_transient_hset_failure_retries_before_count_update() -> None:
+    client = FakeTemporalStoreClient()
+    client.fail_next_hsets = 2
+    adapter = make_adapter(client, "matrixark:retry")
+
+    adapter.append({"record_type": "context_event", "text": "after retry"})
+
+    assert client.strings["matrixark:retry:record_count"] == "1"
+    assert [record["text"] for record in adapter.read_all()] == ["after retry"]
+
+
+def test_deferred_audit_does_not_write_until_flush() -> None:
+    client = FakeTemporalStoreClient()
+    adapter = make_adapter(client, "matrixark:audit")
+
+    adapter.append_audit({"record_type": "context_pack_audit", "context_pack_id": "audit-1"})
+
+    assert client.hsets == []
+    assert adapter._audit_buffer
+    adapter.flush_audits()
+    assert client.hsets
+    assert adapter.read_all()[0]["context_pack_id"] == "audit-1"
+
+
 def main() -> int:
     test_compact_count_log()
     test_compact_count_log_shards_large_runs()
     test_legacy_index_log_remains_readable_and_appendable()
     test_read_all_singleflight_cache_avoids_duplicate_prefix_loads()
+    test_append_many_bundles_expand_without_logical_side_effects()
+    test_transient_hset_failure_retries_before_count_update()
+    test_deferred_audit_does_not_write_until_flush()
     print("PASS matrixark_direct_adapter_compact_log")
     return 0
 
