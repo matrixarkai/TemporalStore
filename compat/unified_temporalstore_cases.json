@@ -4388,6 +4388,35 @@
           }
         }
       ]
+    },
+    {
+      "name": "codex_mcp_temporalstore_rust_record_log_backend",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "rust_matrixark_record_log_persists_shared_mcp_records",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_rust_codex_mcp_parity",
+            "mode": "rust_executable_cxx_static",
+            "description": "Shared MatrixArk MCP server can select temporalstore-direct for C++ or temporalstore-rust for Rust; the Rust backend provides the record-log put/get/hset/hget boundary expected by the shared server.",
+            "required_paths": [
+              "crates/temporalstore-rust/src/bin/matrixark_record_log.rs",
+              "tools/run_matrixark_mcp_server.sh",
+              "docs/rust_cpp_codex_mcp_integration.md"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust --bin matrixark_record_log -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_codex_mcp_parity.py",
+            "cxx_reference_paths": [
+              "/root/src/github-services/TemporalStore/tools/matrixark_mcp_server.py"
+            ],
+            "backends": [
+              "temporalstore-direct",
+              "temporalstore-rust"
+            ]
+          }
+        }
+      ]
     }
   ]
 }

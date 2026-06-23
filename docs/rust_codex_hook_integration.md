@@ -8,6 +8,11 @@ context pipeline directly. Codex lifecycle events are converted into
 retrieval blocks, prompt injection, and `ContextPackAudit` records through
 `TemporalEngine`.
 
+For MCP-based Codex integration, use the shared MatrixArk MCP server with either
+the C++ `temporalstore-direct` backend or the Rust `temporalstore-rust` backend.
+That parity path is documented in
+`docs/rust_cpp_codex_mcp_integration.md`.
+
 ## Hook Shape
 
 Codex sends JSON to stdin for hook events such as `UserPromptSubmit` and `Stop`.
