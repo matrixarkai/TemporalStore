@@ -24,6 +24,17 @@ from typing import Any
 
 
 Json = dict[str, Any]
+
+
+def _mcp_debug_log(message: str) -> None:
+    path = os.environ.get("MATRIXARK_MCP_DEBUG_LOG")
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(f"{time.time():.3f} {message}\n")
+    except Exception:
+        pass
 MAX_PRIOR_MESSAGES = 8
 MAX_PRIOR_CHARS = 4096
 EMBEDDING_DIM = 32
@@ -5300,13 +5311,14 @@ class MatrixArkMcpServer:
         request_id = request.get("id")
         try:
             if method == "initialize":
+                requested_protocol = (request.get("params") or {}).get("protocolVersion") or "2025-06-18"
                 return {
                     "jsonrpc": "2.0",
                     "id": request_id,
                     "result": {
-                        "protocolVersion": "2025-06-18",
+                        "protocolVersion": requested_protocol,
                         "serverInfo": {"name": "matrixark-context", "version": "0.1.0"},
-                        "capabilities": {"tools": {}},
+                        "capabilities": {"tools": {"listChanged": False}},
                     },
                 }
             if method == "notifications/initialized":
@@ -5394,22 +5406,40 @@ class MatrixArkMcpServer:
             line = line.strip()
             if not line:
                 return {}
+            if not line.lstrip().startswith("{"):
+                return {}
             return json.loads(line)
 
+        _mcp_debug_log("read_message: waiting for first header")
         first = sys.stdin.buffer.readline()
+        _mcp_debug_log(f"read_message: first={first[:80]!r}")
         if not first:
             return None
         if not first.strip():
             return {}
-        if not first.lower().startswith(b"content-length:"):
+        if first.lstrip().startswith(b"{"):
+            # Codex CLI currently speaks newline-delimited JSON over stdio for
+            # configured MCP servers. Auto-detect it so responses use the same
+            # framing and do not trigger parse-error ping-pong.
+            self.line_json = True
             return json.loads(first.decode("utf-8"))
 
-        length = int(first.split(b":", 1)[1].strip())
+        headers = [first]
         while True:
             header = sys.stdin.buffer.readline()
             if header in {b"\r\n", b"\n", b""}:
                 break
+            headers.append(header)
+
+        length = None
+        for header in headers:
+            if header.lower().startswith(b"content-length:"):
+                length = int(header.split(b":", 1)[1].strip())
+                break
+        if length is None:
+            raise MatrixArkError("invalid MCP frame: missing Content-Length header")
         body = sys.stdin.buffer.read(length)
+        _mcp_debug_log(f"read_message: body_len={len(body)}")
         return json.loads(body.decode("utf-8"))
 
     def write_response(self, response: Json) -> None:
@@ -5422,6 +5452,7 @@ class MatrixArkMcpServer:
         sys.stdout.buffer.write(f"Content-Length: {len(body)}\r\n\r\n".encode("ascii"))
         sys.stdout.buffer.write(body)
         sys.stdout.buffer.flush()
+        _mcp_debug_log(f"write_response: bytes={len(body)} id={response.get('id')!r} keys={list(response.keys())}")
 
     def serve(self) -> None:
         while True:
@@ -5498,6 +5529,7 @@ def main() -> int:
         help="BRPC I/O timeout for the native C++ TemporalStore SDK.",
     )
     args = parser.parse_args()
+    _mcp_debug_log(f"main: parsed backend={args.backend} metaserver={args.metaserver}")
     if args.backend == "temporalstore-direct":
         adapter = MatrixArkTemporalStoreDirectAdapter(
             metaserver=args.metaserver,
@@ -5510,7 +5542,9 @@ def main() -> int:
         )
     else:
         adapter = MatrixArkLocalAdapter(args.event_log)
+    _mcp_debug_log("main: adapter ready; serving")
     MatrixArkMcpServer(adapter, line_json=args.line_json, access_mode=args.access_mode).serve()
+    _mcp_debug_log("main: serve returned")
     return 0
 
 
