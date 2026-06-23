@@ -107,7 +107,7 @@ The full dataset benchmark runner was updated to accept both `temporalstore-dire
 | official conv2 q100 | C++ | first 2 conversations | 120s | 270.99s | C++ server request timeout during `hset` |
 | official conv2 q100 | Rust | first 2 conversations | 120s | 140.87s | Rust CLI returned the same server-side `hset` timeout |
 
-This means the MatrixArk logical mapping is parity-clean, but the official LOCOMO benchmark path still needs storage-write optimization or smaller/chunked record writes before full C++/Rust official-score parity is claimable.
+Follow-up fix: `docs/matrixark_locomo_hset_gap_fix_20260623.md` adds bounded direct-record bundles and reruns the official LOCOMO 2-conversation / 100-question slice successfully on both C++ and Rust. Full all-conversation LOCOMO still needs native batch writes and benchmark load shaping before full official-score parity is claimable on this single-node local deployment.
 
 ## What Was Fixed
 

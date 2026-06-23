@@ -1,0 +1,38 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>MatrixArk LOCOMO HSET Gap Fix</title>
+<style>
+body{font-family:Inter,Segoe UI,Arial,sans-serif;max-width:1120px;margin:32px auto;padding:0 24px;color:#172033;line-height:1.5}
+table{border-collapse:collapse;width:100%;margin:16px 0}
+td,th{border:1px solid #d8dee9;padding:8px;text-align:left}
+th{background:#f4f7fb}
+pre{background:#f5f7fb;padding:16px;border-radius:8px;overflow:auto}
+code{background:#edf1f7;padding:2px 4px;border-radius:4px}
+h1,h2{color:#0f172a}
+</style>
+<h1>MatrixArk LOCOMO HSET Gap Fix - 2026-06-23</h1>
+<h2>What Was Fixed</h2>
+<p>The previous LOCOMO parity blocker was large <code>matrixark_batch_extract</code> workloads timing out on server-side <code>hset</code> for both C++ and Rust TemporalStore backends.</p>
+<ul>
+<li><code>append_many(records)</code> now exists on the MatrixArk adapter boundary.</li>
+<li>C++ and Rust direct paths persist logical record batches as bounded record bundles.</li>
+<li>Bundles are capped by <code>MATRIXARK_DIRECT_RECORD_BUNDLE_MAX_BYTES</code>, default <code>65536</code>.</li>
+<li><code>matrixark_batch_extract</code> now flushes extracted records through <code>append_many()</code>.</li>
+</ul>
+<h2>Official LOCOMO Slice: C++ vs Rust</h2>
+<table>
+<tr><th>Metric</th><th>C++ TemporalStore</th><th>Rust TemporalStore</th></tr>
+<tr><td>status</td><td>completed</td><td>completed</td></tr>
+<tr><td>elapsed seconds</td><td>14.02</td><td>15.64</td></tr>
+<tr><td>turns ingested</td><td>788</td><td>788</td></tr>
+<tr><td>sessions</td><td>38</td><td>38</td></tr>
+<tr><td>questions</td><td>100</td><td>100</td></tr>
+<tr><td>ingestion throughput turns/sec</td><td>253.948</td><td>286.754</td></tr>
+<tr><td>context recall</td><td>1.0000</td><td>1.0000</td></tr>
+<tr><td>final debug judge score</td><td>0.6200</td><td>0.6200</td></tr>
+<tr><td>p50 retrieval ms</td><td>85.443</td><td>83.262</td></tr>
+<tr><td>p95 retrieval ms</td><td>191.453</td><td>206.703</td></tr>
+<tr><td>compression hidden answers</td><td>0</td><td>0</td></tr>
+</table>
+<h2>Remaining Boundary</h2>
+<p>The official 2-conversation / 100-question LOCOMO slice now passes on both backends. Full all-conversation LOCOMO still overloads this single-node local deployment under sustained writes/retrieval audit, so full official completion remains a native batch-write and benchmark-load-shaping task.</p>
