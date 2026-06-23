@@ -1,0 +1,57 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MatrixArk C++ / Rust Context Pipeline Parity - 2026-06-23</title>
+  <style>
+    body { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; color: #14213d; background: #f7f8fb; }
+    main { max-width: 980px; margin: 0 auto; padding: 44px 24px 72px; }
+    h1 { font-size: 34px; line-height: 1.15; margin: 0 0 16px; }
+    h2 { margin-top: 34px; font-size: 22px; }
+    p, li { line-height: 1.58; font-size: 15px; }
+    .panel { background: #fff; border: 1px solid #dde3ef; border-radius: 8px; padding: 22px; margin: 18px 0; box-shadow: 0 10px 30px rgba(20, 33, 61, 0.06); }
+    table { width: 100%; border-collapse: collapse; margin: 14px 0; background: #fff; }
+    th, td { border: 1px solid #dce3ee; padding: 10px 12px; text-align: left; font-size: 14px; }
+    th { background: #edf2f7; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    pre { background: #101828; color: #e6edf7; border-radius: 8px; padding: 16px; overflow: auto; }
+    .ok { color: #0f766e; font-weight: 700; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>MatrixArk C++ / Rust Context Pipeline Parity</h1>
+  <p><strong>Run date:</strong> 2026-06-23. Repo: <code>/root/src/github-services/TemporalStore</code>. Branch: <code>main</code>.</p>
+  <section class="panel">
+    <h2>Summary</h2>
+    <p>MatrixArk context pipeline parity was revalidated against both TemporalStore backends: C++ local deployment and the Rust <code>matrixark_record_log --serve</code> backend. Both passed the same online and batch context checks.</p>
+    <p>The validated MVP surface includes ingestion, extraction classification, ContextNode materialization, ContextEvent writes, async ContextSummary refresh, L0/L1 summary embeddings for tree traversal, retrieval, feedback confirmation, replay, and batch extraction.</p>
+  </section>
+  <h2>Backend Parity</h2>
+  <table><thead><tr><th>Backend</th><th>Status</th><th>Elapsed</th><th>Selected refs</th><th>Context tokens</th><th>Summary refresh</th></tr></thead><tbody><tr><td>C++</td><td class="ok">pass</td><td>200.53 ms</td><td>1</td><td>18</td><td>3 nodes</td></tr><tr><td>Rust</td><td class="ok">pass</td><td>164.34 ms</td><td>1</td><td>18</td><td>3 nodes</td></tr></tbody></table>
+  <h2>Feature Parity</h2>
+  <table><thead><tr><th>Backend</th><th>Status</th><th>Elapsed</th><th>Online retrieve</th><th>Feedback</th><th>Batch</th><th>Tree traversal</th><th>Replay</th></tr></thead><tbody><tr><td>C++</td><td class="ok">pass</td><td>234.31 ms</td><td>pass</td><td>pass</td><td>pass</td><td>pass</td><td>pass</td></tr><tr><td>Rust</td><td class="ok">pass</td><td>203.63 ms</td><td>pass</td><td>pass</td><td>pass</td><td>pass</td><td>pass</td></tr></tbody></table>
+  <h2>Checks Passed</h2>
+  <ul><li><code>online_ingest_new_event</code></li><li><code>online_summary_refreshed</code></li><li><code>online_retrieve_selected</code></li><li><code>feedback_confirmation</code></li><li><code>post_feedback_retrieve_selected</code></li><li><code>batch_extract_committed</code></li><li><code>batch_summary_refreshed</code></li><li><code>current_preference_selected</code></li><li><code>current_location_selected</code></li><li><code>replay_has_records</code></li></ul>
+  <h2>Tree Traversal</h2>
+  <p>Both backends used tree-first traversal without flat fallback. The run used <code>node_l0</code> and <code>node_l1</code> summary embeddings, <code>top_k_per_layer = 8</code>, and <code>max_children_scored_per_parent = 10000</code>.</p>
+  <h2>Pipeline Proven</h2>
+  <pre>message / batch
+-&gt; MatrixArk extraction
+-&gt; ContextNode path materialization
+-&gt; ContextEvent / ContextEntity / ContextIndex writes
+-&gt; dirty summary marker
+-&gt; async L0/L1 summary refresh + embedding write
+-&gt; tree-first retrieval over summary embeddings
+-&gt; event/entity selection
+-&gt; token-budgeted ContextPack
+-&gt; feedback confirmation
+-&gt; replay</pre>
+  <h2>Artifacts</h2>
+  <ul><li><code>/tmp/matrixark-mcp-backend-parity/matrixark_mcp_backend_parity_cpp-rust-parity-20260623-now.json</code></li><li><code>/tmp/matrixark-mcp-backend-parity/matrixark_mcp_backend_parity_cpp-rust-parity-20260623-now.md</code></li><li><code>/tmp/matrixark-mcp-feature-parity/matrixark_mcp_feature_parity_cpp-rust-feature-20260623-now.json</code></li><li><code>/tmp/matrixark-mcp-feature-parity/matrixark_mcp_feature_parity_cpp-rust-feature-20260623-now.md</code></li></ul>
+  <h2>Remaining Gaps</h2>
+  <p>This is functional context pipeline parity, not final production throughput parity. Larger LOCOMO and LongMemEval runs still need continued batching/write-path optimization, native index/tree API pushdown, and separate multi-node/Raft validation.</p>
+</main>
+</body>
+</html>
