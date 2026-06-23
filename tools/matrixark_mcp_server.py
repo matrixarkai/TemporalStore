@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import secrets
+import select
 import subprocess
 import hashlib
 import json
@@ -4112,12 +4113,11 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
 
 
 class MatrixArkRustCliClient:
-    """Small process boundary around the Rust TemporalStore SDK.
+    """Persistent process boundary around the Rust TemporalStore SDK.
 
-    The Rust binary owns direct SDK linkage and exposes the same tiny storage API
-    the MatrixArk record log needs. Keeping this boundary narrow lets the MCP
-    server run identical extraction/retrieval logic over either C++ direct SDK or
-    Rust direct SDK storage.
+    The Rust binary owns direct SDK linkage and runs in JSON-lines serve mode.
+    Keeping one process alive avoids spawning the CLI and reconnecting the Rust
+    SDK for every hset/hget, which was the main Rust MCP latency source.
     """
 
     def __init__(
@@ -4138,6 +4138,58 @@ class MatrixArkRustCliClient:
         self.table = table
         self.request_timeout_ms = request_timeout_ms
         self.io_timeout_ms = io_timeout_ms
+        self._lock = threading.Lock()
+        self._proc: subprocess.Popen[str] | None = None
+
+    def close(self) -> None:
+        proc = self._proc
+        self._proc = None
+        if proc is None:
+            return
+        if proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=2)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
+    def _ensure_proc(self) -> subprocess.Popen[str]:
+        if self._proc is not None and self._proc.poll() is None:
+            return self._proc
+        self.close()
+        self._proc = subprocess.Popen(
+            [self.cli_path, "--serve"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+        return self._proc
+
+    def _read_json_line(self, proc: subprocess.Popen[str], op: str) -> Json:
+        assert proc.stdout is not None
+        deadline = time.monotonic() + max(2.0, self.request_timeout_ms / 1000.0 + 2.0)
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                stderr = proc.stderr.read() if proc.stderr else ""
+                raise MatrixArkError(f"Rust TemporalStore {op} process exited ({proc.returncode}): {stderr[-1000:]}")
+            ready, _, _ = select.select([proc.stdout], [], [], 0.05)
+            if not ready:
+                continue
+            line = proc.stdout.readline()
+            if not line:
+                continue
+            if not line.strip().startswith("{"):
+                continue
+            try:
+                return json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise MatrixArkError(f"Rust TemporalStore {op} returned invalid JSON: {line[:200]!r}") from exc
+        raise MatrixArkError(f"Rust TemporalStore {op} timed out waiting for response")
 
     def _call(self, op: str, **kwargs: Any) -> str:
         command = {
@@ -4149,25 +4201,20 @@ class MatrixArkRustCliClient:
             "io_timeout_ms": self.io_timeout_ms,
             **kwargs,
         }
-        proc = subprocess.run(
-            [self.cli_path],
-            input=json.dumps(command, separators=(",", ":")),
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-            timeout=max(2.0, self.request_timeout_ms / 1000.0 + 2.0),
-        )
-        if proc.returncode != 0:
-            raise MatrixArkError(f"Rust TemporalStore {op} failed: {proc.stderr.strip() or proc.stdout.strip()}")
-        try:
-            json_lines = [line for line in proc.stdout.splitlines() if line.strip().startswith("{")]
-            payload = json.loads(json_lines[-1] if json_lines else "{}")
-        except json.JSONDecodeError as exc:
-            raise MatrixArkError(f"Rust TemporalStore {op} returned invalid JSON: {proc.stdout[:200]!r}") from exc
-        if not payload.get("ok"):
-            raise MatrixArkError(f"Rust TemporalStore {op} failed: {payload.get('error', 'unknown error')}")
-        return str(payload.get("value", ""))
+        payload = json.dumps(command, separators=(",", ":")) + "\n"
+        with self._lock:
+            proc = self._ensure_proc()
+            assert proc.stdin is not None
+            try:
+                proc.stdin.write(payload)
+                proc.stdin.flush()
+            except BrokenPipeError as exc:
+                self.close()
+                raise MatrixArkError(f"Rust TemporalStore {op} pipe closed") from exc
+            response = self._read_json_line(proc, op)
+        if not response.get("ok"):
+            raise MatrixArkError(f"Rust TemporalStore {op} failed: {response.get('error', 'unknown error')}")
+        return str(response.get("value", ""))
 
     def put_string(self, key: str, value: str) -> None:
         self._call("put_string", key=key, value=value)

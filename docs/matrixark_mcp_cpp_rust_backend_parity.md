@@ -10,10 +10,11 @@ The MatrixArk extraction, ingestion, retrieval, summary refresh, and context-pac
 
 ## Rust Path
 
-The Rust path uses a small direct-SDK CLI:
+The Rust path uses a small direct-SDK CLI that supports both single-shot commands and persistent serve mode:
 
 ```bash
 sdk/rust/temporalstore/target/release/matrixark_record_log
+sdk/rust/temporalstore/target/release/matrixark_record_log --serve
 ```
 
 Supported operations:
@@ -23,7 +24,7 @@ Supported operations:
 - `hset`
 - `hget`
 
-The MCP server calls that CLI through `MatrixArkRustCliClient`, so the Python MCP server can exercise Rust TemporalStore storage without adding a long-lived Rust daemon yet.
+The MCP server calls `matrixark_record_log --serve` through `MatrixArkRustCliClient`, keeping one Rust process alive and reusing the Rust SDK client across storage operations. This gives Rust backend parity without process-per-operation latency.
 
 ## Launchers
 
