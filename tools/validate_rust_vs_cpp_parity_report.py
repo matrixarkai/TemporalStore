@@ -27,6 +27,19 @@ REQUIRED_PHRASES = [
     "full Rust TemporalStore replay",
     "VikingMem paper-comparable",
     "C++ static surface gates",
+    "ContextEntity",
+    "ContextSegment",
+    "context_benchmark_injection_entity_segment_index",
+    "packed LOCOMO",
+    "80 cases and 168 steps",
+    "/root/src/github-services/TemporalStore",
+    "ContextChildModel",
+    "ContextEmbeddingModel",
+    "ContextSummaryModel",
+    "ContextCompressionModel",
+    "`ContextEntityModel`",
+    "`QUERY_NODE_CONTEXT`",
+    "`WRITE_EXTRACTED_EVENT`",
 ]
 
 
@@ -40,6 +53,7 @@ REQUIRED_DOC_LINKS = [
     "docs/unified_test_case_inventory.md",
     "docs/rust_temporalstore_locomo_longmemeval_benchmark_metrics.md",
     "docs/benchmark_reproducibility_evidence.md",
+    "docs/context_benchmark_entity_segment_index_contract.md",
 ]
 
 

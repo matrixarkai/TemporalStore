@@ -25,9 +25,44 @@ The implementation decision remains explicit:
 | Client/proxy | Rust-native migration contract is HTTP/JSON, RESP, and tonic. Topology sync, retry budgets, route invalidation, quarantine, admission, and aliases are tracked. | `docs/client_vs_cpp.md`, `docs/client_sdk_contract.md` |
 | Data-node/metaserver | Rust has lifecycle, scheduler, heartbeat, topology, membership, and readiness evidence, but global production claims still depend on real deployment-scale evidence. | `docs/data_node_vs_cpp.md`, `docs/metaserver_vs_cpp.md` |
 | Ingestion | Shared cases cover Kafka offsets, rebalance/backpressure, Flink checkpoints, dead letters, lag metrics, and restart idempotence. C++ execution still needs broader native shared-runner coverage. | `docs/unified_test_case_inventory.md` |
-| Context/benchmarks | LOCOMO and LongMemEval_s full deterministic runs use Rust TemporalStore for ingestion, event storage, retrieval, and replay. Live GPT-4o-mini/OpenAI-compatible reader evidence is still required for VikingMem paper-comparable claims. | `docs/rust_temporalstore_locomo_longmemeval_benchmark_metrics.md`, `docs/benchmark_reproducibility_evidence.md` |
-| Unified tests | The shared corpus has 79 cases and 166 steps. Rust executes 26 shared behavior cases. C++ still has many static surface gates that should become native executable shared cases. | `docs/unified_test_case_inventory.md`, `compat/unified_temporalstore_cases.json` |
+| Context/benchmarks | LOCOMO and LongMemEval_s full deterministic runs use Rust TemporalStore for ingestion, event storage, retrieval, and replay. Recent Context parity covers `ContextEntity`/`ContextSegment` aliases, source secondary-index routing, L0/L1/L2 prompt injection, and packed LOCOMO source ingestion through bounded Context metadata. Live GPT-4o-mini/OpenAI-compatible reader evidence is still required for VikingMem paper-comparable claims. | `docs/rust_temporalstore_locomo_longmemeval_benchmark_metrics.md`, `docs/benchmark_reproducibility_evidence.md`, `docs/context_benchmark_entity_segment_index_contract.md` |
+| Unified tests | The shared corpus has 80 cases and 168 steps. Rust executes the recent Context benchmark-injection case directly. C++ still has many static surface gates that should become native executable shared cases. | `docs/unified_test_case_inventory.md`, `compat/unified_temporalstore_cases.json` |
 | Ops/scale | Local readiness evidence exists, but broad production readiness needs a Docker/AWS multi-service SLO package. | `docs/storage_raft_production_readiness_plan.md`, `docs/aws_existing_eks_deployment.md` |
+
+## Recent Context Parity Pass
+
+The latest Rust Context work closes the recent benchmark/pipeline gaps against the shared C++/Rust
+contract:
+
+- `ContextEntity` and `ContextSegment` are public Rust aliases for the node-level and
+  timestamp-keyed Context records, matching the benchmark and C++ migration vocabulary without
+  creating a second storage layout.
+- `context_benchmark_injection_entity_segment_index` is now a shared corpus case. Rust executes it
+  directly: extract a LOCOMO-style turn, write entity/segment/index records, query the source
+  secondary index, retrieve L0/L1/L2 blocks, inject them into `<context>`, and verify
+  `ContextPackAudit` selected refs.
+- Packed LOCOMO full-source replay no longer fails Rust ingestion on oversized packed source
+  titles. The harness compacts node metadata to C++/Rust Context validation limits while preserving
+  full segment text and source refs for retrieval scoring.
+
+The newer C++ Context code at `/root/src/github-services/TemporalStore` goes further than the
+current Rust implementation:
+
+| C++ Context surface | C++ model/function evidence | Rust status |
+| --- | --- | --- |
+| `ContextChildModel` | model id `14`, `UPSERT_CHILD_REF`, `QUERY_CHILDREN` | Missing as a first-class Rust model/API. |
+| `ContextEmbeddingModel` | model id `15`, `UPSERT_EMBEDDING`, `QUERY_EMBEDDINGS` | Missing as a first-class Rust model/API; Rust provider profiles and benchmark reports track embedding choices only. |
+| `ContextSummaryModel` | model id `16`, `UPSERT_SUMMARY`, `QUERY_SUMMARIES`, L0/L1 summary retrieval | Partially represented by `ContextNode.l0` / `ContextNode.l1_ref` and dirty markers, but missing the C++ summary timeline model. |
+| `ContextCompressionModel` | model id `17`, `WRITE_COMPRESSION_EVENT`, `QUERY_COMPRESSION_EVENTS`, `COMPRESS_EVENTS` | Missing as a first-class Rust model/API. |
+| `ContextEntityModel` | model id `18`, `UPSERT_ENTITY`, `GET_ENTITY`, `QUERY_ENTITIES` | Rust currently has a benchmark vocabulary alias; it does not yet have the C++ entity object model. |
+| Integrated node context | `QUERY_NODE_CONTEXT` returns node, latest summary, and cold-window compression summaries | Missing as a Rust command/API. |
+| Extracted event fanout | `WRITE_EXTRACTED_EVENT` writes events plus internal indexes for entity/status/source/time bucket | Rust writes event plus source index in the benchmark workflow, but does not yet expose the full C++ extracted-index fanout. |
+
+So the honest current state is: Rust is benchmark-compatible for recent Context ingestion/retrieval
+evidence and shared corpus validation, but it is not yet C++ feature-complete for the newest
+Context storage models. The next parity slice should add Rust-native structs, commands, engine
+storage, client/proxy/admin coverage, and shared corpus cases for child refs, embeddings, summaries,
+compression events, and first-class entities.
 
 ## Readiness Evidence Fields
 
@@ -76,7 +111,11 @@ They are not VikingMem paper-comparable until a live reader endpoint run succeed
 
 - Broader Docker/AWS multi-service SLO evidence for global production readiness.
 - Live GPT-4o-mini/OpenAI-compatible reader evidence for VikingMem-comparable benchmark claims.
-- Native C++ execution for many shared corpus cases that are currently C++ static surface gates.
+- Native C++ execution for many shared corpus cases that are currently C++ static surface gates,
+  including the recent ContextEntity/ContextSegment benchmark-injection contract.
+- Rust implementation of the newest C++ Context models: `ContextChildModel`,
+  `ContextEmbeddingModel`, `ContextSummaryModel`, `ContextCompressionModel`, and the first-class
+  `ContextEntityModel`.
 - Continued migration of Rust-local product tests into the shared corpus.
 - Any future live ByteStore/S3 requirement, if brought back into scope, needs separate follower-cursor
   and Raft-snapshot retention evidence.

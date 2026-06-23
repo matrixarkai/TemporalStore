@@ -173,6 +173,8 @@ AREAS: tuple[ApiModelArea, ...] = (
                 (
                     "ContextNodeModel",
                     "ContextEventModel",
+                    "ContextEntity",
+                    "ContextSegment",
                     "context_model_descriptors",
                     "CONTEXT_EVENT_MODEL_ID",
                     "ContextWire",
