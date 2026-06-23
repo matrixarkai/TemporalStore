@@ -50,6 +50,8 @@ class MatrixArkMcpServerTest(unittest.TestCase):
                 "matrixark_feedback",
                 "matrixark_replay",
                 "matrixark_admin_create_account",
+                "matrixark_admin_update_account",
+                "matrixark_admin_list_accounts",
                 "matrixark_admin_create_user",
                 "matrixark_admin_update_user",
                 "matrixark_admin_list_users",
@@ -97,6 +99,8 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         self.assertIn("allowed_session_ids", create_key["inputSchema"]["properties"])
         create_user = next(tool for tool in response["result"]["tools"] if tool["name"] == "matrixark_admin_create_user")
         self.assertEqual(create_user["inputSchema"]["required"], ["user_id"])
+        self.assertIn("matrixark_admin_update_account", names)
+        self.assertIn("matrixark_admin_list_accounts", names)
         self.assertIn("matrixark_admin_update_user", names)
         self.assertIn("matrixark_admin_list_users", names)
         self.assertIn("matrixark_admin_list_api_keys", names)
@@ -504,6 +508,89 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         )
         self.assertIn("error", error_response)
         self.assertIn("invalid or revoked", error_response["error"]["message"])
+
+    def test_account_tenant_status_and_scope_validation(self):
+        self.call_tool(
+            "matrixark_admin_create_account",
+            {"account_id": "acct_acme", "tenant_id": "tenant_eng", "account_name": "Acme", "tenant_name": "Engineering"},
+        )
+        accounts = self.call_tool("matrixark_admin_list_accounts", {"account_id": "acct_acme"})
+        self.assertEqual(accounts["count"], 1)
+        self.assertEqual(accounts["accounts"][0]["account_status"], "active")
+        self.assertEqual(accounts["accounts"][0]["tenant_status"], "active")
+
+        unknown_scope = self.server.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 49,
+                "method": "tools/call",
+                "params": {
+                    "name": "matrixark_admin_create_api_key",
+                    "arguments": {
+                        "account_id": "acct_acme",
+                        "tenant_id": "tenant_eng",
+                        "scopes": ["context:retrieve", "context:delete_everything"],
+                    },
+                },
+            }
+        )
+        self.assertIn("error", unknown_scope)
+        self.assertIn("unknown MatrixArk scope", unknown_scope["error"]["message"])
+
+        api_key = self.call_tool(
+            "matrixark_admin_create_api_key",
+            {
+                "account_id": "acct_acme",
+                "tenant_id": "tenant_eng",
+                "scopes": ["context:retrieve"],
+            },
+        )["api_key"]
+        disabled = self.call_tool(
+            "matrixark_admin_update_account",
+            {
+                "account_id": "acct_acme",
+                "tenant_id": "tenant_eng",
+                "tenant_status": "disabled",
+            },
+        )
+        self.assertEqual(disabled["tenant_status"], "disabled")
+        blocked = self.server.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 48,
+                "method": "tools/call",
+                "params": {
+                    "name": "matrixark_retrieve",
+                    "arguments": {"api_key": api_key, "query": "anything", "scope": {"user_id": "alice"}},
+                },
+            }
+        )
+        self.assertIn("error", blocked)
+        self.assertIn("tenant is disabled", blocked["error"]["message"])
+
+        reenabled = self.call_tool(
+            "matrixark_admin_update_account",
+            {
+                "account_id": "acct_acme",
+                "tenant_id": "tenant_eng",
+                "tenant_status": "active",
+                "account_status": "disabled",
+            },
+        )
+        self.assertEqual(reenabled["account_status"], "disabled")
+        blocked_account = self.server.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 47,
+                "method": "tools/call",
+                "params": {
+                    "name": "matrixark_retrieve",
+                    "arguments": {"api_key": api_key, "query": "anything", "scope": {"user_id": "alice"}},
+                },
+            }
+        )
+        self.assertIn("error", blocked_account)
+        self.assertIn("account is disabled", blocked_account["error"]["message"])
 
     def test_disabled_user_blocks_api_key_context_access(self):
         self.call_tool(

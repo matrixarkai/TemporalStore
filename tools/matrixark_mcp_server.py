@@ -58,6 +58,7 @@ MATRIXARK_CONTEXT_SCOPES = {
     "context:replay",
     "resource:ingest",
 }
+MATRIXARK_ALL_SCOPES = MATRIXARK_CONTEXT_SCOPES | MATRIXARK_ADMIN_SCOPES
 MATRIXARK_TOOL_SCOPES: dict[str, set[str]] = {
     "matrixark_ingest": {"context:ingest"},
     "matrixark_batch_extract": {"context:ingest"},
@@ -67,6 +68,8 @@ MATRIXARK_TOOL_SCOPES: dict[str, set[str]] = {
     "matrixark_feedback": {"context:feedback"},
     "matrixark_replay": {"context:replay"},
     "matrixark_admin_create_account": {"admin:account"},
+    "matrixark_admin_update_account": {"admin:account"},
+    "matrixark_admin_list_accounts": {"admin:account"},
     "matrixark_admin_create_user": {"admin:user"},
     "matrixark_admin_update_user": {"admin:user"},
     "matrixark_admin_list_users": {"admin:user"},
@@ -3317,6 +3320,8 @@ class MatrixArkAccessManager:
                 raise MatrixArkError("scope.account_id does not match API key account")
             if requested_tenant and requested_tenant != tenant_id:
                 raise MatrixArkError("scope.tenant_id does not match API key tenant")
+            if required_scopes.intersection(MATRIXARK_CONTEXT_SCOPES):
+                self.ensure_account_tenant_active(account_id, tenant_id)
             requested_user = str(scope.get("user_id", ""))
             requested_session = str(scope.get("session_id", ""))
             allowed_user_ids = set(key_record.get("allowed_user_ids", []))
@@ -3351,7 +3356,7 @@ class MatrixArkAccessManager:
             "api_key_id": "dev",
             "account_id": account_id,
             "tenant_id": tenant_id,
-            "scopes": sorted(MATRIXARK_CONTEXT_SCOPES | MATRIXARK_ADMIN_SCOPES),
+            "scopes": sorted(MATRIXARK_ALL_SCOPES),
             "role": "dev_admin",
             "user_id": str(scope.get("user_id", "")),
             "session_id": str(scope.get("session_id", "")),
@@ -3385,6 +3390,30 @@ class MatrixArkAccessManager:
                     return None
                 return record
         return None
+
+    def latest_account_record(self, account_id: str) -> Json | None:
+        for record in reversed(self.adapter.read_all()):
+            if record.get("record_type") == "matrixark_account" and record.get("account_id") == account_id:
+                return record
+        return None
+
+    def latest_tenant_record(self, account_id: str, tenant_id: str) -> Json | None:
+        for record in reversed(self.adapter.read_all()):
+            if (
+                record.get("record_type") == "matrixark_tenant"
+                and record.get("account_id") == account_id
+                and record.get("tenant_id") == tenant_id
+            ):
+                return record
+        return None
+
+    def ensure_account_tenant_active(self, account_id: str, tenant_id: str) -> None:
+        account = self.latest_account_record(account_id)
+        if account and account.get("status") != "active":
+            raise MatrixArkError("account is disabled")
+        tenant = self.latest_tenant_record(account_id, tenant_id)
+        if tenant and tenant.get("status") != "active":
+            raise MatrixArkError("tenant is disabled")
 
     def latest_api_key_record(self, api_key_id: str) -> Json | None:
         for record in reversed(self.adapter.read_all()):
@@ -3483,6 +3512,110 @@ class MatrixArkAccessManager:
         )
         self.append_audit("admin.create_account", identity, status="ok", details={"account_id": account_id, "tenant_id": tenant_id})
         return {"status": "created", "account_id": account_id, "tenant_id": tenant_id}
+
+    def update_account(self, args: Json, identity: Json) -> Json:
+        scope = optional_object(args, "scope")
+        account_id = canonical_account_id(optional_string(args, "account_id") or str(scope.get("account_id") or identity["account_id"]))
+        tenant_id = canonical_tenant_id(optional_string(args, "tenant_id") or str(scope.get("tenant_id") or identity["tenant_id"]))
+        self.ensure_identity_can_manage(identity, account_id, tenant_id)
+        current_account = self.latest_account_record(account_id) or {}
+        current_tenant = self.latest_tenant_record(account_id, tenant_id) or {}
+        account_status = optional_string(args, "account_status", str(current_account.get("status") or "active"))
+        tenant_status = optional_string(args, "tenant_status", str(current_tenant.get("status") or "active"))
+        if account_status not in {"active", "disabled"}:
+            raise MatrixArkError("account_status must be active or disabled")
+        if tenant_status not in {"active", "disabled"}:
+            raise MatrixArkError("tenant_status must be active or disabled")
+        account_name = optional_string(args, "account_name", str(current_account.get("account_name") or account_id))
+        tenant_name = optional_string(args, "tenant_name", str(current_tenant.get("tenant_name") or tenant_id))
+        account_record = {
+            "record_type": "matrixark_account",
+            "account_id": account_id,
+            "account_name": account_name,
+            "status": account_status,
+            "created_by_api_key_id": current_account.get("created_by_api_key_id", identity.get("api_key_id", "")),
+            "created_at_ms": current_account.get("created_at_ms", now_ms()),
+            "updated_by_api_key_id": identity.get("api_key_id", ""),
+            "updated_at_ms": now_ms(),
+        }
+        tenant_record = {
+            "record_type": "matrixark_tenant",
+            "account_id": account_id,
+            "tenant_id": tenant_id,
+            "tenant_name": tenant_name,
+            **identity_hashes(account_id, tenant_id),
+            "status": tenant_status,
+            "created_by_api_key_id": current_tenant.get("created_by_api_key_id", identity.get("api_key_id", "")),
+            "created_at_ms": current_tenant.get("created_at_ms", now_ms()),
+            "updated_by_api_key_id": identity.get("api_key_id", ""),
+            "updated_at_ms": now_ms(),
+        }
+        self.adapter.append(account_record)
+        self.adapter.append(tenant_record)
+        self.append_audit(
+            "admin.update_account",
+            identity,
+            status="ok",
+            details={"account_id": account_id, "tenant_id": tenant_id, "account_status": account_status, "tenant_status": tenant_status},
+        )
+        return {
+            "status": "updated",
+            "account_id": account_id,
+            "tenant_id": tenant_id,
+            "account_status": account_status,
+            "tenant_status": tenant_status,
+            "tenant_hash": tenant_record["tenant_hash"],
+        }
+
+    def list_accounts(self, args: Json, identity: Json) -> Json:
+        limit = args.get("limit", 100)
+        if not isinstance(limit, int) or limit <= 0:
+            raise MatrixArkError("limit must be a positive integer")
+        requested_account = optional_string(args, "account_id", "")
+        requested_tenant = optional_string(args, "tenant_id", "")
+        if identity.get("mode") != "dev":
+            requested_account = identity["account_id"]
+            requested_tenant = requested_tenant or identity["tenant_id"]
+        latest_accounts: dict[str, Json] = {}
+        latest_tenants: dict[tuple[str, str], Json] = {}
+        for record in reversed(self.adapter.read_all()):
+            if record.get("record_type") == "matrixark_account":
+                account_id = str(record.get("account_id", ""))
+                if not account_id or account_id in latest_accounts:
+                    continue
+                if requested_account and account_id != requested_account:
+                    continue
+                latest_accounts[account_id] = record
+            elif record.get("record_type") == "matrixark_tenant":
+                account_id = str(record.get("account_id", ""))
+                tenant_id = str(record.get("tenant_id", ""))
+                key = (account_id, tenant_id)
+                if not account_id or not tenant_id or key in latest_tenants:
+                    continue
+                if requested_account and account_id != requested_account:
+                    continue
+                if requested_tenant and tenant_id != requested_tenant:
+                    continue
+                latest_tenants[key] = record
+        rows = []
+        for (account_id, tenant_id), tenant in latest_tenants.items():
+            account = latest_accounts.get(account_id) or self.latest_account_record(account_id) or {}
+            rows.append(
+                {
+                    "account_id": account_id,
+                    "account_name": account.get("account_name", ""),
+                    "account_status": account.get("status", ""),
+                    "tenant_id": tenant_id,
+                    "tenant_name": tenant.get("tenant_name", ""),
+                    "tenant_status": tenant.get("status", ""),
+                    "tenant_hash": tenant.get("tenant_hash", 0),
+                    "created_at_ms": tenant.get("created_at_ms", 0),
+                    "updated_at_ms": tenant.get("updated_at_ms", 0),
+                }
+            )
+            if len(rows) >= limit:
+                break
+        return {"status": "ok", "accounts": rows, "count": len(rows)}
 
     def create_user(self, args: Json, identity: Json) -> Json:
         scope = optional_object(args, "scope")
@@ -3592,6 +3725,9 @@ class MatrixArkAccessManager:
         scopes = optional_string_list(args, "scopes", ["context:ingest", "context:retrieve", "context:feedback", "context:replay"])
         if not scopes:
             raise MatrixArkError("scopes must not be empty")
+        unknown_scopes = sorted(set(scopes) - MATRIXARK_ALL_SCOPES)
+        if unknown_scopes:
+            raise MatrixArkError(f"unknown MatrixArk scope(s): {unknown_scopes}")
         role = optional_string(args, "role", "service")
         display_name = optional_string(args, "display_name", role)
         allowed_user_ids = sorted(set(optional_string_list(args, "allowed_user_ids", [])))
@@ -4117,6 +4253,39 @@ TOOLS: list[Json] = [
         },
     },
     {
+        "name": "matrixark_admin_update_account",
+        "description": "Update account or tenant metadata and active/disabled status.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "account_id": {"type": "string"},
+                "tenant_id": {"type": "string"},
+                "scope": SCOPE_SCHEMA,
+                "account_name": {"type": "string"},
+                "tenant_name": {"type": "string"},
+                "account_status": {"type": "string", "enum": ["active", "disabled"]},
+                "tenant_status": {"type": "string", "enum": ["active", "disabled"]},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_admin_list_accounts",
+        "description": "List account and tenant metadata visible to the caller.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "account_id": {"type": "string"},
+                "tenant_id": {"type": "string"},
+                "scope": SCOPE_SCHEMA,
+                "limit": {"type": "integer", "default": 100},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
         "name": "matrixark_admin_create_user",
         "description": "Create or register a MatrixArk user under an account/tenant.",
         "inputSchema": {
@@ -4356,6 +4525,10 @@ class MatrixArkMcpServer:
             return {**result, "access": args.get("_matrixark_auth", {})}
         if name == "matrixark_admin_create_account":
             return self.access.create_account(args, identity)
+        if name == "matrixark_admin_update_account":
+            return self.access.update_account(args, identity)
+        if name == "matrixark_admin_list_accounts":
+            return self.access.list_accounts(args, identity)
         if name == "matrixark_admin_create_user":
             return self.access.create_user(args, identity)
         if name == "matrixark_admin_update_user":
