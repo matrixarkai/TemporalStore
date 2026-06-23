@@ -105,6 +105,8 @@ def _call_tool(proc: McpProcess, name: str, arguments: dict[str, Any], timeout_s
 def _backend_command(backend: str) -> list[str]:
     if backend == "local":
         return [sys.executable, str(ROOT / "tools" / "matrixark_mcp_server.py"), "--backend", "local", "--line-json"]
+    if backend == "local-nometa":
+        return ["bash", str(ROOT / "tools" / "matrixark_mcp_cpp_server.sh"), "--line-json"]
     if backend == "cpp":
         return ["bash", str(ROOT / "tools" / "matrixark_mcp_cpp_server.sh"), "--line-json"]
     if backend == "rust":
@@ -122,6 +124,10 @@ def run_backend(backend: str, run_id: str) -> dict[str, Any]:
     env["MATRIXARK_TEMPORALSTORE_PREFIX"] = f"matrixark:mcp:parity:{backend}:{run_id}"
     if backend == "local":
         env["MATRIXARK_MCP_EVENT_LOG"] = str(REPORT_DIR / f"{run_id}-{backend}.jsonl")
+    if backend == "local-nometa":
+        env["MATRIXARK_LOCAL_MODE"] = "no-metaserver"
+        env["MATRIXARK_MCP_AUTOSTART_CPP"] = "0"
+        env["MATRIXARK_TEMPORALSTORE_LOCAL_STORE"] = str(REPORT_DIR / f"{run_id}-{backend}.jsonl")
     proc = McpProcess(backend, _backend_command(backend), env)
     try:
         proc.request(
@@ -186,7 +192,7 @@ def run_backend(backend: str, run_id: str) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--backends", nargs="+", default=["local", "cpp", "rust"], choices=["local", "cpp", "rust"])
+    parser.add_argument("--backends", nargs="+", default=["local", "cpp", "rust"], choices=["local", "local-nometa", "cpp", "rust"])
     parser.add_argument("--run-id", default=str(int(time.time())))
     args = parser.parse_args()
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
@@ -243,3 +249,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
