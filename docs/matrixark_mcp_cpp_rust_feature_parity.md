@@ -18,8 +18,8 @@ The runner writes machine-readable artifacts to:
 Latest validated run:
 
 ```text
-/tmp/matrixark-mcp-feature-parity/matrixark_mcp_feature_parity_1782242382.json
-/tmp/matrixark-mcp-feature-parity/matrixark_mcp_feature_parity_1782242382.md
+/tmp/matrixark-mcp-feature-parity/matrixark_mcp_feature_parity_1782242945.json
+/tmp/matrixark-mcp-feature-parity/matrixark_mcp_feature_parity_1782242945.md
 ```
 
 ## What The Test Covers
@@ -58,12 +58,17 @@ The goal is storage-path parity, not model-quality benchmarking. By default this
 
 ## Timing
 
-Latest run timing:
+Latest feature-parity run timing:
 
-- C++ TemporalStore path: about `956 ms`.
-- Rust TemporalStore path: about `35.7 s`.
+- C++ TemporalStore path: about `1.33 s`.
+- Rust TemporalStore path: about `1.47 s`.
 
-The Rust path is logically correct but slower because the current MCP bridge invokes the Rust `matrixark_record_log` CLI once per storage operation. This is acceptable for parity validation but not the final production shape. A production Rust path should use either a long-lived Rust service/gateway or a Python-callable Rust binding to avoid process-per-operation overhead.
+Latest lightweight backend-parity run timing:
+
+- C++ TemporalStore path: about `610 ms` after local deployment readiness.
+- Rust TemporalStore path: about `444 ms` after local deployment readiness.
+
+The Rust MCP path now keeps `matrixark_record_log --serve` alive as a persistent JSON-lines process and reuses the Rust SDK client internally. That removes the old process-per-operation bottleneck where Rust took about `6.6 s` on the lightweight parity run and about `35.7 s` on the feature-parity run.
 
 ## C++ vs Rust Comparison
 
@@ -90,12 +95,14 @@ The latest run passed these parity checks:
 
 ## Next Gap
 
-The next Rust parity gap is performance, not correctness:
+The next Rust parity gap is production packaging, not correctness:
 
 ```text
 Current Rust MCP path:
-MatrixArk MCP -> Python RustCliClient -> spawn matrixark_record_log per op -> Rust SDK -> TemporalStore
+MatrixArk MCP -> persistent matrixark_record_log --serve process -> Rust SDK -> TemporalStore
 
-Target Rust MCP path:
+Future production option:
 MatrixArk MCP -> long-lived Rust gateway or Python-callable Rust binding -> Rust SDK -> TemporalStore
 ```
+
+The persistent process is enough for MCP parity and local debugging. A native gateway or binding can further improve concurrency and operational control.
