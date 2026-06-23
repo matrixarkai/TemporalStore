@@ -1,4 +1,4 @@
-﻿# MatrixArk C++ / Rust Context Parity
+# MatrixArk C++ / Rust Context Parity
 
 ## Policy
 
@@ -47,20 +47,34 @@ Run this before claiming C++ and Rust context parity:
 bash tools/run_rust_unified_tests.sh
 ```
 
-That wrapper performs:
+The wrapper calls the unified test API:
+
+```bash
+python3 tools/run_unified_parity_tests.py \
+  --corpus sdk/unified/temporalstore_unified_corpus.json \
+  --result-dir /tmp/temporalstore-unified-parity
+```
+
+The unified runner writes one JSON report and one Markdown report:
+
+```bash
+/tmp/temporalstore-unified-parity/unified_parity_report.json
+/tmp/temporalstore-unified-parity/unified_parity_report.md
+```
+
+You can still run individual stages while debugging:
 
 ```bash
 python3 tools/run_temporalstore_unified_tests.py \
-  --corpus sdk/unified/temporalstore_unified_corpus.json
+  --corpus sdk/unified/temporalstore_unified_corpus.json \
+  --validate-only
 
-cargo test --no-default-features --features proxy --test unified_corpus
-```
-
-You can also run the C++ contract directly:
-
-```bash
 bash tools/run_cpp_unified_context_contract.sh \
   sdk/unified/temporalstore_unified_corpus.json
+
+cd sdk/rust/temporalstore && \
+  TEMPORALSTORE_UNIFIED_CORPUS=/root/src/github-services/TemporalStore/sdk/unified/temporalstore_unified_corpus.json \
+  cargo test --no-default-features --features proxy --test unified_corpus
 ```
 
 ## Development Rule
@@ -75,4 +89,4 @@ When C++ adds or changes a context feature:
 
 This keeps Rust from silently lagging behind C++ as MatrixArk adds context nodes,
 events, entities, summaries, compression, indexes, and model-backed extraction
-metadata.
+metadata. See `docs/temporalstore_unified_test_contract.md` for the exact input, output, and runner API.
