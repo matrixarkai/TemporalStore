@@ -144,17 +144,6 @@ def commit_reason_for_event(event: str) -> str:
     return "manual_api"
 
 
-def codex_node_path(args: argparse.Namespace, event: str) -> list[str]:
-    return [
-        f"account:{args.account_id}",
-        f"tenant:{args.tenant_id}",
-        f"principal:user:{args.user_id}",
-        "collection:sessions",
-        f"session:{args.session_id}",
-        f"event:{event}",
-    ]
-
-
 def call_tool(server: Any, name: str, arguments: Json) -> Json:
     response = server.handle(
         {
@@ -222,7 +211,6 @@ def main() -> int:
                 "source": "codex_hook",
                 "codex_event": args.event,
                 "raw_hook_payload": payload,
-                "node_path": codex_node_path(args, args.event),
                 "compacted_session_summary": args.event == "PostCompact",
             },
             "agent_hook": {

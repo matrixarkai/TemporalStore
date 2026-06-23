@@ -100,6 +100,10 @@ class MatrixArkCodexHookTest(unittest.TestCase):
         self.assertIn("context_event", record_types)
         self.assertIn("context_pack_audit", record_types)
         self.assertTrue(any(record.get("agent_hook", {}).get("source") == "codex" for record in records))
+        nodes = [record for record in records if record.get("record_type") == "context_node"]
+        self.assertEqual([record.get("node_path") for record in nodes[:2]], [["user:codex-user"], ["user:codex-user", "session:codex-session"]])
+        events = [record for record in records if record.get("record_type") == "context_event"]
+        self.assertFalse(any("node_path" in record.get("envelope", {}).get("metadata", {}) for record in events))
 
     def test_codex_session_stop_commits_multi_segment_memory(self):
         event_log = Path(self.tmpdir.name) / "codex-hook.jsonl"
