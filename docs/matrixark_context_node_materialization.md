@@ -16,32 +16,33 @@ incoming message or batch
 -> write event/entity/segment/summary/embedding/index records at the selected node
 ```
 
-## Records Written
+## Default Records Written
 
-For a node path like:
-
-```text
-company_a / infra_team / project_1 / approvals
-```
-
-MatrixArk writes four `context_node` records:
+If the caller does not provide `metadata.node_path`, MatrixArk now keeps the default path intentionally shallow:
 
 ```text
-company_a
-company_a / infra_team
-company_a / infra_team / project_1
-company_a / infra_team / project_1 / approvals
+user:<user_id> / session:<session_id>
 ```
 
-And three `context_child_ref` records:
+That creates two `context_node` records and one `context_child_ref`:
 
 ```text
-company_a -> infra_team
-infra_team -> project_1
-project_1 -> approvals
+user:alice
+user:alice / session:thread-1
+user:alice -> session:thread-1
 ```
 
-The write is idempotent. A later event on the same path creates zero new nodes and zero new child refs.
+Account and tenant remain access-control fields in `scope`; they are not automatically added as tree levels. This avoids making the default tree too deep and too product-specific.
+
+## Custom Paths
+
+If the caller or hook provides `metadata.node_path`, MatrixArk materializes exactly that path. For example:
+
+```text
+project_1 / approvals / gpu_purchase
+```
+
+creates three `context_node` records and two `context_child_ref` records. The write is idempotent. A later event on the same path creates zero new nodes and zero new child refs.
 
 ## Why This Matters
 
@@ -62,8 +63,8 @@ Now the runtime keeps the same simple customer API while making the tree explici
 ```json
 {
   "node_materialization": {
-    "nodes_created": 4,
-    "child_refs_created": 3,
+    "nodes_created": 2,
+    "child_refs_created": 1,
     "node_hashes": [123]
   }
 }

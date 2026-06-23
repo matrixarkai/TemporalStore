@@ -182,6 +182,23 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         self.assertEqual(second_ingest["node_materialization"]["nodes_created"], 0)
         self.assertEqual(second_ingest["node_materialization"]["child_refs_created"], 0)
 
+    def test_default_session_node_path_stays_shallow(self):
+        path = self.server.adapter.default_session_node_path({"account_id": "acct_x", "tenant_id": "tenant_y", "user_id": "alice", "session_id": "thread-1"})
+        self.assertEqual(path, ["user:alice", "session:thread-1"])
+
+        ingest = self.call_tool(
+            "matrixark_ingest",
+            {
+                "messages": [{"role": "user", "content": "Remember that I prefer concise context packs."}],
+                "scope": {"account_id": "acct_x", "tenant_id": "tenant_y", "user_id": "alice", "session_id": "thread-1"},
+            },
+        )
+        self.assertEqual(ingest["node_materialization"]["nodes_created"], 2)
+        self.assertEqual(ingest["node_materialization"]["child_refs_created"], 1)
+        replay = self.call_tool("matrixark_replay", {"context_pack_id": "debug"})
+        nodes = [record for record in replay["events"] if record.get("record_type") == "context_node"]
+        self.assertEqual([record.get("node_path") for record in nodes], [["user:alice"], ["user:alice", "session:thread-1"]])
+
     def test_ingest_marks_dirty_and_async_refresh_writes_versioned_node_summaries(self):
         ingest = self.call_tool(
             "matrixark_ingest",
@@ -1619,7 +1636,7 @@ class MatrixArkMcpServerTest(unittest.TestCase):
 
     def test_time_compression_is_retrievable_and_non_destructive(self):
         scope = {"user_id": "alice", "session_id": "operator-window", "team": "infra"}
-        node_path = ["account:acct_dev", "tenant:tenant_dev", "principal:user:alice", "collection:sessions", "session:operator-window"]
+        node_path = ["user:alice", "session:operator-window"]
         ingested = []
         for text in [
             "Alice approved the old GPU purchase after finance reviewed it.",
