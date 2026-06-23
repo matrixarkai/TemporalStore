@@ -1,4 +1,4 @@
-<!doctype html><meta charset='utf-8'><title>What MatrixArk Really Gets From Codex</title><style>body{font-family:Inter,Segoe UI,Arial,sans-serif;max-width:1040px;margin:32px auto;padding:0 24px;color:#172033;line-height:1.45}pre{background:#f6f8fb;border:1px solid #dde5f0;padding:14px;overflow:auto;border-radius:8px}code{background:#edf2f7;padding:2px 4px;border-radius:4px}</style><pre># What MatrixArk Really Gets From Codex
+<!doctype html><meta charset='utf-8'><title>What MatrixArk Really Gets From Codex</title><style>body{font-family:Inter,Segoe UI,Arial,sans-serif;max-width:1120px;margin:32px auto;padding:0 24px;color:#172033;line-height:1.45}pre{white-space:pre-wrap;background:#f6f8fb;border:1px solid #dde5f0;padding:14px;overflow:auto;border-radius:8px}</style><pre># What MatrixArk Really Gets From Codex
 
 Date: 2026-06-23
 
@@ -8,12 +8,12 @@ Codex does not natively send MatrixArk this full schema:
 
 ```json
 {
-  "messages": [{"role": "user", "content": "..."}],
-  "scope": {
-    "account_id": "acct_acme",
-    "tenant_id": "tenant_prod",
-    "user_id": "user_123",
-    "session_id": "codex_thread_456"
+  &quot;messages&quot;: [{&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;...&quot;}],
+  &quot;scope&quot;: {
+    &quot;account_id&quot;: &quot;acct_acme&quot;,
+    &quot;tenant_id&quot;: &quot;tenant_prod&quot;,
+    &quot;user_id&quot;: &quot;user_123&quot;,
+    &quot;session_id&quot;: &quot;codex_thread_456&quot;
   }
 }
 ```
@@ -25,25 +25,33 @@ That is the MatrixArk normalized envelope. The Codex hook receives a raw hook pa
 For `UserPromptSubmit`, the useful raw field is usually one of these text-like fields:
 
 ```json
-{"prompt": "Alice approved the GPU purchase after finance reviewed the budget."}
+{&quot;prompt&quot;: &quot;Alice approved the GPU purchase after finance reviewed the budget.&quot;}
 ```
 
 The hook parser also accepts variants such as `user_prompt`, `input`, `text`, `message`, `params.prompt`, `params.input`, `params.text`, `turn.input`, or a list under `messages`/`items`/`input`.
 
 For `Stop` and `PostCompact`, the useful field is usually a message or compacted summary text. For `PostToolUse`, the payload is tool-related text/JSON.
 
-## Scope Comes From Hook Config
+## Scope Comes From Hook Config And Session Derivation
 
-`account_id`, `tenant_id`, `user_id`, and `session_id` are not reliably provided by Codex as a clean MatrixArk schema. In our local setup they come from `.codex/hooks.json` command arguments:
+`account_id`, `tenant_id`, and `user_id` are not reliably provided by Codex as a clean MatrixArk schema. In our local setup they come from `.codex/hooks.json` command arguments:
 
 ```text
 --account-id acct_codex
 --tenant-id tenant_codex
 --user-id deeproute
---session-id codex-thread-local
 ```
 
-So MatrixArk receives those values because our hook config supplies them, not because Codex naturally emits that schema.
+`session_id` is different. The hook now derives it dynamically:
+
+```text
+1. explicit --session-id or MATRIXARK_SESSION_ID
+2. raw payload fields such as session_id, thread_id, conversation_id, transcript_id
+3. raw payload path fields such as transcript_path, conversation_path, thread_path
+4. persisted local fallback state under MATRIXARK_CODEX_SESSION_STATE_DIR
+```
+
+So MatrixArk receives access-control scope from hook config, while session scope can follow the Codex thread when Codex exposes a thread/conversation id.
 
 ## What The Hook Sends To MatrixArk
 
@@ -51,24 +59,25 @@ The hook converts raw Codex input into:
 
 ```json
 {
-  "messages": [{"role": "user", "content": "Alice approved the GPU purchase after finance reviewed the budget."}],
-  "scope": {
-    "account_id": "acct_codex",
-    "tenant_id": "tenant_codex",
-    "user_id": "deeproute",
-    "session_id": "codex-thread-local",
-    "team": "codex",
-    "project": "local"
+  &quot;messages&quot;: [{&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;Alice approved the GPU purchase after finance reviewed the budget.&quot;}],
+  &quot;scope&quot;: {
+    &quot;account_id&quot;: &quot;acct_codex&quot;,
+    &quot;tenant_id&quot;: &quot;tenant_codex&quot;,
+    &quot;user_id&quot;: &quot;deeproute&quot;,
+    &quot;session_id&quot;: &quot;codex:thread-abc&quot;,
+    &quot;team&quot;: &quot;codex&quot;,
+    &quot;project&quot;: &quot;local&quot;
   },
-  "metadata": {
-    "source": "codex_hook",
-    "codex_event": "UserPromptSubmit",
-    "raw_hook_payload": {"prompt": "..."}
+  &quot;metadata&quot;: {
+    &quot;source&quot;: &quot;codex_hook&quot;,
+    &quot;codex_event&quot;: &quot;UserPromptSubmit&quot;,
+    &quot;codex_session_id_source&quot;: &quot;payload_field&quot;,
+    &quot;raw_hook_payload&quot;: {&quot;prompt&quot;: &quot;...&quot;}
   },
-  "agent_hook": {
-    "source": "codex",
-    "hook_type": "before_llm",
-    "auto_captured": true
+  &quot;agent_hook&quot;: {
+    &quot;source&quot;: &quot;codex&quot;,
+    &quot;hook_type&quot;: &quot;before_llm&quot;,
+    &quot;auto_captured&quot;: true
   }
 }
 ```
@@ -83,5 +92,5 @@ Account and tenant stay in `scope` for access control and isolation, not as auto
 
 ## MCP Difference
 
-If Codex calls MatrixArk through MCP tools, then Codex/the agent explicitly calls a tool such as `matrixark_ingest` or `matrixark_retrieve` with that tool's schema. MCP calls are explicit. They do not automatically fire for every message unless Codex is instructed or hooked to call them.
+If Codex calls MatrixArk through MCP tools, then Codex/the agent explicitly calls a tool such as `matrixark_ingest` or `matrixark_retrieve` with that tool&#x27;s schema. MCP calls are explicit. They do not automatically fire for every message unless Codex is instructed or hooked to call them.
 </pre>

@@ -1,4 +1,4 @@
-# MatrixArk Codex Hook Integration
+<!doctype html><meta charset='utf-8'><title>MatrixArk Codex Hook Integration</title><style>body{font-family:Inter,Segoe UI,Arial,sans-serif;max-width:1120px;margin:32px auto;padding:0 24px;color:#172033;line-height:1.45}pre{white-space:pre-wrap;background:#f6f8fb;border:1px solid #dde5f0;padding:14px;overflow:auto;border-radius:8px}</style><pre># MatrixArk Codex Hook Integration
 
 Codex supports command hooks for lifecycle events such as `UserPromptSubmit`,
 `PostToolUse`, and `Stop`. MatrixArk can use those hooks to ingest Codex
@@ -42,9 +42,9 @@ Session scope is dynamic by default:
 
 ```text
 explicit --session-id or MATRIXARK_SESSION_ID
--> payload session/thread/conversation id
--> payload transcript/thread path hash
--> persisted local fallback session state
+-&gt; payload session/thread/conversation id
+-&gt; payload transcript/thread path hash
+-&gt; persisted local fallback session state
 ```
 
 That means hooks do not need a hard-coded `--session-id` for normal use. Add
@@ -102,8 +102,8 @@ python3 tools/matrixark_codex_hook.py \
   --event-log /tmp/matrixark-codex-hook.jsonl \
   --account-id acct_codex \
   --tenant-id tenant_codex \
-  --user-id deeproute <<'JSON'
-{"prompt":"Remember that Alice approved the GPU purchase for Project Orion."}
+  --user-id deeproute &lt;&lt;&#x27;JSON&#x27;
+{&quot;prompt&quot;:&quot;Remember that Alice approved the GPU purchase for Project Orion.&quot;}
 JSON
 
 python3 tools/matrixark_codex_hook.py \
@@ -111,8 +111,8 @@ python3 tools/matrixark_codex_hook.py \
   --event-log /tmp/matrixark-codex-hook.jsonl \
   --account-id acct_codex \
   --tenant-id tenant_codex \
-  --user-id deeproute <<'JSON'
-{"prompt":"What was approved for Project Orion?","thread_id":"codex-thread-1"}
+  --user-id deeproute &lt;&lt;&#x27;JSON&#x27;
+{&quot;prompt&quot;:&quot;What was approved for Project Orion?&quot;,&quot;thread_id&quot;:&quot;codex-thread-1&quot;}
 JSON
 ```
 
@@ -134,27 +134,27 @@ For a trusted project-local setup, create `.codex/hooks.json`:
 
 ```json
 {
-  "hooks": {
-    "UserPromptSubmit": [
+  &quot;hooks&quot;: {
+    &quot;UserPromptSubmit&quot;: [
       {
-        "hooks": [
+        &quot;hooks&quot;: [
           {
-            "type": "command",
-            "command": "python3 /root/src/github-services/TemporalStore/tools/matrixark_codex_hook.py --event UserPromptSubmit --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id deeproute",
-            "timeout": 30,
-            "statusMessage": "Ingesting prompt into MatrixArk"
+            &quot;type&quot;: &quot;command&quot;,
+            &quot;command&quot;: &quot;python3 /root/src/github-services/TemporalStore/tools/matrixark_codex_hook.py --event UserPromptSubmit --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id deeproute&quot;,
+            &quot;timeout&quot;: 30,
+            &quot;statusMessage&quot;: &quot;Ingesting prompt into MatrixArk&quot;
           }
         ]
       }
     ],
-    "Stop": [
+    &quot;Stop&quot;: [
       {
-        "hooks": [
+        &quot;hooks&quot;: [
           {
-            "type": "command",
-            "command": "python3 /root/src/github-services/TemporalStore/tools/matrixark_codex_hook.py --event Stop --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id deeproute",
-            "timeout": 30,
-            "statusMessage": "Ingesting final Codex turn signal into MatrixArk"
+            &quot;type&quot;: &quot;command&quot;,
+            &quot;command&quot;: &quot;python3 /root/src/github-services/TemporalStore/tools/matrixark_codex_hook.py --event Stop --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id deeproute&quot;,
+            &quot;timeout&quot;: 30,
+            &quot;statusMessage&quot;: &quot;Ingesting final Codex turn signal into MatrixArk&quot;
           }
         ]
       }
@@ -167,10 +167,10 @@ On Windows, use `commandWindows` if Codex runs hooks through PowerShell/CMD:
 
 ```json
 {
-  "type": "command",
-  "command": "python3 /root/src/github-services/TemporalStore/tools/matrixark_codex_hook.py --event UserPromptSubmit",
-  "commandWindows": "wsl -d Ubuntu2204Deeproute -- bash -lc 'cd /root/src/github-services/TemporalStore && python3 tools/matrixark_codex_hook.py --event UserPromptSubmit --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id deeproute'",
-  "timeout": 30
+  &quot;type&quot;: &quot;command&quot;,
+  &quot;command&quot;: &quot;python3 /root/src/github-services/TemporalStore/tools/matrixark_codex_hook.py --event UserPromptSubmit&quot;,
+  &quot;commandWindows&quot;: &quot;wsl -d Ubuntu2204Deeproute -- bash -lc &#x27;cd /root/src/github-services/TemporalStore &amp;&amp; python3 tools/matrixark_codex_hook.py --event UserPromptSubmit --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id deeproute&#x27;&quot;,
+  &quot;timeout&quot;: 30
 }
 ```
 
@@ -200,13 +200,14 @@ This is the first integration layer:
 
 ```text
 Codex hook event
--> matrixark_codex_hook.py
--> matrixark_ingest
--> MatrixArk extraction/entity/summary/index records
--> matrixark_retrieve for user prompts
--> ContextPack audit for replay
+-&gt; matrixark_codex_hook.py
+-&gt; matrixark_ingest
+-&gt; MatrixArk extraction/entity/summary/index records
+-&gt; matrixark_retrieve for user prompts
+-&gt; ContextPack audit for replay
 ```
 
 For deeper hosted integrations, use Codex app-server notifications. Hooks are
 the easiest local path because they can capture prompts and turn-stop signals
 without requiring a custom Codex client.
+</pre>

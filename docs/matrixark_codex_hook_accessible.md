@@ -122,6 +122,23 @@ raw_text
 
 If no known text field exists, MatrixArk stores a compact JSON string from the hook payload.
 
+Session scope is now dynamic. The hook resolves `session_id` in this order:
+
+```text
+1. explicit --session-id or MATRIXARK_SESSION_ID
+2. payload session/thread fields:
+   session_id, sessionId, codex_session_id, thread_id, threadId,
+   conversation_id, conversationId, transcript_id, transcriptId
+3. payload path hash:
+   transcript_path, conversation_path, thread_path, log_path
+4. persisted local fallback under MATRIXARK_CODEX_SESSION_STATE_DIR
+```
+
+So hooks work without a hard-coded `--session-id`. If Codex gives us a real
+thread/conversation id, MatrixArk uses it. If Codex does not expose one, the
+hook keeps a stable local fallback session for the account/user/workspace until
+the state file is removed.
+
 Example `UserPromptSubmit` payload:
 
 ```json
@@ -269,7 +286,7 @@ This is the best production direction: online events are immediately retrievable
 
 ## 7. Hook Config Example
 
-Project-local `.codex/hooks.json` can call the hook script. Use the real path and session IDs for your machine.
+Project-local `.codex/hooks.json` can call the hook script. Use the real path for your machine. Avoid hard-coding `--session-id` unless you intentionally want one fixed session; by default the hook derives the session from the Codex payload or local fallback state.
 
 ```json
 {
@@ -279,7 +296,7 @@ Project-local `.codex/hooks.json` can call the hook script. Use the real path an
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /root/src/github-services/TemporalStore/tools/matrixark_codex_hook.py --event UserPromptSubmit --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id deeproute --session-id codex-thread-local",
+            "command": "python3 /root/src/github-services/TemporalStore/tools/matrixark_codex_hook.py --event UserPromptSubmit --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id deeproute",
             "timeout": 30,
             "statusMessage": "Ingesting prompt into MatrixArk"
           }
@@ -292,7 +309,7 @@ Project-local `.codex/hooks.json` can call the hook script. Use the real path an
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /root/src/github-services/TemporalStore/tools/matrixark_codex_hook.py --event PostToolUse --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id deeproute --session-id codex-thread-local",
+            "command": "python3 /root/src/github-services/TemporalStore/tools/matrixark_codex_hook.py --event PostToolUse --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id deeproute",
             "timeout": 30,
             "statusMessage": "Ingesting tool result into MatrixArk"
           }
@@ -304,7 +321,7 @@ Project-local `.codex/hooks.json` can call the hook script. Use the real path an
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /root/src/github-services/TemporalStore/tools/matrixark_codex_hook.py --event Stop --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id deeproute --session-id codex-thread-local",
+            "command": "python3 /root/src/github-services/TemporalStore/tools/matrixark_codex_hook.py --event Stop --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id deeproute",
             "timeout": 30,
             "statusMessage": "Ingesting final Codex turn signal into MatrixArk"
           }
@@ -325,7 +342,7 @@ If Codex runs on Windows but MatrixArk runs in WSL, use `commandWindows`:
 {
   "type": "command",
   "command": "python3 /root/src/github-services/TemporalStore/tools/matrixark_codex_hook.py --event UserPromptSubmit",
-  "commandWindows": "wsl -d Ubuntu -- bash -lc 'cd /root/src/github-services/TemporalStore && python3 tools/matrixark_codex_hook.py --event UserPromptSubmit --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id deeproute --session-id codex-thread-local'",
+  "commandWindows": "wsl -d Ubuntu -- bash -lc 'cd /root/src/github-services/TemporalStore && python3 tools/matrixark_codex_hook.py --event UserPromptSubmit --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id deeproute'",
   "timeout": 30
 }
 ```

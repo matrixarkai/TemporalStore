@@ -71,6 +71,36 @@ class MatrixArkCodexHookTest(unittest.TestCase):
         )
         return json.loads(proc.stdout), event_log
 
+    def run_hook_without_session_arg(self, payload, *, event="UserPromptSubmit", event_log=None, extra_args=None):
+        event_log = event_log or Path(self.tmpdir.name) / "codex-hook.jsonl"
+        command = [
+            sys.executable,
+            str(HOOK),
+            "--event",
+            event,
+            "--event-log",
+            str(event_log),
+            "--account-id",
+            "acct_test",
+            "--tenant-id",
+            "tenant_test",
+            "--user-id",
+            "codex-user",
+            "--session-state-dir",
+            str(Path(self.tmpdir.name) / "session-state"),
+        ]
+        command.extend(extra_args or [])
+        proc = subprocess.run(
+            command,
+            input=json.dumps(payload),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=str(ROOT),
+            check=True,
+        )
+        return json.loads(proc.stdout), event_log
+
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
 
@@ -104,6 +134,46 @@ class MatrixArkCodexHookTest(unittest.TestCase):
         self.assertEqual([record.get("node_path") for record in nodes[:2]], [["user:codex-user"], ["user:codex-user", "session:codex-session"]])
         events = [record for record in records if record.get("record_type") == "context_event"]
         self.assertFalse(any("node_path" in record.get("envelope", {}).get("metadata", {}) for record in events))
+
+    def test_hook_derives_session_id_from_payload_thread_id_when_not_explicit(self):
+        event_log = Path(self.tmpdir.name) / "codex-hook.jsonl"
+        first, _ = self.run_hook_without_session_arg(
+            {"prompt": "Remember this in the derived thread.", "thread_id": "thread-abc"},
+            event_log=event_log,
+        )
+        second, _ = self.run_hook_without_session_arg(
+            {"prompt": "Recall the derived thread.", "thread_id": "thread-abc"},
+            event_log=event_log,
+        )
+        self.assertEqual(first["session_id"], "codex:thread-abc")
+        self.assertEqual(first["session_id_source"], "payload_field")
+        self.assertEqual(second["session_id"], first["session_id"])
+
+        records = [json.loads(line) for line in event_log.read_text().splitlines() if line.strip()]
+        nodes = [record for record in records if record.get("record_type") == "context_node"]
+        self.assertTrue(any(record.get("node_path") == ["user:codex-user", "session:codex:thread-abc"] for record in nodes))
+        events = [record for record in records if record.get("record_type") == "context_event"]
+        self.assertTrue(
+            all(
+                record.get("envelope", {}).get("metadata", {}).get("codex_session_id_source") == "payload_field"
+                for record in events
+            )
+        )
+
+    def test_hook_persists_fallback_session_id_when_payload_has_no_thread(self):
+        event_log = Path(self.tmpdir.name) / "codex-hook.jsonl"
+        first, _ = self.run_hook_without_session_arg(
+            {"prompt": "Fallback session one.", "cwd": "/tmp/workspace-a"},
+            event_log=event_log,
+        )
+        second, _ = self.run_hook_without_session_arg(
+            {"prompt": "Fallback session two.", "cwd": "/tmp/workspace-a"},
+            event_log=event_log,
+        )
+        self.assertTrue(first["session_id"].startswith("codex:local:"))
+        self.assertIn(first["session_id_source"], {"state_file_created", "state_file"})
+        self.assertEqual(second["session_id"], first["session_id"])
+        self.assertEqual(second["session_id_source"], "state_file")
 
     def test_codex_session_stop_commits_multi_segment_memory(self):
         event_log = Path(self.tmpdir.name) / "codex-hook.jsonl"
