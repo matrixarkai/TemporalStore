@@ -42,6 +42,8 @@ MAX_PRIOR_CHARS = 4096
 EMBEDDING_DIM = 32
 DIRECT_RECORD_LOG_SHARD_SIZE = 256
 DIRECT_RECORD_BUNDLE_MAX_BYTES = int(os.environ.get("MATRIXARK_DIRECT_RECORD_BUNDLE_MAX_BYTES", "65536"))
+DIRECT_AUDIT_BUFFER_MAX_RECORDS = int(os.environ.get("MATRIXARK_DIRECT_AUDIT_BUFFER_MAX_RECORDS", "128"))
+DIRECT_AUDIT_FLUSH_INTERVAL_MS = int(os.environ.get("MATRIXARK_DIRECT_AUDIT_FLUSH_INTERVAL_MS", "1000"))
 MAX_CONTEXT_REF_CHARS = 4096
 DEFAULT_TIME_DECAY_TOLERANCE_MS = 24 * 60 * 60 * 1000
 DEFAULT_TIME_DECAY_HALFLIFE_MS = 7 * 24 * 60 * 60 * 1000
@@ -2318,6 +2320,12 @@ class MatrixArkLocalAdapter:
             for record in records:
                 handle.write(json.dumps(record, sort_keys=True) + "\n")
 
+    def append_audit(self, record: Json) -> None:
+        self.append(record)
+
+    def flush_audits(self) -> None:
+        return
+
     def read_all(self) -> list[Json]:
         if not self.event_log.exists():
             return []
@@ -3475,7 +3483,7 @@ class MatrixArkLocalAdapter:
             "insufficient_context": not selected,
             "partial_context_pack": True,
         }
-        self.append(
+        self.append_audit(
             {
                 "record_type": "context_pack_audit",
                 "context_pack_id": context_pack_id,
@@ -3976,7 +3984,7 @@ class MatrixArkLocalAdapter:
             "quality_warnings": [],
             "insufficient_context": not selected,
         }
-        self.append(
+        self.append_audit(
             {
                 "record_type": "context_pack_audit",
                 "context_pack_id": context_pack_id_text,
@@ -4008,6 +4016,7 @@ class MatrixArkLocalAdapter:
 
     def replay(self, args: Json) -> Json:
         context_pack_id = require_string(args, "context_pack_id")
+        self.flush_audits()
         return {
             "context_pack_id": context_pack_id,
             "events": self.read_all(),
@@ -4062,6 +4071,12 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         self._entry_count_cache: int | None = None
         self._legacy_index_mode = False
         self._records_lock = threading.RLock()
+        self._audit_lock = threading.RLock()
+        self._audit_buffer: list[Json] = []
+        self._audit_flusher_started = False
+        self._audit_flush_failures = 0
+        self._audit_buffer_max_records = max(1, DIRECT_AUDIT_BUFFER_MAX_RECORDS)
+        self._audit_flush_interval_s = max(0.05, DIRECT_AUDIT_FLUSH_INTERVAL_MS / 1000.0)
 
     def __post_init__(self) -> None:
         # Direct adapter does not use the inherited JSONL path.
@@ -4134,6 +4149,47 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             self._entry_count_cache = sequence
             self._records_cache.extend(records)
             self._put_direct_record_cache(self._entry_count_cache, self._records_cache)
+
+    def append_audit(self, record: Json) -> None:
+        with self._audit_lock:
+            self._audit_buffer.append(record)
+            self._ensure_audit_flusher_locked()
+            max_pending = self._audit_buffer_max_records * 4
+            if len(self._audit_buffer) > max_pending:
+                dropped = len(self._audit_buffer) - max_pending
+                self._audit_buffer = self._audit_buffer[-max_pending:]
+                _mcp_debug_log(f"matrixark audit buffer dropped {dropped} oldest records after flush lag")
+
+    def flush_audits(self) -> None:
+        with self._audit_lock:
+            if not self._audit_buffer:
+                return
+            records = self._audit_buffer
+            self._audit_buffer = []
+        try:
+            self.append_many(records)
+        except Exception as exc:
+            with self._audit_lock:
+                self._audit_flush_failures += 1
+                remaining_capacity = max(0, self._audit_buffer_max_records * 2 - len(self._audit_buffer))
+                if remaining_capacity:
+                    self._audit_buffer = records[-remaining_capacity:] + self._audit_buffer
+            _mcp_debug_log(f"matrixark audit flush failed: {exc}")
+
+    def _ensure_audit_flusher_locked(self) -> None:
+        if self._audit_flusher_started:
+            return
+        self._audit_flusher_started = True
+        thread = threading.Thread(target=self._audit_flush_loop, name="matrixark-audit-flusher", daemon=True)
+        thread.start()
+
+    def _audit_flush_loop(self) -> None:
+        while True:
+            time.sleep(self._audit_flush_interval_s)
+            try:
+                self.flush_audits()
+            except Exception as exc:
+                _mcp_debug_log(f"matrixark audit flush loop failed: {exc}")
 
     def _record_bundles(self, records: list[Json]) -> list[list[Json]]:
         bundles: list[list[Json]] = []
@@ -4389,6 +4445,12 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
         self._entry_count_cache: int | None = None
         self._legacy_index_mode = False
         self._records_lock = threading.RLock()
+        self._audit_lock = threading.RLock()
+        self._audit_buffer: list[Json] = []
+        self._audit_flusher_started = False
+        self._audit_flush_failures = 0
+        self._audit_buffer_max_records = max(1, DIRECT_AUDIT_BUFFER_MAX_RECORDS)
+        self._audit_flush_interval_s = max(0.05, DIRECT_AUDIT_FLUSH_INTERVAL_MS / 1000.0)
 
 
 
