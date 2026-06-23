@@ -1,0 +1,94 @@
+{
+  "artifacts": {
+    "context_pack_jsonl": "docs/benchmarks/locomo_cpp_rust_parity_20260623_fixed/official_cpp_conv2/locomo_official_cpp_conv2_fixed_20260623.context_packs.jsonl",
+    "hypotheses_jsonl": "docs/benchmarks/locomo_cpp_rust_parity_20260623_fixed/official_cpp_conv2/locomo_official_cpp_conv2_fixed_20260623.hypotheses.jsonl",
+    "judge_jsonl": "docs/benchmarks/locomo_cpp_rust_parity_20260623_fixed/official_cpp_conv2/locomo_official_cpp_conv2_fixed_20260623.judge.jsonl",
+    "progress_json": "docs/benchmarks/locomo_cpp_rust_parity_20260623_fixed/official_cpp_conv2/locomo_official_cpp_conv2_fixed_20260623.progress.json",
+    "report_json": "docs/benchmarks/locomo_cpp_rust_parity_20260623_fixed/official_cpp_conv2/locomo_official_cpp_conv2_fixed_20260623.report.json",
+    "report_markdown": "docs/benchmarks/locomo_cpp_rust_parity_20260623_fixed/official_cpp_conv2/locomo_official_cpp_conv2_fixed_20260623.report.md",
+    "result_json": "docs/benchmarks/locomo_cpp_rust_parity_20260623_fixed/official_cpp_conv2/locomo_official_cpp_conv2_fixed_20260623.result.json"
+  },
+  "dataset": {
+    "answerable_questions_run": 100,
+    "name": "locomo",
+    "questions_run": 100,
+    "sessions": 38,
+    "source_path": "/root/matrixark_benchmarks/data/locomo10.json",
+    "turns_ingested": 788,
+    "version": "locomo10.json"
+  },
+  "failure_categories": {
+    "answer_density_miss": 0,
+    "compression_hidden_answer": 0,
+    "context_recall_miss": 0,
+    "evidence_miss_with_context": 58,
+    "evidence_session_miss": 60,
+    "reader_exact_substring_miss": 90,
+    "reader_miss_with_evidence": 7,
+    "reader_support_miss": 38,
+    "retrieval_miss": 0,
+    "temporal_or_entity_miss": 0,
+    "token_budget_pressure": 46
+  },
+  "finished_at_ms": 1782249436198,
+  "latency": {
+    "avg_answer_bearing_tokens": 15.11,
+    "avg_latency_ms": 99.61043269009679,
+    "avg_prompt_tokens": 1199.1,
+    "ingestion_elapsed_ms": 3103,
+    "ingestion_throughput_turns_per_sec": 253.948,
+    "p50_latency_ms": 85.44274799351115,
+    "p95_latency_ms": 191.45296000351664
+  },
+  "models": {
+    "embedding_model": "hashing:hashing-local",
+    "judge_model": "matrixark-local-support-v1",
+    "judge_provider": "deterministic",
+    "reader_model": "matrixark-context-substring-v1",
+    "reader_provider": "deterministic"
+  },
+  "retrieval_config": {
+    "batch_size": 40,
+    "ingest_mode": "batch",
+    "io_timeout_ms": 120000,
+    "judge_execution_mode": "deterministic",
+    "max_message_chars": 1600,
+    "metaserver": "127.0.0.1:18000",
+    "namespace": "deploy_ns",
+    "packing_policy": "question_type_aware",
+    "reader_execution_mode": "deterministic",
+    "request_timeout_ms": 120000,
+    "storage_log_mode": "sharded_compact_count_log",
+    "storage_prefix": "matrixark:locomo:official:cpp:conv2:fixed:20260623",
+    "table": "deploy_table",
+    "temporalstore_backend": "temporalstore-direct",
+    "token_budget": 1200
+  },
+  "scores": {
+    "answer_bearing_token_density": 0.012601,
+    "answer_hit": 0.1,
+    "answer_quality_under_budget": 0.62,
+    "answer_support_hit": 0.62,
+    "compression_answer_hidden_count": 0,
+    "compression_safety_passed": true,
+    "context_recall": 1.0,
+    "evidence_session_recall": 0.4,
+    "final_judge_score": 0.62,
+    "judge_score_per_1k_tokens": 0.517054
+  },
+  "started_at_ms": 1782249422467,
+  "token_efficiency": {
+    "answer_bearing_token_density": 0.012601,
+    "answer_bearing_tokens": 1511,
+    "answer_bearing_tokens_per_question": 15.11,
+    "dropped_token_categories": {
+      "dropped_duplicate_tokens": 0,
+      "dropped_low_score_tokens": 0,
+      "dropped_over_budget_tokens": 627815,
+      "dropped_raw_l2_tokens": 0,
+      "dropped_stale_tokens": 0,
+      "dropped_summary_tokens": 0
+    },
+    "selected_tokens": 119910
+  }
+}

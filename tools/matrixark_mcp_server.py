@@ -41,6 +41,7 @@ MAX_PRIOR_MESSAGES = 8
 MAX_PRIOR_CHARS = 4096
 EMBEDDING_DIM = 32
 DIRECT_RECORD_LOG_SHARD_SIZE = 256
+DIRECT_RECORD_BUNDLE_MAX_BYTES = int(os.environ.get("MATRIXARK_DIRECT_RECORD_BUNDLE_MAX_BYTES", "65536"))
 MAX_CONTEXT_REF_CHARS = 4096
 DEFAULT_TIME_DECAY_TOLERANCE_MS = 24 * 60 * 60 * 1000
 DEFAULT_TIME_DECAY_HALFLIFE_MS = 7 * 24 * 60 * 60 * 1000
@@ -2310,6 +2311,13 @@ class MatrixArkLocalAdapter:
         with self.event_log.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, sort_keys=True) + "\n")
 
+    def append_many(self, records: list[Json]) -> None:
+        if not records:
+            return
+        with self.event_log.open("a", encoding="utf-8") as handle:
+            for record in records:
+                handle.write(json.dumps(record, sort_keys=True) + "\n")
+
     def read_all(self) -> list[Json]:
         if not self.event_log.exists():
             return []
@@ -3022,12 +3030,13 @@ class MatrixArkLocalAdapter:
         batch_summary = extraction["batch_summary"]
 
         event_hashes: list[int] = list(source_event_ids) if derive_from_existing_events else []
+        records_to_append: list[Json] = []
         if not derive_from_existing_events:
             for index, message in enumerate(envelope["messages"]):
                 event_text = f"{message['role']}: {message['content']}"
                 event_id_hash = stable_hash(f"{batch_id_hash}:event:{index}:{event_text}")
                 event_hashes.append(event_id_hash)
-                self.append(
+                records_to_append.append(
                     {
                         "record_type": "context_event",
                         "event_id_hash": event_id_hash,
@@ -3050,7 +3059,7 @@ class MatrixArkLocalAdapter:
                         "agent_hook": hook,
                     }
                 )
-                self.append(
+                records_to_append.append(
                     {
                         "record_type": "context_embedding",
                         "embedding_type": "event_text",
@@ -3078,7 +3087,7 @@ class MatrixArkLocalAdapter:
             )
             updated_entity = apply_entity_patches(previous_entity, entity)
             entity_hashes.append(entity_hash)
-            self.append(
+            records_to_append.append(
                 {
                     "record_type": "context_entity",
                     "entity_hash": entity_hash,
@@ -3101,7 +3110,7 @@ class MatrixArkLocalAdapter:
                 }
             )
             if updated_entity.get("patch_results"):
-                self.append(
+                records_to_append.append(
                     {
                         "record_type": "context_entity_update_audit",
                         "entity_hash": entity_hash,
@@ -3118,7 +3127,7 @@ class MatrixArkLocalAdapter:
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
                 )
-            self.append(
+            records_to_append.append(
                 {
                     "record_type": "context_embedding",
                     "embedding_type": "entity_state",
@@ -3138,7 +3147,7 @@ class MatrixArkLocalAdapter:
         for segment in extraction["segments"]:
             segment_hash = stable_hash(f"{batch_id_hash}:segment:{segment['topic']}:{segment['coordinate_tuples']}")
             segment_hashes.append(segment_hash)
-            self.append(
+            records_to_append.append(
                 {
                     "record_type": "context_segment",
                     "segment_hash": segment_hash,
@@ -3157,7 +3166,7 @@ class MatrixArkLocalAdapter:
                     "updated_at_ms": envelope["ingestion_time_ms"],
                 }
             )
-            self.append(
+            records_to_append.append(
                 {
                     "record_type": "context_embedding",
                     "embedding_type": "segment_text",
@@ -3174,7 +3183,7 @@ class MatrixArkLocalAdapter:
             )
 
         summary_hash = stable_hash(f"batch_summary:{batch_id_hash}")
-        self.append(
+        records_to_append.append(
             {
                 "record_type": "context_summary",
                 "summary_type": "batch_l0",
@@ -3190,7 +3199,7 @@ class MatrixArkLocalAdapter:
                 "updated_at_ms": envelope["ingestion_time_ms"],
             }
         )
-        self.append(
+        records_to_append.append(
             {
                 "record_type": "context_embedding",
                 "embedding_type": "batch_l0",
@@ -3206,7 +3215,7 @@ class MatrixArkLocalAdapter:
             }
         )
         for index_name in extraction["indexes"]:
-            self.append(
+            records_to_append.append(
                 {
                     "record_type": "context_index",
                     "index_name": index_name,
@@ -3218,7 +3227,7 @@ class MatrixArkLocalAdapter:
                     "updated_at_ms": envelope["ingestion_time_ms"],
                 }
             )
-        self.append(
+        records_to_append.append(
             {
                 "record_type": "context_extraction_audit",
                 "batch_id_hash": batch_id_hash,
@@ -3242,6 +3251,7 @@ class MatrixArkLocalAdapter:
                 "created_at_ms": now_ms(),
             }
         )
+        self.append_many(records_to_append)
         summary_refresh = self.append_node_summary_embeddings(
             node_path=node_path,
             source_text=batch_summary,
@@ -4049,6 +4059,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         self._shard_size = DIRECT_RECORD_LOG_SHARD_SIZE
         self._index_cache: list[str] | None = None
         self._records_cache: list[Json] | None = None
+        self._entry_count_cache: int | None = None
         self._legacy_index_mode = False
         self._records_lock = threading.RLock()
 
@@ -4085,32 +4096,61 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         return max(0, value)
 
     def append(self, record: Json) -> None:
+        self.append_many([record])
+
+    def append_many(self, records: list[Json]) -> None:
+        if not records:
+            return
         with self._records_lock:
             if self._records_cache is None:
                 self.read_all()
             assert self._records_cache is not None
-            payload = json.dumps(record, sort_keys=True, separators=(",", ":"))
             if self._legacy_index_mode:
                 if self._index_cache is None:
                     self._index_cache = self._get_index()
-                record_id = (
-                    f"{len(self._index_cache):020d}:"
-                    f"{record.get('record_type', 'record')}:"
-                    f"{stable_hash(json.dumps(record, sort_keys=True))}"
-                )
-                self._client.hset(self._record_hash_key, record_id, payload)
-                self._index_cache.append(record_id)
+                for record in records:
+                    payload = json.dumps(record, sort_keys=True, separators=(",", ":"))
+                    record_id = (
+                        f"{len(self._index_cache):020d}:"
+                        f"{record.get('record_type', 'record')}:"
+                        f"{stable_hash(json.dumps(record, sort_keys=True))}"
+                    )
+                    self._client.hset(self._record_hash_key, record_id, payload)
+                    self._index_cache.append(record_id)
                 self._client.put_string(self._index_key, json.dumps(self._index_cache, separators=(",", ":")))
-                self._records_cache.append(record)
+                self._records_cache.extend(records)
                 self._put_direct_record_cache(len(self._records_cache), self._records_cache)
                 return
 
-            sequence = len(self._records_cache)
-            record_key, record_id = self._record_location(sequence)
-            self._client.hset(record_key, record_id, payload)
-            self._client.put_string(self._count_key, str(sequence + 1))
-            self._records_cache.append(record)
-            self._put_direct_record_cache(sequence + 1, self._records_cache)
+            sequence = self._entry_count_cache if self._entry_count_cache is not None else self._get_count()
+            for bundle in self._record_bundles(records):
+                record_key, record_id = self._record_location(sequence)
+                payload_value: Json
+                payload_value = bundle[0] if len(bundle) == 1 else {"record_bundle": bundle}
+                payload = json.dumps(payload_value, sort_keys=True, separators=(",", ":"))
+                self._client.hset(record_key, record_id, payload)
+                sequence += 1
+            self._client.put_string(self._count_key, str(sequence))
+            self._entry_count_cache = sequence
+            self._records_cache.extend(records)
+            self._put_direct_record_cache(self._entry_count_cache, self._records_cache)
+
+    def _record_bundles(self, records: list[Json]) -> list[list[Json]]:
+        bundles: list[list[Json]] = []
+        current: list[Json] = []
+        current_bytes = 0
+        max_bytes = max(8192, DIRECT_RECORD_BUNDLE_MAX_BYTES)
+        for record in records:
+            record_bytes = len(json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+            if current and current_bytes + record_bytes > max_bytes:
+                bundles.append(current)
+                current = []
+                current_bytes = 0
+            current.append(record)
+            current_bytes += record_bytes
+        if current:
+            bundles.append(current)
+        return bundles
 
     def read_all(self) -> list[Json]:
         with self._records_lock:
@@ -4119,6 +4159,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             count = self._get_count()
             if count > 0:
                 self._legacy_index_mode = False
+                self._entry_count_cache = count
                 cached = self._get_direct_record_cache(count)
                 if cached is not None:
                     self._records_cache = cached
@@ -4134,6 +4175,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             index = self._get_index()
             self._index_cache = index
             self._legacy_index_mode = bool(index)
+            self._entry_count_cache = None
             self._records_cache = self._load_records(index)
             return list(self._records_cache)
 
@@ -4172,7 +4214,11 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 continue
             if not payload:
                 continue
-            records.append(json.loads(payload))
+            decoded = json.loads(payload)
+            if isinstance(decoded, dict) and isinstance(decoded.get("record_bundle"), list):
+                records.extend(item for item in decoded["record_bundle"] if isinstance(item, dict))
+            elif isinstance(decoded, dict):
+                records.append(decoded)
         return records
 
     def _record_location(self, sequence: int) -> tuple[str, str]:
@@ -4340,6 +4386,7 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
         self._shard_size = DIRECT_RECORD_LOG_SHARD_SIZE
         self._index_cache: list[str] | None = None
         self._records_cache: list[Json] | None = None
+        self._entry_count_cache: int | None = None
         self._legacy_index_mode = False
         self._records_lock = threading.RLock()
 
