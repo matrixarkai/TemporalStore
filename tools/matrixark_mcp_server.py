@@ -32,6 +32,8 @@ DEFAULT_TIME_DECAY_TOLERANCE_MS = 24 * 60 * 60 * 1000
 DEFAULT_TIME_DECAY_HALFLIFE_MS = 7 * 24 * 60 * 60 * 1000
 DEFAULT_TIME_WEIGHT = 0.18
 DEFAULT_BUSINESS_WEIGHT = 0.22
+_OSS_SEGMENT_MODEL_CACHE: dict[str, Any] = {}
+
 DEFAULT_BUSINESS_TYPE_WEIGHTS: Json = {
     "confirmation": 1.0,
     "correction": 1.0,
@@ -696,7 +698,7 @@ def one_pass_memory_extraction(envelope: Json, *, prior_context: Json) -> Json:
     messages = envelope["messages"]
     batch_text = text_from_messages(messages)
     batch_terms = tokens(batch_text)
-    segments = intelligent_memory_segments(messages)
+    segments, segment_provider_meta = detect_memory_segments(messages, envelope)
     entities = extract_batch_entities(messages, envelope)
     event_type = infer_event_type(batch_text)
     classification = "BATCH_MEMORY"
@@ -722,6 +724,7 @@ def one_pass_memory_extraction(envelope: Json, *, prior_context: Json) -> Json:
         "event_type": event_type,
         "entities": entities,
         "segments": segments,
+        "segment_provider": segment_provider_meta,
         "indexes": indexes[:8],
         "batch_summary": summarize_text(batch_text, limit=700),
         "message_count": len(messages),
@@ -732,6 +735,191 @@ def one_pass_memory_extraction(envelope: Json, *, prior_context: Json) -> Json:
         "prior_summary_count": len(prior_context.get("summaries", [])),
     }
 
+
+
+def detect_memory_segments(messages: list[Json], envelope: Json | None = None) -> tuple[list[Json], Json]:
+    envelope = envelope or {}
+    provider = str(envelope.get("segment_provider") or os.getenv("MATRIXARK_SEGMENT_PROVIDER", "deterministic")).strip().lower()
+    if provider in {"", "deterministic", "rules", "local"}:
+        return intelligent_memory_segments(messages), {
+            "provider": "deterministic",
+            "execution_mode": "rules",
+            "model": "matrixark-local-segmentation-v1",
+            "fallback_used": False,
+        }
+
+    fallback_enabled = bool(envelope.get("segment_provider_fallback", False)) or provider in {"oss-fallback", "oss_with_fallback"} or os.getenv("MATRIXARK_SEGMENT_PROVIDER_FALLBACK", "").lower() in {"1", "true", "yes"}
+    if provider in {"oss", "oss-fallback", "oss_with_fallback"}:
+        model = str(envelope.get("segment_model") or os.getenv("MATRIXARK_SEGMENT_MODEL", "Qwen/Qwen2.5-0.5B-Instruct"))
+        model_path = str(envelope.get("segment_model_path") or os.getenv("MATRIXARK_SEGMENT_MODEL_PATH", ""))
+        max_new_tokens = int(envelope.get("segment_max_new_tokens") or os.getenv("MATRIXARK_SEGMENT_MAX_NEW_TOKENS", "512"))
+        try:
+            raw = oss_model_memory_segments(messages, model=model, model_path=model_path, max_new_tokens=max_new_tokens)
+            segments = normalize_model_segments(raw, messages)
+            return segments, {
+                "provider": "oss",
+                "execution_mode": "oss_model",
+                "model": model_path or model,
+                "fallback_used": False,
+                "segment_count": len(segments),
+            }
+        except Exception as exc:  # pragma: no cover - optional local model stack.
+            if not fallback_enabled:
+                raise MatrixArkError(f"OSS segment provider failed: {exc}") from exc
+            segments = intelligent_memory_segments(messages)
+            return segments, {
+                "provider": "oss",
+                "execution_mode": "rules_fallback",
+                "model": model_path or model,
+                "fallback_used": True,
+                "fallback_reason": str(exc),
+                "segment_count": len(segments),
+            }
+    raise MatrixArkError("segment_provider must be deterministic, oss, or oss-fallback")
+
+
+def build_segment_prompt(messages: list[Json]) -> str:
+    indexed = "\n".join(f"{index}. {message.get('role', 'user')}: {message.get('content', '')}" for index, message in enumerate(messages))
+    return (
+        "You are MatrixArk's memory segmentation extractor. Identify high-saliency memory segments from the indexed conversation. "
+        "Prune greetings, acknowledgements, and filler. Merge semantically related non-contiguous messages into the same segment. "
+        "Return only valid JSON with this shape: "
+        '{"segments":[{"topic":"short_snake_case","coordinate_tuples":[[start,end]],"message_indexes":[0],"saliency_score":0.0,"summary_text":"short summary"}]} '
+        "Indexes are zero-based and coordinate end is inclusive. Do not include messages that are only filler.\n\n"
+        f"Conversation:\n{indexed}\n\nJSON:"
+    )
+
+
+def parse_first_json_object(text: str) -> Json:
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            value, _end = decoder.raw_decode(text[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            return value
+    raise MatrixArkError("model response did not contain a JSON object")
+
+
+def oss_model_memory_segments(messages: list[Json], *, model: str, model_path: str = "", max_new_tokens: int = 512) -> Json:
+    try:
+        import torch  # type: ignore
+        from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore
+    except Exception as exc:  # pragma: no cover - depends on optional OSS stack.
+        raise MatrixArkError("torch and transformers are required for segment_provider=oss") from exc
+
+    target = model_path or model
+    cache_key = f"{target}:{max_new_tokens}"
+    cached = _OSS_SEGMENT_MODEL_CACHE.get(cache_key)
+    if cached is None:
+        local_only = bool(model_path) or os.getenv("MATRIXARK_SEGMENT_MODEL_LOCAL_ONLY", "").lower() in {"1", "true", "yes"}
+        tokenizer = AutoTokenizer.from_pretrained(target, local_files_only=local_only)
+        model_obj = AutoModelForCausalLM.from_pretrained(target, local_files_only=local_only)
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        model_obj.to(device)
+        model_obj.eval()
+        cached = {"tokenizer": tokenizer, "model": model_obj, "device": device}
+        _OSS_SEGMENT_MODEL_CACHE[cache_key] = cached
+    tokenizer = cached["tokenizer"]
+    model_obj = cached["model"]
+    device = cached["device"]
+    prompt = build_segment_prompt(messages)
+    if getattr(tokenizer, "chat_template", None):
+        chat = [
+            {"role": "system", "content": "Return only JSON. No markdown."},
+            {"role": "user", "content": prompt},
+        ]
+        input_ids = tokenizer.apply_chat_template(chat, add_generation_prompt=True, return_tensors="pt").to(device)
+        outputs = model_obj.generate(input_ids, max_new_tokens=max_new_tokens, do_sample=False)
+        generated = outputs[0][input_ids.shape[-1]:]
+        response = tokenizer.decode(generated, skip_special_tokens=True)
+    else:
+        inputs = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=4096)
+        inputs = {key: value.to(device) for key, value in inputs.items()}
+        outputs = model_obj.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
+        generated = outputs[0][inputs["input_ids"].shape[-1]:]
+        response = tokenizer.decode(generated, skip_special_tokens=True)
+    return parse_first_json_object(response)
+
+
+def normalize_model_segments(raw: Any, messages: list[Json]) -> list[Json]:
+    if isinstance(raw, list):
+        raw_segments = raw
+    elif isinstance(raw, dict) and isinstance(raw.get("segments"), list):
+        raw_segments = raw["segments"]
+    else:
+        raise MatrixArkError("OSS segment provider must return {segments:[...]}")
+    max_index = len(messages) - 1
+    normalized: list[Json] = []
+    for raw_segment in raw_segments[:12]:
+        if not isinstance(raw_segment, dict):
+            continue
+        topic = re.sub(r"[^a-z0-9_]+", "_", str(raw_segment.get("topic") or "model_segment").lower()).strip("_") or "model_segment"
+        coordinate_tuples = normalize_coordinate_tuples(raw_segment.get("coordinate_tuples"), max_index)
+        message_indexes = normalize_message_indexes(raw_segment.get("message_indexes"), coordinate_tuples, max_index)
+        if not message_indexes:
+            continue
+        if not coordinate_tuples:
+            coordinate_tuples = contiguous_ranges(message_indexes)
+        segment_text = "\n".join(f"{index}: {messages[index].get('content', '')}" for index in message_indexes)
+        saliency = raw_segment.get("saliency_score", 0.85)
+        try:
+            saliency_score = max(0.0, min(1.0, float(saliency)))
+        except (TypeError, ValueError):
+            saliency_score = 0.85
+        summary_text = str(raw_segment.get("summary_text") or summarize_text(segment_text, limit=420))
+        normalized.append(
+            {
+                "topic": topic,
+                "coordinate_tuples": coordinate_tuples,
+                "message_indexes": message_indexes,
+                "saliency_score": round(saliency_score, 6),
+                "summary_text": summarize_text(summary_text, limit=420),
+                "text": segment_text,
+                "non_contiguous": len(coordinate_tuples) > 1,
+                "detected_by": "oss_model",
+            }
+        )
+    normalized.sort(key=lambda item: (-item["saliency_score"], item["topic"]))
+    return normalized
+
+
+def normalize_coordinate_tuples(value: Any, max_index: int) -> list[list[int]]:
+    ranges: list[list[int]] = []
+    if not isinstance(value, list):
+        return ranges
+    for item in value:
+        if not isinstance(item, list) or len(item) != 2:
+            continue
+        try:
+            start = int(item[0])
+            end = int(item[1])
+        except (TypeError, ValueError):
+            continue
+        start = max(0, min(max_index, start))
+        end = max(0, min(max_index, end))
+        if end < start:
+            start, end = end, start
+        ranges.append([start, end])
+    return ranges
+
+
+def normalize_message_indexes(value: Any, coordinate_tuples: list[list[int]], max_index: int) -> list[int]:
+    indexes: set[int] = set()
+    if isinstance(value, list):
+        for item in value:
+            try:
+                index = int(item)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= index <= max_index:
+                indexes.add(index)
+    for start, end in coordinate_tuples:
+        indexes.update(range(start, end + 1))
+    return sorted(indexes)
 
 def intelligent_memory_segments(messages: list[Json]) -> list[Json]:
     """Segment a batch into salient, event-centric memories.
@@ -1032,6 +1220,11 @@ def normalize_envelope(args: Json, *, default_kind: str) -> Json:
         "raw_uri",
         "resource_type",
         "source_event_ids",
+        "segment_provider",
+        "segment_model",
+        "segment_model_path",
+        "segment_max_new_tokens",
+        "segment_provider_fallback",
     ]:
         if field in args:
             envelope[field] = args[field]
@@ -2592,6 +2785,7 @@ class MatrixArkLocalAdapter:
         return {
             "status": "accepted",
             "mode": extraction["mode"],
+            "segment_provider": extraction.get("segment_provider", {}),
             "classification": extraction["classification"],
             "batch_id_hash": batch_id_hash,
             "node_hash": node_hash,
@@ -4201,6 +4395,32 @@ TOOLS: list[Json] = [
                     "type": "boolean",
                     "default": False,
                     "description": "Force one-pass extraction even when the batch is below threshold.",
+                },
+                "segment_provider": {
+                    "type": "string",
+                    "enum": ["deterministic", "oss", "oss-fallback"],
+                    "default": "deterministic",
+                    "description": "Segment boundary detector. oss uses a local transformers model and emits the same ContextSegment JSON shape.",
+                },
+                "segment_model": {
+                    "type": "string",
+                    "default": "Qwen/Qwen2.5-0.5B-Instruct",
+                    "description": "OSS instruct model name for segment_provider=oss.",
+                },
+                "segment_model_path": {
+                    "type": "string",
+                    "description": "Optional local model path for offline OSS segmentation.",
+                },
+                "segment_max_new_tokens": {
+                    "type": "integer",
+                    "default": 512,
+                    "minimum": 64,
+                    "description": "Maximum tokens generated by the OSS segment boundary model.",
+                },
+                "segment_provider_fallback": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "If true, fall back to deterministic segmentation when the OSS model cannot load or returns invalid JSON.",
                 },
             },
             "additionalProperties": True,
