@@ -1,0 +1,34 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>MatrixArk LongMemEval C++ Rust Parity</title>
+<style>
+body{font-family:Inter,Segoe UI,Arial,sans-serif;max-width:1120px;margin:32px auto;padding:0 24px;color:#172033;line-height:1.5}
+table{border-collapse:collapse;width:100%;margin:16px 0}
+td,th{border:1px solid #d8dee9;padding:8px;text-align:left}
+th{background:#f4f7fb}
+pre{background:#f5f7fb;padding:16px;border-radius:8px;overflow:auto}
+code{background:#edf1f7;padding:2px 4px;border-radius:4px}
+h1,h2{color:#0f172a}
+</style>
+<h1>MatrixArk LongMemEval C++ vs Rust TemporalStore Parity - 2026-06-23</h1>
+<p>LongMemEval is now runnable through both C++ and Rust TemporalStore backends with controlled benchmark slices. The harness now lets <code>--question-limit</code> limit LongMemEval ingestion and adds explicit session caps.</p>
+<h2>Dataset</h2>
+<pre>/root/matrixark_benchmarks/data/longmemeval_s_cleaned_official_hf.json
+items/questions: 500
+sessions: 23867
+turns: 246750</pre>
+<h2>Q20 With 5 Sessions Per Item</h2>
+<table>
+<tr><th>Metric</th><th>C++ TemporalStore</th><th>Rust TemporalStore</th></tr>
+<tr><td>status</td><td>completed</td><td>completed</td></tr>
+<tr><td>elapsed seconds</td><td>16.66</td><td>16.66</td></tr>
+<tr><td>questions</td><td>20</td><td>20</td></tr>
+<tr><td>sessions</td><td>100</td><td>100</td></tr>
+<tr><td>turns ingested</td><td>977</td><td>977</td></tr>
+<tr><td>context recall</td><td>0.9500</td><td>0.9500</td></tr>
+<tr><td>final debug judge score</td><td>0.1000</td><td>0.1000</td></tr>
+<tr><td>p50 retrieval ms</td><td>54.147</td><td>66.681</td></tr>
+<tr><td>p95 retrieval ms</td><td>92.873</td><td>91.983</td></tr>
+</table>
+<h2>Remaining Boundary</h2>
+<p>q20 with all sessions and q20 with 10 sessions per item still exceed the current single-node local deployment during ingestion. The remaining gap is native batch write/load shaping, not logical C++/Rust feature parity.</p>

@@ -1,0 +1,94 @@
+{
+  "artifacts": {
+    "context_pack_jsonl": "docs/benchmarks/longmemeval_cpp_rust_parity_20260623/cpp_q1/longmemeval_official_cpp_q1_20260623.context_packs.jsonl",
+    "hypotheses_jsonl": "docs/benchmarks/longmemeval_cpp_rust_parity_20260623/cpp_q1/longmemeval_official_cpp_q1_20260623.hypotheses.jsonl",
+    "judge_jsonl": "docs/benchmarks/longmemeval_cpp_rust_parity_20260623/cpp_q1/longmemeval_official_cpp_q1_20260623.judge.jsonl",
+    "progress_json": "docs/benchmarks/longmemeval_cpp_rust_parity_20260623/cpp_q1/longmemeval_official_cpp_q1_20260623.progress.json",
+    "report_json": "docs/benchmarks/longmemeval_cpp_rust_parity_20260623/cpp_q1/longmemeval_official_cpp_q1_20260623.report.json",
+    "report_markdown": "docs/benchmarks/longmemeval_cpp_rust_parity_20260623/cpp_q1/longmemeval_official_cpp_q1_20260623.report.md",
+    "result_json": "docs/benchmarks/longmemeval_cpp_rust_parity_20260623/cpp_q1/longmemeval_official_cpp_q1_20260623.result.json"
+  },
+  "dataset": {
+    "answerable_questions_run": 1,
+    "name": "longmemeval_s",
+    "questions_run": 1,
+    "sessions": 53,
+    "source_path": "/root/matrixark_benchmarks/data/longmemeval_s_cleaned_official_hf.json",
+    "turns_ingested": 550,
+    "version": "longmemeval_s_cleaned_official_hf.json"
+  },
+  "failure_categories": {
+    "answer_density_miss": 0,
+    "compression_hidden_answer": 0,
+    "context_recall_miss": 0,
+    "evidence_miss_with_context": 1,
+    "evidence_session_miss": 1,
+    "reader_exact_substring_miss": 1,
+    "reader_miss_with_evidence": 0,
+    "reader_support_miss": 1,
+    "retrieval_miss": 0,
+    "temporal_or_entity_miss": 0,
+    "token_budget_pressure": 1
+  },
+  "finished_at_ms": 1782252406806,
+  "latency": {
+    "avg_answer_bearing_tokens": 13,
+    "avg_latency_ms": 216.2306159880245,
+    "avg_prompt_tokens": 1200,
+    "ingestion_elapsed_ms": 3293,
+    "ingestion_throughput_turns_per_sec": 167.021,
+    "p50_latency_ms": 216.2306159880245,
+    "p95_latency_ms": 216.2306159880245
+  },
+  "models": {
+    "embedding_model": "hashing:hashing-local",
+    "judge_model": "matrixark-local-support-v1",
+    "judge_provider": "deterministic",
+    "reader_model": "matrixark-context-substring-v1",
+    "reader_provider": "deterministic"
+  },
+  "retrieval_config": {
+    "batch_size": 40,
+    "ingest_mode": "batch",
+    "io_timeout_ms": 120000,
+    "judge_execution_mode": "deterministic",
+    "max_message_chars": 1600,
+    "metaserver": "127.0.0.1:18000",
+    "namespace": "deploy_ns",
+    "packing_policy": "question_type_aware",
+    "reader_execution_mode": "deterministic",
+    "request_timeout_ms": 120000,
+    "storage_log_mode": "sharded_compact_count_log",
+    "storage_prefix": "matrixark:longmem:official:cpp:q1:20260623",
+    "table": "deploy_table",
+    "temporalstore_backend": "temporalstore-direct",
+    "token_budget": 1200
+  },
+  "scores": {
+    "answer_bearing_token_density": 0.010833,
+    "answer_hit": 0.0,
+    "answer_quality_under_budget": 0.0,
+    "answer_support_hit": 0.0,
+    "compression_answer_hidden_count": 0,
+    "compression_safety_passed": true,
+    "context_recall": 1.0,
+    "evidence_session_recall": 0.0,
+    "final_judge_score": 0.0,
+    "judge_score_per_1k_tokens": 0.0
+  },
+  "started_at_ms": 1782252403270,
+  "token_efficiency": {
+    "answer_bearing_token_density": 0.010833,
+    "answer_bearing_tokens": 13,
+    "answer_bearing_tokens_per_question": 13,
+    "dropped_token_categories": {
+      "dropped_duplicate_tokens": 0,
+      "dropped_low_score_tokens": 0,
+      "dropped_over_budget_tokens": 1671,
+      "dropped_raw_l2_tokens": 0,
+      "dropped_stale_tokens": 0,
+      "dropped_summary_tokens": 0
+    },
+    "selected_tokens": 1200
+  }
+}
