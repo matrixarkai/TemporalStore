@@ -67,6 +67,23 @@ BENCHMARK_THRESHOLD_PROFILES = {
     "longmemeval_full",
     "oss_reader_full",
 }
+CPP_ADAPTER_STATUSES = {
+    "mixed_native_and_static_surface_gate",
+    "native_adapter_contract",
+    "native_runner_mapped",
+    "temporary_static_surface_gate",
+}
+STATIC_CPP_MODES = {
+    "static",
+    "rust_executable_cxx_static",
+}
+COMPARISON_OUTPUT_FIELDS = {
+    "rust_only_misses",
+    "cpp_only_misses",
+    "shared_hard_failures",
+    "output_diffs",
+    "latency_deltas",
+}
 
 CPP_RUNNER_TEMPLATE = """#!/usr/bin/env bash
 set -euo pipefail
@@ -153,6 +170,8 @@ def validate_corpus(path: Path) -> dict:
     seen_case_names = set()
     seen_command_kinds = set()
     seen_response_kinds = set()
+    seen_cpp_suites = set()
+    seen_static_cpp_suites = set()
     for case in cases:
         if not case.get("name"):
             raise SystemExit(f"{path}: every case must have a name")
@@ -194,6 +213,13 @@ def validate_corpus(path: Path) -> dict:
                 validate_cpp_raft_step(path, case, step)
             if step["command"].get("suite") == "cpp_context_benchmark_parity":
                 validate_context_benchmark_step(path, case, step)
+            if step["command"].get("kind") == "existing_test":
+                suite = step["command"].get("suite")
+                mode = step["command"].get("mode")
+                if isinstance(suite, str) and suite:
+                    seen_cpp_suites.add(suite)
+                    if mode in STATIC_CPP_MODES:
+                        seen_static_cpp_suites.add(suite)
         if case["name"] in COMBINED_RAFT_GATE_CASES:
             validate_combined_raft_case(path, case)
     missing_cases = sorted(set(required_case_names) - seen_case_names)
@@ -208,7 +234,86 @@ def validate_corpus(path: Path) -> dict:
         raise SystemExit(f"{path}: missing required command kinds: {', '.join(missing_commands)}")
     if missing_responses:
         raise SystemExit(f"{path}: missing required response kinds: {', '.join(missing_responses)}")
+    validate_cpp_adapter_coverage(path, coverage, seen_cpp_suites, seen_static_cpp_suites)
     return corpus
+
+
+def validate_cpp_adapter_coverage(
+    path: Path,
+    coverage: dict,
+    seen_cpp_suites: set[str],
+    seen_static_cpp_suites: set[str],
+) -> None:
+    adapter_coverage = coverage.get("cpp_adapter_coverage")
+    if not isinstance(adapter_coverage, list) or not adapter_coverage:
+        raise SystemExit(f"{path}: coverage.cpp_adapter_coverage must be a non-empty list")
+    mapped_suites: set[str] = set()
+    static_gate_suites: set[str] = set()
+    for index, entry in enumerate(adapter_coverage):
+        location = f"{path}: coverage.cpp_adapter_coverage[{index}]"
+        family = entry.get("family")
+        if not isinstance(family, str) or not family:
+            raise SystemExit(f"{location}: family must be a non-empty string")
+        suites = entry.get("suites")
+        if not isinstance(suites, list) or not suites or not all(
+            isinstance(suite, str) and suite for suite in suites
+        ):
+            raise SystemExit(f"{location}: suites must be a non-empty string list")
+        status = entry.get("status")
+        if status not in CPP_ADAPTER_STATUSES:
+            raise SystemExit(
+                f"{location}: status must be one of {', '.join(sorted(CPP_ADAPTER_STATUSES))}"
+            )
+        if status in {"temporary_static_surface_gate", "mixed_native_and_static_surface_gate"}:
+            blocker = entry.get("blocker")
+            expected_runner = entry.get("expected_runner_command")
+            if not isinstance(blocker, str) or len(blocker.strip()) < 24:
+                raise SystemExit(f"{location}: static gates must declare a blocker")
+            if not isinstance(expected_runner, str) or "{corpus}" not in expected_runner:
+                raise SystemExit(
+                    f"{location}: static gates must declare expected_runner_command "
+                    "with a {corpus} placeholder"
+                )
+            static_gate_suites.update(suites)
+        if status in {"native_adapter_contract", "native_runner_mapped", "mixed_native_and_static_surface_gate"}:
+            runner = entry.get("runner_command")
+            if not isinstance(runner, str) or not runner:
+                raise SystemExit(f"{location}: native C++ adapter entries must declare runner_command")
+        comparison = entry.get("comparison_command")
+        if comparison is not None and not isinstance(comparison, str):
+            raise SystemExit(f"{location}: comparison_command must be a string when present")
+        mapped_suites.update(suites)
+
+    unmapped = sorted(seen_cpp_suites - mapped_suites)
+    if unmapped:
+        raise SystemExit(
+            f"{path}: C++ suites missing coverage.cpp_adapter_coverage entries: "
+            + ", ".join(unmapped)
+        )
+    missing_static_blockers = sorted(seen_static_cpp_suites - static_gate_suites)
+    if missing_static_blockers:
+        raise SystemExit(
+            f"{path}: static C++ suites must have temporary_static_surface_gate blockers: "
+            + ", ".join(missing_static_blockers)
+        )
+
+    comparison_outputs = coverage.get("comparison_outputs")
+    if not isinstance(comparison_outputs, dict):
+        raise SystemExit(f"{path}: coverage.comparison_outputs must be an object")
+    comparator = comparison_outputs.get("case_report_comparator")
+    if not isinstance(comparator, str) or not comparator:
+        raise SystemExit(f"{path}: coverage.comparison_outputs.case_report_comparator is required")
+    comparator_path = ROOT / comparator
+    if not comparator_path.exists():
+        raise SystemExit(f"{path}: comparison output tool does not exist: {comparator}")
+    fields = comparison_outputs.get("required_fields")
+    if not isinstance(fields, list) or not all(isinstance(field, str) for field in fields):
+        raise SystemExit(f"{path}: coverage.comparison_outputs.required_fields must be strings")
+    missing_fields = sorted(COMPARISON_OUTPUT_FIELDS - set(fields))
+    if missing_fields:
+        raise SystemExit(
+            f"{path}: comparison_outputs.required_fields missing {', '.join(missing_fields)}"
+        )
 
 
 def validate_context_benchmark_step(path: Path, case: dict, step: dict) -> None:

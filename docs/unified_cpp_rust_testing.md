@@ -99,6 +99,34 @@ If `TS_RUN_CPP_UNIFIED_TESTS=1` is set and the C++ command is missing, the
 runner fails closed. This keeps Rust-only local development fast while making
 cross-codebase validation strict in parity CI.
 
+## C++ Adapter Coverage
+
+Every migrated product family is declared in
+`compat/unified_temporalstore_cases.json` under
+`coverage.cpp_adapter_coverage`.
+
+- `native_runner_mapped` means the corpus names a C++ runner or harness command
+  for that family.
+- `native_adapter_contract` means the C++ side emits the same shared report
+  shape, such as the MatrixArk/VikingMem benchmark adapter.
+- `mixed_native_and_static_surface_gate` means some cases have a native runner
+  while older C++ surface gates still carry explicit blockers.
+- `temporary_static_surface_gate` means native C++ execution is not wired yet;
+  the corpus must carry a blocker and an expected runner command while static
+  C++ source/harness paths are still checked.
+
+Generic Rust/C++ case reports should use the
+`temporalstore_unified_case_report_v1` shape and can be compared with:
+
+```bash
+python3 tools/compare_unified_cpp_rust_case_reports.py \
+  --rust-report /path/to/rust-report.json \
+  --cpp-report /path/to/cpp-report.json
+```
+
+The comparison output includes `rust_only_misses`, `cpp_only_misses`,
+`shared_hard_failures`, `output_diffs`, and `latency_deltas`.
+
 ## Existing C++-Like Gate
 
 `tools/run_temporalstore_cpp_like_tests.sh` now invokes the unified corpus

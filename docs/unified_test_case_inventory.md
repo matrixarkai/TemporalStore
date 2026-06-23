@@ -259,6 +259,32 @@ dataset execution statuses, delegates passed report pairs to the per-report comp
 skipped real LOCOMO/LongMemEval_s artifacts as explicit blockers unless the caller intentionally
 allows skipped evidence.
 
+## C++ Adapter Coverage And Comparison Output
+
+The shared corpus now carries `coverage.cpp_adapter_coverage` so every migrated
+family has a C++ execution story:
+
+| Family | Status |
+| --- | --- |
+| Storage/cache | Temporary static surface gate with a native runner blocker. |
+| Raft | Mixed native runner plus static surface gate for legacy ByteRaft/C++ surfaces. |
+| Context | Temporary static surface gate with a native runner blocker. |
+| Client/proxy/control-plane | Temporary static surface gate with a native runner blocker. |
+| Ingestion | Temporary static surface gate with a native runner blocker. |
+| Benchmarks | Native adapter contract through `cpp_context_benchmark_report_adapter.h`. |
+| Codex/MCP | Temporary static surface gate with a native runner blocker. |
+
+When a native C++ runner is not available, the corpus keeps the case as a
+temporary static surface gate and records the blocker plus the expected runner
+command. The validator fails if a new C++ suite is added without adapter
+coverage, or if a static gate lacks a blocker.
+
+Generic shared-case report comparisons use
+`tools/compare_unified_cpp_rust_case_reports.py`. Its JSON output contains
+`rust_only_misses`, `cpp_only_misses`, `shared_hard_failures`, `output_diffs`,
+and `latency_deltas`; benchmark-specific archives continue to use the dedicated
+MatrixArk/VikingMem comparators.
+
 ## Are There Still Rust-Specific Tests?
 
 Yes. Current Rust-local attributed test count is:

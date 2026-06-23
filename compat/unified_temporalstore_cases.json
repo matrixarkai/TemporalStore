@@ -223,7 +223,87 @@
       "feature_point_groups",
       "ips_stats",
       "ips_snapshot_report"
-    ]
+    ],
+    "cpp_adapter_coverage": [
+      {
+        "family": "storage/cache",
+        "suites": [
+          "cpp_storage_parity"
+        ],
+        "status": "temporary_static_surface_gate",
+        "blocker": "Native C++ storage/cache corpus runner is not wired yet; static C++ object/page/slot/storage harness paths remain required.",
+        "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-storage-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native"
+      },
+      {
+        "family": "raft",
+        "suites": [
+          "cpp_data_raft_parity"
+        ],
+        "status": "mixed_native_and_static_surface_gate",
+        "runner_command": "python3 tools/run_cpp_raft_cases_on_rust.py --cpp-repo {cpp_repo} --artifact-dir <artifact-dir>",
+        "blocker": "Some legacy ByteRaft/C++ source-surface gates remain static until a native C++ shared-case runner emits temporalstore_unified_case_report_v1 for every Raft case.",
+        "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-raft-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
+        "comparison_command": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json>"
+      },
+      {
+        "family": "context",
+        "suites": [
+          "cpp_context_pipeline_parity"
+        ],
+        "status": "temporary_static_surface_gate",
+        "blocker": "Native C++ context pipeline corpus runner is not wired yet; C++ context source/debug paths remain required while Rust executes the shared cases.",
+        "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native"
+      },
+      {
+        "family": "client/proxy/control-plane",
+        "suites": [
+          "cpp_client_control_plane_parity",
+          "cpp_proxy_control_plane_parity",
+          "cpp_data_node_lifecycle_parity",
+          "cpp_metaserver_control_plane_parity"
+        ],
+        "status": "temporary_static_surface_gate",
+        "blocker": "Native C++ control-plane corpus runner is not wired yet; client/proxy/data-node/metaserver source and harness paths remain required.",
+        "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-control-plane-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native"
+      },
+      {
+        "family": "ingestion",
+        "suites": [
+          "cpp_ingestion_parity"
+        ],
+        "status": "temporary_static_surface_gate",
+        "blocker": "Native C++ Kafka/Flink/dead-letter ingestion corpus runner is not wired yet; static ingestion source/harness paths remain required.",
+        "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-ingestion-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native"
+      },
+      {
+        "family": "benchmarks",
+        "suites": [
+          "cpp_context_benchmark_parity"
+        ],
+        "status": "native_adapter_contract",
+        "runner_command": "compat/cpp_context_benchmark_report_adapter.h emits matrixark_vikingmem_context_benchmark_report_v1; python3 tools/compare_context_benchmark_reports.py compares Rust and C++ reports.",
+        "comparison_command": "python3 tools/compare_context_benchmark_archives.py --rust-archive <rust-archive> --cpp-archive <cpp-archive>"
+      },
+      {
+        "family": "codex/mcp",
+        "suites": [
+          "cpp_rust_codex_mcp_parity"
+        ],
+        "status": "temporary_static_surface_gate",
+        "blocker": "Native C++ Codex/MCP parity runner is not wired yet; static MCP integration paths remain required.",
+        "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-codex-mcp-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native"
+      }
+    ],
+    "comparison_outputs": {
+      "case_report_comparator": "tools/compare_unified_cpp_rust_case_reports.py",
+      "required_fields": [
+        "rust_only_misses",
+        "cpp_only_misses",
+        "shared_hard_failures",
+        "output_diffs",
+        "latency_deltas"
+      ]
+    }
   },
   "cases": [
     {
