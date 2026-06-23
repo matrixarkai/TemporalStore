@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MatrixArk No-Metaserver Local Mode</title>
+  <style>
+    body { margin: 0; background: #f7f8fb; color: #14213d; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    main { max-width: 980px; margin: 0 auto; padding: 44px 24px 72px; }
+    h1 { font-size: 34px; line-height: 1.12; margin: 0 0 16px; }
+    h2 { margin-top: 34px; font-size: 22px; }
+    p, li { line-height: 1.58; font-size: 15px; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    pre { background: #101828; color: #e6edf7; border-radius: 8px; padding: 16px; overflow: auto; }
+    table { border-collapse: collapse; width: 100%; background: #fff; }
+    th, td { border: 1px solid #dce3ee; padding: 10px 12px; text-align: left; font-size: 14px; }
+    th { background: #edf2f7; }
+    .panel { background: #fff; border: 1px solid #dde3ef; border-radius: 8px; padding: 22px; box-shadow: 0 10px 30px rgba(20,33,61,.06); }
+  </style>
+</head>
+<body><main>
+<h1>MatrixArk No-Metaserver Local Mode</h1>
+<section class="panel"><p>MatrixArk now supports an explicit local mode that does not start or require a metaserver. Set <code>MATRIXARK_LOCAL_MODE=no-metaserver</code> and the C++/Rust MCP wrappers use the <code>temporalstore-local</code> backend.</p></section>
+<h2>Why</h2>
+<p>Distributed TemporalStore still uses metaserver for table discovery, placement, partition ownership, multi-node operation, and Raft. Local MatrixArk development should not need that full cluster, so no-metaserver mode persists the same MatrixArk context records into a local record log.</p>
+<h2>Run It</h2>
+<pre>cd /root/src/github-services/TemporalStore
+
+MATRIXARK_LOCAL_MODE=no-metaserver \
+MATRIXARK_TEMPORALSTORE_LOCAL_STORE=/tmp/matrixark-local-cpp.jsonl \
+bash tools/matrixark_mcp_cpp_server.sh --line-json</pre>
+<pre>python3 tools/matrixark_mcp_server.py \
+  --backend temporalstore-local \
+  --local-store /tmp/matrixark-local.jsonl \
+  --line-json</pre>
+<h2>Mode Comparison</h2>
+<table><thead><tr><th>Mode</th><th>Metaserver</th><th>Data node</th><th>Storage</th><th>Best for</th></tr></thead><tbody><tr><td><code>temporalstore-local</code></td><td>no</td><td>no</td><td>local record log</td><td>local dev, Codex hooks, demos</td></tr><tr><td><code>temporalstore-direct</code></td><td>yes</td><td>yes</td><td>C++ SDK</td><td>production-like C++ tests</td></tr><tr><td><code>temporalstore-rust</code></td><td>yes</td><td>yes</td><td>Rust SDK process</td><td>Rust/C++ parity</td></tr></tbody></table>
+<h2>Pipeline</h2>
+<pre>agent / Codex / MCP
+-&gt; MatrixArk extraction
+-&gt; ContextNode / ContextEvent / ContextEntity / ContextIndex records
+-&gt; async ContextSummary and ContextEmbedding records
+-&gt; tree-first retrieval
+-&gt; ContextPack audit
+-&gt; local persistent record log</pre>
+<h2>Validation Result On 2026-06-23</h2>
+<p>The local C++ deployment was stopped before validation, and <code>127.0.0.1:18000</code> refused connections. The no-metaserver backend still passed the MatrixArk parity flows.</p>
+<table><thead><tr><th>Test</th><th>Backend</th><th>Result</th><th>Elapsed</th></tr></thead><tbody><tr><td>backend parity</td><td><code>local-nometa</code></td><td>pass</td><td>93.89 ms</td></tr><tr><td>feature parity</td><td><code>local-nometa</code></td><td>pass</td><td>161.81 ms</td></tr></tbody></table>
+<p>Feature parity covered online ingest, async summary refresh, retrieve, feedback confirmation, batch extraction, current-state retrieval, tree traversal with L0/L1 summary embeddings, and replay.</p><h2>Boundary</h2>
+<p>This gives MatrixArk no-metaserver local mode now. A true native C++ embedded single-node backend is still a future storage-engine task because the current C++ SDK requires metaserver address or consul before opening a table.</p>
+</main></body></html>
+

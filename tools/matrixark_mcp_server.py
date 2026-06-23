@@ -5861,15 +5861,21 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--backend",
-        choices=["local", "temporalstore-direct", "temporalstore-rust"],
+        choices=["local", "temporalstore-local", "temporalstore-direct", "temporalstore-rust"],
         default=os.environ.get("MATRIXARK_MCP_BACKEND", "local"),
-        help="Storage backend. local uses JSONL; temporalstore-direct uses the native C++ TemporalStore SDK.",
+        help="Storage backend. local uses JSONL; temporalstore-local uses a no-metaserver local TemporalStore-shaped record log; temporalstore-direct uses the native C++ TemporalStore SDK.",
     )
     parser.add_argument(
         "--event-log",
         type=Path,
         default=Path("/tmp/matrixark-mcp-events.jsonl"),
         help="JSONL event log used by the local adapter.",
+    )
+    parser.add_argument(
+        "--local-store",
+        type=Path,
+        default=Path(os.environ.get("MATRIXARK_TEMPORALSTORE_LOCAL_STORE", "/tmp/matrixark-mcp-temporalstore-local.jsonl")),
+        help="Persistent local record log for --backend temporalstore-local. This mode does not require metaserver.",
     )
     parser.add_argument(
         "--line-json",
@@ -5946,6 +5952,8 @@ def main() -> int:
             request_timeout_ms=args.request_timeout_ms,
             io_timeout_ms=args.io_timeout_ms,
         )
+    elif args.backend == "temporalstore-local":
+        adapter = MatrixArkLocalAdapter(args.local_store)
     else:
         adapter = MatrixArkLocalAdapter(args.event_log)
     _mcp_debug_log("main: adapter ready; serving")
@@ -5956,3 +5964,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

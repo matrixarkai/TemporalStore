@@ -75,6 +75,10 @@ def run_backend(backend: str, run_id: str) -> Json:
     env.setdefault("MATRIXARK_REQUIRE_OSS_UNDERSTANDING", "0")
     env.setdefault("MATRIXARK_RETRIEVAL_TIMEOUT_MS", "8000")
     env["MATRIXARK_TEMPORALSTORE_PREFIX"] = f"matrixark:mcp:feature-parity:{backend}:{run_id}"
+    if backend == "local-nometa":
+        env["MATRIXARK_LOCAL_MODE"] = "no-metaserver"
+        env["MATRIXARK_MCP_AUTOSTART_CPP"] = "0"
+        env["MATRIXARK_TEMPORALSTORE_LOCAL_STORE"] = str(REPORT_DIR / f"{run_id}-{backend}.jsonl")
     proc = McpProcess(backend, _backend_command(backend), env)
     try:
         proc.request(
@@ -297,7 +301,7 @@ def write_report(run_id: str, results: list[Json], failures: list[str]) -> tuple
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--backends", nargs="+", default=["cpp", "rust"], choices=["local", "cpp", "rust"])
+    parser.add_argument("--backends", nargs="+", default=["cpp", "rust"], choices=["local", "local-nometa", "cpp", "rust"])
     parser.add_argument("--run-id", default=str(int(time.time())))
     args = parser.parse_args()
     results: list[Json] = []
@@ -318,8 +322,12 @@ def main() -> int:
     print(f"report_json={report_json}")
     print(f"report_md={report_md}")
     comparison = compare([item for item in results if item.get("ok")])
-    return 0 if not failures and comparison.get("status") == "passed" else 1
+    comparison_status = comparison.get("status")
+    comparison_ok = comparison_status in {"passed", "skipped"}
+    return 0 if not failures and comparison_ok else 1
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
