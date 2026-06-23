@@ -15,8 +15,8 @@ compat/unified_temporalstore_cases.json
 Current inventory:
 
 ```text
-total cases: 79
-total steps: 167
+total cases: 84
+total steps: 172
 executable shared behavior cases: 26
 executable shared behavior steps: 107
 C++ existing-test parity surface cases: 50
@@ -29,6 +29,24 @@ required response kinds: 19
 The target is no duplicated Rust-only and C++-only tests for product behavior. Product behavior
 should be represented as shared corpus cases. Rust-specific and C++-specific tests should remain
 only for implementation internals that are not cross-language TemporalStore contracts.
+
+The Rust grandfathered-test migration ledger is tracked in:
+
+```text
+tools/rust_product_test_migration_ledger.json
+```
+
+Current grandfathered Rust test dispositions:
+
+| Disposition | Count |
+| --- | ---: |
+| `move_to_shared` | 533 |
+| `rust_internal` | 7 |
+| `cpp_out_of_scope` | 0 |
+| `duplicate/remove` | 0 |
+
+The next migration target is the Raft ByteRaft-derived process/fault/readiness family, followed by
+storage/cache recovery cases and Context pipeline model cases.
 
 Focused C++ Raft-to-Rust validation uses the same corpus entries:
 

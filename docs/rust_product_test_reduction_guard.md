@@ -2,39 +2,52 @@
 
 ## Current Split
 
-The current Rust attributed-test count is still:
+The current guard output is:
 
 ```text
-rust_attributed_tests=540
+rust_attributed_tests=555
+grandfathered_tests=540
+shared_corpus_marked_tests=27
+rust_internal_marked_tests=0
 ```
 
-Those tests are now split into two explicit groups:
+The grandfathered baseline is classified in:
+
+```text
+tools/rust_product_test_migration_ledger.json
+```
+
+Those 540 grandfathered tests are split into explicit dispositions:
 
 | Group | Count | Disposition |
 | --- | ---: | --- |
 | Product behavior to move into shared corpus | 533 | Must progressively move to `compat/unified_temporalstore_cases.json` or a sibling shared corpus consumed by both Rust and C++. |
 | Rust-only internals that can remain local | 7 | May stay Rust-local because they protect parser/helper/test-runner mechanics rather than TemporalStore product behavior. |
+| C++ out of scope | 0 | No Rust grandfathered tests are currently classified as C++-only transport/build/internal behavior. |
+| Duplicate/remove | 0 | No explicit duplicate removal targets are identified in the first ledger pass; future migrations should fold redundant tests into shared cases when found. |
 
-The first migration slice now marks **11** existing `temporalstore_compat.rs` product tests with
-explicit `shared-corpus:` references. These tests still count in the 540 Rust-attributed baseline
-until they are removed or collapsed into the shared runner, but their product contract is no longer
-ambiguous. The remaining unmarked compatibility tests are:
-
-- `production_readiness_service_summary_is_public_api`
-- `cxx_stream_random_size_reopen_and_scan_matches_stream_test`
-- `cxx_stream_cross_block_large_values_survive_reopen`
-
-Those need dedicated readiness/stream corpus cases before they can be marked or removed.
+The migration ledger classifies every grandfathered test by family and disposition. Tests with
+`shared-corpus:` markers still count in the 540 grandfathered baseline until they are removed,
+collapsed into the shared runner, or deleted from `tools/rust_product_test_baseline.json`.
 
 ## Product Behavior Backlog
 
 | Bucket | Count | Main files | Shared-corpus target |
 | --- | ---: | --- | --- |
-| Storage/cache/local durability | 163 | `engine.rs`, `page_store.rs`, `cache.rs`, `shared_store.rs`, `oplog.rs`, `index_log.rs`, storage crash and migration tests | Recovery, dump/load, cache refill, corruption, shared-store replay, storage migration. |
-| Control plane/service behavior | 174 | `client.rs`, `proxy.rs`, `data_node.rs`, `meta.rs`, `rebalance.rs`, `bin/server.rs`, `bin/metaserver.rs`, `e2e.rs` | Topology, stale routes, admission, load/reload/unload, scheduler, service convergence. |
-| Raft/distributed behavior | 140 | `raft.rs`, `bin/raft_node.rs` | Log, snapshot, membership, failover, catch-up, secondary reads, OpenRaft rollout evidence. |
-| API/model/ingestion/context/SDK behavior | 36 | `temporalstore_compat.rs`, `redis.rs`, `context_workflow.rs`, `ingestion.rs`, `sdk.rs` | Redis/API, Feature/Sequence/IPS/Risk/Context, ingestion offsets/checkpoints/dead letters, SDK contracts. |
-| Readiness/ops/fault behavior | 20 | `readiness.rs`, `bin/readiness_gate.rs`, `bin/external_chaos_gate.rs`, `replica_replay.rs` | Readiness blockers, chaos/fault evidence, replay safety, scale/fault reports. |
+| Storage/cache/local durability | 176 | `engine.rs`, `page_store.rs`, `cache.rs`, `shared_store.rs`, `oplog.rs`, `index_log.rs`, storage crash and migration tests | Dump/load, recovery, corruption, follower-safe GC, cache pressure/refill, shared-store replay, storage migration. |
+| Raft/distributed behavior | 140 | `raft.rs`, `bin/raft_node.rs` | ByteRaft-derived read safety, metrics/admin, snapshot lifecycle, backpressure, election controls, fault harnesses, membership, failover, secondary reads. |
+| Control plane/service behavior | 91 | `client.rs`, `proxy.rs`, `data_node.rs`, `meta.rs`, `rebalance.rs`, `bin/server.rs`, `bin/metaserver.rs`, `e2e.rs` | Topology changes, stale routes, admission, route quarantine, load/reload/unload, scheduler tokens, service convergence. |
+| Redis/admin/API behavior | 45 | `engine.rs`, `redis.rs`, `sdk.rs`, server/admin alias tests | Redis/API command-response corpus, admin aliases, common string/hash/set lifecycle, SDK contracts. |
+| Ops/scale/fault behavior | 22 | `readiness.rs`, `bin/readiness_gate.rs`, `bin/external_chaos_gate.rs`, `replica_replay.rs` | Readiness blockers, chaos/fault evidence, rolling restart, replay safety, scale/SLO reports. |
+| Feature model behavior | 18 | `engine.rs`, `temporalstore_compat.rs` | Packed timestamped pages, nested point/proto semantics, policy/filter/aggregate lifecycle. |
+| Ingestion behavior | 10 | `ingestion.rs`, server ingestion routes | Kafka offsets, rebalance/backpressure, Flink checkpoints, dead letters, lag metrics, restart idempotence. |
+| Risk model behavior | 10 | `engine.rs`, `temporalstore_compat.rs` | CPC/list/manager/debug/window semantics. |
+| Sequence model behavior | 8 | `engine.rs`, `temporalstore_compat.rs` | Ordering, bounds, batch/filter groups, C++ feature-row shape. |
+| Context model and pipeline behavior | 7 | `context_workflow.rs`, Context model tests | Event/segment/entity/index/embedding/summary/compression, query debug flow, prompt-pack ordering. |
+| IPS model behavior | 6 | `engine.rs`, `temporalstore_compat.rs` | Snapshot/stat/filter metadata, batch-last grouping, action/table/request metadata. |
+
+The next migration target is **Raft ByteRaft-derived process/fault/readiness cases**, followed by
+storage/cache recovery cases and Context pipeline model cases.
 
 ## Rust-Only Internals
 
@@ -85,8 +98,8 @@ python3 tools/validate_no_duplicate_tests.py
 Current guard output includes both the grandfathered baseline and migration marker count:
 
 ```text
-rust_attributed_tests=540
+rust_attributed_tests=555
 grandfathered_tests=540
-shared_corpus_marked_tests=11
+shared_corpus_marked_tests=27
 rust_internal_marked_tests=0
 ```
