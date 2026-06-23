@@ -68,7 +68,10 @@ MATRIXARK_TOOL_SCOPES: dict[str, set[str]] = {
     "matrixark_replay": {"context:replay"},
     "matrixark_admin_create_account": {"admin:account"},
     "matrixark_admin_create_user": {"admin:user"},
+    "matrixark_admin_update_user": {"admin:user"},
+    "matrixark_admin_list_users": {"admin:user"},
     "matrixark_admin_create_api_key": {"admin:api_key"},
+    "matrixark_admin_list_api_keys": {"admin:api_key"},
     "matrixark_admin_rotate_api_key": {"admin:api_key"},
     "matrixark_admin_revoke_api_key": {"admin:api_key"},
     "matrixark_admin_map_sso_user": {"admin:sso"},
@@ -3318,10 +3321,15 @@ class MatrixArkAccessManager:
             requested_session = str(scope.get("session_id", ""))
             allowed_user_ids = set(key_record.get("allowed_user_ids", []))
             allowed_session_ids = set(key_record.get("allowed_session_ids", []))
-            if allowed_user_ids and requested_user and requested_user not in allowed_user_ids:
+            if allowed_user_ids and not requested_user:
+                raise MatrixArkError("scope.user_id is required by API key")
+            if allowed_session_ids and not requested_session:
+                raise MatrixArkError("scope.session_id is required by API key")
+            if allowed_user_ids and requested_user not in allowed_user_ids:
                 raise MatrixArkError("scope.user_id is not allowed by API key")
-            if allowed_session_ids and requested_session and requested_session not in allowed_session_ids:
+            if allowed_session_ids and requested_session not in allowed_session_ids:
                 raise MatrixArkError("scope.session_id is not allowed by API key")
+            self.ensure_user_active(account_id, tenant_id, requested_user)
             return {
                 "mode": "api_key",
                 "api_key_id": key_record["api_key_id"],
@@ -3383,6 +3391,24 @@ class MatrixArkAccessManager:
             if record.get("record_type") == "matrixark_api_key" and record.get("api_key_id") == api_key_id:
                 return record
         return None
+
+    def latest_user_record(self, account_id: str, tenant_id: str, user_id: str) -> Json | None:
+        if not user_id:
+            return None
+        for record in reversed(self.adapter.read_all()):
+            if (
+                record.get("record_type") == "matrixark_user"
+                and record.get("account_id") == account_id
+                and record.get("tenant_id") == tenant_id
+                and record.get("user_id") == user_id
+            ):
+                return record
+        return None
+
+    def ensure_user_active(self, account_id: str, tenant_id: str, user_id: str) -> None:
+        record = self.latest_user_record(account_id, tenant_id, user_id)
+        if record and record.get("status") != "active":
+            raise MatrixArkError("scope.user_id is disabled")
 
     def append_audit(self, action: str, identity: Json, *, status: str, details: Json | None = None) -> None:
         self.adapter.append(
@@ -3492,6 +3518,72 @@ class MatrixArkAccessManager:
             "user_hash": record["user_hash"],
         }
 
+    def update_user(self, args: Json, identity: Json) -> Json:
+        scope = optional_object(args, "scope")
+        account_id = canonical_account_id(optional_string(args, "account_id") or str(scope.get("account_id") or identity["account_id"]))
+        tenant_id = canonical_tenant_id(optional_string(args, "tenant_id") or str(scope.get("tenant_id") or identity["tenant_id"]))
+        self.ensure_identity_can_manage(identity, account_id, tenant_id)
+        user_id = require_string(args, "user_id")
+        current = self.latest_user_record(account_id, tenant_id, user_id) or {}
+        status = optional_string(args, "status", str(current.get("status") or "active"))
+        if status not in {"active", "disabled"}:
+            raise MatrixArkError("status must be active or disabled")
+        display_name = optional_string(args, "display_name", str(current.get("display_name") or user_id))
+        external_subject = optional_string(args, "external_subject", str(current.get("external_subject") or ""))
+        record = {
+            "record_type": "matrixark_user",
+            "user_record_hash": stable_hash(f"{account_id}:{tenant_id}:user:{user_id}"),
+            "account_id": account_id,
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "display_name": display_name,
+            "external_subject": external_subject,
+            **identity_hashes(account_id, tenant_id, user_id),
+            "status": status,
+            "created_by_api_key_id": current.get("created_by_api_key_id", identity.get("api_key_id", "")),
+            "created_at_ms": current.get("created_at_ms", now_ms()),
+            "updated_by_api_key_id": identity.get("api_key_id", ""),
+            "updated_at_ms": now_ms(),
+        }
+        self.adapter.append(record)
+        self.append_audit("admin.update_user", identity, status="ok", details={"account_id": account_id, "tenant_id": tenant_id, "user_id": user_id, "user_status": status})
+        return {"status": "updated", "account_id": account_id, "tenant_id": tenant_id, "user_id": user_id, "user_status": status, "user_hash": record["user_hash"]}
+
+    def list_users(self, args: Json, identity: Json) -> Json:
+        limit = args.get("limit", 100)
+        if not isinstance(limit, int) or limit <= 0:
+            raise MatrixArkError("limit must be a positive integer")
+        scope = optional_object(args, "scope")
+        account_id = canonical_account_id(optional_string(args, "account_id") or str(scope.get("account_id") or identity["account_id"]))
+        tenant_id = canonical_tenant_id(optional_string(args, "tenant_id") or str(scope.get("tenant_id") or identity["tenant_id"]))
+        self.ensure_identity_can_manage(identity, account_id, tenant_id)
+        status_filter = optional_string(args, "status", "")
+        if status_filter and status_filter not in {"active", "disabled"}:
+            raise MatrixArkError("status must be active or disabled")
+        latest: dict[str, Json] = {}
+        for record in reversed(self.adapter.read_all()):
+            if record.get("record_type") != "matrixark_user":
+                continue
+            if record.get("account_id") != account_id or record.get("tenant_id") != tenant_id:
+                continue
+            user_id = str(record.get("user_id", ""))
+            if not user_id or user_id in latest:
+                continue
+            if status_filter and record.get("status") != status_filter:
+                continue
+            latest[user_id] = {
+                "user_id": user_id,
+                "display_name": record.get("display_name", ""),
+                "external_subject": record.get("external_subject", ""),
+                "status": record.get("status", ""),
+                "user_hash": record.get("user_hash", 0),
+                "created_at_ms": record.get("created_at_ms", 0),
+                "updated_at_ms": record.get("updated_at_ms", 0),
+            }
+            if len(latest) >= limit:
+                break
+        return {"status": "ok", "account_id": account_id, "tenant_id": tenant_id, "users": list(latest.values()), "count": len(latest)}
+
     def create_api_key(self, args: Json, identity: Json) -> Json:
         scope = optional_object(args, "scope")
         account_id = canonical_account_id(optional_string(args, "account_id") or str(scope.get("account_id") or identity["account_id"]))
@@ -3594,6 +3686,46 @@ class MatrixArkAccessManager:
         )
         self.append_audit("admin.rotate_api_key", identity, status="ok", details={"old_api_key_id": old_api_key_id, "new_api_key_id": created["api_key_id"]})
         return {"status": "rotated", "old_api_key_id": old_api_key_id, **created}
+
+    def list_api_keys(self, args: Json, identity: Json) -> Json:
+        limit = args.get("limit", 100)
+        if not isinstance(limit, int) or limit <= 0:
+            raise MatrixArkError("limit must be a positive integer")
+        scope = optional_object(args, "scope")
+        account_id = canonical_account_id(optional_string(args, "account_id") or str(scope.get("account_id") or identity["account_id"]))
+        tenant_id = canonical_tenant_id(optional_string(args, "tenant_id") or str(scope.get("tenant_id") or identity["tenant_id"]))
+        self.ensure_identity_can_manage(identity, account_id, tenant_id)
+        include_revoked = bool(args.get("include_revoked", False))
+        latest: dict[str, Json] = {}
+        for record in reversed(self.adapter.read_all()):
+            if record.get("record_type") != "matrixark_api_key":
+                continue
+            if record.get("account_id") != account_id or record.get("tenant_id") != tenant_id:
+                continue
+            api_key_id = str(record.get("api_key_id", ""))
+            if not api_key_id or api_key_id in latest:
+                continue
+            if record.get("status") == "revoked" and not include_revoked:
+                continue
+            expires_at_ms = record.get("expires_at_ms")
+            effective_status = record.get("status", "")
+            if effective_status == "active" and isinstance(expires_at_ms, int) and expires_at_ms <= now_ms():
+                effective_status = "expired"
+            latest[api_key_id] = {
+                "api_key_id": api_key_id,
+                "status": effective_status,
+                "role": record.get("role", ""),
+                "display_name": record.get("display_name", ""),
+                "scopes": record.get("scopes", []),
+                "allowed_user_ids": record.get("allowed_user_ids", []),
+                "allowed_session_ids": record.get("allowed_session_ids", []),
+                "expires_at_ms": expires_at_ms,
+                "created_at_ms": record.get("created_at_ms", 0),
+                "revoked_at_ms": record.get("revoked_at_ms", 0),
+            }
+            if len(latest) >= limit:
+                break
+        return {"status": "ok", "account_id": account_id, "tenant_id": tenant_id, "api_keys": list(latest.values()), "count": len(latest)}
 
     def map_sso_user(self, args: Json, identity: Json) -> Json:
         provider = require_string(args, "provider")
@@ -4004,6 +4136,41 @@ TOOLS: list[Json] = [
         },
     },
     {
+        "name": "matrixark_admin_update_user",
+        "description": "Update, enable, or disable a MatrixArk user under an account/tenant.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["user_id"],
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "account_id": {"type": "string"},
+                "tenant_id": {"type": "string"},
+                "scope": SCOPE_SCHEMA,
+                "user_id": {"type": "string"},
+                "display_name": {"type": "string"},
+                "external_subject": {"type": "string"},
+                "status": {"type": "string", "enum": ["active", "disabled"]},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_admin_list_users",
+        "description": "List MatrixArk users for an account/tenant without exposing context data.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "account_id": {"type": "string"},
+                "tenant_id": {"type": "string"},
+                "scope": SCOPE_SCHEMA,
+                "status": {"type": "string", "enum": ["active", "disabled"]},
+                "limit": {"type": "integer", "default": 100},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
         "name": "matrixark_admin_create_api_key",
         "description": "Create a MatrixArk API key for an account/tenant. The raw key is returned once.",
         "inputSchema": {
@@ -4035,6 +4202,22 @@ TOOLS: list[Json] = [
                     "description": "Optional future unix timestamp in milliseconds when this key expires.",
                 },
                 "key_prefix": {"type": "string", "default": "mk_test"},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_admin_list_api_keys",
+        "description": "List MatrixArk API key metadata for an account/tenant. Raw keys and hashes are never returned.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "account_id": {"type": "string"},
+                "tenant_id": {"type": "string"},
+                "scope": SCOPE_SCHEMA,
+                "include_revoked": {"type": "boolean", "default": False},
+                "limit": {"type": "integer", "default": 100},
             },
             "additionalProperties": True,
         },
@@ -4175,8 +4358,14 @@ class MatrixArkMcpServer:
             return self.access.create_account(args, identity)
         if name == "matrixark_admin_create_user":
             return self.access.create_user(args, identity)
+        if name == "matrixark_admin_update_user":
+            return self.access.update_user(args, identity)
+        if name == "matrixark_admin_list_users":
+            return self.access.list_users(args, identity)
         if name == "matrixark_admin_create_api_key":
             return self.access.create_api_key(args, identity)
+        if name == "matrixark_admin_list_api_keys":
+            return self.access.list_api_keys(args, identity)
         if name == "matrixark_admin_rotate_api_key":
             return self.access.rotate_api_key(args, identity)
         if name == "matrixark_admin_revoke_api_key":

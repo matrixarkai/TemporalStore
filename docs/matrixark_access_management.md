@@ -78,11 +78,14 @@ Policy:
 
 - Empty `allowed_user_ids` means any user inside the key account/tenant.
 - Empty `allowed_session_ids` means any session inside the key account/tenant.
-- If an allow-list is present and the caller sends a different user/session, the
-  request is rejected before TemporalStore is touched.
+- If an allow-list is present, the caller must send the matching `user_id` or
+  `session_id`; omitted or different values are rejected before TemporalStore is
+  touched.
 - `expires_at_ms` must be a future Unix timestamp in milliseconds.
 - Rotated keys preserve scopes, role, display name, user allow-list, session
   allow-list, and expiry.
+- Disabled users are blocked for API-key-authenticated context calls even if the
+  API key is otherwise valid.
 
 ## Scopes
 
@@ -119,7 +122,10 @@ A tenant admin API key can manage users and keys only inside its own
 |---|---|
 | `matrixark_admin_create_account` | Create account and default tenant records. |
 | `matrixark_admin_create_user` | Register a MatrixArk user under an account/tenant. |
+| `matrixark_admin_update_user` | Update user metadata or disable/enable a user. |
+| `matrixark_admin_list_users` | List user metadata for an account/tenant. |
 | `matrixark_admin_create_api_key` | Issue a scoped MatrixArk API key. |
+| `matrixark_admin_list_api_keys` | List redacted API key metadata; raw keys and hashes are never returned. |
 | `matrixark_admin_rotate_api_key` | Revoke an active key and issue a replacement. |
 | `matrixark_admin_revoke_api_key` | Revoke an active key. |
 | `matrixark_admin_map_sso_user` | Map Okta/Google/Azure AD user ids to MatrixArk user ids. |
@@ -151,6 +157,45 @@ matrixark_replay
 - Scoped MatrixArk API keys are required for context and admin operations.
 - Revoked or expired keys stop working immediately because the newest
   append-only key state is authoritative.
+
+## User Status Enforcement
+
+Users are append-only records keyed by `account_id`, `tenant_id`, and `user_id`.
+`matrixark_admin_update_user` writes a new user version. The newest version is
+authoritative.
+
+```json
+{
+  "account_id": "acct_acme",
+  "tenant_id": "tenant_eng",
+  "user_id": "alice",
+  "status": "disabled"
+}
+```
+
+When an API-key-authenticated request includes `scope.user_id`, MatrixArk checks
+the newest user record. If the user is disabled, ingest/retrieve/feedback/replay
+are rejected. This gives enterprises a simple offboarding path without rewriting
+old context data.
+
+## Safe Key Inventory
+
+`matrixark_admin_list_api_keys` returns only operational metadata:
+
+```json
+{
+  "api_key_id": "key_...",
+  "status": "active",
+  "role": "agent_service",
+  "display_name": "alice codex hook",
+  "scopes": ["context:ingest", "context:retrieve"],
+  "allowed_user_ids": ["alice"],
+  "allowed_session_ids": ["codex-thread-123"],
+  "expires_at_ms": 4102444800000
+}
+```
+
+It never returns raw API keys or API key hashes.
 
 ## Audit And Usage Logs
 
@@ -211,5 +256,7 @@ changing TemporalStore data models.
 4. Issue separate API keys for hooks, MCP servers, batch ingestion, and admin
    automation.
 5. Use user/session allow-lists for high-risk hooks or test deployments.
-6. Rotate keys on a fixed schedule and revoke old hooks immediately when a user
+6. Disable users immediately during offboarding; existing context stays
+   replayable for admins, but user-scoped API calls are blocked.
+7. Rotate keys on a fixed schedule and revoke old hooks immediately when a user
    or integration is offboarded.
