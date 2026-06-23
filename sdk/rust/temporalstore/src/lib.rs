@@ -135,6 +135,20 @@ extern "C" {
         value: *mut *mut c_char,
         error_message: *mut *mut c_char,
     ) -> c_int;
+    fn temporalstore_hset(
+        client: *mut TemporalStoreClientOpaque,
+        key: *const c_char,
+        field: *const c_char,
+        value: *const c_char,
+        error_message: *mut *mut c_char,
+    ) -> c_int;
+    fn temporalstore_hget(
+        client: *mut TemporalStoreClientOpaque,
+        key: *const c_char,
+        field: *const c_char,
+        value: *mut *mut c_char,
+        error_message: *mut *mut c_char,
+    ) -> c_int;
     fn temporalstore_add_sequence_feature_rows(
         client: *mut TemporalStoreClientOpaque,
         key: *const c_char,
@@ -264,6 +278,29 @@ impl Client {
         let mut error: *mut c_char = ptr::null_mut();
         let code =
             unsafe { temporalstore_get_string(self.raw, key.as_ptr(), &mut value, &mut error) };
+        check(code, error)?;
+        let out = unsafe { CStr::from_ptr(value).to_string_lossy().into_owned() };
+        unsafe { temporalstore_free_string(value) };
+        Ok(out)
+    }
+
+    pub fn hset(&self, key: &str, field: &str, value: &str) -> Result<()> {
+        let key = cstring(key)?;
+        let field = cstring(field)?;
+        let value = cstring(value)?;
+        let mut error: *mut c_char = ptr::null_mut();
+        let code = unsafe {
+            temporalstore_hset(self.raw, key.as_ptr(), field.as_ptr(), value.as_ptr(), &mut error)
+        };
+        check(code, error)
+    }
+
+    pub fn hget(&self, key: &str, field: &str) -> Result<String> {
+        let key = cstring(key)?;
+        let field = cstring(field)?;
+        let mut value: *mut c_char = ptr::null_mut();
+        let mut error: *mut c_char = ptr::null_mut();
+        let code = unsafe { temporalstore_hget(self.raw, key.as_ptr(), field.as_ptr(), &mut value, &mut error) };
         check(code, error)?;
         let out = unsafe { CStr::from_ptr(value).to_string_lossy().into_owned() };
         unsafe { temporalstore_free_string(value) };

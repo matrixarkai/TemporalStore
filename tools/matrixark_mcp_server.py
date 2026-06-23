@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import secrets
+import subprocess
 import hashlib
 import json
 import math
@@ -4110,6 +4111,111 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         return records
 
 
+class MatrixArkRustCliClient:
+    """Small process boundary around the Rust TemporalStore SDK.
+
+    The Rust binary owns direct SDK linkage and exposes the same tiny storage API
+    the MatrixArk record log needs. Keeping this boundary narrow lets the MCP
+    server run identical extraction/retrieval logic over either C++ direct SDK or
+    Rust direct SDK storage.
+    """
+
+    def __init__(
+        self,
+        *,
+        cli_path: str,
+        metaserver: str,
+        namespace: str,
+        table: str,
+        request_timeout_ms: int,
+        io_timeout_ms: int,
+    ) -> None:
+        if not cli_path:
+            raise MatrixArkError("--rust-cli or MATRIXARK_TEMPORALSTORE_RUST_CLI is required for temporalstore-rust")
+        self.cli_path = cli_path
+        self.metaserver = metaserver
+        self.namespace = namespace
+        self.table = table
+        self.request_timeout_ms = request_timeout_ms
+        self.io_timeout_ms = io_timeout_ms
+
+    def _call(self, op: str, **kwargs: Any) -> str:
+        command = {
+            "op": op,
+            "metaserver": self.metaserver,
+            "namespace": self.namespace,
+            "table": self.table,
+            "request_timeout_ms": self.request_timeout_ms,
+            "io_timeout_ms": self.io_timeout_ms,
+            **kwargs,
+        }
+        proc = subprocess.run(
+            [self.cli_path],
+            input=json.dumps(command, separators=(",", ":")),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=max(2.0, self.request_timeout_ms / 1000.0 + 2.0),
+        )
+        if proc.returncode != 0:
+            raise MatrixArkError(f"Rust TemporalStore {op} failed: {proc.stderr.strip() or proc.stdout.strip()}")
+        try:
+            json_lines = [line for line in proc.stdout.splitlines() if line.strip().startswith("{")]
+            payload = json.loads(json_lines[-1] if json_lines else "{}")
+        except json.JSONDecodeError as exc:
+            raise MatrixArkError(f"Rust TemporalStore {op} returned invalid JSON: {proc.stdout[:200]!r}") from exc
+        if not payload.get("ok"):
+            raise MatrixArkError(f"Rust TemporalStore {op} failed: {payload.get('error', 'unknown error')}")
+        return str(payload.get("value", ""))
+
+    def put_string(self, key: str, value: str) -> None:
+        self._call("put_string", key=key, value=value)
+
+    def get_string(self, key: str) -> str:
+        return self._call("get_string", key=key)
+
+    def hset(self, key: str, field: str, value: str) -> None:
+        self._call("hset", key=key, field=field, value=value)
+
+    def hget(self, key: str, field: str) -> str:
+        return self._call("hget", key=key, field=field)
+
+
+class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
+    """MatrixArk record-log adapter backed by the Rust TemporalStore SDK."""
+
+    def __init__(
+        self,
+        *,
+        rust_cli: str,
+        metaserver: str,
+        namespace: str,
+        table: str,
+        storage_prefix: str = "matrixark:mcp",
+        request_timeout_ms: int = 20000,
+        io_timeout_ms: int = 20000,
+    ) -> None:
+        MatrixArkLocalAdapter.__init__(self, Path("/tmp/matrixark-mcp-unused-rust.jsonl"))
+        self._client = MatrixArkRustCliClient(
+            cli_path=rust_cli,
+            metaserver=metaserver,
+            namespace=namespace,
+            table=table,
+            request_timeout_ms=request_timeout_ms,
+            io_timeout_ms=io_timeout_ms,
+        )
+        self._storage_prefix = storage_prefix.rstrip(":")
+        self._record_hash_key = f"{self._storage_prefix}:records"
+        self._index_key = f"{self._storage_prefix}:record_index"
+        self._count_key = f"{self._storage_prefix}:record_count"
+        self._shard_size = DIRECT_RECORD_LOG_SHARD_SIZE
+        self._index_cache: list[str] | None = None
+        self._records_cache: list[Json] | None = None
+        self._legacy_index_mode = False
+
+
+
 class MatrixArkAccessManager:
     """Small MatrixArk product access layer over the same storage adapter.
 
@@ -5470,7 +5576,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--backend",
-        choices=["local", "temporalstore-direct"],
+        choices=["local", "temporalstore-direct", "temporalstore-rust"],
         default=os.environ.get("MATRIXARK_MCP_BACKEND", "local"),
         help="Storage backend. local uses JSONL; temporalstore-direct uses the native C++ TemporalStore SDK.",
     )
@@ -5517,6 +5623,11 @@ def main() -> int:
         help="TemporalStore key prefix for MatrixArk records.",
     )
     parser.add_argument(
+        "--rust-cli",
+        default=os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_CLI", ""),
+        help="Path to the Rust matrixark_record_log binary for --backend temporalstore-rust.",
+    )
+    parser.add_argument(
         "--request-timeout-ms",
         type=int,
         default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS", "20000")),
@@ -5536,6 +5647,16 @@ def main() -> int:
             namespace=args.namespace,
             table=args.table,
             library_path=args.temporalstore_lib,
+            storage_prefix=args.storage_prefix,
+            request_timeout_ms=args.request_timeout_ms,
+            io_timeout_ms=args.io_timeout_ms,
+        )
+    elif args.backend == "temporalstore-rust":
+        adapter = MatrixArkTemporalStoreRustAdapter(
+            rust_cli=args.rust_cli,
+            metaserver=args.metaserver,
+            namespace=args.namespace,
+            table=args.table,
             storage_prefix=args.storage_prefix,
             request_timeout_ms=args.request_timeout_ms,
             io_timeout_ms=args.io_timeout_ms,
