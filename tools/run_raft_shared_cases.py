@@ -34,6 +34,18 @@ RAFT_CASES = {
     "raft_metaserver_membership_add_promote_remove",
     "raft_openraft_process_rollout_evidence",
     "raft_production_gate",
+    "raft_byteraft_read_safety_policy",
+    "raft_byteraft_metrics_admin_pipeline_status",
+    "raft_byteraft_snapshot_lifecycle_depth",
+    "raft_byteraft_replication_backpressure",
+    "raft_byteraft_election_controls",
+    "raft_byteraft_packet_loss_fault_harness",
+    "raft_byteraft_slow_wal_fsync_fault_harness",
+    "raft_byteraft_snapshot_during_membership_fault_harness",
+    "raft_byteraft_leader_transfer_high_write_fault_harness",
+    "raft_byteraft_follower_rejoin_compacted_logs_fault_harness",
+    "raft_byteraft_rolling_restart_joint_consensus_fault_harness",
+    "raft_byteraft_shared_fault_gate",
 }
 COMBINED_GATE = "tools/run_raft_distributed_parity.sh"
 COMBINED_VALIDATOR_JOB = "temporalstore-raft-distributed-parity-validation"

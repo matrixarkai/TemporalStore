@@ -84,7 +84,25 @@
       "context_tree_embedding_summary_compression",
       "context_temporal_compression_replayable_summary",
       "context_benchmark_fixture_gates",
-      "context_benchmark_full_dataset_gates"
+      "context_benchmark_full_dataset_gates",
+      "raft_byteraft_read_safety_policy",
+      "raft_byteraft_metrics_admin_pipeline_status",
+      "raft_byteraft_snapshot_lifecycle_depth",
+      "raft_byteraft_replication_backpressure",
+      "raft_byteraft_election_controls",
+      "raft_byteraft_packet_loss_fault_harness",
+      "raft_byteraft_slow_wal_fsync_fault_harness",
+      "raft_byteraft_snapshot_during_membership_fault_harness",
+      "raft_byteraft_leader_transfer_high_write_fault_harness",
+      "raft_byteraft_follower_rejoin_compacted_logs_fault_harness",
+      "raft_byteraft_rolling_restart_joint_consensus_fault_harness",
+      "raft_byteraft_shared_fault_gate",
+      "storage_byteraft_dump_load_atomicity",
+      "storage_byteraft_corruption_recovery_matrix",
+      "storage_byteraft_follower_cursor_gc",
+      "storage_byteraft_cache_refill_pressure",
+      "storage_byteraft_shared_store_sync_replay",
+      "storage_byteraft_shared_store_async_replay"
     ],
     "required_raft_case_names": [
       "storage_data_raft_replication_gtest",
@@ -97,7 +115,19 @@
       "raft_data_node_membership_secondary_reads",
       "raft_metaserver_leader_snapshot_restart",
       "raft_metaserver_membership_add_promote_remove",
-      "raft_openraft_process_rollout_evidence"
+      "raft_openraft_process_rollout_evidence",
+      "raft_byteraft_read_safety_policy",
+      "raft_byteraft_metrics_admin_pipeline_status",
+      "raft_byteraft_snapshot_lifecycle_depth",
+      "raft_byteraft_replication_backpressure",
+      "raft_byteraft_election_controls",
+      "raft_byteraft_packet_loss_fault_harness",
+      "raft_byteraft_slow_wal_fsync_fault_harness",
+      "raft_byteraft_snapshot_during_membership_fault_harness",
+      "raft_byteraft_leader_transfer_high_write_fault_harness",
+      "raft_byteraft_follower_rejoin_compacted_logs_fault_harness",
+      "raft_byteraft_rolling_restart_joint_consensus_fault_harness",
+      "raft_byteraft_shared_fault_gate"
     ],
     "required_command_kinds": [
       "string_set",
@@ -4414,6 +4444,434 @@
               "temporalstore-direct",
               "temporalstore-rust"
             ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "raft_byteraft_read_safety_policy",
+      "shard_id": 40,
+      "steps": [
+        {
+          "name": "read_index_lease_bounded_stale_and_secondary_eligibility",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "runtime",
+            "description": "ByteRaft-derived read safety case: read-index rejects lagging followers, stale leader lease blocks reads/writes, bounded-stale reads enforce lag bounds, and secondary reads require catch-up eligibility.",
+            "required_paths": [
+              "tools/run_raft_production_gate_ubuntu22.sh",
+              "tools/run_data_raft_failover_ubuntu22.sh",
+              "tools/run_data_raft_snapshot_restore_ubuntu22.sh",
+              "tools/run_data_raft_scale_up_down_ubuntu22.sh",
+              "src/partition/storage/data_raft_consensus.cc"
+            ],
+            "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
+            "rust_runner": "cargo test -p temporalstore-rust raft_read_index_and_transfer_reject_lagging_replica raft_leader_lease_expiry_blocks_linearizable_reads_and_writes_until_heartbeat raft_replica_read_rejects_lagging_follower_and_succeeds_after_catchup --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
+            "timeout_s": 1200
+          }
+        }
+      ]
+    },
+    {
+      "name": "raft_byteraft_metrics_admin_pipeline_status",
+      "shard_id": 41,
+      "steps": [
+        {
+          "name": "status_local_status_prometheus_peer_pipeline_state",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "runtime",
+            "description": "ByteRaft-derived admin/status case: status, local-status, and Prometheus expose peer lag, apply health, read-index, leader transfer, and pipeline evidence.",
+            "required_paths": [
+              "tools/run_raft_production_gate_ubuntu22.sh",
+              "tools/run_data_raft_failover_ubuntu22.sh",
+              "tools/run_data_raft_snapshot_restore_ubuntu22.sh",
+              "tools/run_data_raft_scale_up_down_ubuntu22.sh",
+              "src/partition/storage/data_raft_consensus.cc",
+              "tools/run_metaserver_raft_failover_ubuntu22.sh",
+              "tools/run_metaserver_raft_membership_ubuntu22.sh",
+              "tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh",
+              "src/metaserver_v2/raft_server.cc"
+            ],
+            "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
+            "rust_runner": "cargo test -p temporalstore-rust raft_status_read_index_and_transfer_leader_match_engine_control_shape metaserver_raft_status_read_index_and_transfer_leader_work --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
+            "timeout_s": 1200
+          }
+        }
+      ]
+    },
+    {
+      "name": "raft_byteraft_snapshot_lifecycle_depth",
+      "shard_id": 42,
+      "steps": [
+        {
+          "name": "snapshot_trigger_chunk_install_progress_and_rollback",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "runtime",
+            "description": "ByteRaft-derived snapshot lifecycle case: trigger policy, chunked install, stale/corrupt rejection, progress, restart recovery, and rollback reporting.",
+            "required_paths": [
+              "tools/run_raft_production_gate_ubuntu22.sh",
+              "tools/run_data_raft_failover_ubuntu22.sh",
+              "tools/run_data_raft_snapshot_restore_ubuntu22.sh",
+              "tools/run_data_raft_scale_up_down_ubuntu22.sh",
+              "src/partition/storage/data_raft_consensus.cc",
+              "tools/run_metaserver_raft_failover_ubuntu22.sh",
+              "tools/run_metaserver_raft_membership_ubuntu22.sh",
+              "tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh",
+              "src/metaserver_v2/raft_server.cc"
+            ],
+            "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
+            "rust_runner": "cargo test -p temporalstore-rust streaming_snapshot_chunks_install_only_after_all_chunks_arrive raft_snapshot_chunk_transport_rejects_stale_term_before_buffering data_raft_snapshot_trigger_compacts_applied_log_bytes metaserver_raft_snapshot_trigger_compacts_applied_log_bytes --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
+            "timeout_s": 1200
+          }
+        }
+      ]
+    },
+    {
+      "name": "raft_byteraft_replication_backpressure",
+      "shard_id": 43,
+      "steps": [
+        {
+          "name": "oversized_log_inflight_reorder_and_apply_batch_gates",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "runtime",
+            "description": "ByteRaft-derived replication pipeline case: oversized-log rejection, in-flight append limits, backpressure counters, reorder window behavior, and apply batch sizing.",
+            "required_paths": [
+              "tools/run_raft_production_gate_ubuntu22.sh",
+              "tools/run_data_raft_failover_ubuntu22.sh",
+              "tools/run_data_raft_snapshot_restore_ubuntu22.sh",
+              "tools/run_data_raft_scale_up_down_ubuntu22.sh",
+              "src/partition/storage/data_raft_consensus.cc"
+            ],
+            "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
+            "rust_runner": "cargo test -p temporalstore-rust raft_config_rejects_oversized_log_entries_and_prohibited_elections raft_rpc_runtime_retries_transport_errors_and_releases_inflight --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
+            "timeout_s": 1200
+          }
+        }
+      ]
+    },
+    {
+      "name": "raft_byteraft_election_controls",
+      "shard_id": 44,
+      "steps": [
+        {
+          "name": "prevote_election_prohibition_transfer_and_offline_timeout",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "runtime",
+            "description": "ByteRaft-derived election control case: pre-vote quorum gates, election prohibition, transfer timeout behavior, and offline peer state.",
+            "required_paths": [
+              "tools/run_raft_production_gate_ubuntu22.sh",
+              "tools/run_data_raft_failover_ubuntu22.sh",
+              "tools/run_data_raft_snapshot_restore_ubuntu22.sh",
+              "tools/run_data_raft_scale_up_down_ubuntu22.sh",
+              "src/partition/storage/data_raft_consensus.cc",
+              "tools/run_metaserver_raft_failover_ubuntu22.sh",
+              "tools/run_metaserver_raft_membership_ubuntu22.sh",
+              "tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh",
+              "src/metaserver_v2/raft_server.cc"
+            ],
+            "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
+            "rust_runner": "cargo test -p temporalstore-rust raft_config_rejects_oversized_log_entries_and_prohibited_elections raft_read_index_and_transfer_reject_lagging_replica production_raft_runtime_validates_security_timer_and_chaos_contracts --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
+            "timeout_s": 1200
+          }
+        }
+      ]
+    },
+    {
+      "name": "raft_byteraft_packet_loss_fault_harness",
+      "shard_id": 45,
+      "steps": [
+        {
+          "name": "packet_loss_partition_heal_majority_progress",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "stress",
+            "description": "ByteRaft fault case: packet-loss/partition isolates a follower, majority continues, stale side is unsafe for reads/writes, and healed follower catches up.",
+            "required_paths": [
+              "tools/run_raft_production_gate_ubuntu22.sh",
+              "tools/run_data_raft_failover_ubuntu22.sh",
+              "tools/run_data_raft_snapshot_restore_ubuntu22.sh",
+              "tools/run_data_raft_scale_up_down_ubuntu22.sh",
+              "src/partition/storage/data_raft_consensus.cc"
+            ],
+            "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
+            "rust_runner": "cargo test -p temporalstore-rust partition_chaos_majority_side_continues_and_healed_replica_catches_up --lib -- --test-threads=1 && cargo run -p temporalstore-rust --bin external_chaos_gate -- --profile quick",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
+            "timeout_s": 1200
+          }
+        }
+      ]
+    },
+    {
+      "name": "raft_byteraft_slow_wal_fsync_fault_harness",
+      "shard_id": 46,
+      "steps": [
+        {
+          "name": "slow_wal_fsync_backpressure_and_recovery",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "stress",
+            "description": "ByteRaft fault case: slow disk/WAL fsync activates backpressure, preserves committed writes, and reports lag/pressure evidence.",
+            "required_paths": [
+              "tools/run_raft_production_gate_ubuntu22.sh",
+              "tools/run_data_raft_failover_ubuntu22.sh",
+              "tools/run_data_raft_snapshot_restore_ubuntu22.sh",
+              "tools/run_data_raft_scale_up_down_ubuntu22.sh",
+              "src/partition/storage/data_raft_consensus.cc"
+            ],
+            "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
+            "rust_runner": "cargo test -p temporalstore-rust raft_rpc_runtime_retries_transport_errors_and_releases_inflight --lib -- --test-threads=1 && cargo run -p temporalstore-rust --bin external_chaos_gate -- --profile quick",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
+            "timeout_s": 1200
+          }
+        }
+      ]
+    },
+    {
+      "name": "raft_byteraft_snapshot_during_membership_fault_harness",
+      "shard_id": 47,
+      "steps": [
+        {
+          "name": "snapshot_during_membership_change_keeps_floor_and_generation_consistent",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "stress",
+            "description": "ByteRaft fault case: snapshot trigger/install during membership change preserves snapshot floor, membership generation, and restart recovery.",
+            "required_paths": [
+              "tools/run_raft_production_gate_ubuntu22.sh",
+              "tools/run_data_raft_failover_ubuntu22.sh",
+              "tools/run_data_raft_snapshot_restore_ubuntu22.sh",
+              "tools/run_data_raft_scale_up_down_ubuntu22.sh",
+              "src/partition/storage/data_raft_consensus.cc",
+              "tools/run_metaserver_raft_failover_ubuntu22.sh",
+              "tools/run_metaserver_raft_membership_ubuntu22.sh",
+              "tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh",
+              "src/metaserver_v2/raft_server.cc"
+            ],
+            "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
+            "rust_runner": "cargo test -p temporalstore-rust data_raft_snapshot_trigger_compacts_applied_log_bytes metaserver_raft_snapshot_trigger_compacts_applied_log_bytes --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
+            "timeout_s": 1200
+          }
+        }
+      ]
+    },
+    {
+      "name": "raft_byteraft_leader_transfer_high_write_fault_harness",
+      "shard_id": 48,
+      "steps": [
+        {
+          "name": "leader_transfer_under_high_write_load_has_no_lost_or_duplicate_commits",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "stress",
+            "description": "ByteRaft fault case: leader transfer under write load commits each accepted write once or fails safely, and final leader owns all committed entries.",
+            "required_paths": [
+              "tools/run_raft_production_gate_ubuntu22.sh",
+              "tools/run_data_raft_failover_ubuntu22.sh",
+              "tools/run_data_raft_snapshot_restore_ubuntu22.sh",
+              "tools/run_data_raft_scale_up_down_ubuntu22.sh",
+              "src/partition/storage/data_raft_consensus.cc"
+            ],
+            "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
+            "rust_runner": "tools/run_raft_distributed_parity.sh",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
+            "timeout_s": 1200
+          }
+        }
+      ]
+    },
+    {
+      "name": "raft_byteraft_follower_rejoin_compacted_logs_fault_harness",
+      "shard_id": 49,
+      "steps": [
+        {
+          "name": "follower_rejoin_after_compaction_installs_snapshot_and_replays_tail",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "stress",
+            "description": "ByteRaft fault case: follower rejoining with compacted logs installs snapshot, replays retained tail, and becomes read-eligible only after catch-up.",
+            "required_paths": [
+              "tools/run_raft_production_gate_ubuntu22.sh",
+              "tools/run_data_raft_failover_ubuntu22.sh",
+              "tools/run_data_raft_snapshot_restore_ubuntu22.sh",
+              "tools/run_data_raft_scale_up_down_ubuntu22.sh",
+              "src/partition/storage/data_raft_consensus.cc"
+            ],
+            "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
+            "rust_runner": "cargo test -p temporalstore-rust raft_snapshot_bootstraps_lagging_data_replica_then_catches_up_logs --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
+            "timeout_s": 1200
+          }
+        }
+      ]
+    },
+    {
+      "name": "raft_byteraft_rolling_restart_joint_consensus_fault_harness",
+      "shard_id": 50,
+      "steps": [
+        {
+          "name": "rolling_restart_with_pending_joint_consensus_completes_or_rolls_back_safely",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "stress",
+            "description": "ByteRaft fault case: rolling restart during pending joint consensus preserves membership state and completes or rolls back safely.",
+            "required_paths": [
+              "tools/run_raft_production_gate_ubuntu22.sh",
+              "tools/run_data_raft_failover_ubuntu22.sh",
+              "tools/run_data_raft_snapshot_restore_ubuntu22.sh",
+              "tools/run_data_raft_scale_up_down_ubuntu22.sh",
+              "src/partition/storage/data_raft_consensus.cc",
+              "tools/run_metaserver_raft_failover_ubuntu22.sh",
+              "tools/run_metaserver_raft_membership_ubuntu22.sh",
+              "tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh",
+              "src/metaserver_v2/raft_server.cc"
+            ],
+            "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
+            "rust_runner": "tools/run_raft_distributed_parity.sh",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
+            "timeout_s": 1200
+          }
+        }
+      ]
+    },
+    {
+      "name": "raft_byteraft_shared_fault_gate",
+      "shard_id": 51,
+      "steps": [
+        {
+          "name": "combined_byteraft_fault_gate_for_data_and_meta_raft",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "stress",
+            "description": "Combined shared ByteRaft-derived fault gate for data-node and metaserver Raft process evidence.",
+            "required_paths": [
+              "tools/run_raft_production_gate_ubuntu22.sh",
+              "tools/run_data_raft_failover_ubuntu22.sh",
+              "tools/run_data_raft_snapshot_restore_ubuntu22.sh",
+              "tools/run_data_raft_scale_up_down_ubuntu22.sh",
+              "src/partition/storage/data_raft_consensus.cc",
+              "tools/run_metaserver_raft_failover_ubuntu22.sh",
+              "tools/run_metaserver_raft_membership_ubuntu22.sh",
+              "tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh",
+              "src/metaserver_v2/raft_server.cc"
+            ],
+            "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
+            "rust_runner": "tools/run_raft_distributed_parity.sh && cargo run -p temporalstore-rust --bin external_chaos_gate -- --profile quick",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
+            "timeout_s": 1800
+          }
+        }
+      ]
+    },
+    {
+      "name": "storage_byteraft_dump_load_atomicity",
+      "shard_id": 52,
+      "steps": [
+        {
+          "name": "storage_dump_load_atomicity_from_cpp_migration_case",
+          "skip_client": true,
+          "command": {
+            "kind": "storage_dump_load_recovery",
+            "migration_case": "cpp_logical_storage_models_packed_timestamped_pages",
+            "description": "Storage shared case: slot-scoped dump/load atomicity, manifest install, restart, and logical read verification."
+          }
+        }
+      ]
+    },
+    {
+      "name": "storage_byteraft_corruption_recovery_matrix",
+      "shard_id": 53,
+      "steps": [
+        {
+          "name": "storage_corruption_recovery_matrix_from_cpp_migration_case",
+          "skip_client": true,
+          "command": {
+            "kind": "storage_fault_matrix",
+            "migration_case": "cpp_logical_storage_models_packed_timestamped_pages",
+            "description": "Storage shared case: corrupt page/index/oplog/manifest, checksum mismatch, partial manifest, missing segment, and stale sequence rejection."
+          }
+        }
+      ]
+    },
+    {
+      "name": "storage_byteraft_follower_cursor_gc",
+      "shard_id": 54,
+      "steps": [
+        {
+          "name": "storage_follower_cursor_gc_from_cpp_migration_case",
+          "skip_client": true,
+          "command": {
+            "kind": "storage_follower_safe_gc",
+            "migration_case": "cpp_logical_storage_models_packed_timestamped_pages",
+            "description": "Storage shared case: follower-cursor-aware GC blocks unsafe reclaim and keeps recovery clean."
+          }
+        }
+      ]
+    },
+    {
+      "name": "storage_byteraft_cache_refill_pressure",
+      "shard_id": 55,
+      "steps": [
+        {
+          "name": "storage_cache_refill_pressure_from_cpp_migration_case",
+          "skip_client": true,
+          "command": {
+            "kind": "storage_cache_refill",
+            "migration_case": "cpp_logical_storage_models_packed_timestamped_pages",
+            "description": "Storage shared case: tiny cache invalidation, page-store read, memory refill, admission/eviction stats, and refill failure reporting."
+          }
+        }
+      ]
+    },
+    {
+      "name": "storage_byteraft_shared_store_sync_replay",
+      "shard_id": 56,
+      "steps": [
+        {
+          "name": "storage_shared_store_sync_replay_from_cpp_migration_case",
+          "skip_client": true,
+          "command": {
+            "kind": "storage_shared_store_replay",
+            "migration_case": "cpp_logical_storage_models_packed_timestamped_pages",
+            "description": "Storage shared case: local shared-store replay preserves converted pages and oplog/index-log ordering in sync mode.",
+            "mode": "Sync"
+          }
+        }
+      ]
+    },
+    {
+      "name": "storage_byteraft_shared_store_async_replay",
+      "shard_id": 57,
+      "steps": [
+        {
+          "name": "storage_shared_store_async_replay_from_cpp_migration_case",
+          "skip_client": true,
+          "command": {
+            "kind": "storage_shared_store_replay",
+            "migration_case": "cpp_logical_storage_models_packed_timestamped_pages",
+            "description": "Storage shared case: async local shared-store replay preserves converted pages and oplog/index-log ordering under delayed follower catch-up.",
+            "mode": "Async"
           }
         }
       ]
