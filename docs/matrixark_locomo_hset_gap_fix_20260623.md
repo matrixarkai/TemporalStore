@@ -73,13 +73,19 @@ embedding/understanding mode: deterministic hash/rules for backend parity
 
 This patch fixes the original larger-batch `hset` timeout enough for the official 2-conversation / 100-question LOCOMO slice to pass on both backends.
 
-The full all-conversation run is still not clean on this single-node local deployment:
+Follow-up async-oplog validation now shows the all-conversation / 100-question C++ run completes on a single local data node when storage async mode is enabled:
 
-- all 10 conversations + 100 questions still times out/crashes under sustained write pressure;
-- 5 conversations ingested 2760 turns and checkpointed 25 retrieval questions, then timed out during retrieval/audit;
-- server logs show log queue saturation and safe-mode symptoms under the larger sustained run.
+- `TEMPORALSTORE_STORAGE_ASYNC=true`
+- `TEMPORALSTORE_STORAGE_OPLOG_DELAY_DUMP_LENGTH=10000`
+- `MATRIXARK_DIRECT_AUDIT_MODE=deferred`
+- 10 conversations, 272 sessions, 5882 turns ingested
+- 100 questions completed
+- ingestion throughput: 710.73 turns/sec
+- p95 retrieval latency: 117.87 ms
 
-So the immediate gap is fixed for the previously failing official slice and for C++/Rust parity, but full official LOCOMO needs explicit storage-engine/load shaping on this single-node local deployment.
+See `docs/matrixark_async_oplog_locomo_benchmark_20260623.md`.
+
+So the original sync-storage bottleneck is now isolated: full official LOCOMO at this shape needs async storage or native batch append/load shaping on this single-node local deployment.
 
 Follow-up load-shaping fix:
 
@@ -95,8 +101,8 @@ For full official LOCOMO completion on one local node:
 1. Add native batch hash write APIs or a MatrixArk-specific append-log API so the SDK can write multiple fields with one server-side operation.
 2. Add runner-side ingestion checkpointing after every conversation so full runs can resume without rewriting all prior records.
 3. Use `MATRIXARK_DIRECT_AUDIT_MODE=deferred` for full benchmark runs so retrieval audits are checkpointed outside the hot path.
-4. Reduce server warning-log pressure for benchmark runs, because the large run saturated the log queue.
-5. Rerun full LOCOMO on C++ and Rust separately with write retry/backoff and audit deferral, then run parity comparison over the full artifact set.
+4. Run a full matrix: sync vs async storage, buffered vs deferred audit, one data node vs multiple data nodes.
+5. Rerun full LOCOMO on C++ and Rust separately with equivalent async/storage policy, then run parity comparison over the full artifact set.
 
 ## Artifact Pointers
 

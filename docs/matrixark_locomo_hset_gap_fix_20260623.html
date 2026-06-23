@@ -1,25 +1,55 @@
-<!doctype html>
-<meta charset="utf-8">
-<title>MatrixArk LOCOMO HSET Gap Fix</title>
-<style>
-body{font-family:Inter,Segoe UI,Arial,sans-serif;max-width:1120px;margin:32px auto;padding:0 24px;color:#172033;line-height:1.5}
-table{border-collapse:collapse;width:100%;margin:16px 0}
-td,th{border:1px solid #d8dee9;padding:8px;text-align:left}
-th{background:#f4f7fb}
-pre{background:#f5f7fb;padding:16px;border-radius:8px;overflow:auto}
-code{background:#edf1f7;padding:2px 4px;border-radius:4px}
-h1,h2{color:#0f172a}
-</style>
+<!doctype html><meta charset="utf-8"><style>body{font-family:Arial,sans-serif;max-width:980px;margin:40px auto;line-height:1.55;color:#17202a}pre{background:#f5f7fa;padding:14px;overflow:auto}h1,h2,h3{color:#0f172a}table{border-collapse:collapse;width:100%;margin:16px 0}td,th{border:1px solid #d8dee9;padding:8px;text-align:left}th{background:#f4f7fb}</style>
 <h1>MatrixArk LOCOMO HSET Gap Fix - 2026-06-23</h1>
+
 <h2>What Was Fixed</h2>
-<p>The previous LOCOMO parity blocker was large <code>matrixark_batch_extract</code> workloads timing out on server-side <code>hset</code> for both C++ and Rust TemporalStore backends.</p>
-<ul>
-<li><code>append_many(records)</code> now exists on the MatrixArk adapter boundary.</li>
-<li>C++ and Rust direct paths persist logical record batches as bounded record bundles.</li>
-<li>Bundles are capped by <code>MATRIXARK_DIRECT_RECORD_BUNDLE_MAX_BYTES</code>, default <code>65536</code>.</li>
-<li><code>matrixark_batch_extract</code> now flushes extracted records through <code>append_many()</code>.</li>
-</ul>
+
+<p>The previous LOCOMO parity blocker was large `matrixark_batch_extract` workloads timing out on server-side `hset` for both C++ and Rust TemporalStore backends.</p>
+
+<p>The fix reduces write pressure in two ways:</p>
+
+<p>&bull; `MatrixArkLocalAdapter` now exposes `append_many(records)`.</p>
+<p>&bull; `MatrixArkTemporalStoreDirectAdapter` and the Rust adapter path now persist logical record batches as bounded record bundles instead of doing one `hset` plus one `record_count` update per MatrixArk record.</p>
+<p>&bull; Bundle payloads are capped by `MATRIXARK_DIRECT_RECORD_BUNDLE_MAX_BYTES`, default `65536`, so we avoid both extremes: too many tiny `hset`s and one oversized hash value.</p>
+<p>&bull; `matrixark_batch_extract` now gathers ContextEvent, ContextEntity, ContextSegment, ContextSummary, ContextEmbedding, ContextIndex, and audit records and flushes them through `append_many()`.</p>
+
+<p>This keeps `read_all()` behavior unchanged for callers: bundled entries are expanded back into normal logical records.</p>
+
+<h2>Validation</h2>
+
+<p>Scripts compile:</p>
+
+<pre>
+python3 -m py_compile \
+  tools/matrixark_mcp_server.py \
+  tools/run_matrixark_dataset_benchmark.py \
+  tools/run_matrixark_locomo_debug_flow.py
+</pre>
+
+<p>The official LOCOMO source file validates:</p>
+
+<pre>
+/root/matrixark_benchmarks/data/locomo10.json
+conversations: 10
+sessions: 272
+turns: 5882
+questions: 1986
+</pre>
+
 <h2>Official LOCOMO Slice: C++ vs Rust</h2>
+
+<p>The previously failing official-file slice now completes on both backends:</p>
+
+<pre>
+dataset: LOCOMO official local file, locomo10.json
+conversation_limit: 2
+turns_ingested: 788
+sessions: 38
+questions_run: 100
+batch_size: 40
+max_context_tokens: 1200
+embedding/understanding mode: deterministic hash/rules for backend parity
+</pre>
+
 <table>
 <tr><th>Metric</th><th>C++ TemporalStore</th><th>Rust TemporalStore</th></tr>
 <tr><td>status</td><td>completed</td><td>completed</td></tr>
@@ -27,13 +57,62 @@ h1,h2{color:#0f172a}
 <tr><td>turns ingested</td><td>788</td><td>788</td></tr>
 <tr><td>sessions</td><td>38</td><td>38</td></tr>
 <tr><td>questions</td><td>100</td><td>100</td></tr>
+<tr><td>ingestion elapsed ms</td><td>3103</td><td>2748</td></tr>
 <tr><td>ingestion throughput turns/sec</td><td>253.948</td><td>286.754</td></tr>
 <tr><td>context recall</td><td>1.0000</td><td>1.0000</td></tr>
 <tr><td>final debug judge score</td><td>0.6200</td><td>0.6200</td></tr>
+<tr><td>answer support hit</td><td>0.6200</td><td>0.6200</td></tr>
+<tr><td>answer hit</td><td>0.1000</td><td>0.1000</td></tr>
+<tr><td>evidence session recall</td><td>0.4000</td><td>0.4000</td></tr>
+<tr><td>avg prompt tokens</td><td>1199.1</td><td>1199.1</td></tr>
+<tr><td>answer-bearing token density</td><td>0.012601</td><td>0.012593</td></tr>
 <tr><td>p50 retrieval ms</td><td>85.443</td><td>83.262</td></tr>
 <tr><td>p95 retrieval ms</td><td>191.453</td><td>206.703</td></tr>
 <tr><td>compression hidden answers</td><td>0</td><td>0</td></tr>
 </table>
+
 <h2>Remaining Boundary</h2>
-<p>The official 2-conversation / 100-question LOCOMO slice now passes on both backends. Full all-conversation LOCOMO needs explicit storage-engine/load shaping on this single-node local deployment.</p>
-<p>Follow-up load-shaping support now exists: direct writes retry transient <code>hset</code> / <code>put_string</code> failures with exponential backoff, <code>MATRIXARK_DIRECT_WRITE_THROTTLE_MS</code> can pace sustained local benchmark writes, and retrieval audit writes can run in <code>buffered</code>, <code>deferred</code>, <code>drop</code>, or <code>sync</code> mode through <code>MATRIXARK_DIRECT_AUDIT_MODE</code>. Use <code>deferred</code> audit mode for full-dataset benchmark runs and flush audits at checkpoints or at the end.</p>
+
+<p>This patch fixes the original larger-batch `hset` timeout enough for the official 2-conversation / 100-question LOCOMO slice to pass on both backends.</p>
+
+<p>Follow-up async-oplog validation now shows the all-conversation / 100-question C++ run completes on a single local data node when storage async mode is enabled:</p>
+
+<p>&bull; `TEMPORALSTORE_STORAGE_ASYNC=true`</p>
+<p>&bull; `TEMPORALSTORE_STORAGE_OPLOG_DELAY_DUMP_LENGTH=10000`</p>
+<p>&bull; `MATRIXARK_DIRECT_AUDIT_MODE=deferred`</p>
+<p>&bull; 10 conversations, 272 sessions, 5882 turns ingested</p>
+<p>&bull; 100 questions completed</p>
+<p>&bull; ingestion throughput: 710.73 turns/sec</p>
+<p>&bull; p95 retrieval latency: 117.87 ms</p>
+
+<p>See `docs/matrixark_async_oplog_locomo_benchmark_20260623.md`.</p>
+
+<p>So the original sync-storage bottleneck is now isolated: full official LOCOMO at this shape needs async storage or native batch append/load shaping on this single-node local deployment.</p>
+
+<p>Follow-up load-shaping fix:</p>
+
+<p>&bull; direct writes now retry transient `hset` / `put_string` failures with exponential backoff;</p>
+<p>&bull; optional `MATRIXARK_DIRECT_WRITE_THROTTLE_MS` can pace sustained local benchmark writes;</p>
+<p>&bull; retrieval audit writes can run in `buffered`, `deferred`, `drop`, or `sync` mode through `MATRIXARK_DIRECT_AUDIT_MODE`;</p>
+<p>&bull; `deferred` audit mode is recommended for full-dataset benchmark ingestion/retrieval runs, with explicit flush at checkpoints/end.</p>
+
+<h2>Next Engineering Step</h2>
+
+<p>For full official LOCOMO completion on one local node:</p>
+
+<p>1. Add native batch hash write APIs or a MatrixArk-specific append-log API so the SDK can write multiple fields with one server-side operation.</p>
+<p>2. Add runner-side ingestion checkpointing after every conversation so full runs can resume without rewriting all prior records.</p>
+<p>3. Use `MATRIXARK_DIRECT_AUDIT_MODE=deferred` for full benchmark runs so retrieval audits are checkpointed outside the hot path.</p>
+<p>4. Run a full matrix: sync vs async storage, buffered vs deferred audit, one data node vs multiple data nodes.</p>
+<p>5. Rerun full LOCOMO on C++ and Rust separately with equivalent async/storage policy, then run parity comparison over the full artifact set.</p>
+
+<h2>Artifact Pointers</h2>
+
+<p>Small report artifacts are under:</p>
+
+<pre>
+docs/benchmarks/locomo_cpp_rust_parity_20260623_fixed/official_cpp_conv2/
+docs/benchmarks/locomo_cpp_rust_parity_20260623_fixed/official_rust_conv2/
+</pre>
+
+<p>The large `context_packs.jsonl` and `result.json` files are local debugging artifacts and should not be committed unless explicitly needed.</p>
