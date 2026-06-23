@@ -27,6 +27,7 @@ class FakeTemporalStoreClient:
         self.hsets.append((key, field, value))
 
     def hget(self, key: str, field: str) -> str:
+        self.hget_count = getattr(self, "hget_count", 0) + 1
         return self.hashes.get(key, {}).get(field, "")
 
 
@@ -42,6 +43,8 @@ def make_adapter(client: FakeTemporalStoreClient, prefix: str) -> MatrixArkTempo
     adapter._index_cache = None
     adapter._records_cache = None
     adapter._legacy_index_mode = False
+    import threading
+    adapter._records_lock = threading.RLock()
     return adapter
 
 
@@ -99,10 +102,36 @@ def test_legacy_index_log_remains_readable_and_appendable() -> None:
     assert [record["text"] for record in adapter.read_all()] == ["old", "new"]
 
 
+def test_read_all_singleflight_cache_avoids_duplicate_prefix_loads() -> None:
+    client = FakeTemporalStoreClient()
+    adapter = make_adapter(client, "matrixark:singleflight")
+    for index in range(4):
+        adapter.append({"record_type": "context_event", "text": f"event-{index}"})
+
+    first_reader = make_adapter(client, "matrixark:singleflight")
+    second_reader = make_adapter(client, "matrixark:singleflight")
+
+    assert [record["text"] for record in first_reader.read_all()] == [
+        "event-0",
+        "event-1",
+        "event-2",
+        "event-3",
+    ]
+    hget_count_after_first = getattr(client, "hget_count", 0)
+    assert [record["text"] for record in second_reader.read_all()] == [
+        "event-0",
+        "event-1",
+        "event-2",
+        "event-3",
+    ]
+    assert getattr(client, "hget_count", 0) == hget_count_after_first
+
+
 def main() -> int:
     test_compact_count_log()
     test_compact_count_log_shards_large_runs()
     test_legacy_index_log_remains_readable_and_appendable()
+    test_read_all_singleflight_cache_avoids_duplicate_prefix_loads()
     print("PASS matrixark_direct_adapter_compact_log")
     return 0
 

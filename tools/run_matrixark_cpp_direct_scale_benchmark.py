@@ -47,6 +47,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--io-timeout-ms", type=int, default=60000)
     parser.add_argument("--retrieval-deadline-ms", type=int, default=int(os.environ.get("MATRIXARK_RETRIEVAL_TIMEOUT_MS", "0") or "0"))
     parser.add_argument("--disable-service-pool", action="store_true")
+    parser.add_argument("--disable-pool-warmup", action="store_true")
     parser.add_argument("--artifact-dir", default=".local/context-debug/cpp-direct-scale")
     parser.add_argument("--report-json", default="")
     return parser.parse_args()
@@ -100,21 +101,26 @@ def service(args: argparse.Namespace, prefix: str) -> MatrixArkMcpServer:
     return MatrixArkMcpServer(adapter)
 
 
-class ThreadLocalServicePool:
+class SharedServicePool:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
-        self.local = threading.local()
+        self._lock = threading.RLock()
+        self._servers: dict[str, MatrixArkMcpServer] = {}
+        self.created = 0
 
     def get(self, prefix: str) -> MatrixArkMcpServer:
-        cache = getattr(self.local, "servers", None)
-        if cache is None:
-            cache = {}
-            self.local.servers = cache
-        server = cache.get(prefix)
-        if server is None:
-            server = service(self.args, prefix)
-            cache[prefix] = server
-        return server
+        with self._lock:
+            server = self._servers.get(prefix)
+            if server is None:
+                server = service(self.args, prefix)
+                self._servers[prefix] = server
+                self.created += 1
+            return server
+
+    @property
+    def size(self) -> int:
+        with self._lock:
+            return len(self._servers)
 
 
 def generated_messages(op_index: int, batch_size: int) -> list[Json]:
@@ -180,7 +186,7 @@ def ingest_op(args: argparse.Namespace, op_index: int) -> Json:
     }
 
 
-def retrieve_op(args: argparse.Namespace, ingest_result: Json, op_index: int, pool: ThreadLocalServicePool | None = None) -> Json:
+def retrieve_op(args: argparse.Namespace, ingest_result: Json, op_index: int, pool: SharedServicePool | None = None) -> Json:
     server = pool.get(str(ingest_result["storage_prefix"])) if pool is not None else service(args, str(ingest_result["storage_prefix"]))
     topic = ["approval", "preference", "location", "role", "plan"][op_index % 5]
     query = {
@@ -291,6 +297,8 @@ def write_report(report: Json, artifact_dir: Path) -> None:
         f"- ingest errors: `{len(report['ingest']['errors'])}`",
         f"- retrieve errors: `{len(report['retrieve']['errors'])}`",
         f"- service pool: `{report['optimizations']['service_pool']}`",
+        f"- service pool size: `{report['optimizations'].get('service_pool_size', 0)}`",
+        f"- pool warmup: `{report['optimizations'].get('pool_warmup_ms', 0.0)} ms`",
         f"- direct record cache: `{report['optimizations']['direct_record_cache']}`",
         f"- embedding vector cache: `{report['optimizations']['embedding_vector_cache']}`",
         f"- retrieval deadline ms: `{report['optimizations']['retrieval_deadline_ms']}`",
@@ -364,8 +372,20 @@ def main() -> int:
         lambda index: ingest_op(args, index),
     )
     retrieve_inputs = ingest_results or []
+    retrieve_pool = None if args.disable_service_pool else SharedServicePool(args)
+    pool_warmup_ms = 0.0
+    pool_warmup_errors: list[Json] = []
+    if retrieve_inputs and retrieve_pool is not None and not args.disable_pool_warmup:
+        warmup_started = time.perf_counter()
+        for row in retrieve_inputs:
+            prefix = str(row["storage_prefix"])
+            try:
+                retrieve_pool.get(prefix).adapter.read_all()
+            except Exception as exc:
+                pool_warmup_errors.append({"storage_prefix": prefix, "error": str(exc)})
+        pool_warmup_ms = round((time.perf_counter() - warmup_started) * 1000.0, 3)
+
     if retrieve_inputs:
-        retrieve_pool = None if args.disable_service_pool else ThreadLocalServicePool(args)
         def retrieve_by_index(index: int) -> Json:
             return retrieve_op(args, retrieve_inputs[index % len(retrieve_inputs)], index, retrieve_pool)
         retrieve_results, retrieve_errors, retrieve_elapsed = run_phase(
@@ -390,8 +410,12 @@ def main() -> int:
         "embedding_model": os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH") or os.environ.get("MATRIXARK_EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"),
         "understanding_provider": os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER"),
         "optimizations": {
-            "service_pool": not args.disable_service_pool,
-            "direct_record_cache": True,
+            "service_pool": "shared_prefix_pool" if not args.disable_service_pool else "disabled",
+            "service_pool_size": retrieve_pool.size if retrieve_inputs and retrieve_pool is not None else 0,
+            "service_pool_created": retrieve_pool.created if retrieve_inputs and retrieve_pool is not None else 0,
+            "pool_warmup_ms": pool_warmup_ms,
+            "pool_warmup_errors": pool_warmup_errors,
+            "direct_record_cache": "prefix_record_count_watermark_with_singleflight_load",
             "embedding_vector_cache": True,
             "retrieval_deadline_ms": args.retrieval_deadline_ms,
             "native_context_api_pushdown": "not_yet: Python direct adapter still performs MatrixArk tree/index scoring",

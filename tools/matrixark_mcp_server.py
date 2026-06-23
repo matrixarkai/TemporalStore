@@ -54,6 +54,7 @@ _EMBEDDING_VECTOR_CACHE_LOCK = threading.RLock()
 _DIRECT_RECORD_CACHE: dict[str, tuple[int, list[Json]]] = {}
 _DIRECT_RECORD_CACHE_LOCK = threading.RLock()
 _DIRECT_RECORD_CACHE_MAX_PREFIXES = 64
+_DIRECT_RECORD_LOAD_LOCKS: dict[str, threading.RLock] = {}
 
 DEFAULT_BUSINESS_TYPE_WEIGHTS: Json = {
     "confirmation": 1.0,
@@ -3985,6 +3986,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         self._index_cache: list[str] | None = None
         self._records_cache: list[Json] | None = None
         self._legacy_index_mode = False
+        self._records_lock = threading.RLock()
 
     def __post_init__(self) -> None:
         # Direct adapter does not use the inherited JSONL path.
@@ -4019,50 +4021,65 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         return max(0, value)
 
     def append(self, record: Json) -> None:
-        if self._records_cache is None:
-            self.read_all()
-        assert self._records_cache is not None
-        payload = json.dumps(record, sort_keys=True, separators=(",", ":"))
-        if self._legacy_index_mode:
-            if self._index_cache is None:
-                self._index_cache = self._get_index()
-            record_id = (
-                f"{len(self._index_cache):020d}:"
-                f"{record.get('record_type', 'record')}:"
-                f"{stable_hash(json.dumps(record, sort_keys=True))}"
-            )
-            self._client.hset(self._record_hash_key, record_id, payload)
-            self._index_cache.append(record_id)
-            self._client.put_string(self._index_key, json.dumps(self._index_cache, separators=(",", ":")))
-            self._records_cache.append(record)
-            self._put_direct_record_cache(len(self._records_cache), self._records_cache)
-            return
+        with self._records_lock:
+            if self._records_cache is None:
+                self.read_all()
+            assert self._records_cache is not None
+            payload = json.dumps(record, sort_keys=True, separators=(",", ":"))
+            if self._legacy_index_mode:
+                if self._index_cache is None:
+                    self._index_cache = self._get_index()
+                record_id = (
+                    f"{len(self._index_cache):020d}:"
+                    f"{record.get('record_type', 'record')}:"
+                    f"{stable_hash(json.dumps(record, sort_keys=True))}"
+                )
+                self._client.hset(self._record_hash_key, record_id, payload)
+                self._index_cache.append(record_id)
+                self._client.put_string(self._index_key, json.dumps(self._index_cache, separators=(",", ":")))
+                self._records_cache.append(record)
+                self._put_direct_record_cache(len(self._records_cache), self._records_cache)
+                return
 
-        sequence = len(self._records_cache)
-        record_key, record_id = self._record_location(sequence)
-        self._client.hset(record_key, record_id, payload)
-        self._client.put_string(self._count_key, str(sequence + 1))
-        self._records_cache.append(record)
-        self._put_direct_record_cache(sequence + 1, self._records_cache)
+            sequence = len(self._records_cache)
+            record_key, record_id = self._record_location(sequence)
+            self._client.hset(record_key, record_id, payload)
+            self._client.put_string(self._count_key, str(sequence + 1))
+            self._records_cache.append(record)
+            self._put_direct_record_cache(sequence + 1, self._records_cache)
 
     def read_all(self) -> list[Json]:
-        if self._records_cache is not None:
-            return list(self._records_cache)
-        count = self._get_count()
-        if count > 0:
-            self._legacy_index_mode = False
-            cached = self._get_direct_record_cache(count)
-            if cached is not None:
-                self._records_cache = cached
+        with self._records_lock:
+            if self._records_cache is not None:
                 return list(self._records_cache)
-            self._records_cache = self._load_records_by_count(count)
-            self._put_direct_record_cache(count, self._records_cache)
+            count = self._get_count()
+            if count > 0:
+                self._legacy_index_mode = False
+                cached = self._get_direct_record_cache(count)
+                if cached is not None:
+                    self._records_cache = cached
+                    return list(self._records_cache)
+                with self._direct_record_load_lock():
+                    cached = self._get_direct_record_cache(count)
+                    if cached is not None:
+                        self._records_cache = cached
+                        return list(self._records_cache)
+                    self._records_cache = self._load_records_by_count(count)
+                    self._put_direct_record_cache(count, self._records_cache)
+                    return list(self._records_cache)
+            index = self._get_index()
+            self._index_cache = index
+            self._legacy_index_mode = bool(index)
+            self._records_cache = self._load_records(index)
             return list(self._records_cache)
-        index = self._get_index()
-        self._index_cache = index
-        self._legacy_index_mode = bool(index)
-        self._records_cache = self._load_records(index)
-        return list(self._records_cache)
+
+    def _direct_record_load_lock(self) -> threading.RLock:
+        with _DIRECT_RECORD_CACHE_LOCK:
+            lock = _DIRECT_RECORD_LOAD_LOCKS.get(self._storage_prefix)
+            if lock is None:
+                lock = threading.RLock()
+                _DIRECT_RECORD_LOAD_LOCKS[self._storage_prefix] = lock
+            return lock
 
     def _get_direct_record_cache(self, count: int) -> list[Json] | None:
         with _DIRECT_RECORD_CACHE_LOCK:
