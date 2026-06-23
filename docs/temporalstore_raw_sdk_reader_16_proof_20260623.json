@@ -1,0 +1,42 @@
+{
+  "backend": "temporalstore-direct-sdk",
+  "key_prefix": "matrixark:raw-sdk:readerproof:16:1782245801102",
+  "metaserver": "127.0.0.1:18000",
+  "namespace": "deploy_ns",
+  "payload_bytes": 512,
+  "read": {
+    "elapsed_sec": 0.209,
+    "errors": [],
+    "latency_ms": {
+      "avg": 2.757,
+      "count": 1000,
+      "max": 14.748,
+      "p50": 2.012,
+      "p95": 7.133,
+      "p99": 10.357
+    },
+    "ops_ok": 1000,
+    "ops_requested": 1000,
+    "qps": 4781.272,
+    "workers": 16
+  },
+  "status": "passed",
+  "table": "deploy_table",
+  "temporalstore_lib": "/root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so",
+  "write": {
+    "elapsed_sec": 2.076,
+    "errors": [],
+    "latency_ms": {
+      "avg": 3.829,
+      "count": 1000,
+      "max": 18.127,
+      "p50": 2.933,
+      "p95": 6.202,
+      "p99": 7.614
+    },
+    "ops_ok": 1000,
+    "ops_requested": 1000,
+    "qps": 481.602,
+    "workers": 2
+  }
+}
