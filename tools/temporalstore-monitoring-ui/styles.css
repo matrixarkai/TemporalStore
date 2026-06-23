@@ -2023,3 +2023,36 @@ a {
     grid-template-columns: 1fr;
   }
 }
+
+
+.access-pattern-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.access-pattern-grid article {
+  min-height: 136px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.access-pattern-grid strong,
+.access-pattern-grid span {
+  display: block;
+}
+
+.access-pattern-grid span {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+@media (max-width: 920px) {
+  .access-pattern-grid {
+    grid-template-columns: 1fr;
+  }
+}

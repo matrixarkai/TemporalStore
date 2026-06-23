@@ -271,6 +271,24 @@ Enterprise apps can keep sending their own user ids first. SSO mapping lets
 larger deployments later connect Okta, Google Workspace, or Azure AD without
 changing TemporalStore data models.
 
+## OpenViking And VikingMem Alignment
+
+The registration and access model follows the practical integration lessons from
+agent-context systems:
+
+- OpenViking-style context organization needs separate keys for memories,
+  resources, skills, MCP tools, and agent hooks, while account/tenant/user/session
+  boundaries keep those trees isolated.
+- VikingMem-style memory extraction benefits from session or rolling batch keys
+  that can ingest logical windows, run one-pass event/entity extraction, and write
+  operator output without sharing admin privileges.
+- Online retrieval hooks should use narrow keys with `context:retrieve`,
+  `context:ingest`, and `context:feedback`; admin automation should use separate
+  `admin:*` keys.
+- MatrixArk adds governance around the pattern: disabled account, disabled tenant,
+  disabled user, revoked key, and expired key all block context calls before
+  TemporalStore data is touched.
+
 ## Registration And Console Pages
 
 The public website includes `website/matrixark-site/registration.html` for
