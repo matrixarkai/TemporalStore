@@ -5,12 +5,14 @@ import argparse
 import html
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
 from tools.matrixark_mcp_server import (
     MatrixArkLocalAdapter,
     MatrixArkMcpServer,
+    MatrixArkTemporalStoreDirectAdapter,
     candidate_index_terms,
     infer_query_type,
     infer_secondary_index_filter_groups,
@@ -35,9 +37,21 @@ def call_tool(server: MatrixArkMcpServer, name: str, arguments: Json) -> Json:
 
 
 def parse_args() -> argparse.Namespace:
+    root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description="Run MatrixArk query/index debug flow with OSS embeddings.")
     parser.add_argument("--artifact-dir", default=".local/context-debug/query-index-oss-docker-debug")
     parser.add_argument("--event-log", default="")
+    parser.add_argument("--backend", choices=["local", "temporalstore-direct"], default="local")
+    parser.add_argument("--metaserver", default="127.0.0.1:18000")
+    parser.add_argument("--namespace", default="deploy_ns")
+    parser.add_argument("--table", default="deploy_table")
+    parser.add_argument(
+        "--temporalstore-lib",
+        default=str(root / "output-ubuntu22" / "release" / "sdk" / "lib" / "libbcache2.so"),
+    )
+    parser.add_argument("--storage-prefix", default=f"matrixark:query:index:debug:{int(time.time() * 1000)}")
+    parser.add_argument("--request-timeout-ms", type=int, default=60000)
+    parser.add_argument("--io-timeout-ms", type=int, default=60000)
     return parser.parse_args()
 
 
@@ -220,11 +234,34 @@ def batch_conversations() -> list[Json]:
     ]
 
 
-def run(artifact_dir: Path) -> Json:
+def create_adapter(args: argparse.Namespace, event_log: Path) -> MatrixArkLocalAdapter:
+    if args.backend == "temporalstore-direct":
+        return MatrixArkTemporalStoreDirectAdapter(
+            metaserver=args.metaserver,
+            namespace=args.namespace,
+            table=args.table,
+            library_path=args.temporalstore_lib,
+            storage_prefix=args.storage_prefix,
+            request_timeout_ms=args.request_timeout_ms,
+            io_timeout_ms=args.io_timeout_ms,
+        )
+    return MatrixArkLocalAdapter(event_log)
+
+
+def read_records(adapter: MatrixArkLocalAdapter, event_log: Path, backend: str) -> list[Json]:
+    if backend == "temporalstore-direct":
+        records = adapter.read_all()
+        event_log.write_text("".join(json.dumps(record, sort_keys=True) + "\n" for record in records), encoding="utf-8")
+        return records
+    return [json.loads(line) for line in event_log.read_text().splitlines() if line.strip()]
+
+
+def run(args: argparse.Namespace, artifact_dir: Path) -> Json:
     artifact_dir.mkdir(parents=True, exist_ok=True)
-    event_log = artifact_dir / "matrixark_query_index_event_log.jsonl"
+    event_log = Path(args.event_log) if args.event_log else artifact_dir / "matrixark_query_index_event_log.jsonl"
     event_log.unlink(missing_ok=True)
-    server = MatrixArkMcpServer(MatrixArkLocalAdapter(event_log))
+    adapter = create_adapter(args, event_log)
+    server = MatrixArkMcpServer(adapter)
     batches = []
     retrievals = []
     for convo in batch_conversations():
@@ -251,7 +288,7 @@ def run(artifact_dir: Path) -> Json:
                 },
             }
             pack = call_tool(server, "matrixark_retrieve", retrieve_args)
-            records_now = [json.loads(line) for line in event_log.read_text().splitlines() if line.strip()]
+            records_now = read_records(adapter, event_log, args.backend)
             qtype = infer_query_type(query)
             retrievals.append(
                 {
@@ -261,13 +298,21 @@ def run(artifact_dir: Path) -> Json:
                     "result": pack,
                 }
             )
-    records = [json.loads(line) for line in event_log.read_text().splitlines() if line.strip()]
+    records = read_records(adapter, event_log, args.backend)
     by_model = {}
     for record in records:
         by_model.setdefault(record.get("record_type", "unknown"), []).append(compact(record))
     report = {
         "status": "passed",
+        "backend": args.backend,
         "event_log": str(event_log),
+        "temporalstore": {
+            "metaserver": args.metaserver if args.backend == "temporalstore-direct" else "",
+            "namespace": args.namespace if args.backend == "temporalstore-direct" else "",
+            "table": args.table if args.backend == "temporalstore-direct" else "",
+            "storage_prefix": args.storage_prefix if args.backend == "temporalstore-direct" else "",
+            "temporalstore_lib": args.temporalstore_lib if args.backend == "temporalstore-direct" else "",
+        },
         "embedding_provider": os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic"),
         "embedding_model": os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH") or os.environ.get("MATRIXARK_EMBEDDING_MODEL", "matrixark-local-token-hash-v1"),
         "note": "This debug run uses real OSS embeddings. Extraction and query-understanding are the current MatrixArk internal deterministic schema/rule path unless an LLM provider is wired in.",
@@ -289,11 +334,17 @@ def write_docs(report: Json, artifact_dir: Path) -> None:
         "",
         "## What This Run Proves",
         "",
+        f"- Backend: `{report.get('backend', 'local')}`.",
         "- Batched 20-message conversations are accepted through `matrixark_batch_extract`.",
         "- ContextEvent, ContextSegment, ContextEntity, ContextSummary, ContextEmbedding, ContextIndex, and ContextPackAudit records are written.",
         "- L0/L1 node summaries are refreshed before retrieval.",
         "- Query text is parsed into a question type and secondary-index filter groups before semantic scoring.",
         "- Real OSS embedding vectors are generated and stored. In this run, the vector dimension is visible in `context_embedding` records.",
+        "",
+        "## Storage Boundary",
+        "",
+        f"- backend: `{report.get('backend', 'local')}`",
+        f"- temporalstore: `{json.dumps(report.get('temporalstore', {}), sort_keys=True)}`",
         "",
         "## Model Boundary",
         "",
@@ -355,9 +406,9 @@ def write_docs(report: Json, artifact_dir: Path) -> None:
 def main() -> int:
     args = parse_args()
     artifact_dir = Path(args.artifact_dir)
-    report = run(artifact_dir)
+    report = run(args, artifact_dir)
     write_docs(report, artifact_dir)
-    print(json.dumps({"status": "passed", "artifact_dir": str(artifact_dir), "model_counts": report["model_counts"]}, indent=2, sort_keys=True))
+    print(json.dumps({"status": "passed", "backend": args.backend, "artifact_dir": str(artifact_dir), "temporalstore": report.get("temporalstore", {}), "model_counts": report["model_counts"]}, indent=2, sort_keys=True))
     return 0
 
 
