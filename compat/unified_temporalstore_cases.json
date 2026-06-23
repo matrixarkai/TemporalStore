@@ -81,6 +81,8 @@
       "context_openviking_blocks_provider_switches",
       "context_injection_prompt_pack_ordering",
       "context_benchmark_injection_entity_segment_index",
+      "context_tree_embedding_summary_compression",
+      "context_temporal_compression_replayable_summary",
       "context_benchmark_fixture_gates",
       "context_benchmark_full_dataset_gates"
     ],
@@ -4103,6 +4105,46 @@
               "docs/context_benchmark_entity_segment_index_contract.md"
             ],
             "rust_runner": "cargo test -p temporalstore-rust context_benchmark_injection_uses_entity_segment_l0_l1_and_secondary_index --lib -- --test-threads=1",
+            "rust_validator": "tools/run_context_workflow_local.sh"
+          }
+        }
+      ]
+    },
+    {
+      "name": "context_tree_embedding_summary_compression",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "context_tree_embedding_summary_compression_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_context_pipeline_parity",
+            "mode": "rust_executable_cxx_static",
+            "description": "Shared C++/Rust Context case translated from C++ TreeEmbeddingSummaryAndCompressionRoundTrip: child refs, embeddings, tree traversal, summaries, compression events, and node-context query must round-trip through TemporalStore.",
+            "required_paths": [
+              "docs/context_tree_embedding_summary_compression_contract.md"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust context_tree_embedding_summary_and_compression_match_cpp_round_trip --lib -- --test-threads=1",
+            "rust_validator": "tools/run_context_workflow_local.sh"
+          }
+        }
+      ]
+    },
+    {
+      "name": "context_temporal_compression_replayable_summary",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "context_temporal_compression_replayable_summary_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_context_pipeline_parity",
+            "mode": "rust_executable_cxx_static",
+            "description": "Shared C++/Rust Context case translated from C++ TemporalCompressionBuildsReplayableSummaryWithoutDeletingSources: compression creates a replayable summary and leaves raw source events queryable.",
+            "required_paths": [
+              "docs/context_temporal_compression_replayable_summary_contract.md"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust context_temporal_compression_builds_replayable_summary_without_deleting_sources --lib -- --test-threads=1",
             "rust_validator": "tools/run_context_workflow_local.sh"
           }
         }

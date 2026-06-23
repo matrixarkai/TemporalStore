@@ -172,8 +172,10 @@ pub use shared_store::{
 };
 pub use types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ContextAuditModel,
-    ContextAuditRef, ContextDirtyModel, ContextEntity, ContextEvent, ContextEventModel,
-    ContextIndexModel, ContextIndexRef, ContextNode, ContextNodeModel, ContextPackAudit,
-    ContextSegment, ContextSummaryDirtyMarker, ContextWire, ExecuteRequest, ExecuteResponse,
-    FeaturePoint, IpsSnapshotReport, IpsStats, ShardId, Status,
+    ContextAuditRef, ContextChildModel, ContextChildRef, ContextCompressionEvent,
+    ContextCompressionModel, ContextDirtyModel, ContextEmbedding, ContextEmbeddingModel,
+    ContextEntity, ContextEvent, ContextEventModel, ContextIndexModel, ContextIndexRef,
+    ContextNode, ContextNodeModel, ContextPackAudit, ContextSegment, ContextSummary,
+    ContextSummaryDirtyMarker, ContextSummaryModel, ContextTraversedNode, ContextWire,
+    ExecuteRequest, ExecuteResponse, FeaturePoint, IpsSnapshotReport, IpsStats, ShardId, Status,
 };

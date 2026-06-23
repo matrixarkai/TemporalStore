@@ -349,12 +349,59 @@ pub struct ContextEntity {
     pub source_event_hashes: Vec<u64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextChildRef {
+    pub parent_hash: u64,
+    pub child_hash: u64,
+    pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ContextEmbedding {
+    pub ref_hash: u64,
+    pub level: u32,
+    #[serde(default)]
+    pub vector: Vec<f32>,
+    pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextSummary {
+    pub node_hash: u64,
+    pub level: u32,
+    #[serde(default)]
+    pub text: String,
+    pub valid_from_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextCompressionEvent {
+    pub compression_id_hash: u64,
+    pub node_hash: u64,
+    pub source_start_ms: u64,
+    pub source_end_ms: u64,
+    pub compressed_time_ms: u64,
+    #[serde(default)]
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ContextTraversedNode {
+    pub node_hash: u64,
+    pub depth: u32,
+    pub score: f32,
+}
+
 pub type ContextNodeModel = ContextNode;
 pub type ContextEventModel = ContextEvent;
 pub type ContextSegment = ContextEvent;
 pub type ContextIndexModel = ContextIndexRef;
 pub type ContextAuditModel = ContextPackAudit;
 pub type ContextDirtyModel = ContextSummaryDirtyMarker;
+pub type ContextChildModel = ContextChildRef;
+pub type ContextEmbeddingModel = ContextEmbedding;
+pub type ContextSummaryModel = ContextSummary;
+pub type ContextCompressionModel = ContextCompressionEvent;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContextModelDescriptor {
@@ -369,6 +416,10 @@ pub const CONTEXT_EVENT_MODEL_ID: u8 = 10;
 pub const CONTEXT_INDEX_MODEL_ID: u8 = 11;
 pub const CONTEXT_AUDIT_MODEL_ID: u8 = 12;
 pub const CONTEXT_DIRTY_MODEL_ID: u8 = 13;
+pub const CONTEXT_CHILD_MODEL_ID: u8 = 14;
+pub const CONTEXT_EMBEDDING_MODEL_ID: u8 = 15;
+pub const CONTEXT_SUMMARY_MODEL_ID: u8 = 16;
+pub const CONTEXT_COMPRESSION_MODEL_ID: u8 = 17;
 pub const CONTEXT_ENTITY_MODEL_ID: u8 = 18;
 
 pub fn context_model_descriptors() -> Vec<ContextModelDescriptor> {
@@ -401,6 +452,30 @@ pub fn context_model_descriptors() -> Vec<ContextModelDescriptor> {
             model_id: CONTEXT_DIRTY_MODEL_ID,
             name: "ContextDirtyModel".to_string(),
             key_family: "ctx:dirty".to_string(),
+            page_primitive: "FeatureOrSet".to_string(),
+        },
+        ContextModelDescriptor {
+            model_id: CONTEXT_CHILD_MODEL_ID,
+            name: "ContextChildModel".to_string(),
+            key_family: "ctx:child".to_string(),
+            page_primitive: "FeatureOrSet".to_string(),
+        },
+        ContextModelDescriptor {
+            model_id: CONTEXT_EMBEDDING_MODEL_ID,
+            name: "ContextEmbeddingModel".to_string(),
+            key_family: "ctx:embedding".to_string(),
+            page_primitive: "HashOrSet<std::string,std::string>".to_string(),
+        },
+        ContextModelDescriptor {
+            model_id: CONTEXT_SUMMARY_MODEL_ID,
+            name: "ContextSummaryModel".to_string(),
+            key_family: "ctx:summary".to_string(),
+            page_primitive: "FeatureOrSet".to_string(),
+        },
+        ContextModelDescriptor {
+            model_id: CONTEXT_COMPRESSION_MODEL_ID,
+            name: "ContextCompressionModel".to_string(),
+            key_family: "ctx:compress".to_string(),
             page_primitive: "FeatureOrSet".to_string(),
         },
         ContextModelDescriptor {
@@ -767,6 +842,150 @@ impl ContextWire for ContextEntity {
                             .push(decode_varint(&packed, &mut packed_cursor)?);
                     }
                 }
+                (_, wire_type) => skip_proto_field(bytes, &mut cursor, wire_type)?,
+            }
+        }
+        Some(value)
+    }
+}
+
+impl ContextWire for ContextChildRef {
+    fn encode_cpp_context_value(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        encode_varint_field(&mut out, 1, self.parent_hash);
+        encode_varint_field(&mut out, 2, self.child_hash);
+        encode_varint_field(&mut out, 5, self.updated_at_ms);
+        out
+    }
+
+    fn decode_cpp_context_value(bytes: &[u8]) -> Option<Self> {
+        let mut cursor = 0;
+        let mut value = Self {
+            parent_hash: 0,
+            child_hash: 0,
+            updated_at_ms: 0,
+        };
+        while cursor < bytes.len() {
+            let tag = decode_varint(bytes, &mut cursor)?;
+            match (tag >> 3, tag & 0x7) {
+                (1, 0) => value.parent_hash = decode_varint(bytes, &mut cursor)?,
+                (2, 0) => value.child_hash = decode_varint(bytes, &mut cursor)?,
+                (5, 0) => value.updated_at_ms = decode_varint(bytes, &mut cursor)?,
+                (_, wire_type) => skip_proto_field(bytes, &mut cursor, wire_type)?,
+            }
+        }
+        Some(value)
+    }
+}
+
+impl ContextWire for ContextEmbedding {
+    fn encode_cpp_context_value(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        encode_varint_field(&mut out, 1, self.ref_hash);
+        encode_varint_field(&mut out, 2, u64::from(self.level));
+        for value in &self.vector {
+            encode_fixed32_field(&mut out, 4, value.to_bits());
+        }
+        encode_varint_field(&mut out, 5, self.updated_at_ms);
+        out
+    }
+
+    fn decode_cpp_context_value(bytes: &[u8]) -> Option<Self> {
+        let mut cursor = 0;
+        let mut value = Self {
+            ref_hash: 0,
+            level: 0,
+            vector: Vec::new(),
+            updated_at_ms: 0,
+        };
+        while cursor < bytes.len() {
+            let tag = decode_varint(bytes, &mut cursor)?;
+            match (tag >> 3, tag & 0x7) {
+                (1, 0) => value.ref_hash = decode_varint(bytes, &mut cursor)?,
+                (2, 0) => value.level = u32::try_from(decode_varint(bytes, &mut cursor)?).ok()?,
+                (4, 5) => value
+                    .vector
+                    .push(f32::from_bits(decode_fixed32(bytes, &mut cursor)?)),
+                (4, 2) => {
+                    let packed = decode_bytes(bytes, &mut cursor)?;
+                    let mut packed_cursor = 0;
+                    while packed_cursor < packed.len() {
+                        value
+                            .vector
+                            .push(f32::from_bits(decode_fixed32(&packed, &mut packed_cursor)?));
+                    }
+                }
+                (5, 0) => value.updated_at_ms = decode_varint(bytes, &mut cursor)?,
+                (_, wire_type) => skip_proto_field(bytes, &mut cursor, wire_type)?,
+            }
+        }
+        Some(value)
+    }
+}
+
+impl ContextWire for ContextSummary {
+    fn encode_cpp_context_value(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        encode_varint_field(&mut out, 2, self.node_hash);
+        encode_varint_field(&mut out, 3, u64::from(self.level));
+        encode_bytes_field(&mut out, 4, self.text.as_bytes());
+        encode_varint_field(&mut out, 5, self.valid_from_ms);
+        out
+    }
+
+    fn decode_cpp_context_value(bytes: &[u8]) -> Option<Self> {
+        let mut cursor = 0;
+        let mut value = Self {
+            node_hash: 0,
+            level: 0,
+            text: String::new(),
+            valid_from_ms: 0,
+        };
+        while cursor < bytes.len() {
+            let tag = decode_varint(bytes, &mut cursor)?;
+            match (tag >> 3, tag & 0x7) {
+                (2, 0) => value.node_hash = decode_varint(bytes, &mut cursor)?,
+                (3, 0) => value.level = u32::try_from(decode_varint(bytes, &mut cursor)?).ok()?,
+                (4, 2) => value.text = decode_string(bytes, &mut cursor)?,
+                (5, 0) => value.valid_from_ms = decode_varint(bytes, &mut cursor)?,
+                (_, wire_type) => skip_proto_field(bytes, &mut cursor, wire_type)?,
+            }
+        }
+        Some(value)
+    }
+}
+
+impl ContextWire for ContextCompressionEvent {
+    fn encode_cpp_context_value(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        encode_varint_field(&mut out, 1, self.compression_id_hash);
+        encode_varint_field(&mut out, 2, self.node_hash);
+        encode_varint_field(&mut out, 3, self.source_start_ms);
+        encode_varint_field(&mut out, 4, self.source_end_ms);
+        encode_varint_field(&mut out, 5, self.compressed_time_ms);
+        encode_bytes_field(&mut out, 6, self.summary.as_bytes());
+        out
+    }
+
+    fn decode_cpp_context_value(bytes: &[u8]) -> Option<Self> {
+        let mut cursor = 0;
+        let mut value = Self {
+            compression_id_hash: 0,
+            node_hash: 0,
+            source_start_ms: 0,
+            source_end_ms: 0,
+            compressed_time_ms: 0,
+            summary: String::new(),
+        };
+        while cursor < bytes.len() {
+            let tag = decode_varint(bytes, &mut cursor)?;
+            match (tag >> 3, tag & 0x7) {
+                (1, 0) => value.compression_id_hash = decode_varint(bytes, &mut cursor)?,
+                (2, 0) => value.node_hash = decode_varint(bytes, &mut cursor)?,
+                (3, 0) => value.source_start_ms = decode_varint(bytes, &mut cursor)?,
+                (4, 0) => value.source_end_ms = decode_varint(bytes, &mut cursor)?,
+                (5, 0) => value.compressed_time_ms = decode_varint(bytes, &mut cursor)?,
+                (6, 2) => value.summary = decode_string(bytes, &mut cursor)?,
                 (_, wire_type) => skip_proto_field(bytes, &mut cursor, wire_type)?,
             }
         }
@@ -1177,6 +1396,91 @@ pub enum Command {
         #[serde(default)]
         limit: Option<usize>,
     },
+    ContextUpsertChildRef {
+        tenant_hash: u64,
+        child_ref: ContextChildRef,
+    },
+    ContextQueryChildren {
+        tenant_hash: u64,
+        parent_hash: u64,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
+    ContextUpsertEmbedding {
+        tenant_hash: u64,
+        embedding: ContextEmbedding,
+    },
+    ContextQueryEmbeddings {
+        tenant_hash: u64,
+        ref_hashes: Vec<u64>,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
+    ContextTraverseTree {
+        tenant_hash: u64,
+        start_node_hash: u64,
+        query_vector: Vec<f32>,
+        #[serde(default)]
+        max_depth: Option<u32>,
+        #[serde(default)]
+        top_k_per_depth: Option<usize>,
+        #[serde(default)]
+        max_children_scored_per_parent: Option<usize>,
+        #[serde(default)]
+        max_candidate_nodes: Option<usize>,
+        #[serde(default)]
+        leaf_only: bool,
+    },
+    ContextUpsertSummary {
+        tenant_hash: u64,
+        summary: ContextSummary,
+    },
+    ContextQuerySummaries {
+        tenant_hash: u64,
+        node_hash: u64,
+        level: u32,
+        as_of_ms: u64,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
+    ContextWriteCompressionEvent {
+        tenant_hash: u64,
+        event: ContextCompressionEvent,
+    },
+    ContextQueryCompressionEvents {
+        tenant_hash: u64,
+        node_hashes: Vec<u64>,
+        start_time_ms: u64,
+        end_time_ms: u64,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
+    ContextCompressEvents {
+        tenant_hash: u64,
+        node_hash: u64,
+        source_start_ms: u64,
+        source_end_ms: u64,
+        compressed_time_ms: u64,
+        #[serde(default)]
+        max_source_events: Option<usize>,
+        #[serde(default)]
+        min_confidence: f32,
+        #[serde(default)]
+        min_importance: f32,
+    },
+    ContextQueryNodeContext {
+        tenant_hash: u64,
+        node_hash: u64,
+        #[serde(default)]
+        summary_level: Option<u32>,
+        as_of_ms: u64,
+        #[serde(default)]
+        cold_start_time_ms: u64,
+        #[serde(default)]
+        cold_end_time_ms: u64,
+        #[serde(default)]
+        compression_limit: Option<usize>,
+    },
 }
 
 fn encode_varint_field(out: &mut Vec<u8>, field_number: u64, value: u64) {
@@ -1325,6 +1629,39 @@ pub enum CommandResponse {
         object_key: String,
         entities: Vec<ContextEntity>,
     },
+    ContextChildRefs {
+        object_key: String,
+        refs: Vec<ContextChildRef>,
+        #[serde(default)]
+        created: Option<bool>,
+        #[serde(default)]
+        parent_child_count: Option<u32>,
+    },
+    ContextEmbeddings {
+        embeddings: Vec<ContextEmbedding>,
+    },
+    ContextTraversedNodes {
+        nodes: Vec<ContextTraversedNode>,
+    },
+    ContextSummaries {
+        object_key: String,
+        summaries: Vec<ContextSummary>,
+    },
+    ContextCompressionEvents {
+        object_key: String,
+        events: Vec<ContextCompressionEvent>,
+        #[serde(default)]
+        source_event_count: Option<u32>,
+        #[serde(default)]
+        truncated_source_events: Option<bool>,
+    },
+    ContextNodeContext {
+        node_exists: bool,
+        node: Option<ContextNode>,
+        overall_summary_exists: bool,
+        overall_summary: Option<ContextSummary>,
+        cold_window_summaries: Vec<ContextCompressionEvent>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1374,6 +1711,10 @@ mod tests {
                 ("ContextIndexModel", 11, "ctxidx"),
                 ("ContextAuditModel", 12, "ctx:audit"),
                 ("ContextDirtyModel", 13, "ctx:dirty"),
+                ("ContextChildModel", 14, "ctx:child"),
+                ("ContextEmbeddingModel", 15, "ctx:embedding"),
+                ("ContextSummaryModel", 16, "ctx:summary"),
+                ("ContextCompressionModel", 17, "ctx:compress"),
                 ("ContextEntityModel", 18, "ctx:entity"),
             ]
         );
@@ -1413,6 +1754,50 @@ mod tests {
         assert_eq!(
             ContextEntity::decode_cpp_context_value(&entity.encode_cpp_context_value()),
             Some(entity)
+        );
+
+        let child = ContextChildRef {
+            parent_hash: 10,
+            child_hash: 20,
+            updated_at_ms: 1_000,
+        };
+        assert_eq!(
+            ContextChildRef::decode_cpp_context_value(&child.encode_cpp_context_value()),
+            Some(child)
+        );
+        let embedding = ContextEmbedding {
+            ref_hash: 20,
+            level: 1,
+            vector: vec![1.0, 0.0],
+            updated_at_ms: 1_000,
+        };
+        assert_eq!(
+            ContextEmbedding::decode_cpp_context_value(&embedding.encode_cpp_context_value()),
+            Some(embedding)
+        );
+        let summary = ContextSummary {
+            node_hash: 20,
+            level: 1,
+            text: "summary".to_string(),
+            valid_from_ms: 1_000,
+        };
+        assert_eq!(
+            ContextSummary::decode_cpp_context_value(&summary.encode_cpp_context_value()),
+            Some(summary)
+        );
+        let compression = ContextCompressionEvent {
+            compression_id_hash: 5001,
+            node_hash: 20,
+            source_start_ms: 900,
+            source_end_ms: 1_000,
+            compressed_time_ms: 1_000,
+            summary: "compressed".to_string(),
+        };
+        assert_eq!(
+            ContextCompressionEvent::decode_cpp_context_value(
+                &compression.encode_cpp_context_value()
+            ),
+            Some(compression)
         );
 
         let event_json = br#"{

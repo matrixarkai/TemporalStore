@@ -26,10 +26,12 @@ use crate::page_store::{
 };
 use crate::types::{
     parse_cpp_feature_filters, BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse,
-    ContextAuditRef, ContextEntity, ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit,
-    ContextSummaryDirtyMarker, ContextWire, ExecuteRequest, ExecuteResponse, FeatureFilter,
-    FeatureFilterOp, FeaturePoint, FeatureWritePolicy, IpsSnapshotReport, IpsStats, RiskFamily,
-    RiskFolType, SequenceFeatureRow, SequenceQuerySpec, ShardId, Status, StringSetCondition,
+    ContextAuditRef, ContextChildRef, ContextCompressionEvent, ContextEmbedding, ContextEntity,
+    ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit, ContextSummary,
+    ContextSummaryDirtyMarker, ContextTraversedNode, ContextWire, ExecuteRequest, ExecuteResponse,
+    FeatureFilter, FeatureFilterOp, FeaturePoint, FeatureWritePolicy, IpsSnapshotReport, IpsStats,
+    RiskFamily, RiskFolType, SequenceFeatureRow, SequenceQuerySpec, ShardId, Status,
+    StringSetCondition,
 };
 
 #[derive(Debug, Clone)]
@@ -82,6 +84,14 @@ struct ShardState {
     context_dirty: HashMap<String, BTreeMap<u64, PageAddress>>,
     #[serde(default)]
     context_entities: HashMap<String, PageAddress>,
+    #[serde(default)]
+    context_children: HashMap<String, BTreeMap<u64, PageAddress>>,
+    #[serde(default)]
+    context_embeddings: HashMap<String, PageAddress>,
+    #[serde(default)]
+    context_summaries: HashMap<String, BTreeMap<u64, PageAddress>>,
+    #[serde(default)]
+    context_compressions: HashMap<String, BTreeMap<u64, PageAddress>>,
     #[serde(skip)]
     dirty_objects: BTreeSet<String>,
 }
@@ -167,6 +177,12 @@ const CONTEXT_MAX_INDEX_NAME_BYTES: usize = 64;
 const CONTEXT_MAX_CANONICAL_NAME_BYTES: usize = 512;
 const CONTEXT_MAX_ENTITY_NAME_BYTES: usize = 512;
 const CONTEXT_MAX_ENTITY_VALUE_BYTES: usize = 4096;
+const CONTEXT_MAX_EMBEDDING_DIM: usize = 4096;
+const CONTEXT_MAX_SUMMARY_BYTES: usize = 16 * 1024;
+const CONTEXT_MAX_COMPRESSION_SNIPPET_BYTES: usize = 256;
+const CONTEXT_MAX_TRAVERSAL_DEPTH: u32 = 16;
+const CONTEXT_DEFAULT_TRAVERSAL_TOP_K: usize = 8;
+const CONTEXT_DEFAULT_TRAVERSAL_CANDIDATES: usize = 64;
 const CONTEXT_MAX_L0_BYTES: usize = 2048;
 const CONTEXT_MAX_REF_BYTES: usize = 4096;
 const CONTEXT_MAX_EVENT_TEXT_BYTES: usize = 64 * 1024;
@@ -4482,6 +4498,40 @@ impl TemporalEngine {
                 &mut rewritten_page_refs,
             )?;
         }
+        for series in shard.context_children.values_mut() {
+            compact_feature_page_addresses(
+                &self.page_store,
+                &self.cache,
+                shard_id,
+                series,
+                &mut rewritten_page_refs,
+            )?;
+        }
+        compact_page_addresses(
+            &self.page_store,
+            &self.cache,
+            shard_id,
+            shard.context_embeddings.values_mut(),
+            &mut rewritten_page_refs,
+        )?;
+        for series in shard.context_summaries.values_mut() {
+            compact_feature_page_addresses(
+                &self.page_store,
+                &self.cache,
+                shard_id,
+                series,
+                &mut rewritten_page_refs,
+            )?;
+        }
+        for series in shard.context_compressions.values_mut() {
+            compact_feature_page_addresses(
+                &self.page_store,
+                &self.cache,
+                shard_id,
+                series,
+                &mut rewritten_page_refs,
+            )?;
+        }
         compact_page_addresses(
             &self.page_store,
             &self.cache,
@@ -7154,6 +7204,402 @@ fn execute_on_shard(
                 entities,
             }
         }
+        Command::ContextUpsertChildRef {
+            tenant_hash,
+            child_ref,
+        } => {
+            let object_key = context_child_key(tenant_hash, child_ref.parent_hash);
+            let existing = load_context_children(cache, page_store, shard_id, shard, &object_key);
+            let created = existing
+                .iter()
+                .all(|stored| stored.child_hash != child_ref.child_hash);
+            if created {
+                let timeline_key =
+                    context_timeline_key(child_ref.updated_at_ms, child_ref.child_hash);
+                let routing_slot =
+                    page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
+                if let Ok(addresses) = append_timestamped_kv_pages(
+                    cache,
+                    page_store,
+                    shard_id,
+                    "context_child",
+                    &object_key,
+                    vec![FeaturePoint {
+                        timestamp_ms: timeline_key,
+                        value: context_bytes(&child_ref),
+                    }],
+                    routing_slot,
+                    async_storage,
+                ) {
+                    let series = shard
+                        .context_children
+                        .entry(object_key.clone())
+                        .or_default();
+                    for (timestamp_ms, address) in addresses {
+                        series.insert(timestamp_ms, address);
+                        mutated = true;
+                    }
+                }
+            }
+            invalidate_record_all(cache, shard_id, &object_key);
+            let count =
+                load_context_children(cache, page_store, shard_id, shard, &object_key).len();
+            CommandResponse::ContextChildRefs {
+                object_key,
+                refs: Vec::new(),
+                created: Some(created),
+                parent_child_count: Some(count as u32),
+            }
+        }
+        Command::ContextQueryChildren {
+            tenant_hash,
+            parent_hash,
+            limit,
+        } => {
+            let object_key = context_child_key(tenant_hash, parent_hash);
+            let mut refs = load_context_children(cache, page_store, shard_id, shard, &object_key);
+            refs.sort_by_key(|child_ref| (child_ref.updated_at_ms, child_ref.child_hash));
+            refs.truncate(context_limit(limit));
+            CommandResponse::ContextChildRefs {
+                object_key,
+                refs,
+                created: None,
+                parent_child_count: None,
+            }
+        }
+        Command::ContextUpsertEmbedding {
+            tenant_hash,
+            embedding,
+        } => {
+            let object_key = context_embedding_key(tenant_hash, embedding.ref_hash);
+            let object_id = stable_page_object_id(shard_id, "context_embedding", &object_key, None);
+            let routing_slot = page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
+            if let Ok(address) = append_value(
+                cache,
+                page_store,
+                shard_id,
+                &context_bytes(&embedding),
+                Some(object_id),
+                Some(routing_slot),
+                async_storage,
+            ) {
+                shard.context_embeddings.insert(object_key.clone(), address);
+                mutated = true;
+            }
+            invalidate_record_all(cache, shard_id, &object_key);
+            CommandResponse::ContextObjectKey { object_key }
+        }
+        Command::ContextQueryEmbeddings {
+            tenant_hash,
+            ref_hashes,
+            limit,
+        } => {
+            let embeddings = ref_hashes
+                .iter()
+                .copied()
+                .filter(|ref_hash| *ref_hash != 0)
+                .take(context_limit(limit))
+                .filter_map(|ref_hash| {
+                    let object_key = context_embedding_key(tenant_hash, ref_hash);
+                    shard
+                        .context_embeddings
+                        .get(&object_key)
+                        .and_then(|address| {
+                            read_page_bytes(cache, page_store, shard_id, address)
+                                .and_then(|bytes| context_from_bytes::<ContextEmbedding>(&bytes))
+                        })
+                })
+                .collect();
+            CommandResponse::ContextEmbeddings { embeddings }
+        }
+        Command::ContextTraverseTree {
+            tenant_hash,
+            start_node_hash,
+            query_vector,
+            max_depth,
+            top_k_per_depth,
+            max_children_scored_per_parent,
+            max_candidate_nodes,
+            leaf_only,
+        } => {
+            let nodes = traverse_context_tree(
+                cache,
+                page_store,
+                shard_id,
+                shard,
+                tenant_hash,
+                start_node_hash,
+                &query_vector,
+                max_depth,
+                top_k_per_depth,
+                max_children_scored_per_parent,
+                max_candidate_nodes,
+                leaf_only,
+            );
+            CommandResponse::ContextTraversedNodes { nodes }
+        }
+        Command::ContextUpsertSummary {
+            tenant_hash,
+            summary,
+        } => {
+            let object_key = context_summary_key(tenant_hash, summary.node_hash, summary.level);
+            let timeline_key =
+                context_timeline_key(summary.valid_from_ms, u64::from(summary.level));
+            let routing_slot = page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
+            if let Ok(addresses) = append_timestamped_kv_pages(
+                cache,
+                page_store,
+                shard_id,
+                "context_summary",
+                &object_key,
+                vec![FeaturePoint {
+                    timestamp_ms: timeline_key,
+                    value: context_bytes(&summary),
+                }],
+                routing_slot,
+                async_storage,
+            ) {
+                let series = shard
+                    .context_summaries
+                    .entry(object_key.clone())
+                    .or_default();
+                for (timestamp_ms, address) in addresses {
+                    series.insert(timestamp_ms, address);
+                    mutated = true;
+                }
+            }
+            invalidate_record_all(cache, shard_id, &object_key);
+            CommandResponse::ContextObjectKey { object_key }
+        }
+        Command::ContextQuerySummaries {
+            tenant_hash,
+            node_hash,
+            level,
+            as_of_ms,
+            limit,
+        } => {
+            let object_key = context_summary_key(tenant_hash, node_hash, level);
+            let mut summaries = load_context_summaries(
+                cache,
+                page_store,
+                shard_id,
+                shard,
+                &object_key,
+                as_of_ms,
+                limit,
+            );
+            summaries.sort_by_key(|summary| summary.valid_from_ms);
+            CommandResponse::ContextSummaries {
+                object_key,
+                summaries,
+            }
+        }
+        Command::ContextWriteCompressionEvent { tenant_hash, event } => {
+            let object_key = context_compression_key(tenant_hash, event.node_hash);
+            let timeline_key =
+                context_timeline_key(event.compressed_time_ms, event.compression_id_hash);
+            let routing_slot = page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
+            if let Ok(addresses) = append_timestamped_kv_pages(
+                cache,
+                page_store,
+                shard_id,
+                "context_compression",
+                &object_key,
+                vec![FeaturePoint {
+                    timestamp_ms: timeline_key,
+                    value: context_bytes(&event),
+                }],
+                routing_slot,
+                async_storage,
+            ) {
+                let series = shard
+                    .context_compressions
+                    .entry(object_key.clone())
+                    .or_default();
+                for (timestamp_ms, address) in addresses {
+                    series.insert(timestamp_ms, address);
+                    mutated = true;
+                }
+            }
+            invalidate_record_all(cache, shard_id, &object_key);
+            CommandResponse::ContextObjectKey { object_key }
+        }
+        Command::ContextQueryCompressionEvents {
+            tenant_hash,
+            node_hashes,
+            start_time_ms,
+            end_time_ms,
+            limit,
+        } => {
+            let mut events = load_context_compression_events(
+                cache,
+                page_store,
+                shard_id,
+                shard,
+                tenant_hash,
+                &node_hashes,
+                start_time_ms,
+                end_time_ms,
+                limit,
+            );
+            let object_key = node_hashes
+                .iter()
+                .find(|node_hash| **node_hash != 0)
+                .map(|node_hash| context_compression_key(tenant_hash, *node_hash))
+                .unwrap_or_else(|| context_compression_key(tenant_hash, 0));
+            CommandResponse::ContextCompressionEvents {
+                object_key,
+                events: {
+                    events.truncate(context_limit(limit));
+                    events
+                },
+                source_event_count: None,
+                truncated_source_events: None,
+            }
+        }
+        Command::ContextCompressEvents {
+            tenant_hash,
+            node_hash,
+            source_start_ms,
+            source_end_ms,
+            compressed_time_ms,
+            max_source_events,
+            min_confidence,
+            min_importance,
+        } => {
+            let object_key = context_compression_key(tenant_hash, node_hash);
+            let source_limit = context_limit(max_source_events);
+            let mut selected = shard
+                .context_events
+                .get(&context_event_key(tenant_hash, node_hash))
+                .map(|series| {
+                    series
+                        .range(
+                            context_timeline_start(source_start_ms)
+                                ..context_timeline_end(source_end_ms),
+                        )
+                        .filter_map(|(timeline_key, address)| {
+                            read_context_value::<ContextEvent>(
+                                cache,
+                                page_store,
+                                shard_id,
+                                *timeline_key,
+                                address,
+                            )
+                        })
+                        .filter(|event| {
+                            event.confidence >= min_confidence && event.importance >= min_importance
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            selected.sort_by_key(|event| (event.event_time_ms, event.event_id_hash));
+            let truncated = selected.len() > source_limit;
+            selected.truncate(source_limit);
+            if selected.is_empty() {
+                CommandResponse::ContextCompressionEvents {
+                    object_key,
+                    events: Vec::new(),
+                    source_event_count: Some(0),
+                    truncated_source_events: Some(false),
+                }
+            } else {
+                let event = build_context_compression_event(
+                    tenant_hash,
+                    node_hash,
+                    source_start_ms,
+                    source_end_ms,
+                    compressed_time_ms,
+                    &selected,
+                    truncated,
+                );
+                let timeline_key =
+                    context_timeline_key(event.compressed_time_ms, event.compression_id_hash);
+                let routing_slot =
+                    page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
+                if let Ok(addresses) = append_timestamped_kv_pages(
+                    cache,
+                    page_store,
+                    shard_id,
+                    "context_compression",
+                    &object_key,
+                    vec![FeaturePoint {
+                        timestamp_ms: timeline_key,
+                        value: context_bytes(&event),
+                    }],
+                    routing_slot,
+                    async_storage,
+                ) {
+                    let series = shard
+                        .context_compressions
+                        .entry(object_key.clone())
+                        .or_default();
+                    for (timestamp_ms, address) in addresses {
+                        series.insert(timestamp_ms, address);
+                        mutated = true;
+                    }
+                }
+                invalidate_record_all(cache, shard_id, &object_key);
+                CommandResponse::ContextCompressionEvents {
+                    object_key,
+                    events: vec![event],
+                    source_event_count: Some(selected.len() as u32),
+                    truncated_source_events: Some(truncated),
+                }
+            }
+        }
+        Command::ContextQueryNodeContext {
+            tenant_hash,
+            node_hash,
+            summary_level,
+            as_of_ms,
+            cold_start_time_ms,
+            cold_end_time_ms,
+            compression_limit,
+        } => {
+            let node_key = context_node_key(tenant_hash, node_hash);
+            let node = shard
+                .hashes
+                .get(&node_key)
+                .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
+                .or_else(|| shard.context_nodes.get(&node_key))
+                .and_then(|address| {
+                    read_page_bytes(cache, page_store, shard_id, address)
+                        .and_then(|bytes| context_from_bytes::<ContextNode>(&bytes))
+                });
+            let level = summary_level.unwrap_or(1).max(1);
+            let summary_key = context_summary_key(tenant_hash, node_hash, level);
+            let latest_summary = load_latest_context_summary(
+                cache,
+                page_store,
+                shard_id,
+                shard,
+                &summary_key,
+                as_of_ms,
+            );
+            let cold_window_summaries = if cold_start_time_ms == 0 && cold_end_time_ms == 0 {
+                Vec::new()
+            } else {
+                load_context_compression_events(
+                    cache,
+                    page_store,
+                    shard_id,
+                    shard,
+                    tenant_hash,
+                    &[node_hash],
+                    cold_start_time_ms,
+                    cold_end_time_ms,
+                    compression_limit,
+                )
+            };
+            CommandResponse::ContextNodeContext {
+                node_exists: node.is_some(),
+                node,
+                overall_summary_exists: latest_summary.is_some(),
+                overall_summary: latest_summary,
+                cold_window_summaries,
+            }
+        }
     };
     ExecuteOutcome { response, mutated }
 }
@@ -7224,6 +7670,10 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     removed |= shard.context_audits.remove(key).is_some();
     removed |= shard.context_dirty.remove(key).is_some();
     removed |= shard.context_entities.remove(key).is_some();
+    removed |= shard.context_children.remove(key).is_some();
+    removed |= shard.context_embeddings.remove(key).is_some();
+    removed |= shard.context_summaries.remove(key).is_some();
+    removed |= shard.context_compressions.remove(key).is_some();
     removed
 }
 
@@ -7286,6 +7736,21 @@ fn collect_live_page_segment_ids(shard: &ShardState) -> BTreeSet<u64> {
             .values()
             .map(|address| address.page_segment_id),
     );
+    for series in shard.context_children.values() {
+        ids.extend(series.values().map(|address| address.page_segment_id));
+    }
+    ids.extend(
+        shard
+            .context_embeddings
+            .values()
+            .map(|address| address.page_segment_id),
+    );
+    for series in shard.context_summaries.values() {
+        ids.extend(series.values().map(|address| address.page_segment_id));
+    }
+    for series in shard.context_compressions.values() {
+        ids.extend(series.values().map(|address| address.page_segment_id));
+    }
     ids
 }
 
@@ -7534,6 +7999,53 @@ fn collect_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
                 address: address.clone(),
             }),
     );
+    for (key, series) in &shard.context_children {
+        entries.extend(
+            unique_timestamped_kv_page_addresses(series)
+                .into_iter()
+                .map(|address| LivePageEntry {
+                    object_key: key.clone(),
+                    kind: "context_child",
+                    component: None,
+                    address,
+                }),
+        );
+    }
+    entries.extend(
+        shard
+            .context_embeddings
+            .iter()
+            .map(|(key, address)| LivePageEntry {
+                object_key: key.clone(),
+                kind: "context_embedding",
+                component: None,
+                address: address.clone(),
+            }),
+    );
+    for (key, series) in &shard.context_summaries {
+        entries.extend(
+            unique_timestamped_kv_page_addresses(series)
+                .into_iter()
+                .map(|address| LivePageEntry {
+                    object_key: key.clone(),
+                    kind: "context_summary",
+                    component: None,
+                    address,
+                }),
+        );
+    }
+    for (key, series) in &shard.context_compressions {
+        entries.extend(
+            unique_timestamped_kv_page_addresses(series)
+                .into_iter()
+                .map(|address| LivePageEntry {
+                    object_key: key.clone(),
+                    kind: "context_compression",
+                    component: None,
+                    address,
+                }),
+        );
+    }
     entries
 }
 
@@ -7761,6 +8273,16 @@ fn collect_live_page_addresses(shard: &ShardState) -> Vec<PageAddress> {
         addresses.extend(unique_timestamped_kv_page_addresses(series));
     }
     addresses.extend(shard.context_entities.values().cloned());
+    for series in shard.context_children.values() {
+        addresses.extend(unique_timestamped_kv_page_addresses(series));
+    }
+    addresses.extend(shard.context_embeddings.values().cloned());
+    for series in shard.context_summaries.values() {
+        addresses.extend(unique_timestamped_kv_page_addresses(series));
+    }
+    for series in shard.context_compressions.values() {
+        addresses.extend(unique_timestamped_kv_page_addresses(series));
+    }
     addresses
 }
 
@@ -7808,6 +8330,15 @@ fn timestamped_kv_series<'a>(
     }
     for (key, timeline) in &shard.context_dirty {
         series.push(("context_dirty", key.as_str(), timeline));
+    }
+    for (key, timeline) in &shard.context_children {
+        series.push(("context_child", key.as_str(), timeline));
+    }
+    for (key, timeline) in &shard.context_summaries {
+        series.push(("context_summary", key.as_str(), timeline));
+    }
+    for (key, timeline) in &shard.context_compressions {
+        series.push(("context_compression", key.as_str(), timeline));
     }
     series
 }
@@ -8160,6 +8691,10 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         || shard.context_audits.contains_key(key)
         || shard.context_dirty.contains_key(key)
         || shard.context_entities.contains_key(key)
+        || shard.context_children.contains_key(key)
+        || shard.context_embeddings.contains_key(key)
+        || shard.context_summaries.contains_key(key)
+        || shard.context_compressions.contains_key(key)
 }
 
 fn invalidate_record_all(cache: &MultiLayerCache, shard_id: ShardId, key: &str) {
@@ -8650,7 +9185,11 @@ fn object_manager_stats(
         + shard.context_indexes.len()
         + shard.context_audits.len()
         + shard.context_dirty.len()
-        + shard.context_entities.len();
+        + shard.context_entities.len()
+        + shard.context_children.len()
+        + shard.context_embeddings.len()
+        + shard.context_summaries.len()
+        + shard.context_compressions.len();
     let page_ref_count = shard.strings.len()
         + shard.hashes.values().map(HashMap::len).sum::<usize>()
         + shard.sets.values().map(BTreeMap::len).sum::<usize>()
@@ -8678,7 +9217,23 @@ fn object_manager_stats(
             .values()
             .map(BTreeMap::len)
             .sum::<usize>()
-        + shard.context_entities.len();
+        + shard.context_entities.len()
+        + shard
+            .context_children
+            .values()
+            .map(BTreeMap::len)
+            .sum::<usize>()
+        + shard.context_embeddings.len()
+        + shard
+            .context_summaries
+            .values()
+            .map(BTreeMap::len)
+            .sum::<usize>()
+        + shard
+            .context_compressions
+            .values()
+            .map(BTreeMap::len)
+            .sum::<usize>();
     let routing_slot_count = routing_slot_count(start_routing_slot, end_routing_slot);
     let dirty_slots = shard
         .dirty_objects
@@ -8759,6 +9314,22 @@ fn context_entity_key(tenant_hash: u64, node_hash: u64, entity_hash: u64) -> Str
 
 fn context_entity_collection_key(tenant_hash: u64, node_hash: u64) -> String {
     format!("ctx:entity:{tenant_hash}:{node_hash}")
+}
+
+fn context_child_key(tenant_hash: u64, parent_hash: u64) -> String {
+    format!("ctx:child:{tenant_hash}:{parent_hash}")
+}
+
+fn context_embedding_key(tenant_hash: u64, ref_hash: u64) -> String {
+    format!("ctx:embedding:{tenant_hash}:{ref_hash}")
+}
+
+fn context_summary_key(tenant_hash: u64, node_hash: u64, level: u32) -> String {
+    format!("ctx:summary:{tenant_hash}:{node_hash}:{level}")
+}
+
+fn context_compression_key(tenant_hash: u64, node_hash: u64) -> String {
+    format!("ctx:compress:{tenant_hash}:{node_hash}")
 }
 
 fn context_timeline_key(timestamp_ms: u64, disambiguator: u64) -> u64 {
@@ -8908,6 +9479,30 @@ fn command_object_keys(command: &Command) -> Vec<String> {
             entity.node_hash,
             entity.entity_hash,
         )],
+        Command::ContextUpsertChildRef {
+            tenant_hash,
+            child_ref,
+        } => vec![context_child_key(*tenant_hash, child_ref.parent_hash)],
+        Command::ContextUpsertEmbedding {
+            tenant_hash,
+            embedding,
+        } => vec![context_embedding_key(*tenant_hash, embedding.ref_hash)],
+        Command::ContextUpsertSummary {
+            tenant_hash,
+            summary,
+        } => vec![context_summary_key(
+            *tenant_hash,
+            summary.node_hash,
+            summary.level,
+        )],
+        Command::ContextWriteCompressionEvent { tenant_hash, event } => {
+            vec![context_compression_key(*tenant_hash, event.node_hash)]
+        }
+        Command::ContextCompressEvents {
+            tenant_hash,
+            node_hash,
+            ..
+        } => vec![context_compression_key(*tenant_hash, *node_hash)],
         Command::SequenceBatchQuery { .. }
         | Command::CommonTtl { .. }
         | Command::CommonExists { .. }
@@ -8943,7 +9538,13 @@ fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::ContextQueryPackAudit { .. }
         | Command::ContextQuerySummaryDirty { .. }
         | Command::ContextGetEntity { .. }
-        | Command::ContextQueryEntities { .. } => Vec::new(),
+        | Command::ContextQueryEntities { .. }
+        | Command::ContextQueryChildren { .. }
+        | Command::ContextQueryEmbeddings { .. }
+        | Command::ContextTraverseTree { .. }
+        | Command::ContextQuerySummaries { .. }
+        | Command::ContextQueryCompressionEvents { .. }
+        | Command::ContextQueryNodeContext { .. } => Vec::new(),
     }
 }
 
@@ -8984,6 +9585,11 @@ fn is_write_command(command: &Command) -> bool {
             | Command::ContextWritePackAudit { .. }
             | Command::ContextMarkSummaryDirty { .. }
             | Command::ContextUpsertEntity { .. }
+            | Command::ContextUpsertChildRef { .. }
+            | Command::ContextUpsertEmbedding { .. }
+            | Command::ContextUpsertSummary { .. }
+            | Command::ContextWriteCompressionEvent { .. }
+            | Command::ContextCompressEvents { .. }
     )
 }
 
@@ -9268,6 +9874,151 @@ fn validate_command_preconditions(
                 ));
             }
         }
+        Command::ContextUpsertChildRef {
+            tenant_hash,
+            child_ref,
+        } => {
+            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
+            validate_context_child_ref(child_ref)?;
+        }
+        Command::ContextQueryChildren {
+            tenant_hash,
+            parent_hash,
+            limit,
+        } => {
+            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
+            validate_context_required(*parent_hash != 0, "parent_hash is required")?;
+            validate_context_limit(*limit)?;
+        }
+        Command::ContextUpsertEmbedding {
+            tenant_hash,
+            embedding,
+        } => {
+            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
+            validate_context_embedding(embedding)?;
+        }
+        Command::ContextQueryEmbeddings {
+            tenant_hash,
+            ref_hashes,
+            limit,
+        } => {
+            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
+            validate_context_limit(*limit)?;
+            if ref_hashes.len() > CONTEXT_MAX_LIMIT {
+                return Err(Status::error("invalid_argument", "too many ref_hashes"));
+            }
+        }
+        Command::ContextTraverseTree {
+            tenant_hash,
+            start_node_hash,
+            query_vector,
+            max_depth,
+            top_k_per_depth,
+            max_children_scored_per_parent,
+            max_candidate_nodes,
+            ..
+        } => {
+            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
+            validate_context_required(*start_node_hash != 0, "start_node_hash is required")?;
+            validate_context_required(!query_vector.is_empty(), "query_vector is required")?;
+            validate_context_embedding_vector("query_vector", query_vector)?;
+            if max_depth.unwrap_or_default() > CONTEXT_MAX_TRAVERSAL_DEPTH {
+                return Err(Status::error(
+                    "invalid_argument",
+                    "max_depth exceeds maximum",
+                ));
+            }
+            for limit in [
+                *top_k_per_depth,
+                *max_children_scored_per_parent,
+                *max_candidate_nodes,
+            ] {
+                validate_context_limit(limit)?;
+            }
+        }
+        Command::ContextUpsertSummary {
+            tenant_hash,
+            summary,
+        } => {
+            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
+            validate_context_summary(summary)?;
+        }
+        Command::ContextQuerySummaries {
+            tenant_hash,
+            node_hash,
+            level,
+            as_of_ms,
+            limit,
+        } => {
+            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
+            validate_context_required(*node_hash != 0, "node_hash is required")?;
+            validate_context_required(*level != 0, "level is required")?;
+            validate_context_required(*as_of_ms != 0, "as_of_ms is required")?;
+            validate_context_timestamp(*as_of_ms)?;
+            validate_context_limit(*limit)?;
+        }
+        Command::ContextWriteCompressionEvent { tenant_hash, event } => {
+            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
+            validate_context_compression_event(event)?;
+        }
+        Command::ContextQueryCompressionEvents {
+            tenant_hash,
+            node_hashes,
+            start_time_ms,
+            end_time_ms,
+            limit,
+        } => {
+            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
+            validate_context_limit(*limit)?;
+            validate_context_range(*start_time_ms, *end_time_ms)?;
+            if node_hashes.len() > CONTEXT_MAX_FILTER_VALUES {
+                return Err(Status::error("invalid_argument", "too many node_hashes"));
+            }
+        }
+        Command::ContextCompressEvents {
+            tenant_hash,
+            node_hash,
+            source_start_ms,
+            source_end_ms,
+            compressed_time_ms,
+            max_source_events,
+            min_confidence,
+            min_importance,
+        } => {
+            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
+            validate_context_required(*node_hash != 0, "node_hash is required")?;
+            validate_context_range(*source_start_ms, *source_end_ms)?;
+            validate_context_limit(*max_source_events)?;
+            validate_context_score("min_confidence", *min_confidence)?;
+            validate_context_score("min_importance", *min_importance)?;
+            if *compressed_time_ms != 0 {
+                validate_context_timestamp(*compressed_time_ms)?;
+            }
+        }
+        Command::ContextQueryNodeContext {
+            tenant_hash,
+            node_hash,
+            summary_level,
+            as_of_ms,
+            cold_start_time_ms,
+            cold_end_time_ms,
+            compression_limit,
+        } => {
+            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
+            validate_context_required(*node_hash != 0, "node_hash is required")?;
+            validate_context_required(*as_of_ms != 0, "as_of_ms is required")?;
+            validate_context_timestamp(*as_of_ms)?;
+            if summary_level.unwrap_or(1) == 0 {
+                return Err(Status::error(
+                    "invalid_argument",
+                    "summary_level is required",
+                ));
+            }
+            validate_context_limit(*compression_limit)?;
+            if *cold_start_time_ms != 0 || *cold_end_time_ms != 0 {
+                validate_context_range(*cold_start_time_ms, *cold_end_time_ms)?;
+            }
+        }
         _ => {}
     }
 
@@ -9544,6 +10295,364 @@ fn validate_context_entity(entity: &ContextEntity) -> Result<(), Status> {
         ));
     }
     Ok(())
+}
+
+fn validate_context_child_ref(child_ref: &ContextChildRef) -> Result<(), Status> {
+    validate_context_required(
+        child_ref.parent_hash != 0 && child_ref.child_hash != 0 && child_ref.updated_at_ms != 0,
+        "parent_hash, child_hash, and updated_at_ms are required",
+    )?;
+    validate_context_timestamp(child_ref.updated_at_ms)
+}
+
+fn validate_context_embedding_vector(name: &'static str, vector: &[f32]) -> Result<(), Status> {
+    validate_context_required(!vector.is_empty(), "embedding vector is required")?;
+    if vector.len() > CONTEXT_MAX_EMBEDDING_DIM {
+        return Err(Status::error(
+            "invalid_argument",
+            format!("{name} dimension exceeds maximum"),
+        ));
+    }
+    if vector.iter().all(|value| value.is_finite()) {
+        Ok(())
+    } else {
+        Err(Status::error(
+            "invalid_argument",
+            format!("{name} contains non-finite value"),
+        ))
+    }
+}
+
+fn validate_context_embedding(embedding: &ContextEmbedding) -> Result<(), Status> {
+    validate_context_required(
+        embedding.ref_hash != 0 && embedding.level != 0 && embedding.updated_at_ms != 0,
+        "ref_hash, level, and updated_at_ms are required",
+    )?;
+    validate_context_timestamp(embedding.updated_at_ms)?;
+    validate_context_embedding_vector("embedding vector", &embedding.vector)
+}
+
+fn validate_context_summary(summary: &ContextSummary) -> Result<(), Status> {
+    validate_context_required(
+        summary.node_hash != 0 && summary.level != 0 && summary.valid_from_ms != 0,
+        "node_hash, level, and valid_from_ms are required",
+    )?;
+    validate_context_timestamp(summary.valid_from_ms)?;
+    validate_context_byte_len(
+        "summary text",
+        summary.text.len(),
+        CONTEXT_MAX_SUMMARY_BYTES,
+    )
+}
+
+fn validate_context_compression_event(event: &ContextCompressionEvent) -> Result<(), Status> {
+    validate_context_required(
+        event.compression_id_hash != 0
+            && event.node_hash != 0
+            && event.source_start_ms != 0
+            && event.source_end_ms != 0
+            && event.compressed_time_ms != 0,
+        "compression_id_hash, node_hash, source range, and compressed_time_ms are required",
+    )?;
+    validate_context_range(event.source_start_ms, event.source_end_ms)?;
+    validate_context_timestamp(event.compressed_time_ms)?;
+    validate_context_byte_len(
+        "compression summary",
+        event.summary.len(),
+        CONTEXT_MAX_SUMMARY_BYTES,
+    )
+}
+
+fn load_context_children(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    shard: &ShardState,
+    object_key: &str,
+) -> Vec<ContextChildRef> {
+    shard
+        .context_children
+        .get(object_key)
+        .map(|series| {
+            series
+                .iter()
+                .filter_map(|(timeline_key, address)| {
+                    read_context_value::<ContextChildRef>(
+                        cache,
+                        page_store,
+                        shard_id,
+                        *timeline_key,
+                        address,
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn load_context_embedding(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    shard: &ShardState,
+    tenant_hash: u64,
+    ref_hash: u64,
+) -> Option<ContextEmbedding> {
+    shard
+        .context_embeddings
+        .get(&context_embedding_key(tenant_hash, ref_hash))
+        .and_then(|address| {
+            read_page_bytes(cache, page_store, shard_id, address)
+                .and_then(|bytes| context_from_bytes::<ContextEmbedding>(&bytes))
+        })
+}
+
+fn load_context_summaries(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    shard: &ShardState,
+    object_key: &str,
+    as_of_ms: u64,
+    limit: Option<usize>,
+) -> Vec<ContextSummary> {
+    shard
+        .context_summaries
+        .get(object_key)
+        .map(|series| {
+            series
+                .range(0..context_timeline_end(as_of_ms))
+                .take(context_limit(limit))
+                .filter_map(|(timeline_key, address)| {
+                    read_context_value::<ContextSummary>(
+                        cache,
+                        page_store,
+                        shard_id,
+                        *timeline_key,
+                        address,
+                    )
+                })
+                .filter(|summary| summary.valid_from_ms <= as_of_ms)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn load_latest_context_summary(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    shard: &ShardState,
+    object_key: &str,
+    as_of_ms: u64,
+) -> Option<ContextSummary> {
+    load_context_summaries(
+        cache, page_store, shard_id, shard, object_key, as_of_ms, None,
+    )
+    .into_iter()
+    .max_by_key(|summary| summary.valid_from_ms)
+}
+
+fn load_context_compression_events(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    shard: &ShardState,
+    tenant_hash: u64,
+    node_hashes: &[u64],
+    start_time_ms: u64,
+    end_time_ms: u64,
+    limit: Option<usize>,
+) -> Vec<ContextCompressionEvent> {
+    let mut events = Vec::new();
+    for node_hash in node_hashes
+        .iter()
+        .copied()
+        .filter(|node_hash| *node_hash != 0)
+    {
+        let object_key = context_compression_key(tenant_hash, node_hash);
+        if let Some(series) = shard.context_compressions.get(&object_key) {
+            events.extend(series.iter().filter_map(|(timeline_key, address)| {
+                read_context_value::<ContextCompressionEvent>(
+                    cache,
+                    page_store,
+                    shard_id,
+                    *timeline_key,
+                    address,
+                )
+                .filter(|event| {
+                    event.source_end_ms >= start_time_ms && event.source_start_ms <= end_time_ms
+                })
+            }));
+        }
+        if events.len() >= context_limit(limit) {
+            break;
+        }
+    }
+    events.sort_by(|left, right| {
+        right
+            .source_end_ms
+            .cmp(&left.source_end_ms)
+            .then_with(|| right.compressed_time_ms.cmp(&left.compressed_time_ms))
+            .then_with(|| left.compression_id_hash.cmp(&right.compression_id_hash))
+    });
+    events.truncate(context_limit(limit));
+    events
+}
+
+fn cosine_similarity(left: &[f32], right: &[f32]) -> f32 {
+    if left.is_empty() || left.len() != right.len() {
+        return 0.0;
+    }
+    let mut dot = 0.0_f32;
+    let mut left_norm = 0.0_f32;
+    let mut right_norm = 0.0_f32;
+    for (l, r) in left.iter().zip(right.iter()) {
+        dot += l * r;
+        left_norm += l * l;
+        right_norm += r * r;
+    }
+    if left_norm <= 0.0 || right_norm <= 0.0 {
+        return 0.0;
+    }
+    dot / (left_norm.sqrt() * right_norm.sqrt())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn traverse_context_tree(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    shard: &ShardState,
+    tenant_hash: u64,
+    start_node_hash: u64,
+    query_vector: &[f32],
+    max_depth: Option<u32>,
+    top_k_per_depth: Option<usize>,
+    max_children_scored_per_parent: Option<usize>,
+    max_candidate_nodes: Option<usize>,
+    leaf_only: bool,
+) -> Vec<ContextTraversedNode> {
+    let max_depth = max_depth.unwrap_or(6).min(CONTEXT_MAX_TRAVERSAL_DEPTH);
+    let top_k = top_k_per_depth
+        .unwrap_or(CONTEXT_DEFAULT_TRAVERSAL_TOP_K)
+        .max(1)
+        .min(CONTEXT_MAX_LIMIT);
+    let child_limit = max_children_scored_per_parent
+        .unwrap_or(CONTEXT_MAX_LIMIT)
+        .max(1)
+        .min(CONTEXT_MAX_LIMIT);
+    let candidate_limit = max_candidate_nodes
+        .unwrap_or(CONTEXT_DEFAULT_TRAVERSAL_CANDIDATES)
+        .max(1)
+        .min(CONTEXT_MAX_LIMIT);
+    let mut frontier = vec![ContextTraversedNode {
+        node_hash: start_node_hash,
+        depth: 0,
+        score: 1.0,
+    }];
+    let mut results = Vec::new();
+    for depth in 1..=max_depth {
+        let mut scored_layer = Vec::new();
+        for parent in &frontier {
+            let child_key = context_child_key(tenant_hash, parent.node_hash);
+            let mut children =
+                load_context_children(cache, page_store, shard_id, shard, &child_key);
+            children.sort_by_key(|child_ref| (child_ref.updated_at_ms, child_ref.child_hash));
+            children.truncate(child_limit);
+            for child in children {
+                let Some(embedding) = load_context_embedding(
+                    cache,
+                    page_store,
+                    shard_id,
+                    shard,
+                    tenant_hash,
+                    child.child_hash,
+                ) else {
+                    continue;
+                };
+                let score = cosine_similarity(query_vector, &embedding.vector);
+                if score > 0.0 {
+                    scored_layer.push(ContextTraversedNode {
+                        node_hash: child.child_hash,
+                        depth,
+                        score,
+                    });
+                }
+            }
+        }
+        scored_layer.sort_by(|left, right| {
+            right
+                .score
+                .partial_cmp(&left.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.node_hash.cmp(&right.node_hash))
+        });
+        scored_layer.truncate(top_k);
+        let mut next_frontier = Vec::new();
+        for node in scored_layer {
+            let child_key = context_child_key(tenant_hash, node.node_hash);
+            let is_leaf =
+                load_context_children(cache, page_store, shard_id, shard, &child_key).is_empty();
+            next_frontier.push(node.clone());
+            if !leaf_only || is_leaf {
+                results.push(node);
+                if results.len() >= candidate_limit {
+                    return results;
+                }
+            }
+        }
+        if next_frontier.is_empty() {
+            break;
+        }
+        frontier = next_frontier;
+    }
+    results
+}
+
+fn build_context_compression_event(
+    tenant_hash: u64,
+    node_hash: u64,
+    source_start_ms: u64,
+    source_end_ms: u64,
+    compressed_time_ms: u64,
+    selected: &[ContextEvent],
+    truncated: bool,
+) -> ContextCompressionEvent {
+    let mut summary = format!("Temporal compression window {source_start_ms}-{source_end_ms}:");
+    for event in selected {
+        let mut text = event.text.clone();
+        if text.len() > CONTEXT_MAX_COMPRESSION_SNIPPET_BYTES {
+            text.truncate(CONTEXT_MAX_COMPRESSION_SNIPPET_BYTES);
+        }
+        summary.push(' ');
+        summary.push_str(&text);
+    }
+    if truncated {
+        summary.push_str(" additional source events truncated.");
+    }
+    if summary.len() > CONTEXT_MAX_SUMMARY_BYTES {
+        summary.truncate(CONTEXT_MAX_SUMMARY_BYTES);
+    }
+    ContextCompressionEvent {
+        compression_id_hash: stable_object_hash(&format!(
+            "{tenant_hash}:{node_hash}:{source_start_ms}:{source_end_ms}:{}",
+            selected
+                .iter()
+                .map(|event| event.event_id_hash.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        )),
+        node_hash,
+        source_start_ms,
+        source_end_ms,
+        compressed_time_ms: if compressed_time_ms == 0 {
+            source_end_ms
+        } else {
+            compressed_time_ms
+        },
+        summary,
+    }
 }
 
 fn cached_response(
@@ -9914,6 +11023,10 @@ mod tests {
                 ("ContextIndexModel", 11),
                 ("ContextAuditModel", 12),
                 ("ContextDirtyModel", 13),
+                ("ContextChildModel", 14),
+                ("ContextEmbeddingModel", 15),
+                ("ContextSummaryModel", 16),
+                ("ContextCompressionModel", 17),
                 ("ContextEntityModel", 18),
             ]
         );
@@ -10057,6 +11170,331 @@ mod tests {
             },
         });
         assert_eq!(invalid_entity.status.code, "invalid_argument");
+    }
+
+    // shared-corpus: context_tree_embedding_summary_compression
+    #[test]
+    fn context_tree_embedding_summary_and_compression_match_cpp_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        const TENANT: u64 = 1001;
+        const ROOT: u64 = 10;
+        const GPU: u64 = 20;
+        const COST: u64 = 30;
+        const EVENT_TIME: u64 = 1_781_500_000_000;
+
+        for node in [
+            ContextNode {
+                node_hash: ROOT,
+                parent_hash: 0,
+                kind: 1,
+                canonical_name: "company_a".to_string(),
+                l0: "Company A context root.".to_string(),
+                status: 0,
+                last_event_time_ms: 0,
+                summary_dirty: false,
+                l1_ref: String::new(),
+                raw_metadata_ref: String::new(),
+            },
+            ContextNode {
+                node_hash: GPU,
+                parent_hash: ROOT,
+                kind: 2,
+                canonical_name: "gpu_purchase".to_string(),
+                l0: "GPU purchase leaf node.".to_string(),
+                status: 0,
+                last_event_time_ms: 0,
+                summary_dirty: false,
+                l1_ref: String::new(),
+                raw_metadata_ref: String::new(),
+            },
+        ] {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextUpsertNode {
+                    tenant_hash: TENANT,
+                    node,
+                },
+            });
+            assert!(response.status.ok);
+        }
+
+        let child_gpu = ContextChildRef {
+            parent_hash: ROOT,
+            child_hash: GPU,
+            updated_at_ms: EVENT_TIME,
+        };
+        for (child_ref, created, count) in [
+            (child_gpu.clone(), true, 1),
+            (
+                ContextChildRef {
+                    parent_hash: ROOT,
+                    child_hash: COST,
+                    updated_at_ms: EVENT_TIME,
+                },
+                true,
+                2,
+            ),
+            (child_gpu.clone(), false, 2),
+        ] {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextUpsertChildRef {
+                    tenant_hash: TENANT,
+                    child_ref,
+                },
+            });
+            assert!(matches!(
+                response.response,
+                CommandResponse::ContextChildRefs {
+                    ref object_key,
+                    created: Some(actual_created),
+                    parent_child_count: Some(actual_count),
+                    ..
+                } if object_key == "ctx:child:1001:10"
+                    && actual_created == created
+                    && actual_count == count
+            ));
+        }
+        let children = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextQueryChildren {
+                tenant_hash: TENANT,
+                parent_hash: ROOT,
+                limit: Some(10),
+            },
+        });
+        assert!(matches!(
+            children.response,
+            CommandResponse::ContextChildRefs { refs, .. }
+                if refs.len() == 2 && refs[0].child_hash == GPU
+        ));
+
+        for (ref_hash, first, second) in [(GPU, 1.0, 0.0), (COST, 0.0, 1.0)] {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextUpsertEmbedding {
+                    tenant_hash: TENANT,
+                    embedding: ContextEmbedding {
+                        ref_hash,
+                        level: 1,
+                        vector: vec![first, second],
+                        updated_at_ms: EVENT_TIME,
+                    },
+                },
+            });
+            assert!(response.status.ok);
+        }
+        let traversal = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextTraverseTree {
+                tenant_hash: TENANT,
+                start_node_hash: ROOT,
+                query_vector: vec![1.0, 0.0],
+                max_depth: Some(2),
+                top_k_per_depth: Some(1),
+                max_children_scored_per_parent: Some(10),
+                max_candidate_nodes: Some(4),
+                leaf_only: true,
+            },
+        });
+        assert!(matches!(
+            traversal.response,
+            CommandResponse::ContextTraversedNodes { ref nodes }
+                if nodes.len() == 1 && nodes[0].node_hash == GPU && nodes[0].score > 0.99
+        ));
+
+        for (text, valid_from_ms) in [
+            ("L0 GPU purchase summary.", EVENT_TIME),
+            ("Latest overall GPU purchase summary.", EVENT_TIME + 5),
+        ] {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextUpsertSummary {
+                    tenant_hash: TENANT,
+                    summary: ContextSummary {
+                        node_hash: GPU,
+                        level: 1,
+                        text: text.to_string(),
+                        valid_from_ms,
+                    },
+                },
+            });
+            assert!(response.status.ok);
+        }
+        let summaries = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextQuerySummaries {
+                tenant_hash: TENANT,
+                node_hash: GPU,
+                level: 1,
+                as_of_ms: EVENT_TIME + 1,
+                limit: Some(10),
+            },
+        });
+        assert!(matches!(
+            summaries.response,
+            CommandResponse::ContextSummaries { ref summaries, .. }
+                if summaries.len() == 1 && summaries[0].text == "L0 GPU purchase summary."
+        ));
+
+        let compression = ContextCompressionEvent {
+            compression_id_hash: 5001,
+            node_hash: GPU,
+            source_start_ms: EVENT_TIME - 1000,
+            source_end_ms: EVENT_TIME,
+            compressed_time_ms: EVENT_TIME,
+            summary: "Older GPU purchase timeline compressed into one summary.".to_string(),
+        };
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextWriteCompressionEvent {
+                tenant_hash: TENANT,
+                event: compression.clone(),
+            },
+        });
+        assert!(response.status.ok);
+        let compression_query = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextQueryCompressionEvents {
+                tenant_hash: TENANT,
+                node_hashes: vec![GPU],
+                start_time_ms: EVENT_TIME - 2000,
+                end_time_ms: EVENT_TIME + 1,
+                limit: Some(10),
+            },
+        });
+        assert!(matches!(
+            compression_query.response,
+            CommandResponse::ContextCompressionEvents { ref events, .. }
+                if events == &vec![compression.clone()]
+        ));
+
+        let node_context = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextQueryNodeContext {
+                tenant_hash: TENANT,
+                node_hash: GPU,
+                summary_level: Some(1),
+                as_of_ms: EVENT_TIME + 10,
+                cold_start_time_ms: EVENT_TIME - 2000,
+                cold_end_time_ms: EVENT_TIME + 1,
+                compression_limit: Some(10),
+            },
+        });
+        assert!(matches!(
+            node_context.response,
+            CommandResponse::ContextNodeContext {
+                node_exists: true,
+                overall_summary_exists: true,
+                overall_summary: Some(ref summary),
+                ref cold_window_summaries,
+                ..
+            } if summary.text == "Latest overall GPU purchase summary."
+                && cold_window_summaries.len() == 1
+                && cold_window_summaries[0].summary == compression.summary
+        ));
+    }
+
+    // shared-corpus: context_temporal_compression_replayable_summary
+    #[test]
+    fn context_temporal_compression_builds_replayable_summary_without_deleting_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        const TENANT: u64 = 3003;
+        const NODE: u64 = 9100;
+        const START: u64 = 1_781_400_000_000;
+        const COMPRESSED_AT: u64 = 1_781_500_000_000;
+
+        for (offset_ms, event_id, text) in [
+            (0, 7001, "Week-old approval was created."),
+            (10, 7002, "Week-old approval was reviewed by finance."),
+            (20, 7003, "Week-old approval was confirmed by infra."),
+        ] {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextWriteEvent {
+                    tenant_hash: TENANT,
+                    node_hash: NODE,
+                    event: ContextEvent {
+                        event_id_hash: event_id,
+                        event_time_ms: START + offset_ms,
+                        kind: 7,
+                        event_type: 7,
+                        actor_hash: 0,
+                        status: 0,
+                        valid_until_ms: 0,
+                        confidence: 0.96,
+                        importance: 0.82,
+                        text: text.to_string(),
+                        source_ref: String::new(),
+                        related_node_hashes: Vec::new(),
+                        compact_attrs: Vec::new(),
+                    },
+                    first_write_only: false,
+                },
+            });
+            assert!(response.status.ok);
+        }
+
+        let compressed = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextCompressEvents {
+                tenant_hash: TENANT,
+                node_hash: NODE,
+                source_start_ms: START,
+                source_end_ms: START + 20,
+                compressed_time_ms: COMPRESSED_AT,
+                max_source_events: Some(2),
+                min_confidence: 0.9,
+                min_importance: 0.8,
+            },
+        });
+        assert!(matches!(
+            compressed.response,
+            CommandResponse::ContextCompressionEvents {
+                ref object_key,
+                ref events,
+                source_event_count: Some(2),
+                truncated_source_events: Some(true),
+            } if object_key == "ctx:compress:3003:9100"
+                && events.len() == 1
+                && events[0].summary.contains("Temporal compression window")
+                && events[0].summary.contains("Week-old approval was created")
+        ));
+
+        let raw_events = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextQueryEvents {
+                tenant_hash: TENANT,
+                node_hash: NODE,
+                start_time_ms: START,
+                end_time_ms: START + 20,
+                limit: Some(10),
+                current_valid_only: false,
+                as_of_ms: 0,
+                kinds: Vec::new(),
+                statuses: Vec::new(),
+                min_confidence: 0.0,
+                min_importance: 0.0,
+            },
+        });
+        assert!(matches!(
+            raw_events.response,
+            CommandResponse::ContextEvents { ref events, .. } if events.len() == 3
+        ));
     }
 
     #[test]

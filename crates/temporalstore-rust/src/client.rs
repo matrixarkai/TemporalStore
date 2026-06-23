@@ -3804,7 +3804,18 @@ fn command_key(command: &Command) -> Option<&str> {
         | Command::ContextQuerySummaryDirty { .. }
         | Command::ContextUpsertEntity { .. }
         | Command::ContextGetEntity { .. }
-        | Command::ContextQueryEntities { .. } => None,
+        | Command::ContextQueryEntities { .. }
+        | Command::ContextUpsertChildRef { .. }
+        | Command::ContextQueryChildren { .. }
+        | Command::ContextUpsertEmbedding { .. }
+        | Command::ContextQueryEmbeddings { .. }
+        | Command::ContextTraverseTree { .. }
+        | Command::ContextUpsertSummary { .. }
+        | Command::ContextQuerySummaries { .. }
+        | Command::ContextWriteCompressionEvent { .. }
+        | Command::ContextQueryCompressionEvents { .. }
+        | Command::ContextCompressEvents { .. }
+        | Command::ContextQueryNodeContext { .. } => None,
     }
 }
 
@@ -3887,6 +3898,65 @@ fn context_command_key(command: &Command) -> Option<String> {
             node_hash,
             ..
         } => Some(context_entity_collection_key(*tenant_hash, *node_hash)),
+        Command::ContextUpsertChildRef {
+            tenant_hash,
+            child_ref,
+        } => Some(context_child_key(*tenant_hash, child_ref.parent_hash)),
+        Command::ContextQueryChildren {
+            tenant_hash,
+            parent_hash,
+            ..
+        } => Some(context_child_key(*tenant_hash, *parent_hash)),
+        Command::ContextUpsertEmbedding {
+            tenant_hash,
+            embedding,
+        } => Some(context_embedding_key(*tenant_hash, embedding.ref_hash)),
+        Command::ContextQueryEmbeddings {
+            tenant_hash,
+            ref_hashes,
+            ..
+        } => ref_hashes
+            .first()
+            .map(|ref_hash| context_embedding_key(*tenant_hash, *ref_hash)),
+        Command::ContextTraverseTree {
+            tenant_hash,
+            start_node_hash,
+            ..
+        } => Some(context_child_key(*tenant_hash, *start_node_hash)),
+        Command::ContextUpsertSummary {
+            tenant_hash,
+            summary,
+        } => Some(context_summary_key(
+            *tenant_hash,
+            summary.node_hash,
+            summary.level,
+        )),
+        Command::ContextQuerySummaries {
+            tenant_hash,
+            node_hash,
+            level,
+            ..
+        } => Some(context_summary_key(*tenant_hash, *node_hash, *level)),
+        Command::ContextWriteCompressionEvent { tenant_hash, event } => {
+            Some(context_compression_key(*tenant_hash, event.node_hash))
+        }
+        Command::ContextQueryCompressionEvents {
+            tenant_hash,
+            node_hashes,
+            ..
+        } => node_hashes
+            .first()
+            .map(|node_hash| context_compression_key(*tenant_hash, *node_hash)),
+        Command::ContextCompressEvents {
+            tenant_hash,
+            node_hash,
+            ..
+        }
+        | Command::ContextQueryNodeContext {
+            tenant_hash,
+            node_hash,
+            ..
+        } => Some(context_compression_key(*tenant_hash, *node_hash)),
         _ => None,
     }
 }
@@ -3922,6 +3992,22 @@ fn context_entity_key(tenant_hash: u64, node_hash: u64, entity_hash: u64) -> Str
 
 fn context_entity_collection_key(tenant_hash: u64, node_hash: u64) -> String {
     format!("ctx:entity:{tenant_hash}:{node_hash}")
+}
+
+fn context_child_key(tenant_hash: u64, parent_hash: u64) -> String {
+    format!("ctx:child:{tenant_hash}:{parent_hash}")
+}
+
+fn context_embedding_key(tenant_hash: u64, ref_hash: u64) -> String {
+    format!("ctx:embedding:{tenant_hash}:{ref_hash}")
+}
+
+fn context_summary_key(tenant_hash: u64, node_hash: u64, level: u32) -> String {
+    format!("ctx:summary:{tenant_hash}:{node_hash}:{level}")
+}
+
+fn context_compression_key(tenant_hash: u64, node_hash: u64) -> String {
+    format!("ctx:compress:{tenant_hash}:{node_hash}")
 }
 
 #[cfg(test)]
