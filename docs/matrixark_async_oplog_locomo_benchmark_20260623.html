@@ -1,0 +1,85 @@
+<!doctype html><meta charset="utf-8"><style>body{font-family:Arial,sans-serif;max-width:980px;margin:40px auto;line-height:1.55;color:#17202a}pre{background:#f5f7fa;padding:14px;overflow:auto}h1,h2,h3{color:#0f172a}table{border-collapse:collapse;width:100%;margin:16px 0}td,th{border:1px solid #d8dee9;padding:8px;text-align:left}th{background:#f4f7fb}</style>
+<h1>MatrixArk Async Oplog LOCOMO Benchmark - 2026-06-23</h1>
+
+<h2>Result</h2>
+
+<p>Using C++ TemporalStore with async storage enabled, the previously stressful all-conversation LOCOMO shape completed locally.</p>
+
+<h2>Runtime</h2>
+
+<p>TemporalStore local deployment:</p>
+
+<pre>
+BUILD_TYPE=Release
+TEMPORALSTORE_STORAGE_ASYNC=true
+TEMPORALSTORE_STORAGE_OPLOG_DELAY_DUMP_LENGTH=10000
+SERVER_COUNT=1
+REPLICA_COUNT=1
+</pre>
+
+<p>Observed server command included:</p>
+
+<pre>
+--storage_async=true
+--storage_oplog_delay_dump_length=10000
+</pre>
+
+<p>MatrixArk benchmark settings:</p>
+
+<pre>
+MATRIXARK_DIRECT_AUDIT_MODE=deferred
+MATRIXARK_DIRECT_WRITE_RETRIES=5
+MATRIXARK_DIRECT_WRITE_BACKOFF_MS=50
+backend=temporalstore-direct
+dataset=locomo10.json
+batch_size=40
+question_limit=100
+request_timeout_ms=120000
+io_timeout_ms=120000
+</pre>
+
+<h2>Metrics</h2>
+
+<table>
+<tr><th>Metric</th><th>Value</th></tr>
+<tr><td>conversations</td><td>10</td></tr>
+<tr><td>sessions</td><td>272</td></tr>
+<tr><td>turns ingested</td><td>5882</td></tr>
+<tr><td>questions run</td><td>100</td></tr>
+<tr><td>ingestion elapsed ms</td><td>8276</td></tr>
+<tr><td>ingestion throughput turns/sec</td><td>710.73</td></tr>
+<tr><td>avg retrieval latency ms</td><td>97.86</td></tr>
+<tr><td>p50 retrieval latency ms</td><td>98.00</td></tr>
+<tr><td>p95 retrieval latency ms</td><td>117.87</td></tr>
+<tr><td>context recall</td><td>1.0000</td></tr>
+<tr><td>final debug judge score</td><td>0.6200</td></tr>
+<tr><td>answer support hit</td><td>0.6200</td></tr>
+<tr><td>answer hit</td><td>0.1000</td></tr>
+<tr><td>evidence session recall</td><td>0.4000</td></tr>
+<tr><td>avg prompt tokens</td><td>1199.1</td></tr>
+<tr><td>compression hidden answers</td><td>0</td></tr>
+</table>
+
+<p>Artifacts were written under:</p>
+
+<pre>
+/tmp/matrixark-async-oplog-locomo-20260623_154435/
+</pre>
+
+<h2>Interpretation</h2>
+
+<p>The prior all-conversation timeout was primarily caused by sync storage pressure on the local single-node deployment, plus retrieval audit pressure. With async storage and deferred audits, the same all-conversation / 100-question LOCOMO shape completed cleanly.</p>
+
+<p>This does not mean all production durability concerns disappear:</p>
+
+<p>&bull; async storage returns before every oplog flush is fully committed;</p>
+<p>&bull; benchmark throughput is now closer to the intended async serving mode;</p>
+<p>&bull; strict durability benchmarks should still run with `TEMPORALSTORE_STORAGE_ASYNC=false`;</p>
+<p>&bull; production should expose both modes by policy: sync for correctness-sensitive writes, async for high-throughput context ingestion where replay/checkpointing is acceptable.</p>
+
+<h2>Remaining Work</h2>
+
+<p>1. Repeat the same shape with Rust TemporalStore once the Rust long-lived gateway is configured for equivalent async behavior.</p>
+<p>2. Run full question count, not only 100 questions.</p>
+<p>3. Add a benchmark matrix: sync vs async storage, buffered vs deferred audit, one data node vs multiple data nodes.</p>
+<p>4. Add native atomic batch append so `record_bundle` and `record_count` advance in one server-side operation.</p>
