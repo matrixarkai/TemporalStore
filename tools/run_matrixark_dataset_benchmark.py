@@ -76,6 +76,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-context-tokens", type=int, default=1200)
     parser.add_argument("--question-limit", type=int, default=0)
     parser.add_argument("--conversation-limit", type=int, default=0)
+    parser.add_argument(
+        "--session-limit",
+        type=int,
+        default=0,
+        help="Maximum sessions to ingest before retrieval. Useful for LongMemEval scale slices.",
+    )
+    parser.add_argument(
+        "--sessions-per-item-limit",
+        type=int,
+        default=0,
+        help="Maximum sessions to ingest per dataset item/question. Useful for LongMemEval controlled parity slices.",
+    )
     parser.add_argument("--checkpoint-interval", type=int, default=50)
     parser.add_argument("--reader-provider", choices=["deterministic", "openai-compatible"], default="deterministic")
     parser.add_argument("--judge-provider", choices=["deterministic", "openai-compatible"], default="deterministic")
@@ -905,7 +917,12 @@ def main() -> int:
             items = normalized_items[: args.conversation_limit or None]
             for item_index, item in enumerate(items):
                 scope_base = {"user_id": f"locomo-{item_index}", "team": "locomo"}
-                for session in locomo_sessions(item, item_index):
+                item_sessions = locomo_sessions(item, item_index)
+                if args.sessions_per_item_limit:
+                    item_sessions = item_sessions[: args.sessions_per_item_limit]
+                for session in item_sessions:
+                    if args.session_limit and sessions_ingested >= args.session_limit:
+                        break
                     messages = session["messages"]
                     for batch_index, batch in enumerate(chunks(messages, args.batch_size)):
                         call(
@@ -925,13 +942,19 @@ def main() -> int:
                     turns_ingested += len(messages)
                     sessions_ingested += 1
                 questions.extend(locomo_questions(item, item_index))
-        else:
-            items = normalized_items
-            for item_index, item in enumerate(items):
-                if args.conversation_limit and item_index >= args.conversation_limit:
+                if args.session_limit and sessions_ingested >= args.session_limit:
                     break
+        else:
+            item_limit = args.conversation_limit or args.question_limit or 0
+            items = normalized_items[: item_limit or None]
+            for item_index, item in enumerate(items):
                 scope_base = {"user_id": f"longmemeval-{item_index}", "team": "longmemeval_s"}
-                for session in longmemeval_sessions(item, item_index, max_message_chars=args.max_message_chars):
+                item_sessions = longmemeval_sessions(item, item_index, max_message_chars=args.max_message_chars)
+                if args.sessions_per_item_limit:
+                    item_sessions = item_sessions[: args.sessions_per_item_limit]
+                for session in item_sessions:
+                    if args.session_limit and sessions_ingested >= args.session_limit:
+                        break
                     messages = session["messages"]
                     for batch_index, batch in enumerate(chunks(messages, args.batch_size)):
                         call(
@@ -951,6 +974,8 @@ def main() -> int:
                     turns_ingested += len(messages)
                     sessions_ingested += 1
                 questions.append(longmemeval_question(item, item_index))
+                if args.session_limit and sessions_ingested >= args.session_limit:
+                    break
 
         if args.question_limit:
             questions = questions[: args.question_limit]

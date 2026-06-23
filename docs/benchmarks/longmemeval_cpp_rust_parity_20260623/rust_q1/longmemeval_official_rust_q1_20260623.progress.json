@@ -1,0 +1,7 @@
+{
+  "partial": false,
+  "questions_completed": 1,
+  "report_json": "docs/benchmarks/longmemeval_cpp_rust_parity_20260623/rust_q1/longmemeval_official_rust_q1_20260623.report.json",
+  "result_json": "docs/benchmarks/longmemeval_cpp_rust_parity_20260623/rust_q1/longmemeval_official_rust_q1_20260623.result.json",
+  "updated_at_ms": 1782252441281
+}
