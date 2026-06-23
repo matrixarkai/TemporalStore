@@ -51,7 +51,10 @@ class MatrixArkMcpServerTest(unittest.TestCase):
                 "matrixark_replay",
                 "matrixark_admin_create_account",
                 "matrixark_admin_create_user",
+                "matrixark_admin_update_user",
+                "matrixark_admin_list_users",
                 "matrixark_admin_create_api_key",
+                "matrixark_admin_list_api_keys",
                 "matrixark_admin_rotate_api_key",
                 "matrixark_admin_revoke_api_key",
                 "matrixark_admin_map_sso_user",
@@ -94,6 +97,9 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         self.assertIn("allowed_session_ids", create_key["inputSchema"]["properties"])
         create_user = next(tool for tool in response["result"]["tools"] if tool["name"] == "matrixark_admin_create_user")
         self.assertEqual(create_user["inputSchema"]["required"], ["user_id"])
+        self.assertIn("matrixark_admin_update_user", names)
+        self.assertIn("matrixark_admin_list_users", names)
+        self.assertIn("matrixark_admin_list_api_keys", names)
 
     def test_hook_captured_ingest_then_retrieve(self):
         ingest = self.call_tool(
@@ -413,6 +419,23 @@ class MatrixArkMcpServerTest(unittest.TestCase):
             },
         )
         self.assertFalse(pack["insufficient_context"])
+        missing_user = self.server.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 96,
+                "method": "tools/call",
+                "params": {
+                    "name": "matrixark_retrieve",
+                    "arguments": {
+                        "api_key": api_key,
+                        "query": "GPU Project Orion approval",
+                        "scope": {"session_id": "sess-a"},
+                    },
+                },
+            }
+        )
+        self.assertIn("error", missing_user)
+        self.assertIn("scope.user_id is required", missing_user["error"]["message"])
         wrong_user = self.server.handle(
             {
                 "jsonrpc": "2.0",
@@ -448,6 +471,16 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         self.assertIn("error", wrong_session)
         self.assertIn("scope.session_id is not allowed", wrong_session["error"]["message"])
 
+        users = self.call_tool("matrixark_admin_list_users", {"account_id": "acct_acme", "tenant_id": "tenant_eng"})
+        self.assertEqual(users["count"], 1)
+        self.assertEqual(users["users"][0]["user_id"], "alice")
+
+        keys = self.call_tool("matrixark_admin_list_api_keys", {"account_id": "acct_acme", "tenant_id": "tenant_eng"})
+        self.assertEqual(keys["count"], 1)
+        self.assertEqual(keys["api_keys"][0]["api_key_id"], created_key["api_key_id"])
+        self.assertNotIn("api_key", keys["api_keys"][0])
+        self.assertNotIn("api_key_hash", keys["api_keys"][0])
+
         audit = self.call_tool("matrixark_admin_audit", {"account_id": "acct_acme", "tenant_id": "tenant_eng"})
         self.assertGreaterEqual(audit["count"], 3)
         usage_rows = [row for row in audit["audit_logs"] if row.get("record_type") == "matrixark_api_key_usage"]
@@ -471,6 +504,58 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         )
         self.assertIn("error", error_response)
         self.assertIn("invalid or revoked", error_response["error"]["message"])
+
+    def test_disabled_user_blocks_api_key_context_access(self):
+        self.call_tool(
+            "matrixark_admin_create_account",
+            {"account_id": "acct_acme", "tenant_id": "tenant_eng"},
+        )
+        self.call_tool(
+            "matrixark_admin_create_user",
+            {"account_id": "acct_acme", "tenant_id": "tenant_eng", "user_id": "alice"},
+        )
+        created_key = self.call_tool(
+            "matrixark_admin_create_api_key",
+            {
+                "account_id": "acct_acme",
+                "tenant_id": "tenant_eng",
+                "scopes": ["context:retrieve"],
+                "allowed_user_ids": ["alice"],
+            },
+        )
+        disabled = self.call_tool(
+            "matrixark_admin_update_user",
+            {
+                "account_id": "acct_acme",
+                "tenant_id": "tenant_eng",
+                "user_id": "alice",
+                "status": "disabled",
+            },
+        )
+        self.assertEqual(disabled["user_status"], "disabled")
+        users = self.call_tool(
+            "matrixark_admin_list_users",
+            {"account_id": "acct_acme", "tenant_id": "tenant_eng", "status": "disabled"},
+        )
+        self.assertEqual(users["count"], 1)
+
+        response = self.server.handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 50,
+                "method": "tools/call",
+                "params": {
+                    "name": "matrixark_retrieve",
+                    "arguments": {
+                        "api_key": created_key["api_key"],
+                        "query": "GPU",
+                        "scope": {"user_id": "alice"},
+                    },
+                },
+            }
+        )
+        self.assertIn("error", response)
+        self.assertIn("scope.user_id is disabled", response["error"]["message"])
 
     def test_api_key_expiry_and_admin_account_boundaries(self):
         self.call_tool(
@@ -537,6 +622,13 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         )
         self.assertIn("error", cross_account_response)
         self.assertIn("admin operation account/tenant does not match API key", cross_account_response["error"]["message"])
+
+        api_keys = self.call_tool(
+            "matrixark_admin_list_api_keys",
+            {"api_key": admin_key, "scope": {"account_id": "acct_acme", "tenant_id": "tenant_eng"}, "include_revoked": True},
+        )
+        self.assertGreaterEqual(api_keys["count"], 1)
+        self.assertTrue(all("api_key_hash" not in key for key in api_keys["api_keys"]))
 
     def test_sso_mapping_and_enforced_mode_requires_api_key(self):
         mapped = self.call_tool(
