@@ -3938,6 +3938,11 @@ mod tests {
                 ("ContextIndexModel", 11),
                 ("ContextAuditModel", 12),
                 ("ContextDirtyModel", 13),
+                ("ContextChildModel", 14),
+                ("ContextEmbeddingModel", 15),
+                ("ContextSummaryModel", 16),
+                ("ContextCompressionModel", 17),
+                ("ContextEntityModel", 18),
             ]
         );
         assert!(state.parity.cpp_context_model_ids_ready);

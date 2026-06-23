@@ -217,6 +217,14 @@ fn response_kind(response: &CommandResponse) -> &'static str {
         CommandResponse::ContextIndexRefs { .. } => "context_index_refs",
         CommandResponse::ContextPackAudits { .. } => "context_pack_audits",
         CommandResponse::ContextSummaryDirtyMarkers { .. } => "context_summary_dirty_markers",
+        CommandResponse::ContextEntity { .. } => "context_entity",
+        CommandResponse::ContextEntities { .. } => "context_entities",
+        CommandResponse::ContextChildRefs { .. } => "context_child_refs",
+        CommandResponse::ContextEmbeddings { .. } => "context_embeddings",
+        CommandResponse::ContextTraversedNodes { .. } => "context_traversed_nodes",
+        CommandResponse::ContextSummaries { .. } => "context_summaries",
+        CommandResponse::ContextCompressionEvents { .. } => "context_compression_events",
+        CommandResponse::ContextNodeContext { .. } => "context_node_context",
     }
 }
 
