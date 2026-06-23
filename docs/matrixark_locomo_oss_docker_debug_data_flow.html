@@ -1,0 +1,1894 @@
+<!doctype html><meta charset='utf-8'><title>MatrixArk LOCOMO Debug Data Flow</title><style>body{font-family:Inter,Segoe UI,Arial,sans-serif;max-width:1180px;margin:32px auto;padding:0 24px;line-height:1.45;color:#172033}pre{background:#f5f7fb;padding:16px;overflow:auto;border-radius:8px}code{background:#edf1f7;padding:2px 4px;border-radius:4px}h1,h2,h3{color:#0f172a}</style><pre># MatrixArk LOCOMO Debug Data Flow
+
+Event log: `.local/context-debug/locomo-oss-docker-debug/matrixark_locomo_debug_event_log.jsonl`
+Embedding provider: `oss`
+Embedding model: `/models/sentence-transformers/all-MiniLM-L6-v2`
+
+## Data Model Counts
+
+- `context_batch_commit`: 3
+- `context_embedding`: 90
+- `context_entity`: 9
+- `context_entity_update_audit`: 9
+- `context_event`: 12
+- `context_extraction_audit`: 3
+- `context_index`: 24
+- `context_pack_audit`: 9
+- `context_segment`: 6
+- `context_summary`: 63
+- `context_summary_dirty`: 51
+- `context_summary_refresh_audit`: 24
+- `matrixark_audit_log`: 27
+- `session_buffer_event`: 12
+
+## Retrieval Queries
+
+### Where is the user currently located?
+- session: `conversation_a_location_preference_approval`
+- question_type: `current_state`
+- context_pack_id: `2729108047481238049`
+- used_context_tokens: `9`
+- tree traversal: selected_nodes=8 selected_paths=8 fallback=False
+- selected refs:
+  - `entity` score=0.700977 node=[&#x27;account:acct_locomo_debug&#x27;, &#x27;tenant:tenant_memory&#x27;, &#x27;principal:user:locomo_user_a&#x27;, &#x27;collection:sessions&#x27;, &#x27;session:locomo_a&#x27;] text=location: location = Austin now for the new infra project
+
+### What does the user prefer for low latency storage?
+- session: `conversation_a_location_preference_approval`
+- question_type: `current_state`
+- context_pack_id: `6780686362125065011`
+- used_context_tokens: `17`
+- tree traversal: selected_nodes=8 selected_paths=8 fallback=False
+- selected refs:
+  - `entity` score=0.832907 node=[&#x27;account:acct_locomo_debug&#x27;, &#x27;tenant:tenant_memory&#x27;, &#x27;principal:user:locomo_user_a&#x27;, &#x27;collection:sessions&#x27;, &#x27;session:locomo_a&#x27;] text=preference: preference = Rust for low latency storage engines
+  - `event` score=0.757172 node=[&#x27;default_team&#x27;, &#x27;default_project&#x27;, &#x27;message&#x27;] text=user: I prefer Rust for low latency storage engines.
+
+### Who approved the GPU purchase?
+- session: `conversation_a_location_preference_approval`
+- question_type: `fact`
+- context_pack_id: `1209877608356494786`
+- used_context_tokens: `39`
+- tree traversal: selected_nodes=8 selected_paths=8 fallback=False
+- selected refs:
+  - `entity` score=0.915328 node=[&#x27;account:acct_locomo_debug&#x27;, &#x27;tenant:tenant_memory&#x27;, &#x27;principal:user:locomo_user_a&#x27;, &#x27;collection:sessions&#x27;, &#x27;session:locomo_a&#x27;] text=approval_state: the GPU purchase after finance reviewed the budget = the GPU purchase after finance reviewed the budget
+  - `event` score=0.795768 node=[&#x27;default_team&#x27;, &#x27;default_project&#x27;, &#x27;message&#x27;] text=user: Alice approved the GPU purchase after finance reviewed the budget.
+  - `segment` score=0.891865 node=[&#x27;account:acct_locomo_debug&#x27;, &#x27;tenant:tenant_memory&#x27;, &#x27;principal:user:locomo_user_a&#x27;, &#x27;collection:sessions&#x27;, &#x27;session:locomo_a&#x27;] text=3: Alice approved the GPU purchase after finance reviewed the budget.
+
+### Who is the user&#x27;s manager?
+- session: `conversation_b_relationship_family_job`
+- question_type: `fact`
+- context_pack_id: `5448656841211536278`
+- used_context_tokens: `22`
+- tree traversal: selected_nodes=8 selected_paths=8 fallback=False
+- selected refs:
+  - `entity` score=0.711964 node=[&#x27;account:acct_locomo_debug&#x27;, &#x27;tenant:tenant_memory&#x27;, &#x27;principal:user:locomo_user_b&#x27;, &#x27;collection:sessions&#x27;, &#x27;session:locomo_b&#x27;] text=relationship: Priya is helping with the launch plan = Priya is helping with the launch plan
+  - `entity` score=0.656002 node=[&#x27;account:acct_locomo_debug&#x27;, &#x27;tenant:tenant_memory&#x27;, &#x27;principal:user:locomo_user_b&#x27;, &#x27;collection:sessions&#x27;, &#x27;session:locomo_b&#x27;] text=family_profile: family_profile = has a dog named Mochi
+
+### What pet is in the user&#x27;s family?
+- session: `conversation_b_relationship_family_job`
+- question_type: `fact`
+- context_pack_id: `7658615883332866040`
+- used_context_tokens: `22`
+- tree traversal: selected_nodes=8 selected_paths=8 fallback=False
+- selected refs:
+  - `entity` score=0.714821 node=[&#x27;account:acct_locomo_debug&#x27;, &#x27;tenant:tenant_memory&#x27;, &#x27;principal:user:locomo_user_b&#x27;, &#x27;collection:sessions&#x27;, &#x27;session:locomo_b&#x27;] text=family_profile: family_profile = has a dog named Mochi
+  - `entity` score=0.691324 node=[&#x27;account:acct_locomo_debug&#x27;, &#x27;tenant:tenant_memory&#x27;, &#x27;principal:user:locomo_user_b&#x27;, &#x27;collection:sessions&#x27;, &#x27;session:locomo_b&#x27;] text=relationship: Priya is helping with the launch plan = Priya is helping with the launch plan
+
+### What is the user&#x27;s current job role?
+- session: `conversation_b_relationship_family_job`
+- question_type: `current_state`
+- context_pack_id: `2607653875530177420`
+- used_context_tokens: `15`
+- tree traversal: selected_nodes=8 selected_paths=8 fallback=False
+- selected refs:
+  - `entity` score=0.753743 node=[&#x27;account:acct_locomo_debug&#x27;, &#x27;tenant:tenant_memory&#x27;, &#x27;principal:user:locomo_user_b&#x27;, &#x27;collection:sessions&#x27;, &#x27;session:locomo_b&#x27;] text=job_status: job_status = role is storage infrastructure lead
+  - `event` score=0.710748 node=[&#x27;default_team&#x27;, &#x27;default_project&#x27;, &#x27;message&#x27;] text=user: My job role is storage infrastructure lead.
+
+### Where is the user currently located?
+- session: `conversation_c_temporal_update`
+- question_type: `current_state`
+- context_pack_id: `3865606364986862534`
+- used_context_tokens: `3`
+- tree traversal: selected_nodes=8 selected_paths=8 fallback=False
+- selected refs:
+  - `entity` score=0.668919 node=[&#x27;account:acct_locomo_debug&#x27;, &#x27;tenant:tenant_memory&#x27;, &#x27;principal:user:locomo_user_c&#x27;, &#x27;collection:sessions&#x27;, &#x27;session:locomo_c&#x27;] text=location: location = Austin
+
+### What language does the user currently prefer?
+- session: `conversation_c_temporal_update`
+- question_type: `current_state`
+- context_pack_id: `8213547396988274382`
+- used_context_tokens: `22`
+- tree traversal: selected_nodes=8 selected_paths=8 fallback=False
+- selected refs:
+  - `entity` score=0.663532 node=[&#x27;account:acct_locomo_debug&#x27;, &#x27;tenant:tenant_memory&#x27;, &#x27;principal:user:locomo_user_c&#x27;, &#x27;collection:sessions&#x27;, &#x27;session:locomo_c&#x27;] text=preference: preference = Rust for backend services
+  - `event` score=0.606905 node=[&#x27;default_team&#x27;, &#x27;default_project&#x27;, &#x27;message&#x27;] text=user: Actually I now prefer Rust for backend services.
+  - `event` score=0.576756 node=[&#x27;default_team&#x27;, &#x27;default_project&#x27;, &#x27;message&#x27;] text=user: I liked Python for dashboards before.
+
+### Where was the user before April 10?
+- session: `conversation_c_temporal_update`
+- question_type: `date`
+- context_pack_id: `5823124350559962024`
+- used_context_tokens: `35`
+- tree traversal: selected_nodes=8 selected_paths=8 fallback=False
+- selected refs:
+  - `event` score=0.671345 node=[&#x27;default_team&#x27;, &#x27;default_project&#x27;, &#x27;message&#x27;] text=user: On April 10 I moved to Austin.
+  - `event` score=0.636438 node=[&#x27;default_team&#x27;, &#x27;default_project&#x27;, &#x27;message&#x27;] text=user: On March 2 I lived in Seattle.
+  - `event` score=0.607561 node=[&#x27;default_team&#x27;, &#x27;default_project&#x27;, &#x27;message&#x27;] text=user: I liked Python for dashboards before.
+  - `entity` score=0.660851 node=[&#x27;account:acct_locomo_debug&#x27;, &#x27;tenant:tenant_memory&#x27;, &#x27;principal:user:locomo_user_c&#x27;, &#x27;collection:sessions&#x27;, &#x27;session:locomo_c&#x27;] text=location: location = Austin
+  - `event` score=0.554599 node=[&#x27;default_team&#x27;, &#x27;default_project&#x27;, &#x27;message&#x27;] text=user: Actually I now prefer Rust for backend services.
+
+
+## Compact Records By Model
+
+### context_event
+```json
+[
+  {
+    &quot;event_id_hash&quot;: 7570832604580476177,
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_event&quot;,
+    &quot;summary_text&quot;: &quot;user: I moved to Seattle today, please remember this location.&quot;,
+    &quot;text&quot;: &quot;user: I moved to Seattle today, please remember this location.&quot;
+  },
+  {
+    &quot;event_id_hash&quot;: 7311142423822763961,
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_event&quot;,
+    &quot;summary_text&quot;: &quot;user: Actually I moved to Austin now for the new infra project.&quot;,
+    &quot;text&quot;: &quot;user: Actually I moved to Austin now for the new infra project.&quot;
+  },
+  {
+    &quot;event_id_hash&quot;: 6138936802764366545,
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_event&quot;,
+    &quot;summary_text&quot;: &quot;user: I prefer Rust for low latency storage engines.&quot;,
+    &quot;text&quot;: &quot;user: I prefer Rust for low latency storage engines.&quot;
+  },
+  {
+    &quot;event_id_hash&quot;: 5941503599347645105,
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_event&quot;,
+    &quot;summary_text&quot;: &quot;user: Alice approved the GPU purchase after finance reviewed the budget.&quot;,
+    &quot;text&quot;: &quot;user: Alice approved the GPU purchase after finance reviewed the budget.&quot;
+  },
+  {
+    &quot;event_id_hash&quot;: 920277984218572951,
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_event&quot;,
+    &quot;summary_text&quot;: &quot;user: My manager Priya is helping with the launch plan.&quot;,
+    &quot;text&quot;: &quot;user: My manager Priya is helping with the launch plan.&quot;
+  },
+  {
+    &quot;event_id_hash&quot;: 6389707507579638321,
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_event&quot;,
+    &quot;summary_text&quot;: &quot;user: My family has a dog named Mochi.&quot;,
+    &quot;text&quot;: &quot;user: My family has a dog named Mochi.&quot;
+  },
+  {
+    &quot;event_id_hash&quot;: 247641261204072080,
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_event&quot;,
+    &quot;summary_text&quot;: &quot;user: My job role is storage infrastructure lead.&quot;,
+    &quot;text&quot;: &quot;user: My job role is storage infrastructure lead.&quot;
+  },
+  {
+    &quot;event_id_hash&quot;: 9124681662871465807,
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_event&quot;,
+    &quot;summary_text&quot;: &quot;user: I plan to visit Berlin next month for the conference.&quot;,
+    &quot;text&quot;: &quot;user: I plan to visit Berlin next month for the conference.&quot;
+  },
+  {
+    &quot;event_id_hash&quot;: 1973686423928385754,
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_event&quot;,
+    &quot;summary_text&quot;: &quot;user: On March 2 I lived in Seattle.&quot;,
+    &quot;text&quot;: &quot;user: On March 2 I lived in Seattle.&quot;
+  },
+  {
+    &quot;event_id_hash&quot;: 242956858601536488,
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_event&quot;,
+    &quot;summary_text&quot;: &quot;user: On April 10 I moved to Austin.&quot;,
+    &quot;text&quot;: &quot;user: On April 10 I moved to Austin.&quot;
+  },
+  {
+    &quot;event_id_hash&quot;: 266141310369888037,
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_event&quot;,
+    &quot;summary_text&quot;: &quot;user: I liked Python for dashboards before.&quot;,
+    &quot;text&quot;: &quot;user: I liked Python for dashboards before.&quot;
+  },
+  {
+    &quot;event_id_hash&quot;: 2387217973418514035,
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_event&quot;,
+    &quot;summary_text&quot;: &quot;user: Actually I now prefer Rust for backend services.&quot;,
+    &quot;text&quot;: &quot;user: Actually I now prefer Rust for backend services.&quot;
+  }
+]
+```
+
+### session_buffer_event
+```json
+[
+  {
+    &quot;event_id_hash&quot;: 7570832604580476177,
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;session_buffer_event&quot;
+  },
+  {
+    &quot;event_id_hash&quot;: 7311142423822763961,
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;session_buffer_event&quot;
+  },
+  {
+    &quot;event_id_hash&quot;: 6138936802764366545,
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;session_buffer_event&quot;
+  },
+  {
+    &quot;event_id_hash&quot;: 5941503599347645105,
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;session_buffer_event&quot;
+  },
+  {
+    &quot;event_id_hash&quot;: 920277984218572951,
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;session_buffer_event&quot;
+  },
+  {
+    &quot;event_id_hash&quot;: 6389707507579638321,
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;session_buffer_event&quot;
+  },
+  {
+    &quot;event_id_hash&quot;: 247641261204072080,
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;session_buffer_event&quot;
+  },
+  {
+    &quot;event_id_hash&quot;: 9124681662871465807,
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;session_buffer_event&quot;
+  },
+  {
+    &quot;event_id_hash&quot;: 1973686423928385754,
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;session_buffer_event&quot;
+  },
+  {
+    &quot;event_id_hash&quot;: 242956858601536488,
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;session_buffer_event&quot;
+  },
+  {
+    &quot;event_id_hash&quot;: 266141310369888037,
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;session_buffer_event&quot;
+  },
+  {
+    &quot;event_id_hash&quot;: 2387217973418514035,
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;session_buffer_event&quot;
+  }
+]
+```
+
+### context_batch_commit
+```json
+[
+  {
+    &quot;node_hash&quot;: 2605184825361232507,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_a&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_a&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_batch_commit&quot;,
+    &quot;source_event_ids&quot;: [
+      7570832604580476177,
+      7311142423822763961,
+      6138936802764366545,
+      5941503599347645105
+    ]
+  },
+  {
+    &quot;node_hash&quot;: 4200235650375758793,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_b&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_b&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_batch_commit&quot;,
+    &quot;source_event_ids&quot;: [
+      920277984218572951,
+      6389707507579638321,
+      247641261204072080,
+      9124681662871465807
+    ]
+  },
+  {
+    &quot;node_hash&quot;: 4722027507052340619,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_c&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_c&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_batch_commit&quot;,
+    &quot;source_event_ids&quot;: [
+      1973686423928385754,
+      242956858601536488,
+      266141310369888037,
+      2387217973418514035
+    ]
+  }
+]
+```
+
+### context_segment
+```json
+[
+  {
+    &quot;coordinate_tuples&quot;: [
+      [
+        3,
+        3
+      ]
+    ],
+    &quot;message_indexes&quot;: [
+      3
+    ],
+    &quot;node_hash&quot;: 2605184825361232507,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_a&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_a&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_segment&quot;,
+    &quot;segment_hash&quot;: 5396457113987538536,
+    &quot;source_event_ids&quot;: [
+      5941503599347645105
+    ],
+    &quot;summary_text&quot;: &quot;3: Alice approved the GPU purchase after finance reviewed the budget.&quot;,
+    &quot;text&quot;: &quot;3: Alice approved the GPU purchase after finance reviewed the budget.&quot;,
+    &quot;topic&quot;: &quot;approval_budget&quot;
+  },
+  {
+    &quot;coordinate_tuples&quot;: [
+      [
+        0,
+        1
+      ]
+    ],
+    &quot;message_indexes&quot;: [
+      0,
+      1
+    ],
+    &quot;node_hash&quot;: 2605184825361232507,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_a&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_a&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_segment&quot;,
+    &quot;segment_hash&quot;: 1836260830955661456,
+    &quot;source_event_ids&quot;: [
+      7570832604580476177,
+      7311142423822763961
+    ],
+    &quot;summary_text&quot;: &quot;0: I moved to Seattle today, please remember this location. 1: Actually I moved to Austin now for the new infra project.&quot;,
+    &quot;text&quot;: &quot;0: I moved to Seattle today, please remember this location.\n1: Actually I moved to Austin now for the new infra project.&quot;,
+    &quot;topic&quot;: &quot;location&quot;
+  },
+  {
+    &quot;coordinate_tuples&quot;: [
+      [
+        2,
+        2
+      ]
+    ],
+    &quot;message_indexes&quot;: [
+      2
+    ],
+    &quot;node_hash&quot;: 2605184825361232507,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_a&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_a&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_segment&quot;,
+    &quot;segment_hash&quot;: 592407927067584115,
+    &quot;source_event_ids&quot;: [
+      6138936802764366545
+    ],
+    &quot;summary_text&quot;: &quot;2: I prefer Rust for low latency storage engines.&quot;,
+    &quot;text&quot;: &quot;2: I prefer Rust for low latency storage engines.&quot;,
+    &quot;topic&quot;: &quot;preference&quot;
+  },
+  {
+    &quot;coordinate_tuples&quot;: [
+      [
+        0,
+        0
+      ],
+      [
+        3,
+        3
+      ]
+    ],
+    &quot;message_indexes&quot;: [
+      0,
+      3
+    ],
+    &quot;node_hash&quot;: 4200235650375758793,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_b&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_b&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_segment&quot;,
+    &quot;segment_hash&quot;: 3182940402083000845,
+    &quot;source_event_ids&quot;: [
+      920277984218572951,
+      9124681662871465807
+    ],
+    &quot;summary_text&quot;: &quot;0: My manager Priya is helping with the launch plan. 3: I plan to visit Berlin next month for the conference.&quot;,
+    &quot;text&quot;: &quot;0: My manager Priya is helping with the launch plan.\n3: I plan to visit Berlin next month for the conference.&quot;,
+    &quot;topic&quot;: &quot;plan_status&quot;
+  },
+  {
+    &quot;coordinate_tuples&quot;: [
+      [
+        3,
+        3
+      ]
+    ],
+    &quot;message_indexes&quot;: [
+      3
+    ],
+    &quot;node_hash&quot;: 4722027507052340619,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_c&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_c&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_segment&quot;,
+    &quot;segment_hash&quot;: 7481300389678453768,
+    &quot;source_event_ids&quot;: [
+      2387217973418514035
+    ],
+    &quot;summary_text&quot;: &quot;3: Actually I now prefer Rust for backend services.&quot;,
+    &quot;text&quot;: &quot;3: Actually I now prefer Rust for backend services.&quot;,
+    &quot;topic&quot;: &quot;preference&quot;
+  },
+  {
+    &quot;coordinate_tuples&quot;: [
+      [
+        1,
+        1
+      ]
+    ],
+    &quot;message_indexes&quot;: [
+      1
+    ],
+    &quot;node_hash&quot;: 4722027507052340619,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_c&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_c&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_segment&quot;,
+    &quot;segment_hash&quot;: 4574550720328123077,
+    &quot;source_event_ids&quot;: [
+      242956858601536488
+    ],
+    &quot;summary_text&quot;: &quot;1: On April 10 I moved to Austin.&quot;,
+    &quot;text&quot;: &quot;1: On April 10 I moved to Austin.&quot;,
+    &quot;topic&quot;: &quot;location&quot;
+  }
+]
+```
+
+### context_entity
+```json
+[
+  {
+    &quot;entity_hash&quot;: 4950599206796422882,
+    &quot;entity_name&quot;: &quot;preference&quot;,
+    &quot;entity_type&quot;: &quot;preference&quot;,
+    &quot;node_hash&quot;: 2605184825361232507,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_a&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_a&quot;
+    ],
+    &quot;previous_state&quot;: &quot;&quot;,
+    &quot;record_type&quot;: &quot;context_entity&quot;,
+    &quot;source_event_ids&quot;: [
+      7570832604580476177,
+      7311142423822763961,
+      6138936802764366545,
+      5941503599347645105
+    ],
+    &quot;source_refs&quot;: [
+      &quot;7570832604580476177&quot;,
+      &quot;7311142423822763961&quot;,
+      &quot;6138936802764366545&quot;,
+      &quot;5941503599347645105&quot;
+    ],
+    &quot;state&quot;: &quot;Rust for low latency storage engines&quot;
+  },
+  {
+    &quot;entity_hash&quot;: 1095861174750854234,
+    &quot;entity_name&quot;: &quot;location&quot;,
+    &quot;entity_type&quot;: &quot;location&quot;,
+    &quot;node_hash&quot;: 2605184825361232507,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_a&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_a&quot;
+    ],
+    &quot;previous_state&quot;: &quot;&quot;,
+    &quot;record_type&quot;: &quot;context_entity&quot;,
+    &quot;source_event_ids&quot;: [
+      7570832604580476177,
+      7311142423822763961,
+      6138936802764366545,
+      5941503599347645105
+    ],
+    &quot;source_refs&quot;: [
+      &quot;7570832604580476177&quot;,
+      &quot;7311142423822763961&quot;,
+      &quot;6138936802764366545&quot;,
+      &quot;5941503599347645105&quot;
+    ],
+    &quot;state&quot;: &quot;Austin now for the new infra project&quot;
+  },
+  {
+    &quot;entity_hash&quot;: 2340647924214384547,
+    &quot;entity_name&quot;: &quot;the GPU purchase after finance reviewed the budget&quot;,
+    &quot;entity_type&quot;: &quot;approval_state&quot;,
+    &quot;node_hash&quot;: 2605184825361232507,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_a&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_a&quot;
+    ],
+    &quot;previous_state&quot;: &quot;&quot;,
+    &quot;record_type&quot;: &quot;context_entity&quot;,
+    &quot;source_event_ids&quot;: [
+      7570832604580476177,
+      7311142423822763961,
+      6138936802764366545,
+      5941503599347645105
+    ],
+    &quot;source_refs&quot;: [
+      &quot;7570832604580476177&quot;,
+      &quot;7311142423822763961&quot;,
+      &quot;6138936802764366545&quot;,
+      &quot;5941503599347645105&quot;
+    ],
+    &quot;state&quot;: &quot;the GPU purchase after finance reviewed the budget&quot;
+  },
+  {
+    &quot;entity_hash&quot;: 7468951861799448500,
+    &quot;entity_name&quot;: &quot;Priya is helping with the launch plan&quot;,
+    &quot;entity_type&quot;: &quot;relationship&quot;,
+    &quot;node_hash&quot;: 4200235650375758793,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_b&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_b&quot;
+    ],
+    &quot;previous_state&quot;: &quot;&quot;,
+    &quot;record_type&quot;: &quot;context_entity&quot;,
+    &quot;source_event_ids&quot;: [
+      920277984218572951,
+      6389707507579638321,
+      247641261204072080,
+      9124681662871465807
+    ],
+    &quot;source_refs&quot;: [
+      &quot;920277984218572951&quot;,
+      &quot;6389707507579638321&quot;,
+      &quot;247641261204072080&quot;,
+      &quot;9124681662871465807&quot;
+    ],
+    &quot;state&quot;: &quot;Priya is helping with the launch plan&quot;
+  },
+  {
+    &quot;entity_hash&quot;: 5709091068117281195,
+    &quot;entity_name&quot;: &quot;job_status&quot;,
+    &quot;entity_type&quot;: &quot;job_status&quot;,
+    &quot;node_hash&quot;: 4200235650375758793,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_b&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_b&quot;
+    ],
+    &quot;previous_state&quot;: &quot;&quot;,
+    &quot;record_type&quot;: &quot;context_entity&quot;,
+    &quot;source_event_ids&quot;: [
+      920277984218572951,
+      6389707507579638321,
+      247641261204072080,
+      9124681662871465807
+    ],
+    &quot;source_refs&quot;: [
+      &quot;920277984218572951&quot;,
+      &quot;6389707507579638321&quot;,
+      &quot;247641261204072080&quot;,
+      &quot;9124681662871465807&quot;
+    ],
+    &quot;state&quot;: &quot;role is storage infrastructure lead&quot;
+  },
+  {
+    &quot;entity_hash&quot;: 1274680141737714062,
+    &quot;entity_name&quot;: &quot;current_plan&quot;,
+    &quot;entity_type&quot;: &quot;current_plan&quot;,
+    &quot;node_hash&quot;: 4200235650375758793,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_b&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_b&quot;
+    ],
+    &quot;previous_state&quot;: &quot;&quot;,
+    &quot;record_type&quot;: &quot;context_entity&quot;,
+    &quot;source_event_ids&quot;: [
+      920277984218572951,
+      6389707507579638321,
+      247641261204072080,
+      9124681662871465807
+    ],
+    &quot;source_refs&quot;: [
+      &quot;920277984218572951&quot;,
+      &quot;6389707507579638321&quot;,
+      &quot;247641261204072080&quot;,
+      &quot;9124681662871465807&quot;
+    ],
+    &quot;state&quot;: &quot;to visit Berlin next month for the conference&quot;
+  },
+  {
+    &quot;entity_hash&quot;: 4728765086146969721,
+    &quot;entity_name&quot;: &quot;family_profile&quot;,
+    &quot;entity_type&quot;: &quot;family_profile&quot;,
+    &quot;node_hash&quot;: 4200235650375758793,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_b&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_b&quot;
+    ],
+    &quot;previous_state&quot;: &quot;&quot;,
+    &quot;record_type&quot;: &quot;context_entity&quot;,
+    &quot;source_event_ids&quot;: [
+      920277984218572951,
+      6389707507579638321,
+      247641261204072080,
+      9124681662871465807
+    ],
+    &quot;source_refs&quot;: [
+      &quot;920277984218572951&quot;,
+      &quot;6389707507579638321&quot;,
+      &quot;247641261204072080&quot;,
+      &quot;9124681662871465807&quot;
+    ],
+    &quot;state&quot;: &quot;has a dog named Mochi&quot;
+  },
+  {
+    &quot;entity_hash&quot;: 5393950348500104652,
+    &quot;entity_name&quot;: &quot;preference&quot;,
+    &quot;entity_type&quot;: &quot;preference&quot;,
+    &quot;node_hash&quot;: 4722027507052340619,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_c&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_c&quot;
+    ],
+    &quot;previous_state&quot;: &quot;&quot;,
+    &quot;record_type&quot;: &quot;context_entity&quot;,
+    &quot;source_event_ids&quot;: [
+      1973686423928385754,
+      242956858601536488,
+      266141310369888037,
+      2387217973418514035
+    ],
+    &quot;source_refs&quot;: [
+      &quot;1973686423928385754&quot;,
+      &quot;242956858601536488&quot;,
+      &quot;266141310369888037&quot;,
+      &quot;2387217973418514035&quot;
+    ],
+    &quot;state&quot;: &quot;Rust for backend services&quot;
+  },
+  {
+    &quot;entity_hash&quot;: 1127864556131246544,
+    &quot;entity_name&quot;: &quot;location&quot;,
+    &quot;entity_type&quot;: &quot;location&quot;,
+    &quot;node_hash&quot;: 4722027507052340619,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_c&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_c&quot;
+    ],
+    &quot;previous_state&quot;: &quot;&quot;,
+    &quot;record_type&quot;: &quot;context_entity&quot;,
+    &quot;source_event_ids&quot;: [
+      1973686423928385754,
+      242956858601536488,
+      266141310369888037,
+      2387217973418514035
+    ],
+    &quot;source_refs&quot;: [
+      &quot;1973686423928385754&quot;,
+      &quot;242956858601536488&quot;,
+      &quot;266141310369888037&quot;,
+      &quot;2387217973418514035&quot;
+    ],
+    &quot;state&quot;: &quot;Austin&quot;
+  }
+]
+```
+
+### context_summary
+```json
+[
+  {
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_summary&quot;,
+    &quot;summary_hash&quot;: 2962234381734522119,
+    &quot;summary_text&quot;: &quot;user: I moved to Seattle today, please remember this location.&quot;,
+    &quot;summary_type&quot;: &quot;session_l0&quot;
+  },
+  {
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_summary&quot;,
+    &quot;summary_hash&quot;: 2962234381734522119,
+    &quot;summary_text&quot;: &quot;user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: Actually I moved to Austin now for the new infra project.&quot;,
+    &quot;summary_type&quot;: &quot;session_l0&quot;
+  },
+  {
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_summary&quot;,
+    &quot;summary_hash&quot;: 2962234381734522119,
+    &quot;summary_text&quot;: &quot;user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: Actually I moved to Austin now for the new infra project. user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: Actually I moved to Austin now for the new infra project. use...&quot;,
+    &quot;summary_type&quot;: &quot;session_l0&quot;
+  },
+  {
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_summary&quot;,
+    &quot;summary_hash&quot;: 2962234381734522119,
+    &quot;summary_text&quot;: &quot;user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: Actually I moved to Austin now for the new infra project. user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: Actually I moved to Austin now for the new infra project. use...&quot;,
+    &quot;summary_type&quot;: &quot;session_l0&quot;
+  },
+  {
+    &quot;node_hash&quot;: 2605184825361232507,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_a&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_a&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_summary&quot;,
+    &quot;source_event_ids&quot;: [
+      7570832604580476177,
+      7311142423822763961,
+      6138936802764366545,
+      5941503599347645105
+    ],
+    &quot;summary_hash&quot;: 8726806307546336116,
+    &quot;summary_text&quot;: &quot;user: I moved to Seattle today, please remember this location. user: Actually I moved to Austin now for the new infra project. user: I prefer Rust for low latency storage engines. user: Alice approved the GPU purchase after finance reviewed the budget.&quot;,
+    &quot;summary_type&quot;: &quot;batch_l0&quot;
+  },
+  {
+    &quot;node_hash&quot;: 8066816596465017513,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_summary&quot;,
+    &quot;source_event_ids&quot;: [
+      7570832604580476177,
+      7311142423822763961,
+      6138936802764366545,
+      5941503599347645105
+    ],
+    &quot;summary_text&quot;: &quot;default_team :: user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: Actual...&quot;,
+    &quot;summary_type&quot;: &quot;node_l0&quot;
+  },
+  {
+    &quot;node_hash&quot;: 8066816596465017513,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_summary&quot;,
+    &quot;source_event_ids&quot;: [
+      7570832604580476177,
+      7311142423822763961,
+      6138936802764366545,
+      5941503599347645105
+    ],
+    &quot;summary_text&quot;: &quot;Context node default_team. Overview: user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: Actually I moved to Austin now for the new infra project. user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: Actually I moved to Austin now for the new infra project. use... user: I moved to Seattle today, please remember this location. user: Actually I moved to Austin now for the new infra project. user: I prefer Rust for low latency storage engines. user: Alice approved the GPU purchase after finance reviewed the budget.. This node belongs to path default_team and should be used for tree-first retrieval before leaf event/entity recall.&quot;,
+    &quot;summary_type&quot;: &quot;node_l1&quot;
+  },
+  {
+    &quot;node_hash&quot;: 1644032532652301419,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_summary&quot;,
+    &quot;source_event_ids&quot;: [
+      7570832604580476177,
+      7311142423822763961,
+      6138936802764366545,
+      5941503599347645105
+    ],
+    &quot;summary_text&quot;: &quot;default_team / default_project :: user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this loca...&quot;,
+    &quot;summary_type&quot;: &quot;node_l0&quot;
+  },
+  {
+    &quot;node_hash&quot;: 1644032532652301419,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_summary&quot;,
+    &quot;source_event_ids&quot;: [
+      7570832604580476177,
+      7311142423822763961,
+      6138936802764366545,
+      5941503599347645105
+    ],
+    &quot;summary_text&quot;: &quot;Context node default_team / default_project. Overview: user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: Actually I moved to Austin now for the new infra project. user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: I moved to Seattle today, please remember this location. user: Actually I moved to Austin now for the new infra project. use... user: I moved to Seattle today, please remember this location. user: Actually I moved to Austin now for the new infra project. user: I prefer Rust for low latency storage engines. user: Alice approved the GPU purchase after finance reviewed the budget.. This node belongs to path default_team / default_project and should be used for tree-first retrieval before leaf event/entity recall.&quot;,
+    &quot;summary_type&quot;: &quot;node_l1&quot;
+  },
+  {
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_summary&quot;,
+    &quot;source_event_ids&quot;: [
+      7570832604580476177,
+      7311142423822763961,
+      6138936802764366545,
+      5941503599347645105
+    ],
+    &quot;summary_text&quot;: &quot;default_team / default_project / message :: user: I moved to Seattle today, please remember this location. user: Actually I moved to Austin now for the new infra project. user: I prefer Rust for low latency storage en...&quot;,
+    &quot;summary_type&quot;: &quot;node_l0&quot;
+  },
+  {
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_summary&quot;,
+    &quot;source_event_ids&quot;: [
+      7570832604580476177,
+      7311142423822763961,
+      6138936802764366545,
+      5941503599347645105
+    ],
+    &quot;summary_text&quot;: &quot;Context node default_team / default_project / message. Overview: user: I moved to Seattle today, please remember this location. user: Actually I moved to Austin now for the new infra project. user: I prefer Rust for low latency storage engines. user: Alice approved the GPU purchase after finance reviewed the budget.. This node belongs to path default_team / default_project / message and should be used for tree-first retrieval before leaf event/entity recall.&quot;,
+    &quot;summary_type&quot;: &quot;node_l1&quot;
+  },
+  {
+    &quot;node_hash&quot;: 8693054764298772795,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_summary&quot;,
+    &quot;source_event_ids&quot;: [],
+    &quot;summary_text&quot;: &quot;account:acct_locomo_debug :: user: I moved to Seattle today, please remember this location. user: Actually I moved to Austin now for the new infra project. user: I prefer Rust for low latency storage engines. user: Al...&quot;,
+    &quot;summary_type&quot;: &quot;node_l0&quot;
+  },
+  {
+    &quot;node_hash&quot;: 8693054764298772795,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_summary&quot;,
+    &quot;source_event_ids&quot;: [],
+    &quot;summary_text&quot;: &quot;Context node account:acct_locomo_debug. Overview: user: I moved to Seattle today, please remember this location. user: Actually I moved to Austin now for the new infra project. user: I prefer Rust for low latency storage engines. user: Alice approved the GPU purchase after finance reviewed the budget.. This node belongs to path account:acct_locomo_debug and should be used for tree-first retrieval before leaf event/entity recall.&quot;,
+    &quot;summary_type&quot;: &quot;node_l1&quot;
+  },
+  {
+    &quot;node_hash&quot;: 5168753367304870008,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_summary&quot;,
+    &quot;source_event_ids&quot;: [],
+    &quot;summary_text&quot;: &quot;account:acct_locomo_debug / tenant:tenant_memory :: user: I moved to Seattle today, please remember this location. user: Actually I moved to Austin now for the new infra project. user: I prefer Rust for low latency st...&quot;,
+    &quot;summary_type&quot;: &quot;node_l0&quot;
+  },
+  {
+    &quot;node_hash&quot;: 5168753367304870008,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_summary&quot;,
+    &quot;source_event_ids&quot;: [],
+    &quot;summary_text&quot;: &quot;Context node account:acct_locomo_debug / tenant:tenant_memory. Overview: user: I moved to Seattle today, please remember this location. user: Actually I moved to Austin now for the new infra project. user: I prefer Rust for low latency storage engines. user: Alice approved the GPU purchase after finance reviewed the budget.. This node belongs to path account:acct_locomo_debug / tenant:tenant_memory and should be used for tree-first retrieval before leaf event/entity recall.&quot;,
+    &quot;summary_type&quot;: &quot;node_l1&quot;
+  },
+  {
+    &quot;node_hash&quot;: 2876112719397074770,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_a&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_summary&quot;,
+    &quot;source_event_ids&quot;: [],
+    &quot;summary_text&quot;: &quot;account:acct_locomo_debug / tenant:tenant_memory / principal:user:locomo_user_a :: user: I moved to Seattle today, please remember this location. user: Actually I moved to Austin now for the new infra project. user: I...&quot;,
+    &quot;summary_type&quot;: &quot;node_l0&quot;
+  },
+  {
+    &quot;node_hash&quot;: 2876112719397074770,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_a&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_summary&quot;,
+    &quot;source_event_ids&quot;: [],
+    &quot;summary_text&quot;: &quot;Context node account:acct_locomo_debug / tenant:tenant_memory / principal:user:locomo_user_a. Overview: user: I moved to Seattle today, please remember this location. user: Actually I moved to Austin now for the new infra project. user: I prefer Rust for low latency storage engines. user: Alice approved the GPU purchase after finance reviewed the budget.. This node belongs to path account:acct_locomo_debug / tenant:tenant_memory / principal:user:locomo_user_a and should be used for tree-first retrieval before leaf event/entity recall.&quot;,
+    &quot;summary_type&quot;: &quot;node_l1&quot;
+  },
+  {
+    &quot;node_hash&quot;: 3637146953197469304,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_a&quot;,
+      &quot;collection:sessions&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_summary&quot;,
+    &quot;source_event_ids&quot;: [],
+    &quot;summary_text&quot;: &quot;account:acct_locomo_debug / tenant:tenant_memory / principal:user:locomo_user_a / collection:sessions :: user: I moved to Seattle today, please remember this location. user: Actually I moved to Austin now for the new ...&quot;,
+    &quot;summary_type&quot;: &quot;node_l0&quot;
+  },
+  {
+    &quot;node_hash&quot;: 3637146953197469304,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_a&quot;,
+      &quot;collection:sessions&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_summary&quot;,
+    &quot;source_event_ids&quot;: [],
+    &quot;summary_text&quot;: &quot;Context node account:acct_locomo_debug / tenant:tenant_memory / principal:user:locomo_user_a / collection:sessions. Overview: user: I moved to Seattle today, please remember this location. user: Actually I moved to Austin now for the new infra project. user: I prefer Rust for low latency storage engines. user: Alice approved the GPU purchase after finance reviewed the budget.. This node belongs to path account:acct_locomo_debug / tenant:tenant_memory / principal:user:locomo_user_a / collection:sessions and should be used for tree-first retrieval before leaf event/entity recall.&quot;,
+    &quot;summary_type&quot;: &quot;node_l1&quot;
+  },
+  {
+    &quot;node_hash&quot;: 2605184825361232507,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_a&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_a&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_summary&quot;,
+    &quot;source_event_ids&quot;: [],
+    &quot;summary_text&quot;: &quot;account:acct_locomo_debug / tenant:tenant_memory / principal:user:locomo_user_a / collection:sessions / session:locomo_a :: account:acct_locomo_debug tenant:tenant_memory principal:user:locomo_user_a collection:sessio...&quot;,
+    &quot;summary_type&quot;: &quot;node_l0&quot;
+  }
+]
+```
+
+### context_embedding
+```json
+[
+  {
+    &quot;embedding_type&quot;: &quot;session_l0&quot;,
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_embedding&quot;,
+    &quot;vector_dim&quot;: 384,
+    &quot;vector_preview&quot;: [
+      0.110351,
+      0.033211,
+      0.034226,
+      0.029132,
+      -0.019359,
+      0.064912
+    ]
+  },
+  {
+    &quot;embedding_type&quot;: &quot;event_text&quot;,
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_embedding&quot;,
+    &quot;vector_dim&quot;: 384,
+    &quot;vector_preview&quot;: [
+      0.110351,
+      0.033211,
+      0.034226,
+      0.029132,
+      -0.019359,
+      0.064912
+    ]
+  },
+  {
+    &quot;embedding_type&quot;: &quot;session_l0&quot;,
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_embedding&quot;,
+    &quot;vector_dim&quot;: 384,
+    &quot;vector_preview&quot;: [
+      0.059204,
+      -0.007162,
+      0.025576,
+      0.018365,
+      0.003706,
+      0.031547
+    ]
+  },
+  {
+    &quot;embedding_type&quot;: &quot;event_text&quot;,
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_embedding&quot;,
+    &quot;vector_dim&quot;: 384,
+    &quot;vector_preview&quot;: [
+      -0.034345,
+      -0.057782,
+      0.106371,
+      0.042288,
+      -0.013944,
+      -0.109066
+    ]
+  },
+  {
+    &quot;embedding_type&quot;: &quot;session_l0&quot;,
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_embedding&quot;,
+    &quot;vector_dim&quot;: 384,
+    &quot;vector_preview&quot;: [
+      0.037567,
+      -0.009227,
+      0.008283,
+      0.016594,
+      0.011206,
+      0.045565
+    ]
+  },
+  {
+    &quot;embedding_type&quot;: &quot;event_text&quot;,
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_embedding&quot;,
+    &quot;vector_dim&quot;: 384,
+    &quot;vector_preview&quot;: [
+      -0.097252,
+      0.03182,
+      -0.019792,
+      0.071623,
+      0.012002,
+      -0.080943
+    ]
+  },
+  {
+    &quot;embedding_type&quot;: &quot;session_l0&quot;,
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_embedding&quot;,
+    &quot;vector_dim&quot;: 384,
+    &quot;vector_preview&quot;: [
+      0.037567,
+      -0.009227,
+      0.008283,
+      0.016594,
+      0.011206,
+      0.045565
+    ]
+  },
+  {
+    &quot;embedding_type&quot;: &quot;event_text&quot;,
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_embedding&quot;,
+    &quot;vector_dim&quot;: 384,
+    &quot;vector_preview&quot;: [
+      -0.028551,
+      0.060351,
+      -0.082751,
+      0.01934,
+      0.001187,
+      -0.0431
+    ]
+  },
+  {
+    &quot;embedding_type&quot;: &quot;entity_state&quot;,
+    &quot;node_hash&quot;: 2605184825361232507,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_a&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_a&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_embedding&quot;,
+    &quot;vector_dim&quot;: 384,
+    &quot;vector_preview&quot;: [
+      -0.085584,
+      0.033689,
+      -0.001248,
+      0.080202,
+      -0.003265,
+      -0.039969
+    ]
+  },
+  {
+    &quot;embedding_type&quot;: &quot;entity_state&quot;,
+    &quot;node_hash&quot;: 2605184825361232507,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_a&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_a&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_embedding&quot;,
+    &quot;vector_dim&quot;: 384,
+    &quot;vector_preview&quot;: [
+      -0.010166,
+      -0.024317,
+      0.068798,
+      0.049037,
+      0.003507,
+      -0.042855
+    ]
+  },
+  {
+    &quot;embedding_type&quot;: &quot;entity_state&quot;,
+    &quot;node_hash&quot;: 2605184825361232507,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_a&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_a&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_embedding&quot;,
+    &quot;vector_dim&quot;: 384,
+    &quot;vector_preview&quot;: [
+      -0.03733,
+      0.03683,
+      -0.04369,
+      0.048769,
+      0.065121,
+      -0.059191
+    ]
+  },
+  {
+    &quot;embedding_type&quot;: &quot;segment_text&quot;,
+    &quot;node_hash&quot;: 2605184825361232507,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_a&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_a&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_embedding&quot;,
+    &quot;vector_dim&quot;: 384,
+    &quot;vector_preview&quot;: [
+      -0.033274,
+      0.039726,
+      -0.081958,
+      0.021489,
+      0.057272,
+      -0.055093
+    ]
+  },
+  {
+    &quot;embedding_type&quot;: &quot;segment_text&quot;,
+    &quot;node_hash&quot;: 2605184825361232507,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_a&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_a&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_embedding&quot;,
+    &quot;vector_dim&quot;: 384,
+    &quot;vector_preview&quot;: [
+      0.060018,
+      -0.021845,
+      0.054004,
+      0.043016,
+      0.013539,
+      0.005257
+    ]
+  },
+  {
+    &quot;embedding_type&quot;: &quot;segment_text&quot;,
+    &quot;node_hash&quot;: 2605184825361232507,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_a&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_a&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_embedding&quot;,
+    &quot;vector_dim&quot;: 384,
+    &quot;vector_preview&quot;: [
+      -0.096845,
+      0.033835,
+      -0.013383,
+      0.062101,
+      0.026017,
+      -0.039021
+    ]
+  },
+  {
+    &quot;embedding_type&quot;: &quot;batch_l0&quot;,
+    &quot;node_hash&quot;: 2605184825361232507,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_a&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_a&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_embedding&quot;,
+    &quot;vector_dim&quot;: 384,
+    &quot;vector_preview&quot;: [
+      0.043868,
+      0.000451,
+      -0.050493,
+      0.06084,
+      -0.010749,
+      -0.073809
+    ]
+  },
+  {
+    &quot;embedding_type&quot;: &quot;node_l0&quot;,
+    &quot;node_hash&quot;: 8066816596465017513,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_embedding&quot;,
+    &quot;vector_dim&quot;: 384,
+    &quot;vector_preview&quot;: [
+      0.067036,
+      -0.010558,
+      -0.037046,
+      -0.001407,
+      0.005859,
+      0.098174
+    ]
+  },
+  {
+    &quot;embedding_type&quot;: &quot;node_l1&quot;,
+    &quot;node_hash&quot;: 8066816596465017513,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_embedding&quot;,
+    &quot;vector_dim&quot;: 384,
+    &quot;vector_preview&quot;: [
+      0.020495,
+      -0.012829,
+      -0.017933,
+      0.075714,
+      0.116219,
+      0.018423
+    ]
+  },
+  {
+    &quot;embedding_type&quot;: &quot;node_l0&quot;,
+    &quot;node_hash&quot;: 1644032532652301419,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_embedding&quot;,
+    &quot;vector_dim&quot;: 384,
+    &quot;vector_preview&quot;: [
+      0.062221,
+      0.004917,
+      -0.030778,
+      -0.018147,
+      0.016155,
+      0.087011
+    ]
+  },
+  {
+    &quot;embedding_type&quot;: &quot;node_l1&quot;,
+    &quot;node_hash&quot;: 1644032532652301419,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_embedding&quot;,
+    &quot;vector_dim&quot;: 384,
+    &quot;vector_preview&quot;: [
+      0.026684,
+      -0.012139,
+      -0.026245,
+      0.05878,
+      0.100001,
+      0.003813
+    ]
+  },
+  {
+    &quot;embedding_type&quot;: &quot;node_l0&quot;,
+    &quot;node_hash&quot;: 8055349922769951567,
+    &quot;node_path&quot;: [
+      &quot;default_team&quot;,
+      &quot;default_project&quot;,
+      &quot;message&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_embedding&quot;,
+    &quot;vector_dim&quot;: 384,
+    &quot;vector_preview&quot;: [
+      0.005397,
+      -0.014132,
+      -0.000627,
+      0.025267,
+      0.049371,
+      -0.047566
+    ]
+  }
+]
+```
+
+### context_index
+```json
+[
+  {
+    &quot;index_name&quot;: &quot;event_type:confirmation&quot;,
+    &quot;node_hash&quot;: 2605184825361232507,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_a&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_a&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_index&quot;
+  },
+  {
+    &quot;index_name&quot;: &quot;classification:batch_memory&quot;,
+    &quot;node_hash&quot;: 2605184825361232507,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_a&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_a&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_index&quot;
+  },
+  {
+    &quot;index_name&quot;: &quot;status:observed&quot;,
+    &quot;node_hash&quot;: 2605184825361232507,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_a&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_a&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_index&quot;
+  },
+  {
+    &quot;index_name&quot;: &quot;source_type:message&quot;,
+    &quot;node_hash&quot;: 2605184825361232507,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_a&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_a&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_index&quot;
+  },
+  {
+    &quot;index_name&quot;: &quot;entity_type:preference&quot;,
+    &quot;node_hash&quot;: 2605184825361232507,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_a&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_a&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_index&quot;
+  },
+  {
+    &quot;index_name&quot;: &quot;entity_type:location&quot;,
+    &quot;node_hash&quot;: 2605184825361232507,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_a&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_a&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_index&quot;
+  },
+  {
+    &quot;index_name&quot;: &quot;entity_type:approval_state&quot;,
+    &quot;node_hash&quot;: 2605184825361232507,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_a&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_a&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_index&quot;
+  },
+  {
+    &quot;index_name&quot;: &quot;segment_topic:approval_budget&quot;,
+    &quot;node_hash&quot;: 2605184825361232507,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_a&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_a&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_index&quot;
+  },
+  {
+    &quot;index_name&quot;: &quot;event_type:plan_update&quot;,
+    &quot;node_hash&quot;: 4200235650375758793,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_b&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_b&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_index&quot;
+  },
+  {
+    &quot;index_name&quot;: &quot;classification:batch_memory&quot;,
+    &quot;node_hash&quot;: 4200235650375758793,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_b&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_b&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_index&quot;
+  },
+  {
+    &quot;index_name&quot;: &quot;status:observed&quot;,
+    &quot;node_hash&quot;: 4200235650375758793,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_b&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_b&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_index&quot;
+  },
+  {
+    &quot;index_name&quot;: &quot;source_type:message&quot;,
+    &quot;node_hash&quot;: 4200235650375758793,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_b&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_b&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_index&quot;
+  },
+  {
+    &quot;index_name&quot;: &quot;entity_type:relationship&quot;,
+    &quot;node_hash&quot;: 4200235650375758793,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_b&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_b&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_index&quot;
+  },
+  {
+    &quot;index_name&quot;: &quot;entity_type:job_status&quot;,
+    &quot;node_hash&quot;: 4200235650375758793,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_b&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_b&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_index&quot;
+  },
+  {
+    &quot;index_name&quot;: &quot;entity_type:current_plan&quot;,
+    &quot;node_hash&quot;: 4200235650375758793,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_b&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_b&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_index&quot;
+  },
+  {
+    &quot;index_name&quot;: &quot;entity_type:family_profile&quot;,
+    &quot;node_hash&quot;: 4200235650375758793,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_b&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_b&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_index&quot;
+  },
+  {
+    &quot;index_name&quot;: &quot;event_type:preference_update&quot;,
+    &quot;node_hash&quot;: 4722027507052340619,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_c&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_c&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_index&quot;
+  },
+  {
+    &quot;index_name&quot;: &quot;classification:batch_memory&quot;,
+    &quot;node_hash&quot;: 4722027507052340619,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_c&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_c&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_index&quot;
+  },
+  {
+    &quot;index_name&quot;: &quot;status:observed&quot;,
+    &quot;node_hash&quot;: 4722027507052340619,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_c&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_c&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_index&quot;
+  },
+  {
+    &quot;index_name&quot;: &quot;source_type:message&quot;,
+    &quot;node_hash&quot;: 4722027507052340619,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_c&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_c&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_index&quot;
+  },
+  {
+    &quot;index_name&quot;: &quot;entity_type:preference&quot;,
+    &quot;node_hash&quot;: 4722027507052340619,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_c&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_c&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_index&quot;
+  },
+  {
+    &quot;index_name&quot;: &quot;entity_type:location&quot;,
+    &quot;node_hash&quot;: 4722027507052340619,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_c&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_c&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_index&quot;
+  },
+  {
+    &quot;index_name&quot;: &quot;segment_topic:preference&quot;,
+    &quot;node_hash&quot;: 4722027507052340619,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_c&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_c&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_index&quot;
+  },
+  {
+    &quot;index_name&quot;: &quot;segment_topic:location&quot;,
+    &quot;node_hash&quot;: 4722027507052340619,
+    &quot;node_path&quot;: [
+      &quot;account:acct_locomo_debug&quot;,
+      &quot;tenant:tenant_memory&quot;,
+      &quot;principal:user:locomo_user_c&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:locomo_c&quot;
+    ],
+    &quot;record_type&quot;: &quot;context_index&quot;
+  }
+]
+```
+
+### context_pack_audit
+```json
+[
+  {
+    &quot;record_type&quot;: &quot;context_pack_audit&quot;,
+    &quot;summary_text&quot;: &quot;location: location = Austin now for the new infra project&quot;
+  },
+  {
+    &quot;record_type&quot;: &quot;context_pack_audit&quot;,
+    &quot;summary_text&quot;: &quot;preference: preference = Rust for low latency storage engines user: I prefer Rust for low latency storage engines.&quot;
+  },
+  {
+    &quot;record_type&quot;: &quot;context_pack_audit&quot;,
+    &quot;summary_text&quot;: &quot;approval_state: the GPU purchase after finance reviewed the budget = the GPU purchase after finance reviewed the budget user: Alice approved the GPU purchase after finance reviewed the budget. 3: Alice approved the GPU purchase after finance reviewed the budget.&quot;
+  },
+  {
+    &quot;record_type&quot;: &quot;context_pack_audit&quot;,
+    &quot;summary_text&quot;: &quot;relationship: Priya is helping with the launch plan = Priya is helping with the launch plan family_profile: family_profile = has a dog named Mochi&quot;
+  },
+  {
+    &quot;record_type&quot;: &quot;context_pack_audit&quot;,
+    &quot;summary_text&quot;: &quot;family_profile: family_profile = has a dog named Mochi relationship: Priya is helping with the launch plan = Priya is helping with the launch plan&quot;
+  },
+  {
+    &quot;record_type&quot;: &quot;context_pack_audit&quot;,
+    &quot;summary_text&quot;: &quot;job_status: job_status = role is storage infrastructure lead user: My job role is storage infrastructure lead.&quot;
+  },
+  {
+    &quot;record_type&quot;: &quot;context_pack_audit&quot;,
+    &quot;summary_text&quot;: &quot;location: location = Austin&quot;
+  },
+  {
+    &quot;record_type&quot;: &quot;context_pack_audit&quot;,
+    &quot;summary_text&quot;: &quot;preference: preference = Rust for backend services user: Actually I now prefer Rust for backend services. user: I liked Python for dashboards before.&quot;
+  },
+  {
+    &quot;record_type&quot;: &quot;context_pack_audit&quot;,
+    &quot;summary_text&quot;: &quot;user: On April 10 I moved to Austin. user: On March 2 I lived in Seattle. user: I liked Python for dashboards before. location: location = Austin user: Actually I now prefer Rust for backend services.&quot;
+  }
+]
+```
+</pre>

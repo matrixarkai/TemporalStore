@@ -33,6 +33,7 @@ DEFAULT_TIME_DECAY_HALFLIFE_MS = 7 * 24 * 60 * 60 * 1000
 DEFAULT_TIME_WEIGHT = 0.18
 DEFAULT_BUSINESS_WEIGHT = 0.22
 _OSS_SEGMENT_MODEL_CACHE: dict[str, Any] = {}
+_OSS_EMBEDDING_MODEL_CACHE: dict[str, Any] = {}
 
 DEFAULT_BUSINESS_TYPE_WEIGHTS: Json = {
     "confirmation": 1.0,
@@ -1250,6 +1251,9 @@ def clip_context_text(text: str, *, max_chars: int = MAX_CONTEXT_REF_CHARS) -> s
 
 
 def embedding_for_text(text: str) -> list[float]:
+    provider = os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic").strip().lower()
+    if provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:
+        return oss_embedding_for_text(text)
     vector = [0.0] * EMBEDDING_DIM
     for token in tokens(text):
         digest = hashlib.sha256(token.encode("utf-8")).digest()
@@ -1260,6 +1264,44 @@ def embedding_for_text(text: str) -> list[float]:
     if norm == 0:
         return vector
     return [round(value / norm, 6) for value in vector]
+
+
+def embedding_model_name() -> str:
+    provider = os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic").strip().lower()
+    if provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:
+        return os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH") or os.environ.get(
+            "MATRIXARK_EMBEDDING_MODEL",
+            "sentence-transformers/all-MiniLM-L6-v2",
+        )
+    return "matrixark-local-token-hash-v1"
+
+
+def oss_embedding_for_text(text: str) -> list[float]:
+    model_ref = os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH") or os.environ.get(
+        "MATRIXARK_EMBEDDING_MODEL",
+        "sentence-transformers/all-MiniLM-L6-v2",
+    )
+    try:
+        encoder = _OSS_EMBEDDING_MODEL_CACHE.get(model_ref)
+        if encoder is None:
+            from sentence_transformers import SentenceTransformer  # type: ignore
+
+            encoder = SentenceTransformer(model_ref)
+            _OSS_EMBEDDING_MODEL_CACHE[model_ref] = encoder
+        vector = encoder.encode([text], normalize_embeddings=True, show_progress_bar=False)[0]
+        return [round(float(value), 6) for value in vector]
+    except Exception as exc:  # pragma: no cover - depends on optional local model packages.
+        if os.environ.get("MATRIXARK_REQUIRE_OSS_EMBEDDINGS", "").strip().lower() in {"1", "true", "yes"}:
+            raise MatrixArkError(f"OSS embedding model is required but unavailable: {model_ref}: {exc}") from exc
+        previous = os.environ.get("MATRIXARK_EMBEDDING_PROVIDER")
+        try:
+            os.environ["MATRIXARK_EMBEDDING_PROVIDER"] = "deterministic"
+            return embedding_for_text(text)
+        finally:
+            if previous is None:
+                os.environ.pop("MATRIXARK_EMBEDDING_PROVIDER", None)
+            else:
+                os.environ["MATRIXARK_EMBEDDING_PROVIDER"] = previous
 
 
 def cosine(left: list[float], right: list[float]) -> float:
@@ -3248,7 +3290,7 @@ class MatrixArkLocalAdapter:
             "layer_scores": layer_scores[:24],
             "question_type": question_type,
             "packing_policy": f"question_type_aware:{question_type}",
-            "query_embedding_model": "matrixark-local-token-hash-v1",
+            "query_embedding_model": embedding_model_name(),
             "recall_policy": {
                 "tree_traversal": {
                     "enabled": True,
