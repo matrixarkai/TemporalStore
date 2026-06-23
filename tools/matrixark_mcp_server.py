@@ -2370,17 +2370,9 @@ class MatrixArkLocalAdapter:
         )
 
     def default_session_node_path(self, scope: Json) -> list[str]:
-        account_id = str(scope.get("account_id") or "acct_dev")
-        tenant_id = str(scope.get("tenant_id") or "tenant_dev")
         user_id = str(scope.get("user_id") or "unknown_user")
         session_id = str(scope.get("session_id") or user_id or "default_session")
-        return [
-            f"account:{account_id}",
-            f"tenant:{tenant_id}",
-            f"principal:user:{user_id}",
-            "collection:sessions",
-            f"session:{session_id}",
-        ]
+        return [f"user:{user_id}", f"session:{session_id}"]
 
     def ensure_context_node_path(self, *, node_path: list[str], scope: Json, updated_at_ms: int) -> Json:
         prefixes = node_prefixes(node_path)
@@ -2854,11 +2846,7 @@ class MatrixArkLocalAdapter:
         event_id_hash = stable_hash(
             f"{envelope['kind']}:{text}:{envelope['scope']}:{envelope['ingestion_time_ms']}"
         )
-        node_hint = envelope["metadata"].get("node_path") or [
-            envelope["scope"].get("team", "default_team"),
-            envelope["scope"].get("project", "default_project"),
-            envelope["kind"],
-        ]
+        node_hint = envelope["metadata"].get("node_path") or self.default_session_node_path(envelope["scope"])
         node_path = normalized_node_path(envelope, node_hint)
         node_hash = stable_hash("/".join(node_path))
         node_materialization = self.ensure_context_node_path(
@@ -3023,11 +3011,7 @@ class MatrixArkLocalAdapter:
         batch_id_hash = stable_hash(
             f"batch:{batch_text}:{envelope['scope']}:{envelope['ingestion_time_ms']}"
         )
-        node_hint = envelope["metadata"].get("node_path") or [
-            envelope["scope"].get("team", "default_team"),
-            envelope["scope"].get("project", "default_project"),
-            "session_batch",
-        ]
+        node_hint = envelope["metadata"].get("node_path") or self.default_session_node_path(envelope["scope"])
         node_path = normalized_node_path(envelope, node_hint)
         node_hash = stable_hash("/".join(node_path))
         node_materialization = self.ensure_context_node_path(
