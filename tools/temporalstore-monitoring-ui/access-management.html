@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MatrixArk Access Management Console</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">MatrixArk</p>
+          <h1>Access Management</h1>
+        </div>
+        <div class="toolbar">
+          <a class="button-link" href="./index.html">Operations</a>
+          <a class="button-link" href="./matrixark-api-reference.html">API Reference</a>
+          <a class="button-link" href="./agent-context-envelope.html">Agent Envelope</a>
+        </div>
+      </header>
+
+      <section class="summary-grid" aria-label="Access summary">
+        <article><span>Boundary</span><strong>Account</strong><small>billing and governance</small></article>
+        <article><span>Workspace</span><strong>Tenant</strong><small>environment or department</small></article>
+        <article><span>Principal</span><strong>User</strong><small>human, agent, or SSO id</small></article>
+        <article><span>Credential</span><strong>API key</strong><small>scoped, expiring, revocable</small></article>
+      </section>
+
+      <section class="panel access-console-panel">
+        <div class="panel-head">
+          <div>
+            <h2>Apply For API Key</h2>
+            <p>Use this payload with matrixark_admin_create_api_key. The raw key is returned once; inventories are redacted.</p>
+          </div>
+        </div>
+        <div class="access-console-grid">
+          <div class="console-form-grid">
+            <label>Account ID<input id="console-account" value="acct_acme" /></label>
+            <label>Tenant ID<input id="console-tenant" value="tenant_prod" /></label>
+            <label>User ID<input id="console-user" value="alice" /></label>
+            <label>Session ID<input id="console-session" value="codex-thread-123" /></label>
+            <label>Role<select id="console-role"><option>agent_service</option><option>mcp_server</option><option>tenant_admin</option><option>batch_ingestor</option></select></label>
+          </div>
+          <pre id="console-key-payload"></pre>
+        </div>
+      </section>
+
+      <section class="layout">
+        <article class="panel panel-wide">
+          <div class="panel-head"><div><h2>Admin Tools</h2><p>MCP operations used by the MatrixArk access layer.</p></div></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Tool</th><th>Purpose</th><th>Required scope</th><th>Safety rule</th></tr></thead>
+              <tbody>
+                <tr><td>matrixark_admin_create_account</td><td>Create account and tenant</td><td>admin:account</td><td>bootstrap only or tenant admin boundary</td></tr>
+                <tr><td>matrixark_admin_update_account</td><td>Enable/disable account or tenant</td><td>admin:account</td><td>context APIs blocked when disabled</td></tr>
+                <tr><td>matrixark_admin_create_user</td><td>Register user</td><td>admin:user</td><td>hashes user under tenant</td></tr>
+                <tr><td>matrixark_admin_update_user</td><td>Enable/disable user</td><td>admin:user</td><td>disabled users cannot use context APIs</td></tr>
+                <tr><td>matrixark_admin_create_api_key</td><td>Issue scoped key</td><td>admin:api_key</td><td>raw key returned once</td></tr>
+                <tr><td>matrixark_admin_list_api_keys</td><td>Inventory keys</td><td>admin:api_key</td><td>never returns raw key or hash</td></tr>
+                <tr><td>matrixark_admin_audit</td><td>Review usage and admin logs</td><td>admin:audit</td><td>account and tenant filtered</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+        <article class="panel">
+          <div class="panel-head compact"><h2>Access Policy</h2></div>
+          <div class="metric-list">
+            <div><strong>Account disabled</strong><span>all API-key context calls blocked</span></div>
+            <div><strong>Tenant disabled</strong><span>only that workspace is blocked</span></div>
+            <div><strong>User disabled</strong><span>user-scoped calls are blocked</span></div>
+            <div><strong>Key revoked</strong><span>newest append-only key state wins</span></div>
+            <div><strong>Key expired</strong><span>auth fails before storage is touched</span></div>
+          </div>
+        </article>
+      </section>
+    </main>
+    <script>
+      const payload = document.querySelector('#console-key-payload');
+      const controls = ['console-account', 'console-tenant', 'console-user', 'console-session', 'console-role'].map((id) => document.getElementById(id));
+      const render = () => {
+        payload.textContent = JSON.stringify({
+          account_id: controls[0].value,
+          tenant_id: controls[1].value,
+          role: controls[4].value,
+          scopes: ['context:ingest', 'context:retrieve', 'context:feedback'],
+          allowed_user_ids: [controls[2].value].filter(Boolean),
+          allowed_session_ids: [controls[3].value].filter(Boolean),
+          expires_at_ms: 4102444800000
+        }, null, 2);
+      };
+      controls.forEach((control) => control.addEventListener('input', render));
+      render();
+    </script>
+  </body>
+</html>

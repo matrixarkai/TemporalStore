@@ -1276,3 +1276,167 @@ th {
 }
 
 
+
+
+.access-hero {
+  min-height: 560px;
+  background:
+    linear-gradient(90deg, rgba(13, 19, 31, 0.98), rgba(13, 19, 31, 0.78)),
+    radial-gradient(circle at 78% 24%, rgba(15, 159, 143, 0.34), transparent 32%),
+    #0d131f;
+}
+
+.hero-copy.narrow {
+  max-width: 900px;
+}
+
+.access-flow-grid,
+.access-admin-grid,
+.access-note-grid {
+  max-width: 1180px;
+  margin: 0 auto;
+  display: grid;
+  gap: 16px;
+}
+
+.access-flow-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.access-admin-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.access-flow-grid article,
+.access-admin-grid article,
+.access-preview,
+.access-form {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--white);
+}
+
+.access-flow-grid article,
+.access-admin-grid article {
+  min-height: 220px;
+  padding: 24px;
+}
+
+.access-flow-grid code {
+  display: inline-block;
+  margin-top: 14px;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: #17324d;
+  background: #f6f9fc;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.key-request-layout {
+  max-width: 1180px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: 18px;
+}
+
+.access-form,
+.access-preview {
+  padding: 24px;
+}
+
+.access-form {
+  display: grid;
+  gap: 14px;
+}
+
+.access-form label,
+.access-form fieldset {
+  display: grid;
+  gap: 7px;
+  color: #263449;
+  font-size: 13px;
+  font-weight: 820;
+}
+
+.access-form input,
+.access-form select {
+  width: 100%;
+  min-height: 42px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--ink);
+  background: #f8fafc;
+  font: inherit;
+}
+
+.access-form fieldset {
+  margin: 4px 0 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+
+.access-form fieldset label {
+  display: flex;
+  grid-template-columns: none;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-weight: 720;
+}
+
+.access-form fieldset input {
+  width: 16px;
+  min-height: 16px;
+}
+
+.access-preview pre {
+  min-height: 300px;
+  overflow: auto;
+  margin: 14px 0 16px;
+  padding: 16px;
+  border-radius: 8px;
+  background: #101828;
+  color: #f8fafc;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.access-note-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.access-note-grid div {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #f8fafc;
+}
+
+.access-note-grid strong,
+.access-note-grid span {
+  display: block;
+}
+
+.access-note-grid span {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.soft-band {
+  background: #f3f7fb;
+}
+
+@media (max-width: 1040px) {
+  .access-flow-grid,
+  .access-admin-grid,
+  .access-note-grid,
+  .key-request-layout {
+    grid-template-columns: 1fr;
+  }
+}

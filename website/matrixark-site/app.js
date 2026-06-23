@@ -43,3 +43,26 @@ document.addEventListener("keydown", (event) => {
     menu.querySelector(".nav-product-trigger")?.setAttribute("aria-expanded", "false");
   });
 });
+
+
+const apiKeyPayload = document.querySelector("#api-key-payload");
+const apiKeyForm = document.querySelector(".access-form");
+
+const updateApiKeyPayload = () => {
+  if (!apiKeyPayload || !apiKeyForm) return;
+  const checkedScopes = Array.from(apiKeyForm.querySelectorAll('input[type="checkbox"]:checked')).map((item) => item.value);
+  const payload = {
+    account_id: document.querySelector("#request-account")?.value || "acct_acme",
+    tenant_id: document.querySelector("#request-tenant")?.value || "tenant_prod",
+    role: document.querySelector("#request-role")?.value || "agent_service",
+    display_name: `${document.querySelector("#request-role")?.value || "agent_service"} key`,
+    scopes: checkedScopes,
+    allowed_user_ids: [document.querySelector("#request-user")?.value || "alice"].filter(Boolean),
+    allowed_session_ids: [document.querySelector("#request-session")?.value || ""].filter(Boolean),
+    expires_at_ms: 4102444800000,
+  };
+  apiKeyPayload.textContent = JSON.stringify(payload, null, 2);
+};
+
+apiKeyForm?.addEventListener("input", updateApiKeyPayload);
+updateApiKeyPayload();
