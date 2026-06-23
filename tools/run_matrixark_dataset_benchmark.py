@@ -53,13 +53,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data-path", required=True)
     parser.add_argument("--artifact-dir", required=True)
     parser.add_argument("--artifact-prefix", required=True)
-    parser.add_argument("--backend", choices=["temporalstore-direct"], default="temporalstore-direct")
+    parser.add_argument("--backend", choices=["temporalstore-direct", "temporalstore-rust"], default="temporalstore-direct")
     parser.add_argument("--metaserver", default="127.0.0.1:18000")
     parser.add_argument("--namespace", default="deploy_ns")
     parser.add_argument("--table", default="deploy_table")
     parser.add_argument(
         "--temporalstore-lib",
         default=str(root / "output-ubuntu22" / "release" / "sdk" / "lib" / "libbcache2.so"),
+    )
+    parser.add_argument(
+        "--rust-cli",
+        default=os.environ.get(
+            "MATRIXARK_TEMPORALSTORE_RUST_CLI",
+            str(root / "sdk" / "rust" / "temporalstore" / "target" / "release" / "matrixark_record_log"),
+        ),
     )
     parser.add_argument("--storage-prefix", default="")
     parser.add_argument("--request-timeout-ms", type=int, default=60000)
@@ -674,7 +681,7 @@ def build_report(
             "sessions": sessions_ingested,
         },
         "retrieval_config": {
-            "temporalstore_backend": "temporalstore-direct",
+            "temporalstore_backend": args.backend,
             "metaserver": args.metaserver,
             "namespace": args.namespace,
             "table": args.table,
@@ -782,9 +789,9 @@ def write_artifacts(
 def report_markdown(args: argparse.Namespace, report: Json) -> str:
     return "\n".join(
         [
-            f"# MatrixArk {args.dataset} C++ TemporalStore Benchmark",
+            f"# MatrixArk {args.dataset} TemporalStore Benchmark",
             "",
-            f"- backend: `temporalstore-direct`",
+            f"- backend: `{args.backend}`",
             f"- metaserver: `{args.metaserver}`",
             f"- storage prefix: `{args.storage_prefix}`",
             f"- questions: `{report['dataset']['questions_run']}`",
@@ -828,29 +835,34 @@ def main() -> int:
         return 0
     env = os.environ.copy()
     env["TEMPORALSTORE_LIB"] = args.temporalstore_lib
+    sdk_lib_dir = str(Path(args.temporalstore_lib).resolve().parent)
+    env["LD_LIBRARY_PATH"] = sdk_lib_dir + os.pathsep + env.get("LD_LIBRARY_PATH", "")
     env["PYTHONPATH"] = str(root / "sdk" / "python") + os.pathsep + env.get("PYTHONPATH", "")
+    command = [
+        sys.executable,
+        str(root / "tools" / "matrixark_mcp_server.py"),
+        "--line-json",
+        "--backend",
+        args.backend,
+        "--metaserver",
+        args.metaserver,
+        "--namespace",
+        args.namespace,
+        "--table",
+        args.table,
+        "--storage-prefix",
+        args.storage_prefix,
+        "--request-timeout-ms",
+        str(args.request_timeout_ms),
+        "--io-timeout-ms",
+        str(args.io_timeout_ms),
+    ]
+    if args.backend == "temporalstore-direct":
+        command.extend(["--temporalstore-lib", args.temporalstore_lib])
+    else:
+        command.extend(["--rust-cli", args.rust_cli])
     proc = subprocess.Popen(
-        [
-            sys.executable,
-            str(root / "tools" / "matrixark_mcp_server.py"),
-            "--line-json",
-            "--backend",
-            "temporalstore-direct",
-            "--metaserver",
-            args.metaserver,
-            "--namespace",
-            args.namespace,
-            "--table",
-            args.table,
-            "--temporalstore-lib",
-            args.temporalstore_lib,
-            "--storage-prefix",
-            args.storage_prefix,
-            "--request-timeout-ms",
-            str(args.request_timeout_ms),
-            "--io-timeout-ms",
-            str(args.io_timeout_ms),
-        ],
+        command,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

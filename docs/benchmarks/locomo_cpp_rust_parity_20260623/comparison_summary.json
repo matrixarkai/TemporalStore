@@ -1,0 +1,42 @@
+{
+  "cpp": {
+    "backend": "cpp",
+    "context_embedding": 54,
+    "context_entity": 9,
+    "context_event": 12,
+    "context_index": 24,
+    "context_node": 6,
+    "context_segment": 6,
+    "context_summary": 27,
+    "elapsed_sec": 2.44,
+    "queries": 9,
+    "records_total": 192,
+    "selected_nodes_by_query": [2, 2, 2, 2, 2, 2, 2, 2, 2],
+    "selected_refs_total": 45,
+    "tokens_by_query": [51, 50, 70, 59, 59, 44, 35, 38, 35],
+    "tokens_total": 441
+  },
+  "parity": {
+    "model_counts_equal": true,
+    "query_token_counts_equal": true,
+    "selected_ref_counts_equal": true,
+    "tree_traversal_no_flat_fallback": true
+  },
+  "rust": {
+    "backend": "rust",
+    "context_embedding": 54,
+    "context_entity": 9,
+    "context_event": 12,
+    "context_index": 24,
+    "context_node": 6,
+    "context_segment": 6,
+    "context_summary": 27,
+    "elapsed_sec": 2.16,
+    "queries": 9,
+    "records_total": 192,
+    "selected_nodes_by_query": [2, 2, 2, 2, 2, 2, 2, 2, 2],
+    "selected_refs_total": 45,
+    "tokens_by_query": [51, 50, 70, 59, 59, 44, 35, 38, 35],
+    "tokens_total": 441
+  }
+}
