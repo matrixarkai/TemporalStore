@@ -48,6 +48,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--io-timeout-ms", type=int, default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS", "60000")))
     parser.add_argument("--session-commit-threshold", type=int, default=int(os.environ.get("MATRIXARK_SESSION_COMMIT_THRESHOLD", "20")))
     parser.add_argument("--idle-commit-timeout-ms", type=int, default=int(os.environ.get("MATRIXARK_IDLE_COMMIT_TIMEOUT_MS", "0")))
+    parser.add_argument("--understanding-provider", default=os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER", "rules"))
+    parser.add_argument("--segment-provider", default=os.environ.get("MATRIXARK_SEGMENT_PROVIDER", "deterministic"))
     parser.add_argument("--repo-root", type=Path, default=root)
     return parser.parse_args()
 
@@ -214,8 +216,8 @@ def main() -> int:
         ingest_args: Json = {
             **common,
             "messages": [{"role": role_for_event(args.event), "content": text}],
-            "understanding_provider": "oss_encoder",
-            "segment_provider": "oss_encoder",
+            "understanding_provider": args.understanding_provider,
+            "segment_provider": args.segment_provider,
             "metadata": {
                 "source": "codex_hook",
                 "codex_event": args.event,
@@ -251,8 +253,8 @@ def main() -> int:
                 "threshold_messages": args.session_commit_threshold,
                 "force": commit_reason != "idle_timeout",
                 "commit_reason": commit_reason,
-                "understanding_provider": "oss_encoder",
-                "segment_provider": "oss_encoder",
+                "understanding_provider": args.understanding_provider,
+                "segment_provider": args.segment_provider,
                 **({"idle_timeout_ms": args.idle_commit_timeout_ms} if commit_reason == "idle_timeout" else {}),
                 "agent_hook": {
                     "source": "codex",
