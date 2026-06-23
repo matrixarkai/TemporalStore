@@ -271,6 +271,18 @@ Enterprise apps can keep sending their own user ids first. SSO mapping lets
 larger deployments later connect Okta, Google Workspace, or Azure AD without
 changing TemporalStore data models.
 
+## Registration And Console Pages
+
+The public website includes `website/matrixark-site/registration.html` for
+account registration and API-key request planning. The local operations UI
+includes `tools/temporalstore-monitoring-ui/access-management.html` for admins
+to see the account, tenant, user, session, API-key, and audit tool map.
+
+Both pages are intentionally static-friendly: they generate request payloads and
+explain governance controls without requiring a live billing backend. A hosted
+MatrixArk Cloud control plane can wire the same fields directly into the MCP
+admin tools.
+
 ## Recommended Enterprise Setup
 
 1. Create one account per customer or business unit.

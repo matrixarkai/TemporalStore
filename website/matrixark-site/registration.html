@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Register for MatrixArk | API keys and access management</title>
+    <meta
+      name="description"
+      content="Register a MatrixArk account, request API keys, and understand account, user, session, tenant, and access-management controls for LLM context infrastructure."
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="./index.html" aria-label="MatrixArk home">
+        <span class="brand-mark" aria-hidden="true">M</span>
+        <span>MatrixArk</span>
+      </a>
+      <nav class="nav" aria-label="Registration navigation">
+        <div class="nav-product-menu">
+          <button class="nav-product-trigger" type="button" aria-expanded="false">Products</button>
+          <div class="nav-product-panel" aria-label="Product pages">
+            <a href="./temporalstore.html"><strong>TemporalStore</strong><span>Time-aware LLM context and temporal serving</span></a>
+            <a href="./matrixdb.html"><strong>MatrixDB</strong><span>Optional serving and offline analysis complement</span></a>
+            <a href="./matrixkv.html"><strong>MatrixKV</strong><span>Optional transactional metadata complement</span></a>
+          </div>
+        </div>
+        <a href="./index.html#architecture">Platform</a>
+        <a href="./blogs.html">Blogs</a>
+        <a href="./registration.html">Register</a>
+      </nav>
+      <a class="header-action" href="#api-key-request">Apply for API key</a>
+    </header>
+
+    <main>
+      <section class="product-hero access-hero">
+        <div class="hero-copy narrow">
+          <p class="eyebrow">Access Management</p>
+          <h1>Register an account, request API keys, and control LLM context access.</h1>
+          <p class="hero-subcopy">
+            MatrixArk treats account, tenant, user, session, and API key as first-class boundaries. Start with a cloud account or local deployment, then issue scoped keys for Codex/Cursor hooks, MCP servers, batch ingestion, and admin automation.
+          </p>
+          <div class="hero-actions">
+            <a class="button primary" href="#registration-flow">Registration flow</a>
+            <a class="button secondary" href="#api-key-request">API key request</a>
+          </div>
+        </div>
+      </section>
+
+      <section id="registration-flow" class="section access-section">
+        <div class="section-heading">
+          <p class="eyebrow">Registration</p>
+          <h2>Simple for users, strict for production.</h2>
+          <p>
+            End users can subscribe to MatrixArk Cloud. Enterprise teams can run local or on-prem deployments for free/open-source TemporalStore and use MatrixArk Cloud services later. The identity model stays the same in both cases.
+          </p>
+        </div>
+        <div class="access-flow-grid">
+          <article>
+            <span class="number">01</span>
+            <h3>Create account</h3>
+            <p>Account is the commercial and governance boundary. Use one account per company, team, or controlled business unit.</p>
+            <code>account_id = acct_acme</code>
+          </article>
+          <article>
+            <span class="number">02</span>
+            <h3>Create tenant</h3>
+            <p>Tenant is the workspace boundary. Use tenants for prod, staging, departments, regulated data, or customer environments.</p>
+            <code>tenant_id = tenant_prod</code>
+          </article>
+          <article>
+            <span class="number">03</span>
+            <h3>Register users</h3>
+            <p>User ids come from the app, hook, or SSO provider. MatrixArk maps them to stable hashes before context is stored.</p>
+            <code>user_id = alice</code>
+          </article>
+          <article>
+            <span class="number">04</span>
+            <h3>Issue keys</h3>
+            <p>Issue different keys for hooks, MCP tools, batch ingestion, feedback, and admin automation. Keys can be user/session scoped.</p>
+            <code>scope = context:retrieve</code>
+          </article>
+        </div>
+      </section>
+
+      <section id="api-key-request" class="section key-request-section">
+        <div class="section-heading compact">
+          <p class="eyebrow">Apply For API Key</p>
+          <h2>Generate the exact request your admin or MatrixArk Cloud should approve.</h2>
+        </div>
+        <div class="key-request-layout">
+          <form class="access-form" aria-label="API key request form">
+            <label>
+              Account ID
+              <input id="request-account" value="acct_acme" autocomplete="organization" />
+            </label>
+            <label>
+              Tenant ID
+              <input id="request-tenant" value="tenant_prod" />
+            </label>
+            <label>
+              User ID
+              <input id="request-user" value="alice" autocomplete="username" />
+            </label>
+            <label>
+              Session ID allow-list
+              <input id="request-session" value="codex-thread-123" />
+            </label>
+            <label>
+              Integration role
+              <select id="request-role">
+                <option value="agent_service">Agent service</option>
+                <option value="mcp_server">MCP server</option>
+                <option value="batch_ingestor">Batch ingestor</option>
+                <option value="tenant_admin">Tenant admin</option>
+              </select>
+            </label>
+            <fieldset>
+              <legend>Scopes</legend>
+              <label><input type="checkbox" value="context:ingest" checked /> context:ingest</label>
+              <label><input type="checkbox" value="context:retrieve" checked /> context:retrieve</label>
+              <label><input type="checkbox" value="context:feedback" checked /> context:feedback</label>
+              <label><input type="checkbox" value="context:replay" /> context:replay</label>
+              <label><input type="checkbox" value="admin:api_key" /> admin:api_key</label>
+            </fieldset>
+          </form>
+          <aside class="access-preview">
+            <div class="panel-head compact">
+              <h2>Request payload</h2>
+            </div>
+            <pre id="api-key-payload" aria-live="polite"></pre>
+            <div class="access-note-grid">
+              <div><strong>Raw key</strong><span>returned once only</span></div>
+              <div><strong>Stored key</strong><span>hash only</span></div>
+              <div><strong>Isolation</strong><span>account, tenant, user, session</span></div>
+              <div><strong>Offboarding</strong><span>disable user or revoke key</span></div>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section class="section access-section soft-band">
+        <div class="section-heading">
+          <p class="eyebrow">Access Management</p>
+          <h2>What admins control after registration.</h2>
+        </div>
+        <div class="access-admin-grid">
+          <article>
+            <h3>Account and tenant status</h3>
+            <p>Disable one tenant for an isolation incident or disable the whole account for a customer suspension without deleting historical context.</p>
+          </article>
+          <article>
+            <h3>User lifecycle</h3>
+            <p>Register, list, enable, or disable users. Disabled users are blocked for API-key-authenticated context calls.</p>
+          </article>
+          <article>
+            <h3>API key lifecycle</h3>
+            <p>Create, list redacted metadata, rotate, revoke, and expire keys. Raw keys and hashes are never returned by inventory APIs.</p>
+          </article>
+          <article>
+            <h3>Audit and usage</h3>
+            <p>Every context and admin operation records account, tenant, role, key id, user id, session id, and timestamp for replayable governance.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section contact-section">
+        <div>
+          <p class="eyebrow">MatrixArk Cloud</p>
+          <h2>Ready to register?</h2>
+          <p>Send your preferred account id, tenant id, integration type, and expected context volume. We will issue scoped keys for the right deployment mode.</p>
+        </div>
+        <div class="contact-panel">
+          <strong>Apply now</strong>
+          <p>Cloud subscription for end users and teams. Local/open-source TemporalStore setup for developers and on-prem enterprise pilots.</p>
+          <a class="button primary" href="mailto:founders@matrixark.ai?subject=MatrixArk%20API%20key%20request">founders@matrixark.ai</a>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span>MatrixArk</span>
+      <span>Register. Apply. Govern.</span>
+    </footer>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
