@@ -1734,6 +1734,7 @@ fn proxy_command_is_write(command: &Command) -> bool {
             | Command::ContextWriteIndexRef { .. }
             | Command::ContextWritePackAudit { .. }
             | Command::ContextMarkSummaryDirty { .. }
+            | Command::ContextUpsertEntity { .. }
     )
 }
 
@@ -1805,7 +1806,10 @@ fn proxy_command_key(command: &Command) -> Option<&str> {
         | Command::ContextWritePackAudit { .. }
         | Command::ContextQueryPackAudit { .. }
         | Command::ContextMarkSummaryDirty { .. }
-        | Command::ContextQuerySummaryDirty { .. } => None,
+        | Command::ContextQuerySummaryDirty { .. }
+        | Command::ContextUpsertEntity { .. }
+        | Command::ContextGetEntity { .. }
+        | Command::ContextQueryEntities { .. } => None,
     }
 }
 
@@ -1863,6 +1867,25 @@ fn proxy_command_routing_key(command: &Command) -> Option<String> {
                 node_hash,
                 ..
             } => Some(format!("ctx:dirty:{tenant_hash}:{node_hash}")),
+            Command::ContextUpsertEntity {
+                tenant_hash,
+                entity,
+            } => Some(format!(
+                "ctx:entity:{tenant_hash}:{}:{}",
+                entity.node_hash, entity.entity_hash
+            )),
+            Command::ContextGetEntity {
+                tenant_hash,
+                node_hash,
+                entity_hash,
+            } => Some(format!(
+                "ctx:entity:{tenant_hash}:{node_hash}:{entity_hash}"
+            )),
+            Command::ContextQueryEntities {
+                tenant_hash,
+                node_hash,
+                ..
+            } => Some(format!("ctx:entity:{tenant_hash}:{node_hash}")),
             _ => None,
         })
 }

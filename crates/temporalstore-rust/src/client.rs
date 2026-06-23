@@ -3801,7 +3801,10 @@ fn command_key(command: &Command) -> Option<&str> {
         | Command::ContextWritePackAudit { .. }
         | Command::ContextQueryPackAudit { .. }
         | Command::ContextMarkSummaryDirty { .. }
-        | Command::ContextQuerySummaryDirty { .. } => None,
+        | Command::ContextQuerySummaryDirty { .. }
+        | Command::ContextUpsertEntity { .. }
+        | Command::ContextGetEntity { .. }
+        | Command::ContextQueryEntities { .. } => None,
     }
 }
 
@@ -3866,6 +3869,24 @@ fn context_command_key(command: &Command) -> Option<String> {
             node_hash,
             ..
         } => Some(context_dirty_key(*tenant_hash, *node_hash)),
+        Command::ContextUpsertEntity {
+            tenant_hash,
+            entity,
+        } => Some(context_entity_key(
+            *tenant_hash,
+            entity.node_hash,
+            entity.entity_hash,
+        )),
+        Command::ContextGetEntity {
+            tenant_hash,
+            node_hash,
+            entity_hash,
+        } => Some(context_entity_key(*tenant_hash, *node_hash, *entity_hash)),
+        Command::ContextQueryEntities {
+            tenant_hash,
+            node_hash,
+            ..
+        } => Some(context_entity_collection_key(*tenant_hash, *node_hash)),
         _ => None,
     }
 }
@@ -3893,6 +3914,14 @@ fn context_audit_key(tenant_hash: u64, session_hash: u64) -> String {
 
 fn context_dirty_key(tenant_hash: u64, node_hash: u64) -> String {
     format!("ctx:dirty:{tenant_hash}:{node_hash}")
+}
+
+fn context_entity_key(tenant_hash: u64, node_hash: u64, entity_hash: u64) -> String {
+    format!("ctx:entity:{tenant_hash}:{node_hash}:{entity_hash}")
+}
+
+fn context_entity_collection_key(tenant_hash: u64, node_hash: u64) -> String {
+    format!("ctx:entity:{tenant_hash}:{node_hash}")
 }
 
 #[cfg(test)]

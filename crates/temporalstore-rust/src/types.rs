@@ -330,9 +330,27 @@ pub struct ContextSummaryDirtyMarker {
     pub propagate_depth: u32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ContextEntity {
+    pub entity_hash: u64,
+    pub node_hash: u64,
+    #[serde(default, rename = "type", alias = "entity_type")]
+    pub entity_type: u32,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub value: String,
+    pub updated_at_ms: u64,
+    #[serde(default)]
+    pub valid_from_ms: u64,
+    #[serde(default)]
+    pub confidence: f32,
+    #[serde(default)]
+    pub source_event_hashes: Vec<u64>,
+}
+
 pub type ContextNodeModel = ContextNode;
 pub type ContextEventModel = ContextEvent;
-pub type ContextEntity = ContextNode;
 pub type ContextSegment = ContextEvent;
 pub type ContextIndexModel = ContextIndexRef;
 pub type ContextAuditModel = ContextPackAudit;
@@ -351,6 +369,7 @@ pub const CONTEXT_EVENT_MODEL_ID: u8 = 10;
 pub const CONTEXT_INDEX_MODEL_ID: u8 = 11;
 pub const CONTEXT_AUDIT_MODEL_ID: u8 = 12;
 pub const CONTEXT_DIRTY_MODEL_ID: u8 = 13;
+pub const CONTEXT_ENTITY_MODEL_ID: u8 = 18;
 
 pub fn context_model_descriptors() -> Vec<ContextModelDescriptor> {
     vec![
@@ -383,6 +402,12 @@ pub fn context_model_descriptors() -> Vec<ContextModelDescriptor> {
             name: "ContextDirtyModel".to_string(),
             key_family: "ctx:dirty".to_string(),
             page_primitive: "FeatureOrSet".to_string(),
+        },
+        ContextModelDescriptor {
+            model_id: CONTEXT_ENTITY_MODEL_ID,
+            name: "ContextEntityModel".to_string(),
+            key_family: "ctx:entity".to_string(),
+            page_primitive: "HashOrSet<std::string,std::string>".to_string(),
         },
     ]
 }
@@ -679,6 +704,68 @@ impl ContextWire for ContextSummaryDirtyMarker {
                 (4, 0) => {
                     value.propagate_depth =
                         u32::try_from(decode_varint(bytes, &mut cursor)?).ok()?
+                }
+                (_, wire_type) => skip_proto_field(bytes, &mut cursor, wire_type)?,
+            }
+        }
+        Some(value)
+    }
+}
+
+impl ContextWire for ContextEntity {
+    fn encode_cpp_context_value(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        encode_varint_field(&mut out, 1, self.entity_hash);
+        encode_varint_field(&mut out, 2, self.node_hash);
+        encode_varint_field(&mut out, 3, u64::from(self.entity_type));
+        encode_bytes_field(&mut out, 4, self.name.as_bytes());
+        encode_bytes_field(&mut out, 5, self.value.as_bytes());
+        encode_varint_field(&mut out, 6, self.updated_at_ms);
+        encode_varint_field(&mut out, 7, self.valid_from_ms);
+        encode_fixed32_field(&mut out, 8, self.confidence.to_bits());
+        for source_event_hash in &self.source_event_hashes {
+            encode_varint_field(&mut out, 9, *source_event_hash);
+        }
+        out
+    }
+
+    fn decode_cpp_context_value(bytes: &[u8]) -> Option<Self> {
+        let mut cursor = 0;
+        let mut value = Self {
+            entity_hash: 0,
+            node_hash: 0,
+            entity_type: 0,
+            name: String::new(),
+            value: String::new(),
+            updated_at_ms: 0,
+            valid_from_ms: 0,
+            confidence: 0.0,
+            source_event_hashes: Vec::new(),
+        };
+        while cursor < bytes.len() {
+            let tag = decode_varint(bytes, &mut cursor)?;
+            match (tag >> 3, tag & 0x7) {
+                (1, 0) => value.entity_hash = decode_varint(bytes, &mut cursor)?,
+                (2, 0) => value.node_hash = decode_varint(bytes, &mut cursor)?,
+                (3, 0) => {
+                    value.entity_type = u32::try_from(decode_varint(bytes, &mut cursor)?).ok()?
+                }
+                (4, 2) => value.name = decode_string(bytes, &mut cursor)?,
+                (5, 2) => value.value = decode_string(bytes, &mut cursor)?,
+                (6, 0) => value.updated_at_ms = decode_varint(bytes, &mut cursor)?,
+                (7, 0) => value.valid_from_ms = decode_varint(bytes, &mut cursor)?,
+                (8, 5) => value.confidence = f32::from_bits(decode_fixed32(bytes, &mut cursor)?),
+                (9, 0) => value
+                    .source_event_hashes
+                    .push(decode_varint(bytes, &mut cursor)?),
+                (9, 2) => {
+                    let packed = decode_bytes(bytes, &mut cursor)?;
+                    let mut packed_cursor = 0;
+                    while packed_cursor < packed.len() {
+                        value
+                            .source_event_hashes
+                            .push(decode_varint(&packed, &mut packed_cursor)?);
+                    }
                 }
                 (_, wire_type) => skip_proto_field(bytes, &mut cursor, wire_type)?,
             }
@@ -1074,6 +1161,22 @@ pub enum Command {
         #[serde(default)]
         limit: Option<usize>,
     },
+    ContextUpsertEntity {
+        tenant_hash: u64,
+        entity: ContextEntity,
+    },
+    ContextGetEntity {
+        tenant_hash: u64,
+        node_hash: u64,
+        entity_hash: u64,
+    },
+    ContextQueryEntities {
+        tenant_hash: u64,
+        node_hash: u64,
+        entity_hashes: Vec<u64>,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
 }
 
 fn encode_varint_field(out: &mut Vec<u8>, field_number: u64, value: u64) {
@@ -1214,6 +1317,14 @@ pub enum CommandResponse {
         object_key: String,
         markers: Vec<ContextSummaryDirtyMarker>,
     },
+    ContextEntity {
+        object_key: String,
+        entity: Option<ContextEntity>,
+    },
+    ContextEntities {
+        object_key: String,
+        entities: Vec<ContextEntity>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1263,6 +1374,7 @@ mod tests {
                 ("ContextIndexModel", 11, "ctxidx"),
                 ("ContextAuditModel", 12, "ctx:audit"),
                 ("ContextDirtyModel", 13, "ctx:dirty"),
+                ("ContextEntityModel", 18, "ctx:entity"),
             ]
         );
         assert_eq!(
@@ -1285,6 +1397,22 @@ mod tests {
         assert_eq!(
             ContextNode::decode_cpp_context_value(&node.encode_cpp_context_value()),
             Some(node)
+        );
+
+        let entity = ContextEntity {
+            entity_hash: 7001,
+            node_hash: 42,
+            entity_type: 1,
+            name: "gpu_purchase_request".to_string(),
+            value: "approved".to_string(),
+            updated_at_ms: 1_000,
+            valid_from_ms: 1_000,
+            confidence: 0.97,
+            source_event_hashes: vec![5, 6],
+        };
+        assert_eq!(
+            ContextEntity::decode_cpp_context_value(&entity.encode_cpp_context_value()),
+            Some(entity)
         );
 
         let event_json = br#"{

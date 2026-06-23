@@ -6,8 +6,10 @@ This is the shared C++/Rust contract for
 The case proves that benchmark ingestion, retrieval, and injection use TemporalStore Context
 models directly:
 
-- `ContextEntity` maps to the node-level Context model and carries the stable node hash, canonical
-  name, L0 routing summary, L1 key-fact summary, and raw source ref.
+- Benchmark `ContextEntity`/node blocks map to the node-level Context model and carry the stable
+  node hash, canonical name, L0 routing summary, L1 key-fact summary, and raw source ref. Rust also
+  exposes first-class C++ `ContextEntityModel` storage for extracted entity attributes through
+  `UPSERT_ENTITY`, `GET_ENTITY`, and `QUERY_ENTITIES`.
 - `ContextSegment` maps to the timestamp-keyed event/segment Context model and carries the event
   id hash, timestamp key, source text, source ref, and related entity node hashes.
 - `ContextIndexRef` provides the source secondary index from benchmark source id to the exact

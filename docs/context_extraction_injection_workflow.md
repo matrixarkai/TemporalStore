@@ -33,9 +33,10 @@ The workflow is:
 LOCOMO, LongMemEval_s, and OpenViking-style benchmark ingestion use the same Rust
 TemporalStore context models as normal production traffic:
 
-1. `ContextEntity` is the public benchmark/pipeline name for the node-level record stored as
-   `ContextNodeModel`. It owns the stable node hash, canonical title, `L0` routing summary, `L1`
-   key-fact summary, last event time, dirty-summary flag, and raw source metadata ref.
+1. Benchmark entity blocks are backed by the node-level record stored as `ContextNodeModel`. The
+   node owns the stable node hash, canonical title, `L0` routing summary, `L1` key-fact summary,
+   last event time, dirty-summary flag, and raw source metadata ref. Rust also has a first-class
+   C++ `ContextEntityModel` for extracted entity attributes keyed by tenant/node/entity hash.
 2. `ContextSegment` is the public benchmark/pipeline name for the timestamped evidence segment
    stored as `ContextEventModel`. It owns the timestamp key, event id hash, source text, source
    ref, confidence/importance, and related entity node hashes. The page stores timestamp-keyed
@@ -181,11 +182,12 @@ existing hash/feature page primitives:
 
 | C++ model | Model id | Rust model descriptor | Key family | Primitive |
 | --- | ---: | --- | --- | --- |
-| `ContextNodeModel` / `ContextEntity` | `9` | `ContextNodeModel` | `ctx:node` | hash/object metadata, L0/L1 summaries |
+| `ContextNodeModel` | `9` | `ContextNodeModel` | `ctx:node` | hash/object metadata, L0/L1 summaries |
 | `ContextEventModel` / `ContextSegment` | `10` | `ContextEventModel` | `ctx:event` | timestamp-keyed segment page |
 | `ContextIndexModel` | `11` | `ContextIndexModel` | `ctxidx` | timestamped feature page |
 | `ContextAuditModel` | `12` | `ContextAuditModel` | `ctx:audit` | timestamped feature page |
 | `ContextDirtyModel` | `13` | `ContextDirtyModel` | `ctx:dirty` | timestamped feature page |
+| `ContextEntityModel` | `18` | `ContextEntityModel` | `ctx:entity` | hash/object extracted entity attributes |
 
 Rust exposes the same model IDs through `context_model_descriptors()`, uses the same object-key
 families, and matches the C++ timeline fanout (`1024 * 1024`) so multiple records in the same

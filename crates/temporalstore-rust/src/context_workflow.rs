@@ -3563,16 +3563,16 @@ mod tests {
         );
         assert!(extract.status.ok, "{:?}", extract.status);
 
-        let entity: crate::ContextEntity = extract.node.clone();
+        let node_entity: crate::ContextNode = extract.node.clone();
         let segment: crate::ContextSegment = extract.event.clone();
-        assert_eq!(entity.node_hash, extract.index_ref.primary_node_hash);
+        assert_eq!(node_entity.node_hash, extract.index_ref.primary_node_hash);
         assert_eq!(segment.event_id_hash, extract.index_ref.event_id_hash);
-        assert!(entity.l0.contains("Caroline"));
-        assert!(entity.l1_ref.contains("kind=Chat"));
+        assert!(node_entity.l0.contains("Caroline"));
+        assert!(node_entity.l1_ref.contains("kind=Chat"));
         assert!(segment
             .text
             .contains("cardiology appointment moved after the museum visit"));
-        assert_eq!(segment.related_node_hashes, vec![entity.node_hash]);
+        assert_eq!(segment.related_node_hashes, vec![node_entity.node_hash]);
 
         let indexed = engine.execute(ExecuteRequest {
             shard_id: 1,
@@ -3610,11 +3610,11 @@ mod tests {
         assert!(retrieved
             .blocks
             .iter()
-            .any(|block| { block.tier == ContextTier::L0 && block.text == entity.l0 }));
+            .any(|block| { block.tier == ContextTier::L0 && block.text == node_entity.l0 }));
         assert!(retrieved
             .blocks
             .iter()
-            .any(|block| { block.tier == ContextTier::L1 && block.text == entity.l1_ref }));
+            .any(|block| { block.tier == ContextTier::L1 && block.text == node_entity.l1_ref }));
         assert!(retrieved
             .blocks
             .iter()
@@ -3644,14 +3644,14 @@ mod tests {
             .selected_blocks
             .iter()
             .any(|block| block.tier == ContextTier::L2));
-        assert!(inject.injected_prompt.contains(&entity.l0));
-        assert!(inject.injected_prompt.contains(&entity.l1_ref));
+        assert!(inject.injected_prompt.contains(&node_entity.l0));
+        assert!(inject.injected_prompt.contains(&node_entity.l1_ref));
         assert!(inject.injected_prompt.contains(&segment.text));
         assert!(inject
             .audit
             .selected_refs
             .iter()
-            .any(|audit| audit.node_hash == entity.node_hash
+            .any(|audit| audit.node_hash == node_entity.node_hash
                 && audit.event_time_ms == segment.event_time_ms));
     }
 

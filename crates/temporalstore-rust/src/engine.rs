@@ -26,7 +26,7 @@ use crate::page_store::{
 };
 use crate::types::{
     parse_cpp_feature_filters, BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse,
-    ContextAuditRef, ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit,
+    ContextAuditRef, ContextEntity, ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit,
     ContextSummaryDirtyMarker, ContextWire, ExecuteRequest, ExecuteResponse, FeatureFilter,
     FeatureFilterOp, FeaturePoint, FeatureWritePolicy, IpsSnapshotReport, IpsStats, RiskFamily,
     RiskFolType, SequenceFeatureRow, SequenceQuerySpec, ShardId, Status, StringSetCondition,
@@ -80,6 +80,8 @@ struct ShardState {
     context_audits: HashMap<String, BTreeMap<u64, PageAddress>>,
     #[serde(default)]
     context_dirty: HashMap<String, BTreeMap<u64, PageAddress>>,
+    #[serde(default)]
+    context_entities: HashMap<String, PageAddress>,
     #[serde(skip)]
     dirty_objects: BTreeSet<String>,
 }
@@ -163,6 +165,8 @@ const CONTEXT_MAX_AUDIT_REFS: usize = 512;
 const CONTEXT_MAX_PROPAGATE_DEPTH: u32 = 8;
 const CONTEXT_MAX_INDEX_NAME_BYTES: usize = 64;
 const CONTEXT_MAX_CANONICAL_NAME_BYTES: usize = 512;
+const CONTEXT_MAX_ENTITY_NAME_BYTES: usize = 512;
+const CONTEXT_MAX_ENTITY_VALUE_BYTES: usize = 4096;
 const CONTEXT_MAX_L0_BYTES: usize = 2048;
 const CONTEXT_MAX_REF_BYTES: usize = 4096;
 const CONTEXT_MAX_EVENT_TEXT_BYTES: usize = 64 * 1024;
@@ -4478,6 +4482,13 @@ impl TemporalEngine {
                 &mut rewritten_page_refs,
             )?;
         }
+        compact_page_addresses(
+            &self.page_store,
+            &self.cache,
+            shard_id,
+            shard.context_entities.values_mut(),
+            &mut rewritten_page_refs,
+        )?;
         for (key, meta_series) in &mut shard.ips_meta {
             if let Some(address_series) = shard.ips.get(key) {
                 for (timestamp, meta) in meta_series {
@@ -7084,6 +7095,65 @@ fn execute_on_shard(
                 markers,
             }
         }
+        Command::ContextUpsertEntity {
+            tenant_hash,
+            entity,
+        } => {
+            let object_key = context_entity_key(tenant_hash, entity.node_hash, entity.entity_hash);
+            let object_id = stable_page_object_id(shard_id, "context_entity", &object_key, None);
+            let routing_slot = page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
+            let bytes = context_bytes(&entity);
+            if let Ok(address) = append_value(
+                cache,
+                page_store,
+                shard_id,
+                &bytes,
+                Some(object_id),
+                Some(routing_slot),
+                async_storage,
+            ) {
+                shard.context_entities.insert(object_key.clone(), address);
+                mutated = true;
+            }
+            invalidate_record_all(cache, shard_id, &object_key);
+            CommandResponse::ContextObjectKey { object_key }
+        }
+        Command::ContextGetEntity {
+            tenant_hash,
+            node_hash,
+            entity_hash,
+        } => {
+            let object_key = context_entity_key(tenant_hash, node_hash, entity_hash);
+            let entity = shard.context_entities.get(&object_key).and_then(|address| {
+                read_page_bytes(cache, page_store, shard_id, address)
+                    .and_then(|bytes| context_from_bytes::<ContextEntity>(&bytes))
+            });
+            CommandResponse::ContextEntity { object_key, entity }
+        }
+        Command::ContextQueryEntities {
+            tenant_hash,
+            node_hash,
+            entity_hashes,
+            limit,
+        } => {
+            let object_key = context_entity_collection_key(tenant_hash, node_hash);
+            let entities = entity_hashes
+                .iter()
+                .copied()
+                .take(context_limit(limit))
+                .filter_map(|entity_hash| {
+                    let entity_key = context_entity_key(tenant_hash, node_hash, entity_hash);
+                    shard.context_entities.get(&entity_key).and_then(|address| {
+                        read_page_bytes(cache, page_store, shard_id, address)
+                            .and_then(|bytes| context_from_bytes::<ContextEntity>(&bytes))
+                    })
+                })
+                .collect();
+            CommandResponse::ContextEntities {
+                object_key,
+                entities,
+            }
+        }
     };
     ExecuteOutcome { response, mutated }
 }
@@ -7153,6 +7223,7 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     removed |= shard.context_indexes.remove(key).is_some();
     removed |= shard.context_audits.remove(key).is_some();
     removed |= shard.context_dirty.remove(key).is_some();
+    removed |= shard.context_entities.remove(key).is_some();
     removed
 }
 
@@ -7209,6 +7280,12 @@ fn collect_live_page_segment_ids(shard: &ShardState) -> BTreeSet<u64> {
     for series in shard.context_dirty.values() {
         ids.extend(series.values().map(|address| address.page_segment_id));
     }
+    ids.extend(
+        shard
+            .context_entities
+            .values()
+            .map(|address| address.page_segment_id),
+    );
     ids
 }
 
@@ -7446,6 +7523,17 @@ fn collect_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
                 }),
         );
     }
+    entries.extend(
+        shard
+            .context_entities
+            .iter()
+            .map(|(key, address)| LivePageEntry {
+                object_key: key.clone(),
+                kind: "context_entity",
+                component: None,
+                address: address.clone(),
+            }),
+    );
     entries
 }
 
@@ -7672,6 +7760,7 @@ fn collect_live_page_addresses(shard: &ShardState) -> Vec<PageAddress> {
     for series in shard.context_dirty.values() {
         addresses.extend(unique_timestamped_kv_page_addresses(series));
     }
+    addresses.extend(shard.context_entities.values().cloned());
     addresses
 }
 
@@ -8070,6 +8159,7 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         || shard.context_indexes.contains_key(key)
         || shard.context_audits.contains_key(key)
         || shard.context_dirty.contains_key(key)
+        || shard.context_entities.contains_key(key)
 }
 
 fn invalidate_record_all(cache: &MultiLayerCache, shard_id: ShardId, key: &str) {
@@ -8559,7 +8649,8 @@ fn object_manager_stats(
         + shard.context_events.len()
         + shard.context_indexes.len()
         + shard.context_audits.len()
-        + shard.context_dirty.len();
+        + shard.context_dirty.len()
+        + shard.context_entities.len();
     let page_ref_count = shard.strings.len()
         + shard.hashes.values().map(HashMap::len).sum::<usize>()
         + shard.sets.values().map(BTreeMap::len).sum::<usize>()
@@ -8586,7 +8677,8 @@ fn object_manager_stats(
             .context_dirty
             .values()
             .map(BTreeMap::len)
-            .sum::<usize>();
+            .sum::<usize>()
+        + shard.context_entities.len();
     let routing_slot_count = routing_slot_count(start_routing_slot, end_routing_slot);
     let dirty_slots = shard
         .dirty_objects
@@ -8659,6 +8751,14 @@ fn context_audit_key(tenant_hash: u64, session_hash: u64) -> String {
 
 fn context_dirty_key(tenant_hash: u64, node_hash: u64) -> String {
     format!("ctx:dirty:{tenant_hash}:{node_hash}")
+}
+
+fn context_entity_key(tenant_hash: u64, node_hash: u64, entity_hash: u64) -> String {
+    format!("ctx:entity:{tenant_hash}:{node_hash}:{entity_hash}")
+}
+
+fn context_entity_collection_key(tenant_hash: u64, node_hash: u64) -> String {
+    format!("ctx:entity:{tenant_hash}:{node_hash}")
 }
 
 fn context_timeline_key(timestamp_ms: u64, disambiguator: u64) -> u64 {
@@ -8800,6 +8900,14 @@ fn command_object_keys(command: &Command) -> Vec<String> {
             tenant_hash,
             marker,
         } => vec![context_dirty_key(*tenant_hash, marker.node_hash)],
+        Command::ContextUpsertEntity {
+            tenant_hash,
+            entity,
+        } => vec![context_entity_key(
+            *tenant_hash,
+            entity.node_hash,
+            entity.entity_hash,
+        )],
         Command::SequenceBatchQuery { .. }
         | Command::CommonTtl { .. }
         | Command::CommonExists { .. }
@@ -8833,7 +8941,9 @@ fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::ContextQueryEvents { .. }
         | Command::ContextQueryIndex { .. }
         | Command::ContextQueryPackAudit { .. }
-        | Command::ContextQuerySummaryDirty { .. } => Vec::new(),
+        | Command::ContextQuerySummaryDirty { .. }
+        | Command::ContextGetEntity { .. }
+        | Command::ContextQueryEntities { .. } => Vec::new(),
     }
 }
 
@@ -8873,6 +8983,7 @@ fn is_write_command(command: &Command) -> bool {
             | Command::ContextWriteIndexRef { .. }
             | Command::ContextWritePackAudit { .. }
             | Command::ContextMarkSummaryDirty { .. }
+            | Command::ContextUpsertEntity { .. }
     )
 }
 
@@ -9118,6 +9229,44 @@ fn validate_command_preconditions(
             validate_context_required(*node_hash != 0, "node_hash is required")?;
             validate_context_limit(*limit)?;
             validate_context_range(*start_time_ms, *end_time_ms)?;
+        }
+        Command::ContextUpsertEntity {
+            tenant_hash,
+            entity,
+        } => {
+            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
+            validate_context_entity(entity)?;
+        }
+        Command::ContextGetEntity {
+            tenant_hash,
+            node_hash,
+            entity_hash,
+        } => {
+            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
+            validate_context_required(*node_hash != 0, "node_hash is required")?;
+            validate_context_required(*entity_hash != 0, "entity_hash is required")?;
+        }
+        Command::ContextQueryEntities {
+            tenant_hash,
+            node_hash,
+            entity_hashes,
+            limit,
+        } => {
+            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
+            validate_context_required(*node_hash != 0, "node_hash is required")?;
+            validate_context_limit(*limit)?;
+            if entity_hashes.len() > CONTEXT_MAX_LIMIT {
+                return Err(Status::error(
+                    "invalid_argument",
+                    "entity_hashes exceeds maximum",
+                ));
+            }
+            if entity_hashes.iter().any(|hash| *hash == 0) {
+                return Err(Status::error(
+                    "invalid_argument",
+                    "entity_hashes must be non-zero",
+                ));
+            }
         }
         _ => {}
     }
@@ -9368,6 +9517,35 @@ fn validate_context_dirty_marker(marker: &ContextSummaryDirtyMarker) -> Result<(
     validate_context_timestamp(marker.event_time_ms)
 }
 
+fn validate_context_entity(entity: &ContextEntity) -> Result<(), Status> {
+    validate_context_required(
+        entity.entity_hash != 0 && entity.node_hash != 0 && entity.updated_at_ms != 0,
+        "entity_hash, node_hash, and updated_at_ms are required",
+    )?;
+    validate_context_timestamp(entity.updated_at_ms)?;
+    if entity.valid_from_ms != 0 {
+        validate_context_timestamp(entity.valid_from_ms)?;
+    }
+    validate_context_score("confidence", entity.confidence)?;
+    validate_context_byte_len(
+        "entity name",
+        entity.name.len(),
+        CONTEXT_MAX_ENTITY_NAME_BYTES,
+    )?;
+    validate_context_byte_len(
+        "entity value",
+        entity.value.len(),
+        CONTEXT_MAX_ENTITY_VALUE_BYTES,
+    )?;
+    if entity.source_event_hashes.len() > CONTEXT_MAX_AUDIT_REFS {
+        return Err(Status::error(
+            "invalid_argument",
+            "source_event_hashes exceeds maximum",
+        ));
+    }
+    Ok(())
+}
+
 fn cached_response(
     cache: &MultiLayerCache,
     key: CacheKey,
@@ -9463,6 +9641,57 @@ mod tests {
             meta.response,
             CommandResponse::Bytes { value: Some(ref bytes) }
                 if ContextNode::decode_context_value(bytes).as_ref() == Some(&node)
+        ));
+
+        let entity = ContextEntity {
+            entity_hash: 7001,
+            node_hash: 42,
+            entity_type: 1,
+            name: "gpu_purchase_request".to_string(),
+            value: "approved".to_string(),
+            updated_at_ms: 1_000,
+            valid_from_ms: 1_000,
+            confidence: 0.97,
+            source_event_hashes: vec![5],
+        };
+        let entity_upsert = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertEntity {
+                tenant_hash: 11,
+                entity: entity.clone(),
+            },
+        });
+        assert!(entity_upsert.status.ok);
+        assert!(matches!(
+            entity_upsert.response,
+            CommandResponse::ContextObjectKey { ref object_key }
+                if object_key == "ctx:entity:11:42:7001"
+        ));
+        let entity_get = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextGetEntity {
+                tenant_hash: 11,
+                node_hash: 42,
+                entity_hash: 7001,
+            },
+        });
+        assert!(matches!(
+            entity_get.response,
+            CommandResponse::ContextEntity { entity: Some(ref stored), .. } if stored == &entity
+        ));
+        let entity_query = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextQueryEntities {
+                tenant_hash: 11,
+                node_hash: 42,
+                entity_hashes: vec![7001, 8888],
+                limit: Some(10),
+            },
+        });
+        assert!(matches!(
+            entity_query.response,
+            CommandResponse::ContextEntities { ref entities, .. }
+                if entities == &vec![entity.clone()]
         ));
 
         let event_a = ContextEvent {
@@ -9685,6 +9914,7 @@ mod tests {
                 ("ContextIndexModel", 11),
                 ("ContextAuditModel", 12),
                 ("ContextDirtyModel", 13),
+                ("ContextEntityModel", 18),
             ]
         );
 
@@ -9808,6 +10038,25 @@ mod tests {
             },
         });
         assert_eq!(invalid_dirty.status.code, "invalid_argument");
+
+        let invalid_entity = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertEntity {
+                tenant_hash: 11,
+                entity: ContextEntity {
+                    entity_hash: 7001,
+                    node_hash: 42,
+                    entity_type: 1,
+                    name: "gpu_purchase_request".to_string(),
+                    value: "approved".to_string(),
+                    updated_at_ms: 0,
+                    valid_from_ms: 0,
+                    confidence: 1.1,
+                    source_event_hashes: Vec::new(),
+                },
+            },
+        });
+        assert_eq!(invalid_entity.status.code, "invalid_argument");
     }
 
     #[test]
