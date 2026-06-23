@@ -50,7 +50,7 @@ DEFAULT_BUSINESS_TYPE_WEIGHTS: Json = {
     "dialogue_batch": 0.45,
     "session": 0.45,
 }
-MATRIXARK_ADMIN_SCOPES = {"admin:account", "admin:tenant", "admin:api_key", "admin:sso", "admin:audit"}
+MATRIXARK_ADMIN_SCOPES = {"admin:account", "admin:tenant", "admin:user", "admin:api_key", "admin:sso", "admin:audit"}
 MATRIXARK_CONTEXT_SCOPES = {
     "context:ingest",
     "context:retrieve",
@@ -67,6 +67,7 @@ MATRIXARK_TOOL_SCOPES: dict[str, set[str]] = {
     "matrixark_feedback": {"context:feedback"},
     "matrixark_replay": {"context:replay"},
     "matrixark_admin_create_account": {"admin:account"},
+    "matrixark_admin_create_user": {"admin:user"},
     "matrixark_admin_create_api_key": {"admin:api_key"},
     "matrixark_admin_rotate_api_key": {"admin:api_key"},
     "matrixark_admin_revoke_api_key": {"admin:api_key"},
@@ -3313,6 +3314,14 @@ class MatrixArkAccessManager:
                 raise MatrixArkError("scope.account_id does not match API key account")
             if requested_tenant and requested_tenant != tenant_id:
                 raise MatrixArkError("scope.tenant_id does not match API key tenant")
+            requested_user = str(scope.get("user_id", ""))
+            requested_session = str(scope.get("session_id", ""))
+            allowed_user_ids = set(key_record.get("allowed_user_ids", []))
+            allowed_session_ids = set(key_record.get("allowed_session_ids", []))
+            if allowed_user_ids and requested_user and requested_user not in allowed_user_ids:
+                raise MatrixArkError("scope.user_id is not allowed by API key")
+            if allowed_session_ids and requested_session and requested_session not in allowed_session_ids:
+                raise MatrixArkError("scope.session_id is not allowed by API key")
             return {
                 "mode": "api_key",
                 "api_key_id": key_record["api_key_id"],
@@ -3320,8 +3329,10 @@ class MatrixArkAccessManager:
                 "tenant_id": tenant_id,
                 "scopes": sorted(scopes),
                 "role": key_record.get("role", "service"),
-                "user_id": str(scope.get("user_id", "")),
-                "session_id": str(scope.get("session_id", "")),
+                "user_id": requested_user,
+                "session_id": requested_session,
+                "allowed_user_ids": sorted(allowed_user_ids),
+                "allowed_session_ids": sorted(allowed_session_ids),
             }
         if self.mode == "enforced" and required_scopes:
             raise MatrixArkError("MatrixArk API key is required")
@@ -3349,6 +3360,8 @@ class MatrixArkAccessManager:
             "tenant_id": identity["tenant_id"],
             "role": identity["role"],
         }
+        if identity["mode"] == "api_key":
+            self.append_api_key_usage(tool_name, identity, args["scope"])
         return identity
 
     def find_active_api_key(self, api_key: str) -> Json | None:
@@ -3357,7 +3370,12 @@ class MatrixArkAccessManager:
             if record.get("record_type") != "matrixark_api_key":
                 continue
             if record.get("api_key_hash") == hashed:
-                return record if record.get("status") == "active" else None
+                if record.get("status") != "active":
+                    return None
+                expires_at_ms = record.get("expires_at_ms")
+                if isinstance(expires_at_ms, int) and expires_at_ms <= now_ms():
+                    return None
+                return record
         return None
 
     def latest_api_key_record(self, api_key_id: str) -> Json | None:
@@ -3382,9 +3400,37 @@ class MatrixArkAccessManager:
             }
         )
 
+    def append_api_key_usage(self, action: str, identity: Json, scope: Json) -> None:
+        self.adapter.append(
+            {
+                "record_type": "matrixark_api_key_usage",
+                "usage_id_hash": stable_hash(
+                    f"{identity.get('api_key_id')}:{action}:{scope.get('user_id', '')}:{scope.get('session_id', '')}:{now_ms()}"
+                ),
+                "action": action,
+                "api_key_id": identity.get("api_key_id", ""),
+                "account_id": identity.get("account_id", ""),
+                "tenant_id": identity.get("tenant_id", ""),
+                "role": identity.get("role", ""),
+                "user_id": scope.get("user_id", ""),
+                "session_id": scope.get("session_id", ""),
+                "tenant_hash": scope.get("tenant_hash", 0),
+                "user_hash": scope.get("user_hash", 0),
+                "session_hash": scope.get("session_hash", 0),
+                "used_at_ms": now_ms(),
+            }
+        )
+
+    def ensure_identity_can_manage(self, identity: Json, account_id: str, tenant_id: str) -> None:
+        if identity.get("mode") == "dev":
+            return
+        if identity.get("account_id") != account_id or identity.get("tenant_id") != tenant_id:
+            raise MatrixArkError("admin operation account/tenant does not match API key")
+
     def create_account(self, args: Json, identity: Json) -> Json:
         account_id = canonical_account_id(optional_string(args, "account_id") or f"acct_{stable_hash(optional_string(args, 'account_name', 'account'))}")
         tenant_id = canonical_tenant_id(optional_string(args, "tenant_id") or "tenant_default")
+        self.ensure_identity_can_manage(identity, account_id, tenant_id)
         account_name = optional_string(args, "account_name", account_id)
         tenant_name = optional_string(args, "tenant_name", tenant_id)
         self.adapter.append(
@@ -3412,14 +3458,56 @@ class MatrixArkAccessManager:
         self.append_audit("admin.create_account", identity, status="ok", details={"account_id": account_id, "tenant_id": tenant_id})
         return {"status": "created", "account_id": account_id, "tenant_id": tenant_id}
 
+    def create_user(self, args: Json, identity: Json) -> Json:
+        scope = optional_object(args, "scope")
+        account_id = canonical_account_id(optional_string(args, "account_id") or str(scope.get("account_id") or identity["account_id"]))
+        tenant_id = canonical_tenant_id(optional_string(args, "tenant_id") or str(scope.get("tenant_id") or identity["tenant_id"]))
+        self.ensure_identity_can_manage(identity, account_id, tenant_id)
+        user_id = require_string(args, "user_id")
+        display_name = optional_string(args, "display_name", user_id)
+        external_subject = optional_string(args, "external_subject", "")
+        status = optional_string(args, "status", "active")
+        if status not in {"active", "disabled"}:
+            raise MatrixArkError("status must be active or disabled")
+        record = {
+            "record_type": "matrixark_user",
+            "user_record_hash": stable_hash(f"{account_id}:{tenant_id}:user:{user_id}"),
+            "account_id": account_id,
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "display_name": display_name,
+            "external_subject": external_subject,
+            **identity_hashes(account_id, tenant_id, user_id),
+            "status": status,
+            "created_by_api_key_id": identity.get("api_key_id", ""),
+            "created_at_ms": now_ms(),
+        }
+        self.adapter.append(record)
+        self.append_audit("admin.create_user", identity, status="ok", details={"account_id": account_id, "tenant_id": tenant_id, "user_id": user_id})
+        return {
+            "status": "created",
+            "account_id": account_id,
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "user_hash": record["user_hash"],
+        }
+
     def create_api_key(self, args: Json, identity: Json) -> Json:
         scope = optional_object(args, "scope")
         account_id = canonical_account_id(optional_string(args, "account_id") or str(scope.get("account_id") or identity["account_id"]))
         tenant_id = canonical_tenant_id(optional_string(args, "tenant_id") or str(scope.get("tenant_id") or identity["tenant_id"]))
+        self.ensure_identity_can_manage(identity, account_id, tenant_id)
         scopes = optional_string_list(args, "scopes", ["context:ingest", "context:retrieve", "context:feedback", "context:replay"])
         if not scopes:
             raise MatrixArkError("scopes must not be empty")
         role = optional_string(args, "role", "service")
+        display_name = optional_string(args, "display_name", role)
+        allowed_user_ids = sorted(set(optional_string_list(args, "allowed_user_ids", [])))
+        allowed_session_ids = sorted(set(optional_string_list(args, "allowed_session_ids", [])))
+        expires_at_ms = args.get("expires_at_ms")
+        if expires_at_ms is not None:
+            if not isinstance(expires_at_ms, int) or expires_at_ms <= now_ms():
+                raise MatrixArkError("expires_at_ms must be a future unix timestamp in milliseconds")
         key_prefix = optional_string(args, "key_prefix", "mk_test")
         api_key = make_api_key(key_prefix)
         api_key_id = f"key_{stable_hash(api_key)}"
@@ -3432,12 +3520,28 @@ class MatrixArkAccessManager:
             **identity_hashes(account_id, tenant_id),
             "scopes": sorted(set(scopes)),
             "role": role,
+            "display_name": display_name,
+            "allowed_user_ids": allowed_user_ids,
+            "allowed_session_ids": allowed_session_ids,
+            "expires_at_ms": expires_at_ms,
             "status": "active",
             "created_by_api_key_id": identity.get("api_key_id", ""),
             "created_at_ms": now_ms(),
         }
         self.adapter.append(record)
-        self.append_audit("admin.create_api_key", identity, status="ok", details={"api_key_id": api_key_id, "account_id": account_id, "tenant_id": tenant_id})
+        self.append_audit(
+            "admin.create_api_key",
+            identity,
+            status="ok",
+            details={
+                "api_key_id": api_key_id,
+                "account_id": account_id,
+                "tenant_id": tenant_id,
+                "allowed_user_count": len(allowed_user_ids),
+                "allowed_session_count": len(allowed_session_ids),
+                "expires_at_ms": expires_at_ms,
+            },
+        )
         return {
             "status": "created",
             "api_key": api_key,
@@ -3445,6 +3549,10 @@ class MatrixArkAccessManager:
             "account_id": account_id,
             "tenant_id": tenant_id,
             "scopes": record["scopes"],
+            "role": role,
+            "allowed_user_ids": allowed_user_ids,
+            "allowed_session_ids": allowed_session_ids,
+            "expires_at_ms": expires_at_ms,
             "warning": "Store api_key now. MatrixArk only stores its hash.",
         }
 
@@ -3476,6 +3584,10 @@ class MatrixArkAccessManager:
                 "tenant_id": old_record["tenant_id"],
                 "scopes": list(old_record.get("scopes", [])),
                 "role": old_record.get("role", "service"),
+                "display_name": old_record.get("display_name", old_record.get("role", "service")),
+                "allowed_user_ids": list(old_record.get("allowed_user_ids", [])),
+                "allowed_session_ids": list(old_record.get("allowed_session_ids", [])),
+                "expires_at_ms": old_record.get("expires_at_ms"),
                 "key_prefix": optional_string(args, "key_prefix", "mk_test"),
             },
             identity,
@@ -3489,6 +3601,7 @@ class MatrixArkAccessManager:
         scope = optional_object(args, "scope")
         account_id = canonical_account_id(optional_string(args, "account_id") or str(scope.get("account_id") or identity["account_id"]))
         tenant_id = canonical_tenant_id(optional_string(args, "tenant_id") or str(scope.get("tenant_id") or identity["tenant_id"]))
+        self.ensure_identity_can_manage(identity, account_id, tenant_id)
         matrixark_user_id = optional_string(args, "matrixark_user_id") or f"mu_{stable_hash(f'{account_id}:{tenant_id}:{provider}:{external_user_id}')}"
         record = {
             "record_type": "matrixark_sso_user_mapping",
@@ -3516,7 +3629,7 @@ class MatrixArkAccessManager:
         rows = [
             record
             for record in reversed(self.adapter.read_all())
-            if record.get("record_type") == "matrixark_audit_log"
+            if record.get("record_type") in {"matrixark_audit_log", "matrixark_api_key_usage"}
             and (not account_id or record.get("account_id") == account_id)
             and (not tenant_id or record.get("tenant_id") == tenant_id)
         ][:limit]
@@ -3543,6 +3656,7 @@ SCOPE_SCHEMA: Json = {
     "type": "object",
     "description": "Optional memory scope. Send user_id or session_id at minimum; both together give the best user and thread grouping.",
     "properties": {
+        "account_id": {"type": "string"},
         "tenant_id": {"type": "string"},
         "user_id": {
             "type": "string",
@@ -3871,6 +3985,25 @@ TOOLS: list[Json] = [
         },
     },
     {
+        "name": "matrixark_admin_create_user",
+        "description": "Create or register a MatrixArk user under an account/tenant.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["user_id"],
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "account_id": {"type": "string"},
+                "tenant_id": {"type": "string"},
+                "scope": SCOPE_SCHEMA,
+                "user_id": {"type": "string"},
+                "display_name": {"type": "string"},
+                "external_subject": {"type": "string"},
+                "status": {"type": "string", "enum": ["active", "disabled"], "default": "active"},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
         "name": "matrixark_admin_create_api_key",
         "description": "Create a MatrixArk API key for an account/tenant. The raw key is returned once.",
         "inputSchema": {
@@ -3886,6 +4019,21 @@ TOOLS: list[Json] = [
                     "description": "Allowed scopes such as context:ingest, context:retrieve, admin:api_key.",
                 },
                 "role": {"type": "string", "default": "service"},
+                "display_name": {"type": "string"},
+                "allowed_user_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional user allow-list. Empty means any user in the key tenant.",
+                },
+                "allowed_session_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional session allow-list. Empty means any session in the key tenant.",
+                },
+                "expires_at_ms": {
+                    "type": "integer",
+                    "description": "Optional future unix timestamp in milliseconds when this key expires.",
+                },
                 "key_prefix": {"type": "string", "default": "mk_test"},
             },
             "additionalProperties": True,
@@ -4025,6 +4173,8 @@ class MatrixArkMcpServer:
             return {**result, "access": args.get("_matrixark_auth", {})}
         if name == "matrixark_admin_create_account":
             return self.access.create_account(args, identity)
+        if name == "matrixark_admin_create_user":
+            return self.access.create_user(args, identity)
         if name == "matrixark_admin_create_api_key":
             return self.access.create_api_key(args, identity)
         if name == "matrixark_admin_rotate_api_key":
