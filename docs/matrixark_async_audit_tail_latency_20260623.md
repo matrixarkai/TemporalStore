@@ -19,14 +19,46 @@ The retrieval path no longer waits for audit persistence unless an operator expl
 
 ## Runtime Knobs
 
+- `MATRIXARK_DIRECT_AUDIT_MODE`
+  - Default: `buffered`
+  - Options:
+    - `buffered`: background flush audits; best normal serving default.
+    - `deferred`: buffer audits but do not background flush; benchmark runners can flush at checkpoints/end.
+    - `drop`: do not persist retrieval audits; useful only for raw engine stress isolation.
+    - `sync`: write audits inline; useful for debugging old behavior.
 - `MATRIXARK_DIRECT_AUDIT_BUFFER_MAX_RECORDS`
   - Default: `128`
   - Controls the normal buffered flush batch size.
 - `MATRIXARK_DIRECT_AUDIT_FLUSH_INTERVAL_MS`
   - Default: `1000`
   - Controls the background flush cadence.
+- `MATRIXARK_DIRECT_WRITE_RETRIES`
+  - Default: `3`
+  - Retries transient direct SDK `hset` / `put_string` write failures before surfacing an error.
+- `MATRIXARK_DIRECT_WRITE_BACKOFF_MS`
+  - Default: `25`
+  - Exponential backoff base between direct SDK write retries.
+- `MATRIXARK_DIRECT_WRITE_THROTTLE_MS`
+  - Default: `0`
+  - Optional tiny sleep after each direct SDK write. Use this for single-node benchmark load shaping if warning-log or write-queue saturation appears.
 
 If the background flusher falls behind, the adapter keeps a bounded pending buffer and drops the oldest excess audit records with a debug-log message instead of blocking retrieval. Enable `MATRIXARK_MCP_DEBUG_LOG` to capture those warnings.
+
+## Record Bundling Side Effects
+
+The direct record log batches multiple MatrixArk logical records into one TemporalStore hash field using:
+
+```json
+{"record_bundle": [ ...records... ]}
+```
+
+This reduces `hset` pressure. The important semantics are:
+
+- `record_count` counts physical log entries, not logical MatrixArk records.
+- `read_all()` expands `record_bundle` entries, so callers still see the same logical records in order.
+- Appends update the in-process cache only after the bundle write and count write succeed.
+- A crash after bundle `hset` but before `record_count` update can leave an unreferenced physical field. That is acceptable for the MVP append log because readers only trust `record_count`; a later native append-log API should make this atomic.
+- Bundling is not a substitute for native multi-field writes; it is a Python-side pressure reducer until the C++/Rust SDK exposes a dedicated batch append path.
 
 ## Expected Impact
 
@@ -47,4 +79,4 @@ The next production fix should push more retrieval work into native C++ APIs:
 2. Traverse ContextNode children and L0/L1 embeddings in C++.
 3. Return bounded candidate refs to Python for packing/reader logic.
 4. Keep ContextPackAudit buffered or move it to a dedicated append-only audit stream.
-
+5. Add native atomic batch append for MatrixArk record bundles so `hset` and `record_count` advance as one server-side operation.

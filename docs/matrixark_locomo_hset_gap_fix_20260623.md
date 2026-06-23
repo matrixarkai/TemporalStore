@@ -79,7 +79,14 @@ The full all-conversation run is still not clean on this single-node local deplo
 - 5 conversations ingested 2760 turns and checkpointed 25 retrieval questions, then timed out during retrieval/audit;
 - server logs show log queue saturation and safe-mode symptoms under the larger sustained run.
 
-So the immediate gap is fixed for the previously failing official slice and for C++/Rust parity, but full official LOCOMO remains a storage-engine/load-shaping task.
+So the immediate gap is fixed for the previously failing official slice and for C++/Rust parity, but full official LOCOMO needs explicit storage-engine/load shaping on this single-node local deployment.
+
+Follow-up load-shaping fix:
+
+- direct writes now retry transient `hset` / `put_string` failures with exponential backoff;
+- optional `MATRIXARK_DIRECT_WRITE_THROTTLE_MS` can pace sustained local benchmark writes;
+- retrieval audit writes can run in `buffered`, `deferred`, `drop`, or `sync` mode through `MATRIXARK_DIRECT_AUDIT_MODE`;
+- `deferred` audit mode is recommended for full-dataset benchmark ingestion/retrieval runs, with explicit flush at checkpoints/end.
 
 ## Next Engineering Step
 
@@ -87,9 +94,9 @@ For full official LOCOMO completion on one local node:
 
 1. Add native batch hash write APIs or a MatrixArk-specific append-log API so the SDK can write multiple fields with one server-side operation.
 2. Add runner-side ingestion checkpointing after every conversation so full runs can resume without rewriting all prior records.
-3. Move retrieval audit writes off the critical path or batch them after question checkpoints.
+3. Use `MATRIXARK_DIRECT_AUDIT_MODE=deferred` for full benchmark runs so retrieval audits are checkpointed outside the hot path.
 4. Reduce server warning-log pressure for benchmark runs, because the large run saturated the log queue.
-5. Rerun full LOCOMO on C++ and Rust separately, then run parity comparison over the full artifact set.
+5. Rerun full LOCOMO on C++ and Rust separately with write retry/backoff and audit deferral, then run parity comparison over the full artifact set.
 
 ## Artifact Pointers
 

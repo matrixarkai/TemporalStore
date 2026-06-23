@@ -35,4 +35,5 @@ h1,h2{color:#0f172a}
 <tr><td>compression hidden answers</td><td>0</td><td>0</td></tr>
 </table>
 <h2>Remaining Boundary</h2>
-<p>The official 2-conversation / 100-question LOCOMO slice now passes on both backends. Full all-conversation LOCOMO still overloads this single-node local deployment under sustained writes/retrieval audit, so full official completion remains a native batch-write and benchmark-load-shaping task.</p>
+<p>The official 2-conversation / 100-question LOCOMO slice now passes on both backends. Full all-conversation LOCOMO needs explicit storage-engine/load shaping on this single-node local deployment.</p>
+<p>Follow-up load-shaping support now exists: direct writes retry transient <code>hset</code> / <code>put_string</code> failures with exponential backoff, <code>MATRIXARK_DIRECT_WRITE_THROTTLE_MS</code> can pace sustained local benchmark writes, and retrieval audit writes can run in <code>buffered</code>, <code>deferred</code>, <code>drop</code>, or <code>sync</code> mode through <code>MATRIXARK_DIRECT_AUDIT_MODE</code>. Use <code>deferred</code> audit mode for full-dataset benchmark runs and flush audits at checkpoints or at the end.</p>
