@@ -258,6 +258,13 @@ def read_records(adapter: MatrixArkLocalAdapter, event_log: Path, backend: str) 
 
 def run(args: argparse.Namespace, artifact_dir: Path) -> Json:
     artifact_dir.mkdir(parents=True, exist_ok=True)
+    understanding_provider = os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER", "oss_encoder").strip().lower().replace("-", "_")
+    if understanding_provider in {"oss", "open_source", "embedding", "oss_embedding"}:
+        understanding_provider = "oss_encoder"
+    if understanding_provider != "oss_encoder":
+        raise RuntimeError("This debug flow must run with MATRIXARK_UNDERSTANDING_PROVIDER=oss_encoder; deterministic extraction/query understanding is not allowed.")
+    os.environ["MATRIXARK_UNDERSTANDING_PROVIDER"] = "oss_encoder"
+    os.environ["MATRIXARK_REQUIRE_OSS_UNDERSTANDING"] = "1"
     event_log = Path(args.event_log) if args.event_log else artifact_dir / "matrixark_query_index_event_log.jsonl"
     event_log.unlink(missing_ok=True)
     adapter = create_adapter(args, event_log)
@@ -272,6 +279,8 @@ def run(args: argparse.Namespace, artifact_dir: Path) -> Json:
             "threshold_messages": 20,
             "force": False,
             "skip_prior_context": False,
+            "understanding_provider": "oss_encoder",
+            "segment_provider": "oss_encoder",
         }
         batch_result = call_tool(server, "matrixark_batch_extract", batch_args)
         refresh = call_tool(server, "matrixark_refresh_summaries", {"scope": convo["scope"], "limit": 128})
@@ -315,7 +324,8 @@ def run(args: argparse.Namespace, artifact_dir: Path) -> Json:
         },
         "embedding_provider": os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic"),
         "embedding_model": os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH") or os.environ.get("MATRIXARK_EMBEDDING_MODEL", "matrixark-local-token-hash-v1"),
-        "note": "This debug run uses real OSS embeddings. Extraction and query-understanding are the current MatrixArk internal deterministic schema/rule path unless an LLM provider is wired in.",
+        "understanding_provider": "oss_encoder",
+        "note": "This debug run requires real OSS embeddings and OSS-encoder extraction/query understanding. Deterministic extraction, segmentation, and query-understanding are disabled for this run.",
         "model_counts": model_counts(records),
         "batch_conversations": batches,
         "retrievals": retrievals,
@@ -350,6 +360,7 @@ def write_docs(report: Json, artifact_dir: Path) -> None:
         "",
         f"- embedding_provider: `{report['embedding_provider']}`",
         f"- embedding_model: `{report['embedding_model']}`",
+        f"- understanding_provider: `{report['understanding_provider']}`",
         f"- note: {report['note']}",
         "",
         "## Data Model Counts",
