@@ -34,8 +34,9 @@ Each ingest operation runs:
 Each retrieval operation runs:
 
 ```text
-new direct C++ adapter
+thread-local direct C++ adapter
 -> read persisted MatrixArk records from C++ TemporalStore
+-> reuse prefix cache when record_count watermark is unchanged
 -> query understanding with OSS encoder
 -> tree/summary/index/event/entity retrieval
 -> ContextPack construction
@@ -108,6 +109,88 @@ The likely bottlenecks are:
 - C++ direct SDK request serialization and timeout behavior under many concurrent
   read adapters.
 
+## Optimizations Implemented After This Run
+
+The follow-up optimization pass added executable support for five of the six
+items listed below:
+
+1. Process-local service/adapter pool for retrieval.
+   - `tools/run_matrixark_cpp_direct_scale_benchmark.py` now uses a thread-local
+     `MatrixArkMcpServer` / `MatrixArkTemporalStoreDirectAdapter` pool by
+     default.
+   - Use `--disable-service-pool` to compare the old behavior.
+2. C++ record cache by prefix and invalidation watermark.
+   - `MatrixArkTemporalStoreDirectAdapter.read_all()` now caches records by
+     `storage_prefix` and `record_count`.
+   - A new append updates the local cache and bumps the count watermark.
+3. Shared model/vector cache and batch-friendly embedding helper.
+   - `embedding_for_text()` now uses a bounded process-local vector cache.
+   - `embeddings_for_texts()` batches OSS sentence-transformer encoding when
+     callers provide multiple texts.
+4. Hard retrieval deadlines with partial ContextPack fallback.
+   - `matrixark_retrieve` accepts `deadline_ms` or
+     `ranking.deadline_ms`.
+   - `MATRIXARK_RETRIEVAL_TIMEOUT_MS` can set the default.
+   - When the deadline is exceeded, MatrixArk writes a replayable
+     `ContextPackAudit` and returns a partial pack from recent summaries,
+     entities, segments, and events.
+5. Raw C++ direct SDK microbenchmark.
+   - `tools/run_temporalstore_raw_sdk_microbench.py` measures direct SDK
+     `hset`/`hget` without MatrixArk extraction, OSS models, traversal, or
+     token packing.
+
+The remaining item is native C++ context API pushdown. The Python direct adapter
+still performs MatrixArk tree/index scoring after reading records. A future C++
+context API should expose prefix/index scans and selected context-model queries
+directly so Python does not need to call `read_all()` for every serving request.
+
+## Optimized Validation Run
+
+After the changes, a small optimized product-pipeline run passed:
+
+- Ingest concurrency: 1
+- Retrieve concurrency: 4
+- Retrieval deadline: 5000 ms
+- Ingest operations: 1 batch of 20 messages
+- Retrieve operations: 8
+- Ingest errors: 0
+- Retrieve errors: 0
+- Ingest latency: 2.925 sec for the 20-message batch
+- Retrieval p95: 3.156 sec
+- Retrieval p99: 3.156 sec
+- Later warm-cache retrievals: 41.952 ms, 45.686 ms, 105.810 ms, 179.154 ms
+
+Artifacts:
+
+- `docs/matrixark_cpp_direct_scale_benchmark_optimized_tiny_20260623.html`
+- `docs/matrixark_cpp_direct_scale_benchmark_optimized_tiny_20260623.json`
+
+## Raw C++ SDK Microbenchmark
+
+A raw direct SDK microbenchmark was added and run after restarting the local
+onebox:
+
+- Operations: 32 writes, then 32 reads
+- Write workers: 2
+- Read workers: 4
+- Payload: 512 bytes
+- Read errors: 0
+- Read QPS: 1071.585 ops/sec
+- Read p95: 1.640 ms
+- Write errors: 0
+- Write p50: 4.796 ms
+- Write p95: 11.510 ms
+- One write outlier hit 60018.148 ms
+
+This means the previous 8-worker retrieval tail was mostly MatrixArk
+product-pipeline overhead, but the local C++ write path can still produce rare
+long write stalls. We should not label this as purely Python.
+
+Artifacts:
+
+- `docs/temporalstore_raw_sdk_microbench_20260623.html`
+- `docs/temporalstore_raw_sdk_microbench_20260623.json`
+
 ## Required Next Caps
 
 Until the next optimization pass, use these limits for local C++ debug runs:
@@ -118,14 +201,10 @@ Until the next optimization pass, use these limits for local C++ debug runs:
 - Keep `MATRIXARK_REQUIRE_OSS_EMBEDDINGS=1`
 - Keep `MATRIXARK_REQUIRE_OSS_UNDERSTANDING=1`
 
-## Next Optimizations
+## Remaining Optimization Work
 
-1. Reuse a process-local service/adapter pool for retrieval instead of creating a
-   fresh adapter per request.
-2. Cache loaded C++ records by prefix with an invalidation watermark.
-3. Push more prefix/index scans into native C++ context APIs.
-4. Add a shared model worker or batched embedding encode path.
-5. Add hard retrieval deadlines with partial ContextPack fallback.
-6. Add raw C++ engine microbenchmarks separately from MatrixArk product-pipeline
-   benchmarks.
-
+1. Push prefix/index scans into native C++ context APIs.
+2. Add a real native ContextIndex query instead of Python-side `read_all()`.
+3. Investigate raw C++ write outliers under `hset` concurrency.
+4. Evaluate `storage_async=true` for MatrixArk serving workloads.
+5. Add a long-running soak once write outliers are understood.

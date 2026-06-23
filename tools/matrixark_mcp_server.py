@@ -16,6 +16,7 @@ import math
 import os
 import re
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +36,11 @@ DEFAULT_BUSINESS_WEIGHT = 0.22
 _OSS_SEGMENT_MODEL_CACHE: dict[str, Any] = {}
 _OSS_EMBEDDING_MODEL_CACHE: dict[str, Any] = {}
 _OSS_UNDERSTANDING_PROTOTYPE_CACHE: dict[str, dict[str, list[float]]] = {}
+_EMBEDDING_VECTOR_CACHE: dict[tuple[str, str], list[float]] = {}
+_EMBEDDING_VECTOR_CACHE_LOCK = threading.RLock()
+_DIRECT_RECORD_CACHE: dict[str, tuple[int, list[Json]]] = {}
+_DIRECT_RECORD_CACHE_LOCK = threading.RLock()
+_DIRECT_RECORD_CACHE_MAX_PREFIXES = 64
 
 DEFAULT_BUSINESS_TYPE_WEIGHTS: Json = {
     "confirmation": 1.0,
@@ -1487,9 +1493,20 @@ def clip_context_text(text: str, *, max_chars: int = MAX_CONTEXT_REF_CHARS) -> s
 
 
 def embedding_for_text(text: str) -> list[float]:
+    model = embedding_model_name()
+    cache_key = (model, text)
+    with _EMBEDDING_VECTOR_CACHE_LOCK:
+        cached = _EMBEDDING_VECTOR_CACHE.get(cache_key)
+        if cached is not None:
+            return list(cached)
     provider = os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic").strip().lower()
     if provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:
-        return oss_embedding_for_text(text)
+        vector = oss_embedding_for_text(text)
+        with _EMBEDDING_VECTOR_CACHE_LOCK:
+            if len(_EMBEDDING_VECTOR_CACHE) >= 8192:
+                _EMBEDDING_VECTOR_CACHE.clear()
+            _EMBEDDING_VECTOR_CACHE[cache_key] = list(vector)
+        return vector
     vector = [0.0] * EMBEDDING_DIM
     for token in tokens(text):
         digest = hashlib.sha256(token.encode("utf-8")).digest()
@@ -1498,8 +1515,59 @@ def embedding_for_text(text: str) -> list[float]:
         vector[index] += sign
     norm = math.sqrt(sum(value * value for value in vector))
     if norm == 0:
-        return vector
-    return [round(value / norm, 6) for value in vector]
+        result = vector
+    else:
+        result = [round(value / norm, 6) for value in vector]
+    with _EMBEDDING_VECTOR_CACHE_LOCK:
+        if len(_EMBEDDING_VECTOR_CACHE) >= 8192:
+            _EMBEDDING_VECTOR_CACHE.clear()
+        _EMBEDDING_VECTOR_CACHE[cache_key] = list(result)
+    return result
+
+
+def embeddings_for_texts(texts: list[str]) -> list[list[float]]:
+    """Batch-friendly embedding helper with the same cache as embedding_for_text."""
+    if not texts:
+        return []
+    model = embedding_model_name()
+    results: list[list[float] | None] = []
+    missing: list[tuple[int, str]] = []
+    with _EMBEDDING_VECTOR_CACHE_LOCK:
+        for index, text in enumerate(texts):
+            cached = _EMBEDDING_VECTOR_CACHE.get((model, text))
+            if cached is None:
+                results.append(None)
+                missing.append((index, text))
+            else:
+                results.append(list(cached))
+    provider = os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic").strip().lower()
+    if missing and provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:
+        model_ref = os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH") or os.environ.get(
+            "MATRIXARK_EMBEDDING_MODEL",
+            "sentence-transformers/all-MiniLM-L6-v2",
+        )
+        try:
+            encoder = _OSS_EMBEDDING_MODEL_CACHE.get(model_ref)
+            if encoder is None:
+                from sentence_transformers import SentenceTransformer  # type: ignore
+
+                encoder = SentenceTransformer(model_ref)
+                _OSS_EMBEDDING_MODEL_CACHE[model_ref] = encoder
+            vectors = encoder.encode([text for _index, text in missing], normalize_embeddings=True, show_progress_bar=False)
+            with _EMBEDDING_VECTOR_CACHE_LOCK:
+                if len(_EMBEDDING_VECTOR_CACHE) + len(missing) >= 8192:
+                    _EMBEDDING_VECTOR_CACHE.clear()
+                for (index, text), vector in zip(missing, vectors):
+                    materialized = [round(float(value), 6) for value in vector]
+                    _EMBEDDING_VECTOR_CACHE[(model, text)] = list(materialized)
+                    results[index] = materialized
+        except Exception:
+            for index, text in missing:
+                results[index] = embedding_for_text(text)
+    else:
+        for index, text in missing:
+            results[index] = embedding_for_text(text)
+    return [list(item or []) for item in results]
 
 
 def embedding_model_name() -> str:
@@ -3227,10 +3295,135 @@ class MatrixArkLocalAdapter:
         matches.sort(key=lambda record: (int(record.get("source_end_ms") or 0), int(record.get("compressed_time_ms") or 0)), reverse=True)
         return matches[:limit]
 
+    def deadline_fallback_pack(
+        self,
+        *,
+        query: str,
+        scope: Json,
+        question_type: str,
+        max_context_tokens: int,
+        local_budget: Json,
+        deadline_ms: int,
+        elapsed_ms: float,
+        records: list[Json],
+        reason: str,
+    ) -> Json:
+        selected = []
+        used_context_tokens = 0
+        remote_budget = max(0, max_context_tokens - int(local_budget.get("token_estimate", 0)))
+        for record in reversed(records):
+            record_type = record.get("record_type")
+            record_scope = record.get("scope", record.get("envelope", {}).get("scope", {}))
+            if record_type not in {"context_summary", "context_entity", "context_event", "context_segment"}:
+                continue
+            if not scope_matches(record_scope, scope):
+                continue
+            if record_type == "context_summary":
+                text = str(record.get("summary_text", ""))
+                ref_type = "summary"
+                ref_hash = record.get("summary_hash") or record.get("node_hash")
+            elif record_type == "context_entity":
+                text = f"{record.get('entity_type', '')}: {record.get('entity_name', '')} = {record.get('state', '')}"
+                ref_type = "entity"
+                ref_hash = record.get("entity_hash")
+            elif record_type == "context_segment":
+                text = f"{record.get('topic', '')}: {record.get('summary_text', '')}"
+                ref_type = "segment"
+                ref_hash = record.get("segment_hash")
+            else:
+                text = str(record.get("summary_text") or record.get("text") or "")
+                ref_type = "event"
+                ref_hash = record.get("event_id_hash")
+            if not text or ref_hash is None:
+                continue
+            item_tokens = token_count(text)
+            if used_context_tokens + item_tokens > remote_budget:
+                continue
+            selected.append(
+                {
+                    "ref_type": ref_type,
+                    "ref_hash": ref_hash,
+                    "node_hash": record.get("node_hash"),
+                    "node_path": record.get("node_path", []),
+                    "score": 0.0,
+                    "recall_path": "deadline_fallback_recent_context",
+                    "updated_at_ms": record.get("updated_at_ms", record.get("envelope", {}).get("ingestion_time_ms", now_ms())),
+                    "text": clip_context_text(text),
+                }
+            )
+            used_context_tokens += item_tokens
+            if len(selected) >= 8:
+                break
+        context_pack_id = str(stable_hash(f"deadline:{query}:{selected}:{now_ms()}"))
+        pack = {
+            "context_pack_id": context_pack_id,
+            "selected_refs": selected,
+            "layer_scores": [],
+            "question_type": question_type,
+            "packing_policy": f"deadline_fallback:{question_type}",
+            "query_embedding_model": embedding_model_name(),
+            "recall_policy": {
+                "deadline_ms": deadline_ms,
+                "elapsed_ms": elapsed_ms,
+                "partial_context_pack": True,
+                "fallback_reason": reason,
+            },
+            "primary_candidate_count": 0,
+            "auxiliary_candidate_count": 0,
+            "used_context_tokens": used_context_tokens,
+            "used_remote_context_tokens": used_context_tokens,
+            "used_local_context_tokens": local_budget["token_estimate"],
+            "total_prompt_context_tokens": used_context_tokens + local_budget["token_estimate"],
+            "remote_context_budget_tokens": remote_budget,
+            "local_context_policy": {
+                "mode": "shared_budget_dedupe",
+                "local_context_count": len(local_budget["items"]),
+                "local_context_tokens": local_budget["token_estimate"],
+                "dedupe_remote_against_local": True,
+                "remote_is_additive_only_within_remaining_budget": True,
+            },
+            "dropped_refs": [],
+            "quality_warnings": [f"retrieval_deadline_exceeded:{reason}"],
+            "insufficient_context": not selected,
+            "partial_context_pack": True,
+        }
+        self.append(
+            {
+                "record_type": "context_pack_audit",
+                "context_pack_id": context_pack_id,
+                "query": query,
+                "scope": scope,
+                "summary_text": summarize_text(" ".join(str(item.get("text", "")) for item in selected), limit=512),
+                "selected_refs": compact_refs_for_audit(selected),
+                "question_type": question_type,
+                "packing_policy": pack["packing_policy"],
+                "recall_policy": pack["recall_policy"],
+                "local_context_policy": pack["local_context_policy"],
+                "used_local_context_tokens": pack["used_local_context_tokens"],
+                "used_remote_context_tokens": pack["used_remote_context_tokens"],
+                "total_prompt_context_tokens": pack["total_prompt_context_tokens"],
+                "remote_context_budget_tokens": pack["remote_context_budget_tokens"],
+                "primary_candidate_count": 0,
+                "auxiliary_candidate_count": 0,
+                "created_at_ms": now_ms(),
+            }
+        )
+        return pack
+
     def retrieve(self, args: Json) -> Json:
+        started_perf = time.perf_counter()
         query = require_string(args, "query")
         scope = optional_object(args, "scope")
         ranking = optional_object(args, "ranking")
+        raw_deadline_ms = args.get("deadline_ms", ranking.get("deadline_ms", os.environ.get("MATRIXARK_RETRIEVAL_TIMEOUT_MS", 0)))
+        try:
+            deadline_ms = int(raw_deadline_ms or 0)
+        except (TypeError, ValueError):
+            raise MatrixArkError("deadline_ms must be an integer")
+
+        def deadline_exceeded() -> bool:
+            return deadline_ms > 0 and (time.perf_counter() - started_perf) * 1000.0 >= deadline_ms
+
         question_type = str(args.get("question_type") or infer_query_type(query))
         secondary_index_filter_groups = infer_secondary_index_filter_groups(query, question_type)
         secondary_index_filter_mode = "any_group" if len(secondary_index_filter_groups) > 1 else "all_groups"
@@ -3248,6 +3441,18 @@ class MatrixArkLocalAdapter:
         reference_time_ms = raw_reference_time_ms
         auxiliary_quota = integer_arg(ranking, "auxiliary_quota", 2, minimum=0)
         records = self.read_all()
+        if deadline_exceeded():
+            return self.deadline_fallback_pack(
+                query=query,
+                scope=scope,
+                question_type=question_type,
+                max_context_tokens=max_context_tokens,
+                local_budget=local_budget,
+                deadline_ms=deadline_ms,
+                elapsed_ms=round((time.perf_counter() - started_perf) * 1000.0, 3),
+                records=records,
+                reason="deadline_after_record_load",
+            )
         node_scores: dict[int, Json] = {}
         event_embedding_vectors: dict[int, list[float]] = {}
         entity_embedding_vectors: dict[int, list[float]] = {}
@@ -3303,6 +3508,18 @@ class MatrixArkLocalAdapter:
                 segment_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
             elif record_type == "context_embedding" and record.get("embedding_type") == "compression_summary":
                 compression_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
+        if deadline_exceeded():
+            return self.deadline_fallback_pack(
+                query=query,
+                scope=scope,
+                question_type=question_type,
+                max_context_tokens=max_context_tokens,
+                local_budget=local_budget,
+                deadline_ms=deadline_ms,
+                elapsed_ms=round((time.perf_counter() - started_perf) * 1000.0, 3),
+                records=records,
+                reason="deadline_after_embedding_index_scan",
+            )
 
         top_k_per_layer = integer_arg(ranking, "top_k_per_layer", 8, minimum=1)
         max_children_scored_per_parent = integer_arg(ranking, "max_children_scored_per_parent", 10000, minimum=1)
@@ -3392,6 +3609,18 @@ class MatrixArkLocalAdapter:
                         reference_time_ms=reference_time_ms,
                     )
                 )
+        if deadline_exceeded():
+            return self.deadline_fallback_pack(
+                query=query,
+                scope=scope,
+                question_type=question_type,
+                max_context_tokens=max_context_tokens,
+                local_budget=local_budget,
+                deadline_ms=deadline_ms,
+                elapsed_ms=round((time.perf_counter() - started_perf) * 1000.0, 3),
+                records=records,
+                reason="deadline_after_event_scan",
+            )
         for record in reversed(records):
             if record.get("record_type") != "context_entity":
                 continue
@@ -3443,6 +3672,18 @@ class MatrixArkLocalAdapter:
                         reference_time_ms=reference_time_ms,
                     )
                 )
+        if deadline_exceeded():
+            return self.deadline_fallback_pack(
+                query=query,
+                scope=scope,
+                question_type=question_type,
+                max_context_tokens=max_context_tokens,
+                local_budget=local_budget,
+                deadline_ms=deadline_ms,
+                elapsed_ms=round((time.perf_counter() - started_perf) * 1000.0, 3),
+                records=records,
+                reason="deadline_after_entity_scan",
+            )
         for record in reversed(records):
             if record.get("record_type") != "context_segment":
                 continue
@@ -3499,6 +3740,18 @@ class MatrixArkLocalAdapter:
                         reference_time_ms=reference_time_ms,
                     )
                 )
+        if deadline_exceeded():
+            return self.deadline_fallback_pack(
+                query=query,
+                scope=scope,
+                question_type=question_type,
+                max_context_tokens=max_context_tokens,
+                local_budget=local_budget,
+                deadline_ms=deadline_ms,
+                elapsed_ms=round((time.perf_counter() - started_perf) * 1000.0, 3),
+                records=records,
+                reason="deadline_after_segment_scan",
+            )
         for record in reversed(records):
             if record.get("record_type") != "context_compression_event":
                 continue
@@ -3548,6 +3801,18 @@ class MatrixArkLocalAdapter:
                         reference_time_ms=reference_time_ms,
                     )
                 )
+        if deadline_exceeded():
+            return self.deadline_fallback_pack(
+                query=query,
+                scope=scope,
+                question_type=question_type,
+                max_context_tokens=max_context_tokens,
+                local_budget=local_budget,
+                deadline_ms=deadline_ms,
+                elapsed_ms=round((time.perf_counter() - started_perf) * 1000.0, 3),
+                records=records,
+                reason="deadline_after_compression_scan",
+            )
         primary_matches.sort(key=lambda item: item["score"], reverse=True)
         auxiliary_matches.sort(key=lambda item: item["score"], reverse=True)
         selected, used_context_tokens, dropped_over_budget = select_token_budgeted_refs(
@@ -3757,6 +4022,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             self._index_cache.append(record_id)
             self._client.put_string(self._index_key, json.dumps(self._index_cache, separators=(",", ":")))
             self._records_cache.append(record)
+            self._put_direct_record_cache(len(self._records_cache), self._records_cache)
             return
 
         sequence = len(self._records_cache)
@@ -3764,6 +4030,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         self._client.hset(record_key, record_id, payload)
         self._client.put_string(self._count_key, str(sequence + 1))
         self._records_cache.append(record)
+        self._put_direct_record_cache(sequence + 1, self._records_cache)
 
     def read_all(self) -> list[Json]:
         if self._records_cache is not None:
@@ -3771,13 +4038,35 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         count = self._get_count()
         if count > 0:
             self._legacy_index_mode = False
+            cached = self._get_direct_record_cache(count)
+            if cached is not None:
+                self._records_cache = cached
+                return list(self._records_cache)
             self._records_cache = self._load_records_by_count(count)
+            self._put_direct_record_cache(count, self._records_cache)
             return list(self._records_cache)
         index = self._get_index()
         self._index_cache = index
         self._legacy_index_mode = bool(index)
         self._records_cache = self._load_records(index)
         return list(self._records_cache)
+
+    def _get_direct_record_cache(self, count: int) -> list[Json] | None:
+        with _DIRECT_RECORD_CACHE_LOCK:
+            cached = _DIRECT_RECORD_CACHE.get(self._storage_prefix)
+            if cached is None:
+                return None
+            cached_count, records = cached
+            if cached_count != count:
+                return None
+            return list(records)
+
+    def _put_direct_record_cache(self, count: int, records: list[Json]) -> None:
+        with _DIRECT_RECORD_CACHE_LOCK:
+            if len(_DIRECT_RECORD_CACHE) >= _DIRECT_RECORD_CACHE_MAX_PREFIXES and self._storage_prefix not in _DIRECT_RECORD_CACHE:
+                oldest = next(iter(_DIRECT_RECORD_CACHE))
+                _DIRECT_RECORD_CACHE.pop(oldest, None)
+            _DIRECT_RECORD_CACHE[self._storage_prefix] = (count, list(records))
 
     def _load_records_by_count(self, count: int) -> list[Json]:
         records = []
