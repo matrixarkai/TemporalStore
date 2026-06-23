@@ -8,9 +8,9 @@ use serde_json::Value;
 use crate::engine::TemporalEngine;
 use crate::http::{post_json_with_options_and_headers, HttpRequestOptions};
 use crate::types::{
-    context_model_descriptors, Command, CommandResponse, ContextAuditRef, ContextEvent,
-    ContextIndexRef, ContextModelDescriptor, ContextNode, ContextPackAudit,
-    ContextSummaryDirtyMarker, ExecuteRequest, ShardId, Status,
+    context_model_descriptors, Command, CommandResponse, ContextAuditRef, ContextEmbedding,
+    ContextEvent, ContextIndexRef, ContextModelDescriptor, ContextNode, ContextPackAudit,
+    ContextSummary, ContextSummaryDirtyMarker, ExecuteRequest, ShardId, Status,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1095,6 +1095,37 @@ pub fn extract_context(
         propagate_depth: 1,
     };
 
+    let summary_l0 = ContextSummary {
+        node_hash,
+        level: 1,
+        text: l0.clone(),
+        valid_from_ms: timestamp_ms,
+    };
+    let summary_l1 = ContextSummary {
+        node_hash,
+        level: 2,
+        text: l1.clone(),
+        valid_from_ms: timestamp_ms,
+    };
+    let embedding_l0 = ContextEmbedding {
+        ref_hash: context_embedding_ref_hash(request.tenant_hash, node_hash, "node_l0"),
+        level: 1,
+        vector: deterministic_context_embedding(&provider.embedding_model, &l0),
+        updated_at_ms: timestamp_ms,
+    };
+    let embedding_l1 = ContextEmbedding {
+        ref_hash: context_embedding_ref_hash(request.tenant_hash, node_hash, "node_l1"),
+        level: 2,
+        vector: deterministic_context_embedding(&provider.embedding_model, &l1),
+        updated_at_ms: timestamp_ms,
+    };
+    let embedding_event = ContextEmbedding {
+        ref_hash: context_embedding_ref_hash(request.tenant_hash, event_id_hash, "event_text"),
+        level: 3,
+        vector: deterministic_context_embedding(&provider.embedding_model, &request.body),
+        updated_at_ms: timestamp_ms,
+    };
+
     for command in [
         Command::ContextUpsertNode {
             tenant_hash: request.tenant_hash,
@@ -1117,6 +1148,26 @@ pub fn extract_context(
         Command::ContextMarkSummaryDirty {
             tenant_hash: request.tenant_hash,
             marker: dirty_marker.clone(),
+        },
+        Command::ContextUpsertSummary {
+            tenant_hash: request.tenant_hash,
+            summary: summary_l0,
+        },
+        Command::ContextUpsertSummary {
+            tenant_hash: request.tenant_hash,
+            summary: summary_l1,
+        },
+        Command::ContextUpsertEmbedding {
+            tenant_hash: request.tenant_hash,
+            embedding: embedding_l0,
+        },
+        Command::ContextUpsertEmbedding {
+            tenant_hash: request.tenant_hash,
+            embedding: embedding_l1,
+        },
+        Command::ContextUpsertEmbedding {
+            tenant_hash: request.tenant_hash,
+            embedding: embedding_event,
         },
     ] {
         let response = engine.execute_durable(ExecuteRequest {
@@ -2903,6 +2954,26 @@ fn stable_hash64(value: &str) -> u64 {
     hash
 }
 
+fn context_embedding_ref_hash(tenant_hash: u64, ref_hash: u64, level: &str) -> u64 {
+    stable_hash64(&format!("ctx-embedding:{tenant_hash}:{ref_hash}:{level}"))
+}
+
+fn deterministic_context_embedding(model: &str, text: &str) -> Vec<f32> {
+    let mut vector = Vec::with_capacity(16);
+    for index in 0..16_u64 {
+        let hash = stable_hash64(&format!("{model}:{index}:{text}"));
+        let signed = (hash % 20_001) as f32 - 10_000.0;
+        vector.push(signed / 10_000.0);
+    }
+    let norm = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        for value in &mut vector {
+            *value /= norm;
+        }
+    }
+    vector
+}
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -4072,6 +4143,44 @@ mod tests {
             extract.provider.vlm_model == "Vision-CAIR/MiniGPT-4"
                 && extract.provider.embedding_model == "BAAI/bge-m3"
         }));
+        for extract in &ingest.extracts {
+            let summaries = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextQuerySummaries {
+                    tenant_hash: 20260620,
+                    node_hash: extract.node.node_hash,
+                    level: 1,
+                    as_of_ms: extract.event.event_time_ms + 1,
+                    limit: Some(4),
+                },
+            });
+            assert!(matches!(
+                summaries.response,
+                CommandResponse::ContextSummaries { ref summaries, .. }
+                    if summaries.iter().any(|summary| summary.text == extract.l0)
+            ));
+
+            let embedding_refs = vec![
+                context_embedding_ref_hash(20260620, extract.node.node_hash, "node_l0"),
+                context_embedding_ref_hash(20260620, extract.node.node_hash, "node_l1"),
+                context_embedding_ref_hash(20260620, extract.event.event_id_hash, "event_text"),
+            ];
+            let embeddings = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextQueryEmbeddings {
+                    tenant_hash: 20260620,
+                    ref_hashes: embedding_refs,
+                    limit: Some(8),
+                },
+            });
+            assert!(matches!(
+                embeddings.response,
+                CommandResponse::ContextEmbeddings { ref embeddings }
+                    if embeddings.len() == 3
+                        && embeddings.iter().all(|embedding| embedding.vector.len() == 16)
+                        && embeddings.iter().all(|embedding| embedding.updated_at_ms == extract.event.event_time_ms)
+            ));
+        }
 
         let retrieve = retrieve_context(&engine, ingest.retrieve_request);
         assert!(retrieve.status.ok, "{:?}", retrieve.status);

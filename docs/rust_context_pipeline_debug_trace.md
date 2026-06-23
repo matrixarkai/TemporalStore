@@ -71,10 +71,14 @@ flowchart LR
   C --> E["ContextEventModel / ContextSegment id 10"]
   C --> F["ContextIndexModel id 11"]
   C --> G["ContextDirtyModel id 13"]
+  C --> N["ContextSummaryModel id 16"]
+  C --> O["ContextEmbeddingModel id 15"]
   D --> H["TemporalEngine durable pages/index-log/oplog"]
   E --> H
   F --> H
   G --> H
+  N --> H
+  O --> H
   H --> I["retrieve_context L0/L1/L2"]
   I --> J["ContextBlock evidence"]
   J --> K["inject_context"]
@@ -242,6 +246,74 @@ Command:
 
 ```text
 Command::ContextMarkSummaryDirty
+```
+
+### `ContextSummaryModel` / `ContextSummary`
+
+Purpose: persist generated L0/L1 summaries for retrieval, node-context queries, and later
+compression/refresh workflows.
+
+Every Rust extraction now writes:
+
+```json
+[
+  {
+    "node_hash": "<node_hash>",
+    "level": 1,
+    "text": "<generated L0 summary>",
+    "valid_from_ms": "<event_time_ms>"
+  },
+  {
+    "node_hash": "<node_hash>",
+    "level": 2,
+    "text": "<generated L1 summary>",
+    "valid_from_ms": "<event_time_ms>"
+  }
+]
+```
+
+Command:
+
+```text
+Command::ContextUpsertSummary
+```
+
+### `ContextEmbeddingModel` / `ContextEmbedding`
+
+Purpose: persist OSS/OpenViking-provider embedding evidence for node summaries and event text.
+
+Every Rust extraction now writes deterministic local embeddings seeded by the selected provider's
+`embedding_model`, so OSS profiles such as `sentence-transformers/all-MiniLM-L6-v2`,
+`nomic-embed-text`, and `BAAI/bge-m3` produce persisted `ContextEmbedding` records without claiming
+a live model endpoint was called.
+
+```json
+[
+  {
+    "level": 1,
+    "ref": "node_l0",
+    "vector_dimensions": 16,
+    "updated_at_ms": "<event_time_ms>"
+  },
+  {
+    "level": 2,
+    "ref": "node_l1",
+    "vector_dimensions": 16,
+    "updated_at_ms": "<event_time_ms>"
+  },
+  {
+    "level": 3,
+    "ref": "event_text",
+    "vector_dimensions": 16,
+    "updated_at_ms": "<event_time_ms>"
+  }
+]
+```
+
+Command:
+
+```text
+Command::ContextUpsertEmbedding
 ```
 
 ### `ContextAuditModel` / `ContextPackAudit`
