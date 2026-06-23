@@ -102,7 +102,20 @@
       "storage_byteraft_follower_cursor_gc",
       "storage_byteraft_cache_refill_pressure",
       "storage_byteraft_shared_store_sync_replay",
-      "storage_byteraft_shared_store_async_replay"
+      "storage_byteraft_shared_store_async_replay",
+      "context_events_segments_entities_child_refs",
+      "context_embeddings_summaries_l0_l1_pipeline",
+      "context_compression_secondary_index_query_debug_flow",
+      "control_multi_proxy_convergence_and_quarantine",
+      "control_scheduler_token_stale_rejection",
+      "control_datanode_lifecycle_restart_recovery",
+      "control_client_retry_budget_topology_refresh",
+      "ingestion_kafka_consumer_group_runtime_rebalance",
+      "ingestion_flink_checkpoint_restart_failover",
+      "ingestion_dead_letter_lag_report_contract",
+      "benchmark_locomo_rust_full_replay_contract",
+      "benchmark_longmemeval_rust_full_replay_contract",
+      "benchmark_cpp_rust_vikingmem_report_comparator"
     ],
     "required_raft_case_names": [
       "storage_data_raft_replication_gtest",
@@ -4872,6 +4885,506 @@
             "migration_case": "cpp_logical_storage_models_packed_timestamped_pages",
             "description": "Storage shared case: async local shared-store replay preserves converted pages and oplog/index-log ordering under delayed follower catch-up.",
             "mode": "Async"
+          }
+        }
+      ]
+    },
+    {
+      "name": "context_events_segments_entities_child_refs",
+      "shard_id": 58,
+      "steps": [
+        {
+          "name": "context_events_segments_entities_child_refs_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_context_pipeline_parity",
+            "mode": "rust_executable_cxx_static",
+            "description": "Shared Context pipeline case for ContextEvent, ContextSegment, ContextEntity, child refs, extracted-event fanout, and node-context query behavior.",
+            "required_paths": [
+              "docs/rust_code_deep_dive_vs_cpp.md"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust context_models_match_cpp_registration_ids_and_validation_limits context_write_extracted_event_fans_out_default_indexes --lib -- --test-threads=1",
+            "rust_validator": "tools/run_context_workflow_local.sh"
+          }
+        }
+      ]
+    },
+    {
+      "name": "context_embeddings_summaries_l0_l1_pipeline",
+      "shard_id": 59,
+      "steps": [
+        {
+          "name": "context_embeddings_summaries_l0_l1_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_context_pipeline_parity",
+            "mode": "rust_executable_cxx_static",
+            "description": "Shared Context pipeline case for embedding records, L0/L1 summaries, summary dirty tracking, provider/model selection, and prompt block construction.",
+            "required_paths": [
+              "docs/context_ingestion_extraction_retrieval_manual.md"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust context_tree_embedding_summary_and_compression_match_cpp_round_trip context_benchmark_injection_uses_entity_segment_l0_l1_and_secondary_index --lib -- --test-threads=1",
+            "rust_validator": "tools/run_context_workflow_local.sh"
+          }
+        }
+      ]
+    },
+    {
+      "name": "context_compression_secondary_index_query_debug_flow",
+      "shard_id": 60,
+      "steps": [
+        {
+          "name": "context_compression_secondary_index_query_debug_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_context_pipeline_parity",
+            "mode": "rust_executable_cxx_static",
+            "description": "Shared Context pipeline case for temporal compression, secondary-index filter groups, query debug flow, retrieved evidence ordering, and audit refs.",
+            "required_paths": [
+              "docs/rust_matrixark_query_index_debug_flow.md"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust context_temporal_compression_keeps_source_events_replayable context_benchmark_injection_uses_entity_segment_l0_l1_and_secondary_index --lib -- --test-threads=1",
+            "rust_validator": "tools/run_context_workflow_local.sh"
+          }
+        }
+      ]
+    },
+    {
+      "name": "control_multi_proxy_convergence_and_quarantine",
+      "shard_id": 61,
+      "steps": [
+        {
+          "name": "multi_proxy_convergence_quarantine_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_proxy_control_plane_parity",
+            "mode": "rust_executable_cxx_static",
+            "description": "Shared control-plane case for multi-proxy topology convergence, backend quarantine, recovery probing, and stale-cache comparison.",
+            "required_paths": [
+              "src/proxy/proxy_server.cc"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust proxy_backend_failure_quarantines_route_then_recovers proxy_cache_ttl_and_topology_version_guard_invalidate_routes -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py"
+          }
+        }
+      ]
+    },
+    {
+      "name": "control_scheduler_token_stale_rejection",
+      "shard_id": 62,
+      "steps": [
+        {
+          "name": "scheduler_token_stale_generation_rejection_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_metaserver_control_plane_parity",
+            "mode": "rust_executable_cxx_static",
+            "description": "Shared control-plane case for metaserver scheduler-issued load/reload/unload tokens and stale generation rejection.",
+            "required_paths": [
+              "src/metaserver_v2/meta_task_scheduler.cc"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust metaserver_scheduler_execute_next_installs_token_then_loads_node metaserver_scheduler_retries_busy_unload_without_dropping_task -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py"
+          }
+        }
+      ]
+    },
+    {
+      "name": "control_datanode_lifecycle_restart_recovery",
+      "shard_id": 63,
+      "steps": [
+        {
+          "name": "datanode_lifecycle_restart_recovery_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_node_lifecycle_parity",
+            "mode": "rust_executable_cxx_static",
+            "description": "Shared control-plane case for data-node load/reload/readonly/unload lifecycle, lifecycle snapshot restore, and restart diagnostics.",
+            "required_paths": [
+              "src/partition/partition_manager.cc"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust runtime_lifecycle_snapshot_restores_transitions_and_tokens runtime_auto_persists_lifecycle_snapshot_across_transitions runtime_reports_bad_lifecycle_snapshot_restore_in_preflight -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py"
+          }
+        }
+      ]
+    },
+    {
+      "name": "control_client_retry_budget_topology_refresh",
+      "shard_id": 64,
+      "steps": [
+        {
+          "name": "client_retry_budget_topology_refresh_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_client_control_plane_parity",
+            "mode": "rust_executable_cxx_static",
+            "description": "Shared control-plane case for client read/write retry budgets, topology refresh on version changes, stale route invalidation, and no duplicate unsafe writes.",
+            "required_paths": [
+              "src/client/table_client.cc"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust client_retries_cpp_retryable_read_status_before_returning client_does_not_retry_write_status_without_write_retry_budget client_retry_classifier_separates_safe_topology_retry_from_unsafe_write_retry -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py"
+          }
+        }
+      ]
+    },
+    {
+      "name": "ingestion_kafka_consumer_group_runtime_rebalance",
+      "shard_id": 65,
+      "steps": [
+        {
+          "name": "kafka_consumer_group_runtime_rebalance_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_ingestion_parity",
+            "mode": "rust_executable_cxx_static",
+            "description": "Shared ingestion case for Kafka consumer-group runtime, assignment changes, rebalance-required detection, and backpressure under in-flight pressure.",
+            "required_paths": [
+              "src/client/example/kafka_consumer_group_runtime.cc"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust kafka_consumer_group_runtime_reports_rebalance_and_backpressure -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_ingestion_ops_parity_evidence.py"
+          }
+        }
+      ]
+    },
+    {
+      "name": "ingestion_flink_checkpoint_restart_failover",
+      "shard_id": 66,
+      "steps": [
+        {
+          "name": "flink_checkpoint_restart_failover_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_ingestion_parity",
+            "mode": "rust_executable_cxx_static",
+            "description": "Shared ingestion case for Flink precommit/commit/abort lifecycle across restart/failover idempotence.",
+            "required_paths": [
+              "src/client/example/flink_checkpoint_replay_example.cc"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust flink_checkpoint_lifecycle_precommit_commit_abort ingestion_restart_replays_offsets_and_checkpoints_idempotently -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_ingestion_ops_parity_evidence.py"
+          }
+        }
+      ]
+    },
+    {
+      "name": "ingestion_dead_letter_lag_report_contract",
+      "shard_id": 67,
+      "steps": [
+        {
+          "name": "dead_letter_lag_report_contract_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_ingestion_parity",
+            "mode": "rust_executable_cxx_static",
+            "description": "Shared ingestion case for dead-letter export, lag metrics, committed offsets, and non-blocking valid-record continuation.",
+            "required_paths": [
+              "docs/rust_ingestion_api_kafka_flink_20_cycle_plan.md"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust dead_letter_export_captures_invalid_records_without_blocking_valid_records ingestion_lag_metrics_report_committed_and_high_water_offsets -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_ingestion_ops_parity_evidence.py"
+          }
+        }
+      ]
+    },
+    {
+      "name": "benchmark_locomo_rust_full_replay_contract",
+      "shard_id": 68,
+      "steps": [
+        {
+          "name": "locomo_full_rust_replay_contract_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_context_benchmark_parity",
+            "mode": "shared_benchmark_contract",
+            "description": "Shared benchmark contract for LOCOMO full Rust TemporalStore replay, deterministic and OSS-reader modes, report archive, and VikingMem-style fields.",
+            "required_paths": [
+              "docs/locomo_cpp_path_testing_score_improvement.md"
+            ],
+            "rust_runner": "python3 tools/run_locomo_90_hit_rate.py --threshold-profile locomo_full --require-full-rust-temporalstore-replay --rust-temporalstore-release",
+            "rust_validator": "python3 tools/validate_benchmark_claims.py",
+            "report_contract": {
+              "format": "matrixark_vikingmem_context_benchmark_report_v1",
+              "required_fields": [
+                "schema",
+                "benchmark_family",
+                "input_sha256",
+                "input_bytes",
+                "benchmark_hit_at_k",
+                "benchmark_recall_at_k",
+                "benchmark_mean_reciprocal_rank",
+                "benchmark_token_reduction_percent",
+                "benchmark_retrieval_p50_ms",
+                "benchmark_retrieval_p95_ms",
+                "benchmark_reader_p50_ms",
+                "benchmark_reader_p95_ms",
+                "benchmark_quality_ready",
+                "benchmark_threshold_passed",
+                "benchmark_threshold_violation_count",
+                "benchmark_threshold_violations",
+                "benchmark_thresholds",
+                "benchmark_per_query_count",
+                "benchmark_avg_retrieved_source_groups_per_query",
+                "benchmark_multi_source_group_query_rate",
+                "benchmark_max_retrieved_tokens_per_query",
+                "category_breakdown",
+                "weak_category_count",
+                "weak_categories",
+                "weak_category_policy",
+                "case_count",
+                "hit_rate",
+                "reader_hit_rate",
+                "reader_mode_requested",
+                "reader_mode_effective",
+                "reader_provider_name",
+                "reader_model",
+                "paper_comparable_claim_ready",
+                "rust_temporalstore_full_replay_ready"
+              ],
+              "per_query_required_fields": [
+                "query_id",
+                "category",
+                "hit",
+                "rank",
+                "reader_hit",
+                "reader_answer",
+                "expected_answer_terms",
+                "expected_source_ref_ids",
+                "retrieved_source_ids",
+                "retrieved_source_groups",
+                "retrieved_source_group_ids",
+                "retrieval_ms",
+                "reader_ms",
+                "retrieved_blocks",
+                "retrieved_tokens",
+                "source_tokens",
+                "token_reduction_percent"
+              ],
+              "thresholds_field": "benchmark_thresholds",
+              "violations_field": "benchmark_threshold_violations"
+            },
+            "cpp_runner_contract": "C++ runner emits matrixark_vikingmem_context_benchmark_report_v1 with the same dataset, threshold, archive, and per-query fields.",
+            "archive_contract": "Archive directory contains manifest.json, report JSON, and misses JSONL; skipped real artifacts are explicit status values, not passing scores.",
+            "threshold_profiles": [
+              "locomo_full",
+              "oss_reader_full"
+            ],
+            "datasets": [
+              {
+                "name": "LOCOMO",
+                "artifact_kind": "real_or_fixture_json",
+                "threshold_profile": "locomo_full"
+              },
+              {
+                "name": "LOCOMO_oss_reader",
+                "artifact_kind": "real_json_with_live_reader",
+                "threshold_profile": "oss_reader_full"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "benchmark_longmemeval_rust_full_replay_contract",
+      "shard_id": 69,
+      "steps": [
+        {
+          "name": "longmemeval_full_rust_replay_contract_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_context_benchmark_parity",
+            "mode": "shared_benchmark_contract",
+            "description": "Shared benchmark contract for LongMemEval_s full Rust TemporalStore replay, deterministic and OSS-reader modes, report archive, and VikingMem-style fields.",
+            "required_paths": [
+              "docs/rust_temporalstore_locomo_longmemeval_benchmark_metrics.md"
+            ],
+            "rust_runner": "python3 tools/run_longmemeval_s_full_path.py --threshold-profile longmemeval_full --require-full-rust-temporalstore-replay --rust-temporalstore-release",
+            "rust_validator": "python3 tools/validate_benchmark_claims.py",
+            "report_contract": {
+              "format": "matrixark_vikingmem_context_benchmark_report_v1",
+              "required_fields": [
+                "schema",
+                "benchmark_family",
+                "input_sha256",
+                "input_bytes",
+                "benchmark_hit_at_k",
+                "benchmark_recall_at_k",
+                "benchmark_mean_reciprocal_rank",
+                "benchmark_token_reduction_percent",
+                "benchmark_retrieval_p50_ms",
+                "benchmark_retrieval_p95_ms",
+                "benchmark_reader_p50_ms",
+                "benchmark_reader_p95_ms",
+                "benchmark_quality_ready",
+                "benchmark_threshold_passed",
+                "benchmark_threshold_violation_count",
+                "benchmark_threshold_violations",
+                "benchmark_thresholds",
+                "benchmark_per_query_count",
+                "benchmark_avg_retrieved_source_groups_per_query",
+                "benchmark_multi_source_group_query_rate",
+                "benchmark_max_retrieved_tokens_per_query",
+                "category_breakdown",
+                "weak_category_count",
+                "weak_categories",
+                "weak_category_policy",
+                "case_count",
+                "hit_rate",
+                "reader_hit_rate",
+                "reader_mode_requested",
+                "reader_mode_effective",
+                "reader_provider_name",
+                "reader_model",
+                "paper_comparable_claim_ready",
+                "rust_temporalstore_full_replay_ready"
+              ],
+              "per_query_required_fields": [
+                "query_id",
+                "category",
+                "hit",
+                "rank",
+                "reader_hit",
+                "reader_answer",
+                "expected_answer_terms",
+                "expected_source_ref_ids",
+                "retrieved_source_ids",
+                "retrieved_source_groups",
+                "retrieved_source_group_ids",
+                "retrieval_ms",
+                "reader_ms",
+                "retrieved_blocks",
+                "retrieved_tokens",
+                "source_tokens",
+                "token_reduction_percent"
+              ],
+              "thresholds_field": "benchmark_thresholds",
+              "violations_field": "benchmark_threshold_violations"
+            },
+            "cpp_runner_contract": "C++ runner emits matrixark_vikingmem_context_benchmark_report_v1 with the same dataset, threshold, archive, and per-query fields.",
+            "archive_contract": "Archive directory contains manifest.json, report JSON, and misses JSONL; skipped real artifacts are explicit status values, not passing scores.",
+            "threshold_profiles": [
+              "longmemeval_full",
+              "oss_reader_full"
+            ],
+            "datasets": [
+              {
+                "name": "LongMemEval_s",
+                "artifact_kind": "real_or_fixture_json",
+                "threshold_profile": "longmemeval_full"
+              },
+              {
+                "name": "LongMemEval_s_oss_reader",
+                "artifact_kind": "real_json_with_live_reader",
+                "threshold_profile": "oss_reader_full"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "benchmark_cpp_rust_vikingmem_report_comparator",
+      "shard_id": 70,
+      "steps": [
+        {
+          "name": "cpp_rust_vikingmem_report_comparator_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_context_benchmark_parity",
+            "mode": "shared_benchmark_contract",
+            "description": "Shared benchmark contract for comparing C++ and Rust matrixark_vikingmem_context_benchmark_report_v1 archives case-by-case.",
+            "required_paths": [
+              "docs/same_tests_cpp_rust_contract.md"
+            ],
+            "rust_runner": "python3 tools/compare_context_benchmark_archives.py --help",
+            "rust_validator": "python3 tools/validate_benchmark_claims.py",
+            "report_contract": {
+              "format": "matrixark_vikingmem_context_benchmark_report_v1",
+              "required_fields": [
+                "schema",
+                "benchmark_family",
+                "input_sha256",
+                "input_bytes",
+                "benchmark_hit_at_k",
+                "benchmark_recall_at_k",
+                "benchmark_mean_reciprocal_rank",
+                "benchmark_token_reduction_percent",
+                "benchmark_retrieval_p50_ms",
+                "benchmark_retrieval_p95_ms",
+                "benchmark_reader_p50_ms",
+                "benchmark_reader_p95_ms",
+                "benchmark_quality_ready",
+                "benchmark_threshold_passed",
+                "benchmark_threshold_violation_count",
+                "benchmark_threshold_violations",
+                "benchmark_thresholds",
+                "benchmark_per_query_count",
+                "benchmark_avg_retrieved_source_groups_per_query",
+                "benchmark_multi_source_group_query_rate",
+                "benchmark_max_retrieved_tokens_per_query",
+                "category_breakdown",
+                "weak_category_count",
+                "weak_categories",
+                "weak_category_policy",
+                "case_count",
+                "hit_rate",
+                "reader_hit_rate",
+                "reader_mode_requested",
+                "reader_mode_effective",
+                "reader_provider_name",
+                "reader_model",
+                "paper_comparable_claim_ready",
+                "rust_temporalstore_full_replay_ready"
+              ],
+              "per_query_required_fields": [
+                "query_id",
+                "category",
+                "hit",
+                "rank",
+                "reader_hit",
+                "reader_answer",
+                "expected_answer_terms",
+                "expected_source_ref_ids",
+                "retrieved_source_ids",
+                "retrieved_source_groups",
+                "retrieved_source_group_ids",
+                "retrieval_ms",
+                "reader_ms",
+                "retrieved_blocks",
+                "retrieved_tokens",
+                "source_tokens",
+                "token_reduction_percent"
+              ],
+              "thresholds_field": "benchmark_thresholds",
+              "violations_field": "benchmark_threshold_violations"
+            },
+            "cpp_runner_contract": "C++ runner emits matrixark_vikingmem_context_benchmark_report_v1 with the same dataset, threshold, archive, and per-query fields.",
+            "archive_contract": "Archive directory contains manifest.json, report JSON, and misses JSONL; skipped real artifacts are explicit status values, not passing scores.",
+            "threshold_profiles": [
+              "fixture",
+              "locomo_full",
+              "longmemeval_full"
+            ],
+            "datasets": [
+              {
+                "name": "LOCOMO_comparison",
+                "artifact_kind": "archived_report_pair",
+                "threshold_profile": "locomo_full"
+              },
+              {
+                "name": "LongMemEval_s_comparison",
+                "artifact_kind": "archived_report_pair",
+                "threshold_profile": "longmemeval_full"
+              },
+              {
+                "name": "fixture_comparison",
+                "artifact_kind": "archived_report_pair",
+                "threshold_profile": "fixture"
+              }
+            ]
           }
         }
       ]

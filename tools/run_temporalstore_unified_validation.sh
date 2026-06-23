@@ -55,6 +55,7 @@ python3 tools/validate_raft_storage_parity_evidence.py "${RAFT_CPP_EVIDENCE_ARGS
 python3 tools/run_raft_shared_cases.py --validate-only
 python3 tools/validate_storage_raft_production_plan.py
 python3 tools/validate_control_plane_parity_evidence.py
+python3 tools/run_context_shared_cases.py --validate-only
 python3 tools/run_control_plane_shared_cases.py --validate-only
 python3 tools/validate_api_model_parity_evidence.py
 python3 tools/validate_ingestion_ops_parity_evidence.py

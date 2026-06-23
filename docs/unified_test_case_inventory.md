@@ -15,12 +15,12 @@ compat/unified_temporalstore_cases.json
 Current inventory:
 
 ```text
-total cases: 102
-total steps: 190
+total cases: 115
+total steps: 203
 executable shared behavior cases: 32
 executable shared behavior steps: 113
-C++ existing-test parity surface cases: 70
-C++ existing-test parity surface steps: 77
+C++ existing-test parity surface cases: 83
+C++ existing-test parity surface steps: 90
 C++ required source/test/harness paths: 133 unique paths plus 60 Raft path references
 required command kinds: 59
 required response kinds: 19
@@ -179,8 +179,21 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `context_extracted_event_default_index_fanout` | Rust-executable/C++-static gate translated from C++ `WRITE_EXTRACTED_EVENT` debug tests; default internal indexes fan out and disabled indexes do not return refs. |
 | `context_tree_embedding_summary_compression` | Rust-executable/C++-static gate translated from C++ tree/embedding/summary/compression round-trip behavior. |
 | `context_temporal_compression_replayable_summary` | Rust-executable/C++-static gate translated from C++ temporal compression behavior; compression must not delete source events. |
+| `context_events_segments_entities_child_refs` | Rust-executable/C++-static gate for ContextEvent, ContextSegment, ContextEntity, child refs, extracted-event fanout, and node-context query behavior. |
+| `context_embeddings_summaries_l0_l1_pipeline` | Rust-executable/C++-static gate for embeddings, L0/L1 summaries, summary dirty tracking, provider/model selection, and prompt block construction. |
+| `context_compression_secondary_index_query_debug_flow` | Rust-executable/C++-static gate for temporal compression, secondary-index filter groups, C++-style query debug flow, retrieved evidence ordering, and audit refs. |
 | `context_benchmark_fixture_gates` | Shared C++/Rust benchmark contract for LOCOMO-style and LongMemEval_s fixture gates using MatrixArk/VikingMem report fields. |
 | `context_benchmark_full_dataset_gates` | Shared C++/Rust benchmark contract for LOCOMO, LongMemEval_s, and Docker/open-model full-dataset gates with explicit threshold profiles and archive reports. |
+| `control_multi_proxy_convergence_and_quarantine` | Rust-executable/C++-static gate for multi-proxy convergence, backend quarantine, recovery probing, and stale-cache comparison. |
+| `control_scheduler_token_stale_rejection` | Rust-executable/C++-static gate for metaserver scheduler-issued lifecycle tokens and stale generation rejection. |
+| `control_datanode_lifecycle_restart_recovery` | Rust-executable/C++-static gate for data-node lifecycle, snapshot restore, and restart diagnostics. |
+| `control_client_retry_budget_topology_refresh` | Rust-executable/C++-static gate for client retry budgets, topology refresh, stale route invalidation, and no duplicate unsafe writes. |
+| `ingestion_kafka_consumer_group_runtime_rebalance` | Rust-executable/C++-static gate for Kafka consumer-group runtime assignment, rebalance-required detection, and backpressure. |
+| `ingestion_flink_checkpoint_restart_failover` | Rust-executable/C++-static gate for Flink checkpoint lifecycle across restart/failover idempotence. |
+| `ingestion_dead_letter_lag_report_contract` | Rust-executable/C++-static gate for dead-letter export, lag metrics, committed offsets, and valid-record continuation. |
+| `benchmark_locomo_rust_full_replay_contract` | Shared benchmark contract for LOCOMO full Rust TemporalStore replay, deterministic/OSS reader modes, and VikingMem-style archive fields. |
+| `benchmark_longmemeval_rust_full_replay_contract` | Shared benchmark contract for LongMemEval_s full Rust TemporalStore replay, deterministic/OSS reader modes, and VikingMem-style archive fields. |
+| `benchmark_cpp_rust_vikingmem_report_comparator` | Shared benchmark contract for comparing C++ and Rust `matrixark_vikingmem_context_benchmark_report_v1` archives case-by-case. |
 
 ## Unified Benchmark Report Contract
 
