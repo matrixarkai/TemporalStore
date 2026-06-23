@@ -3,6 +3,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from tools.matrixark_mcp_server import (
@@ -965,6 +966,70 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         )
         self.assertEqual(deferred["status"], "deferred")
         self.assertEqual(deferred["pending_event_count"], 1)
+
+    def test_oss_segment_provider_emits_model_boundaries(self):
+        scope = {"user_id": "segment-user", "session_id": "oss-segment-session"}
+        model_output = {
+            "segments": [
+                {
+                    "topic": "recursion_learning",
+                    "coordinate_tuples": [[1, 1], [3, 3]],
+                    "message_indexes": [1, 3],
+                    "saliency_score": 0.97,
+                    "summary_text": "Recursion definition and merge sort usage.",
+                }
+            ]
+        }
+        with patch("tools.matrixark_mcp_server.oss_model_memory_segments", return_value=model_output) as mocked:
+            result = self.call_tool(
+                "matrixark_batch_extract",
+                {
+                    "messages": [
+                        {"role": "user", "content": "Hi"},
+                        {"role": "user", "content": "Recursion means solving a smaller version of the same problem."},
+                        {"role": "assistant", "content": "A game algorithm note is unrelated."},
+                        {"role": "user", "content": "Merge sort uses recursion to split and combine arrays."},
+                    ],
+                    "scope": scope,
+                    "threshold_messages": 1,
+                    "segment_provider": "oss",
+                    "segment_model": "local-test-model",
+                },
+            )
+        mocked.assert_called_once()
+        self.assertEqual(result["segment_provider"]["provider"], "oss")
+        self.assertEqual(result["segment_provider"]["execution_mode"], "oss_model")
+        self.assertEqual(result["segment_provider"]["model"], "local-test-model")
+        self.assertFalse(result["segment_provider"]["fallback_used"])
+
+        replay = self.call_tool("matrixark_replay", {"context_pack_id": "debug"})
+        segments = [record for record in replay["events"] if record.get("record_type") == "context_segment"]
+        self.assertEqual(len(segments), 1)
+        self.assertEqual(segments[0]["topic"], "recursion_learning")
+        self.assertTrue(segments[0]["non_contiguous"])
+        self.assertEqual(segments[0]["message_indexes"], [1, 3])
+        self.assertEqual(len(segments[0]["source_event_ids"]), 2)
+
+    def test_oss_segment_provider_can_fallback_to_rules(self):
+        scope = {"user_id": "segment-user", "session_id": "oss-fallback-session"}
+        with patch("tools.matrixark_mcp_server.oss_model_memory_segments", side_effect=RuntimeError("model unavailable")):
+            result = self.call_tool(
+                "matrixark_batch_extract",
+                {
+                    "messages": [
+                        {"role": "user", "content": "The rollback runbook says restart stream proxy first."},
+                        {"role": "assistant", "content": "Thanks"},
+                    ],
+                    "scope": scope,
+                    "threshold_messages": 1,
+                    "segment_provider": "oss-fallback",
+                    "segment_model": "missing-local-model",
+                },
+            )
+        self.assertEqual(result["segment_provider"]["provider"], "oss")
+        self.assertEqual(result["segment_provider"]["execution_mode"], "rules_fallback")
+        self.assertTrue(result["segment_provider"]["fallback_used"])
+        self.assertGreaterEqual(result["segments_written"], 1)
 
     def test_segment_detection_keeps_generic_business_facts(self):
         scope = {"user_id": "segment-user", "session_id": "business-segment-session"}

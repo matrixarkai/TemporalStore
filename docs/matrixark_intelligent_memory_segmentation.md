@@ -37,12 +37,22 @@ Phase 2: event-centric partitioning
   merge non-contiguous segments with the same topic
 ```
 
-The production extractor can emit these tuples directly from GPT-4o-mini/OSS.
-The local implementation uses deterministic topic and saliency rules for tests,
-but it is deliberately not limited to a few demo topics: it keeps generic
-business/resource facts such as owners, deadlines, reviewer requirements,
-runbooks, incidents, and metrics so useful context is not pruned just because it
-is outside the original keyword set.
+MatrixArk now supports two segment-boundary providers:
+
+- `segment_provider=deterministic`: dependency-free local rules for CI and
+  offline debugging.
+- `segment_provider=oss`: calls a local `transformers` causal/instruct model and
+  asks it to emit the same JSON shape with topics, coordinate tuples, message
+  indexes, saliency scores, and summaries.
+
+The deterministic implementation is deliberately not limited to a few demo
+topics: it keeps generic business/resource facts such as owners, deadlines,
+reviewer requirements, runbooks, incidents, and metrics so useful context is not
+pruned just because it is outside the original keyword set.
+
+`segment_provider=oss-fallback` or `segment_provider_fallback=true` tries the OSS
+model first and falls back to deterministic rules if the local model cannot load
+or returns invalid JSON.
 
 ## Record Shape
 
@@ -82,12 +92,38 @@ limited to contiguous file/session spans.
 
 ## Validation
 
-Local:
+Local deterministic:
 
 ```bash
 python3 tools/run_matrixark_memory_segmentation_test.py \
   --backend local \
   --report-json /tmp/matrixark_segmentation_local.json
+```
+
+Local OSS model through MCP/API:
+
+```json
+{
+  "messages": [
+    {"role": "user", "content": "Recursion means solving smaller subproblems."},
+    {"role": "assistant", "content": "Game minimax is unrelated here."},
+    {"role": "user", "content": "Merge sort uses recursion to split arrays."}
+  ],
+  "scope": {"user_id": "u1", "session_id": "s1"},
+  "threshold_messages": 1,
+  "segment_provider": "oss",
+  "segment_model": "Qwen/Qwen2.5-0.5B-Instruct"
+}
+```
+
+Offline cached model path:
+
+```json
+{
+  "segment_provider": "oss",
+  "segment_model_path": "/models/qwen2.5-0.5b-instruct",
+  "segment_max_new_tokens": 512
+}
 ```
 
 C++ TemporalStore direct:
