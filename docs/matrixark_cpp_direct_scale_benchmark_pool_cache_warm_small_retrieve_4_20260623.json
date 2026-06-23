@@ -1,0 +1,654 @@
+{
+  "backend": "temporalstore-direct",
+  "embedding_model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+  "embedding_provider": "oss",
+  "ingest": {
+    "concurrency": 1,
+    "elapsed_sec": 8.244,
+    "errors": [],
+    "latency_ms": {
+      "avg": 2041.386,
+      "count": 4,
+      "max": 2384.844,
+      "p50": 1989.866,
+      "p95": 2384.844,
+      "p99": 2384.844
+    },
+    "message_qps": 9.703,
+    "messages_per_batch": 20,
+    "ops_ok": 4,
+    "ops_requested": 4,
+    "qps": 0.485,
+    "results": [
+      {
+        "entities_written": 7,
+        "events_written": 20,
+        "indexes_written": 8,
+        "latency_ms": 2384.844,
+        "node_path": [
+          "scale_memory",
+          "user_0",
+          "session_0",
+          "topic_0"
+        ],
+        "op_index": 0,
+        "record_count": 107,
+        "scope": {
+          "account_id": "acct_scale",
+          "session_id": "scale_session_0",
+          "tenant_id": "tenant_scale",
+          "user_id": "user_0"
+        },
+        "segments_written": 5,
+        "status": "ok",
+        "storage_prefix": "matrixark:cpp:scale:poolcachewarmsmall:4:1782245464850:ingest:000000",
+        "summary_refresh": {
+          "access": {
+            "account_id": "acct_scale",
+            "api_key_id": "dev",
+            "mode": "dev",
+            "role": "dev_admin",
+            "tenant_id": "tenant_scale"
+          },
+          "refreshed": [
+            {
+              "dirty_hash": 8462084356125500620,
+              "node_hash": 4161404976699238217,
+              "node_path": [
+                "scale_memory"
+              ],
+              "source_event_count": 8,
+              "source_summary_count": 1,
+              "summary_version_hash": 778649884813164260
+            },
+            {
+              "dirty_hash": 4596115124085716993,
+              "node_hash": 3398311254707296233,
+              "node_path": [
+                "scale_memory",
+                "user_0"
+              ],
+              "source_event_count": 8,
+              "source_summary_count": 1,
+              "summary_version_hash": 990206604613664494
+            },
+            {
+              "dirty_hash": 3730036274151153314,
+              "node_hash": 7705047518059419169,
+              "node_path": [
+                "scale_memory",
+                "user_0",
+                "session_0"
+              ],
+              "source_event_count": 8,
+              "source_summary_count": 1,
+              "summary_version_hash": 6869227444726853559
+            },
+            {
+              "dirty_hash": 8936865839803035945,
+              "node_hash": 4032639987420463562,
+              "node_path": [
+                "scale_memory",
+                "user_0",
+                "session_0",
+                "topic_0"
+              ],
+              "source_event_count": 8,
+              "source_summary_count": 0,
+              "summary_version_hash": 8985038393586983302
+            }
+          ],
+          "refreshed_count": 4,
+          "status": "ok"
+        }
+      },
+      {
+        "entities_written": 7,
+        "events_written": 20,
+        "indexes_written": 8,
+        "latency_ms": 1989.866,
+        "node_path": [
+          "scale_memory",
+          "user_1",
+          "session_1",
+          "topic_1"
+        ],
+        "op_index": 1,
+        "record_count": 107,
+        "scope": {
+          "account_id": "acct_scale",
+          "session_id": "scale_session_1",
+          "tenant_id": "tenant_scale",
+          "user_id": "user_1"
+        },
+        "segments_written": 5,
+        "status": "ok",
+        "storage_prefix": "matrixark:cpp:scale:poolcachewarmsmall:4:1782245464850:ingest:000001",
+        "summary_refresh": {
+          "access": {
+            "account_id": "acct_scale",
+            "api_key_id": "dev",
+            "mode": "dev",
+            "role": "dev_admin",
+            "tenant_id": "tenant_scale"
+          },
+          "refreshed": [
+            {
+              "dirty_hash": 5611509761734519584,
+              "node_hash": 4161404976699238217,
+              "node_path": [
+                "scale_memory"
+              ],
+              "source_event_count": 8,
+              "source_summary_count": 1,
+              "summary_version_hash": 9088642362327787506
+            },
+            {
+              "dirty_hash": 1498849153158789808,
+              "node_hash": 3582765207560127561,
+              "node_path": [
+                "scale_memory",
+                "user_1"
+              ],
+              "source_event_count": 8,
+              "source_summary_count": 1,
+              "summary_version_hash": 3974042758548286906
+            },
+            {
+              "dirty_hash": 8951857586853068036,
+              "node_hash": 2229273187946850223,
+              "node_path": [
+                "scale_memory",
+                "user_1",
+                "session_1"
+              ],
+              "source_event_count": 8,
+              "source_summary_count": 1,
+              "summary_version_hash": 9171306496257773677
+            },
+            {
+              "dirty_hash": 2646757969150102246,
+              "node_hash": 2863495772041194278,
+              "node_path": [
+                "scale_memory",
+                "user_1",
+                "session_1",
+                "topic_1"
+              ],
+              "source_event_count": 8,
+              "source_summary_count": 0,
+              "summary_version_hash": 7164956811622852625
+            }
+          ],
+          "refreshed_count": 4,
+          "status": "ok"
+        }
+      },
+      {
+        "entities_written": 7,
+        "events_written": 20,
+        "indexes_written": 8,
+        "latency_ms": 1961.504,
+        "node_path": [
+          "scale_memory",
+          "user_2",
+          "session_2",
+          "topic_2"
+        ],
+        "op_index": 2,
+        "record_count": 107,
+        "scope": {
+          "account_id": "acct_scale",
+          "session_id": "scale_session_2",
+          "tenant_id": "tenant_scale",
+          "user_id": "user_2"
+        },
+        "segments_written": 5,
+        "status": "ok",
+        "storage_prefix": "matrixark:cpp:scale:poolcachewarmsmall:4:1782245464850:ingest:000002",
+        "summary_refresh": {
+          "access": {
+            "account_id": "acct_scale",
+            "api_key_id": "dev",
+            "mode": "dev",
+            "role": "dev_admin",
+            "tenant_id": "tenant_scale"
+          },
+          "refreshed": [
+            {
+              "dirty_hash": 5436057286002695441,
+              "node_hash": 4161404976699238217,
+              "node_path": [
+                "scale_memory"
+              ],
+              "source_event_count": 8,
+              "source_summary_count": 1,
+              "summary_version_hash": 6447505837727442172
+            },
+            {
+              "dirty_hash": 8529188030196922731,
+              "node_hash": 8695006746314541035,
+              "node_path": [
+                "scale_memory",
+                "user_2"
+              ],
+              "source_event_count": 8,
+              "source_summary_count": 1,
+              "summary_version_hash": 7956563355842953069
+            },
+            {
+              "dirty_hash": 7988341069408005774,
+              "node_hash": 6793932960607247364,
+              "node_path": [
+                "scale_memory",
+                "user_2",
+                "session_2"
+              ],
+              "source_event_count": 8,
+              "source_summary_count": 1,
+              "summary_version_hash": 2747646056337434439
+            },
+            {
+              "dirty_hash": 8548061205453967074,
+              "node_hash": 325549840268526629,
+              "node_path": [
+                "scale_memory",
+                "user_2",
+                "session_2",
+                "topic_2"
+              ],
+              "source_event_count": 8,
+              "source_summary_count": 0,
+              "summary_version_hash": 3136514863905677334
+            }
+          ],
+          "refreshed_count": 4,
+          "status": "ok"
+        }
+      },
+      {
+        "entities_written": 7,
+        "events_written": 20,
+        "indexes_written": 8,
+        "latency_ms": 1829.329,
+        "node_path": [
+          "scale_memory",
+          "user_3",
+          "session_3",
+          "topic_3"
+        ],
+        "op_index": 3,
+        "record_count": 107,
+        "scope": {
+          "account_id": "acct_scale",
+          "session_id": "scale_session_3",
+          "tenant_id": "tenant_scale",
+          "user_id": "user_3"
+        },
+        "segments_written": 5,
+        "status": "ok",
+        "storage_prefix": "matrixark:cpp:scale:poolcachewarmsmall:4:1782245464850:ingest:000003",
+        "summary_refresh": {
+          "access": {
+            "account_id": "acct_scale",
+            "api_key_id": "dev",
+            "mode": "dev",
+            "role": "dev_admin",
+            "tenant_id": "tenant_scale"
+          },
+          "refreshed": [
+            {
+              "dirty_hash": 6219702526480467455,
+              "node_hash": 4161404976699238217,
+              "node_path": [
+                "scale_memory"
+              ],
+              "source_event_count": 8,
+              "source_summary_count": 1,
+              "summary_version_hash": 2912786323305275996
+            },
+            {
+              "dirty_hash": 5475313305752645823,
+              "node_hash": 7831975152526328792,
+              "node_path": [
+                "scale_memory",
+                "user_3"
+              ],
+              "source_event_count": 8,
+              "source_summary_count": 1,
+              "summary_version_hash": 9085597633428076561
+            },
+            {
+              "dirty_hash": 5141674455430819554,
+              "node_hash": 6415226549422712373,
+              "node_path": [
+                "scale_memory",
+                "user_3",
+                "session_3"
+              ],
+              "source_event_count": 8,
+              "source_summary_count": 1,
+              "summary_version_hash": 4928907745885269612
+            },
+            {
+              "dirty_hash": 4264848037564985419,
+              "node_hash": 8550341119414500087,
+              "node_path": [
+                "scale_memory",
+                "user_3",
+                "session_3",
+                "topic_3"
+              ],
+              "source_event_count": 8,
+              "source_summary_count": 0,
+              "summary_version_hash": 3381636755927381523
+            }
+          ],
+          "refreshed_count": 4,
+          "status": "ok"
+        }
+      }
+    ]
+  },
+  "metaserver": "127.0.0.1:18000",
+  "model_warmup_ms": 6605.161,
+  "namespace": "deploy_ns",
+  "optimizations": {
+    "direct_record_cache": "prefix_record_count_watermark_with_singleflight_load",
+    "embedding_vector_cache": true,
+    "native_context_api_pushdown": "not_yet: Python direct adapter still performs MatrixArk tree/index scoring",
+    "pool_warmup_errors": [],
+    "pool_warmup_ms": 10.403,
+    "retrieval_deadline_ms": 0,
+    "service_pool": "shared_prefix_pool",
+    "service_pool_created": 4,
+    "service_pool_size": 4
+  },
+  "process_snapshot_after": {
+    "processes": [
+      {
+        "args": "/root/src/github-services/TemporalStore/output-ubuntu22/release/bcache2-metaserver --metaserver_cluster_name=localdeploy --metaserver_server_port=18000 --metaserver_work_dir=/tmp/temporalstore-deploy/runtime/metaserver1/data --metaserver_log_dir=/tmp/temporalstore-deploy/runtime/metaserver1/log --metaserver_raft_id=1 --metaserver_raft_peers=1,127.0.0.1:18010,127.0.0.1:18020,0 --metaserver_raft_heartbeat_cycle_ms=500 --metaserver_raft_election_cycle_ms=1500 --metaserver_raft_segment_size=16384 --metaserver_snapshot_trigger_interval_sec=0 --metaserver_meta_check_routine_interval_sec=1 --metaserver_balance_routine_interval_ms=3000 --metaserver_placement_host_deduplicate=false --metaserver_forbid_auto_register_for_convict_server=false --metaserver_consul_announce_enabled=false --metaserver_log_level=2",
+        "command": "bcache2-metaser",
+        "cpu_percent": "499",
+        "mem_percent": "0.3",
+        "pid": "26460",
+        "rss_kb": "51916"
+      },
+      {
+        "args": "/root/src/github-services/TemporalStore/output-ubuntu22/release/bcache2-server --cluster_name=localdeploy --metaserver_uri=127.0.0.1:18000 --host_spec_path=/tmp/temporalstore-deploy/runtime/server1/host_spec.json --host=127.0.0.1 --port=18001 --server_log_dir=/tmp/temporalstore-deploy/runtime/server1/log --server_log_level=2 --server_meta_tinker_interval_ms=1000 --server_heartbeat_interval_ms=1000 --storage_zone_size=10485760 --stream_max_blob_size=10485760 --storage_async=false --storage_oplog_delay_dump_length=0 --replicator_out_of_sync_s=10",
+        "command": "bcache2-server",
+        "cpu_percent": "7.7",
+        "mem_percent": "0.4",
+        "pid": "26562",
+        "rss_kb": "64332"
+      }
+    ]
+  },
+  "process_snapshot_before": {
+    "processes": [
+      {
+        "args": "/root/src/github-services/TemporalStore/output-ubuntu22/release/bcache2-metaserver --metaserver_cluster_name=localdeploy --metaserver_server_port=18000 --metaserver_work_dir=/tmp/temporalstore-deploy/runtime/metaserver1/data --metaserver_log_dir=/tmp/temporalstore-deploy/runtime/metaserver1/log --metaserver_raft_id=1 --metaserver_raft_peers=1,127.0.0.1:18010,127.0.0.1:18020,0 --metaserver_raft_heartbeat_cycle_ms=500 --metaserver_raft_election_cycle_ms=1500 --metaserver_raft_segment_size=16384 --metaserver_snapshot_trigger_interval_sec=0 --metaserver_meta_check_routine_interval_sec=1 --metaserver_balance_routine_interval_ms=3000 --metaserver_placement_host_deduplicate=false --metaserver_forbid_auto_register_for_convict_server=false --metaserver_consul_announce_enabled=false --metaserver_log_level=2",
+        "command": "bcache2-metaser",
+        "cpu_percent": "340",
+        "mem_percent": "0.3",
+        "pid": "26460",
+        "rss_kb": "48680"
+      },
+      {
+        "args": "/root/src/github-services/TemporalStore/output-ubuntu22/release/bcache2-server --cluster_name=localdeploy --metaserver_uri=127.0.0.1:18000 --host_spec_path=/tmp/temporalstore-deploy/runtime/server1/host_spec.json --host=127.0.0.1 --port=18001 --server_log_dir=/tmp/temporalstore-deploy/runtime/server1/log --server_log_level=2 --server_meta_tinker_interval_ms=1000 --server_heartbeat_interval_ms=1000 --storage_zone_size=10485760 --stream_max_blob_size=10485760 --storage_async=false --storage_oplog_delay_dump_length=0 --replicator_out_of_sync_s=10",
+        "command": "bcache2-server",
+        "cpu_percent": "6.9",
+        "mem_percent": "0.3",
+        "pid": "26562",
+        "rss_kb": "57628"
+      }
+    ]
+  },
+  "retrieve": {
+    "concurrency": 4,
+    "elapsed_sec": 62.443,
+    "errors": [],
+    "latency_ms": {
+      "avg": 4348.754,
+      "count": 16,
+      "max": 60130.624,
+      "p50": 60.838,
+      "p95": 2193.476,
+      "p99": 60130.624
+    },
+    "ops_ok": 16,
+    "ops_requested": 16,
+    "qps": 0.256,
+    "results": [
+      {
+        "insufficient_context": false,
+        "latency_ms": 2138.611,
+        "op_index": 0,
+        "partial_context_pack": false,
+        "quality_warnings": [],
+        "query": "Who approved the GPU budget and what amount is current?",
+        "question_type": "evidence",
+        "selected_ref_count": 13,
+        "status": "ok",
+        "storage_prefix": "matrixark:cpp:scale:poolcachewarmsmall:4:1782245464850:ingest:000000",
+        "total_prompt_context_tokens": 185,
+        "used_remote_context_tokens": 185
+      },
+      {
+        "insufficient_context": false,
+        "latency_ms": 2127.913,
+        "op_index": 1,
+        "partial_context_pack": false,
+        "quality_warnings": [],
+        "query": "What does the user currently prefer for low latency services?",
+        "question_type": "current_state",
+        "selected_ref_count": 14,
+        "status": "ok",
+        "storage_prefix": "matrixark:cpp:scale:poolcachewarmsmall:4:1782245464850:ingest:000001",
+        "total_prompt_context_tokens": 211,
+        "used_remote_context_tokens": 211
+      },
+      {
+        "insufficient_context": false,
+        "latency_ms": 2193.476,
+        "op_index": 2,
+        "partial_context_pack": false,
+        "quality_warnings": [],
+        "query": "Where is the user currently located?",
+        "question_type": "current_state",
+        "selected_ref_count": 13,
+        "status": "ok",
+        "storage_prefix": "matrixark:cpp:scale:poolcachewarmsmall:4:1782245464850:ingest:000002",
+        "total_prompt_context_tokens": 176,
+        "used_remote_context_tokens": 176
+      },
+      {
+        "insufficient_context": false,
+        "latency_ms": 2161.202,
+        "op_index": 3,
+        "partial_context_pack": false,
+        "quality_warnings": [],
+        "query": "What is the user's current role?",
+        "question_type": "current_state",
+        "selected_ref_count": 14,
+        "status": "ok",
+        "storage_prefix": "matrixark:cpp:scale:poolcachewarmsmall:4:1782245464850:ingest:000003",
+        "total_prompt_context_tokens": 211,
+        "used_remote_context_tokens": 211
+      },
+      {
+        "insufficient_context": false,
+        "latency_ms": 247.262,
+        "op_index": 4,
+        "partial_context_pack": false,
+        "quality_warnings": [],
+        "query": "What is the current benchmark plan?",
+        "question_type": "current_state",
+        "selected_ref_count": 13,
+        "status": "ok",
+        "storage_prefix": "matrixark:cpp:scale:poolcachewarmsmall:4:1782245464850:ingest:000000",
+        "total_prompt_context_tokens": 175,
+        "used_remote_context_tokens": 175
+      },
+      {
+        "insufficient_context": false,
+        "latency_ms": 40.921,
+        "op_index": 5,
+        "partial_context_pack": false,
+        "quality_warnings": [],
+        "query": "Who approved the GPU budget and what amount is current?",
+        "question_type": "evidence",
+        "selected_ref_count": 13,
+        "status": "ok",
+        "storage_prefix": "matrixark:cpp:scale:poolcachewarmsmall:4:1782245464850:ingest:000001",
+        "total_prompt_context_tokens": 185,
+        "used_remote_context_tokens": 185
+      },
+      {
+        "insufficient_context": false,
+        "latency_ms": 60.838,
+        "op_index": 6,
+        "partial_context_pack": false,
+        "quality_warnings": [],
+        "query": "What does the user currently prefer for low latency services?",
+        "question_type": "current_state",
+        "selected_ref_count": 14,
+        "status": "ok",
+        "storage_prefix": "matrixark:cpp:scale:poolcachewarmsmall:4:1782245464850:ingest:000002",
+        "total_prompt_context_tokens": 211,
+        "used_remote_context_tokens": 211
+      },
+      {
+        "insufficient_context": false,
+        "latency_ms": 30.031,
+        "op_index": 7,
+        "partial_context_pack": false,
+        "quality_warnings": [],
+        "query": "Where is the user currently located?",
+        "question_type": "current_state",
+        "selected_ref_count": 13,
+        "status": "ok",
+        "storage_prefix": "matrixark:cpp:scale:poolcachewarmsmall:4:1782245464850:ingest:000003",
+        "total_prompt_context_tokens": 176,
+        "used_remote_context_tokens": 176
+      },
+      {
+        "insufficient_context": false,
+        "latency_ms": 39.596,
+        "op_index": 8,
+        "partial_context_pack": false,
+        "quality_warnings": [],
+        "query": "What is the user's current role?",
+        "question_type": "current_state",
+        "selected_ref_count": 14,
+        "status": "ok",
+        "storage_prefix": "matrixark:cpp:scale:poolcachewarmsmall:4:1782245464850:ingest:000000",
+        "total_prompt_context_tokens": 211,
+        "used_remote_context_tokens": 211
+      },
+      {
+        "insufficient_context": false,
+        "latency_ms": 215.439,
+        "op_index": 9,
+        "partial_context_pack": false,
+        "quality_warnings": [],
+        "query": "What is the current benchmark plan?",
+        "question_type": "current_state",
+        "selected_ref_count": 13,
+        "status": "ok",
+        "storage_prefix": "matrixark:cpp:scale:poolcachewarmsmall:4:1782245464850:ingest:000001",
+        "total_prompt_context_tokens": 175,
+        "used_remote_context_tokens": 175
+      },
+      {
+        "insufficient_context": false,
+        "latency_ms": 60.063,
+        "op_index": 10,
+        "partial_context_pack": false,
+        "quality_warnings": [],
+        "query": "Who approved the GPU budget and what amount is current?",
+        "question_type": "evidence",
+        "selected_ref_count": 1,
+        "status": "ok",
+        "storage_prefix": "matrixark:cpp:scale:poolcachewarmsmall:4:1782245464850:ingest:000002",
+        "total_prompt_context_tokens": 45,
+        "used_remote_context_tokens": 45
+      },
+      {
+        "insufficient_context": false,
+        "latency_ms": 31.155,
+        "op_index": 11,
+        "partial_context_pack": false,
+        "quality_warnings": [],
+        "query": "What does the user currently prefer for low latency services?",
+        "question_type": "current_state",
+        "selected_ref_count": 14,
+        "status": "ok",
+        "storage_prefix": "matrixark:cpp:scale:poolcachewarmsmall:4:1782245464850:ingest:000003",
+        "total_prompt_context_tokens": 211,
+        "used_remote_context_tokens": 211
+      },
+      {
+        "insufficient_context": false,
+        "latency_ms": 45.153,
+        "op_index": 12,
+        "partial_context_pack": false,
+        "quality_warnings": [],
+        "query": "Where is the user currently located?",
+        "question_type": "current_state",
+        "selected_ref_count": 13,
+        "status": "ok",
+        "storage_prefix": "matrixark:cpp:scale:poolcachewarmsmall:4:1782245464850:ingest:000000",
+        "total_prompt_context_tokens": 176,
+        "used_remote_context_tokens": 176
+      },
+      {
+        "insufficient_context": false,
+        "latency_ms": 32.874,
+        "op_index": 13,
+        "partial_context_pack": false,
+        "quality_warnings": [],
+        "query": "What is the user's current role?",
+        "question_type": "current_state",
+        "selected_ref_count": 14,
+        "status": "ok",
+        "storage_prefix": "matrixark:cpp:scale:poolcachewarmsmall:4:1782245464850:ingest:000001",
+        "total_prompt_context_tokens": 211,
+        "used_remote_context_tokens": 211
+      },
+      {
+        "insufficient_context": false,
+        "latency_ms": 60130.624,
+        "op_index": 14,
+        "partial_context_pack": false,
+        "quality_warnings": [],
+        "query": "What is the current benchmark plan?",
+        "question_type": "current_state",
+        "selected_ref_count": 13,
+        "status": "ok",
+        "storage_prefix": "matrixark:cpp:scale:poolcachewarmsmall:4:1782245464850:ingest:000002",
+        "total_prompt_context_tokens": 175,
+        "used_remote_context_tokens": 175
+      },
+      {
+        "insufficient_context": false,
+        "latency_ms": 24.899,
+        "op_index": 15,
+        "partial_context_pack": false,
+        "quality_warnings": [],
+        "query": "Who approved the GPU budget and what amount is current?",
+        "question_type": "evidence",
+        "selected_ref_count": 1,
+        "status": "ok",
+        "storage_prefix": "matrixark:cpp:scale:poolcachewarmsmall:4:1782245464850:ingest:000003",
+        "total_prompt_context_tokens": 45,
+        "used_remote_context_tokens": 45
+      }
+    ]
+  },
+  "status": "passed",
+  "storage_prefix": "matrixark:cpp:scale:poolcachewarmsmall:4:1782245464850",
+  "table": "deploy_table",
+  "temporalstore_lib": "/root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so",
+  "understanding_provider": "oss_encoder"
+}
