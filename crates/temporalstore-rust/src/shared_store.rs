@@ -933,6 +933,7 @@ fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
     use std::sync::Arc;
 
     use async_trait::async_trait;
@@ -942,15 +943,34 @@ mod tests {
     use super::*;
     use crate::types::{CommandResponse, FeaturePoint};
 
+    const TEST_CLUSTER_ID: &str = "cluster-a";
+    const TEST_CACHE_BYTES: usize = 1024;
+
+    fn test_engine(root: &Path, role: &str) -> TemporalEngine {
+        test_engine_with_cache(root, role, TEST_CACHE_BYTES)
+    }
+
+    fn test_engine_with_cache(root: &Path, role: &str, cache_bytes: usize) -> TemporalEngine {
+        TemporalEngine::with_local_dirs(
+            cache_bytes,
+            root.join(format!("{role}-cache")),
+            root.join(format!("{role}-pages")),
+            root.join(format!("{role}-index")),
+        )
+    }
+
+    fn test_shared_store(
+        root: &Path,
+    ) -> (Arc<FileObjectStore>, SharedStoreReplicator<FileObjectStore>) {
+        let store = Arc::new(FileObjectStore::new(root.join("objects")));
+        let replicator = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone());
+        (store, replicator)
+    }
+
     #[tokio::test]
     async fn shared_store_restores_index_pages_and_replays_later_oplog() {
         let dir = tempfile::tempdir().unwrap();
-        let primary = TemporalEngine::with_local_dirs(
-            1024,
-            dir.path().join("primary-cache"),
-            dir.path().join("primary-pages"),
-            dir.path().join("primary-index"),
-        );
+        let primary = test_engine(dir.path(), "primary");
         primary.load_shard(1);
         primary.execute(ExecuteRequest {
             shard_id: 1,
@@ -960,8 +980,7 @@ mod tests {
             },
         });
 
-        let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
-        let replicator = SharedStoreReplicator::new("cluster-a", store);
+        let (_store, replicator) = test_shared_store(dir.path());
         replicator.publish_index(1, &primary).await.unwrap();
         replicator
             .publish_page_segments(1, &primary.page_store())
@@ -979,12 +998,7 @@ mod tests {
             .await
             .unwrap();
 
-        let follower = TemporalEngine::with_local_dirs(
-            1024,
-            dir.path().join("follower-cache"),
-            dir.path().join("follower-pages"),
-            dir.path().join("follower-index"),
-        );
+        let follower = test_engine(dir.path(), "follower");
         let restored = replicator
             .restore_index_and_pages(1, &follower, &follower.page_store())
             .await
@@ -1032,12 +1046,7 @@ mod tests {
     #[tokio::test]
     async fn shared_store_checkpoint_rejects_corrupt_page_segment() {
         let dir = tempfile::tempdir().unwrap();
-        let primary = TemporalEngine::with_local_dirs(
-            1024,
-            dir.path().join("primary-cache"),
-            dir.path().join("primary-pages"),
-            dir.path().join("primary-index"),
-        );
+        let primary = test_engine(dir.path(), "primary");
         primary.load_shard(1);
         primary.execute(ExecuteRequest {
             shard_id: 1,
@@ -1047,8 +1056,7 @@ mod tests {
             },
         });
 
-        let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
-        let replicator = SharedStoreReplicator::new("cluster-a", store.clone());
+        let (store, replicator) = test_shared_store(dir.path());
         let manifest = replicator
             .publish_checkpoint(1, 1, &primary, &primary.page_store())
             .await
@@ -1061,12 +1069,7 @@ mod tests {
             .await
             .unwrap();
 
-        let follower = TemporalEngine::with_local_dirs(
-            1024,
-            dir.path().join("follower-cache"),
-            dir.path().join("follower-pages"),
-            dir.path().join("follower-index"),
-        );
+        let follower = test_engine(dir.path(), "follower");
         assert!(matches!(
             replicator
                 .restore_checkpoint(&manifest, &follower, &follower.page_store())
@@ -1079,8 +1082,7 @@ mod tests {
     #[tokio::test]
     async fn shared_store_strict_replay_rejects_oplog_gaps() {
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
-        let replicator = SharedStoreReplicator::new("cluster-a", store);
+        let (_store, replicator) = test_shared_store(dir.path());
         replicator
             .publish_oplog_entry(SharedStoreOplogEntry {
                 shard_id: 1,
@@ -1093,12 +1095,7 @@ mod tests {
             .await
             .unwrap();
 
-        let follower = TemporalEngine::with_local_dirs(
-            1024,
-            dir.path().join("follower-cache"),
-            dir.path().join("follower-pages"),
-            dir.path().join("follower-index"),
-        );
+        let follower = test_engine(dir.path(), "follower");
         follower.load_shard(1);
         assert!(matches!(
             replicator
@@ -1115,8 +1112,7 @@ mod tests {
     #[tokio::test]
     async fn shared_store_sync_storage_publishes_and_cursor_replay_resumes() {
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
-        let replicator = SharedStoreReplicator::new("cluster-a", store);
+        let (_store, replicator) = test_shared_store(dir.path());
         let writer = replicator.storage_writer(SharedStoreStorageMode::Sync, 1);
 
         let report = writer
@@ -1138,12 +1134,7 @@ mod tests {
             }
         );
 
-        let follower = TemporalEngine::with_local_dirs(
-            1024,
-            dir.path().join("follower-cache"),
-            dir.path().join("follower-pages"),
-            dir.path().join("follower-index"),
-        );
+        let follower = test_engine(dir.path(), "follower");
         follower.load_shard(1);
         let replay = replicator
             .replay_oplog_strict_with_cursor(1, &follower)
@@ -1192,8 +1183,7 @@ mod tests {
     #[tokio::test]
     async fn shared_store_async_storage_flushes_in_order_with_limit() {
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
-        let replicator = SharedStoreReplicator::new("cluster-a", store);
+        let (_store, replicator) = test_shared_store(dir.path());
         let writer = replicator.storage_writer(SharedStoreStorageMode::Async, 1);
 
         for (key, value) in [("a", b"1".to_vec()), ("b", b"2".to_vec())] {
@@ -1212,12 +1202,7 @@ mod tests {
         }
         assert_eq!(writer.queued_len(), 2);
 
-        let follower = TemporalEngine::with_local_dirs(
-            1024,
-            dir.path().join("follower-cache"),
-            dir.path().join("follower-pages"),
-            dir.path().join("follower-index"),
-        );
+        let follower = test_engine(dir.path(), "follower");
         follower.load_shard(1);
         assert_eq!(
             replicator
@@ -1286,8 +1271,7 @@ mod tests {
     #[tokio::test]
     async fn shared_store_replays_chunked_timestamped_kv_pages_in_sync_and_async_modes() {
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
-        let replicator = SharedStoreReplicator::new("cluster-a", store);
+        let (_store, replicator) = test_shared_store(dir.path());
         let points = large_timestamped_points();
 
         let sync_writer = replicator.storage_writer(SharedStoreStorageMode::Sync, 1);
@@ -1326,12 +1310,7 @@ mod tests {
         assert!(sync_ips_report.published);
         assert!(!sync_ips_report.queued);
 
-        let sync_follower = TemporalEngine::with_local_dirs(
-            1024 * 1024,
-            dir.path().join("sync-follower-cache"),
-            dir.path().join("sync-follower-pages"),
-            dir.path().join("sync-follower-index"),
-        );
+        let sync_follower = test_engine_with_cache(dir.path(), "sync-follower", 1024 * 1024);
         sync_follower.load_shard(1);
         assert_eq!(
             replicator
@@ -1421,12 +1400,7 @@ mod tests {
             }
         );
 
-        let async_follower = TemporalEngine::with_local_dirs(
-            1024 * 1024,
-            dir.path().join("async-follower-cache"),
-            dir.path().join("async-follower-pages"),
-            dir.path().join("async-follower-index"),
-        );
+        let async_follower = test_engine_with_cache(dir.path(), "async-follower", 1024 * 1024);
         async_follower.load_shard(1);
         assert_eq!(
             replicator
@@ -1473,8 +1447,7 @@ mod tests {
     #[tokio::test]
     async fn shared_store_rejects_corrupt_oplog_checksum() {
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
-        let replicator = SharedStoreReplicator::new("cluster-a", store.clone());
+        let (store, replicator) = test_shared_store(dir.path());
         replicator
             .publish_oplog_entry(SharedStoreOplogEntry {
                 shard_id: 1,
@@ -1499,12 +1472,7 @@ mod tests {
             .await
             .unwrap();
 
-        let follower = TemporalEngine::with_local_dirs(
-            1024,
-            dir.path().join("follower-cache"),
-            dir.path().join("follower-pages"),
-            dir.path().join("follower-index"),
-        );
+        let follower = test_engine(dir.path(), "follower");
         follower.load_shard(1);
         assert!(matches!(
             replicator
@@ -1550,7 +1518,7 @@ mod tests {
             inner: FileObjectStore::new(dir.path().join("objects")),
             fail_puts: Mutex::new(1),
         });
-        let replicator = SharedStoreReplicator::new("cluster-a", store);
+        let replicator = SharedStoreReplicator::new(TEST_CLUSTER_ID, store);
         let writer = replicator.storage_writer(SharedStoreStorageMode::Async, 1);
         writer
             .write(
@@ -1578,15 +1546,9 @@ mod tests {
     #[tokio::test]
     async fn shared_store_gc_removes_old_oplog_and_checkpoint_generations() {
         let dir = tempfile::tempdir().unwrap();
-        let primary = TemporalEngine::with_local_dirs(
-            1024,
-            dir.path().join("primary-cache"),
-            dir.path().join("primary-pages"),
-            dir.path().join("primary-index"),
-        );
+        let primary = test_engine(dir.path(), "primary");
         primary.load_shard(1);
-        let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
-        let replicator = SharedStoreReplicator::new("cluster-a", store.clone());
+        let (store, replicator) = test_shared_store(dir.path());
 
         for oplog_index in 1..=3 {
             replicator
@@ -1633,8 +1595,7 @@ mod tests {
     #[tokio::test]
     async fn shared_store_gc_refuses_oplog_needed_by_replay_cursor() {
         let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
-        let replicator = SharedStoreReplicator::new("cluster-a", store.clone());
+        let (_store, replicator) = test_shared_store(dir.path());
         for oplog_index in 1..=3 {
             replicator
                 .publish_oplog_entry(SharedStoreOplogEntry {
@@ -1677,15 +1638,9 @@ mod tests {
     #[tokio::test]
     async fn shared_store_checkpoint_gc_retains_cursor_anchor_checkpoint() {
         let dir = tempfile::tempdir().unwrap();
-        let primary = TemporalEngine::with_local_dirs(
-            1024,
-            dir.path().join("primary-cache"),
-            dir.path().join("primary-pages"),
-            dir.path().join("primary-index"),
-        );
+        let primary = test_engine(dir.path(), "primary");
         primary.load_shard(1);
-        let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
-        let replicator = SharedStoreReplicator::new("cluster-a", store.clone());
+        let (store, replicator) = test_shared_store(dir.path());
         let mut manifests = Vec::new();
 
         for checkpoint_oplog_index in 1..=3 {
