@@ -1309,11 +1309,30 @@ fn context_resource_parser_matches_openviking_stable_refs() {
         max_chunk_chars: 1_400,
         overlap_chars: 120,
         chunk_hash_base: Some(900),
+        owner_scope: "team:ops".to_string(),
+        version: "v1".to_string(),
+        watch_interval_minutes: 60,
+        parser_name: "unit-test-parser".to_string(),
     });
     assert!(report.status.ok);
     assert_eq!(report.resource_type, "md");
     assert_eq!(report.uri_scheme, "file");
     assert_eq!(report.resource_title, "runbook.md");
+    assert_eq!(report.lifecycle.owner_scope, "team:ops");
+    assert_eq!(report.lifecycle.parser_name, "unit-test-parser");
+    assert_eq!(report.lifecycle.parser_version, "openviking-compatible-v1");
+    assert_eq!(report.lifecycle.version, "v1");
+    assert_eq!(
+        report.lifecycle.import_kind,
+        ContextResourceImportKind::Markdown
+    );
+    assert_eq!(
+        report.lifecycle.action,
+        ContextResourceLifecycleAction::Watch
+    );
+    assert!(report.lifecycle.watched);
+    assert_eq!(report.lifecycle.watch_interval_minutes, 60);
+    assert_eq!(report.lifecycle.next_refresh_after_ms, 3_600_000);
     assert_eq!(report.chunks.len(), 2);
     assert_eq!(report.chunks[0].chunk_hash, 900);
     assert!(report.chunks[0].content_hash != 0);
@@ -1361,6 +1380,115 @@ fn context_resource_parser_matches_openviking_stable_refs() {
             .map(String::as_str),
         Some("code")
     );
+}
+
+// shared-corpus: context_resource_lifecycle_openviking_parity
+#[test]
+fn context_resource_lifecycle_models_import_paths_refresh_and_delete() {
+    let url = parse_context_resource(ContextResourceParseRequest {
+        raw_uri: "https://docs.example.com/runbook".to_string(),
+        resource_type: Some("html".to_string()),
+        text: "Remote runbook body".to_string(),
+        max_chunk_chars: 1_400,
+        overlap_chars: 120,
+        chunk_hash_base: None,
+        owner_scope: "team:docs".to_string(),
+        version: "etag-1".to_string(),
+        watch_interval_minutes: 30,
+        parser_name: "url-parser".to_string(),
+    });
+    let git = parse_context_resource(ContextResourceParseRequest {
+        raw_uri: "git@github.com:matrixarkai/TemporalStore.git".to_string(),
+        resource_type: Some("git".to_string()),
+        text: "README source".to_string(),
+        max_chunk_chars: 1_400,
+        overlap_chars: 120,
+        chunk_hash_base: None,
+        owner_scope: "team:code".to_string(),
+        version: "main@abc".to_string(),
+        watch_interval_minutes: 0,
+        parser_name: "git-parser".to_string(),
+    });
+    let pdf = parse_context_resource(ContextResourceParseRequest {
+        raw_uri: "file:///tmp/report.pdf".to_string(),
+        resource_type: None,
+        text: "Extracted PDF text".to_string(),
+        max_chunk_chars: 1_400,
+        overlap_chars: 120,
+        chunk_hash_base: None,
+        owner_scope: "team:docs".to_string(),
+        version: "pdf-v1".to_string(),
+        watch_interval_minutes: 0,
+        parser_name: "pdf-parser".to_string(),
+    });
+    let feishu = parse_context_resource(ContextResourceParseRequest {
+        raw_uri: "feishu://doc/abc123".to_string(),
+        resource_type: Some("doc".to_string()),
+        text: "Feishu imported document".to_string(),
+        max_chunk_chars: 1_400,
+        overlap_chars: 120,
+        chunk_hash_base: None,
+        owner_scope: "team:docs".to_string(),
+        version: "doc-v1".to_string(),
+        watch_interval_minutes: 10,
+        parser_name: "feishu-parser".to_string(),
+    });
+
+    assert_eq!(url.lifecycle.import_kind, ContextResourceImportKind::Url);
+    assert_eq!(
+        git.lifecycle.import_kind,
+        ContextResourceImportKind::GitRepo
+    );
+    assert_eq!(pdf.lifecycle.import_kind, ContextResourceImportKind::Pdf);
+    assert_eq!(
+        feishu.lifecycle.import_kind,
+        ContextResourceImportKind::FeishuDoc
+    );
+    assert!(url.chunks[0].metadata.contains_key("parser_name"));
+
+    let report = update_context_resource_lifecycle(
+        vec![
+            url.lifecycle.clone(),
+            git.lifecycle.clone(),
+            pdf.lifecycle.clone(),
+            feishu.lifecycle.clone(),
+        ],
+        vec![
+            ContextResourceLifecycleUpdate {
+                raw_uri: url.raw_uri.clone(),
+                action: ContextResourceLifecycleAction::Refresh,
+                owner_scope: String::new(),
+                version: "etag-2".to_string(),
+                watch_interval_minutes: 30,
+                observed_at_ms: 1_000,
+            },
+            ContextResourceLifecycleUpdate {
+                raw_uri: git.raw_uri.clone(),
+                action: ContextResourceLifecycleAction::Delete,
+                owner_scope: String::new(),
+                version: String::new(),
+                watch_interval_minutes: 0,
+                observed_at_ms: 1_000,
+            },
+        ],
+    );
+    assert_eq!(report.watched_count, 2);
+    assert_eq!(report.deleted_count, 1);
+    assert!(report
+        .resources
+        .iter()
+        .any(|resource| resource.raw_uri == url.raw_uri
+            && resource.version == "etag-2"
+            && resource.invalidates_version == "etag-1"
+            && resource.next_refresh_after_ms == 1_801_000));
+    assert!(report
+        .resources
+        .iter()
+        .any(|resource| resource.raw_uri == git.raw_uri && resource.deleted));
+    assert_eq!(report.import_kinds.get("url").copied(), Some(1));
+    assert_eq!(report.import_kinds.get("git_repo").copied(), Some(1));
+    assert_eq!(report.import_kinds.get("pdf").copied(), Some(1));
+    assert_eq!(report.import_kinds.get("feishu_doc").copied(), Some(1));
 }
 
 // shared-corpus: context_resource_skill_parser_openviking_parity
@@ -1510,6 +1638,10 @@ fn parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval() {
             max_chunk_chars: 220,
             overlap_chars: 40,
             chunk_hash_base: None,
+            owner_scope: "team:payments".to_string(),
+            version: "v1".to_string(),
+            watch_interval_minutes: 15,
+            parser_name: "unit-test-parser".to_string(),
             },
             ],
             skills: vec![ContextSkillIngestInput {
@@ -1530,6 +1662,15 @@ fn parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval() {
         report.status, report.fanout, report.secondary_indexes
     );
     assert_eq!(report.ingest.failed, 0);
+    assert_eq!(report.resource_lifecycle.watched_count, 1);
+    assert_eq!(
+        report
+            .resource_lifecycle
+            .import_kinds
+            .get("markdown")
+            .copied(),
+        Some(1)
+    );
     assert_eq!(report.skill_registry.enabled_count, 1);
     assert_eq!(
         report.skill_registry.highest_precedence,

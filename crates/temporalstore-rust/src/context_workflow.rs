@@ -167,6 +167,124 @@ pub struct ContextResourceParseRequest {
     pub overlap_chars: usize,
     #[serde(default)]
     pub chunk_hash_base: Option<u64>,
+    #[serde(default)]
+    pub owner_scope: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub watch_interval_minutes: u64,
+    #[serde(default)]
+    pub parser_name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextResourceLifecycleAction {
+    #[default]
+    Add,
+    Watch,
+    Refresh,
+    Delete,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextResourceImportKind {
+    #[default]
+    Text,
+    Markdown,
+    Skill,
+    Url,
+    GitRepo,
+    CodeRepo,
+    Pdf,
+    Document,
+    FeishuDoc,
+    WatchedResource,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextResourceLifecycleRecord {
+    pub raw_uri: String,
+    pub target_uri: String,
+    pub owner_scope: String,
+    pub parser_name: String,
+    pub parser_version: String,
+    pub resource_type: String,
+    pub import_kind: ContextResourceImportKind,
+    pub action: ContextResourceLifecycleAction,
+    pub version: String,
+    pub content_hash: u64,
+    pub stale: bool,
+    pub invalidates_version: String,
+    pub watched: bool,
+    pub watch_interval_minutes: u64,
+    pub next_refresh_after_ms: u64,
+    pub deleted: bool,
+    pub chunk_count: usize,
+}
+
+impl Default for ContextResourceLifecycleRecord {
+    fn default() -> Self {
+        Self {
+            raw_uri: String::new(),
+            target_uri: String::new(),
+            owner_scope: "user".to_string(),
+            parser_name: default_resource_parser_name(),
+            parser_version: default_resource_parser_version(),
+            resource_type: "txt".to_string(),
+            import_kind: ContextResourceImportKind::Text,
+            action: ContextResourceLifecycleAction::Add,
+            version: String::new(),
+            content_hash: 0,
+            stale: false,
+            invalidates_version: String::new(),
+            watched: false,
+            watch_interval_minutes: 0,
+            next_refresh_after_ms: 0,
+            deleted: false,
+            chunk_count: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextResourceLifecycleUpdate {
+    pub raw_uri: String,
+    pub action: ContextResourceLifecycleAction,
+    #[serde(default)]
+    pub owner_scope: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub watch_interval_minutes: u64,
+    #[serde(default)]
+    pub observed_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextResourceLifecycleReport {
+    pub status: Status,
+    pub resources: Vec<ContextResourceLifecycleRecord>,
+    pub watched_count: usize,
+    pub stale_count: usize,
+    pub deleted_count: usize,
+    pub refresh_due_count: usize,
+    pub import_kinds: BTreeMap<String, usize>,
+}
+
+impl Default for ContextResourceLifecycleReport {
+    fn default() -> Self {
+        Self {
+            status: Status::ok(),
+            resources: Vec::new(),
+            watched_count: 0,
+            stale_count: 0,
+            deleted_count: 0,
+            refresh_due_count: 0,
+            import_kinds: BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -196,6 +314,8 @@ pub struct ContextResourceParseReport {
     #[serde(default)]
     pub resource_title: String,
     pub embedding_model: String,
+    #[serde(default)]
+    pub lifecycle: ContextResourceLifecycleRecord,
     pub chunks: Vec<ContextParsedResourceChunk>,
     #[serde(default)]
     pub source_refs: Vec<String>,
@@ -434,6 +554,8 @@ pub struct ContextResourceSkillSecondaryIndexValidationReport {
 pub struct ContextResourceSkillIngestReport {
     pub status: Status,
     pub resources: Vec<ContextResourceParseReport>,
+    #[serde(default)]
+    pub resource_lifecycle: ContextResourceLifecycleReport,
     pub skills: Vec<ContextSkillParseReport>,
     #[serde(default)]
     pub skill_registry: ContextSkillRegistryReport,
@@ -1975,10 +2097,18 @@ pub fn ingest_resource_skill_context(
             "resource/skill ingest produced no accepted context sources",
         );
     }
+    let resource_lifecycle = context_resource_lifecycle_report(
+        resources
+            .iter()
+            .map(|resource| resource.lifecycle.clone())
+            .collect(),
+        request.start_time_ms,
+    );
 
     ContextResourceSkillIngestReport {
         status,
         resources,
+        resource_lifecycle,
         skills,
         skill_registry,
         skill_selection,
@@ -2352,6 +2482,17 @@ fn query_missing_secondary_index_refs(
 pub fn parse_context_resource(request: ContextResourceParseRequest) -> ContextResourceParseReport {
     let resource_type =
         infer_context_resource_type(&request.raw_uri, request.resource_type.as_deref());
+    let import_kind = context_resource_import_kind(&request.raw_uri, &resource_type);
+    let owner_scope = if request.owner_scope.trim().is_empty() {
+        "user".to_string()
+    } else {
+        request.owner_scope.trim().to_string()
+    };
+    let parser_name = if request.parser_name.trim().is_empty() {
+        default_resource_parser_name()
+    } else {
+        request.parser_name.trim().to_string()
+    };
     let max_chunk_chars = request.max_chunk_chars.max(1);
     let overlap_chars = request.overlap_chars.min(max_chunk_chars.saturating_sub(1));
     let units = context_resource_units(&request.text, &resource_type, &request.raw_uri);
@@ -2383,6 +2524,16 @@ pub fn parse_context_resource(request: ContextResourceParseRequest) -> ContextRe
             }
             let chunk_index = chunks.len();
             unit.insert("resource_type".to_string(), resource_type.clone());
+            unit.insert(
+                "import_kind".to_string(),
+                context_resource_import_kind_name(import_kind).to_string(),
+            );
+            unit.insert("parser_name".to_string(), parser_name.clone());
+            unit.insert(
+                "parser_version".to_string(),
+                default_resource_parser_version(),
+            );
+            unit.insert("owner_scope".to_string(), owner_scope.clone());
             unit.insert("chunk_index".to_string(), chunk_index.to_string());
             unit.insert("unit_index".to_string(), unit_index.to_string());
             unit.insert("split_index".to_string(), split_index.to_string());
@@ -2443,6 +2594,40 @@ pub fn parse_context_resource(request: ContextResourceParseRequest) -> ContextRe
     let total_tokens = chunks.iter().fold(0_u32, |total, chunk| {
         total.saturating_add(chunk.token_estimate)
     });
+    let content_hash = stable_hash64(&format!(
+        "resource_lifecycle:{}:{}:{}",
+        request.raw_uri, request.version, request.text
+    ));
+    let watched = request.watch_interval_minutes > 0
+        || matches!(import_kind, ContextResourceImportKind::WatchedResource);
+    let version = if request.version.trim().is_empty() {
+        format!("{content_hash:x}")
+    } else {
+        request.version.trim().to_string()
+    };
+    let lifecycle = ContextResourceLifecycleRecord {
+        raw_uri: request.raw_uri.clone(),
+        target_uri: context_resource_target_uri(&request.raw_uri),
+        owner_scope,
+        parser_name,
+        parser_version: default_resource_parser_version(),
+        resource_type: resource_type.clone(),
+        import_kind,
+        action: if watched {
+            ContextResourceLifecycleAction::Watch
+        } else {
+            ContextResourceLifecycleAction::Add
+        },
+        version,
+        content_hash,
+        stale: false,
+        invalidates_version: String::new(),
+        watched,
+        watch_interval_minutes: request.watch_interval_minutes,
+        next_refresh_after_ms: request.watch_interval_minutes.saturating_mul(60_000),
+        deleted: false,
+        chunk_count: chunks.len(),
+    };
     ContextResourceParseReport {
         status: Status::ok(),
         raw_uri: request.raw_uri.clone(),
@@ -2451,6 +2636,7 @@ pub fn parse_context_resource(request: ContextResourceParseRequest) -> ContextRe
         uri_scheme: context_resource_uri_scheme(&request.raw_uri),
         resource_title: context_resource_title(&request.raw_uri),
         embedding_model: "mock-embedding-v1".to_string(),
+        lifecycle,
         source_refs: chunks
             .iter()
             .map(|chunk| chunk.source_ref.clone())
@@ -2473,6 +2659,68 @@ pub fn context_resource_chunk_embedding(
         vector: deterministic_context_embedding(model, &chunk.text),
         updated_at_ms,
     }
+}
+
+pub fn update_context_resource_lifecycle(
+    mut resources: Vec<ContextResourceLifecycleRecord>,
+    updates: Vec<ContextResourceLifecycleUpdate>,
+) -> ContextResourceLifecycleReport {
+    let mut by_uri = resources
+        .iter()
+        .enumerate()
+        .map(|(index, resource)| (resource.raw_uri.clone(), index))
+        .collect::<BTreeMap<_, _>>();
+    for update in updates {
+        let observed_at_ms = update.observed_at_ms;
+        if let Some(index) = by_uri.get(&update.raw_uri).copied() {
+            let resource = &mut resources[index];
+            resource.action = update.action;
+            if !update.owner_scope.trim().is_empty() {
+                resource.owner_scope = update.owner_scope.trim().to_string();
+            }
+            if !update.version.trim().is_empty() && update.version != resource.version {
+                resource.stale = true;
+                resource.invalidates_version = resource.version.clone();
+                resource.version = update.version.trim().to_string();
+            }
+            if update.watch_interval_minutes > 0 {
+                resource.watched = true;
+                resource.watch_interval_minutes = update.watch_interval_minutes;
+            }
+            if resource.watched {
+                resource.next_refresh_after_ms = observed_at_ms
+                    .saturating_add(resource.watch_interval_minutes.saturating_mul(60_000));
+            }
+            resource.deleted = update.action == ContextResourceLifecycleAction::Delete;
+            if update.action == ContextResourceLifecycleAction::Refresh {
+                resource.stale = false;
+            }
+        } else {
+            let mut resource = ContextResourceLifecycleRecord {
+                raw_uri: update.raw_uri.clone(),
+                target_uri: context_resource_target_uri(&update.raw_uri),
+                owner_scope: if update.owner_scope.trim().is_empty() {
+                    "user".to_string()
+                } else {
+                    update.owner_scope.trim().to_string()
+                },
+                resource_type: infer_context_resource_type(&update.raw_uri, None),
+                action: update.action,
+                version: update.version,
+                watched: update.watch_interval_minutes > 0,
+                watch_interval_minutes: update.watch_interval_minutes,
+                next_refresh_after_ms: observed_at_ms
+                    .saturating_add(update.watch_interval_minutes.saturating_mul(60_000)),
+                deleted: update.action == ContextResourceLifecycleAction::Delete,
+                ..ContextResourceLifecycleRecord::default()
+            };
+            resource.import_kind =
+                context_resource_import_kind(&resource.raw_uri, &resource.resource_type);
+            by_uri.insert(resource.raw_uri.clone(), resources.len());
+            resources.push(resource);
+        }
+    }
+    context_resource_lifecycle_report(resources, 0)
 }
 
 pub fn parse_context_skill_markdown(
@@ -2522,6 +2770,13 @@ pub fn parse_context_skill_markdown(
         max_chunk_chars: default_resource_max_chunk_chars(),
         overlap_chars: default_resource_overlap_chars(),
         chunk_hash_base: None,
+        owner_scope: "skill".to_string(),
+        version: front_matter
+            .get("version")
+            .cloned()
+            .unwrap_or_else(|| "unknown".to_string()),
+        watch_interval_minutes: 0,
+        parser_name: default_resource_parser_name(),
     });
     let capability_refs = resource
         .chunks
@@ -4085,6 +4340,14 @@ fn default_resource_overlap_chars() -> usize {
     120
 }
 
+fn default_resource_parser_name() -> String {
+    "rust-context-resource-parser".to_string()
+}
+
+fn default_resource_parser_version() -> String {
+    "openviking-compatible-v1".to_string()
+}
+
 fn infer_context_resource_type(raw_uri: &str, resource_type: Option<&str>) -> String {
     if let Some(kind) = resource_type {
         let kind = kind.trim().trim_start_matches('.').to_ascii_lowercase();
@@ -4104,6 +4367,99 @@ fn context_resource_uri_scheme(raw_uri: &str) -> String {
         .split_once("://")
         .map(|(scheme, _)| scheme.to_ascii_lowercase())
         .unwrap_or_else(|| "file".to_string())
+}
+
+fn context_resource_target_uri(raw_uri: &str) -> String {
+    if raw_uri.starts_with("viking://resources/") {
+        raw_uri.to_string()
+    } else {
+        format!("viking://resources/{}", stable_hash64(raw_uri))
+    }
+}
+
+fn context_resource_import_kind(raw_uri: &str, resource_type: &str) -> ContextResourceImportKind {
+    let scheme = context_resource_uri_scheme(raw_uri);
+    let lower_uri = raw_uri.to_ascii_lowercase();
+    let resource_type = resource_type.to_ascii_lowercase();
+    if lower_uri.contains("feishu") || scheme == "feishu" || scheme == "lark" {
+        ContextResourceImportKind::FeishuDoc
+    } else if matches!(scheme.as_str(), "git" | "ssh")
+        || lower_uri.ends_with(".git")
+        || lower_uri.starts_with("git@")
+    {
+        ContextResourceImportKind::GitRepo
+    } else if matches!(
+        resource_type.as_str(),
+        "rs" | "py" | "cpp" | "cc" | "c" | "h" | "hpp" | "js" | "ts" | "go" | "java"
+    ) || lower_uri.contains("/src/")
+    {
+        ContextResourceImportKind::CodeRepo
+    } else if matches!(resource_type.as_str(), "pdf") {
+        ContextResourceImportKind::Pdf
+    } else if matches!(
+        resource_type.as_str(),
+        "doc" | "docx" | "ppt" | "pptx" | "xls" | "xlsx"
+    ) {
+        ContextResourceImportKind::Document
+    } else if matches!(resource_type.as_str(), "skill") {
+        ContextResourceImportKind::Skill
+    } else if matches!(resource_type.as_str(), "md" | "markdown") {
+        ContextResourceImportKind::Markdown
+    } else if matches!(scheme.as_str(), "http" | "https") {
+        ContextResourceImportKind::Url
+    } else if lower_uri.contains("watch=") || lower_uri.contains("/watched/") {
+        ContextResourceImportKind::WatchedResource
+    } else {
+        ContextResourceImportKind::Text
+    }
+}
+
+fn context_resource_import_kind_name(kind: ContextResourceImportKind) -> &'static str {
+    match kind {
+        ContextResourceImportKind::Text => "text",
+        ContextResourceImportKind::Markdown => "markdown",
+        ContextResourceImportKind::Skill => "skill",
+        ContextResourceImportKind::Url => "url",
+        ContextResourceImportKind::GitRepo => "git_repo",
+        ContextResourceImportKind::CodeRepo => "code_repo",
+        ContextResourceImportKind::Pdf => "pdf",
+        ContextResourceImportKind::Document => "document",
+        ContextResourceImportKind::FeishuDoc => "feishu_doc",
+        ContextResourceImportKind::WatchedResource => "watched_resource",
+    }
+}
+
+fn context_resource_lifecycle_report(
+    mut resources: Vec<ContextResourceLifecycleRecord>,
+    now_ms: u64,
+) -> ContextResourceLifecycleReport {
+    resources.sort_by_key(|resource| resource.target_uri.clone());
+    let watched_count = resources.iter().filter(|resource| resource.watched).count();
+    let stale_count = resources.iter().filter(|resource| resource.stale).count();
+    let deleted_count = resources.iter().filter(|resource| resource.deleted).count();
+    let refresh_due_count = resources
+        .iter()
+        .filter(|resource| {
+            resource.watched
+                && resource.next_refresh_after_ms > 0
+                && now_ms >= resource.next_refresh_after_ms
+        })
+        .count();
+    let mut import_kinds = BTreeMap::new();
+    for resource in &resources {
+        *import_kinds
+            .entry(context_resource_import_kind_name(resource.import_kind).to_string())
+            .or_insert(0) += 1;
+    }
+    ContextResourceLifecycleReport {
+        status: Status::ok(),
+        resources,
+        watched_count,
+        stale_count,
+        deleted_count,
+        refresh_due_count,
+        import_kinds,
+    }
 }
 
 fn context_resource_title(raw_uri: &str) -> String {
