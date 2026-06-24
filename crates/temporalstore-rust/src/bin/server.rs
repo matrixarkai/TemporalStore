@@ -2403,6 +2403,7 @@ fn send_heartbeat(
 #[cfg(test)]
 mod tests {
     use std::net::TcpListener;
+    use std::path::Path;
     use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::{Duration, Instant};
@@ -2418,6 +2419,21 @@ mod tests {
     };
 
     use super::*;
+
+    const TEST_CACHE_BYTES: usize = 1024;
+
+    fn test_engine(root: &Path, role: &str) -> TemporalEngine {
+        test_engine_with_cache(root, role, TEST_CACHE_BYTES)
+    }
+
+    fn test_engine_with_cache(root: &Path, role: &str, cache_bytes: usize) -> TemporalEngine {
+        TemporalEngine::with_local_dirs(
+            cache_bytes,
+            root.join(format!("{role}-cache")),
+            root.join(format!("{role}-pages")),
+            root.join(format!("{role}-index")),
+        )
+    }
 
     #[test]
     fn startup_load_request_uses_readonly_secondary_env() {
@@ -2451,12 +2467,7 @@ mod tests {
         assert_eq!(request.table_name, "events");
 
         let engine_dir = tempdir().unwrap();
-        let engine = TemporalEngine::with_local_dirs(
-            1024,
-            engine_dir.path().join("cache"),
-            engine_dir.path().join("pages"),
-            engine_dir.path().join("index"),
-        );
+        let engine = test_engine(engine_dir.path(), "engine");
         assert!(engine.load_shard_with(request).status.ok);
         let write = engine.execute(ExecuteRequest {
             shard_id: 31,
@@ -2612,12 +2623,7 @@ mod tests {
     #[test]
     fn membership_update_posts_finish_callback_to_meta() {
         let engine_dir = tempdir().unwrap();
-        let engine = TemporalEngine::with_local_dirs(
-            1024,
-            engine_dir.path().join("cache"),
-            engine_dir.path().join("pages"),
-            engine_dir.path().join("index"),
-        );
+        let engine = test_engine(engine_dir.path(), "engine");
         assert!(
             engine
                 .load_shard_with(LoadShardRequest {
@@ -2673,18 +2679,8 @@ mod tests {
         let primary_dir = tempdir().unwrap();
         let follower_dir = tempdir().unwrap();
         let cursor_dir = tempdir().unwrap();
-        let primary = TemporalEngine::with_local_dirs(
-            1024,
-            primary_dir.path().join("cache"),
-            primary_dir.path().join("pages"),
-            primary_dir.path().join("index"),
-        );
-        let follower = TemporalEngine::with_local_dirs(
-            1024,
-            follower_dir.path().join("cache"),
-            follower_dir.path().join("pages"),
-            follower_dir.path().join("index"),
-        );
+        let primary = test_engine(primary_dir.path(), "primary");
+        let follower = test_engine(follower_dir.path(), "follower");
         primary.load_shard(17);
         primary.execute(ExecuteRequest {
             shard_id: 17,
@@ -2759,18 +2755,8 @@ mod tests {
         let primary_dir = tempdir().unwrap();
         let follower_dir = tempdir().unwrap();
         let cursor_dir = tempdir().unwrap();
-        let primary = TemporalEngine::with_local_dirs(
-            1024,
-            primary_dir.path().join("cache"),
-            primary_dir.path().join("pages"),
-            primary_dir.path().join("index"),
-        );
-        let follower = TemporalEngine::with_local_dirs(
-            1024,
-            follower_dir.path().join("cache"),
-            follower_dir.path().join("pages"),
-            follower_dir.path().join("index"),
-        );
+        let primary = test_engine(primary_dir.path(), "primary");
+        let follower = test_engine(follower_dir.path(), "follower");
         primary.load_shard(19);
         primary.execute(ExecuteRequest {
             shard_id: 19,
@@ -2822,18 +2808,8 @@ mod tests {
         let primary_dir = tempdir().unwrap();
         let follower_dir = tempdir().unwrap();
         let cursor_dir = tempdir().unwrap();
-        let primary = TemporalEngine::with_local_dirs(
-            1024,
-            primary_dir.path().join("cache"),
-            primary_dir.path().join("pages"),
-            primary_dir.path().join("index"),
-        );
-        let follower = TemporalEngine::with_local_dirs(
-            1024,
-            follower_dir.path().join("cache"),
-            follower_dir.path().join("pages"),
-            follower_dir.path().join("index"),
-        );
+        let primary = test_engine(primary_dir.path(), "primary");
+        let follower = test_engine(follower_dir.path(), "follower");
         primary.load_shard(23);
         primary.execute(ExecuteRequest {
             shard_id: 23,
@@ -2886,18 +2862,8 @@ mod tests {
         let primary_dir = tempdir().unwrap();
         let follower_dir = tempdir().unwrap();
         let cursor_dir = tempdir().unwrap();
-        let primary = TemporalEngine::with_local_dirs(
-            1024,
-            primary_dir.path().join("cache"),
-            primary_dir.path().join("pages"),
-            primary_dir.path().join("index"),
-        );
-        let follower = TemporalEngine::with_local_dirs(
-            1024,
-            follower_dir.path().join("cache"),
-            follower_dir.path().join("pages"),
-            follower_dir.path().join("index"),
-        );
+        let primary = test_engine(primary_dir.path(), "primary");
+        let follower = test_engine(follower_dir.path(), "follower");
         primary.load_shard(27);
         primary.execute(ExecuteRequest {
             shard_id: 27,
@@ -2976,12 +2942,7 @@ mod tests {
     fn server_background_replica_replay_loop_reports_failures_with_backoff() {
         let follower_dir = tempdir().unwrap();
         let cursor_dir = tempdir().unwrap();
-        let follower = TemporalEngine::with_local_dirs(
-            1024,
-            follower_dir.path().join("cache"),
-            follower_dir.path().join("pages"),
-            follower_dir.path().join("index"),
-        );
+        let follower = test_engine(follower_dir.path(), "follower");
 
         let missing_primary = free_local_addr();
         let replay_loop = start_replica_replay_loop(
@@ -3135,12 +3096,7 @@ mod tests {
     #[test]
     fn cpp_server_service_aliases_cover_partition_manager_surface() {
         let dir = tempdir().unwrap();
-        let engine = TemporalEngine::with_local_dirs(
-            1024 * 1024,
-            dir.path().join("cache"),
-            dir.path().join("pages"),
-            dir.path().join("index"),
-        );
+        let engine = test_engine_with_cache(dir.path(), "engine", 1024 * 1024);
         let data_raft_appliers: Arc<Mutex<BTreeMap<u64, DataRaftCommittedLogApplier>>> =
             Arc::default();
         let runtime = DataNodeRuntime::new(engine.clone(), DataNodeRuntimeOptions::default());
@@ -3502,12 +3458,7 @@ mod tests {
     #[test]
     fn cpp_server_service_lifecycle_snapshot_routes_restore_scheduler_state() {
         let dir = tempdir().unwrap();
-        let engine = TemporalEngine::with_local_dirs(
-            1024 * 1024,
-            dir.path().join("source-cache"),
-            dir.path().join("source-pages"),
-            dir.path().join("source-index"),
-        );
+        let engine = test_engine_with_cache(dir.path(), "source", 1024 * 1024);
         let runtime = DataNodeRuntime::new(engine.clone(), DataNodeRuntimeOptions::default());
         let data_raft_appliers: Arc<Mutex<BTreeMap<u64, DataRaftCommittedLogApplier>>> =
             Arc::default();
@@ -3836,12 +3787,7 @@ mod tests {
     #[test]
     fn server_cpp_async_lifecycle_alias_submits_load_job() {
         let dir = tempdir().unwrap();
-        let engine = TemporalEngine::with_local_dirs(
-            1024 * 1024,
-            dir.path().join("cache"),
-            dir.path().join("pages"),
-            dir.path().join("index"),
-        );
+        let engine = test_engine_with_cache(dir.path(), "engine", 1024 * 1024);
         let data_raft_appliers: Arc<Mutex<BTreeMap<u64, DataRaftCommittedLogApplier>>> =
             Arc::default();
         let runtime = DataNodeRuntime::new(
