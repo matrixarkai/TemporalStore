@@ -14,6 +14,11 @@ Hook adapter:
   agents that expose lifecycle hooks or external command runners
 ```
 
+This follows the OpenViking-style integration lesson: the context system should
+be agent-facing, not app-specific. Agents get a stable interface for memory,
+resources, and skills; products can add automatic recall/capture through hooks
+when their runtime exposes lifecycle events.
+
 Use `tools/matrixark_agent_hook.py` as the universal hook adapter. It reads the
 agent's JSON payload from stdin and normalizes it into MatrixArk MCP calls:
 
@@ -55,13 +60,27 @@ claude
 cursor
 windsurf
 cline
+roo
 continue
 copilot
+opencode
+openclaw
+aider
+gemini
+qwen-code
+autogen
+langgraph
+crewai
+llamaindex
+semantic-kernel
+dify
+n8n
 generic
 ```
 
-These labels are used in `metadata.source`, `agent_hook.source`, session id
-fallbacks, and audit logs.
+These are presets, not a closed list. `--agent` accepts any string. The label is
+used in `metadata.source`, `agent_hook.source`, session id fallbacks, and audit
+logs.
 
 ## Event Mapping
 
@@ -108,6 +127,12 @@ Commit events / one-pass batch extraction:
 | Windsurf | MCP first, external runner if available | Use the same MatrixArk MCP server; hook adapter works if the client can run external commands. |
 | Cline / Roo-style agents | MCP first | These agent loops are tool-heavy; MatrixArk should be a durable memory/tool provider. |
 | Continue | MCP or HTTP | Good fit for local IDE context plus MatrixArk durable memory. |
+| OpenCode / OpenClaw-style agents | MCP plus hook adapter | Same model as OpenViking integrations: explicit context tools plus automatic lifecycle capture where available. |
+| Aider | CLI wrapper or MCP bridge | Wrap the CLI invocation or use a supervising script to call MatrixArk before/after prompts. |
+| Gemini CLI / Qwen Code | MCP or CLI wrapper | Use MatrixArk as a durable context tool; hook adapter works when wrapping command execution. |
+| AutoGen / LangGraph / CrewAI | HTTP or Python-side hook calls | Integrate at graph node boundaries: before model call, after model call, after tool call, and workflow end. |
+| LlamaIndex / Semantic Kernel | HTTP or tool plugin | Register MatrixArk as memory/context tool and call retrieve before synthesis. |
+| Dify / n8n / workflow agents | HTTP nodes | Use retrieve/ingest/session_commit nodes in the workflow. |
 | GitHub Copilot-style agents | HTTP/MCP gateway | Native lifecycle hooks are not a stable public boundary; integrate through extension/server-side workflow where available. |
 | Enterprise vertical agents | MCP, HTTP, and hooks | Best target. They can send before-LLM, after-LLM, feedback, tool-result, idle, and session-commit events. |
 
@@ -188,6 +213,53 @@ python3 /root/src/github-services/TemporalStore/tools/matrixark_agent_hook.py \
 This captures durable tool outcomes and keeps raw tool output out of future
 prompts unless it becomes relevant.
 
+## Multi-Agent Framework Example
+
+For AutoGen, LangGraph, CrewAI, LlamaIndex, Semantic Kernel, Dify, or n8n,
+place MatrixArk at workflow boundaries:
+
+```text
+Before model node:
+  call matrixark_retrieve(query, scope, local_context, max_context_tokens)
+
+After model node:
+  call matrixark_ingest(messages=[assistant answer], metadata.source=<framework>)
+
+After tool node:
+  call matrixark_ingest(messages=[tool result], metadata.event=tool_result)
+
+At graph/workflow end:
+  call matrixark_feedback and matrixark_session_commit
+```
+
+CLI wrapper pattern:
+
+```bash
+cat payload.json | python3 /root/src/github-services/TemporalStore/tools/matrixark_agent_hook.py \
+  --agent langgraph \
+  --event UserPromptSubmit \
+  --backend temporalstore-direct
+```
+
+HTTP workflow node pattern:
+
+```http
+POST /v1/context/retrieve
+Authorization: Bearer mk_live_...
+Content-Type: application/json
+
+{
+  "query": "raw user or workflow task",
+  "scope": {
+    "account_id": "acct_prod",
+    "tenant_id": "tenant_prod",
+    "user_id": "user_123",
+    "session_id": "workflow_run_456"
+  },
+  "max_context_tokens": 2048
+}
+```
+
 ## What The Hook Sends To MatrixArk
 
 For a prompt event:
@@ -242,4 +314,3 @@ hooks:
 HTTP:
   server-side vertical agents and SaaS backends
 ```
-

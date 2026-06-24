@@ -105,7 +105,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--agent",
         default=os.environ.get("MATRIXARK_AGENT", "generic"),
-        choices=["codex", "claude", "cursor", "windsurf", "cline", "continue", "copilot", "generic"],
+        help=(
+            "Agent label for metadata/audit/session prefixes. Known labels include "
+            "codex, claude, cursor, windsurf, cline, roo, continue, copilot, "
+            "opencode, openclaw, aider, gemini, qwen-code, autogen, langgraph, "
+            "crewai, llamaindex, semantic-kernel, dify, n8n, and generic."
+        ),
     )
     parser.add_argument(
         "--event",
