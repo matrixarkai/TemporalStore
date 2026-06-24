@@ -17,6 +17,7 @@
 #include <vector>
 #include <strings.h>
 
+#include "butil/arena.h"
 #include "bthread/countdown_event.h"
 #include "butil/file_util.h"
 #include "butil/files/file_path.h"
@@ -711,6 +712,65 @@ void RedisCommandHandler::Ping(RedisClientContext* c) {
     }
 }
 
+void RedisCommandHandler::Echo(RedisClientContext* c) {
+    c->reply->SetString(c->StrArg(1));
+}
+
+void RedisCommandHandler::Quit(RedisClientContext* c) {
+    c->reply->SetStatus("OK");
+}
+
+void RedisCommandHandler::Client(RedisClientContext* c) {
+    const std::string op = c->StrArg(1);
+    if (!strcasecmp(op.c_str(), "setname") && c->ArgSize() == 3) {
+        c->reply->SetStatus("OK");
+        return;
+    }
+    if (!strcasecmp(op.c_str(), "getname") && c->ArgSize() == 2) {
+        c->reply->SetNullString();
+        return;
+    }
+    if (!strcasecmp(op.c_str(), "id") && c->ArgSize() == 2) {
+        c->reply->SetInteger(0);
+        return;
+    }
+    c->reply->SetError("ERR unsupported CLIENT subcommand");
+}
+
+void RedisCommandHandler::Command(RedisClientContext* c) {
+    if (c->ArgSize() == 1) {
+        c->reply->SetArray(0);
+        return;
+    }
+    const std::string op = c->StrArg(1);
+    if (!strcasecmp(op.c_str(), "count") && c->ArgSize() == 2) {
+        c->reply->SetInteger(0);
+        return;
+    }
+    if (!strcasecmp(op.c_str(), "docs") && c->ArgSize() >= 2) {
+        c->reply->SetArray(0);
+        return;
+    }
+    if (!strcasecmp(op.c_str(), "info") && c->ArgSize() >= 2) {
+        c->reply->SetArray(0);
+        return;
+    }
+    c->reply->SetError("ERR unsupported COMMAND subcommand");
+}
+
+void RedisCommandHandler::Select(RedisClientContext* c) {
+    int64_t db = 0;
+    if (!ParseInt64Arg(c->StrArg(1), &db) || db < 0) {
+        c->reply->SetError("ERR invalid DB index");
+        return;
+    }
+    if (db != 0) {
+        c->reply->SetError("ERR SELECT is only supported for DB 0 by the native Redis bridge");
+        return;
+    }
+    c->reply->SetStatus("OK");
+}
+
 void FillConfig(Config* config, const std::string& key, const std::string& value) {
     if (key == "maxmemory") {
         config->mutable_evicter_config()->mutable_maxmemory()->set_value(atoi(value.c_str()));
@@ -1228,6 +1288,61 @@ void RedisCommandHandler::Auth(RedisClientContext* c) {
     c->reply->SetStatus("OK");
 }
 
+void RedisCommandHandler::Type(RedisClientContext* c) {
+    const std::string key = c->StrArg(1);
+
+    CmdResponse string_response;
+    butil::Arena scratch_arena;
+    brpc::RedisReply scratch(&scratch_arena);
+    if (!ExecuteRedisSingle(redis_service_, StringGetCmd(key), &string_response, &scratch)) {
+        c->reply->SetError("ERR failed to inspect key type");
+        return;
+    }
+    if (IsOkStatus(string_response.response_status())) {
+        str2::GetResponse get_response;
+        if (!ParseStringGetResponse(string_response, &get_response, c->reply)) {
+            return;
+        }
+        std::vector<std::string> list_values;
+        std::vector<ZItem> zset_items;
+        if (DecodeStringVector(get_response.value(), ListPrefix(), &list_values)) {
+            c->reply->SetStatus("list");
+            return;
+        }
+        if (DecodeZSet(get_response.value(), &zset_items)) {
+            c->reply->SetStatus("zset");
+            return;
+        }
+        c->reply->SetStatus("string");
+        return;
+    }
+
+    CmdResponse hash_response;
+    butil::Arena hash_scratch_arena;
+    brpc::RedisReply hash_scratch(&hash_scratch_arena);
+    if (ExecuteRedisSingle(redis_service_, HashLenCmd(key), &hash_response, &hash_scratch) &&
+        IsOkStatus(hash_response.response_status())) {
+        hash2::LenResponse len_response;
+        if (len_response.ParseFromString(hash_response.response_bytes()) && len_response.len() > 0) {
+            c->reply->SetStatus("hash");
+            return;
+        }
+    }
+
+    CmdResponse set_response;
+    butil::Arena set_scratch_arena;
+    brpc::RedisReply set_scratch(&set_scratch_arena);
+    if (ExecuteRedisSingle(redis_service_, SetCardCmd(key), &set_response, &set_scratch) &&
+        IsOkStatus(set_response.response_status())) {
+        set::SCardResponse scard_response;
+        if (scard_response.ParseFromString(set_response.response_bytes()) && scard_response.len() > 0) {
+            c->reply->SetStatus("set");
+            return;
+        }
+    }
+
+    c->reply->SetStatus("none");
+}
 
 void RedisCommandHandler::Get(RedisClientContext* c) {
     CmdResponse response;

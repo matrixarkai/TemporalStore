@@ -26,6 +26,16 @@ void RedisServiceImpl::InitCommands() {
                     &RedisCommandHandler::Auth);
     RegisterCommand("ping", RedisCommand::CmdType::kPing, -1, "tF", 0, 0, 0,
                     &RedisCommandHandler::Ping);
+    RegisterCommand("echo", RedisCommand::CmdType::kEcho, 2, "tF", 0, 0, 0,
+                    &RedisCommandHandler::Echo);
+    RegisterCommand("quit", RedisCommand::CmdType::kQuit, 1, "tF", 0, 0, 0,
+                    &RedisCommandHandler::Quit);
+    RegisterCommand("client", RedisCommand::CmdType::kClient, -2, "rF", 0, 0, 0,
+                    &RedisCommandHandler::Client);
+    RegisterCommand("command", RedisCommand::CmdType::kCommand, -1, "r", 0, 0, 0,
+                    &RedisCommandHandler::Command);
+    RegisterCommand("select", RedisCommand::CmdType::kSelect, 2, "lF", 0, 0, 0,
+                    &RedisCommandHandler::Select);
     RegisterCommand("bgsave", RedisCommand::CmdType::kBgSave, -1, "as", 0, 0, 0,
                     &RedisCommandHandler::Unsupported);
     RegisterCommand("config", RedisCommand::CmdType::kConfig, -2, "last", 0, 0, 0,
@@ -58,8 +68,8 @@ void RedisServiceImpl::InitCommands() {
                     &RedisCommandHandler::Unsupported);
     RegisterCommand("partition", RedisCommand::CmdType::kPartition, -3, "aw", 0, 0, 0,
                     &RedisCommandHandler::Partition);
-    RegisterCommand("echo", RedisCommand::CmdType::kPing, 2, "tF", 0, 0, 0,
-                    &RedisCommandHandler::Ping);
+    RegisterCommand("type", RedisCommand::CmdType::kType, 2, "rF", 1, 1, 1,
+                    &RedisCommandHandler::Type);
     RegisterCommand("get", RedisCommand::CmdType::kGet, 2, "rF", 1, 1, 1,
                     &RedisCommandHandler::Get);
     RegisterCommand("set", RedisCommand::CmdType::kSet, -3, "wm", 1, 1, 1,
@@ -79,6 +89,8 @@ void RedisServiceImpl::InitCommands() {
     RegisterCommand("mset", RedisCommand::CmdType::kMSet, -3, "wm", 1, -1, 2,
                     &RedisCommandHandler::MSet);
     RegisterCommand("del", RedisCommand::CmdType::kDel, -2, "w", 1, -1, 1,
+                    &RedisCommandHandler::Del);
+    RegisterCommand("unlink", RedisCommand::CmdType::kUnlink, -2, "wF", 1, -1, 1,
                     &RedisCommandHandler::Del);
     RegisterCommand("exists", RedisCommand::CmdType::kExists, -2, "rF", 1, -1, 1,
                     &RedisCommandHandler::Exists);
