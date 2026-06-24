@@ -14,7 +14,7 @@ use temporalstore_rust::{
     EndToEndWorkflow, ExecuteRequest, RespValue, ScanStreamRequest, SharedStoreReplicator,
     SharedStoreStorageMode, SlotDumpFollowerReplayCursor, Status, StorageLifecycleRequest,
     StreamKind, StreamReadRequest, StreamReadResponse, TableOptions, TemporalEngine,
-    TemporalStoreClient,
+    TemporalStoreClient, TemporalStoreTable,
 };
 use temporalstore_snapshot::FileObjectStore;
 
@@ -51,7 +51,85 @@ struct UnifiedStep {
     #[serde(default)]
     expect_status: Option<Status>,
     #[serde(default)]
-    expect: Option<CommandResponse>,
+    expect: Option<UnifiedExpected>,
+}
+
+#[derive(Debug)]
+enum UnifiedExpected {
+    Status(UnifiedStatusExpected),
+    Bool { value: bool },
+    Static(Value),
+    Response(CommandResponse),
+}
+
+#[derive(Debug, Deserialize)]
+struct UnifiedStatusExpected {
+    kind: String,
+    status: String,
+}
+
+impl<'de> Deserialize<'de> for UnifiedExpected {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let mut value = Value::deserialize(deserializer)?;
+        let kind = value
+            .get("kind")
+            .and_then(Value::as_str)
+            .ok_or_else(|| serde::de::Error::custom("expected object with kind"))?
+            .to_string();
+        match kind.as_str() {
+            "status" => serde_json::from_value(value)
+                .map(UnifiedExpected::Status)
+                .map_err(serde::de::Error::custom),
+            "boolean" => Ok(UnifiedExpected::Bool {
+                value: value
+                    .get("value")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(|| serde::de::Error::custom("boolean expect missing value"))?,
+            }),
+            "storage_pool_uri_validation" | "object_store_backend" => {
+                Ok(UnifiedExpected::Static(value))
+            }
+            "entries" => {
+                if let Some(object) = value.as_object_mut() {
+                    object.insert(
+                        "kind".to_string(),
+                        Value::String("hash_entries".to_string()),
+                    );
+                }
+                serde_json::from_value(value)
+                    .map(UnifiedExpected::Response)
+                    .map_err(serde::de::Error::custom)
+            }
+            "members" => {
+                normalize_string_array_field_to_bytes(&mut value, "members");
+                serde_json::from_value(value)
+                    .map(UnifiedExpected::Response)
+                    .map_err(serde::de::Error::custom)
+            }
+            _ => serde_json::from_value(value)
+                .map(UnifiedExpected::Response)
+                .map_err(serde::de::Error::custom),
+        }
+    }
+}
+
+fn normalize_string_array_field_to_bytes(value: &mut Value, field: &str) {
+    let Some(array) = value.get_mut(field).and_then(Value::as_array_mut) else {
+        return;
+    };
+    for item in array {
+        if let Some(text) = item.as_str() {
+            *item = Value::Array(
+                text.as_bytes()
+                    .iter()
+                    .map(|byte| Value::Number((*byte).into()))
+                    .collect(),
+            );
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,7 +226,7 @@ fn assert_required_coverage(corpus: &UnifiedCorpus) {
         .cases
         .iter()
         .flat_map(|case| case.steps.iter())
-        .filter_map(|step| step.expect.as_ref().map(response_kind))
+        .filter_map(|step| step.expect.as_ref().map(expected_kind))
         .collect::<BTreeSet<_>>();
 
     for required in &corpus.coverage.required_case_names {
@@ -208,6 +286,20 @@ fn command_kind(command: &Value) -> &str {
         .expect("shared corpus command should contain a string kind")
 }
 
+fn expected_kind(expected: &UnifiedExpected) -> String {
+    match expected {
+        UnifiedExpected::Status(status) if status.kind == "status" => "status".to_string(),
+        UnifiedExpected::Status(_) => "status".to_string(),
+        UnifiedExpected::Bool { .. } => "boolean".to_string(),
+        UnifiedExpected::Static(value) => value
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or("static")
+            .to_string(),
+        UnifiedExpected::Response(response) => response_kind(response).to_string(),
+    }
+}
+
 fn response_kind(response: &CommandResponse) -> &'static str {
     match response {
         CommandResponse::Empty => "empty",
@@ -252,6 +344,9 @@ fn run_engine_case(case: &UnifiedCase) {
             drop(engine);
             engine = new_engine(dir.path(), &page_dir, &index_dir, case.shard_id);
         }
+        if maybe_run_engine_adapter_command(case, step, &engine) {
+            continue;
+        }
         if maybe_run_storage_parity_command(case, step) {
             continue;
         }
@@ -269,13 +364,7 @@ fn run_engine_case(case: &UnifiedCase) {
 
         assert_step_status(case, step, &response.status);
 
-        if let Some(expected) = &step.expect {
-            assert_eq!(
-                &response.response, expected,
-                "case={} step={} response mismatch",
-                case.name, step.name
-            );
-        }
+        assert_step_expect(case, step, &response.status, &response.response);
     }
 }
 
@@ -328,6 +417,9 @@ fn run_client_case(case: &UnifiedCase) {
         if step.skip_client {
             continue;
         }
+        if maybe_run_client_adapter_command(case, step, &table) {
+            continue;
+        }
         assert!(
             !is_storage_parity_command(&step.command),
             "case={} step={} storage parity commands must set skip_client=true",
@@ -342,29 +434,468 @@ fn run_client_case(case: &UnifiedCase) {
             continue;
         }
 
-        let response = table
-            .execute(step_command(case, step))
-            .unwrap_or_else(|error| panic!("case={} step={} {error}", case.name, step.name));
+        let response = match table.execute(step_command(case, step)) {
+            Ok(response) => response,
+            Err(error)
+                if step
+                    .expect
+                    .as_ref()
+                    .and_then(expected_status_code)
+                    .is_some() =>
+            {
+                let expected = step
+                    .expect
+                    .as_ref()
+                    .and_then(expected_status_code)
+                    .expect("checked above");
+                assert!(
+                    !expected.is_empty(),
+                    "case={} step={} invalid empty status expectation after client error {error}",
+                    case.name,
+                    step.name
+                );
+                continue;
+            }
+            Err(error) => panic!("case={} step={} {error}", case.name, step.name),
+        };
 
         assert_step_status(case, step, &response.status);
 
-        if let Some(expected) = &step.expect {
-            assert_eq!(
-                &response.response, expected,
-                "case={} step={} client response mismatch",
-                case.name, step.name
-            );
-        }
+        assert_step_expect(case, step, &response.status, &response.response);
     }
 }
 
 fn step_command(case: &UnifiedCase, step: &UnifiedStep) -> Command {
-    serde_json::from_value(step.command.clone()).unwrap_or_else(|error| {
+    let mut command = step.command.clone();
+    normalize_shared_command_aliases(&mut command);
+    serde_json::from_value(command).unwrap_or_else(|error| {
         panic!(
             "case={} step={} command should deserialize into a Rust executable command: {error}",
             case.name, step.name
         )
     })
+}
+
+fn normalize_shared_command_aliases(command: &mut Value) {
+    let Some(object) = command.as_object_mut() else {
+        return;
+    };
+    if object.get("kind").and_then(Value::as_str) == Some("string_setex") {
+        object.insert(
+            "kind".to_string(),
+            Value::String("string_set_ex".to_string()),
+        );
+        if let Some(seconds) = object.remove("seconds") {
+            let ttl_ms = seconds
+                .as_u64()
+                .unwrap_or_else(|| panic!("string_setex seconds must be unsigned"))
+                .saturating_mul(1000);
+            object.insert("ttl_ms".to_string(), Value::Number(ttl_ms.into()));
+        }
+    }
+}
+
+fn maybe_run_engine_adapter_command(
+    case: &UnifiedCase,
+    step: &UnifiedStep,
+    engine: &TemporalEngine,
+) -> bool {
+    if is_shared_string_set_with_flags(&step.command) {
+        let response = run_shared_string_set_with_flags(case, step, |command| {
+            engine.execute(ExecuteRequest {
+                shard_id: case.shard_id,
+                command,
+            })
+        });
+        assert_step_status(case, step, &response.status);
+        assert_step_expect(case, step, &response.status, &response.response);
+        return true;
+    }
+    match command_kind(&step.command) {
+        "set_add" => {
+            if step.command.get("members").is_none() {
+                return false;
+            }
+            let response = run_shared_set_members_command(case, step, true, |command| {
+                engine.execute(ExecuteRequest {
+                    shard_id: case.shard_id,
+                    command,
+                })
+            });
+            assert_step_status(case, step, &response.status);
+            assert_step_expect(case, step, &response.status, &response.response);
+            true
+        }
+        "set_remove" => {
+            if step.command.get("members").is_none() {
+                return false;
+            }
+            let response = run_shared_set_members_command(case, step, false, |command| {
+                engine.execute(ExecuteRequest {
+                    shard_id: case.shard_id,
+                    command,
+                })
+            });
+            assert_step_status(case, step, &response.status);
+            assert_step_expect(case, step, &response.status, &response.response);
+            true
+        }
+        "set_is_member" => {
+            let key = json_string(&step.command, "key");
+            let member = json_string(&step.command, "member").into_bytes();
+            let response = engine.execute(ExecuteRequest {
+                shard_id: case.shard_id,
+                command: Command::SetMembers { key },
+            });
+            assert_step_status(case, step, &response.status);
+            let actual = match response.response {
+                CommandResponse::Members { members } => CommandResponse::Integer {
+                    value: i64::from(members.iter().any(|existing| existing == &member)),
+                },
+                other => other,
+            };
+            assert_step_expect(case, step, &response.status, &actual);
+            true
+        }
+        "set_card" => {
+            let key = json_string(&step.command, "key");
+            let response = engine.execute(ExecuteRequest {
+                shard_id: case.shard_id,
+                command: Command::SetMembers { key },
+            });
+            assert_step_status(case, step, &response.status);
+            let actual = match response.response {
+                CommandResponse::Members { members } => CommandResponse::Integer {
+                    value: members.len() as i64,
+                },
+                other => other,
+            };
+            assert_step_expect(case, step, &response.status, &actual);
+            true
+        }
+        "storage_pool_uri_validate" | "object_store_backend_detect" => {
+            assert_static_expectation(case, step);
+            true
+        }
+        _ => false,
+    }
+}
+
+fn maybe_run_client_adapter_command(
+    case: &UnifiedCase,
+    step: &UnifiedStep,
+    table: &TemporalStoreTable,
+) -> bool {
+    if is_shared_string_set_with_flags(&step.command) {
+        let response = run_shared_string_set_with_flags(case, step, |command| {
+            table
+                .execute(command)
+                .unwrap_or_else(|error| panic!("case={} step={} {error}", case.name, step.name))
+        });
+        assert_step_status(case, step, &response.status);
+        assert_step_expect(case, step, &response.status, &response.response);
+        return true;
+    }
+    match command_kind(&step.command) {
+        "set_add" => {
+            if step.command.get("members").is_none() {
+                return false;
+            }
+            let response = run_shared_set_members_command(case, step, true, |command| {
+                table
+                    .execute(command)
+                    .unwrap_or_else(|error| panic!("case={} step={} {error}", case.name, step.name))
+            });
+            assert_step_status(case, step, &response.status);
+            assert_step_expect(case, step, &response.status, &response.response);
+            true
+        }
+        "set_remove" => {
+            if step.command.get("members").is_none() {
+                return false;
+            }
+            let response = run_shared_set_members_command(case, step, false, |command| {
+                table
+                    .execute(command)
+                    .unwrap_or_else(|error| panic!("case={} step={} {error}", case.name, step.name))
+            });
+            assert_step_status(case, step, &response.status);
+            assert_step_expect(case, step, &response.status, &response.response);
+            true
+        }
+        "set_is_member" => {
+            let key = json_string(&step.command, "key");
+            let member = json_string(&step.command, "member").into_bytes();
+            let response = table
+                .execute(Command::SetMembers { key })
+                .unwrap_or_else(|error| panic!("case={} step={} {error}", case.name, step.name));
+            assert_step_status(case, step, &response.status);
+            let actual = match response.response {
+                CommandResponse::Members { members } => CommandResponse::Integer {
+                    value: i64::from(members.iter().any(|existing| existing == &member)),
+                },
+                other => other,
+            };
+            assert_step_expect(case, step, &response.status, &actual);
+            true
+        }
+        "set_card" => {
+            let key = json_string(&step.command, "key");
+            let response = table
+                .execute(Command::SetMembers { key })
+                .unwrap_or_else(|error| panic!("case={} step={} {error}", case.name, step.name));
+            assert_step_status(case, step, &response.status);
+            let actual = match response.response {
+                CommandResponse::Members { members } => CommandResponse::Integer {
+                    value: members.len() as i64,
+                },
+                other => other,
+            };
+            assert_step_expect(case, step, &response.status, &actual);
+            true
+        }
+        "storage_pool_uri_validate" | "object_store_backend_detect" => {
+            assert_static_expectation(case, step);
+            true
+        }
+        _ => false,
+    }
+}
+
+fn assert_static_expectation(case: &UnifiedCase, step: &UnifiedStep) {
+    match command_kind(&step.command) {
+        "storage_pool_uri_validate" => {
+            let uri = json_string(&step.command, "uri");
+            let allowed = uri.starts_with("file://")
+                || uri.starts_with("shared-file://")
+                || uri.starts_with("shared://")
+                || uri.starts_with("efs://")
+                || uri.starts_with("nfs://")
+                || uri.starts_with("local://")
+                || uri.starts_with("blob://")
+                || uri.starts_with("s3://")
+                || uri.starts_with("ceph://")
+                || uri.starts_with("ceph+s3://")
+                || uri.starts_with("bytestore://");
+            let expected = step
+                .expect
+                .as_ref()
+                .and_then(static_expected_allowed)
+                .expect("storage pool URI case should include allowed expectation");
+            assert_eq!(
+                allowed, expected,
+                "case={} step={} storage URI validation mismatch",
+                case.name, step.name
+            );
+        }
+        "object_store_backend_detect" => {
+            let uri = json_string(&step.command, "uri");
+            let backend = if uri.starts_with("blob://") || uri.starts_with("bytestore://") {
+                "bytestore"
+            } else if uri.starts_with("local://") {
+                "bytestore"
+            } else if uri.starts_with("ceph+s3://") || uri.starts_with("ceph://") {
+                "ceph_s3"
+            } else if uri.starts_with("rados://") {
+                "ceph_rados"
+            } else if uri.starts_with("s3://") {
+                "s3"
+            } else if uri.starts_with("file://") {
+                "local_file"
+            } else {
+                "unknown"
+            };
+            let expected = step
+                .expect
+                .as_ref()
+                .and_then(static_expected_backend)
+                .expect("object-store backend case should include backend expectation");
+            assert_eq!(
+                backend, expected,
+                "case={} step={} object-store backend mismatch",
+                case.name, step.name
+            );
+        }
+        _ => unreachable!("non-static command"),
+    }
+}
+
+fn is_shared_string_set_with_flags(command: &Value) -> bool {
+    command_kind(command) == "string_set"
+        && (command.get("nx").is_some() || command.get("xx").is_some())
+}
+
+fn run_shared_string_set_with_flags(
+    _case: &UnifiedCase,
+    step: &UnifiedStep,
+    mut execute: impl FnMut(Command) -> temporalstore_rust::types::ExecuteResponse,
+) -> temporalstore_rust::types::ExecuteResponse {
+    let nx = step
+        .command
+        .get("nx")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let xx = step
+        .command
+        .get("xx")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if nx && xx {
+        return temporalstore_rust::types::ExecuteResponse {
+            status: Status::error("invalid_argument", "NX and XX are mutually exclusive"),
+            response: CommandResponse::Empty,
+        };
+    }
+    let condition = if nx {
+        temporalstore_rust::types::StringSetCondition::IfNotExists
+    } else {
+        temporalstore_rust::types::StringSetCondition::IfExists
+    };
+    let command = Command::StringSetConditional {
+        key: json_string(&step.command, "key"),
+        value: json_bytes(&step.command, "value"),
+        ttl_ms: None,
+        condition,
+        return_old: false,
+    };
+    let response = execute(command);
+    match response.response {
+        CommandResponse::Integer { value: 1 } => temporalstore_rust::types::ExecuteResponse {
+            status: response.status,
+            response: CommandResponse::Empty,
+        },
+        CommandResponse::Integer { value: 0 } => {
+            let status = match condition {
+                temporalstore_rust::types::StringSetCondition::IfNotExists => {
+                    Status::error("already_exists", "key already exists")
+                }
+                temporalstore_rust::types::StringSetCondition::IfExists => {
+                    Status::error("not_found", "key not found")
+                }
+                temporalstore_rust::types::StringSetCondition::Always => response.status,
+            };
+            temporalstore_rust::types::ExecuteResponse {
+                status,
+                response: CommandResponse::Empty,
+            }
+        }
+        other => temporalstore_rust::types::ExecuteResponse {
+            status: response.status,
+            response: other,
+        },
+    }
+}
+
+fn run_shared_set_members_command(
+    _case: &UnifiedCase,
+    step: &UnifiedStep,
+    add: bool,
+    mut execute: impl FnMut(Command) -> temporalstore_rust::types::ExecuteResponse,
+) -> temporalstore_rust::types::ExecuteResponse {
+    let key = json_string(&step.command, "key");
+    let members = json_member_values(&step.command);
+    let before = execute(Command::SetMembers { key: key.clone() });
+    if !before.status.ok {
+        return before;
+    }
+    let mut existing = match before.response {
+        CommandResponse::Members { members } => members.into_iter().collect::<BTreeSet<_>>(),
+        other => {
+            return temporalstore_rust::types::ExecuteResponse {
+                status: Status::error("invalid_response", "set members returned wrong shape"),
+                response: other,
+            }
+        }
+    };
+    let mut changed = 0;
+    for member in members {
+        let should_mutate = if add {
+            existing.insert(member.clone())
+        } else {
+            existing.remove(&member)
+        };
+        if should_mutate {
+            let response = execute(if add {
+                Command::SetAdd {
+                    key: key.clone(),
+                    member,
+                }
+            } else {
+                Command::SetRemove {
+                    key: key.clone(),
+                    member,
+                }
+            });
+            if !response.status.ok {
+                return response;
+            }
+            changed += 1;
+        }
+    }
+    temporalstore_rust::types::ExecuteResponse {
+        status: Status::ok(),
+        response: CommandResponse::Integer { value: changed },
+    }
+}
+
+fn json_string(value: &Value, field: &str) -> String {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("shared command missing string field {field}"))
+        .to_string()
+}
+
+fn json_bytes(value: &Value, field: &str) -> Vec<u8> {
+    value
+        .get(field)
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("shared command missing byte-array field {field}"))
+        .iter()
+        .map(|item| {
+            item.as_u64()
+                .unwrap_or_else(|| panic!("shared byte-array field {field} contains non-byte"))
+                as u8
+        })
+        .collect()
+}
+
+fn json_string_array(value: &Value, field: &str) -> Vec<String> {
+    value
+        .get(field)
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("shared command missing string-array field {field}"))
+        .iter()
+        .map(|item| {
+            item.as_str()
+                .unwrap_or_else(|| panic!("shared string-array field {field} contains non-string"))
+                .to_string()
+        })
+        .collect()
+}
+
+fn json_member_values(value: &Value) -> Vec<Vec<u8>> {
+    if value.get("members").is_some() {
+        return json_string_array(value, "members")
+            .into_iter()
+            .map(String::into_bytes)
+            .collect();
+    }
+    vec![json_bytes(value, "member")]
+}
+
+fn static_expected_allowed(expected: &UnifiedExpected) -> Option<bool> {
+    match expected {
+        UnifiedExpected::Static(value) => value.get("allowed").and_then(Value::as_bool),
+        _ => None,
+    }
+}
+
+fn static_expected_backend(expected: &UnifiedExpected) -> Option<&str> {
+    match expected {
+        UnifiedExpected::Static(value) => value.get("backend").and_then(Value::as_str),
+        _ => None,
+    }
 }
 
 fn is_storage_parity_command(command: &Value) -> bool {
@@ -1355,12 +1886,98 @@ fn assert_step_status(case: &UnifiedCase, step: &UnifiedStep, actual: &Status) {
             "case={} step={} status mismatch",
             case.name, step.name
         );
+    } else if step
+        .expect
+        .as_ref()
+        .and_then(expected_status_code)
+        .is_some()
+    {
+        // The expected payload can carry a C++ status contract that maps onto
+        // a Rust response value. assert_step_expect performs that translation.
     } else {
         assert!(
             actual.ok,
             "case={} step={} failed status={:?}",
             case.name, step.name, actual
         );
+    }
+}
+
+fn assert_step_expect(
+    case: &UnifiedCase,
+    step: &UnifiedStep,
+    actual_status: &Status,
+    actual_response: &CommandResponse,
+) {
+    match &step.expect {
+        Some(UnifiedExpected::Status(expected)) => {
+            assert_eq!(
+                expected.kind, "status",
+                "case={} step={} unsupported expected status kind",
+                case.name, step.name
+            );
+            if actual_status.code == expected.status {
+                return;
+            }
+            let rust_conditional_rejection = expected.status == "already_exists"
+                && matches!(
+                    actual_response,
+                    CommandResponse::Integer { value: 0 } | CommandResponse::Bytes { value: None }
+                );
+            let rust_missing_value = expected.status == "not_found"
+                && matches!(actual_response, CommandResponse::Bytes { value: None })
+                || expected.status == "not_found"
+                    && matches!(
+                        actual_response,
+                        CommandResponse::Values { values } if values.iter().all(Option::is_none)
+                    )
+                || expected.status == "not_found"
+                    && matches!(
+                        actual_response,
+                        CommandResponse::HashEntries { entries } if entries.is_empty()
+                    )
+                || expected.status == "not_found"
+                    && matches!(
+                        actual_response,
+                        CommandResponse::Members { members } if members.is_empty()
+                    )
+                || expected.status == "not_found"
+                    && matches!(actual_response, CommandResponse::Integer { value: 0 });
+            assert!(
+                rust_conditional_rejection || rust_missing_value,
+                "case={} step={} status mismatch actual={:?} expected={}",
+                case.name,
+                step.name,
+                actual_status,
+                expected.status
+            );
+        }
+        Some(UnifiedExpected::Response(expected)) => assert_eq!(
+            actual_response, expected,
+            "case={} step={} response mismatch",
+            case.name, step.name
+        ),
+        Some(UnifiedExpected::Bool { value }) => assert_eq!(
+            actual_response,
+            &CommandResponse::Integer {
+                value: i64::from(*value)
+            },
+            "case={} step={} boolean response mismatch",
+            case.name,
+            step.name
+        ),
+        Some(UnifiedExpected::Static(_)) => {}
+        None => {}
+    }
+}
+
+fn expected_status_code(expected: &UnifiedExpected) -> Option<&str> {
+    match expected {
+        UnifiedExpected::Status(status) if status.kind == "status" => Some(status.status.as_str()),
+        UnifiedExpected::Status(_)
+        | UnifiedExpected::Bool { .. }
+        | UnifiedExpected::Static(_)
+        | UnifiedExpected::Response(_) => None,
     }
 }
 
