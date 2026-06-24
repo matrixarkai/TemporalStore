@@ -24,10 +24,11 @@ String:
 - `SETEX` -> `StringSetEx`
 - `GET` -> `StringGet`
 - Redis-compatible `MGET`, `MSET`, `MSETNX`, `GETDEL`, `GETSET`, `DEL`, `EXPIRE`,
-  `PEXPIRE`, `TTL`, `PTTL`, `APPEND`, `STRLEN`, `INCR`, `DECR`, `INCRBY`, `DECRBY`,
-  `GETRANGE`, `SETRANGE`, `TYPE`, `TOUCH`, `UNLINK`, `RANDOMKEY`, `FLUSHDB`,
-  `FLUSHALL`, state-backed `DBSIZE`, `KEYS`, and `SCAN` for keys mutated through the
-  RESP adapter
+  `PEXPIRE`, `EXPIREAT`, `PEXPIREAT`, `EXPIRETIME`, `PEXPIRETIME`, `TTL`, `PTTL`,
+  `GETEX`, `APPEND`, `STRLEN`, `INCR`, `DECR`, `INCRBY`, `DECRBY`, `INCRBYFLOAT`,
+  `GETRANGE`, `SETRANGE`, `COPY`, `RENAME`, `RENAMENX`, `TYPE`, `TOUCH`, `UNLINK`,
+  `RANDOMKEY`, `FLUSHDB`, `FLUSHALL`, state-backed `DBSIZE`, `KEYS`, and `SCAN`
+  for keys mutated through the RESP adapter
 
 Hash:
 
@@ -40,7 +41,8 @@ Hash:
 - `LEN` -> `HashLen`
 - `INCRBY` -> `HashIncrBy`, including C++-style rejection of non-integer values and i64 overflow
 - Redis-compatible `HSET`, `HSETNX`, `HGET`, `HEXISTS`, `HDEL`, `HMGET`, `HMSET`,
-  `HGETALL`, `HKEYS`, `HVALS`, `HLEN`, `HSTRLEN`, `HSCAN`, and `HINCRBY`
+  `HGETALL`, `HKEYS`, `HVALS`, `HLEN`, `HSTRLEN`, `HSCAN`, `HINCRBY`, and
+  `HINCRBYFLOAT`
 
 Set:
 
@@ -54,11 +56,12 @@ Redis list/sorted-set compatibility:
 
 - List commands are stored through the TemporalStore string engine path with a self-describing
   Redis compatibility envelope: `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LLEN`, `LINDEX`, `LRANGE`,
-  `LSET`, `LTRIM`, `LREM`, and `LPOS`.
+  `LSET`, `LTRIM`, `LREM`, `LPOS`, `LINSERT`, `LMOVE`, and `RPOPLPUSH`.
 - Sorted-set commands are stored through the TemporalStore string engine path with a self-describing
   Redis compatibility envelope: `ZADD`, `ZRANGE`, `ZREVRANGE`, `ZRANGEBYSCORE`, `ZCARD`,
   `ZSCORE`, `ZCOUNT`, `ZINCRBY`, `ZRANK`, `ZREVRANK`, `ZREM`, `ZPOPMIN`,
-  `ZPOPMAX`, `ZREMRANGEBYSCORE`, `ZREMRANGEBYRANK`, and `ZSCAN`.
+  `ZPOPMAX`, `ZREMRANGEBYSCORE`, `ZREMRANGEBYRANK`, `ZSCAN`, `ZMSCORE`,
+  `ZRANDMEMBER`, `ZDIFF`, `ZINTER`, and `ZUNION`.
 - `COMMAND` introspection is guarded by a Rust test that sends a valid sample command for every
   advertised command and fails if any entry falls through to `ERR syntax error`.
 

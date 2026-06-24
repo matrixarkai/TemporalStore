@@ -3,6 +3,7 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::thread;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::client::{slot_id_for_key, stable_key_hash};
 use crate::types::{
@@ -332,6 +333,27 @@ pub fn execute_redis_command_with_state(
             }
             RespValue::Integer(1)
         }
+        "GETEX" if args.len() >= 2 => {
+            let key = string_arg(&args[1]);
+            match execute(Command::StringGet { key: key.clone() }) {
+                Ok(CommandResponse::Bytes { value }) => {
+                    if value.is_some() {
+                        let ttl_ms = match parse_getex_ttl_ms(&args[2..]) {
+                            Ok(value) => value,
+                            Err(err) => return RespValue::Error(err),
+                        };
+                        if let Some(ttl_ms) = ttl_ms {
+                            if let Err(err) = execute(Command::CommonExpire { key, ttl_ms }) {
+                                return RespValue::Error(format!("ERR {err}"));
+                            }
+                        }
+                    }
+                    RespValue::Bulk(value)
+                }
+                Ok(_) => RespValue::Error("ERR invalid getex response".to_string()),
+                Err(err) => RespValue::Error(format!("ERR {err}")),
+            }
+        }
         "SETEX" if args.len() == 4 => match parse_u64(&args[2], "seconds") {
             Ok(seconds) => match execute(Command::StringSetEx {
                 key: string_arg(&args[1]),
@@ -439,8 +461,24 @@ pub fn execute_redis_command_with_state(
             state.keyspace.clear();
             RespValue::SimpleString("OK".to_string())
         }
+        "COPY" if args.len() == 3 || args.len() == 4 => {
+            let replace = args
+                .get(3)
+                .is_some_and(|option| upper(option).as_str() == "REPLACE");
+            copy_or_rename_key_response(&args[1], &args[2], false, replace, state, &mut execute)
+        }
+        "RENAME" if args.len() == 3 => {
+            copy_or_rename_key_response(&args[1], &args[2], true, true, state, &mut execute)
+        }
+        "RENAMENX" if args.len() == 3 => {
+            copy_or_rename_key_response(&args[1], &args[2], true, false, state, &mut execute)
+        }
         "EXPIRE" if args.len() == 3 => expire_response(&args, 1000, execute),
         "PEXPIRE" if args.len() == 3 => expire_response(&args, 1, execute),
+        "EXPIREAT" if args.len() == 3 => expire_at_response(&args, 1000, execute),
+        "PEXPIREAT" if args.len() == 3 => expire_at_response(&args, 1, execute),
+        "EXPIRETIME" if args.len() == 2 => expire_time_response(&args[1], 1000, &mut execute),
+        "PEXPIRETIME" if args.len() == 2 => expire_time_response(&args[1], 1, &mut execute),
         "TTL" if args.len() == 2 => match execute(Command::CommonTtl {
             key: string_arg(&args[1]),
         }) {
@@ -512,6 +550,13 @@ pub fn execute_redis_command_with_state(
             }
             Err(err) => RespValue::Error(err),
         },
+        "INCRBYFLOAT" if args.len() == 3 => {
+            let response = string_increment_float_response(&args[1], &args[2], &mut execute);
+            if matches!(response, RespValue::Bulk(Some(_))) {
+                state.keyspace.insert(string_arg(&args[1]));
+            }
+            response
+        }
         "DECRBY" if args.len() == 3 => match parse_i64_arg(&args[2], "decrement") {
             Ok(decrement) => {
                 let response = string_increment_response(&args[1], -decrement, &mut execute);
@@ -522,6 +567,14 @@ pub fn execute_redis_command_with_state(
             }
             Err(err) => RespValue::Error(err),
         },
+        "HINCRBYFLOAT" if args.len() == 4 => {
+            let response =
+                hash_increment_float_response(&args[1], &args[2], &args[3], &mut execute);
+            if matches!(response, RespValue::Bulk(Some(_))) {
+                state.keyspace.insert(string_arg(&args[1]));
+            }
+            response
+        }
         "HSET" if args.len() >= 4 && args.len() % 2 == 0 => {
             let key = string_arg(&args[1]);
             let mut added = 0;
@@ -974,6 +1027,30 @@ pub fn execute_redis_command_with_state(
             }
             response
         }
+        "RPOPLPUSH" if args.len() == 3 => {
+            let response = list_move_response(&args[1], &args[2], false, true, &mut execute);
+            if matches!(response, RespValue::Bulk(Some(_))) {
+                state.keyspace.insert(string_arg(&args[1]));
+                state.keyspace.insert(string_arg(&args[2]));
+            }
+            response
+        }
+        "LMOVE" if args.len() == 5 => {
+            let from_left = match parse_list_side(&args[3]) {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let to_left = match parse_list_side(&args[4]) {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let response = list_move_response(&args[1], &args[2], from_left, to_left, &mut execute);
+            if matches!(response, RespValue::Bulk(Some(_))) {
+                state.keyspace.insert(string_arg(&args[1]));
+                state.keyspace.insert(string_arg(&args[2]));
+            }
+            response
+        }
         "LLEN" if args.len() == 2 => match load_redis_list(&string_arg(&args[1]), &mut execute) {
             Ok(values) => RespValue::Integer(values.len() as i64),
             Err(err) => RespValue::Error(err),
@@ -996,6 +1073,9 @@ pub fn execute_redis_command_with_state(
                 .unwrap_or(RespValue::Bulk(None)),
             Err(err) => RespValue::Error(err),
         },
+        "LINSERT" if args.len() == 5 => {
+            list_insert_response(&args[1], &args[2], &args[3], &args[4], &mut execute)
+        }
         "LRANGE" if args.len() == 4 => {
             let start = match parse_i64_arg(&args[2], "start") {
                 Ok(value) => value,
@@ -1110,6 +1190,27 @@ pub fn execute_redis_command_with_state(
             ),
             Err(err) => RespValue::Error(err),
         },
+        "ZMSCORE" if args.len() >= 3 => {
+            match load_redis_zset(&string_arg(&args[1]), &mut execute) {
+                Ok(values) => RespValue::Array(
+                    args.iter()
+                        .skip(2)
+                        .map(|member| {
+                            RespValue::Bulk(
+                                values
+                                    .iter()
+                                    .find(|(existing, _)| existing == member)
+                                    .map(|(_, score)| format_redis_score(*score).into_bytes()),
+                            )
+                        })
+                        .collect(),
+                ),
+                Err(err) => RespValue::Error(err),
+            }
+        }
+        "ZRANDMEMBER" if args.len() == 2 || args.len() == 3 || args.len() == 4 => {
+            zrandmember_response(&args, &mut execute)
+        }
         "ZRANK" if args.len() == 3 => zrank_response(&args, false, &mut execute),
         "ZREVRANK" if args.len() == 3 => zrank_response(&args, true, &mut execute),
         "ZINCRBY" if args.len() == 4 => {
@@ -1187,6 +1288,15 @@ pub fn execute_redis_command_with_state(
                 }
                 Err(err) => RespValue::Error(err),
             }
+        }
+        "ZDIFF" if args.len() >= 3 => {
+            zset_algebra_response(&args, ZSetAlgebraOp::Diff, &mut execute)
+        }
+        "ZINTER" if args.len() >= 3 => {
+            zset_algebra_response(&args, ZSetAlgebraOp::Inter, &mut execute)
+        }
+        "ZUNION" if args.len() >= 3 => {
+            zset_algebra_response(&args, ZSetAlgebraOp::Union, &mut execute)
         }
         "KEYS" if args.len() == 2 => redis_keys_response(&args[1], state),
         "SCAN" if args.len() >= 2 => redis_scan_response(&args, state),
@@ -1916,6 +2026,130 @@ fn redis_config_response(args: &[Vec<u8>], state: &mut RedisCommandState) -> Res
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+enum RedisStoredValue {
+    String(Vec<u8>),
+    Hash(Vec<(String, Vec<u8>)>),
+    Set(Vec<Vec<u8>>),
+}
+
+fn copy_or_rename_key_response(
+    source: &[u8],
+    destination: &[u8],
+    rename: bool,
+    replace: bool,
+    state: &mut RedisCommandState,
+    execute: &mut impl FnMut(Command) -> Result<CommandResponse, String>,
+) -> RespValue {
+    let source_key = string_arg(source);
+    let destination_key = string_arg(destination);
+    let value = match load_stored_key_value(&source_key, execute) {
+        Ok(Some(value)) => value,
+        Ok(None) if rename => return RespValue::Error("ERR no such key".to_string()),
+        Ok(None) => return RespValue::Integer(0),
+        Err(err) => return RespValue::Error(err),
+    };
+    if !replace {
+        match execute(Command::CommonExists {
+            key: destination_key.clone(),
+        }) {
+            Ok(CommandResponse::Integer { value }) if value > 0 => {
+                return if rename {
+                    RespValue::Integer(0)
+                } else {
+                    RespValue::Integer(0)
+                };
+            }
+            Ok(CommandResponse::Integer { .. }) => {}
+            Ok(_) => return RespValue::Error("ERR invalid exists response".to_string()),
+            Err(err) => return RespValue::Error(format!("ERR {err}")),
+        }
+    }
+    if let Err(err) = store_stored_key_value(&destination_key, value, execute) {
+        return RespValue::Error(err);
+    }
+    state.keyspace.insert(destination_key);
+    if rename {
+        if let Err(err) = execute(Command::CommonDelete {
+            key: source_key.clone(),
+        }) {
+            return RespValue::Error(format!("ERR {err}"));
+        }
+        state.keyspace.remove(&source_key);
+        RespValue::SimpleString("OK".to_string())
+    } else {
+        RespValue::Integer(1)
+    }
+}
+
+fn load_stored_key_value(
+    key: &str,
+    execute: &mut impl FnMut(Command) -> Result<CommandResponse, String>,
+) -> Result<Option<RedisStoredValue>, String> {
+    match execute(Command::StringGet {
+        key: key.to_string(),
+    }) {
+        Ok(CommandResponse::Bytes { value: Some(value) }) => {
+            return Ok(Some(RedisStoredValue::String(value)));
+        }
+        Ok(CommandResponse::Bytes { value: None }) => {}
+        Ok(_) => return Err("ERR invalid string response".to_string()),
+        Err(err) => return Err(format!("ERR {err}")),
+    }
+    match execute(Command::HashGetAll {
+        key: key.to_string(),
+    }) {
+        Ok(CommandResponse::HashEntries { entries }) if !entries.is_empty() => {
+            return Ok(Some(RedisStoredValue::Hash(entries)));
+        }
+        Ok(CommandResponse::HashEntries { .. }) => {}
+        Ok(_) => return Err("ERR invalid hash response".to_string()),
+        Err(err) => return Err(format!("ERR {err}")),
+    }
+    match execute(Command::SetMembers {
+        key: key.to_string(),
+    }) {
+        Ok(CommandResponse::Members { members }) if !members.is_empty() => {
+            return Ok(Some(RedisStoredValue::Set(members)));
+        }
+        Ok(CommandResponse::Members { .. }) => {}
+        Ok(_) => return Err("ERR invalid set response".to_string()),
+        Err(err) => return Err(format!("ERR {err}")),
+    }
+    Ok(None)
+}
+
+fn store_stored_key_value(
+    key: &str,
+    value: RedisStoredValue,
+    execute: &mut impl FnMut(Command) -> Result<CommandResponse, String>,
+) -> Result<(), String> {
+    match value {
+        RedisStoredValue::String(value) => execute(Command::StringSet {
+            key: key.to_string(),
+            value,
+        })
+        .map(|_| ())
+        .map_err(|err| format!("ERR {err}")),
+        RedisStoredValue::Hash(entries) => execute(Command::HashMultiSet {
+            key: key.to_string(),
+            entries,
+        })
+        .map(|_| ())
+        .map_err(|err| format!("ERR {err}")),
+        RedisStoredValue::Set(members) => {
+            for member in members {
+                execute(Command::SetAdd {
+                    key: key.to_string(),
+                    member,
+                })
+                .map_err(|err| format!("ERR {err}"))?;
+            }
+            Ok(())
+        }
+    }
+}
+
 fn redis_partition_response(
     args: &[Vec<u8>],
     shard_id: ShardId,
@@ -2030,6 +2264,11 @@ fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             flags: ADMIN,
         },
         RedisCommandDescriptor {
+            name: "COPY",
+            arity: -3,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
             name: "DBSIZE",
             arity: 1,
             flags: READ,
@@ -2055,6 +2294,16 @@ fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             flags: WRITE,
         },
         RedisCommandDescriptor {
+            name: "EXPIREAT",
+            arity: 3,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "EXPIRETIME",
+            arity: 2,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
             name: "FLUSHALL",
             arity: -1,
             flags: ADMIN,
@@ -2072,6 +2321,11 @@ fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
         RedisCommandDescriptor {
             name: "GETDEL",
             arity: 2,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "GETEX",
+            arity: -2,
             flags: WRITE,
         },
         RedisCommandDescriptor {
@@ -2106,6 +2360,11 @@ fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
         },
         RedisCommandDescriptor {
             name: "HINCRBY",
+            arity: 4,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "HINCRBYFLOAT",
             arity: 4,
             flags: WRITE,
         },
@@ -2160,6 +2419,11 @@ fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             flags: ADMIN,
         },
         RedisCommandDescriptor {
+            name: "INCRBYFLOAT",
+            arity: 3,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
             name: "LINDEX",
             arity: 3,
             flags: READ,
@@ -2172,6 +2436,16 @@ fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
         RedisCommandDescriptor {
             name: "LPOP",
             arity: -2,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "LINSERT",
+            arity: 5,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "LMOVE",
+            arity: 5,
             flags: WRITE,
         },
         RedisCommandDescriptor {
@@ -2235,6 +2509,16 @@ fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             flags: WRITE,
         },
         RedisCommandDescriptor {
+            name: "PEXPIREAT",
+            arity: 3,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "PEXPIRETIME",
+            arity: 2,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
             name: "PING",
             arity: -1,
             flags: READ,
@@ -2255,8 +2539,23 @@ fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             flags: READ,
         },
         RedisCommandDescriptor {
+            name: "RENAME",
+            arity: 3,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "RENAMENX",
+            arity: 3,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
             name: "RPOP",
             arity: -2,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "RPOPLPUSH",
+            arity: 3,
             flags: WRITE,
         },
         RedisCommandDescriptor {
@@ -2405,9 +2704,24 @@ fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             flags: READ,
         },
         RedisCommandDescriptor {
+            name: "ZDIFF",
+            arity: -3,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
             name: "ZINCRBY",
             arity: 4,
             flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "ZINTER",
+            arity: -3,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "ZMSCORE",
+            arity: -3,
+            flags: READ,
         },
         RedisCommandDescriptor {
             name: "ZPOPMAX",
@@ -2450,6 +2764,11 @@ fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             flags: READ,
         },
         RedisCommandDescriptor {
+            name: "ZRANDMEMBER",
+            arity: -2,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
             name: "ZREVRANGE",
             arity: -4,
             flags: READ,
@@ -2467,6 +2786,11 @@ fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
         RedisCommandDescriptor {
             name: "ZSCORE",
             arity: 3,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "ZUNION",
+            arity: -3,
             flags: READ,
         },
     ]
@@ -2658,6 +2982,77 @@ fn expire_response(
     }
 }
 
+fn expire_at_response(
+    args: &[Vec<u8>],
+    factor: u64,
+    mut execute: impl FnMut(Command) -> Result<CommandResponse, String>,
+) -> RespValue {
+    let deadline_ms = match parse_u64(&args[2], "timestamp") {
+        Ok(value) => value.saturating_mul(factor),
+        Err(err) => return RespValue::Error(err),
+    };
+    let ttl_ms = deadline_ms.saturating_sub(unix_time_ms()).max(1);
+    match execute(Command::CommonExpire {
+        key: string_arg(&args[1]),
+        ttl_ms,
+    }) {
+        Ok(_) => RespValue::Integer(1),
+        Err(err) if err.contains("not_found") || err.contains("key not found") => {
+            RespValue::Integer(0)
+        }
+        Err(err) => RespValue::Error(format!("ERR {err}")),
+    }
+}
+
+fn expire_time_response(
+    key: &[u8],
+    divisor_ms: u64,
+    execute: &mut impl FnMut(Command) -> Result<CommandResponse, String>,
+) -> RespValue {
+    match execute(Command::CommonTtl {
+        key: string_arg(key),
+    }) {
+        Ok(CommandResponse::Integer { value }) if value < 0 => RespValue::Integer(value),
+        Ok(CommandResponse::Integer { value }) => {
+            RespValue::Integer((unix_time_ms() as i64).saturating_add(value) / divisor_ms as i64)
+        }
+        Ok(_) => RespValue::Error("ERR invalid expiretime response".to_string()),
+        Err(err) => RespValue::Error(format!("ERR {err}")),
+    }
+}
+
+fn parse_getex_ttl_ms(args: &[Vec<u8>]) -> Result<Option<u64>, String> {
+    if args.is_empty() {
+        return Ok(None);
+    }
+    if args.len() == 1 && upper(&args[0]) == "PERSIST" {
+        return Ok(None);
+    }
+    if args.len() != 2 {
+        return Err("ERR syntax error".to_string());
+    }
+    match upper(&args[0]).as_str() {
+        "EX" => parse_u64(&args[1], "seconds").map(|value| Some(value.saturating_mul(1000))),
+        "PX" => parse_u64(&args[1], "milliseconds").map(Some),
+        "EXAT" => {
+            let deadline = parse_u64(&args[1], "timestamp")?.saturating_mul(1000);
+            Ok(Some(deadline.saturating_sub(unix_time_ms()).max(1)))
+        }
+        "PXAT" => {
+            let deadline = parse_u64(&args[1], "timestamp")?;
+            Ok(Some(deadline.saturating_sub(unix_time_ms()).max(1)))
+        }
+        _ => Err("ERR syntax error".to_string()),
+    }
+}
+
+fn unix_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default()
+}
+
 fn string_increment_response(
     key: &[u8],
     increment: i64,
@@ -2683,6 +3078,70 @@ fn string_increment_response(
         return RespValue::Error(format!("ERR {err}"));
     }
     RespValue::Integer(next)
+}
+
+fn string_increment_float_response(
+    key: &[u8],
+    increment: &[u8],
+    execute: &mut impl FnMut(Command) -> Result<CommandResponse, String>,
+) -> RespValue {
+    let increment = match parse_f64_arg(increment, "increment") {
+        Ok(value) => value,
+        Err(err) => return RespValue::Error(err),
+    };
+    let key = string_arg(key);
+    let current = match execute(Command::StringGet { key: key.clone() }) {
+        Ok(CommandResponse::Bytes { value: None }) => 0.0,
+        Ok(CommandResponse::Bytes { value: Some(value) }) => match parse_f64_arg(&value, "value") {
+            Ok(value) => value,
+            Err(_) => return RespValue::Error("ERR value is not a valid float".to_string()),
+        },
+        Ok(_) => return RespValue::Error("ERR invalid incrbyfloat response".to_string()),
+        Err(err) => return RespValue::Error(format!("ERR {err}")),
+    };
+    let value = format_redis_score(current + increment).into_bytes();
+    match execute(Command::StringSet {
+        key,
+        value: value.clone(),
+    }) {
+        Ok(_) => RespValue::Bulk(Some(value)),
+        Err(err) => RespValue::Error(format!("ERR {err}")),
+    }
+}
+
+fn hash_increment_float_response(
+    key: &[u8],
+    field: &[u8],
+    increment: &[u8],
+    execute: &mut impl FnMut(Command) -> Result<CommandResponse, String>,
+) -> RespValue {
+    let increment = match parse_f64_arg(increment, "increment") {
+        Ok(value) => value,
+        Err(err) => return RespValue::Error(err),
+    };
+    let key = string_arg(key);
+    let field = string_arg(field);
+    let current = match execute(Command::HashGet {
+        key: key.clone(),
+        field: field.clone(),
+    }) {
+        Ok(CommandResponse::Bytes { value: None }) => 0.0,
+        Ok(CommandResponse::Bytes { value: Some(value) }) => match parse_f64_arg(&value, "value") {
+            Ok(value) => value,
+            Err(_) => return RespValue::Error("ERR hash value is not a valid float".to_string()),
+        },
+        Ok(_) => return RespValue::Error("ERR invalid hincrbyfloat response".to_string()),
+        Err(err) => return RespValue::Error(format!("ERR {err}")),
+    };
+    let value = format_redis_score(current + increment).into_bytes();
+    match execute(Command::HashSet {
+        key,
+        field,
+        value: value.clone(),
+    }) {
+        Ok(_) => RespValue::Bulk(Some(value)),
+        Err(err) => RespValue::Error(format!("ERR {err}")),
+    }
 }
 
 fn list_push_response(
@@ -2797,6 +3256,92 @@ fn list_rem_response(
     let removed = before.saturating_sub(values.len()) as i64;
     match store_redis_list(&key, &values, execute) {
         Ok(()) => RespValue::Integer(removed),
+        Err(err) => RespValue::Error(err),
+    }
+}
+
+fn parse_list_side(value: &[u8]) -> Result<bool, String> {
+    match upper(value).as_str() {
+        "LEFT" => Ok(true),
+        "RIGHT" => Ok(false),
+        _ => Err("ERR syntax error".to_string()),
+    }
+}
+
+fn list_move_response(
+    source: &[u8],
+    destination: &[u8],
+    from_left: bool,
+    to_left: bool,
+    execute: &mut impl FnMut(Command) -> Result<CommandResponse, String>,
+) -> RespValue {
+    let source_key = string_arg(source);
+    let destination_key = string_arg(destination);
+    let mut source_values = match load_redis_list(&source_key, execute) {
+        Ok(values) => values,
+        Err(err) => return RespValue::Error(err),
+    };
+    if source_values.is_empty() {
+        return RespValue::Bulk(None);
+    }
+    let value = if from_left {
+        source_values.remove(0)
+    } else {
+        source_values.pop().unwrap_or_default()
+    };
+    let mut destination_values = if source_key == destination_key {
+        source_values.clone()
+    } else {
+        match load_redis_list(&destination_key, execute) {
+            Ok(values) => values,
+            Err(err) => return RespValue::Error(err),
+        }
+    };
+    if to_left {
+        destination_values.insert(0, value.clone());
+    } else {
+        destination_values.push(value.clone());
+    }
+    if source_key == destination_key {
+        match store_redis_list(&source_key, &destination_values, execute) {
+            Ok(()) => RespValue::Bulk(Some(value)),
+            Err(err) => RespValue::Error(err),
+        }
+    } else if let Err(err) = store_redis_list(&source_key, &source_values, execute) {
+        RespValue::Error(err)
+    } else {
+        match store_redis_list(&destination_key, &destination_values, execute) {
+            Ok(()) => RespValue::Bulk(Some(value)),
+            Err(err) => RespValue::Error(err),
+        }
+    }
+}
+
+fn list_insert_response(
+    key: &[u8],
+    placement: &[u8],
+    pivot: &[u8],
+    value: &[u8],
+    execute: &mut impl FnMut(Command) -> Result<CommandResponse, String>,
+) -> RespValue {
+    let before = match upper(placement).as_str() {
+        "BEFORE" => true,
+        "AFTER" => false,
+        _ => return RespValue::Error("ERR syntax error".to_string()),
+    };
+    let key = string_arg(key);
+    let mut values = match load_redis_list(&key, execute) {
+        Ok(values) => values,
+        Err(err) => return RespValue::Error(err),
+    };
+    let Some(index) = values.iter().position(|existing| existing == pivot) else {
+        return RespValue::Integer(-1);
+    };
+    let index = if before { index } else { index + 1 };
+    values.insert(index, value.to_vec());
+    let len = values.len() as i64;
+    match store_redis_list(&key, &values, execute) {
+        Ok(()) => RespValue::Integer(len),
         Err(err) => RespValue::Error(err),
     }
 }
@@ -3220,6 +3765,141 @@ fn zremrangebyrank_response(
     match store_redis_zset(&key, &values, execute) {
         Ok(()) => RespValue::Integer(removed),
         Err(err) => RespValue::Error(err),
+    }
+}
+
+fn zrandmember_response(
+    args: &[Vec<u8>],
+    execute: &mut impl FnMut(Command) -> Result<CommandResponse, String>,
+) -> RespValue {
+    let count = match args.get(2) {
+        Some(value) => match parse_i64_arg(value, "count") {
+            Ok(value) => Some(value),
+            Err(err) => return RespValue::Error(err),
+        },
+        None => None,
+    };
+    let with_scores = args
+        .get(3)
+        .is_some_and(|arg| upper(arg).as_str() == "WITHSCORES");
+    match load_redis_zset(&string_arg(&args[1]), execute) {
+        Ok(mut values) => {
+            sort_zset_values(&mut values);
+            match count {
+                Some(count) => {
+                    let take = count.unsigned_abs() as usize;
+                    let mut selected = Vec::new();
+                    for index in 0..take {
+                        if values.is_empty() {
+                            break;
+                        }
+                        let entry = if count >= 0 {
+                            values.get(index).cloned()
+                        } else {
+                            values.get(index % values.len()).cloned()
+                        };
+                        if let Some((member, score)) = entry {
+                            selected.push(RespValue::Bulk(Some(member)));
+                            if with_scores {
+                                selected.push(RespValue::Bulk(Some(
+                                    format_redis_score(score).into_bytes(),
+                                )));
+                            }
+                        }
+                    }
+                    RespValue::Array(selected)
+                }
+                None => values
+                    .into_iter()
+                    .next()
+                    .map(|(member, _)| RespValue::Bulk(Some(member)))
+                    .unwrap_or(RespValue::Bulk(None)),
+            }
+        }
+        Err(err) => RespValue::Error(err),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ZSetAlgebraOp {
+    Diff,
+    Inter,
+    Union,
+}
+
+fn zset_algebra_response(
+    args: &[Vec<u8>],
+    op: ZSetAlgebraOp,
+    execute: &mut impl FnMut(Command) -> Result<CommandResponse, String>,
+) -> RespValue {
+    let key_count = match parse_usize(&args[1], "numkeys") {
+        Ok(value) => value,
+        Err(err) => return RespValue::Error(err),
+    };
+    if key_count == 0 || args.len() < key_count + 2 {
+        return RespValue::Error("ERR syntax error".to_string());
+    }
+    let with_scores = args
+        .get(key_count + 2)
+        .is_some_and(|arg| upper(arg).as_str() == "WITHSCORES");
+    let mut sets = Vec::new();
+    for key in args.iter().skip(2).take(key_count) {
+        match load_redis_zset(&string_arg(key), execute) {
+            Ok(values) => sets.push(values.into_iter().collect::<HashMap<_, _>>()),
+            Err(err) => return RespValue::Error(err),
+        }
+    }
+    let mut result = match op {
+        ZSetAlgebraOp::Diff | ZSetAlgebraOp::Inter => sets.first().cloned().unwrap_or_default(),
+        ZSetAlgebraOp::Union => HashMap::new(),
+    };
+    match op {
+        ZSetAlgebraOp::Diff => {
+            for set in sets.iter().skip(1) {
+                result.retain(|member, _| !set.contains_key(member));
+            }
+        }
+        ZSetAlgebraOp::Inter => {
+            for set in sets.iter().skip(1) {
+                result.retain(|member, score| {
+                    if let Some(other_score) = set.get(member) {
+                        *score += *other_score;
+                        true
+                    } else {
+                        false
+                    }
+                });
+            }
+        }
+        ZSetAlgebraOp::Union => {
+            for set in sets {
+                for (member, score) in set {
+                    *result.entry(member).or_insert(0.0) += score;
+                }
+            }
+        }
+    }
+    let mut values = result.into_iter().collect::<Vec<_>>();
+    sort_zset_values(&mut values);
+    if with_scores {
+        RespValue::Array(
+            values
+                .into_iter()
+                .flat_map(|(member, score)| {
+                    [
+                        RespValue::Bulk(Some(member)),
+                        RespValue::Bulk(Some(format_redis_score(score).into_bytes())),
+                    ]
+                })
+                .collect(),
+        )
+    } else {
+        RespValue::Array(
+            values
+                .into_iter()
+                .map(|(member, _)| RespValue::Bulk(Some(member)))
+                .collect(),
+        )
     }
 }
 
@@ -3858,6 +4538,17 @@ mod tests {
             RespValue::Bulk(Some(b"value-tail".to_vec()))
         );
         assert_eq!(
+            run(
+                &mut state,
+                vec!["GETEX", "redis:core:string", "PX", "60000"]
+            ),
+            RespValue::Bulk(Some(b"value-tail".to_vec()))
+        );
+        assert_eq!(
+            run(&mut state, vec!["INCRBYFLOAT", "redis:core:float", "1.5"]),
+            RespValue::Bulk(Some(b"1.5".to_vec()))
+        );
+        assert_eq!(
             run(&mut state, vec!["TYPE", "redis:core:string"]),
             RespValue::SimpleString("string".to_string())
         );
@@ -3890,12 +4581,21 @@ mod tests {
             RespValue::Integer(2)
         );
         assert_eq!(
+            run(
+                &mut state,
+                vec!["HINCRBYFLOAT", "redis:core:hash", "float", "1.5"]
+            ),
+            RespValue::Bulk(Some(b"1.5".to_vec()))
+        );
+        assert_eq!(
             run(&mut state, vec!["HSCAN", "redis:core:hash", "0"]),
             RespValue::Array(vec![
                 RespValue::Bulk(Some(b"0".to_vec())),
                 RespValue::Array(vec![
                     RespValue::Bulk(Some(b"field".to_vec())),
                     RespValue::Bulk(Some(b"v1".to_vec())),
+                    RespValue::Bulk(Some(b"float".to_vec())),
+                    RespValue::Bulk(Some(b"1.5".to_vec())),
                 ]),
             ])
         );
@@ -3985,8 +4685,35 @@ mod tests {
             ])
         );
         assert_eq!(
+            run(
+                &mut state,
+                vec!["LINSERT", "redis:core:list", "BEFORE", "c", "x"]
+            ),
+            RespValue::Integer(4)
+        );
+        assert_eq!(
             run(&mut state, vec!["LPOS", "redis:core:list", "a"]),
-            RespValue::Integer(2)
+            RespValue::Integer(3)
+        );
+        assert_eq!(
+            run(
+                &mut state,
+                vec![
+                    "LMOVE",
+                    "redis:core:list",
+                    "redis:core:list2",
+                    "RIGHT",
+                    "LEFT"
+                ]
+            ),
+            RespValue::Bulk(Some(b"a".to_vec()))
+        );
+        assert_eq!(
+            run(
+                &mut state,
+                vec!["RPOPLPUSH", "redis:core:list2", "redis:core:list"]
+            ),
+            RespValue::Bulk(Some(b"a".to_vec()))
         );
         assert_eq!(
             run(&mut state, vec!["TYPE", "redis:core:list"]),
@@ -4022,6 +4749,65 @@ mod tests {
         assert_eq!(
             run(&mut state, vec!["ZREVRANK", "redis:core:zset", "b"]),
             RespValue::Integer(0)
+        );
+        assert_eq!(
+            run(
+                &mut state,
+                vec!["ZMSCORE", "redis:core:zset", "a", "missing"]
+            ),
+            RespValue::Array(vec![
+                RespValue::Bulk(Some(b"1".to_vec())),
+                RespValue::Bulk(None),
+            ])
+        );
+        assert_eq!(
+            run(&mut state, vec!["ZRANDMEMBER", "redis:core:zset"]),
+            RespValue::Bulk(Some(b"a".to_vec()))
+        );
+        assert_eq!(
+            run(
+                &mut state,
+                vec!["ZADD", "redis:core:zset2", "2", "a", "5", "d"]
+            ),
+            RespValue::Integer(2)
+        );
+        assert_eq!(
+            run(
+                &mut state,
+                vec!["ZDIFF", "2", "redis:core:zset", "redis:core:zset2"]
+            ),
+            RespValue::Array(vec![
+                RespValue::Bulk(Some(b"c".to_vec())),
+                RespValue::Bulk(Some(b"b".to_vec())),
+            ])
+        );
+        assert_eq!(
+            run(
+                &mut state,
+                vec![
+                    "ZINTER",
+                    "2",
+                    "redis:core:zset",
+                    "redis:core:zset2",
+                    "WITHSCORES"
+                ]
+            ),
+            RespValue::Array(vec![
+                RespValue::Bulk(Some(b"a".to_vec())),
+                RespValue::Bulk(Some(b"3".to_vec())),
+            ])
+        );
+        assert_eq!(
+            run(
+                &mut state,
+                vec!["ZUNION", "2", "redis:core:zset", "redis:core:zset2"]
+            ),
+            RespValue::Array(vec![
+                RespValue::Bulk(Some(b"a".to_vec())),
+                RespValue::Bulk(Some(b"c".to_vec())),
+                RespValue::Bulk(Some(b"b".to_vec())),
+                RespValue::Bulk(Some(b"d".to_vec())),
+            ])
         );
         assert_eq!(
             run(
@@ -4071,8 +4857,41 @@ mod tests {
             RespValue::SimpleString("zset".to_string())
         );
         assert_eq!(
+            run(
+                &mut state,
+                vec!["COPY", "redis:core:string", "redis:core:string-copy"]
+            ),
+            RespValue::Integer(1)
+        );
+        assert_eq!(
+            run(
+                &mut state,
+                vec![
+                    "RENAMENX",
+                    "redis:core:string-copy",
+                    "redis:core:string-renamed"
+                ]
+            ),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(
+            run(&mut state, vec!["GET", "redis:core:string-renamed"]),
+            RespValue::Bulk(Some(b"value-tail".to_vec()))
+        );
+        assert_eq!(
+            run(
+                &mut state,
+                vec![
+                    "RENAME",
+                    "redis:core:string-renamed",
+                    "redis:core:string-copy"
+                ]
+            ),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(
             run(&mut state, vec!["RANDOMKEY"]),
-            RespValue::Bulk(Some(b"redis:core:hash".to_vec()))
+            RespValue::Bulk(Some(b"redis:core:float".to_vec()))
         );
         assert_eq!(
             run(
@@ -4084,13 +4903,17 @@ mod tests {
         assert_eq!(
             run(&mut state, vec!["KEYS", "redis:core:*"]),
             RespValue::Array(vec![
+                RespValue::Bulk(Some(b"redis:core:float".to_vec())),
                 RespValue::Bulk(Some(b"redis:core:hash".to_vec())),
                 RespValue::Bulk(Some(b"redis:core:list".to_vec())),
+                RespValue::Bulk(Some(b"redis:core:list2".to_vec())),
                 RespValue::Bulk(Some(b"redis:core:other-set".to_vec())),
                 RespValue::Bulk(Some(b"redis:core:set".to_vec())),
                 RespValue::Bulk(Some(b"redis:core:set-dest".to_vec())),
                 RespValue::Bulk(Some(b"redis:core:string".to_vec())),
+                RespValue::Bulk(Some(b"redis:core:string-copy".to_vec())),
                 RespValue::Bulk(Some(b"redis:core:zset".to_vec())),
+                RespValue::Bulk(Some(b"redis:core:zset2".to_vec())),
             ])
         );
         assert_eq!(
@@ -4101,8 +4924,8 @@ mod tests {
             RespValue::Array(vec![
                 RespValue::Bulk(Some(b"2".to_vec())),
                 RespValue::Array(vec![
+                    RespValue::Bulk(Some(b"redis:core:float".to_vec())),
                     RespValue::Bulk(Some(b"redis:core:hash".to_vec())),
-                    RespValue::Bulk(Some(b"redis:core:list".to_vec())),
                 ]),
             ])
         );
@@ -4110,7 +4933,7 @@ mod tests {
             run(&mut state, vec!["TYPE", "redis:core:missing"]),
             RespValue::SimpleString("none".to_string())
         );
-        assert_eq!(run(&mut state, vec!["DBSIZE"]), RespValue::Integer(7));
+        assert_eq!(run(&mut state, vec!["DBSIZE"]), RespValue::Integer(11));
         assert_eq!(
             run(&mut state, vec!["DEL", "redis:core:string"]),
             RespValue::Integer(1)
@@ -4119,7 +4942,7 @@ mod tests {
             run(&mut state, vec!["UNLINK", "redis:core:other-set"]),
             RespValue::Integer(1)
         );
-        assert_eq!(run(&mut state, vec!["DBSIZE"]), RespValue::Integer(5));
+        assert_eq!(run(&mut state, vec!["DBSIZE"]), RespValue::Integer(9));
         assert_eq!(
             run(&mut state, vec!["FLUSHDB"]),
             RespValue::SimpleString("OK".to_string())
@@ -4167,15 +4990,19 @@ mod tests {
             "BGSAVE" => vec!["BGSAVE"],
             "COMMAND" => vec!["COMMAND", "COUNT"],
             "CONFIG" => vec!["CONFIG", "GET", "maxmemory"],
+            "COPY" => vec!["COPY", "advertised:missing", "advertised:copy"],
             "DBSIZE" => vec!["DBSIZE"],
             "DEL" => vec!["DEL", "advertised:missing"],
             "ECHO" => vec!["ECHO", "hello"],
             "EXISTS" => vec!["EXISTS", "advertised:missing"],
             "EXPIRE" => vec!["EXPIRE", "advertised:missing", "10"],
+            "EXPIREAT" => vec!["EXPIREAT", "advertised:missing", "4102444800"],
+            "EXPIRETIME" => vec!["EXPIRETIME", "advertised:missing"],
             "FLUSHALL" => vec!["FLUSHALL"],
             "FLUSHDB" => vec!["FLUSHDB"],
             "GET" => vec!["GET", "advertised:missing"],
             "GETDEL" => vec!["GETDEL", "advertised:missing"],
+            "GETEX" => vec!["GETEX", "advertised:missing"],
             "GETRANGE" => vec!["GETRANGE", "advertised:missing", "0", "-1"],
             "GETSET" => vec!["GETSET", "advertised:getset", "v"],
             "HDEL" => vec!["HDEL", "advertised:hash", "missing"],
@@ -4183,6 +5010,7 @@ mod tests {
             "HGET" => vec!["HGET", "advertised:hash", "missing"],
             "HGETALL" => vec!["HGETALL", "advertised:hash"],
             "HINCRBY" => vec!["HINCRBY", "advertised:hash", "n", "1"],
+            "HINCRBYFLOAT" => vec!["HINCRBYFLOAT", "advertised:hash", "f", "1.5"],
             "HKEYS" => vec!["HKEYS", "advertised:hash"],
             "HLEN" => vec!["HLEN", "advertised:hash"],
             "HMGET" => vec!["HMGET", "advertised:hash", "missing"],
@@ -4193,9 +5021,18 @@ mod tests {
             "HSTRLEN" => vec!["HSTRLEN", "advertised:hash", "a"],
             "HVALS" => vec!["HVALS", "advertised:hash"],
             "INFO" => vec!["INFO"],
+            "INCRBYFLOAT" => vec!["INCRBYFLOAT", "advertised:float", "1.5"],
             "KEYS" => vec!["KEYS", "*"],
+            "LINSERT" => vec!["LINSERT", "advertised:list", "BEFORE", "a", "b"],
             "LINDEX" => vec!["LINDEX", "advertised:list", "0"],
             "LLEN" => vec!["LLEN", "advertised:list"],
+            "LMOVE" => vec![
+                "LMOVE",
+                "advertised:list",
+                "advertised:list2",
+                "RIGHT",
+                "LEFT",
+            ],
             "LPOP" => vec!["LPOP", "advertised:list"],
             "LPUSH" => vec!["LPUSH", "advertised:list", "a"],
             "LPOS" => vec!["LPOS", "advertised:list", "a"],
@@ -4208,11 +5045,16 @@ mod tests {
             "MSETNX" => vec!["MSETNX", "advertised:msetnx", "v"],
             "PARTITION" => vec!["PARTITION", "INFO"],
             "PEXPIRE" => vec!["PEXPIRE", "advertised:missing", "10"],
+            "PEXPIREAT" => vec!["PEXPIREAT", "advertised:missing", "4102444800000"],
+            "PEXPIRETIME" => vec!["PEXPIRETIME", "advertised:missing"],
             "PING" => vec!["PING"],
             "PSETEX" => vec!["PSETEX", "advertised:psetex", "10", "v"],
             "PTTL" => vec!["PTTL", "advertised:missing"],
             "RANDOMKEY" => vec!["RANDOMKEY"],
+            "RENAME" => vec!["RENAME", "advertised:missing", "advertised:renamed"],
+            "RENAMENX" => vec!["RENAMENX", "advertised:missing", "advertised:renamed"],
             "RPOP" => vec!["RPOP", "advertised:list"],
+            "RPOPLPUSH" => vec!["RPOPLPUSH", "advertised:list", "advertised:list2"],
             "RPUSH" => vec!["RPUSH", "advertised:list", "z"],
             "SADD" => vec!["SADD", "advertised:set", "a"],
             "SCARD" => vec!["SCARD", "advertised:set"],
@@ -4242,12 +5084,16 @@ mod tests {
             "ZADD" => vec!["ZADD", "advertised:zset", "1", "a"],
             "ZCARD" => vec!["ZCARD", "advertised:zset"],
             "ZCOUNT" => vec!["ZCOUNT", "advertised:zset", "0", "10"],
+            "ZDIFF" => vec!["ZDIFF", "1", "advertised:zset"],
             "ZINCRBY" => vec!["ZINCRBY", "advertised:zset", "1", "a"],
+            "ZINTER" => vec!["ZINTER", "1", "advertised:zset"],
+            "ZMSCORE" => vec!["ZMSCORE", "advertised:zset", "a"],
             "ZPOPMAX" => vec!["ZPOPMAX", "advertised:zset"],
             "ZPOPMIN" => vec!["ZPOPMIN", "advertised:zset"],
             "ZRANGE" => vec!["ZRANGE", "advertised:zset", "0", "-1"],
             "ZRANGEBYSCORE" => vec!["ZRANGEBYSCORE", "advertised:zset", "0", "10"],
             "ZRANK" => vec!["ZRANK", "advertised:zset", "a"],
+            "ZRANDMEMBER" => vec!["ZRANDMEMBER", "advertised:zset"],
             "ZREM" => vec!["ZREM", "advertised:zset", "a"],
             "ZREMRANGEBYRANK" => vec!["ZREMRANGEBYRANK", "advertised:zset", "0", "1"],
             "ZREMRANGEBYSCORE" => vec!["ZREMRANGEBYSCORE", "advertised:zset", "0", "10"],
@@ -4255,6 +5101,7 @@ mod tests {
             "ZREVRANK" => vec!["ZREVRANK", "advertised:zset", "a"],
             "ZSCAN" => vec!["ZSCAN", "advertised:zset", "0"],
             "ZSCORE" => vec!["ZSCORE", "advertised:zset", "a"],
+            "ZUNION" => vec!["ZUNION", "1", "advertised:zset"],
             other => panic!("missing sample command for {other}"),
         }
     }
