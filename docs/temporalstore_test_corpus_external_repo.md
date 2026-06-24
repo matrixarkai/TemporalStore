@@ -79,7 +79,7 @@ internals, transport-specific surfaces, or temporary pending-migration gaps.
 Remote target:
 
 ```text
-https://github.com/bjmeetsfo/TemporalStoreTestCorpus.git
+<TemporalStoreTestCorpus remote URL>
 ```
 
 Current blocker: GitHub currently returns `Repository not found` for that remote,

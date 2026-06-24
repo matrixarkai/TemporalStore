@@ -59,7 +59,7 @@ contract:
   titles. The harness compacts node metadata to C++/Rust Context validation limits while preserving
   full segment text and source refs for retrieval scoring.
 
-The newer C++ Context code at `/root/src/github-services/TemporalStore` goes further than the
+The newer C++ Context code at `<cpp-temporalstore-checkout>` goes further than the
 current Rust implementation:
 
 | C++ Context surface | C++ model/function evidence | Rust status |

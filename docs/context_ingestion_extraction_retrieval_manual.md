@@ -17,7 +17,7 @@ The workflow is:
 Run commands from the repository root:
 
 ```bash
-cd /mnt/c/Users/Deeproute/Documents/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStore
+cd <repo-root>
 ```
 
 Useful tools:

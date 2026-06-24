@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -43,6 +45,7 @@ CONTRIBUTING_TOKENS = [
 
 IGNORE_TOKENS = [
     "target/",
+    ".codex/",
     ".local/",
     "build-ubuntu22/",
     "output/",
@@ -50,6 +53,27 @@ IGNORE_TOKENS = [
     "thirdparty/",
     "benchmark_reports/",
 ]
+
+PRIVATE_PATH_TOKENS = [
+    "C:\\Users\\",
+    "/mnt/c/Users",
+    "/mnt/c/Users/",
+    "/root/src/",
+    "Ubuntu2204Deeproute",
+    "Deeproute",
+    "Vincent Jiang",
+]
+
+FALLBACK_SCAN_SKIP_DIRS = {
+    ".git",
+    "target",
+    "target-rust-bench",
+    "build-ubuntu22",
+    "output",
+    "benchmark_reports",
+    "thirdparty",
+    "__pycache__",
+}
 
 def read(relative_path: str) -> str:
     path = ROOT / relative_path
@@ -85,11 +109,64 @@ def validate_license() -> None:
         raise SystemExit("NOTICE must include contributor attribution")
 
 
+def validate_no_tracked_local_codex_config() -> None:
+    tracked = repository_files()
+    local_codex_files = [path for path in tracked if path == ".codex" or path.startswith(".codex/")]
+    if local_codex_files:
+        raise SystemExit(
+            "tracked local Codex config is not open-source safe: "
+            + ", ".join(local_codex_files)
+        )
+
+
+def validate_no_private_paths() -> None:
+    tracked = repository_files()
+    offenders: list[str] = []
+    for relative_path in tracked:
+        if relative_path == "tools/validate_open_source_readiness.py":
+            continue
+        path = ROOT / relative_path
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for token in PRIVATE_PATH_TOKENS:
+            if token in text:
+                offenders.append(f"{relative_path}: {token}")
+                break
+    if offenders:
+        raise SystemExit(
+            "tracked files contain local/private path markers:\n" + "\n".join(offenders[:50])
+        )
+
+
+def repository_files() -> list[str]:
+    try:
+        return subprocess.run(
+            ["git", "ls-files"],
+            cwd=ROOT,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        ).stdout.splitlines()
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        files: list[str] = []
+        for directory, dirnames, filenames in os.walk(ROOT):
+            dirnames[:] = [
+                dirname for dirname in dirnames if dirname not in FALLBACK_SCAN_SKIP_DIRS
+            ]
+            for filename in filenames:
+                path = Path(directory) / filename
+                files.append(path.relative_to(ROOT).as_posix())
+        return sorted(files)
+
+
 def main() -> int:
     for path in REQUIRED_FILES:
         read(path)
     validate_cargo_license()
     validate_license()
+    validate_no_tracked_local_codex_config()
+    validate_no_private_paths()
     require_tokens("README.md", README_TOKENS)
     require_tokens("SECURITY.md", SECURITY_TOKENS)
     require_tokens("CONTRIBUTING.md", CONTRIBUTING_TOKENS)

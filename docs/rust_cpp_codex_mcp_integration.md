@@ -21,9 +21,9 @@ Use the Rust repo launcher so Codex gets the same MCP server and both backend
 paths:
 
 ```bash
-cd /mnt/c/Users/Deeproute/Documents/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStore
+cd <repo-root>
 MATRIXARK_MCP_BACKEND=temporalstore-rust \
-MATRIXARK_CPP_TEMPORALSTORE_REPO=/root/src/github-services/TemporalStore \
+MATRIXARK_CPP_TEMPORALSTORE_REPO=<cpp-temporalstore-checkout> \
 tools/run_matrixark_mcp_server.sh
 ```
 
@@ -31,7 +31,7 @@ For the C++ path, switch only the backend:
 
 ```bash
 MATRIXARK_MCP_BACKEND=temporalstore-direct \
-MATRIXARK_CPP_TEMPORALSTORE_REPO=/root/src/github-services/TemporalStore \
+MATRIXARK_CPP_TEMPORALSTORE_REPO=<cpp-temporalstore-checkout> \
 tools/run_matrixark_mcp_server.sh \
   --metaserver 127.0.0.1:18000 \
   --namespace deploy_ns \

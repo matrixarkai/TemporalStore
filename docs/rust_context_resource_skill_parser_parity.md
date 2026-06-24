@@ -2,7 +2,7 @@
 
 Shared case: `context_resource_skill_parser_openviking_parity`.
 
-Rust now has a Rust-native parser path for OpenViking-style resources and Codex `SKILL.md` files. The parser is intentionally behavior-compatible with the C++ MatrixArk helper in `/root/src/github-services/TemporalStore/tools/matrixark_resource_parser.py`: it creates stable source refs, bounded chunks, token estimates, embedding refs, and metadata that can feed context ingestion/extraction/retrieval.
+Rust now has a Rust-native parser path for OpenViking-style resources and Codex `SKILL.md` files. The parser is intentionally behavior-compatible with the C++ MatrixArk helper in `<cpp-temporalstore-checkout>/tools/matrixark_resource_parser.py`: it creates stable source refs, bounded chunks, token estimates, embedding refs, and metadata that can feed context ingestion/extraction/retrieval.
 
 ## Resource Parser
 
@@ -105,8 +105,8 @@ The focused Rust tests verify resource refs, `SKILL.md` front matter, tag refs, 
 
 ## C++ Parity Notes
 
-- C++ helper parity source: `/root/src/github-services/TemporalStore/tools/matrixark_resource_parser.py`.
-- C++ tests: `/root/src/github-services/TemporalStore/tools/test_matrixark_resource_parser.py`.
+- C++ helper parity source: `<cpp-temporalstore-checkout>/tools/matrixark_resource_parser.py`.
+- C++ tests: `<cpp-temporalstore-checkout>/tools/test_matrixark_resource_parser.py`.
 - Rust shared case: `context_resource_skill_parser_openviking_parity`.
 - Rust parser is not a viking filesystem clone; it produces Rust TemporalStore context inputs with OpenViking-compatible source refs and chunk metadata.
 

@@ -7,7 +7,7 @@ that exercise the same behavior.
 
 Reference tree:
 
-`C:\Users\Vincent Jiang\Documents\Codex\2026-05-10\bytekv-in-local-vs-etcd\clean_push\TemporalStore`
+`<cpp-temporalstore-checkout>`
 
 Representative C++ files inspected:
 

@@ -32,7 +32,7 @@ REQUIRED_PHRASES = [
     "context_benchmark_injection_entity_segment_index",
     "packed LOCOMO",
     "82 cases",
-    "/root/src/github-services/TemporalStore",
+    "<cpp-temporalstore-checkout>",
     "ContextChildModel",
     "ContextEmbeddingModel",
     "ContextSummaryModel",

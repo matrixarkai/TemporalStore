@@ -1,5 +1,6 @@
 target
 .git
+.codex
 *.log
 bytestorelab-master
 abase2_images

@@ -47,9 +47,10 @@ python3 tools/run_temporalstore_unified_tests.py --validate-only
 ```
 
 The open-source readiness validator checks required files, license alignment,
-scope language, and generated-output ignore rules. Add the CI workflow with a
-credential that has `workflow` scope, then run the same validation commands in
-that workflow.
+scope language, generated-output ignore rules, absence of tracked local Codex
+hook config, and absence of personal absolute checkout paths. Add the CI
+workflow with a credential that has `workflow` scope, then run the same
+validation commands in that workflow.
 
 ## Release Hygiene
 
@@ -58,5 +59,9 @@ Before publishing or accepting external contributions:
 - keep secrets out of git
 - keep generated build outputs out of git
 - keep third-party dependency caches out of git
+- keep `.codex/` local-only; publish hook templates in docs instead of tracked
+  machine-specific hook files
+- use placeholders such as `<repo-root>` and `<cpp-temporalstore-checkout>` in
+  docs instead of absolute local paths
 - keep production-readiness claims tied to evidence
 - update readiness docs when scope changes

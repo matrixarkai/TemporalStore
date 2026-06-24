@@ -766,7 +766,7 @@ This pass closed one of the hard readiness blockers instead of leaving it as a n
     compatibility tests.
 
 This pass compared the Rust RESP layer against the local C++ server Redis command handler in
-`C:\Users\Vincent Jiang\Documents\Codex\temporalstore-small\src\server\redis_service.cc` and
+`<cpp-temporalstore-checkout>\src\server\redis_service.cc` and
 `redis_command_handler.cc`. It closed these small, test-backed compatibility gaps:
 
 1. Stateful Redis operational command context for connection-local admin behavior.
@@ -783,7 +783,7 @@ These are Redis/admin compatibility shims for local tooling and smoke tests. The
 the C++ partition manager implementation behind those commands.
 
 This continuation compared the Rust hash module with
-`C:\Users\Vincent Jiang\Documents\Codex\temporalstore-small\src\extension\hash\test.cc` and
+`<cpp-temporalstore-checkout>\src\extension\hash\test.cc` and
 closed the C++ `INCRBY` edge-case behavior:
 
 1. Existing non-integer hash values now return an `unmatched` error instead of being treated as `0`.
@@ -1032,7 +1032,7 @@ The Rust data node also has a first runtime layer around `TemporalEngine`: worke
 The Rust tree is smaller because it does not yet include the full first-party
 C++ service surface or the vendored dependency surface.
 
-Measured locally against `/root/src/github-services/TemporalStore-main-no-deps`
+Measured locally against `<cpp-temporalstore-checkout>`
 and the Rust `rust-main` branch:
 
 - C++ TemporalStore first-party service code: about 96,293 LOC across 566

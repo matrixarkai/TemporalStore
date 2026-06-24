@@ -1,4 +1,5 @@
 target/
+.codex/
 .local/
 build-ubuntu22/
 output/

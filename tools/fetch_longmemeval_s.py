@@ -104,8 +104,9 @@ def main() -> int:
                 "errors": errors,
                 "hint": (
                     "Network access to Hugging Face may be blocked. Download LongMemEval_s manually "
-                    "and place it at /tmp/longmemeval_s.json, /mnt/c/tmp/longmemeval_s.json, or pass "
-                    "--candidate-path PATH. If a trusted corporate/local proxy is replacing TLS "
+                    "and place it at /tmp/longmemeval_s.json, /mnt/c/tmp/longmemeval_s.json, pass "
+                    "--candidate-path PATH, or set TEMPORALSTORE_LONGMEMEVAL_SEARCH_ROOTS. "
+                    "If a trusted corporate/local proxy is replacing TLS "
                     "certificates, rerun with --allow-insecure-tls and archive the JSON report. Then rerun "
                     "tools/run_longmemeval_s_full_path.py --threshold-profile longmemeval_full."
                 ),
@@ -122,12 +123,16 @@ def candidate_paths(output: Path, explicit_paths: list[Path]) -> list[Path]:
     paths: list[Path] = []
     paths.extend(explicit_paths)
     paths.extend(DEFAULT_CANDIDATE_PATHS)
-    paths.extend(Path("/mnt/c/Users").glob("*/Downloads/longmemeval_s.json"))
-    paths.extend(Path("/mnt/c/Users").glob("*/Downloads/LongMemEval_s.json"))
-    paths.extend(Path("/mnt/c/Users").glob("*/Downloads/longmemeval_s_cleaned.json"))
-    paths.extend(Path("/mnt/c/Users").glob("*/Documents/longmemeval_s.json"))
-    paths.extend(Path("/mnt/c/Users").glob("*/Documents/LongMemEval_s.json"))
-    paths.extend(Path("/mnt/c/Users").glob("*/Documents/longmemeval_s_cleaned.json"))
+    for root in extra_search_roots():
+        paths.extend(root.glob("longmemeval_s.json"))
+        paths.extend(root.glob("LongMemEval_s.json"))
+        paths.extend(root.glob("longmemeval_s_cleaned.json"))
+        paths.extend(root.glob("Downloads/longmemeval_s.json"))
+        paths.extend(root.glob("Downloads/LongMemEval_s.json"))
+        paths.extend(root.glob("Downloads/longmemeval_s_cleaned.json"))
+        paths.extend(root.glob("Documents/longmemeval_s.json"))
+        paths.extend(root.glob("Documents/LongMemEval_s.json"))
+        paths.extend(root.glob("Documents/longmemeval_s_cleaned.json"))
     output_parent = output.parent
     paths.extend(output_parent.glob("LongMemEval_s.json"))
     paths.extend(output_parent.glob("longmemeval_s_cleaned.json"))
@@ -139,6 +144,11 @@ def candidate_paths(output: Path, explicit_paths: list[Path]) -> list[Path]:
             seen.add(key)
             unique.append(path)
     return unique
+
+
+def extra_search_roots() -> list[Path]:
+    raw = os.environ.get("TEMPORALSTORE_LONGMEMEVAL_SEARCH_ROOTS", "")
+    return [Path(item).expanduser() for item in raw.split(os.pathsep) if item.strip()]
 
 
 def same_path(left: Path, right: Path) -> bool:

@@ -11,14 +11,21 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CPP_REPO = Path(os.environ.get("MATRIXARK_CPP_TEMPORALSTORE_REPO", "/root/src/github-services/TemporalStore"))
-CPP_SERVER = Path(os.environ.get("MATRIXARK_MCP_SERVER", CPP_REPO / "tools" / "matrixark_mcp_server.py"))
+CPP_REPO_ENV = os.environ.get("MATRIXARK_CPP_TEMPORALSTORE_REPO")
+CPP_SERVER_ENV = os.environ.get("MATRIXARK_MCP_SERVER")
+CPP_REPO = Path(CPP_REPO_ENV) if CPP_REPO_ENV else None
+CPP_SERVER = (
+    Path(CPP_SERVER_ENV)
+    if CPP_SERVER_ENV
+    else (CPP_REPO / "tools" / "matrixark_mcp_server.py" if CPP_REPO else None)
+)
 
 REQUIRED_RUST_FILES = [
     ROOT / "crates" / "temporalstore-rust" / "src" / "bin" / "matrixark_record_log.rs",
@@ -56,10 +63,10 @@ def require_contains(path: Path, tokens: list[str]) -> None:
 
 
 def validate_cpp_server_when_available() -> dict[str, object]:
-    if not CPP_SERVER.exists():
+    if CPP_SERVER is None or not CPP_SERVER.exists():
         return {
             "cpp_server_checked": False,
-            "cpp_server_path": str(CPP_SERVER),
+            "cpp_server_path": str(CPP_SERVER) if CPP_SERVER else "",
             "reason": "C++ MatrixArk MCP server checkout not present",
         }
     text = read(CPP_SERVER)
@@ -98,8 +105,7 @@ def validate_rust_cli_smoke() -> dict[str, object]:
         "key": "matrixark:mcp:parity",
         "value": "rust-temporalstore-ok",
     }
-    proc = subprocess.run(
-        [
+    cargo_command = [
             "cargo",
             "run",
             "-q",
@@ -107,8 +113,20 @@ def validate_rust_cli_smoke() -> dict[str, object]:
             "temporalstore-rust",
             "--bin",
             "matrixark_record_log",
-        ],
-        cwd=ROOT,
+    ]
+    cwd = ROOT
+    if shutil.which("cargo") is None and shutil.which("wsl.exe") is not None:
+        wsl_root = subprocess.run(
+            ["wsl.exe", "wslpath", "-a", str(ROOT).replace("\\", "/")],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        ).stdout.strip()
+        cargo_command = ["wsl.exe", "bash", "-lc", f"cd '{wsl_root}' && {' '.join(cargo_command)}"]
+        cwd = None
+    proc = subprocess.run(
+        cargo_command,
+        cwd=cwd,
         input=json.dumps(request),
         text=True,
         stdout=subprocess.PIPE,

@@ -4614,7 +4614,7 @@
               "docs/rust_context_pipeline_debug_trace.md",
               "docs/rust_vs_cpp_temporalstore_parity_report.md"
             ],
-            "cpp_reference": "/root/src/github-services/TemporalStore/src/extension/context/test.cc",
+            "cpp_reference": "<cpp-temporalstore-checkout>/src/extension/context/test.cc",
             "rust_runner": "cargo test -p temporalstore-rust context_models_match_cpp_keys_timeline_pages_and_filters --lib -- --test-threads=1",
             "rust_validator": "tools/run_context_workflow_local.sh"
           }
@@ -4897,7 +4897,7 @@
             "rust_runner": "cargo test -p temporalstore-rust --bin matrixark_record_log -- --test-threads=1",
             "rust_validator": "python3 tools/validate_codex_mcp_parity.py",
             "cxx_reference_paths": [
-              "/root/src/github-services/TemporalStore/tools/matrixark_mcp_server.py"
+              "<cpp-temporalstore-checkout>/tools/matrixark_mcp_server.py"
             ],
             "backends": [
               "temporalstore-direct",

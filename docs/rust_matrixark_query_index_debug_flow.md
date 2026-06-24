@@ -22,7 +22,7 @@ Rust TemporalStore context pipeline through `context_workflow_harness`.
 ## Command
 
 ```bash
-cd /mnt/c/Users/Deeproute/Documents/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStore
+cd <repo-root>
 CARGO_TARGET_DIR=/tmp/temporalstore-rust-query-index-debug-target \
   cargo run --release -p temporalstore-rust --bin context_workflow_harness \
   > /tmp/temporalstore-rust-query-index-debug-v3-release.log

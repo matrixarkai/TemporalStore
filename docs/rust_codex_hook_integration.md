@@ -48,18 +48,20 @@ Codex hook event
 
 ## Project Hook Config
 
-This repo now includes `.codex/hooks.json` with `UserPromptSubmit` and `Stop`
-hooks. On Windows, the hook uses WSL:
+This open-source repository does not track `.codex/hooks.json`, because Codex
+hook files normally contain local checkout paths, WSL distribution names, user
+ids, and session ids. Create a local `.codex/hooks.json` from this template when
+you want to enable hooks for your checkout:
 
 ```bash
-wsl -d Ubuntu2204Deeproute -u root -- bash -lc \
-  'cd /mnt/c/Users/Deeproute/Documents/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStore &&
+wsl -d <your-ubuntu-distro> -- bash -lc \
+  'cd <repo-root> &&
    tools/run_rust_codex_context_hook.sh --event UserPromptSubmit \
      --root /tmp/temporalstore-rust-codex-hook \
      --event-log /tmp/temporalstore-rust-codex-hook/events.jsonl \
      --account-id acct_codex \
      --tenant-id tenant_codex \
-     --user-id deeproute \
+     --user-id <user-id> \
      --session-id codex-thread-local'
 ```
 

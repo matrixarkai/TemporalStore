@@ -424,19 +424,19 @@ The guard is `python3 tools/validate_rust_product_test_guard.py`, and it is also
 Rust checkout:
 
 ```text
-C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore
+<repo-root>
 ```
 
 C++ checkout:
 
 ```text
-C:\Users\Deeproute\Documents\Codex\2026-06-07\what-s-the-topology-for-all\temporalstore-service-fix
+<cpp-temporalstore-checkout>
 ```
 
 Shared corpus command:
 
 ```bash
-TS_CPP_REPO=/mnt/c/Users/Deeproute/Documents/Codex/2026-06-07/what-s-the-topology-for-all/temporalstore-service-fix \
+TS_CPP_REPO=<cpp-temporalstore-checkout> \
 python3 tools/run_temporalstore_unified_tests.py \
   --both \
   --require-cpp
@@ -485,7 +485,7 @@ Strict native enforcement check:
 python3 tools/run_temporalstore_unified_tests.py \
   --cpp \
   --require-cpp-native \
-  --cpp-repo /mnt/c/Users/Deeproute/Documents/Codex/2026-06-07/what-s-the-topology-for-all/temporalstore-service-fix
+  --cpp-repo <cpp-temporalstore-checkout>
 ```
 
 Expected current result: fail closed until `TS_CPP_UNIFIED_NATIVE_CMD` or `TS_CPP_UNIFIED_TEST_CMD`
@@ -498,7 +498,7 @@ After the C++ hook was updated to accept the current shared context command shap
 Rust/C++ command was repeated eight times:
 
 ```bash
-TS_CPP_REPO=/mnt/c/Users/Deeproute/Documents/Codex/2026-06-07/what-s-the-topology-for-all/temporalstore-service-fix \
+TS_CPP_REPO=<cpp-temporalstore-checkout> \
 CARGO_TARGET_DIR=/tmp/temporalstore-local-validation-target \
 python3 tools/run_temporalstore_unified_tests.py --both --require-cpp
 ```
@@ -535,7 +535,7 @@ harness files as separate gap-fill gates.
 Repeated command:
 
 ```bash
-TS_CPP_REPO=/mnt/c/Users/Deeproute/Documents/Codex/2026-06-07/what-s-the-topology-for-all/temporalstore-service-fix \
+TS_CPP_REPO=<cpp-temporalstore-checkout> \
 CARGO_TARGET_DIR=/tmp/temporalstore-local-validation-target \
 python3 tools/run_temporalstore_unified_tests.py --both --require-cpp
 ```
@@ -563,7 +563,7 @@ data-Raft consensus, replication, unit tests, failover, snapshot restore, and sc
 The expanded Rust+C++ command was repeated 9 times:
 
 ```bash
-TS_CPP_REPO=/mnt/c/Users/Deeproute/Documents/Codex/2026-06-07/what-s-the-topology-for-all/temporalstore-service-fix \
+TS_CPP_REPO=<cpp-temporalstore-checkout> \
 CARGO_TARGET_DIR=/tmp/temporalstore-local-validation-target \
 python3 tools/run_temporalstore_unified_tests.py --both --require-cpp
 ```
@@ -594,7 +594,7 @@ coverage disappears from the C++ codebase.
 The expanded Rust+C++ command was repeated 8 times against the current local C++ checkout:
 
 ```bash
-TS_CPP_REPO=/mnt/c/Users/Deeproute/Documents/Codex/2026-06-07/what-s-the-topology-for-all/temporalstore-service-fix \
+TS_CPP_REPO=<cpp-temporalstore-checkout> \
 CARGO_TARGET_DIR=/tmp/temporalstore-local-validation-target \
 python3 tools/run_temporalstore_unified_tests.py --both --require-cpp
 ```

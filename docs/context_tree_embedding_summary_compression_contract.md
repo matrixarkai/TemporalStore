@@ -27,5 +27,5 @@ cargo test -p temporalstore-rust \
 
 C++ source evidence:
 
-- `/root/src/github-services/TemporalStore/src/extension/context/test.cc`
-- `/root/src/github-services/TemporalStore/src/extension/context/interface.proto`
+- `<cpp-temporalstore-checkout>/src/extension/context/test.cc`
+- `<cpp-temporalstore-checkout>/src/extension/context/interface.proto`
