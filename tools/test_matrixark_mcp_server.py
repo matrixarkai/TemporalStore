@@ -248,6 +248,10 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         ]
         self.assertIn("source_type:resource", indexes)
         self.assertIn("resource_type:md", indexes)
+        self.assertIn("unit_kind:markdown_section", indexes)
+        self.assertIn("heading_slug:budget", indexes)
+        self.assertIn("keyword:finance", indexes)
+        self.assertIn("keyword:gpu", indexes)
         resources = self.call_tool(
             "matrixark_list_resources",
             {"scope": {"user_id": "u1", "session_id": "s1"}},
@@ -390,6 +394,22 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         )
         refs = [(ref["ref_type"], ref["ref_hash"]) for ref in pack["selected_refs"]]
         self.assertIn(("resource_chunk", 9200), refs)
+        chunk_ref = next(ref for ref in pack["selected_refs"] if ref["ref_type"] == "resource_chunk")
+        self.assertIn("selection_reason", chunk_ref)
+        self.assertIn("matched_index_terms", chunk_ref)
+        self.assertIn("keyword:finance", chunk_ref["matched_index_terms"])
+        self.assertEqual(chunk_ref["raw_uri"], "finance-runbook.txt")
+        self.assertEqual(chunk_ref["metadata"]["unit_kind"], "paragraph")
+        self.assertIn("reason_descriptions", pack["dropped_refs"])
+
+        replay = self.call_tool("matrixark_replay", {"context_pack_id": "debug"})
+        audits = [record for record in replay["events"] if record.get("record_type") == "context_pack_audit"]
+        self.assertTrue(audits)
+        audit_ref = audits[-1]["selected_refs"][0]
+        self.assertIn("selection_reason", audit_ref)
+        self.assertIn("matched_index_terms", audit_ref)
+        self.assertIn("dropped_refs", audits[-1])
+        self.assertIn("reason_descriptions", audits[-1]["dropped_refs"])
 
         isolated = self.call_tool(
             "matrixark_retrieve",
