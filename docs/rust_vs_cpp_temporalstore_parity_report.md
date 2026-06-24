@@ -26,7 +26,8 @@ The implementation decision remains explicit:
 | Data-node/metaserver | Rust has lifecycle, scheduler, heartbeat, topology, membership, and readiness evidence, but global production claims still depend on real deployment-scale evidence. | `docs/data_node_vs_cpp.md`, `docs/metaserver_vs_cpp.md` |
 | Ingestion | Shared cases cover Kafka offsets, rebalance/backpressure, Flink checkpoints, dead letters, lag metrics, and restart idempotence. C++ execution still needs broader native shared-runner coverage. | `docs/unified_test_case_inventory.md` |
 | Context/benchmarks | LOCOMO and LongMemEval_s full deterministic runs use Rust TemporalStore for ingestion, event storage, retrieval, and replay. Recent Context parity covers first-class `ContextEntityModel`, tree child refs, embeddings, summaries, compression events, node-context query, `ContextSegment` event blocks, source secondary-index routing, L0/L1/L2 prompt injection, and packed LOCOMO source ingestion through bounded Context metadata. Live GPT-4o-mini/OpenAI-compatible reader evidence is still required for VikingMem paper-comparable claims. | `docs/rust_temporalstore_locomo_longmemeval_benchmark_metrics.md`, `docs/benchmark_reproducibility_evidence.md`, `docs/context_benchmark_entity_segment_index_contract.md` |
-| Unified tests | The shared corpus has 82 cases. Rust executes the recent Context benchmark-injection, tree/embedding/summary/compression, and temporal-compression cases directly. C++ still has many static surface gates that should become native executable shared cases. | `docs/unified_test_case_inventory.md`, `compat/unified_temporalstore_cases.json` |
+| Cross-subsystem parity | `cross_storage_control_agent_parity` ties storage dump/load/cache recovery, client/proxy topology refresh and admission policy, data-node lifecycle barriers, metaserver scheduler tokens, and Context agent resource/skill parser workflow evidence into one Rust-executable/C++-static shared contract. | `docs/cross_storage_control_agent_parity.md`, `docs/unified_test_case_inventory.md` |
+| Unified tests | The shared corpus has 82 cases. Rust executes the recent Context benchmark-injection, tree/embedding/summary/compression, temporal-compression, and cross storage/control/agent parity cases directly. C++ still has many static surface gates that should become native executable shared cases. | `docs/unified_test_case_inventory.md`, `compat/unified_temporalstore_cases.json` |
 | Ops/scale | Local readiness evidence exists, but broad production readiness needs a Docker/AWS multi-service SLO package. | `docs/storage_raft_production_readiness_plan.md`, `docs/aws_existing_eks_deployment.md` |
 
 ## Recent Context Parity Pass
@@ -90,6 +91,14 @@ Each major blocker must map to a concrete evidence field before it can be treate
 | `metaserver` | Networked Raft mutation path evidence, scheduler execution, durable task/retry replay, stale token/generation rejection, and data-node membership coupling. |
 | `benchmarks` | Dataset hash, full Rust TemporalStore replay, reader mode/provider/model, category breakdown, p50/p95 latencies, token reduction, per-query rows, and report paths. |
 | `scale_testing` | Real multi-process Docker/AWS SLO evidence with metaserver, proxy, client, data-node, Raft failover, storage/cache pressure, proxy convergence, workload replay, and resource collectors. |
+
+The cross-subsystem readiness guard is the shared `cross_storage_control_agent_parity` case. It is
+the explicit evidence join for storage/cache, client/proxy, data-node, metaserver, and Context agent
+workflow parity: storage dump/load/cache recovery must agree with client/proxy topology and
+admission behavior; data-node lifecycle barriers must agree with metaserver scheduler tokens; and
+the Context agent resource/skill parser must feed Rust ingestion, extraction, secondary indexing,
+and retrieval through the same shared case. C++ still treats this as a static surface gate until the
+native shared runner executes the case.
 
 ## Unified Test Migration Backlog
 

@@ -42,6 +42,12 @@ REQUIRED_PHRASES = [
     "`ContextEntityModel`",
     "`QUERY_NODE_CONTEXT`",
     "`WRITE_EXTRACTED_EVENT`",
+    "cross_storage_control_agent_parity",
+    "storage dump/load/cache recovery",
+    "client/proxy topology refresh",
+    "data-node lifecycle barriers",
+    "metaserver scheduler tokens",
+    "Context agent resource/skill parser",
 ]
 
 
@@ -56,6 +62,7 @@ REQUIRED_DOC_LINKS = [
     "docs/rust_temporalstore_locomo_longmemeval_benchmark_metrics.md",
     "docs/benchmark_reproducibility_evidence.md",
     "docs/context_benchmark_entity_segment_index_contract.md",
+    "docs/cross_storage_control_agent_parity.md",
 ]
 
 
