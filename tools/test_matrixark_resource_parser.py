@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 from __future__ import annotations
 
 import tempfile
@@ -19,8 +19,11 @@ class MatrixArkResourceParserTest(unittest.TestCase):
         )
         self.assertEqual([chunk.chunk_hash for chunk in chunks], [900, 901])
         self.assertEqual(chunks[0].source_ref, "runbook.md#heading=rollback")
-        self.assertEqual(chunks[1].source_ref, "runbook.md#heading=checks")
+        self.assertEqual(chunks[1].source_ref, "runbook.md#heading=rollback/checks")
         self.assertEqual(chunks[1].metadata["heading_level"], 2)
+        self.assertEqual(chunks[1].metadata["heading_path"], ["Rollback", "Checks"])
+        self.assertIn("content_hash", chunks[1].metadata)
+        self.assertIn("keywords", chunks[1].metadata)
 
     def test_text_paragraphs_are_chunked_with_refs(self):
         chunks = parse_resource(
@@ -42,6 +45,7 @@ class MatrixArkResourceParserTest(unittest.TestCase):
         self.assertEqual(len(chunks), 2)
         self.assertEqual(chunks[0].chunk_hash, 800)
         self.assertEqual(chunks[0].metadata["resource_type"], "pdf")
+        self.assertEqual(chunks[0].metadata["unit_kind"], "pdf_text_fallback")
 
     def test_real_pdf_file_is_parsed_when_pdf_dependencies_exist(self):
         try:
@@ -87,9 +91,64 @@ class MatrixArkResourceParserTest(unittest.TestCase):
         self.assertEqual(skill.metadata["triggers"], ["context pack replay"])
         self.assertEqual(skill.metadata["allowed_tools"], ["matrixark_replay", "matrixark_audit"])
         self.assertEqual(skill.metadata["version"], "2")
+        self.assertEqual(skill.metadata["skill_slug"], "context-debugger")
+        self.assertEqual(skill.metadata["section_count"], len(skill.chunks))
         self.assertEqual(skill.chunks[0].chunk_hash, 1200)
         self.assertEqual(skill.chunks[0].metadata["resource_type"], "skill")
+
+    def test_html_csv_jsonl_resources_are_parsed_with_metadata(self):
+        html_chunks = parse_resource(
+            "page.html",
+            resource_type="html",
+            text="<html><title>Ops</title><body><h1>GPU</h1><p>Finance approval required.</p></body></html>",
+            chunk_hash_base=1500,
+        )
+        self.assertEqual(html_chunks[0].metadata["title"], "Ops")
+        self.assertEqual(html_chunks[0].metadata["unit_kind"], "html_text")
+        self.assertTrue(any("Finance approval" in chunk.text for chunk in html_chunks))
+
+        csv_chunks = parse_resource(
+            "budget.csv",
+            resource_type="csv",
+            text="item,amount,approver\ngpu,42000,Alice\n",
+            chunk_hash_base=1600,
+        )
+        self.assertEqual(csv_chunks[0].source_ref, "budget.csv#row=0")
+        self.assertEqual(csv_chunks[0].metadata["columns"], ["item", "amount", "approver"])
+
+        jsonl_chunks = parse_resource(
+            "events.jsonl",
+            resource_type="jsonl",
+            text='{"event":"approval","actor":"Alice"}\n',
+            chunk_hash_base=1700,
+        )
+        self.assertEqual(jsonl_chunks[0].source_ref, "events.jsonl#record=0")
+        self.assertEqual(jsonl_chunks[0].metadata["unit_kind"], "jsonl_record")
+
+    def test_skill_section_lists_and_permissions_are_extracted(self):
+        skill = parse_skill(
+            "skills/ops/SKILL.md",
+            text=(
+                "# Ops Helper\n\n"
+                "Helps with production operations.\n\n"
+                "## Triggers\n\n"
+                "- production incident\n\n"
+                "## Tools\n\n"
+                "- matrixark_retrieve\n\n"
+                "## Permissions\n\n"
+                "- context:retrieve\n\n"
+                "## Inputs\n\n"
+                "- incident summary\n"
+            ),
+            chunk_hash_base=1800,
+        )
+        self.assertEqual(skill.name, "Ops Helper")
+        self.assertEqual(skill.metadata["triggers"], ["production incident"])
+        self.assertEqual(skill.metadata["allowed_tools"], ["matrixark_retrieve"])
+        self.assertEqual(skill.metadata["permissions"], ["context:retrieve"])
+        self.assertEqual(skill.metadata["inputs"], ["incident summary"])
 
 
 if __name__ == "__main__":
     unittest.main()
+
