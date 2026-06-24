@@ -1294,6 +1294,8 @@ fn context_workflow_falls_back_when_live_provider_fails() {
         .provider
         .provider_name
         .starts_with("offline-live-provider+fallback:"));
+    assert!(report.embedding_generation.mock_mode);
+    assert!(!report.embedding_generation.production_evidence_ready);
     assert_eq!(report.l0, "doc: body");
 }
 
@@ -1366,13 +1368,15 @@ fn context_resource_parser_matches_openviking_stable_refs() {
 fn context_skill_parser_extracts_frontmatter_and_capability_sections() {
     let skill = parse_context_skill_markdown(
             "skills/context-debug/SKILL.md",
-            "---\nname: context-debug\ndescription: Trace context ingestion and retrieval.\nversion: 1.2.0\nowner_scope: team:context\ntags: [context, debug, openviking]\nallowed_tools:\n  - context_workflow_harness\n  - codex_context_hook\ntriggers: [context-debug, retrieval-trace]\nmodels: [nomic-embed-text, qwen2.5vl]\n---\n\n# Context Debug\n\n## When To Use\n\n- Use for context trace debugging.\n\n## Tools\n\n- context_workflow_harness\n- `codex_context_hook` captures prompt context.\n\n## Resources\n\n- [Debug Resource](viking://resources/context-debug.md)\n\n## Examples\n\n- Query the context debug flow for stale entity filters.\n",
+            "---\nname: context-debug\ndescription: Trace context ingestion and retrieval.\nversion: 1.2.0\nowner_scope: team:context\nprecedence: high\nenabled: true\ntags: [context, debug, openviking]\nallowed_tools:\n  - context_workflow_harness\n  - codex_context_hook\ntriggers: [context-debug, retrieval-trace]\nmodels: [nomic-embed-text, qwen2.5vl]\n---\n\n# Context Debug\n\n## When To Use\n\n- Use for context trace debugging.\n\n## Tools\n\n- context_workflow_harness\n- `codex_context_hook` captures prompt context.\n\n## Resources\n\n- [Debug Resource](viking://resources/context-debug.md)\n\n## Examples\n\n- Query the context debug flow for stale entity filters.\n",
         );
     assert!(skill.status.ok);
     assert_eq!(skill.skill_name, "context-debug");
     assert_eq!(skill.description, "Trace context ingestion and retrieval.");
     assert_eq!(skill.version, "1.2.0");
     assert_eq!(skill.owner_scope, "team:context");
+    assert!(skill.enabled);
+    assert_eq!(skill.precedence, ContextSkillPrecedence::High);
     assert_eq!(
         skill.front_matter.get("tags").map(String::as_str),
         Some("[context, debug, openviking]")
@@ -1412,6 +1416,78 @@ fn context_skill_parser_extracts_frontmatter_and_capability_sections() {
         == Some("skill")));
 }
 
+// shared-corpus: context_resource_skill_registry_openviking_parity
+#[test]
+fn context_skill_registry_supports_updates_and_retrieval_selection() {
+    let active = parse_context_skill_markdown(
+        "skills/context-debug/SKILL.md",
+        "---\nname: context-debug\ndescription: Trace context retrieval.\nversion: 1.0.0\nowner_scope: team:context\nprecedence: low\nallowed_tools: [context_workflow_harness]\ntriggers: [context-debug, retrieval]\n---\n\n# Context Debug\n",
+    );
+    let disabled = parse_context_skill_markdown(
+        "skills/payment-debug/SKILL.md",
+        "---\nname: payment-debug\ndescription: Disabled payment workflow.\nversion: 0.9.0\nowner_scope: team:payments\nstatus: disabled\nprecedence: critical\nallowed_tools: [context_workflow_harness]\ntriggers: [payment]\n---\n\n# Payment Debug\n",
+    );
+    let registry = context_skill_registry_from_parsed(&[active, disabled], 10);
+    assert_eq!(registry.enabled_count, 1);
+    assert_eq!(registry.disabled_count, 1);
+    assert_eq!(
+        registry.highest_precedence,
+        ContextSkillPrecedence::Critical
+    );
+
+    let updated = update_context_skill_registry(
+        registry.entries,
+        vec![
+            ContextSkillRegistryUpdate {
+                skill_name: "payment-debug".to_string(),
+                enabled: Some(true),
+                precedence: Some(ContextSkillPrecedence::Critical),
+                owner_scope: Some("team:context".to_string()),
+                triggers: Some(vec!["payment".to_string(), "retrieval".to_string()]),
+                allowed_tools: Some(vec!["context_workflow_harness".to_string()]),
+                version: Some("1.1.0".to_string()),
+                updated_at_ms: 20,
+            },
+            ContextSkillRegistryUpdate {
+                skill_name: "context-debug".to_string(),
+                enabled: Some(false),
+                precedence: None,
+                owner_scope: None,
+                triggers: None,
+                allowed_tools: None,
+                version: None,
+                updated_at_ms: 21,
+            },
+        ],
+    );
+    assert_eq!(updated.enabled_count, 1);
+    assert!(updated
+        .version_updates
+        .contains(&"payment-debug:0.9.0->1.1.0".to_string()));
+
+    let selection = select_context_skills_for_retrieval(ContextSkillSelectionRequest {
+        query: "payment retrieval trace".to_string(),
+        owner_scope: "team:context".to_string(),
+        tool_name: "context_workflow_harness".to_string(),
+        include_disabled: false,
+        limit: 4,
+        registry: updated.entries,
+    });
+    assert!(selection.status.ok, "{:?}", selection);
+    assert_eq!(selection.selected[0].skill_name, "payment-debug");
+    assert_eq!(selection.selected[0].version, "1.1.0");
+    assert_eq!(
+        selection.selected[0].precedence,
+        ContextSkillPrecedence::Critical
+    );
+    assert!(selection.selected[0]
+        .matched_triggers
+        .contains(&"payment".to_string()));
+    assert!(selection
+        .skipped_disabled
+        .contains(&"context-debug".to_string()));
+}
+
 // shared-corpus: context_resource_skill_parser_openviking_parity
 #[test]
 fn parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval() {
@@ -1438,7 +1514,7 @@ fn parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval() {
             ],
             skills: vec![ContextSkillIngestInput {
                 raw_uri: "skills/payment-incident/SKILL.md".to_string(),
-                text: "---\nname: payment-incident\ndescription: Debug payment incident context.\n---\n\n# Payment Incident\n\n## When To Use\n\nUse when checkout latency or payment risk spikes.\n"
+                text: "---\nname: payment-incident\ndescription: Debug payment incident context.\nprecedence: high\nowner_scope: team:payments\nallowed_tools: [context_workflow_harness]\ntriggers: [payment, checkout, latency]\n---\n\n# Payment Incident\n\n## When To Use\n\nUse when checkout latency or payment risk spikes.\n"
                     .to_string(),
             }],
             query: "payment dependency rollback p95 latency".to_string(),
@@ -1454,6 +1530,18 @@ fn parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval() {
         report.status, report.fanout, report.secondary_indexes
     );
     assert_eq!(report.ingest.failed, 0);
+    assert_eq!(report.skill_registry.enabled_count, 1);
+    assert_eq!(
+        report.skill_registry.highest_precedence,
+        ContextSkillPrecedence::High
+    );
+    assert_eq!(
+        report.skill_selection.selected[0].skill_name,
+        "payment-incident"
+    );
+    assert!(report.skill_selection.selected[0]
+        .matched_triggers
+        .contains(&"payment".to_string()));
     assert!(report.fanout.query_back_ok, "{:?}", report.fanout);
     assert!(
         report.secondary_indexes.query_back_ok,

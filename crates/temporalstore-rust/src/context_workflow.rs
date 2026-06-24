@@ -214,6 +214,10 @@ pub struct ContextSkillParseReport {
     pub version: String,
     #[serde(default)]
     pub owner_scope: String,
+    #[serde(default = "default_context_skill_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub precedence: ContextSkillPrecedence,
     pub front_matter: BTreeMap<String, String>,
     pub tag_refs: Vec<String>,
     pub capability_refs: Vec<String>,
@@ -230,6 +234,122 @@ pub struct ContextSkillParseReport {
     #[serde(default)]
     pub parser_warnings: Vec<String>,
     pub resource: ContextResourceParseReport,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
+pub enum ContextSkillPrecedence {
+    Low,
+    #[default]
+    Normal,
+    High,
+    Critical,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextSkillRegistryEntry {
+    pub skill_name: String,
+    pub source_ref: String,
+    pub description: String,
+    pub version: String,
+    pub owner_scope: String,
+    pub enabled: bool,
+    pub precedence: ContextSkillPrecedence,
+    pub triggers: Vec<String>,
+    pub allowed_tools: Vec<String>,
+    pub tag_refs: Vec<String>,
+    pub model_refs: Vec<String>,
+    pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextSkillRegistryUpdate {
+    pub skill_name: String,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub precedence: Option<ContextSkillPrecedence>,
+    #[serde(default)]
+    pub owner_scope: Option<String>,
+    #[serde(default)]
+    pub triggers: Option<Vec<String>>,
+    #[serde(default)]
+    pub allowed_tools: Option<Vec<String>>,
+    #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
+    pub updated_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextSkillRegistryReport {
+    pub status: Status,
+    pub entries: Vec<ContextSkillRegistryEntry>,
+    pub enabled_count: usize,
+    pub disabled_count: usize,
+    pub highest_precedence: ContextSkillPrecedence,
+    pub version_updates: Vec<String>,
+}
+
+impl Default for ContextSkillRegistryReport {
+    fn default() -> Self {
+        Self {
+            status: Status::ok(),
+            entries: Vec::new(),
+            enabled_count: 0,
+            disabled_count: 0,
+            highest_precedence: ContextSkillPrecedence::Normal,
+            version_updates: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextSkillSelectionRequest {
+    pub query: String,
+    #[serde(default)]
+    pub owner_scope: String,
+    #[serde(default)]
+    pub tool_name: String,
+    #[serde(default)]
+    pub include_disabled: bool,
+    #[serde(default = "default_skill_selection_limit")]
+    pub limit: usize,
+    pub registry: Vec<ContextSkillRegistryEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextSkillSelectionCandidate {
+    pub skill_name: String,
+    pub version: String,
+    pub owner_scope: String,
+    pub precedence: ContextSkillPrecedence,
+    pub score: i64,
+    pub matched_triggers: Vec<String>,
+    pub allowed_tool_match: bool,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextSkillSelectionReport {
+    pub status: Status,
+    pub query: String,
+    pub selected: Vec<ContextSkillSelectionCandidate>,
+    pub skipped_disabled: Vec<String>,
+    pub skipped_owner_scope: Vec<String>,
+    pub skipped_tool: Vec<String>,
+}
+
+impl Default for ContextSkillSelectionReport {
+    fn default() -> Self {
+        Self {
+            status: Status::ok(),
+            query: String::new(),
+            selected: Vec::new(),
+            skipped_disabled: Vec::new(),
+            skipped_owner_scope: Vec::new(),
+            skipped_tool: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -315,6 +435,10 @@ pub struct ContextResourceSkillIngestReport {
     pub status: Status,
     pub resources: Vec<ContextResourceParseReport>,
     pub skills: Vec<ContextSkillParseReport>,
+    #[serde(default)]
+    pub skill_registry: ContextSkillRegistryReport,
+    #[serde(default)]
+    pub skill_selection: ContextSkillSelectionReport,
     pub ingest: ContextIngestExtractReport,
     pub embedding_refs: Vec<u64>,
     pub fanout: ContextResourceSkillModelFanoutReport,
@@ -1641,22 +1765,37 @@ pub fn ingest_resource_skill_context(
 
     for skill_input in request.skills {
         let skill = parse_context_skill_markdown(skill_input.raw_uri, skill_input.text);
-        for chunk in &skill.resource.chunks {
-            skill_ref_by_source.insert(chunk.source_ref.clone(), skill.skill_name.clone());
-            sources.push(ContextExtractRequest {
-                shard_id: request.shard_id,
-                tenant_hash: request.tenant_hash,
-                source_kind: ContextSourceKind::Document,
-                source_id: chunk.source_ref.clone(),
-                title: format!("skill:{}", skill.skill_name),
-                body: chunk.text.clone(),
-                timestamp_ms,
-                provider: provider.clone(),
-            });
-            timestamp_ms = timestamp_ms.saturating_add(1);
+        if skill.enabled {
+            for chunk in &skill.resource.chunks {
+                skill_ref_by_source.insert(chunk.source_ref.clone(), skill.skill_name.clone());
+                sources.push(ContextExtractRequest {
+                    shard_id: request.shard_id,
+                    tenant_hash: request.tenant_hash,
+                    source_kind: ContextSourceKind::Document,
+                    source_id: chunk.source_ref.clone(),
+                    title: format!("skill:{}", skill.skill_name),
+                    body: chunk.text.clone(),
+                    timestamp_ms,
+                    provider: provider.clone(),
+                });
+                timestamp_ms = timestamp_ms.saturating_add(1);
+            }
         }
         skills.push(skill);
     }
+    let skill_registry = context_skill_registry_from_parsed(&skills, request.start_time_ms);
+    let skill_selection = if skill_registry.entries.is_empty() {
+        ContextSkillSelectionReport::default()
+    } else {
+        select_context_skills_for_retrieval(ContextSkillSelectionRequest {
+            query: request.query.clone(),
+            owner_scope: String::new(),
+            tool_name: "context_workflow_harness".to_string(),
+            include_disabled: false,
+            limit: default_skill_selection_limit(),
+            registry: skill_registry.entries.clone(),
+        })
+    };
 
     let ingest = ingest_extract_context(
         engine,
@@ -1841,6 +1980,8 @@ pub fn ingest_resource_skill_context(
         status,
         resources,
         skills,
+        skill_registry,
+        skill_selection,
         ingest,
         embedding_refs,
         fanout,
@@ -2359,6 +2500,13 @@ pub fn parse_context_skill_markdown(
         parse_skill_front_matter_list(&front_matter, &["triggers", "trigger", "activation"]);
     let model_refs =
         parse_skill_front_matter_list(&front_matter, &["models", "model", "providers", "provider"]);
+    let enabled = parse_skill_enabled(&front_matter);
+    let precedence = parse_skill_precedence(
+        front_matter
+            .get("precedence")
+            .or_else(|| front_matter.get("priority"))
+            .map(String::as_str),
+    );
     let tool_refs = parse_skill_section_items(&text, &["tools", "tooling", "commands"], true);
     let instruction_refs = parse_skill_section_items(
         &text,
@@ -2407,6 +2555,8 @@ pub fn parse_context_skill_markdown(
             .or_else(|| front_matter.get("owner"))
             .cloned()
             .unwrap_or_else(|| "user".to_string()),
+        enabled,
+        precedence,
         front_matter,
         tag_refs,
         capability_refs,
@@ -2419,6 +2569,178 @@ pub fn parse_context_skill_markdown(
         example_refs,
         parser_warnings: resource.parser_warnings.clone(),
         resource,
+    }
+}
+
+pub fn context_skill_registry_from_parsed(
+    skills: &[ContextSkillParseReport],
+    updated_at_ms: u64,
+) -> ContextSkillRegistryReport {
+    let entries = skills
+        .iter()
+        .map(|skill| ContextSkillRegistryEntry {
+            skill_name: skill.skill_name.clone(),
+            source_ref: skill.source_ref.clone(),
+            description: skill.description.clone(),
+            version: skill.version.clone(),
+            owner_scope: skill.owner_scope.clone(),
+            enabled: skill.enabled,
+            precedence: skill.precedence,
+            triggers: normalized_unique_strings(skill.triggers.clone()),
+            allowed_tools: normalized_unique_strings(skill.allowed_tools.clone()),
+            tag_refs: normalized_unique_strings(skill.tag_refs.clone()),
+            model_refs: normalized_unique_strings(skill.model_refs.clone()),
+            updated_at_ms,
+        })
+        .collect::<Vec<_>>();
+    context_skill_registry_report(entries, Vec::new())
+}
+
+pub fn update_context_skill_registry(
+    mut entries: Vec<ContextSkillRegistryEntry>,
+    updates: Vec<ContextSkillRegistryUpdate>,
+) -> ContextSkillRegistryReport {
+    let mut version_updates = Vec::new();
+    for update in updates {
+        if let Some(entry) = entries
+            .iter_mut()
+            .find(|entry| entry.skill_name == update.skill_name)
+        {
+            if let Some(enabled) = update.enabled {
+                entry.enabled = enabled;
+            }
+            if let Some(precedence) = update.precedence {
+                entry.precedence = precedence;
+            }
+            if let Some(owner_scope) = update.owner_scope {
+                entry.owner_scope = owner_scope;
+            }
+            if let Some(triggers) = update.triggers {
+                entry.triggers = normalized_unique_strings(triggers);
+            }
+            if let Some(allowed_tools) = update.allowed_tools {
+                entry.allowed_tools = normalized_unique_strings(allowed_tools);
+            }
+            if let Some(version) = update.version {
+                if entry.version != version {
+                    version_updates.push(format!(
+                        "{}:{}->{}",
+                        entry.skill_name, entry.version, version
+                    ));
+                    entry.version = version;
+                }
+            }
+            if update.updated_at_ms > 0 {
+                entry.updated_at_ms = update.updated_at_ms;
+            }
+        }
+    }
+    context_skill_registry_report(entries, version_updates)
+}
+
+pub fn select_context_skills_for_retrieval(
+    request: ContextSkillSelectionRequest,
+) -> ContextSkillSelectionReport {
+    let query_terms = context_query_terms(&request.query);
+    let owner_scope = request.owner_scope.trim();
+    let tool_name = request.tool_name.trim();
+    let mut selected = Vec::new();
+    let mut skipped_disabled = Vec::new();
+    let mut skipped_owner_scope = Vec::new();
+    let mut skipped_tool = Vec::new();
+
+    for entry in request.registry {
+        if !entry.enabled && !request.include_disabled {
+            skipped_disabled.push(entry.skill_name);
+            continue;
+        }
+        if !owner_scope.is_empty()
+            && entry.owner_scope != owner_scope
+            && entry.owner_scope != "global"
+            && entry.owner_scope != "all"
+        {
+            skipped_owner_scope.push(entry.skill_name);
+            continue;
+        }
+        let allowed_tool_match = tool_name.is_empty()
+            || entry.allowed_tools.is_empty()
+            || entry
+                .allowed_tools
+                .iter()
+                .any(|allowed| allowed.eq_ignore_ascii_case(tool_name));
+        if !allowed_tool_match {
+            skipped_tool.push(entry.skill_name);
+            continue;
+        }
+        let matched_triggers = entry
+            .triggers
+            .iter()
+            .filter(|trigger| {
+                query_terms
+                    .iter()
+                    .any(|term| trigger.to_ascii_lowercase().contains(term))
+                    || request
+                        .query
+                        .to_ascii_lowercase()
+                        .contains(trigger.to_ascii_lowercase().as_str())
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let lexical_matches = query_terms
+            .iter()
+            .filter(|term| {
+                entry
+                    .skill_name
+                    .to_ascii_lowercase()
+                    .contains(term.as_str())
+                    || entry
+                        .description
+                        .to_ascii_lowercase()
+                        .contains(term.as_str())
+                    || entry
+                        .tag_refs
+                        .iter()
+                        .any(|tag| tag.to_ascii_lowercase().contains(term.as_str()))
+            })
+            .count() as i64;
+        let score = context_skill_precedence_weight(entry.precedence)
+            + (matched_triggers.len() as i64 * 25)
+            + (lexical_matches * 5)
+            + i64::from(allowed_tool_match);
+        selected.push(ContextSkillSelectionCandidate {
+            skill_name: entry.skill_name,
+            version: entry.version,
+            owner_scope: entry.owner_scope,
+            precedence: entry.precedence,
+            score,
+            matched_triggers,
+            allowed_tool_match,
+            enabled: entry.enabled,
+        });
+    }
+    selected.sort_by_key(|candidate| {
+        (
+            Reverse(candidate.score),
+            Reverse(context_skill_precedence_weight(candidate.precedence)),
+            candidate.skill_name.clone(),
+        )
+    });
+    selected.truncate(request.limit.max(1));
+    let status = if selected.is_empty() {
+        Status::error(
+            "context_skill_selection_empty",
+            "no registry skills matched retrieval request",
+        )
+    } else {
+        Status::ok()
+    };
+    ContextSkillSelectionReport {
+        status,
+        query: request.query,
+        selected,
+        skipped_disabled,
+        skipped_owner_scope,
+        skipped_tool,
     }
 }
 
@@ -4169,6 +4491,29 @@ fn parse_skill_front_matter(text: &str) -> BTreeMap<String, String> {
     metadata
 }
 
+fn parse_skill_enabled(metadata: &BTreeMap<String, String>) -> bool {
+    let raw = metadata
+        .get("enabled")
+        .or_else(|| metadata.get("disabled"))
+        .or_else(|| metadata.get("status"))
+        .map(|value| value.trim().to_ascii_lowercase());
+    match raw.as_deref() {
+        Some("false") | Some("0") | Some("no") | Some("disabled") | Some("disable") => false,
+        Some("true") | Some("1") | Some("yes") | Some("enabled") | Some("active") => true,
+        Some(value) if metadata.contains_key("disabled") => !matches!(value, "true" | "1" | "yes"),
+        _ => true,
+    }
+}
+
+fn parse_skill_precedence(raw: Option<&str>) -> ContextSkillPrecedence {
+    match raw.unwrap_or_default().trim().to_ascii_lowercase().as_str() {
+        "low" | "0" => ContextSkillPrecedence::Low,
+        "high" | "2" => ContextSkillPrecedence::High,
+        "critical" | "highest" | "3" => ContextSkillPrecedence::Critical,
+        _ => ContextSkillPrecedence::Normal,
+    }
+}
+
 fn parse_skill_front_matter_list(
     metadata: &BTreeMap<String, String>,
     keys: &[&str],
@@ -4301,6 +4646,52 @@ fn infer_skill_name_from_uri(raw_uri: &str) -> String {
         .unwrap_or("skill")
         .trim_end_matches(".md")
         .to_string()
+}
+
+fn normalized_unique_strings(mut values: Vec<String>) -> Vec<String> {
+    values.iter_mut().for_each(|value| {
+        *value = value.trim().to_string();
+    });
+    values.retain(|value| !value.is_empty());
+    values.sort_by_key(|value| value.to_ascii_lowercase());
+    values.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+    values
+}
+
+fn context_skill_precedence_weight(precedence: ContextSkillPrecedence) -> i64 {
+    match precedence {
+        ContextSkillPrecedence::Low => 0,
+        ContextSkillPrecedence::Normal => 100,
+        ContextSkillPrecedence::High => 200,
+        ContextSkillPrecedence::Critical => 300,
+    }
+}
+
+fn context_skill_registry_report(
+    mut entries: Vec<ContextSkillRegistryEntry>,
+    version_updates: Vec<String>,
+) -> ContextSkillRegistryReport {
+    entries.sort_by_key(|entry| {
+        (
+            Reverse(context_skill_precedence_weight(entry.precedence)),
+            entry.skill_name.clone(),
+        )
+    });
+    let enabled_count = entries.iter().filter(|entry| entry.enabled).count();
+    let disabled_count = entries.len().saturating_sub(enabled_count);
+    let highest_precedence = entries
+        .iter()
+        .map(|entry| entry.precedence)
+        .max()
+        .unwrap_or_default();
+    ContextSkillRegistryReport {
+        status: Status::ok(),
+        entries,
+        enabled_count,
+        disabled_count,
+        highest_precedence,
+        version_updates,
+    }
 }
 
 fn first_markdown_paragraph(text: &str) -> String {
@@ -5331,6 +5722,14 @@ fn default_max_retries() -> usize {
 
 fn default_retrieve_limit() -> usize {
     16
+}
+
+fn default_context_skill_enabled() -> bool {
+    true
+}
+
+fn default_skill_selection_limit() -> usize {
+    8
 }
 
 fn default_benchmark_profile() -> String {

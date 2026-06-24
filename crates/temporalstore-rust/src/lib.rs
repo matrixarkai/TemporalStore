@@ -30,11 +30,12 @@ pub use client::{
 };
 pub use context_workflow::{
     context_pipeline_manage_report, context_pipeline_parity_evidence,
-    context_resource_chunk_embedding, context_workflow_state_report,
-    default_context_model_providers, extract_context, ingest_extract_context,
-    ingest_resource_skill_context, inject_context, openviking_open_source_model_profiles,
-    parse_context_resource, parse_context_skill_markdown, retrieve_context,
-    run_context_pipeline_benchmark, run_context_pipeline_benchmark_sweep,
+    context_resource_chunk_embedding, context_skill_registry_from_parsed,
+    context_workflow_state_report, default_context_model_providers, extract_context,
+    ingest_extract_context, ingest_resource_skill_context, inject_context,
+    openviking_open_source_model_profiles, parse_context_resource, parse_context_skill_markdown,
+    retrieve_context, run_context_pipeline_benchmark, run_context_pipeline_benchmark_sweep,
+    select_context_skills_for_retrieval, update_context_skill_registry,
     validate_resource_skill_secondary_indexes, ContextBlock, ContextExtractReport,
     ContextExtractRequest, ContextIngestExtractReport, ContextIngestExtractRequest,
     ContextIngestExtractSummary, ContextIngestSourceFailure, ContextInjectReport,
@@ -50,8 +51,10 @@ pub use context_workflow::{
     ContextResourceSkillSecondaryIndexReport, ContextResourceSkillSecondaryIndexValidationReport,
     ContextResourceSkillSecondaryIndexValidationRequest, ContextRetrieveReport,
     ContextRetrieveRequest, ContextSecondaryIndexFamilyValidationReport, ContextSkillIngestInput,
-    ContextSkillParseReport, ContextSourceKind, ContextTier, ContextTreeTraversalDebug,
-    ContextWorkflowStateReport,
+    ContextSkillParseReport, ContextSkillPrecedence, ContextSkillRegistryEntry,
+    ContextSkillRegistryReport, ContextSkillRegistryUpdate, ContextSkillSelectionCandidate,
+    ContextSkillSelectionReport, ContextSkillSelectionRequest, ContextSourceKind, ContextTier,
+    ContextTreeTraversalDebug, ContextWorkflowStateReport,
 };
 pub use control::{
     CheckedBatchExecuteRequest, CheckedBatchExecuteResponse, CheckedExecuteRequest,
