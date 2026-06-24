@@ -156,7 +156,19 @@ def main() -> int:
     require_contains(ROOT / "docs" / "rust_cpp_codex_mcp_integration.md", REQUIRED_BACKEND_TOKENS + REQUIRED_TOOL_NAMES)
     require_contains(
         ROOT / "crates" / "temporalstore-rust" / "src" / "bin" / "matrixark_record_log.rs",
-        ["put_string", "get_string", "hset", "hget", "TemporalEngine"],
+        [
+            "health",
+            "put_string",
+            "get_string",
+            "delete",
+            "hset",
+            "hget",
+            "hdel",
+            "hgetall",
+            "scan_hash",
+            "TemporalEngine",
+            "HashGetAll",
+        ],
     )
 
     report = {

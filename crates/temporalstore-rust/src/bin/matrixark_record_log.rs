@@ -1,4 +1,5 @@
 use std::collections::hash_map::DefaultHasher;
+use std::collections::BTreeMap;
 use std::env;
 use std::hash::{Hash, Hasher};
 use std::io::{self, Read};
@@ -32,20 +33,44 @@ struct RecordLogResponse {
     ok: bool,
     #[serde(skip_serializing_if = "String::is_empty")]
     value: String,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    entries: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    count: Option<usize>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    op: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    root: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     error: String,
 }
 
+#[derive(Debug)]
+struct RecordLogOutput {
+    value: String,
+    entries: BTreeMap<String, String>,
+    count: Option<usize>,
+    root: PathBuf,
+}
+
 fn main() {
     let response = match run() {
-        Ok(value) => RecordLogResponse {
+        Ok((op, output)) => RecordLogResponse {
             ok: true,
-            value,
+            value: output.value,
+            entries: output.entries,
+            count: output.count,
+            op,
+            root: output.root.display().to_string(),
             error: String::new(),
         },
-        Err(error) => RecordLogResponse {
+        Err((op, error)) => RecordLogResponse {
             ok: false,
             value: String::new(),
+            entries: BTreeMap::new(),
+            count: None,
+            op,
+            root: String::new(),
             error,
         },
     };
@@ -58,15 +83,31 @@ fn main() {
     }
 }
 
-fn run() -> Result<String, String> {
+fn run() -> Result<(String, RecordLogOutput), (String, String)> {
     let mut input = String::new();
-    io::stdin()
-        .read_to_string(&mut input)
-        .map_err(|error| format!("failed to read request: {error}"))?;
-    let request: RecordLogRequest =
-        serde_json::from_str(&input).map_err(|error| format!("invalid JSON request: {error}"))?;
-    let engine = open_engine(&request)?;
-    match request.op.as_str() {
+    io::stdin().read_to_string(&mut input).map_err(|error| {
+        (
+            "unknown".to_string(),
+            format!("failed to read request: {error}"),
+        )
+    })?;
+    let request: RecordLogRequest = serde_json::from_str(&input).map_err(|error| {
+        (
+            "unknown".to_string(),
+            format!("invalid JSON request: {error}"),
+        )
+    })?;
+    let op = request.op.clone();
+    validate_request(&request).map_err(|error| (op.clone(), error))?;
+    let root = record_log_root(&request);
+    let engine = open_engine(&request).map_err(|error| (op.clone(), error))?;
+    let output = match request.op.as_str() {
+        "health" | "preflight" => RecordLogOutput {
+            value: "ready".to_string(),
+            entries: BTreeMap::new(),
+            count: Some(0),
+            root,
+        },
         "put_string" => {
             execute_empty(
                 &engine,
@@ -74,10 +115,20 @@ fn run() -> Result<String, String> {
                     key: request.key,
                     value: request.value.into_bytes(),
                 },
-            )?;
-            Ok(String::new())
+            )
+            .map_err(|error| (op.clone(), error))?;
+            empty_output(root)
         }
-        "get_string" => read_bytes(&engine, Command::StringGet { key: request.key }),
+        "get_string" => value_output(
+            read_bytes(&engine, Command::StringGet { key: request.key })
+                .map_err(|error| (op.clone(), error))?,
+            root,
+        ),
+        "delete" | "del" => {
+            execute_empty(&engine, Command::CommonDelete { key: request.key })
+                .map_err(|error| (op.clone(), error))?;
+            empty_output(root)
+        }
         "hset" => {
             execute_empty(
                 &engine,
@@ -86,17 +137,115 @@ fn run() -> Result<String, String> {
                     field: request.field,
                     value: request.value.into_bytes(),
                 },
-            )?;
-            Ok(String::new())
+            )
+            .map_err(|error| (op.clone(), error))?;
+            empty_output(root)
         }
-        "hget" => read_bytes(
-            &engine,
-            Command::HashGet {
-                key: request.key,
-                field: request.field,
-            },
+        "hget" => value_output(
+            read_bytes(
+                &engine,
+                Command::HashGet {
+                    key: request.key,
+                    field: request.field,
+                },
+            )
+            .map_err(|error| (op.clone(), error))?,
+            root,
         ),
+        "hdel" => {
+            execute_empty(
+                &engine,
+                Command::HashDelete {
+                    key: request.key,
+                    field: request.field,
+                },
+            )
+            .map_err(|error| (op.clone(), error))?;
+            empty_output(root)
+        }
+        "hgetall" | "scan_hash" => {
+            hash_entries_output(&engine, request.key, root).map_err(|error| (op.clone(), error))?
+        }
+        other => return Err((op, format!("unsupported op {other:?}"))),
+    };
+    Ok((op, output))
+}
+
+fn validate_request(request: &RecordLogRequest) -> Result<(), String> {
+    if request.op.trim().is_empty() {
+        return Err("missing op".to_string());
+    }
+    match request.op.as_str() {
+        "health" | "preflight" => Ok(()),
+        "put_string" | "get_string" | "delete" | "del" | "hgetall" | "scan_hash" => {
+            require_non_empty("key", &request.key)
+        }
+        "hset" | "hget" | "hdel" => {
+            require_non_empty("key", &request.key)?;
+            require_non_empty("field", &request.field)
+        }
         other => Err(format!("unsupported op {other:?}")),
+    }
+}
+
+fn require_non_empty(name: &str, value: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        Err(format!("missing {name}"))
+    } else {
+        Ok(())
+    }
+}
+
+fn empty_output(root: PathBuf) -> RecordLogOutput {
+    RecordLogOutput {
+        value: String::new(),
+        entries: BTreeMap::new(),
+        count: None,
+        root,
+    }
+}
+
+fn value_output(value: String, root: PathBuf) -> RecordLogOutput {
+    RecordLogOutput {
+        value,
+        entries: BTreeMap::new(),
+        count: None,
+        root,
+    }
+}
+
+fn hash_entries_output(
+    engine: &TemporalEngine,
+    key: String,
+    root: PathBuf,
+) -> Result<RecordLogOutput, String> {
+    let response = engine.execute_durable(ExecuteRequest {
+        shard_id: DEFAULT_SHARD_ID,
+        command: Command::HashGetAll { key },
+    });
+    if !response.status.ok {
+        return Err(format!(
+            "{}: {}",
+            response.status.code, response.status.message
+        ));
+    }
+    match response.response {
+        CommandResponse::HashEntries { entries } => {
+            let mut decoded = BTreeMap::new();
+            for (field, value) in entries {
+                let value = String::from_utf8(value)
+                    .map_err(|error| format!("stored hash value is not UTF-8: {error}"))?;
+                decoded.insert(field, value);
+            }
+            Ok(RecordLogOutput {
+                value: serde_json::to_string(&decoded)
+                    .map_err(|error| format!("failed to serialize hash entries: {error}"))?,
+                count: Some(decoded.len()),
+                entries: decoded,
+                root,
+            })
+        }
+        other => Err(format!("unexpected response for hgetall: {other:?}")),
     }
 }
 
@@ -208,7 +357,18 @@ fn _request_shape_for_docs() -> serde_json::Value {
         "table": "deploy_table",
         "key": "matrixark:mcp:records:000000",
         "field": "00000000000000000000",
-        "value": "{\"record_type\":\"raw_event\"}"
+        "value": "{\"record_type\":\"raw_event\"}",
+        "supported_ops": [
+            "health",
+            "put_string",
+            "get_string",
+            "delete",
+            "hset",
+            "hget",
+            "hdel",
+            "hgetall",
+            "scan_hash"
+        ]
     })
 }
 
@@ -300,6 +460,78 @@ mod tests {
             .expect("hget"),
             r#"{"record_type":"raw_event"}"#
         );
+
+        env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
+    }
+
+    // shared-corpus: codex_mcp_temporalstore_rust_record_log_backend
+    #[test]
+    fn rust_record_log_supports_health_validation_and_hash_scan_output() {
+        let dir = tempdir().expect("tempdir");
+        env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
+
+        let health = request("health");
+        validate_request(&health).expect("health validates without key");
+        let engine = open_engine(&health).expect("engine");
+        let root = record_log_root(&health);
+        assert_eq!(root, dir.path());
+
+        let missing_key = request("hset");
+        assert_eq!(
+            validate_request(&missing_key),
+            Err("missing key".to_string())
+        );
+
+        execute_empty(
+            &engine,
+            Command::HashSet {
+                key: "matrixark:test:records".to_string(),
+                field: "00000000000000000002".to_string(),
+                value: br#"{"record_type":"segment"}"#.to_vec(),
+            },
+        )
+        .expect("hset segment");
+        execute_empty(
+            &engine,
+            Command::HashSet {
+                key: "matrixark:test:records".to_string(),
+                field: "00000000000000000001".to_string(),
+                value: br#"{"record_type":"raw_event"}"#.to_vec(),
+            },
+        )
+        .expect("hset raw event");
+
+        let output = hash_entries_output(
+            &engine,
+            "matrixark:test:records".to_string(),
+            record_log_root(&health),
+        )
+        .expect("hgetall output");
+        assert_eq!(output.count, Some(2));
+        assert_eq!(
+            output
+                .entries
+                .get("00000000000000000001")
+                .map(String::as_str),
+            Some(r#"{"record_type":"raw_event"}"#)
+        );
+        assert!(output.value.contains("segment"));
+
+        execute_empty(
+            &engine,
+            Command::HashDelete {
+                key: "matrixark:test:records".to_string(),
+                field: "00000000000000000002".to_string(),
+            },
+        )
+        .expect("hdel");
+        let output = hash_entries_output(
+            &engine,
+            "matrixark:test:records".to_string(),
+            record_log_root(&health),
+        )
+        .expect("hgetall after delete");
+        assert_eq!(output.count, Some(1));
 
         env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
     }

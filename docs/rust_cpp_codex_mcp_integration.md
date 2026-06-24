@@ -75,6 +75,21 @@ Those operations are executed through Rust `TemporalEngine` string/hash commands
 and durable local index/page/oplog persistence, so Codex ingestion and retrieval
 exercise Rust TemporalStore storage instead of a Python-only side log.
 
+The Rust CLI also exposes production diagnostics and replay helpers used by
+MatrixArk MCP readiness checks:
+
+- `health` / `preflight`: open the durable Rust engine and return the selected
+  storage root.
+- `delete` / `del`: remove a record-log key.
+- `hdel`: remove one hash field.
+- `hgetall` / `scan_hash`: return all hash fields as deterministic JSON plus an
+  `entries` object and `count`.
+
+Every response keeps the shared-server-compatible `ok`, `value`, and `error`
+fields, and additionally emits `op`, `root`, `entries`, and `count` when
+available. Required fields are validated before the engine is opened, so bad MCP
+calls fail closed with a structured error instead of creating partial state.
+
 ## Validation
 
 Fast local checks:
@@ -83,6 +98,16 @@ Fast local checks:
 cargo test -p temporalstore-rust --bin matrixark_record_log -- --test-threads=1
 python3 tools/validate_codex_mcp_parity.py
 python3 tools/run_temporalstore_unified_tests.py --validate-only
+```
+
+Direct Rust CLI smoke:
+
+```bash
+printf '%s' '{"op":"health","namespace":"deploy_ns","table":"deploy_table"}' |
+  cargo run -q -p temporalstore-rust --bin matrixark_record_log
+printf '%s' '{"op":"hgetall","key":"matrixark:mcp:records"}' |
+  MATRIXARK_TEMPORALSTORE_RUST_ROOT=/tmp/matrixark-rust-codex \
+  cargo run -q -p temporalstore-rust --bin matrixark_record_log
 ```
 
 Manual JSON-RPC smoke:
