@@ -112,6 +112,16 @@ def content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
+def resource_content_version(raw_uri: str, units: list[Json]) -> str:
+    digest = hashlib.sha256()
+    digest.update(raw_uri.encode("utf-8", errors="ignore"))
+    for unit in units:
+        digest.update(str(unit.get("unit_kind", "")).encode("utf-8", errors="ignore"))
+        digest.update(str(unit.get("source_ref", "")).encode("utf-8", errors="ignore"))
+        digest.update(str(unit.get("text", "")).encode("utf-8", errors="ignore"))
+    return digest.hexdigest()[:16]
+
+
 def keywords_for_text(text: str, limit: int = 12) -> list[str]:
     stop = {
         "the", "and", "for", "that", "with", "from", "this", "will", "are", "was", "were", "has", "have",
@@ -139,6 +149,7 @@ def build_embedding_text(text: str, metadata: Json, source_ref: str) -> str:
         "relative_path",
         "child_resource_type",
         "unit_kind",
+        "resource_version",
     ]:
         value = metadata.get(key)
         if value:
@@ -192,7 +203,11 @@ def parse_resource(
     text: str | None = None,
     max_chunk_chars: int = 1400,
     overlap_chars: int = 120,
+    max_chunk_tokens: int = 240,
+    overlap_tokens: int = 24,
     chunk_hash_base: int | None = None,
+    resource_version: str | None = None,
+    supersedes_chunk_hashes: dict[str, int] | None = None,
     max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
     max_directory_files: int = DEFAULT_MAX_DIRECTORY_FILES,
     max_directory_depth: int = DEFAULT_MAX_DIRECTORY_DEPTH,
@@ -209,6 +224,10 @@ def parse_resource(
         raise ResourceParserError("max_chunk_chars must be >= 256")
     if overlap_chars < 0 or overlap_chars >= max_chunk_chars:
         raise ResourceParserError("overlap_chars must be non-negative and smaller than max_chunk_chars")
+    if max_chunk_tokens < 32:
+        raise ResourceParserError("max_chunk_tokens must be >= 32")
+    if overlap_tokens < 0 or overlap_tokens >= max_chunk_tokens:
+        raise ResourceParserError("overlap_tokens must be non-negative and smaller than max_chunk_tokens")
     if max_total_chunks <= 0:
         raise ResourceParserError("max_total_chunks must be positive")
     if max_inline_text_chars <= 0:
@@ -228,31 +247,44 @@ def parse_resource(
     )
 
     chunks: list[ParsedResourceChunk] = []
+    version = resource_version or resource_content_version(raw_uri_text, units)
+    supersedes = supersedes_chunk_hashes or {}
     for unit_index, unit in enumerate(units):
         unit_text = compact_ws(str(unit.get("text", "")))
-        for split_index, piece in enumerate(_split_text(unit_text, max_chunk_chars, overlap_chars)):
+        for split_index, piece in enumerate(
+            _split_text(
+                unit_text,
+                max_chunk_chars,
+                overlap_chars,
+                max_chunk_tokens=max_chunk_tokens,
+                overlap_tokens=overlap_tokens,
+            )
+        ):
             piece = compact_ws(piece)
             if not piece:
                 continue
+            piece_hash = content_hash(piece)
             metadata = {key: value for key, value in unit.items() if key != "text"}
             metadata.update(
                 {
                     "resource_type": kind,
+                    "resource_version": version,
                     "chunk_index": len(chunks),
                     "unit_index": unit_index,
                     "split_index": split_index,
                     "char_count": len(piece),
-                    "content_hash": content_hash(piece),
+                    "content_hash": piece_hash,
                     "keywords": keywords_for_text(piece),
                 }
             )
             source_ref = _source_ref(raw_uri_text, metadata)
             metadata["citation"] = source_ref
+            metadata["supersedes_chunk_hash"] = supersedes.get(source_ref) or supersedes.get(piece_hash)
             metadata["embedding_text"] = build_embedding_text(piece, metadata, source_ref)
             chunk_hash = (
                 chunk_hash_base + len(chunks)
                 if chunk_hash_base is not None
-                else stable_hash(f"resource_chunk:{source_ref}:{metadata['content_hash']}")
+                else stable_hash(f"resource_chunk:{source_ref}:{version}:{piece_hash}")
             )
             if len(chunks) >= max_total_chunks:
                 raise ResourceParserError(f"resource produced more than max_total_chunks={max_total_chunks}")
@@ -666,10 +698,60 @@ def _parse_docx_units(path: Path, raw_uri: str) -> list[Json]:
     return units or _paragraph_units("\n\n".join(p.text for p in document.paragraphs), raw_uri)
 
 
-def _split_text(text: str, max_chunk_chars: int, overlap_chars: int) -> list[str]:
+def _split_text(
+    text: str,
+    max_chunk_chars: int,
+    overlap_chars: int,
+    *,
+    max_chunk_tokens: int,
+    overlap_tokens: int,
+) -> list[str]:
     text = compact_ws(text)
-    if len(text) <= max_chunk_chars:
+    if len(text) <= max_chunk_chars and token_estimate(text) <= max_chunk_tokens:
         return [text]
+
+    token_pieces = _split_text_by_tokens(text, max_chunk_tokens, overlap_tokens)
+    pieces: list[str] = []
+    for token_piece in token_pieces:
+        if len(token_piece) <= max_chunk_chars:
+            pieces.append(token_piece)
+            continue
+        pieces.extend(_split_text_by_chars(token_piece, max_chunk_chars, overlap_chars))
+    return pieces
+
+
+def _split_text_by_tokens(text: str, max_chunk_tokens: int, overlap_tokens: int) -> list[str]:
+    spans = [(match.start(), match.end()) for match in re.finditer(r"[A-Za-z0-9_]+|[^\sA-Za-z0-9_]+", text)]
+    if len(spans) <= max_chunk_tokens:
+        return [text]
+    pieces: list[str] = []
+    start_token = 0
+    while start_token < len(spans):
+        end_token = min(len(spans), start_token + max_chunk_tokens)
+        if end_token < len(spans):
+            boundary = _token_boundary(text, spans, start_token, end_token)
+            if boundary > start_token + max_chunk_tokens // 2:
+                end_token = boundary
+        start_char = spans[start_token][0]
+        end_char = spans[end_token - 1][1]
+        piece = text[start_char:end_char].strip()
+        if piece:
+            pieces.append(piece)
+        if end_token >= len(spans):
+            break
+        start_token = max(end_token - overlap_tokens, start_token + 1)
+    return pieces
+
+
+def _token_boundary(text: str, spans: list[tuple[int, int]], start_token: int, end_token: int) -> int:
+    for index in range(end_token - 1, start_token, -1):
+        token_end = spans[index - 1][1]
+        if token_end < len(text) and text[token_end : token_end + 1] in {".", "!", "?", "\n", ";"}:
+            return index
+    return end_token
+
+
+def _split_text_by_chars(text: str, max_chunk_chars: int, overlap_chars: int) -> list[str]:
     pieces: list[str] = []
     start = 0
     while start < len(text):

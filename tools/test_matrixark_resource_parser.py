@@ -44,6 +44,32 @@ class MatrixArkResourceParserTest(unittest.TestCase):
         self.assertEqual(chunks[1].source_ref, "notes.txt#paragraph=1")
         self.assertGreaterEqual(chunks[0].token_estimate, 1)
 
+    def test_token_aware_splitter_versions_and_supersedes_chunks(self):
+        text = " ".join(f"token{i}" for i in range(95))
+        chunks = parse_resource(
+            "long.txt",
+            resource_type="txt",
+            text=text,
+            max_chunk_tokens=32,
+            overlap_tokens=4,
+            max_chunk_chars=4096,
+            chunk_hash_base=3000,
+            resource_version="v2",
+            supersedes_chunk_hashes={"long.txt#paragraph=0": 2999},
+        )
+        self.assertGreater(len(chunks), 2)
+        self.assertTrue(all(chunk.token_estimate <= 32 for chunk in chunks))
+        self.assertEqual(chunks[0].metadata["resource_version"], "v2")
+        self.assertEqual(chunks[0].metadata["supersedes_chunk_hash"], 2999)
+        self.assertIn("resource_version", chunks[0].metadata["embedding_text"])
+
+    def test_resource_version_defaults_to_content_hash(self):
+        first = parse_resource("same.txt", resource_type="txt", text="same body", chunk_hash_base=3100)
+        second = parse_resource("same.txt", resource_type="txt", text="same body", chunk_hash_base=3200)
+        changed = parse_resource("same.txt", resource_type="txt", text="changed body", chunk_hash_base=3300)
+        self.assertEqual(first[0].metadata["resource_version"], second[0].metadata["resource_version"])
+        self.assertNotEqual(first[0].metadata["resource_version"], changed[0].metadata["resource_version"])
+
     def test_pdf_text_fixture_without_pdf_header_uses_text_fallback(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "sample.pdf"
