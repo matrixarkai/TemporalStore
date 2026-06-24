@@ -71,12 +71,15 @@ class RedisCommand {
         kHExists,
         kHLen,
         kHGetAll,
+        kHKeys,
+        kHVals,
         kHIncrBy,
         kSAdd,
         kSRem,
         kSMembers,
         kSCard,
         kSIsMember,
+        kSMIsMember,
         kLPush,
         kRPush,
         kLPop,
@@ -197,12 +200,15 @@ class RedisCommandHandler : public brpc::RedisCommandHandler {
     void HExists(RedisClientContext* c);
     void HLen(RedisClientContext* c);
     void HGetAll(RedisClientContext* c);
+    void HKeys(RedisClientContext* c);
+    void HVals(RedisClientContext* c);
     void HIncrBy(RedisClientContext* c);
     void SAdd(RedisClientContext* c);
     void SRem(RedisClientContext* c);
     void SMembers(RedisClientContext* c);
     void SCard(RedisClientContext* c);
     void SIsMember(RedisClientContext* c);
+    void SMIsMember(RedisClientContext* c);
     void LPush(RedisClientContext* c);
     void RPush(RedisClientContext* c);
     void LPop(RedisClientContext* c);

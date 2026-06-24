@@ -146,12 +146,19 @@ expect_eq hincrby_1 3 HINCRBY "$(k hash)" counter 3
 expect_eq hincrby_2 7 HINCRBY "$(k hash)" counter 4
 expect_contains_line hgetall_f1 f1 HGETALL "$(k hash)"
 expect_contains_line hgetall_v1 v1b HGETALL "$(k hash)"
+expect_contains_line hkeys_f1 f1 HKEYS "$(k hash)"
+expect_contains_line hkeys_f2 f2 HKEYS "$(k hash)"
+expect_contains_line hvals_v1 v1b HVALS "$(k hash)"
+expect_contains_line hvals_v2 v2 HVALS "$(k hash)"
 expect_eq hdel 1 HDEL "$(k hash)" f1
 expect_eq hexists_after_hdel 0 HEXISTS "$(k hash)" f1
+expect_eq hmset OK HMSET "$(k hash2)" a 1 b 2
+expect_eq hmget_hmset $'1\n2' HMGET "$(k hash2)" a b
 expect_eq sadd 2 SADD "$(k set)" a b a
 expect_eq scard 2 SCARD "$(k set)"
 expect_eq sismember_present 1 SISMEMBER "$(k set)" a
 expect_eq sismember_missing 0 SISMEMBER "$(k set)" missing
+expect_eq smismember $'1\n0\n1' SMISMEMBER "$(k set)" a missing b
 expect_contains_line smembers_a a SMEMBERS "$(k set)"
 expect_contains_line smembers_b b SMEMBERS "$(k set)"
 expect_eq srem 1 SREM "$(k set)" a missing
@@ -175,6 +182,9 @@ expect_eq zrange $'alice\ncarol\nbob' ZRANGE "$(k zset)" 0 -1
 expect_eq zrevrange $'bob\ncarol\nalice' ZREVRANGE "$(k zset)" 0 -1
 expect_eq zrange_withscores $'alice\n1\ncarol\n1.5\nbob\n3' ZRANGE "$(k zset)" 0 -1 WITHSCORES
 expect_eq zrangebyscore $'carol\nbob' ZRANGEBYSCORE "$(k zset)" 1.1 3
+expect_eq zrangebyscore_withscores $'carol\n1.5\nbob\n3' ZRANGEBYSCORE "$(k zset)" 1.1 3 WITHSCORES
+expect_eq zrangebyscore_limit bob ZRANGEBYSCORE "$(k zset)" 1 3 LIMIT 2 1
+expect_eq zrangebyscore_withscores_limit $'carol\n1.5' ZRANGEBYSCORE "$(k zset)" 1 3 WITHSCORES LIMIT 1 1
 expect_eq zcount 2 ZCOUNT "$(k zset)" 1.1 3
 expect_eq zrem 1 ZREM "$(k zset)" carol missing
 expect_eq zcard_after_zrem 2 ZCARD "$(k zset)"

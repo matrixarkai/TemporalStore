@@ -106,6 +106,8 @@ void RedisServiceImpl::InitCommands() {
                     &RedisCommandHandler::IncrBy);
     RegisterCommand("hset", RedisCommand::CmdType::kHSet, -4, "wm", 1, 1, 1,
                     &RedisCommandHandler::HSet);
+    RegisterCommand("hmset", RedisCommand::CmdType::kHSet, -4, "wm", 1, 1, 1,
+                    &RedisCommandHandler::HSet);
     RegisterCommand("hget", RedisCommand::CmdType::kHGet, 3, "rF", 1, 1, 1,
                     &RedisCommandHandler::HGet);
     RegisterCommand("hmget", RedisCommand::CmdType::kHMGet, -3, "rF", 1, 1, 1,
@@ -118,6 +120,10 @@ void RedisServiceImpl::InitCommands() {
                     &RedisCommandHandler::HLen);
     RegisterCommand("hgetall", RedisCommand::CmdType::kHGetAll, 2, "r", 1, 1, 1,
                     &RedisCommandHandler::HGetAll);
+    RegisterCommand("hkeys", RedisCommand::CmdType::kHKeys, 2, "r", 1, 1, 1,
+                    &RedisCommandHandler::HKeys);
+    RegisterCommand("hvals", RedisCommand::CmdType::kHVals, 2, "r", 1, 1, 1,
+                    &RedisCommandHandler::HVals);
     RegisterCommand("hincrby", RedisCommand::CmdType::kHIncrBy, 4, "wm", 1, 1, 1,
                     &RedisCommandHandler::HIncrBy);
     RegisterCommand("sadd", RedisCommand::CmdType::kSAdd, -3, "wm", 1, 1, 1,
@@ -130,6 +136,8 @@ void RedisServiceImpl::InitCommands() {
                     &RedisCommandHandler::SCard);
     RegisterCommand("sismember", RedisCommand::CmdType::kSIsMember, 3, "rF", 1, 1, 1,
                     &RedisCommandHandler::SIsMember);
+    RegisterCommand("smismember", RedisCommand::CmdType::kSMIsMember, -3, "rF", 1, 1, 1,
+                    &RedisCommandHandler::SMIsMember);
     RegisterCommand("lpush", RedisCommand::CmdType::kLPush, -3, "wm", 1, 1, 1,
                     &RedisCommandHandler::LPush);
     RegisterCommand("rpush", RedisCommand::CmdType::kRPush, -3, "wm", 1, 1, 1,

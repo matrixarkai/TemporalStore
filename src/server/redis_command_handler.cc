@@ -577,6 +577,28 @@ bool WithScoresArg(RedisClientContext* c, size_t index) {
     return c->ArgSize() > index && !strcasecmp(c->StrArg(index).c_str(), "withscores");
 }
 
+bool ParseLimitArgs(RedisClientContext* c, size_t index, int64_t* offset, int64_t* count,
+                    brpc::RedisReply* reply) {
+    *offset = 0;
+    *count = LLONG_MAX;
+    if (c->ArgSize() <= index) {
+        return true;
+    }
+    if (c->ArgSize() != index + 3 || strcasecmp(c->StrArg(index).c_str(), "limit")) {
+        reply->SetError("ERR syntax error");
+        return false;
+    }
+    if (!ParseInt64Arg(c->StrArg(index + 1), offset) ||
+        !ParseInt64Arg(c->StrArg(index + 2), count)) {
+        reply->SetError("ERR value is not an integer or out of range");
+        return false;
+    }
+    if (*offset < 0) {
+        *offset = 0;
+    }
+    return true;
+}
+
 }  // namespace
 
 
@@ -1625,6 +1647,10 @@ void RedisCommandHandler::HSet(RedisClientContext* c) {
             return;
         }
     }
+    if (!strcasecmp(c->StrArg(0).c_str(), "hmset")) {
+        c->reply->SetStatus("OK");
+        return;
+    }
     c->reply->SetInteger(added);
 }
 
@@ -1732,6 +1758,46 @@ void RedisCommandHandler::HGetAll(RedisClientContext* c) {
     for (int i = 0; i < getall_response.fields_size(); ++i) {
         (*c->reply)[i * 2].SetString(getall_response.fields(i));
         (*c->reply)[i * 2 + 1].SetString(getall_response.values(i));
+    }
+}
+
+void RedisCommandHandler::HKeys(RedisClientContext* c) {
+    CmdResponse response;
+    if (!ExecuteRedisSingle(redis_service_, HashGetAllCmd(c->StrArg(1)), &response, c->reply)) {
+        return;
+    }
+    if (!IsOkStatus(response.response_status())) {
+        c->reply->SetArray(0);
+        return;
+    }
+    hash2::GetAllResponse getall_response;
+    if (!getall_response.ParseFromString(response.response_bytes())) {
+        SetRedisError(c->reply, "failed to parse HKEYS response");
+        return;
+    }
+    c->reply->SetArray(getall_response.fields_size());
+    for (int i = 0; i < getall_response.fields_size(); ++i) {
+        (*c->reply)[i].SetString(getall_response.fields(i));
+    }
+}
+
+void RedisCommandHandler::HVals(RedisClientContext* c) {
+    CmdResponse response;
+    if (!ExecuteRedisSingle(redis_service_, HashGetAllCmd(c->StrArg(1)), &response, c->reply)) {
+        return;
+    }
+    if (!IsOkStatus(response.response_status())) {
+        c->reply->SetArray(0);
+        return;
+    }
+    hash2::GetAllResponse getall_response;
+    if (!getall_response.ParseFromString(response.response_bytes())) {
+        SetRedisError(c->reply, "failed to parse HVALS response");
+        return;
+    }
+    c->reply->SetArray(getall_response.values_size());
+    for (int i = 0; i < getall_response.values_size(); ++i) {
+        (*c->reply)[i].SetString(getall_response.values(i));
     }
 }
 
@@ -1855,6 +1921,28 @@ void RedisCommandHandler::SIsMember(RedisClientContext* c) {
         return;
     }
     c->reply->SetInteger(sismember_response.exist() ? 1 : 0);
+}
+
+void RedisCommandHandler::SMIsMember(RedisClientContext* c) {
+    std::vector<CmdRequest> commands;
+    for (size_t i = 2; i < c->ArgSize(); ++i) {
+        commands.emplace_back(SetIsMemberCmd(c->StrArg(1), c->StrArg(i)));
+    }
+    BatchExecuteCmdResponse response;
+    if (!ExecuteRedisBatch(redis_service_, commands, &response, c->reply)) {
+        return;
+    }
+    c->reply->SetArray(response.response_size());
+    for (int i = 0; i < response.response_size(); ++i) {
+        const auto& item = response.response(i);
+        set::SIsMemberResponse member_response;
+        if (!IsOkStatus(item.response_status()) ||
+            !member_response.ParseFromString(item.response_bytes())) {
+            (*c->reply)[i].SetInteger(0);
+        } else {
+            (*c->reply)[i].SetInteger(member_response.exist() ? 1 : 0);
+        }
+    }
 }
 
 void RedisCommandHandler::LPush(RedisClientContext* c) {
@@ -2190,17 +2278,28 @@ void RedisCommandHandler::ZRangeByScore(RedisClientContext* c) {
     }
     SortZSet(&items);
     bool with_scores = WithScoresArg(c, 4);
+    int64_t offset = 0;
+    int64_t count = LLONG_MAX;
+    size_t limit_index = with_scores ? 5 : 4;
+    if (!ParseLimitArgs(c, limit_index, &offset, &count, c->reply)) {
+        return;
+    }
     std::vector<ZItem> selected;
     for (const auto& item : items) {
         if (item.score >= min_score && item.score <= max_score) {
             selected.push_back(item);
         }
     }
-    c->reply->SetArray(with_scores ? selected.size() * 2 : selected.size());
-    for (size_t i = 0; i < selected.size(); ++i) {
-        (*c->reply)[with_scores ? i * 2 : i].SetString(selected[i].member);
+    size_t begin = std::min(static_cast<size_t>(offset), selected.size());
+    size_t end = count < 0 ? selected.size()
+                           : std::min(selected.size(), begin + static_cast<size_t>(count));
+    size_t result_size = end - begin;
+    c->reply->SetArray(with_scores ? result_size * 2 : result_size);
+    for (size_t i = 0; i < result_size; ++i) {
+        const auto& item = selected[begin + i];
+        (*c->reply)[with_scores ? i * 2 : i].SetString(item.member);
         if (with_scores) {
-            (*c->reply)[i * 2 + 1].SetString(selected[i].score_text);
+            (*c->reply)[i * 2 + 1].SetString(item.score_text);
         }
     }
 }
