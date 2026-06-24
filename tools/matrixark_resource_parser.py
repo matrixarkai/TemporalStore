@@ -33,6 +33,8 @@ DEFAULT_MAX_DIRECTORY_FILES = int(os.environ.get("MATRIXARK_RESOURCE_MAX_DIRECTO
 DEFAULT_MAX_DIRECTORY_DEPTH = int(os.environ.get("MATRIXARK_RESOURCE_MAX_DIRECTORY_DEPTH", "8"))
 DEFAULT_MAX_TOTAL_CHUNKS = int(os.environ.get("MATRIXARK_RESOURCE_MAX_TOTAL_CHUNKS", "2048"))
 DEFAULT_MAX_INLINE_TEXT_CHARS = int(os.environ.get("MATRIXARK_RESOURCE_MAX_INLINE_TEXT_CHARS", str(5 * 1024 * 1024)))
+DEFAULT_TABLE_ROWS_PER_CHUNK = int(os.environ.get("MATRIXARK_RESOURCE_TABLE_ROWS_PER_CHUNK", "20"))
+DEFAULT_JSON_RECORDS_PER_CHUNK = int(os.environ.get("MATRIXARK_RESOURCE_JSON_RECORDS_PER_CHUNK", "20"))
 
 
 class ResourceParserError(RuntimeError):
@@ -277,6 +279,8 @@ def parse_resource(
                     "keywords": keywords_for_text(piece),
                 }
             )
+            if "page" in metadata and split_index:
+                metadata["page_section"] = split_index
             source_ref = _source_ref(raw_uri_text, metadata)
             metadata["citation"] = source_ref
             metadata["supersedes_chunk_hash"] = supersedes.get(source_ref) or supersedes.get(piece_hash)
@@ -530,27 +534,46 @@ def _delimited_units(text: str, raw_uri: str, *, delimiter: str) -> list[Json]:
     rows = list(csv.DictReader(text.splitlines(), delimiter=delimiter))
     if not rows:
         return _paragraph_units(text, raw_uri)
-    units = []
-    for index, row in enumerate(rows):
-        clean = {str(k): str(v) for k, v in row.items() if k is not None and str(v).strip()}
-        rendered = "; ".join(f"{key}: {value}" for key, value in clean.items())
-        if rendered:
-            units.append({"text": rendered, "row_index": index, "columns": list(clean.keys()), "unit_kind": "table_row"})
+    units: list[Json] = []
+    chunk_size = max(1, DEFAULT_TABLE_ROWS_PER_CHUNK)
+    for start in range(0, len(rows), chunk_size):
+        group = rows[start : start + chunk_size]
+        rendered_rows: list[str] = []
+        columns: list[str] = []
+        for row_offset, row in enumerate(group):
+            clean = {str(k): str(v) for k, v in row.items() if k is not None and str(v).strip()}
+            if not columns:
+                columns = list(clean.keys())
+            if clean:
+                rendered_rows.append(f"row {start + row_offset}: " + "; ".join(f"{key}: {value}" for key, value in clean.items()))
+        if rendered_rows:
+            row_end = start + len(group) - 1
+            unit: Json = {
+                "text": "\n".join(rendered_rows),
+                "row_start": start,
+                "row_end": row_end,
+                "row_count": len(group),
+                "columns": columns,
+                "unit_kind": "table_row_group" if len(group) > 1 else "table_row",
+            }
+            if len(group) == 1:
+                unit["row_index"] = start
+            units.append(unit)
     return units or _paragraph_units(text, raw_uri)
 
 
 def _jsonl_units(text: str, raw_uri: str) -> list[Json]:
-    units = []
+    parsed: list[tuple[int, str, str]] = []
     for index, line in enumerate(text.splitlines()):
         if not line.strip():
             continue
         try:
             obj = json.loads(line)
             rendered = json.dumps(obj, ensure_ascii=False, sort_keys=True)
-            units.append({"text": rendered, "record_index": index, "unit_kind": "jsonl_record"})
+            parsed.append((index, rendered, "jsonl_record"))
         except json.JSONDecodeError:
-            units.append({"text": line.strip(), "record_index": index, "unit_kind": "jsonl_text"})
-    return units or _paragraph_units(text, raw_uri)
+            parsed.append((index, line.strip(), "jsonl_text"))
+    return _record_group_units(parsed, "jsonl") or _paragraph_units(text, raw_uri)
 
 
 def _json_units(text: str, raw_uri: str) -> list[Json]:
@@ -559,13 +582,36 @@ def _json_units(text: str, raw_uri: str) -> list[Json]:
     except json.JSONDecodeError:
         return _paragraph_units(text, raw_uri)
     if isinstance(obj, list):
-        return [
-            {"text": json.dumps(item, ensure_ascii=False, sort_keys=True), "record_index": index, "unit_kind": "json_record"}
-            for index, item in enumerate(obj)
-        ]
+        parsed = [(index, json.dumps(item, ensure_ascii=False, sort_keys=True), "json_record") for index, item in enumerate(obj)]
+        return _record_group_units(parsed, "json") or _paragraph_units(text, raw_uri)
     if isinstance(obj, dict):
         return [{"text": json.dumps(obj, ensure_ascii=False, sort_keys=True), "record_index": 0, "unit_kind": "json_document"}]
     return [{"text": str(obj), "record_index": 0, "unit_kind": "json_value"}]
+
+
+def _record_group_units(records: list[tuple[int, str, str]], family: str) -> list[Json]:
+    units: list[Json] = []
+    chunk_size = max(1, DEFAULT_JSON_RECORDS_PER_CHUNK)
+    for start in range(0, len(records), chunk_size):
+        group = records[start : start + chunk_size]
+        if not group:
+            continue
+        record_start = group[0][0]
+        record_end = group[-1][0]
+        rendered = "\n".join(f"record {index}: {text}" for index, text, _kind in group if text)
+        if not rendered.strip():
+            continue
+        unit: Json = {
+            "text": rendered,
+            "record_start": record_start,
+            "record_end": record_end,
+            "record_count": len(group),
+            "unit_kind": f"{family}_record_group" if len(group) > 1 else group[0][2],
+        }
+        if len(group) == 1:
+            unit["record_index"] = record_start
+        units.append(unit)
+    return units
 
 
 def _binary_stub_units(raw_uri: str, kind: str) -> list[Json]:
@@ -773,18 +819,32 @@ def _source_ref(raw_uri: str, metadata: Json) -> str:
     base_uri = str(metadata.get("child_uri") or raw_uri)
     if "page" in metadata:
         suffix = f"page={metadata['page']}"
+        if metadata.get("split_index", 0):
+            suffix += f"&section={metadata['split_index']}"
     elif "heading_path_slugs" in metadata:
         suffix = "heading=" + "/".join(str(part) for part in metadata["heading_path_slugs"])
     elif "heading_slug" in metadata:
         suffix = f"heading={metadata['heading_slug']}"
+    elif "row_start" in metadata and "row_end" in metadata:
+        suffix = (
+            f"row={metadata['row_start']}"
+            if metadata["row_start"] == metadata["row_end"]
+            else f"row={metadata['row_start']}-{metadata['row_end']}"
+        )
     elif "row_index" in metadata:
         suffix = f"row={metadata['row_index']}"
+    elif "record_start" in metadata and "record_end" in metadata:
+        suffix = (
+            f"record={metadata['record_start']}"
+            if metadata["record_start"] == metadata["record_end"]
+            else f"record={metadata['record_start']}-{metadata['record_end']}"
+        )
     elif "record_index" in metadata:
         suffix = f"record={metadata['record_index']}"
     elif "paragraph_index" in metadata:
         suffix = f"paragraph={metadata['paragraph_index']}"
     else:
         suffix = f"chunk={metadata.get('chunk_index', 0)}"
-    if metadata.get("split_index", 0):
+    if metadata.get("split_index", 0) and "page" not in metadata:
         suffix += f"&part={metadata['split_index']}"
     return f"{base_uri}#{suffix}"
