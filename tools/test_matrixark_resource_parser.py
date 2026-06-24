@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 from __future__ import annotations
 
 import tempfile
@@ -148,6 +148,42 @@ class MatrixArkResourceParserTest(unittest.TestCase):
         self.assertEqual(skill.metadata["permissions"], ["context:retrieve"])
         self.assertEqual(skill.metadata["inputs"], ["incident summary"])
 
+
+    def test_directory_resource_parses_supported_child_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "resources"
+            root.mkdir()
+            (root / "runbook.md").write_text("# GPU\n\nFinance approval required.", encoding="utf-8")
+            (root / "facts.jsonl").write_text('{"fact":"CFO approval over 40000"}\n', encoding="utf-8")
+            (root / "ignore.bin").write_bytes(b"not parsed")
+            chunks = parse_resource(root, resource_type="directory", chunk_hash_base=1900)
+        self.assertEqual([chunk.chunk_hash for chunk in chunks], [1900, 1901])
+        self.assertEqual(chunks[0].metadata["relative_path"], "facts.jsonl")
+        self.assertEqual(chunks[1].metadata["relative_path"], "runbook.md")
+        self.assertEqual(chunks[1].metadata["child_resource_type"], "md")
+        self.assertIn("runbook.md#heading=gpu", chunks[1].source_ref)
+
+    def test_skill_bundle_reads_manifest_and_readme_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "skill_bundle"
+            root.mkdir()
+            (root / "manifest.json").write_text(
+                '{"name":"bundle-debugger","description":"Bundle manifest description.","triggers":["bundle replay"],"tools":["matrixark_replay"],"version":"3"}',
+                encoding="utf-8",
+            )
+            (root / "README.md").write_text(
+                "# Bundle Debugger\n\nREADME body.\n\n## Permissions\n\n- context:retrieve\n",
+                encoding="utf-8",
+            )
+            skill = parse_skill(root, chunk_hash_base=2000)
+        self.assertEqual(skill.name, "bundle-debugger")
+        self.assertEqual(skill.description, "Bundle manifest description.")
+        self.assertEqual(skill.metadata["triggers"], ["bundle replay"])
+        self.assertEqual(skill.metadata["allowed_tools"], ["matrixark_replay"])
+        self.assertEqual(skill.metadata["permissions"], ["context:retrieve"])
+        self.assertEqual(skill.metadata["version"], "3")
+        self.assertIn("README.md", skill.metadata["bundle_files"])
+        self.assertTrue(skill.metadata["bundle_manifest"].get("manifest_uri"))
 
 if __name__ == "__main__":
     unittest.main()

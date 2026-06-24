@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """MatrixArk resource parsing helpers.
 
 The parser keeps raw bytes outside TemporalStore and converts resources into
@@ -21,6 +21,8 @@ from typing import Any
 
 
 Json = dict[str, Any]
+
+SUPPORTED_DIRECTORY_TYPES = {"md", "txt", "pdf", "html", "csv", "tsv", "json", "jsonl", "docx", "skill"}
 
 
 class ResourceParserError(RuntimeError):
@@ -166,6 +168,8 @@ def _parse_units(raw_uri: str, kind: str, text: str | None) -> list[Json]:
         path = Path(raw_uri)
         if not path.exists():
             raise ResourceParserError(f"resource path does not exist: {raw_uri}")
+        if path.is_dir():
+            return _parse_directory_units(path)
         if kind == "pdf":
             return _parse_pdf_units(path, raw_uri)
         if kind == "docx":
@@ -192,6 +196,8 @@ def _parse_units(raw_uri: str, kind: str, text: str | None) -> list[Json]:
 
 
 def _markdown_units(text: str) -> list[Json]:
+    document_metadata, text = _split_simple_front_matter(text)
+    document_title = ""
     units: list[Json] = []
     heading_stack: list[tuple[int, str]] = []
     current_heading = "document"
@@ -217,6 +223,8 @@ def _markdown_units(text: str) -> list[Json]:
                     "line_start": current_start_line,
                     "line_end": max(current_start_line, end_line),
                     "unit_kind": "markdown_section",
+                    "document_metadata": document_metadata,
+                    "document_title": document_title or (heading_stack[0][1] if heading_stack else ""),
                 }
             )
         buffer.clear()
@@ -233,6 +241,8 @@ def _markdown_units(text: str) -> list[Json]:
             current_heading = match.group(2).strip()
             heading_stack = [item for item in heading_stack if item[0] < current_level]
             heading_stack.append((current_level, current_heading))
+            if current_level == 1 and not document_title:
+                document_title = current_heading
             current_start_line = line_no
             buffer.append(line.strip())
         else:
@@ -250,9 +260,42 @@ def _markdown_units(text: str) -> list[Json]:
                 "line_start": 1,
                 "line_end": len(text.splitlines()) or 1,
                 "unit_kind": "markdown_document",
+                "document_metadata": document_metadata,
+                "document_title": document_title,
             }
         )
     return units
+
+
+def _split_simple_front_matter(text: str) -> tuple[Json, str]:
+    if not text.startswith("---"):
+        return {}, text
+    match = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", text, flags=re.DOTALL)
+    if not match:
+        return {}, text
+    metadata: Json = {}
+    current_key = ""
+    for raw_line in match.group(1).splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("-") and current_key:
+            metadata.setdefault(current_key, [])
+            if isinstance(metadata[current_key], list):
+                metadata[current_key].append(stripped[1:].strip().strip('"').strip("'"))
+            continue
+        if ":" not in raw_line:
+            continue
+        key, value = raw_line.split(":", 1)
+        current_key = key.strip()
+        value = value.strip()
+        if not value:
+            metadata[current_key] = []
+        elif value.startswith("[") and value.endswith("]"):
+            metadata[current_key] = [item.strip().strip('"').strip("'") for item in value[1:-1].split(",") if item.strip()]
+        else:
+            metadata[current_key] = value.strip('"').strip("'")
+    return metadata, match.group(2)
 
 
 def _paragraph_units(text: str, raw_uri: str) -> list[Json]:
@@ -370,6 +413,31 @@ def _binary_stub_units(raw_uri: str, kind: str) -> list[Json]:
     ]
 
 
+def _parse_directory_units(path: Path) -> list[Json]:
+    units: list[Json] = []
+    for child in sorted(item for item in path.rglob("*") if item.is_file()):
+        if any(part.startswith(".") for part in child.relative_to(path).parts):
+            continue
+        child_kind = infer_resource_type(str(child))
+        if child_kind not in SUPPORTED_DIRECTORY_TYPES:
+            continue
+        try:
+            child_units = _parse_units(str(child), child_kind, None)
+        except ResourceParserError:
+            continue
+        relative_path = str(child.relative_to(path)).replace("\\", "/")
+        for unit in child_units:
+            unit = dict(unit)
+            unit["child_uri"] = str(child)
+            unit["relative_path"] = relative_path
+            unit["child_resource_type"] = child_kind
+            unit["directory_root"] = str(path)
+            units.append(unit)
+    if not units:
+        raise ResourceParserError(f"directory resource has no supported files: {path}")
+    return units
+
+
 def _parse_pdf_units(path: Path, raw_uri: str) -> list[Json]:
     data = path.read_bytes()
     if not data.startswith(b"%PDF"):
@@ -463,6 +531,7 @@ def _split_text(text: str, max_chunk_chars: int, overlap_chars: int) -> list[str
 
 
 def _source_ref(raw_uri: str, metadata: Json) -> str:
+    base_uri = str(metadata.get("child_uri") or raw_uri)
     if "page" in metadata:
         suffix = f"page={metadata['page']}"
     elif "heading_path_slugs" in metadata:
@@ -479,4 +548,4 @@ def _source_ref(raw_uri: str, metadata: Json) -> str:
         suffix = f"chunk={metadata.get('chunk_index', 0)}"
     if metadata.get("split_index", 0):
         suffix += f"&part={metadata['split_index']}"
-    return f"{raw_uri}#{suffix}"
+    return f"{base_uri}#{suffix}"
