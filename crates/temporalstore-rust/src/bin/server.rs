@@ -3104,6 +3104,7 @@ mod tests {
         );
     }
 
+    // shared-corpus: cpp_redis_live_storage_smoke_parity_surfaces
     #[test]
     fn server_ping_routes_match_cpp_ping_rpc() {
         for (method, path) in [
@@ -3883,6 +3884,7 @@ mod tests {
         assert!(async_status.output.is_none());
     }
 
+    // shared-corpus: ingestion_kafka_offset_ledger
     #[test]
     fn server_ingest_batch_routes_execute_api_kafka_and_flink_records() {
         let dir = tempdir().unwrap();

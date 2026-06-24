@@ -115,7 +115,8 @@
       "ingestion_dead_letter_lag_report_contract",
       "benchmark_locomo_rust_full_replay_contract",
       "benchmark_longmemeval_rust_full_replay_contract",
-      "benchmark_cpp_rust_vikingmem_report_comparator"
+      "benchmark_cpp_rust_vikingmem_report_comparator",
+      "ops_scale_readiness_slo_gate"
     ],
     "required_raft_case_names": [
       "storage_data_raft_replication_gtest",
@@ -283,6 +284,15 @@
         "status": "native_adapter_contract",
         "runner_command": "compat/cpp_context_benchmark_report_adapter.h emits matrixark_vikingmem_context_benchmark_report_v1; python3 tools/compare_context_benchmark_reports.py compares Rust and C++ reports.",
         "comparison_command": "python3 tools/compare_context_benchmark_archives.py --rust-archive <rust-archive> --cpp-archive <cpp-archive>"
+      },
+      {
+        "family": "ops/scale",
+        "suites": [
+          "cpp_ops_scale_parity"
+        ],
+        "status": "temporary_static_surface_gate",
+        "blocker": "Native C++ ops/scale SLO corpus runner is not wired yet; static readiness, external chaos, rolling restart, and scale report paths remain required.",
+        "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-ops-scale-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native"
       },
       {
         "family": "codex/mcp",
@@ -5465,6 +5475,29 @@
                 "threshold_profile": "fixture"
               }
             ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "ops_scale_readiness_slo_gate",
+      "shard_id": 90,
+      "steps": [
+        {
+          "name": "readiness_scale_slo_shared_gate",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_ops_scale_parity",
+            "mode": "rust_executable_cxx_static",
+            "description": "Shared ops/scale gate for readiness filtering, external chaos plan, rolling restart, Docker/AWS SLO evidence, and scale workload replay.",
+            "required_paths": [
+              "docs/aws_existing_eks_deployment.md",
+              "docs/storage_raft_production_readiness_plan.md",
+              "tools/run_temporalstore_unified_validation.sh",
+              "tools/validate_aws_validation_log.py"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust readiness_gate_can_filter_one_service -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_readiness_workflow.py"
           }
         }
       ]

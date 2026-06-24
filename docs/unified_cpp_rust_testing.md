@@ -127,6 +127,17 @@ python3 tools/compare_unified_cpp_rust_case_reports.py \
 The comparison output includes `rust_only_misses`, `cpp_only_misses`,
 `shared_hard_failures`, `output_diffs`, and `latency_deltas`.
 
+For a migration pass on one family, run:
+
+```bash
+python3 tools/run_per_family_migration_tests.py --family "storage/cache"
+python3 tools/run_per_family_migration_tests.py --family "storage/cache" --run-rust
+```
+
+Pass `--cpp-repo /path/to/cpp/TemporalStore` when a C++ adapter or static
+surface checkout is available, and pass `--rust-report` plus `--cpp-report`
+when both sides emit `temporalstore_unified_case_report_v1`.
+
 ## Existing C++-Like Gate
 
 `tools/run_temporalstore_cpp_like_tests.sh` now invokes the unified corpus

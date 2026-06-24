@@ -95,6 +95,29 @@ It is also run by:
 python3 tools/validate_no_duplicate_tests.py
 ```
 
+## Per-Family Migration Checks
+
+Use the per-family runner when moving a test family from grandfathered
+Rust-local coverage into shared Rust/C++ coverage:
+
+```bash
+python3 tools/run_per_family_migration_tests.py --family all
+python3 tools/run_per_family_migration_tests.py --family "control plane" --run-rust
+```
+
+Each family declares:
+
+- shared corpus case IDs
+- representative Rust tests that must carry `shared-corpus: <case_id>`
+- the focused Rust test command for that family
+- C++ adapter suites or temporary static-surface gates
+- optional Rust/C++ report comparison through
+  `tools/compare_unified_cpp_rust_case_reports.py`
+
+When native C++ execution is not available, the shared corpus keeps that family
+as a temporary static surface gate with an explicit blocker and expected runner
+command.
+
 Current guard output includes both the grandfathered baseline and migration marker count:
 
 ```text

@@ -15,13 +15,13 @@ compat/unified_temporalstore_cases.json
 Current inventory:
 
 ```text
-total cases: 115
-total steps: 203
+total cases: 116
+total steps: 204
 executable shared behavior cases: 32
 executable shared behavior steps: 113
-C++ existing-test parity surface cases: 83
-C++ existing-test parity surface steps: 90
-C++ required source/test/harness paths: 133 unique paths plus 60 Raft path references
+C++ existing-test parity surface cases: 84
+C++ existing-test parity surface steps: 91
+C++ required source/test/harness paths: 164 unique paths
 required command kinds: 59
 required response kinds: 19
 ```
@@ -191,6 +191,7 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `ingestion_kafka_consumer_group_runtime_rebalance` | Rust-executable/C++-static gate for Kafka consumer-group runtime assignment, rebalance-required detection, and backpressure. |
 | `ingestion_flink_checkpoint_restart_failover` | Rust-executable/C++-static gate for Flink checkpoint lifecycle across restart/failover idempotence. |
 | `ingestion_dead_letter_lag_report_contract` | Rust-executable/C++-static gate for dead-letter export, lag metrics, committed offsets, and valid-record continuation. |
+| `ops_scale_readiness_slo_gate` | Rust-executable/C++-static gate for readiness filtering, external chaos plan, rolling restart, Docker/AWS SLO evidence, and scale workload replay. |
 | `benchmark_locomo_rust_full_replay_contract` | Shared benchmark contract for LOCOMO full Rust TemporalStore replay, deterministic/OSS reader modes, and VikingMem-style archive fields. |
 | `benchmark_longmemeval_rust_full_replay_contract` | Shared benchmark contract for LongMemEval_s full Rust TemporalStore replay, deterministic/OSS reader modes, and VikingMem-style archive fields. |
 | `benchmark_cpp_rust_vikingmem_report_comparator` | Shared benchmark contract for comparing C++ and Rust `matrixark_vikingmem_context_benchmark_report_v1` archives case-by-case. |
@@ -290,20 +291,20 @@ MatrixArk/VikingMem comparators.
 Yes. Current Rust-local attributed test count is:
 
 ```text
-Rust attributed tests: 546
-shared-corpus marked Rust tests: 17
-shared corpus cases: 79
-shared corpus steps: 167
-C++ existing-test surfaces: 133
+Rust attributed tests: 555
+shared-corpus marked Rust tests: 35
+shared corpus cases: 116
+shared corpus steps: 204
+C++ existing-test surfaces: 160
 ```
 
 The detailed reduction split and new-test guard live in
 `docs/rust_product_test_reduction_guard.md`. The current split is:
 
 ```text
-product behavior to move into shared corpus: 536
+product behavior to move into shared corpus: 533
 Rust-only internals that can remain local: 7
-existing Rust tests already marked with shared-corpus references: 14
+existing Rust tests already marked with shared-corpus references: 35
 ```
 
 The Rust-attributed tests are a migration backlog, not the desired final state. They should be

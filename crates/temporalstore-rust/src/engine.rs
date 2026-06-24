@@ -13463,6 +13463,7 @@ mod tests {
         assert_eq!(underflow.status.code, "out_of_range");
     }
 
+    // shared-corpus: feature_packed_timestamped_pages
     #[test]
     fn feature_query_respects_count_limit() {
         let engine = TemporalEngine::default();
@@ -13734,6 +13735,7 @@ mod tests {
         );
     }
 
+    // shared-corpus: sequence_cpp_feature_rows
     #[test]
     fn sequence_add_packs_many_timestamp_values_into_one_page() {
         let engine = TemporalEngine::default();
@@ -15677,6 +15679,7 @@ mod tests {
         );
     }
 
+    // shared-corpus: ips_snapshot_stat_filter_batch
     #[test]
     fn ips_load_snapshot_stat_and_filter_match_cpp_style_module_shape() {
         let engine = TemporalEngine::default();
@@ -16384,6 +16387,7 @@ mod tests {
         );
     }
 
+    // shared-corpus: risk_manager_debug_fol
     #[test]
     fn risk_cpp_family_set_query_setandget_and_manager_work() {
         let engine = TemporalEngine::default();

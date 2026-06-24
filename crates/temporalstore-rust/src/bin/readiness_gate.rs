@@ -293,6 +293,7 @@ mod tests {
             .all(|line| !line.contains("service metaserver")));
     }
 
+    // shared-corpus: ops_scale_readiness_slo_gate
     #[test]
     fn readiness_gate_can_filter_one_service() {
         let report = production_readiness_report();

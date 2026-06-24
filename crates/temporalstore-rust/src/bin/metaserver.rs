@@ -2863,6 +2863,7 @@ mod tests {
         assert_eq!(submitted.queue_len, 1);
     }
 
+    // shared-corpus: control_metaserver_scheduler_lifecycle_workflow
     #[test]
     fn metaserver_scheduler_execute_next_installs_token_then_loads_node() {
         let backend = MetaBackend::Single(SingleNodeMeta::default());
