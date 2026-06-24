@@ -149,14 +149,41 @@ matrixark_feedback
 matrixark_replay
 ```
 
+## Local Agent Defaults
+
+For local agent usage, MatrixArk can derive a safe scope without making Codex,
+Claude, Cursor, or another host agent send a full enterprise envelope.
+
+```text
+account_id = acct_local
+tenant_id  = tenant_<agent_name>
+user_id    = local OS account or MATRIXARK_LOCAL_USER_ID
+node_path  = tenant:<tenant_id> / user:<user_id> / session:<session_id>
+```
+
+Use `matrixark_admin_apply_api_key` for one-call local onboarding. It creates or
+reuses the local account, agent-derived tenant, local user, and a scoped API key.
+The response returns the raw key once, the derived `local_scope`, and the default
+ContextNode path.
+
+```json
+{
+  "agent_name": "codex",
+  "scope": {"session_id": "thread-123"}
+}
+```
+
+Single-user keys can infer that user when the caller sends only `session_id`.
+Multi-user keys still require an explicit `scope.user_id`.
+
 ## Access Modes
 
 `MATRIXARK_ACCESS_MODE=dev`
 
 - Default for local testing.
 - Missing API keys are allowed.
-- MatrixArk uses `acct_dev` and `tenant_dev` unless the caller sends account and
-  tenant ids.
+- MatrixArk uses `acct_local` and `tenant_<agent_name>` unless the caller sends
+  account and tenant ids.
 
 `MATRIXARK_ACCESS_MODE=enforced`
 
