@@ -2,7 +2,7 @@
 """Run the unified TemporalStore C++/Rust parity contract.
 
 Input API:
-  --corpus sdk/unified/temporalstore_unified_corpus.json
+  --corpus third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json
   --result-dir /tmp/temporalstore-unified-parity
 
 Output API:
@@ -10,7 +10,7 @@ Output API:
   unified_parity_report.md
 
 The same corpus drives Python schema validation, the C++ context contract, and
-Rust SDK parity awareness so test inputs, expected outputs, and command kinds do
+C++ parity awareness so test inputs, expected outputs, and command kinds do
 not drift between implementations.
 """
 
@@ -27,7 +27,7 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CORPUS = ROOT / "sdk" / "unified" / "temporalstore_unified_corpus.json"
+DEFAULT_CORPUS = Path(os.environ.get("TEMPORALSTORE_TEST_CORPUS", ROOT / "third_party" / "TemporalStoreTestCorpus" / "cases" / "unified_temporalstore_cases.json"))
 DEFAULT_RESULT_DIR = Path(os.environ.get("TEMPORALSTORE_UNIFIED_RESULT_DIR", "/tmp/temporalstore-unified-parity"))
 
 
@@ -112,7 +112,7 @@ def write_reports(report: dict[str, Any], result_dir: Path) -> None:
         "- Output is one JSON report plus this Markdown report.",
         "- Python validates schema and API shape.",
         "- C++ validates behavior against the same command sequence.",
-        "- Rust validates the same corpus, required cases, and required command kinds.",
+        "- Rust validation is run by the Rust repo against the same external corpus; this C++ wrapper can run its legacy Rust SDK stage with `--run-rust`.",
         "",
     ])
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -126,7 +126,7 @@ def main() -> int:
     parser.add_argument("--result-dir", type=Path, default=DEFAULT_RESULT_DIR)
     parser.add_argument("--validate-only", action="store_true", help="Run schema validation only.")
     parser.add_argument("--skip-cpp", action="store_true", help="Skip C++ behavior contract stage.")
-    parser.add_argument("--skip-rust", action="store_true", help="Skip Rust cargo parity stage.")
+    parser.add_argument("--run-rust", action="store_true", help="Also run the legacy Rust SDK stage from this C++ checkout.")
     args = parser.parse_args()
 
     corpus = args.corpus.resolve()
@@ -161,7 +161,7 @@ def main() -> int:
             ["cargo", "test", "--no-default-features", "--features", "proxy", "--test", "unified_corpus"],
             cwd=ROOT / "sdk" / "rust" / "temporalstore",
             env=rust_env,
-            skipped=args.validate_only or args.skip_rust,
+            skipped=args.validate_only or not args.run_rust,
         )
     )
 

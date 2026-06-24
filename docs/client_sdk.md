@@ -142,7 +142,7 @@ cluster. The legacy C++ and C customer examples are opt-in with
 `RUN_CUSTOMER_EXAMPLES=1`; shared behavior should live in the unified corpus.
 
 Enable the shared C++/Rust unified corpus tests through the same runner. The
-default corpus lives at `sdk/unified/temporalstore_unified_corpus.json`; the C++
+default corpus lives at `third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json`; the C++
 hook validates the corpus contract and the Rust proxy integration test executes
 the same SDK cases. The corpus also lists existing C++ multi-layer cache,
 storage, and RAFT gates as `existing_test` steps so they share one test

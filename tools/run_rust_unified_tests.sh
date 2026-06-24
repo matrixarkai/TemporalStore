@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CORPUS="${RUST_UNIFIED_CORPUS:-${ROOT}/sdk/unified/temporalstore_unified_corpus.json}"
+CORPUS="${RUST_UNIFIED_CORPUS:-$(python3 "${ROOT}/tools/resolve_temporalstore_test_corpus.py")}"
 RESULT_DIR="${RUST_UNIFIED_RESULT_DIR:-/tmp/temporalstore-unified-parity}"
 VALIDATE_ONLY="${RUST_UNIFIED_VALIDATE_ONLY:-0}"
 

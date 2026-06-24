@@ -1193,7 +1193,7 @@ const fallbackHealth = {
     runbook: [
       { label: "Run unified tests", value: "bash tools/run_rust_unified_tests.sh" },
       { label: "Validate corpus", value: "python3 tools/run_temporalstore_unified_tests.py --validate-only" },
-      { label: "Run C++ contract", value: "tools/run_cpp_unified_context_contract.sh sdk/unified/temporalstore_unified_corpus.json" },
+      { label: "Run C++ contract", value: "tools/run_cpp_unified_context_contract.sh third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json" },
       { label: "Refresh health", value: "python3 tools/temporalstore-monitoring-ui/render_health_from_results.py" },
       { label: "Serve locally", value: "python3 -m http.server 8080 -d tools/temporalstore-monitoring-ui" },
     ],

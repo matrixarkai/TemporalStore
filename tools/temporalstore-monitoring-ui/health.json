@@ -1330,7 +1330,7 @@
       },
       {
         "label": "Run C++ contract",
-        "value": "tools/run_cpp_unified_context_contract.sh sdk/unified/temporalstore_unified_corpus.json"
+        "value": "tools/run_cpp_unified_context_contract.sh third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json"
       },
       {
         "label": "Refresh health",

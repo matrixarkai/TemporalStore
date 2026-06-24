@@ -10,9 +10,6 @@ Consume the newer shared unified test corpus from `bjmeetsfo/TemporalStore` / ex
   1. `TEMPORALSTORE_TEST_CORPUS`
   2. `third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json`
   3. `../TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json`
-  4. `../TemporalStore/compat/unified_temporalstore_cases.json`
-  5. `../TemporalStore/sdk/unified/temporalstore_unified_corpus.json`
-  6. local fallback `sdk/unified/temporalstore_unified_corpus.json`
 - Added `tools/validate_temporalstore_test_corpus_dependency.py` to enforce external corpus wiring.
 - Added `tools/compare_unified_cpp_rust_case_reports.py`, required by the newer 127-case corpus contract.
 - Added `docs/temporalstore_test_corpus_external_repo.md` with usage instructions.
@@ -28,8 +25,7 @@ python3 tools/run_temporalstore_unified_tests.py --validate-only
 Result:
 
 ```text
-validated temporalstore-cpp-rust-context-parity schema=1 cases=11 path=/root/src/github-services/TemporalStore/sdk/unified/temporalstore_unified_corpus.json
-TemporalStore C++ unified corpus hook passed.
+validated temporalstore-unified-cpp-rust-corpus schema=1 cases=127 path=/root/src/github-services/TemporalStore/third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json
 ```
 
 External corpus validation, using the newer corpus extracted from `origin/rust-main:compat/unified_temporalstore_cases.json`:
@@ -58,4 +54,4 @@ validated TemporalStore test corpus dependency external=/tmp/TemporalStoreTestCo
 
 ## Current Transition State
 
-The external corpus has 127 cases / 226 steps. The embedded C++ fallback has 11 cases / 43 steps. Use `--allow-drift` until the local fallback is intentionally updated or the standalone corpus repository is pinned in CI.
+The external corpus has 127 cases / 226 steps and is now the canonical source. The embedded C++ fallback has been removed; initialize the submodule or set `TEMPORALSTORE_TEST_CORPUS`. The current C++ consumer report is `docs/benchmarks/unified_external_corpus_cpp_consumer_20260624/unified_parity_report.md`.

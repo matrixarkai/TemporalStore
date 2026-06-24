@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CORPUS="${1:-${ROOT}/sdk/unified/temporalstore_unified_corpus.json}"
+CORPUS="${1:-$(python3 "${ROOT}/tools/resolve_temporalstore_test_corpus.py")}"
 BUILD_DIR="${TMPDIR:-/tmp}/temporalstore_cpp_unified_$$"
 BIN="${BUILD_DIR}/cpp_unified_context_contract"
 
