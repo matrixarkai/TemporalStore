@@ -6,8 +6,18 @@ fn main() {
         return;
     }
 
+    println!("cargo:rerun-if-env-changed=TEMPORALSTORE_LIB_DIR");
+    println!("cargo:rerun-if-env-changed=TEMPORALSTORE_LIB_NAME");
+
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let default_lib_dir = manifest_dir.join("../../../output/sdk/lib");
+    let repo_root = manifest_dir.join("../../..");
+    let ubuntu_lib_dir = repo_root.join("output-ubuntu22/release/sdk/lib");
+    let default_lib_dir = repo_root.join("output/sdk/lib");
+    let default_lib_dir = if ubuntu_lib_dir.exists() {
+        ubuntu_lib_dir
+    } else {
+        default_lib_dir
+    };
     let lib_dir =
         env::var("TEMPORALSTORE_LIB_DIR").unwrap_or_else(|_| default_lib_dir.display().to_string());
     let lib_name = env::var("TEMPORALSTORE_LIB_NAME").unwrap_or_else(|_| "bcache2".to_string());
