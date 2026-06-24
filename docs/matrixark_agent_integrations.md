@@ -96,6 +96,7 @@ Generate config snippets:
 ```bash
 cd /root/src/github-services/TemporalStore
 python3 tools/matrixark_agent_config.py --client all
+python3 tools/matrixark_agent_config.py --client policy
 ```
 
 ### Codex Desktop
@@ -144,6 +145,32 @@ or shared resources may matter, and `matrixark_ingest` or
 `matrixark_feedback` after the answer when a new durable fact, correction,
 commitment, or accepted/rejected reference should be remembered.
 
+### Claude Code / Claude CLI-Style Agents
+
+Claude Code-style agents should use the same MatrixArk MCP stdio server when
+their local installation supports MCP.  The exact config location can differ by
+Claude product/version, so generate the server block and paste it into the MCP
+server registry used by that installation:
+
+```bash
+python3 tools/matrixark_agent_config.py --client claude-code
+```
+
+Claude should treat MatrixArk as remote durable context, not as a replacement
+for local file reading.  Recommended usage:
+
+```text
+before analysis:
+  call matrixark_retrieve with raw user query, user/session scope, and token budget
+
+during answer:
+  combine MatrixArk ContextPack with local files and tool output
+
+after answer:
+  call matrixark_feedback when the user confirms/corrects/accepts refs
+  call matrixark_ingest for durable tool outcomes or decisions
+```
+
 ### Cursor
 
 Use the same MCP server shape:
@@ -175,6 +202,73 @@ Cursor should keep using its local codebase context.  MatrixArk should be called
 for durable context such as historical decisions, team runbooks, project memory,
 prior debugging outcomes, approvals, resource chunks, and skills.
 
+Suggested Cursor policy text can be placed in project instructions:
+
+```text
+Use MatrixArk MCP for durable context. Before answering questions that may depend
+on prior decisions, resources, team memory, user preferences, or historical
+debugging attempts, call matrixark_retrieve. Keep using Cursor local code context
+for current files. After a final answer, tool result, accepted ref, rejected ref,
+decision, correction, or user confirmation, call matrixark_ingest or
+matrixark_feedback. On task completion, call matrixark_session_commit.
+```
+
+Cursor should pass a stable scope when possible:
+
+```json
+{
+  "account_id": "acct_customer",
+  "tenant_id": "tenant_workspace",
+  "user_id": "cursor_user_123",
+  "session_id": "cursor_workspace_thread_456",
+  "source": "cursor"
+}
+```
+
+### Generic HTTP Agent
+
+For agents that cannot use MCP, expose the same operations over HTTP.  The
+request body should stay close to the MCP tool schema:
+
+```http
+POST /v1/context/retrieve
+Content-Type: application/json
+Authorization: Bearer mk_live_...
+
+{
+  "query": "What did we decide about GPU budget approvals?",
+  "scope": {
+    "account_id": "acct_acme",
+    "tenant_id": "tenant_prod",
+    "user_id": "user_123",
+    "session_id": "thread_456"
+  },
+  "max_context_tokens": 2048,
+  "local_context": [
+    {"ref": "open-buffer:infra/budget.md", "text": "short local summary"}
+  ]
+}
+```
+
+```http
+POST /v1/context/ingest
+Content-Type: application/json
+Authorization: Bearer mk_live_...
+
+{
+  "messages": [
+    {"role": "assistant", "content": "The GPU request is approved under capex."}
+  ],
+  "scope": {
+    "account_id": "acct_acme",
+    "tenant_id": "tenant_prod",
+    "user_id": "user_123",
+    "session_id": "thread_456"
+  },
+  "metadata": {"source": "vertical_agent", "event": "after_llm"}
+}
+```
+
 ### Vertical Agents
 
 Vertical agents can integrate through MCP or HTTP.  They should send:
@@ -197,6 +291,37 @@ strongly recommended:
 If a session id is missing, MatrixArk can fall back to user scope, but
 confirmation detection and same-session batch extraction are much better when
 `session_id` is present.
+
+## What Each Agent Sends
+
+```text
+Codex:
+  MCP explicit tool calls, or hook payloads such as UserPromptSubmit, Stop,
+  PostCompact, and PostToolUse. MatrixArk wrapper normalizes raw hook payloads.
+
+Claude Desktop / Claude Code:
+  MCP explicit tool calls. Claude keeps local context and calls MatrixArk when
+  durable memory, resources, or prior decisions matter.
+
+Cursor:
+  MCP explicit tool calls from chat/agent workflows. Cursor keeps local code
+  context and sends MatrixArk raw query plus optional local refs/summaries.
+
+Vertical AI harness:
+  MCP or HTTP. Best integration can also send lifecycle hooks before LLM,
+  after LLM, tool-result, feedback, idle-timeout, and session-commit events.
+```
+
+## Agent Policy File
+
+Use this local policy doc as project/agent instruction material:
+
+```text
+docs/matrixark_agent_policy.md
+```
+
+It describes exactly when to call `matrixark_retrieve`, `matrixark_ingest`,
+`matrixark_feedback`, and `matrixark_session_commit`.
 
 ## Runtime Flow
 
@@ -303,4 +428,3 @@ per-agent default retrieval policies
 automatic local-context token budget negotiation
 enterprise SSO provisioning
 ```
-

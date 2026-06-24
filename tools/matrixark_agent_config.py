@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 
 
 DEFAULT_REPO_ROOT = "/root/src/github-services/TemporalStore"
@@ -61,6 +60,17 @@ def claude_json(repo_root: str, launcher: str) -> str:
     )
 
 
+def claude_code_json(repo_root: str, launcher: str) -> str:
+    return json.dumps(
+        {
+            "matrixark": stdio_server(repo_root, launcher),
+            "usage": "Register this stdio server with the Claude Code MCP configuration path used by your installation.",
+        },
+        indent=2,
+        sort_keys=True,
+    )
+
+
 def cursor_json(repo_root: str, launcher: str) -> str:
     return json.dumps(
         {"mcpServers": {"matrixark": stdio_server(repo_root, launcher)}},
@@ -87,11 +97,40 @@ def generic_json(repo_root: str, launcher: str) -> str:
     )
 
 
+def agent_policy_text() -> str:
+    return """# MatrixArk Agent Policy
+
+Use MatrixArk as durable remote context. Keep using your native local context
+for currently open files, active buffers, terminal output, and immediate tool
+results.
+
+Before answering, call matrixark_retrieve when the request may depend on:
+- prior decisions, approvals, incidents, debugging attempts, or user memory
+- shared resources, runbooks, skills, team/project history, or cross-device context
+- current-state facts that may have superseded older facts
+
+Pass:
+- query: the raw user request
+- scope: account_id/tenant_id plus user_id and preferably session_id
+- max_context_tokens: the remote context budget
+- local_context: short refs or summaries of current files/buffers when useful
+
+After answering or using tools, call matrixark_ingest or matrixark_feedback when
+the turn produced durable information:
+- accepted or rejected refs
+- final answer summary
+- correction, confirmation, decision, approval, commitment, or tool outcome
+
+At task/session boundaries, call matrixark_session_commit so MatrixArk can run
+one-pass batch extraction over the same-session buffer.
+"""
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--client",
-        choices=["codex", "claude", "cursor", "generic", "all"],
+        choices=["codex", "claude", "claude-code", "cursor", "generic", "policy", "all"],
         default="all",
         help="Config snippet to print.",
     )
@@ -102,9 +141,13 @@ def main() -> int:
     generators = {
         "codex": ("# Codex config.toml", codex_toml),
         "claude": ("# Claude Desktop claude_desktop_config.json", claude_json),
+        "claude-code": ("# Claude Code MCP server entry", claude_code_json),
         "cursor": ("# Cursor MCP config", cursor_json),
         "generic": ("# Generic MCP stdio config", generic_json),
     }
+    if args.client == "policy":
+        print(agent_policy_text())
+        return 0
     selected = generators if args.client == "all" else {args.client: generators[args.client]}
     blocks: list[str] = []
     for _, (title, generator) in selected.items():
