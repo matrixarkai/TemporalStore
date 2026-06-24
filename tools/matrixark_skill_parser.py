@@ -22,6 +22,12 @@ except ModuleNotFoundError:
 
 Json = dict[str, Any]
 
+VALID_SKILL_STATUS = {"active", "disabled", "deprecated"}
+VALID_SKILL_PRECEDENCE = {"low", "normal", "high", "critical"}
+VALID_OWNER_SCOPE = {"user", "team", "tenant", "account", "global"}
+SKIP_BUNDLE_DIRS = {".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv", "target", "build", "dist"}
+MAX_BUNDLE_FILES = 200
+
 
 @dataclass(frozen=True)
 class ParsedSkill:
@@ -61,13 +67,13 @@ def parse_skill(
         path = Path(raw_uri_text)
         if path.is_dir():
             bundle_root = str(path)
-            bundle_files = sorted(str(item.relative_to(path)) for item in path.rglob("*") if item.is_file())[:200]
+            bundle_files = _bundle_file_list(path)
             bundle_manifest = _load_bundle_manifest(path)
             skill_path = _find_skill_entrypoint(path)
             raw_uri_text = str(skill_path)
         else:
             skill_path = path
-        text = skill_path.read_text(encoding="utf-8")
+        text = skill_path.read_text(encoding="utf-8-sig")
     front_matter, body = _split_front_matter(text)
     front_matter = {**bundle_manifest, **front_matter}
     skill_text = body.strip() or text.strip()
@@ -75,13 +81,13 @@ def parse_skill(
     description = str(front_matter.get("description") or front_matter.get("summary") or _first_paragraph(skill_text) or name)
     triggers = _list_field(front_matter.get("triggers") or front_matter.get("activation") or front_matter.get("when")) or _extract_section_list(skill_text, "triggers") or _extract_section_list(skill_text, "when to use")
     allowed_tools = _list_field(front_matter.get("allowed_tools") or front_matter.get("tools") or front_matter.get("allowed-tools")) or _extract_section_list(skill_text, "allowed tools") or _extract_section_list(skill_text, "tools")
-    owner_scope = str(front_matter.get("owner_scope") or front_matter.get("scope") or front_matter.get("visibility") or "user")
+    owner_scope = _validated_choice(str(front_matter.get("owner_scope") or front_matter.get("scope") or front_matter.get("visibility") or "user"), VALID_OWNER_SCOPE, "user")
     examples = _list_field(front_matter.get("examples")) or _extract_section_list(skill_text, "examples")
     permissions = _list_field(front_matter.get("permissions") or front_matter.get("scopes")) or _extract_section_list(skill_text, "permissions")
     inputs = _list_field(front_matter.get("inputs") or front_matter.get("input_schema")) or _extract_section_list(skill_text, "inputs")
     outputs = _list_field(front_matter.get("outputs") or front_matter.get("output_schema")) or _extract_section_list(skill_text, "outputs")
-    precedence = str(front_matter.get("precedence") or "normal")
-    status = str(front_matter.get("status") or "active")
+    precedence = _validated_choice(str(front_matter.get("precedence") or "normal"), VALID_SKILL_PRECEDENCE, "normal")
+    status = _validated_choice(str(front_matter.get("status") or "active"), VALID_SKILL_STATUS, "active")
     version = str(front_matter.get("version") or "1")
     category = str(front_matter.get("category") or front_matter.get("domain") or "general")
     skill_hash = stable_hash(f"skill:{raw_uri_text}:{name}:{version}")
@@ -125,6 +131,23 @@ def parse_skill(
     )
 
 
+def _validated_choice(value: str, allowed: set[str], default: str) -> str:
+    normalized = value.strip().lower()
+    return normalized if normalized in allowed else default
+
+
+def _bundle_file_list(path: Path) -> list[str]:
+    files = []
+    for item in sorted(child for child in path.rglob("*") if child.is_file()):
+        relative = item.relative_to(path)
+        if any(part.startswith(".") or part in SKIP_BUNDLE_DIRS for part in relative.parts[:-1]):
+            continue
+        files.append(str(relative).replace("\\", "/"))
+        if len(files) >= MAX_BUNDLE_FILES:
+            break
+    return files
+
+
 def _find_skill_entrypoint(path: Path) -> Path:
     for candidate in ["SKILL.md", "skill.md", "README.md", "readme.md"]:
         skill_path = path / candidate
@@ -139,7 +162,7 @@ def _load_bundle_manifest(path: Path) -> Json:
         if not manifest_path.exists():
             continue
         try:
-            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+            data = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
         except Exception:
             continue
         if not isinstance(data, dict):
