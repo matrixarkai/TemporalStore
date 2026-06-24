@@ -1,0 +1,100 @@
+{
+  "artifacts": {
+    "json": "/tmp/temporalstore-rust-code-parity-20260623/unified_parity_report.json",
+    "markdown": "/tmp/temporalstore-rust-code-parity-20260623/unified_parity_report.md"
+  },
+  "input": {
+    "case_count": 11,
+    "command_kind_count": 33,
+    "command_kinds": [
+      "context_api_ingest_raw_event",
+      "context_assert_parity_gates",
+      "context_assert_summary_embeddings",
+      "context_batch_ingest_raw_events",
+      "context_build_pack",
+      "context_extract_query",
+      "context_extract_resource_events",
+      "context_ingest_feedback",
+      "context_ingest_resource",
+      "context_mark_summary_dirty",
+      "context_query_children",
+      "context_query_compression",
+      "context_query_dirty",
+      "context_query_entities",
+      "context_query_events",
+      "context_query_index",
+      "context_query_index_and",
+      "context_query_pack_audit",
+      "context_query_resource_chunks",
+      "context_query_summaries",
+      "context_retrieve",
+      "context_retrieve_with_resources",
+      "context_stream_ingest_raw_events",
+      "context_traverse_tree",
+      "context_upsert_child_ref",
+      "context_upsert_embedding",
+      "context_upsert_entity",
+      "context_upsert_node",
+      "context_upsert_summary",
+      "context_write_compression",
+      "context_write_event",
+      "context_write_index_ref",
+      "context_write_pack_audit"
+    ],
+    "context_step_count": 43,
+    "corpus": "/root/src/github-services/TemporalStore/sdk/unified/temporalstore_unified_corpus.json",
+    "name": "temporalstore-cpp-rust-context-parity",
+    "schema_version": 1
+  },
+  "stages": [
+    {
+      "command": [
+        "/usr/bin/python3",
+        "tools/run_temporalstore_unified_tests.py",
+        "--corpus",
+        "/root/src/github-services/TemporalStore/sdk/unified/temporalstore_unified_corpus.json",
+        "--validate-only"
+      ],
+      "cwd": "/root/src/github-services/TemporalStore",
+      "duration_s": 0.052,
+      "name": "python_schema",
+      "returncode": 0,
+      "status": "passed",
+      "stderr_tail": "",
+      "stdout_tail": "validated temporalstore-cpp-rust-context-parity schema=1 cases=11 path=/root/src/github-services/TemporalStore/sdk/unified/temporalstore_unified_corpus.json\nTemporalStore C++ unified corpus hook passed.\n"
+    },
+    {
+      "command": [
+        "bash",
+        "tools/run_cpp_unified_context_contract.sh",
+        "/root/src/github-services/TemporalStore/sdk/unified/temporalstore_unified_corpus.json"
+      ],
+      "cwd": "/root/src/github-services/TemporalStore",
+      "duration_s": 3.084,
+      "name": "cpp_context_contract",
+      "returncode": 0,
+      "status": "passed",
+      "stderr_tail": "",
+      "stdout_tail": "C++ unified context contract passed: cases=11 context_steps=43\n"
+    },
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--no-default-features",
+        "--features",
+        "proxy",
+        "--test",
+        "unified_corpus"
+      ],
+      "cwd": "/root/src/github-services/TemporalStore/sdk/rust/temporalstore",
+      "duration_s": 0.078,
+      "name": "rust_unified_corpus",
+      "returncode": 0,
+      "status": "passed",
+      "stderr_tail": "    Finished test [unoptimized + debuginfo] target(s) in 0.05s\n     Running tests/unified_corpus.rs (target/debug/deps/unified_corpus-681290c559ba473d)\n",
+      "stdout_tail": "\nrunning 1 test\ntest unified_corpus_proxy_contract ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n"
+    }
+  ],
+  "status": "passed"
+}
