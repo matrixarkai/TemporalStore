@@ -69,7 +69,11 @@ FAMILIES: dict[str, FamilyConfig] = {
     ),
     "Feature": FamilyConfig(
         "Feature",
-        ("feature_packed_timestamped_pages", "feature_policy_filter_aggregate_lifecycle"),
+        (
+            "feature_packed_timestamped_pages",
+            "feature_policy_filter_aggregate_lifecycle",
+            "feature_nested_proto_aggregate_semantics",
+        ),
         ("crates/temporalstore-rust/src/engine.rs::feature_query_respects_count_limit",),
         "cargo test -p temporalstore-rust feature_query_respects_count_limit -- --test-threads=1",
         (),

@@ -20,6 +20,7 @@
       "common_not_found_and_empty_reads",
       "timestamped_query_bounds",
       "feature_policy_filter_aggregate_lifecycle",
+      "feature_nested_proto_aggregate_semantics",
       "sequence_batch_filter_groups",
       "context_missing_node_semantics",
       "cpp_storage_object_page_slot_parity_surfaces",
@@ -2722,6 +2723,247 @@
           "expect": {
             "kind": "feature_points",
             "points": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "feature_nested_proto_aggregate_semantics",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "feature_append_nested_proto_numeric_points",
+          "command": {
+            "kind": "feature_append",
+            "key": "unified:feature:nested",
+            "points": [
+              {
+                "timestamp_ms": 8300,
+                "value": [
+                  49,
+                  50
+                ]
+              },
+              {
+                "timestamp_ms": 8310,
+                "value": [
+                  45,
+                  51
+                ]
+              },
+              {
+                "timestamp_ms": 8320,
+                "value": [
+                  57
+                ]
+              }
+            ]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "feature_nested_sum",
+          "command": {
+            "kind": "feature_agg_query",
+            "key": "unified:feature:nested",
+            "start_ms": 8300,
+            "end_ms": 8320,
+            "aggregator": "sum",
+            "count": null
+          },
+          "expect": {
+            "kind": "aggregate",
+            "value": 18
+          }
+        },
+        {
+          "name": "feature_nested_average",
+          "command": {
+            "kind": "feature_agg_query",
+            "key": "unified:feature:nested",
+            "start_ms": 8300,
+            "end_ms": 8320,
+            "aggregator": "avg",
+            "count": null
+          },
+          "expect": {
+            "kind": "aggregate",
+            "value": 6
+          }
+        },
+        {
+          "name": "feature_nested_min",
+          "command": {
+            "kind": "feature_agg_query",
+            "key": "unified:feature:nested",
+            "start_ms": 8300,
+            "end_ms": 8320,
+            "aggregator": "min",
+            "count": null
+          },
+          "expect": {
+            "kind": "aggregate",
+            "value": -3
+          }
+        },
+        {
+          "name": "feature_nested_max",
+          "command": {
+            "kind": "feature_agg_query",
+            "key": "unified:feature:nested",
+            "start_ms": 8300,
+            "end_ms": 8320,
+            "aggregator": "max",
+            "count": null
+          },
+          "expect": {
+            "kind": "aggregate",
+            "value": 12
+          }
+        },
+        {
+          "name": "feature_nested_count",
+          "command": {
+            "kind": "feature_agg_query",
+            "key": "unified:feature:nested",
+            "start_ms": 8300,
+            "end_ms": 8320,
+            "aggregator": "count",
+            "count": null
+          },
+          "expect": {
+            "kind": "aggregate",
+            "value": 3
+          }
+        },
+        {
+          "name": "feature_nested_roundtrip_payloads",
+          "command": {
+            "kind": "feature_query",
+            "key": "unified:feature:nested",
+            "start_ms": 8300,
+            "end_ms": 8320,
+            "count": null
+          },
+          "expect": {
+            "kind": "feature_points",
+            "points": [
+              {
+                "timestamp_ms": 8300,
+                "value": [
+                  49,
+                  50
+                ]
+              },
+              {
+                "timestamp_ms": 8310,
+                "value": [
+                  45,
+                  51
+                ]
+              },
+              {
+                "timestamp_ms": 8320,
+                "value": [
+                  57
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "feature_cpp_nested_row_filter_append",
+          "command": {
+            "kind": "feature_append",
+            "key": "unified:feature:nested:rows",
+            "points": [
+              {
+                "timestamp_ms": 8400,
+                "value": [
+                  8,
+                  91,
+                  16,
+                  2,
+                  24,
+                  11,
+                  32,
+                  4,
+                  42,
+                  3,
+                  101,
+                  117,
+                  1
+                ]
+              },
+              {
+                "timestamp_ms": 8410,
+                "value": [
+                  8,
+                  92,
+                  16,
+                  4,
+                  24,
+                  99,
+                  32,
+                  4,
+                  42,
+                  3,
+                  101,
+                  117,
+                  2
+                ]
+              }
+            ]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "feature_cpp_nested_row_filter_query",
+          "command": {
+            "kind": "feature_query_filtered",
+            "key": "unified:feature:nested:rows",
+            "start_ms": 8400,
+            "end_ms": 8410,
+            "count": 10,
+            "filters": [
+              {
+                "field": "action_type",
+                "op": "greater_or_equal",
+                "value": 4
+              },
+              {
+                "field": "duration",
+                "op": "greater_than",
+                "value": 50
+              }
+            ]
+          },
+          "expect": {
+            "kind": "feature_points",
+            "points": [
+              {
+                "timestamp_ms": 8410,
+                "value": [
+                  8,
+                  92,
+                  16,
+                  4,
+                  24,
+                  99,
+                  32,
+                  4,
+                  42,
+                  3,
+                  101,
+                  117,
+                  2
+                ]
+              }
+            ]
           }
         }
       ]

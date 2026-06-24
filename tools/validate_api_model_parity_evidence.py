@@ -68,6 +68,7 @@ AREAS: tuple[ApiModelArea, ...] = (
             "sequence_cpp_feature_rows",
             "timestamped_query_bounds",
             "feature_policy_filter_aggregate_lifecycle",
+            "feature_nested_proto_aggregate_semantics",
             "sequence_batch_filter_groups",
             "mixed_model_restart_persistence",
         ),

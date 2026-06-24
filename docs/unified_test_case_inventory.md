@@ -86,6 +86,7 @@ C++ execution should progressively cover every executable case.
 | `common_not_found_and_empty_reads` | Missing string/hash/exists reads and C++ `CommonExpire` not-found status. |
 | `timestamped_query_bounds` | Feature and Sequence count limits and empty timestamp windows. |
 | `feature_policy_filter_aggregate_lifecycle` | Feature append policy, aggregate, replace/delete, C++ row filtering, and scan-bound count behavior. |
+| `feature_nested_proto_aggregate_semantics` | Feature nested/proto-shaped payload roundtrip, C++ row filtering, and sum/avg/min/max/count aggregate semantics. |
 | `sequence_batch_filter_groups` | Sequence unsorted writes, filtered ordered reads, batch groups, and missing sequence groups. |
 | `context_missing_node_semantics` | Missing Context node returns a stable object key and `null` node. |
 | `storage_dump_load_recovery` | Rust executes the C++ migration storage corpus through slot dump/load, restart, recovery, and logical reads. |

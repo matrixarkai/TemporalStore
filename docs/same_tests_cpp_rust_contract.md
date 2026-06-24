@@ -63,6 +63,8 @@ The shared cases are:
 - `timestamped_query_bounds`: Feature and Sequence count limits and empty timestamp windows.
 - `feature_policy_filter_aggregate_lifecycle`: Feature append policy, aggregate query, replace,
   delete, C++ feature-row filter, and scan-bound count semantics.
+- `feature_nested_proto_aggregate_semantics`: Feature nested/proto-shaped payload roundtrip,
+  C++ row filtering, and sum/avg/min/max/count aggregate semantics.
 - `sequence_batch_filter_groups`: Sequence unsorted insert, filtered ordered query, scan-bound
   count semantics, batch query groups, and missing sequence groups.
 - `context_missing_node_semantics`: missing Context node returns a stable object key with `null`
