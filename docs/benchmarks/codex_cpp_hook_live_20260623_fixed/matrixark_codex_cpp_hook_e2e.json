@@ -1,0 +1,1713 @@
+{
+  "account_id": "acct_codex",
+  "backend": "temporalstore-direct",
+  "events": [
+    {
+      "event": "UserPromptSubmit",
+      "payload": {
+        "prompt": "Remember that Alice approved the GPU budget for Project Orion."
+      },
+      "stderr": "",
+      "stdout": {
+        "event": "UserPromptSubmit",
+        "event_log": "/tmp/matrixark-codex-hook.jsonl",
+        "ingest": {
+          "access": {
+            "account_id": "acct_codex",
+            "api_key_id": "dev",
+            "mode": "dev",
+            "role": "dev_admin",
+            "tenant_id": "tenant_codex"
+          },
+          "auto_batch_extract_result": null,
+          "classification": "NEW_EVENT",
+          "event_id_hash": 3417608880605332495,
+          "extraction_mode": "matrixark_internal",
+          "hook_captured": true,
+          "idle_commit_result": null,
+          "node_hash": 7582193041685219331,
+          "node_materialization": {
+            "child_refs_created": 1,
+            "node_hashes": [
+              8011850765587569801,
+              7582193041685219331
+            ],
+            "nodes_created": 2
+          },
+          "prior_context": "",
+          "prior_message_count": 0,
+          "prior_refs": [],
+          "prior_summary_count": 0,
+          "quality_warning": "",
+          "session_buffer": {
+            "auto_batch_extract": true,
+            "buffer_key": [
+              "acct_codex",
+              "tenant_codex",
+              "root",
+              "codex-session-1782260669"
+            ],
+            "pending_event_count": 1,
+            "threshold_messages": 4
+          },
+          "status": "accepted",
+          "summary_refresh": {
+            "async_required": true,
+            "dirty_hashes": [
+              3956819527172031886,
+              4969313980781093929
+            ],
+            "refresh_result": null,
+            "status": "dirty_marked"
+          }
+        },
+        "lifecycle_stage": {
+          "after_llm_ingest_only": false,
+          "auto_threshold_commit": false,
+          "before_llm_retrieve": true,
+          "hook_boundary_commit": false,
+          "idle_timeout_commit": false
+        },
+        "retrieve": {
+          "context_pack_id": "1627483852100760531",
+          "selected_ref_count": 1,
+          "used_context_tokens": 11
+        },
+        "session_commit": {},
+        "session_id": "codex-session-1782260669",
+        "session_id_source": "explicit",
+        "status": "ok"
+      }
+    },
+    {
+      "event": "UserPromptSubmit",
+      "payload": {
+        "prompt": "Remember that I prefer Rust for low latency context systems."
+      },
+      "stderr": "",
+      "stdout": {
+        "event": "UserPromptSubmit",
+        "event_log": "/tmp/matrixark-codex-hook.jsonl",
+        "ingest": {
+          "access": {
+            "account_id": "acct_codex",
+            "api_key_id": "dev",
+            "mode": "dev",
+            "role": "dev_admin",
+            "tenant_id": "tenant_codex"
+          },
+          "auto_batch_extract_result": null,
+          "classification": "NEW_EVENT",
+          "event_id_hash": 5663194309296841600,
+          "extraction_mode": "matrixark_internal",
+          "hook_captured": true,
+          "idle_commit_result": null,
+          "node_hash": 7582193041685219331,
+          "node_materialization": {
+            "child_refs_created": 0,
+            "node_hashes": [
+              8011850765587569801,
+              7582193041685219331
+            ],
+            "nodes_created": 0
+          },
+          "prior_context": "session",
+          "prior_message_count": 1,
+          "prior_refs": [
+            {
+              "node_hash": 7582193041685219331,
+              "ref_hash": 2507385746169927860,
+              "ref_type": "session_summary"
+            },
+            {
+              "node_hash": 7582193041685219331,
+              "ref_hash": 7582193041685219331,
+              "ref_type": "summary"
+            },
+            {
+              "node_hash": 7582193041685219331,
+              "ref_hash": 3417608880605332495,
+              "ref_type": "event"
+            }
+          ],
+          "prior_summary_count": 2,
+          "quality_warning": "",
+          "session_buffer": {
+            "auto_batch_extract": true,
+            "buffer_key": [
+              "acct_codex",
+              "tenant_codex",
+              "root",
+              "codex-session-1782260669"
+            ],
+            "pending_event_count": 2,
+            "threshold_messages": 4
+          },
+          "status": "accepted",
+          "summary_refresh": {
+            "async_required": true,
+            "dirty_hashes": [
+              5445490738270660304,
+              7800329470555117776
+            ],
+            "refresh_result": null,
+            "status": "dirty_marked"
+          }
+        },
+        "lifecycle_stage": {
+          "after_llm_ingest_only": false,
+          "auto_threshold_commit": false,
+          "before_llm_retrieve": true,
+          "hook_boundary_commit": false,
+          "idle_timeout_commit": false
+        },
+        "retrieve": {
+          "context_pack_id": "5360485596211310294",
+          "selected_ref_count": 1,
+          "used_context_tokens": 11
+        },
+        "session_commit": {},
+        "session_id": "codex-session-1782260669",
+        "session_id_source": "explicit",
+        "status": "ok"
+      }
+    },
+    {
+      "event": "UserPromptSubmit",
+      "payload": {
+        "prompt": "I moved to Austin for the MatrixArk benchmark rollout."
+      },
+      "stderr": "",
+      "stdout": {
+        "event": "UserPromptSubmit",
+        "event_log": "/tmp/matrixark-codex-hook.jsonl",
+        "ingest": {
+          "access": {
+            "account_id": "acct_codex",
+            "api_key_id": "dev",
+            "mode": "dev",
+            "role": "dev_admin",
+            "tenant_id": "tenant_codex"
+          },
+          "auto_batch_extract_result": null,
+          "classification": "NEW_EVENT",
+          "event_id_hash": 7893499585179976280,
+          "extraction_mode": "matrixark_internal",
+          "hook_captured": true,
+          "idle_commit_result": null,
+          "node_hash": 7582193041685219331,
+          "node_materialization": {
+            "child_refs_created": 0,
+            "node_hashes": [
+              8011850765587569801,
+              7582193041685219331
+            ],
+            "nodes_created": 0
+          },
+          "prior_context": "session",
+          "prior_message_count": 2,
+          "prior_refs": [
+            {
+              "node_hash": 7582193041685219331,
+              "ref_hash": 2507385746169927860,
+              "ref_type": "session_summary"
+            },
+            {
+              "node_hash": 7582193041685219331,
+              "ref_hash": 7582193041685219331,
+              "ref_type": "summary"
+            },
+            {
+              "node_hash": 7582193041685219331,
+              "ref_hash": 5663194309296841600,
+              "ref_type": "event"
+            },
+            {
+              "node_hash": 7582193041685219331,
+              "ref_hash": 3417608880605332495,
+              "ref_type": "event"
+            }
+          ],
+          "prior_summary_count": 2,
+          "quality_warning": "",
+          "session_buffer": {
+            "auto_batch_extract": true,
+            "buffer_key": [
+              "acct_codex",
+              "tenant_codex",
+              "root",
+              "codex-session-1782260669"
+            ],
+            "pending_event_count": 3,
+            "threshold_messages": 4
+          },
+          "status": "accepted",
+          "summary_refresh": {
+            "async_required": true,
+            "dirty_hashes": [
+              7809333021578956124,
+              7813668294547794965
+            ],
+            "refresh_result": null,
+            "status": "dirty_marked"
+          }
+        },
+        "lifecycle_stage": {
+          "after_llm_ingest_only": false,
+          "auto_threshold_commit": false,
+          "before_llm_retrieve": true,
+          "hook_boundary_commit": false,
+          "idle_timeout_commit": false
+        },
+        "retrieve": {
+          "context_pack_id": "4622719507868888370",
+          "selected_ref_count": 0,
+          "used_context_tokens": 0
+        },
+        "session_commit": {},
+        "session_id": "codex-session-1782260669",
+        "session_id_source": "explicit",
+        "status": "ok"
+      }
+    },
+    {
+      "event": "UserPromptSubmit",
+      "payload": {
+        "prompt": "My role is AI memory platform owner."
+      },
+      "stderr": "",
+      "stdout": {
+        "event": "UserPromptSubmit",
+        "event_log": "/tmp/matrixark-codex-hook.jsonl",
+        "ingest": {
+          "access": {
+            "account_id": "acct_codex",
+            "api_key_id": "dev",
+            "mode": "dev",
+            "role": "dev_admin",
+            "tenant_id": "tenant_codex"
+          },
+          "auto_batch_extract_result": {
+            "batch_id_hash": 1135903115585767696,
+            "classification": "BATCH_MEMORY",
+            "commit_id_hash": 55835986094548660,
+            "commit_reason": "threshold",
+            "committed_event_count": 4,
+            "entities_written": 4,
+            "events_written": 0,
+            "idle_elapsed_ms": 0,
+            "idle_timeout_ms": null,
+            "indexes_written": 8,
+            "message_count": 4,
+            "mode": "matrixark_one_pass_schema",
+            "node_hash": 7582193041685219331,
+            "node_materialization": {
+              "child_refs_created": 0,
+              "node_hashes": [
+                8011850765587569801,
+                7582193041685219331
+              ],
+              "nodes_created": 0
+            },
+            "one_pass": true,
+            "pending_event_count": 4,
+            "raw_events_duplicated": false,
+            "segment_provider": {
+              "execution_mode": "rules",
+              "fallback_used": false,
+              "model": "matrixark-local-segmentation-v1",
+              "provider": "deterministic"
+            },
+            "segments_written": 4,
+            "source_event_count": 4,
+            "source_event_ids": [
+              3417608880605332495,
+              5663194309296841600,
+              7893499585179976280,
+              4622248537735198683
+            ],
+            "status": "committed",
+            "summary_hash": 1462335991929090890,
+            "summary_refresh": {
+              "async_required": true,
+              "dirty_hashes": [
+                1545817885661820393,
+                4700029055639696184
+              ],
+              "refresh_result": null,
+              "status": "dirty_marked"
+            },
+            "threshold_messages": 4,
+            "token_count_estimate": 40,
+            "trigger_policy": "threshold"
+          },
+          "classification": "NEW_EVENT",
+          "event_id_hash": 4622248537735198683,
+          "extraction_mode": "matrixark_internal",
+          "hook_captured": true,
+          "idle_commit_result": null,
+          "node_hash": 7582193041685219331,
+          "node_materialization": {
+            "child_refs_created": 0,
+            "node_hashes": [
+              8011850765587569801,
+              7582193041685219331
+            ],
+            "nodes_created": 0
+          },
+          "prior_context": "session",
+          "prior_message_count": 3,
+          "prior_refs": [
+            {
+              "node_hash": 7582193041685219331,
+              "ref_hash": 2507385746169927860,
+              "ref_type": "session_summary"
+            },
+            {
+              "node_hash": 7582193041685219331,
+              "ref_hash": 7582193041685219331,
+              "ref_type": "summary"
+            },
+            {
+              "node_hash": 7582193041685219331,
+              "ref_hash": 7893499585179976280,
+              "ref_type": "event"
+            },
+            {
+              "node_hash": 7582193041685219331,
+              "ref_hash": 5663194309296841600,
+              "ref_type": "event"
+            },
+            {
+              "node_hash": 7582193041685219331,
+              "ref_hash": 3417608880605332495,
+              "ref_type": "event"
+            }
+          ],
+          "prior_summary_count": 2,
+          "quality_warning": "",
+          "session_buffer": {
+            "auto_batch_extract": true,
+            "buffer_key": [
+              "acct_codex",
+              "tenant_codex",
+              "root",
+              "codex-session-1782260669"
+            ],
+            "pending_event_count": 4,
+            "threshold_messages": 4
+          },
+          "status": "accepted",
+          "summary_refresh": {
+            "async_required": true,
+            "dirty_hashes": [
+              8285499274309745827,
+              399569540387292665
+            ],
+            "refresh_result": null,
+            "status": "dirty_marked"
+          }
+        },
+        "lifecycle_stage": {
+          "after_llm_ingest_only": false,
+          "auto_threshold_commit": true,
+          "before_llm_retrieve": true,
+          "hook_boundary_commit": false,
+          "idle_timeout_commit": false
+        },
+        "retrieve": {
+          "context_pack_id": "8167714015643765112",
+          "selected_ref_count": 5,
+          "used_context_tokens": 46
+        },
+        "session_commit": {},
+        "session_id": "codex-session-1782260669",
+        "session_id_source": "explicit",
+        "status": "ok"
+      }
+    },
+    {
+      "event": "Stop",
+      "payload": {
+        "message": "Codex turn completed; commit the useful session memory."
+      },
+      "stderr": "",
+      "stdout": {
+        "event": "Stop",
+        "event_log": "/tmp/matrixark-codex-hook.jsonl",
+        "ingest": {
+          "access": {
+            "account_id": "acct_codex",
+            "api_key_id": "dev",
+            "mode": "dev",
+            "role": "dev_admin",
+            "tenant_id": "tenant_codex"
+          },
+          "auto_batch_extract_result": null,
+          "classification": "NEW_EVENT",
+          "event_id_hash": 2244840015158891270,
+          "extraction_mode": "matrixark_internal",
+          "hook_captured": true,
+          "idle_commit_result": null,
+          "node_hash": 7582193041685219331,
+          "node_materialization": {
+            "child_refs_created": 0,
+            "node_hashes": [
+              8011850765587569801,
+              7582193041685219331
+            ],
+            "nodes_created": 0
+          },
+          "prior_context": "session",
+          "prior_message_count": 4,
+          "prior_refs": [
+            {
+              "node_hash": 7582193041685219331,
+              "ref_hash": 2507385746169927860,
+              "ref_type": "session_summary"
+            },
+            {
+              "node_hash": 7582193041685219331,
+              "ref_hash": 7582193041685219331,
+              "ref_type": "summary"
+            },
+            {
+              "node_hash": 7582193041685219331,
+              "ref_hash": 4622248537735198683,
+              "ref_type": "event"
+            },
+            {
+              "node_hash": 7582193041685219331,
+              "ref_hash": 7893499585179976280,
+              "ref_type": "event"
+            },
+            {
+              "node_hash": 7582193041685219331,
+              "ref_hash": 5663194309296841600,
+              "ref_type": "event"
+            },
+            {
+              "node_hash": 7582193041685219331,
+              "ref_hash": 3417608880605332495,
+              "ref_type": "event"
+            }
+          ],
+          "prior_summary_count": 2,
+          "quality_warning": "",
+          "session_buffer": {
+            "auto_batch_extract": false,
+            "buffer_key": [
+              "acct_codex",
+              "tenant_codex",
+              "root",
+              "codex-session-1782260669"
+            ],
+            "pending_event_count": 1,
+            "threshold_messages": 20
+          },
+          "status": "accepted",
+          "summary_refresh": {
+            "async_required": true,
+            "dirty_hashes": [
+              1074676900110133249,
+              3855667497510593268
+            ],
+            "refresh_result": null,
+            "status": "dirty_marked"
+          }
+        },
+        "lifecycle_stage": {
+          "after_llm_ingest_only": false,
+          "auto_threshold_commit": false,
+          "before_llm_retrieve": false,
+          "hook_boundary_commit": true,
+          "idle_timeout_commit": false
+        },
+        "retrieve": {
+          "context_pack_id": null,
+          "selected_ref_count": 0,
+          "used_context_tokens": 0
+        },
+        "session_commit": {
+          "commit_id_hash": 8898898695867981001,
+          "commit_reason": "hook_boundary",
+          "entities_written": 1,
+          "raw_events_duplicated": false,
+          "segments_written": 0,
+          "source_event_count": 1,
+          "status": "committed",
+          "trigger_policy": "force"
+        },
+        "session_id": "codex-session-1782260669",
+        "session_id_source": "explicit",
+        "status": "ok"
+      }
+    },
+    {
+      "event": "UserPromptSubmit",
+      "payload": {
+        "prompt": "What was approved and what do I prefer now?"
+      },
+      "stderr": "",
+      "stdout": {
+        "event": "UserPromptSubmit",
+        "event_log": "/tmp/matrixark-codex-hook.jsonl",
+        "ingest": {
+          "access": {
+            "account_id": "acct_codex",
+            "api_key_id": "dev",
+            "mode": "dev",
+            "role": "dev_admin",
+            "tenant_id": "tenant_codex"
+          },
+          "auto_batch_extract_result": null,
+          "classification": "NEW_EVENT",
+          "event_id_hash": 1917488661831587815,
+          "extraction_mode": "matrixark_internal",
+          "hook_captured": true,
+          "idle_commit_result": null,
+          "node_hash": 7582193041685219331,
+          "node_materialization": {
+            "child_refs_created": 0,
+            "node_hashes": [
+              8011850765587569801,
+              7582193041685219331
+            ],
+            "nodes_created": 0
+          },
+          "prior_context": "session",
+          "prior_message_count": 5,
+          "prior_refs": [
+            {
+              "node_hash": 7582193041685219331,
+              "ref_hash": 2507385746169927860,
+              "ref_type": "session_summary"
+            },
+            {
+              "node_hash": 7582193041685219331,
+              "ref_hash": 7582193041685219331,
+              "ref_type": "summary"
+            },
+            {
+              "node_hash": 7582193041685219331,
+              "ref_hash": 2244840015158891270,
+              "ref_type": "event"
+            },
+            {
+              "node_hash": 7582193041685219331,
+              "ref_hash": 4622248537735198683,
+              "ref_type": "event"
+            },
+            {
+              "node_hash": 7582193041685219331,
+              "ref_hash": 7893499585179976280,
+              "ref_type": "event"
+            },
+            {
+              "node_hash": 7582193041685219331,
+              "ref_hash": 5663194309296841600,
+              "ref_type": "event"
+            },
+            {
+              "node_hash": 7582193041685219331,
+              "ref_hash": 3417608880605332495,
+              "ref_type": "event"
+            }
+          ],
+          "prior_summary_count": 2,
+          "quality_warning": "",
+          "session_buffer": {
+            "auto_batch_extract": true,
+            "buffer_key": [
+              "acct_codex",
+              "tenant_codex",
+              "root",
+              "codex-session-1782260669"
+            ],
+            "pending_event_count": 1,
+            "threshold_messages": 4
+          },
+          "status": "accepted",
+          "summary_refresh": {
+            "async_required": true,
+            "dirty_hashes": [
+              5642113872349202017,
+              6718220537019486943
+            ],
+            "refresh_result": null,
+            "status": "dirty_marked"
+          }
+        },
+        "lifecycle_stage": {
+          "after_llm_ingest_only": false,
+          "auto_threshold_commit": false,
+          "before_llm_retrieve": true,
+          "hook_boundary_commit": false,
+          "idle_timeout_commit": false
+        },
+        "retrieve": {
+          "context_pack_id": "7164377999878262799",
+          "selected_ref_count": 9,
+          "used_context_tokens": 91
+        },
+        "session_commit": {},
+        "session_id": "codex-session-1782260669",
+        "session_id_source": "explicit",
+        "status": "ok"
+      }
+    }
+  ],
+  "final_context_pack_id": "7164377999878262799",
+  "final_selected_ref_count": 9,
+  "record_count": 65,
+  "record_counts": {
+    "context_batch_commit": 2,
+    "context_child_ref": 1,
+    "context_embedding": 12,
+    "context_event": 6,
+    "context_node": 2,
+    "context_summary": 6,
+    "context_summary_dirty": 16,
+    "matrixark_audit_log": 12,
+    "session_buffer_event": 6,
+    "unknown": 2
+  },
+  "sample_records": [
+    {
+      "created_at_ms": 1782260669315,
+      "depth": 1,
+      "node_hash": 8011850765587569801,
+      "node_name": "user:root",
+      "node_path": [
+        "user:root"
+      ],
+      "parent_hash": 0,
+      "record_type": "context_node",
+      "scope": {
+        "account_id": "acct_codex",
+        "project": "local",
+        "session_hash": 756197502450566050,
+        "session_id": "codex-session-1782260669",
+        "team": "codex",
+        "tenant_hash": 3196228001501567070,
+        "tenant_id": "tenant_codex",
+        "user_hash": 4074418174658082087,
+        "user_id": "root"
+      },
+      "status": "active",
+      "updated_at_ms": 1782260669315
+    },
+    {
+      "created_at_ms": 1782260669315,
+      "depth": 2,
+      "node_hash": 7582193041685219331,
+      "node_name": "session:codex-session-1782260669",
+      "node_path": [
+        "user:root",
+        "session:codex-session-1782260669"
+      ],
+      "parent_hash": 8011850765587569801,
+      "record_type": "context_node",
+      "scope": {
+        "account_id": "acct_codex",
+        "project": "local",
+        "session_hash": 756197502450566050,
+        "session_id": "codex-session-1782260669",
+        "team": "codex",
+        "tenant_hash": 3196228001501567070,
+        "tenant_id": "tenant_codex",
+        "user_hash": 4074418174658082087,
+        "user_id": "root"
+      },
+      "status": "active",
+      "updated_at_ms": 1782260669315
+    },
+    {
+      "child_hash": 7582193041685219331,
+      "child_name": "session:codex-session-1782260669",
+      "child_path": [
+        "user:root",
+        "session:codex-session-1782260669"
+      ],
+      "child_ref_hash": 6952436033959983121,
+      "created_at_ms": 1782260669315,
+      "depth": 2,
+      "parent_hash": 8011850765587569801,
+      "parent_path": [
+        "user:root"
+      ],
+      "record_type": "context_child_ref",
+      "scope": {
+        "account_id": "acct_codex",
+        "project": "local",
+        "session_hash": 756197502450566050,
+        "session_id": "codex-session-1782260669",
+        "team": "codex",
+        "tenant_hash": 3196228001501567070,
+        "tenant_id": "tenant_codex",
+        "user_hash": 4074418174658082087,
+        "user_id": "root"
+      },
+      "status": "active",
+      "updated_at_ms": 1782260669315
+    },
+    {
+      "context_node_key": [
+        "root",
+        "codex-session-1782260669",
+        "codex",
+        "local"
+      ],
+      "node_hash": 7582193041685219331,
+      "node_path": [
+        "user:root",
+        "session:codex-session-1782260669"
+      ],
+      "record_type": "context_summary",
+      "scope": {
+        "account_id": "acct_codex",
+        "project": "local",
+        "session_hash": 756197502450566050,
+        "session_id": "codex-session-1782260669",
+        "team": "codex",
+        "tenant_hash": 3196228001501567070,
+        "tenant_id": "tenant_codex",
+        "user_hash": 4074418174658082087,
+        "user_id": "root"
+      },
+      "source_event_hash": 3417608880605332495,
+      "summary_hash": 2507385746169927860,
+      "summary_text": "user: Remember that Alice approved the GPU budget for Project Orion.",
+      "summary_type": "session_l0",
+      "updated_at_ms": 1782260669315
+    },
+    {
+      "dim": 32,
+      "embedding_type": "session_l0",
+      "model": "matrixark-local-token-hash-v1",
+      "node_hash": 7582193041685219331,
+      "node_path": [
+        "user:root",
+        "session:codex-session-1782260669"
+      ],
+      "record_type": "context_embedding",
+      "ref_hash": 2507385746169927860,
+      "ref_type": "summary",
+      "scope": {
+        "account_id": "acct_codex",
+        "project": "local",
+        "session_hash": 756197502450566050,
+        "session_id": "codex-session-1782260669",
+        "team": "codex",
+        "tenant_hash": 3196228001501567070,
+        "tenant_id": "tenant_codex",
+        "user_hash": 4074418174658082087,
+        "user_id": "root"
+      },
+      "updated_at_ms": 1782260669315,
+      "vector": [
+        0.0,
+        0.0,
+        0.0,
+        -0.27735,
+        0.5547,
+        0.0,
+        -0.27735,
+        0.0,
+        0.0,
+        -0.27735,
+        -0.27735,
+        0.27735,
+        0.0,
+        0.0,
+        -0.27735,
+        0.0,
+        0.27735,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        -0.27735,
+        0.0,
+        0.0,
+        0.0,
+        -0.27735,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "dim": 32,
+      "embedding_type": "event_text",
+      "model": "matrixark-local-token-hash-v1",
+      "node_hash": 7582193041685219331,
+      "node_path": [
+        "user:root",
+        "session:codex-session-1782260669"
+      ],
+      "record_type": "context_embedding",
+      "ref_hash": 3417608880605332495,
+      "ref_type": "event",
+      "scope": {
+        "account_id": "acct_codex",
+        "project": "local",
+        "session_hash": 756197502450566050,
+        "session_id": "codex-session-1782260669",
+        "team": "codex",
+        "tenant_hash": 3196228001501567070,
+        "tenant_id": "tenant_codex",
+        "user_hash": 4074418174658082087,
+        "user_id": "root"
+      },
+      "updated_at_ms": 1782260669315,
+      "vector": [
+        0.0,
+        0.0,
+        0.0,
+        -0.27735,
+        0.5547,
+        0.0,
+        -0.27735,
+        0.0,
+        0.0,
+        -0.27735,
+        -0.27735,
+        0.27735,
+        0.0,
+        0.0,
+        -0.27735,
+        0.0,
+        0.27735,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        -0.27735,
+        0.0,
+        0.0,
+        0.0,
+        -0.27735,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "agent_hook": {
+        "auto_captured": true,
+        "hook_id": "UserPromptSubmit:1782260669315",
+        "hook_type": "before_llm",
+        "idempotency_key": "",
+        "observed_at_ms": 1782260669315,
+        "session_id_source": "explicit",
+        "source": "codex",
+        "trigger": "UserPromptSubmit"
+      },
+      "envelope": {
+        "ingestion_time_ms": 1782260669315,
+        "kind": "message",
+        "messages": [
+          {
+            "content": "Remember that Alice approved the GPU budget for Project Orion.",
+            "role": "user"
+          }
+        ],
+        "metadata": {
+          "codex_event": "UserPromptSubmit",
+          "codex_session_id_source": "explicit",
+          "compacted_session_summary": false,
+          "raw_hook_payload": {
+            "prompt": "Remember that Alice approved the GPU budget for Project Orion."
+          },
+          "source": "codex_hook"
+        },
+        "scope": {
+          "account_id": "acct_codex",
+          "project": "local",
+          "session_hash": 756197502450566050,
+          "session_id": "codex-session-1782260669",
+          "team": "codex",
+          "tenant_hash": 3196228001501567070,
+          "tenant_id": "tenant_codex",
+          "user_hash": 4074418174658082087,
+          "user_id": "root"
+        },
+        "segment_provider": "deterministic",
+        "understanding_provider": "rules"
+      },
+      "event_id_hash": 3417608880605332495,
+      "internal_extraction": {
+        "classification": "NEW_EVENT",
+        "mode": "matrixark_internal",
+        "prior_context": "",
+        "prior_message_count": 0,
+        "prior_refs": [],
+        "prior_summary_count": 0,
+        "quality_warning": "",
+        "status": "observed"
+      },
+      "node_hash": 7582193041685219331,
+      "node_path": [
+        "user:root",
+        "session:codex-session-1782260669"
+      ],
+      "prior_context": {
+        "char_count": 0,
+        "level": "",
+        "limit": 8,
+        "messages": [],
+        "refs": [],
+        "summaries": []
+      },
+      "record_type": "context_event",
+      "summary_embedding": [
+        0.0,
+        0.0,
+        0.0,
+        -0.2,
+        0.6,
+        0.0,
+        -0.2,
+        0.0,
+        -0.2,
+        -0.2,
+        -0.2,
+        0.2,
+        0.0,
+        0.0,
+        -0.2,
+        0.0,
+        0.2,
+        0.0,
+        -0.2,
+        0.0,
+        0.0,
+        -0.2,
+        0.0,
+        0.2,
+        0.0,
+        -0.2,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.4
+      ],
+      "summary_text": "user: Remember that Alice approved the GPU budget for Project Orion.",
+      "text": "user: Remember that Alice approved the GPU budget for Project Orion."
+    },
+    {
+      "agent_hook": {
+        "auto_captured": true,
+        "hook_id": "UserPromptSubmit:1782260669315",
+        "hook_type": "before_llm",
+        "idempotency_key": "",
+        "observed_at_ms": 1782260669315,
+        "session_id_source": "explicit",
+        "source": "codex",
+        "trigger": "UserPromptSubmit"
+      },
+      "buffer_key": [
+        "acct_codex",
+        "tenant_codex",
+        "root",
+        "codex-session-1782260669"
+      ],
+      "buffer_key_hash": 879746452923578343,
+      "created_at_ms": 1782260669315,
+      "event_id_hash": 3417608880605332495,
+      "node_hash": 7582193041685219331,
+      "node_path": [
+        "user:root",
+        "session:codex-session-1782260669"
+      ],
+      "record_type": "session_buffer_event",
+      "scope": {
+        "account_id": "acct_codex",
+        "project": "local",
+        "session_hash": 756197502450566050,
+        "session_id": "codex-session-1782260669",
+        "team": "codex",
+        "tenant_hash": 3196228001501567070,
+        "tenant_id": "tenant_codex",
+        "user_hash": 4074418174658082087,
+        "user_id": "root"
+      },
+      "status": "pending"
+    },
+    {
+      "changed_ref_count": 1,
+      "created_at_ms": 1782260669315,
+      "depth": 1,
+      "dirty_hash": 3956819527172031886,
+      "dirty_reason": "new_event",
+      "node_hash": 8011850765587569801,
+      "node_path": [
+        "user:root"
+      ],
+      "propagate_depth": 2,
+      "record_type": "context_summary_dirty",
+      "scope": {
+        "account_id": "acct_codex",
+        "project": "local",
+        "session_hash": 756197502450566050,
+        "session_id": "codex-session-1782260669",
+        "team": "codex",
+        "tenant_hash": 3196228001501567070,
+        "tenant_id": "tenant_codex",
+        "user_hash": 4074418174658082087,
+        "user_id": "root"
+      },
+      "source_event_hash": 3417608880605332495,
+      "source_ref_type": "event",
+      "status": "pending",
+      "updated_at_ms": 1782260669315
+    },
+    {
+      "changed_ref_count": 1,
+      "created_at_ms": 1782260669315,
+      "depth": 2,
+      "dirty_hash": 4969313980781093929,
+      "dirty_reason": "new_event",
+      "node_hash": 7582193041685219331,
+      "node_path": [
+        "user:root",
+        "session:codex-session-1782260669"
+      ],
+      "propagate_depth": 2,
+      "record_type": "context_summary_dirty",
+      "scope": {
+        "account_id": "acct_codex",
+        "project": "local",
+        "session_hash": 756197502450566050,
+        "session_id": "codex-session-1782260669",
+        "team": "codex",
+        "tenant_hash": 3196228001501567070,
+        "tenant_id": "tenant_codex",
+        "user_hash": 4074418174658082087,
+        "user_id": "root"
+      },
+      "source_event_hash": 3417608880605332495,
+      "source_ref_type": "event",
+      "status": "pending",
+      "updated_at_ms": 1782260669315
+    },
+    {
+      "account_id": "acct_codex",
+      "action": "context.ingest",
+      "api_key_id": "dev",
+      "audit_id_hash": 753258244055486533,
+      "created_at_ms": 1782260669392,
+      "details": {
+        "event_id_hash": 3417608880605332495
+      },
+      "record_type": "matrixark_audit_log",
+      "role": "dev_admin",
+      "status": "ok",
+      "tenant_id": "tenant_codex"
+    },
+    {
+      "account_id": "acct_codex",
+      "action": "context.retrieve",
+      "api_key_id": "dev",
+      "audit_id_hash": 3101674188005890488,
+      "created_at_ms": 1782260669405,
+      "details": {
+        "context_pack_id": "1627483852100760531"
+      },
+      "record_type": "matrixark_audit_log",
+      "role": "dev_admin",
+      "status": "ok",
+      "tenant_id": "tenant_codex"
+    },
+    {
+      "context_node_key": [
+        "root",
+        "codex-session-1782260669",
+        "codex",
+        "local"
+      ],
+      "node_hash": 7582193041685219331,
+      "node_path": [
+        "user:root",
+        "session:codex-session-1782260669"
+      ],
+      "record_type": "context_summary",
+      "scope": {
+        "account_id": "acct_codex",
+        "project": "local",
+        "session_hash": 756197502450566050,
+        "session_id": "codex-session-1782260669",
+        "team": "codex",
+        "tenant_hash": 3196228001501567070,
+        "tenant_id": "tenant_codex",
+        "user_hash": 4074418174658082087,
+        "user_id": "root"
+      },
+      "source_event_hash": 5663194309296841600,
+      "summary_hash": 2507385746169927860,
+      "summary_text": "user: Remember that Alice approved the GPU budget for Project Orion. user: Remember that Alice approved the GPU budget for Project Orion. user: Remember that Alice approved the GPU budget for Project Orion. user: Remember that I prefer Rust for low latency context systems.",
+      "summary_type": "session_l0",
+      "updated_at_ms": 1782260669667
+    },
+    {
+      "dim": 32,
+      "embedding_type": "session_l0",
+      "model": "matrixark-local-token-hash-v1",
+      "node_hash": 7582193041685219331,
+      "node_path": [
+        "user:root",
+        "session:codex-session-1782260669"
+      ],
+      "record_type": "context_embedding",
+      "ref_hash": 2507385746169927860,
+      "ref_type": "summary",
+      "scope": {
+        "account_id": "acct_codex",
+        "project": "local",
+        "session_hash": 756197502450566050,
+        "session_id": "codex-session-1782260669",
+        "team": "codex",
+        "tenant_hash": 3196228001501567070,
+        "tenant_id": "tenant_codex",
+        "user_hash": 4074418174658082087,
+        "user_id": "root"
+      },
+      "updated_at_ms": 1782260669667,
+      "vector": [
+        0.0,
+        0.0,
+        0.0,
+        -0.234261,
+        0.546608,
+        0.0,
+        -0.234261,
+        -0.078087,
+        0.0,
+        -0.234261,
+        -0.312348,
+        0.234261,
+        -0.078087,
+        0.0,
+        -0.312348,
+        0.0,
+        0.312348,
+        0.0,
+        -0.078087,
+        0.078087,
+        0.0,
+        -0.312348,
+        0.0,
+        0.0,
+        0.0,
+        -0.234261,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        -0.078087,
+        -0.078087
+      ]
+    },
+    {
+      "dim": 32,
+      "embedding_type": "event_text",
+      "model": "matrixark-local-token-hash-v1",
+      "node_hash": 7582193041685219331,
+      "node_path": [
+        "user:root",
+        "session:codex-session-1782260669"
+      ],
+      "record_type": "context_embedding",
+      "ref_hash": 5663194309296841600,
+      "ref_type": "event",
+      "scope": {
+        "account_id": "acct_codex",
+        "project": "local",
+        "session_hash": 756197502450566050,
+        "session_id": "codex-session-1782260669",
+        "team": "codex",
+        "tenant_hash": 3196228001501567070,
+        "tenant_id": "tenant_codex",
+        "user_hash": 4074418174658082087,
+        "user_id": "root"
+      },
+      "updated_at_ms": 1782260669667,
+      "vector": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.301511,
+        0.0,
+        0.0,
+        -0.301511,
+        0.0,
+        0.0,
+        -0.301511,
+        0.0,
+        -0.301511,
+        0.0,
+        -0.301511,
+        0.0,
+        0.301511,
+        0.0,
+        -0.301511,
+        0.301511,
+        0.0,
+        -0.301511,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        -0.301511,
+        -0.301511
+      ]
+    },
+    {
+      "agent_hook": {
+        "auto_captured": true,
+        "hook_id": "UserPromptSubmit:1782260669667",
+        "hook_type": "before_llm",
+        "idempotency_key": "",
+        "observed_at_ms": 1782260669667,
+        "session_id_source": "explicit",
+        "source": "codex",
+        "trigger": "UserPromptSubmit"
+      },
+      "envelope": {
+        "ingestion_time_ms": 1782260669667,
+        "kind": "message",
+        "messages": [
+          {
+            "content": "Remember that I prefer Rust for low latency context systems.",
+            "role": "user"
+          }
+        ],
+        "metadata": {
+          "codex_event": "UserPromptSubmit",
+          "codex_session_id_source": "explicit",
+          "compacted_session_summary": false,
+          "raw_hook_payload": {
+            "prompt": "Remember that I prefer Rust for low latency context systems."
+          },
+          "source": "codex_hook"
+        },
+        "scope": {
+          "account_id": "acct_codex",
+          "project": "local",
+          "session_hash": 756197502450566050,
+          "session_id": "codex-session-1782260669",
+          "team": "codex",
+          "tenant_hash": 3196228001501567070,
+          "tenant_id": "tenant_codex",
+          "user_hash": 4074418174658082087,
+          "user_id": "root"
+        },
+        "segment_provider": "deterministic",
+        "understanding_provider": "rules"
+      },
+      "event_id_hash": 5663194309296841600,
+      "internal_extraction": {
+        "classification": "NEW_EVENT",
+        "mode": "matrixark_internal",
+        "prior_context": "session",
+        "prior_message_count": 1,
+        "prior_refs": [
+          {
+            "node_hash": 7582193041685219331,
+            "ref_hash": 2507385746169927860,
+            "ref_type": "session_summary"
+          },
+          {
+            "node_hash": 7582193041685219331,
+            "ref_hash": 7582193041685219331,
+            "ref_type": "summary"
+          },
+          {
+            "node_hash": 7582193041685219331,
+            "ref_hash": 3417608880605332495,
+            "ref_type": "event"
+          }
+        ],
+        "prior_summary_count": 2,
+        "quality_warning": "",
+        "status": "observed"
+      },
+      "node_hash": 7582193041685219331,
+      "node_path": [
+        "user:root",
+        "session:codex-session-1782260669"
+      ],
+      "prior_context": {
+        "char_count": 204,
+        "level": "session",
+        "limit": 8,
+        "messages": [
+          {
+            "node_hash": 7582193041685219331,
+            "ref_hash": 3417608880605332495,
+            "text": "user: Remember that Alice approved the GPU budget for Project Orion."
+          }
+        ],
+        "refs": [
+          {
+            "node_hash": 7582193041685219331,
+            "ref_hash": 2507385746169927860,
+            "ref_type": "session_summary"
+          },
+          {
+            "node_hash": 7582193041685219331,
+            "ref_hash": 7582193041685219331,
+            "ref_type": "summary"
+          },
+          {
+            "node_hash": 7582193041685219331,
+            "ref_hash": 3417608880605332495,
+            "ref_type": "event"
+          }
+        ],
+        "summaries": [
+          {
+            "node_hash": 7582193041685219331,
+            "ref_hash": 2507385746169927860,
+            "ref_type": "session_summary",
+            "text": "user: Remember that Alice approved the GPU budget for Project Orion."
+          },
+          {
+            "node_hash": 7582193041685219331,
+            "ref_hash": 7582193041685219331,
+            "ref_type": "summary",
+            "text": "user: Remember that Alice approved the GPU budget for Project Orion."
+          }
+        ]
+      },
+      "record_type": "context_event",
+      "summary_embedding": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.458831,
+        0.0,
+        0.0,
+        -0.229416,
+        -0.229416,
+        0.0,
+        -0.229416,
+        0.0,
+        -0.229416,
+        0.0,
+        -0.229416,
+        0.0,
+        0.229416,
+        0.0,
+        -0.458831,
+        0.229416,
+        0.0,
+        -0.229416,
+        0.0,
+        0.229416,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        -0.229416,
+        0.229416
+      ],
+      "summary_text": "user: Remember that I prefer Rust for low latency context systems.",
+      "text": "user: Remember that I prefer Rust for low latency context systems."
+    },
+    {
+      "agent_hook": {
+        "auto_captured": true,
+        "hook_id": "UserPromptSubmit:1782260669667",
+        "hook_type": "before_llm",
+        "idempotency_key": "",
+        "observed_at_ms": 1782260669667,
+        "session_id_source": "explicit",
+        "source": "codex",
+        "trigger": "UserPromptSubmit"
+      },
+      "buffer_key": [
+        "acct_codex",
+        "tenant_codex",
+        "root",
+        "codex-session-1782260669"
+      ],
+      "buffer_key_hash": 879746452923578343,
+      "created_at_ms": 1782260669667,
+      "event_id_hash": 5663194309296841600,
+      "node_hash": 7582193041685219331,
+      "node_path": [
+        "user:root",
+        "session:codex-session-1782260669"
+      ],
+      "record_type": "session_buffer_event",
+      "scope": {
+        "account_id": "acct_codex",
+        "project": "local",
+        "session_hash": 756197502450566050,
+        "session_id": "codex-session-1782260669",
+        "team": "codex",
+        "tenant_hash": 3196228001501567070,
+        "tenant_id": "tenant_codex",
+        "user_hash": 4074418174658082087,
+        "user_id": "root"
+      },
+      "status": "pending"
+    },
+    {
+      "changed_ref_count": 1,
+      "created_at_ms": 1782260669667,
+      "depth": 1,
+      "dirty_hash": 5445490738270660304,
+      "dirty_reason": "new_event",
+      "node_hash": 8011850765587569801,
+      "node_path": [
+        "user:root"
+      ],
+      "propagate_depth": 2,
+      "record_type": "context_summary_dirty",
+      "scope": {
+        "account_id": "acct_codex",
+        "project": "local",
+        "session_hash": 756197502450566050,
+        "session_id": "codex-session-1782260669",
+        "team": "codex",
+        "tenant_hash": 3196228001501567070,
+        "tenant_id": "tenant_codex",
+        "user_hash": 4074418174658082087,
+        "user_id": "root"
+      },
+      "source_event_hash": 5663194309296841600,
+      "source_ref_type": "event",
+      "status": "pending",
+      "updated_at_ms": 1782260669667
+    },
+    {
+      "changed_ref_count": 1,
+      "created_at_ms": 1782260669667,
+      "depth": 2,
+      "dirty_hash": 7800329470555117776,
+      "dirty_reason": "new_event",
+      "node_hash": 7582193041685219331,
+      "node_path": [
+        "user:root",
+        "session:codex-session-1782260669"
+      ],
+      "propagate_depth": 2,
+      "record_type": "context_summary_dirty",
+      "scope": {
+        "account_id": "acct_codex",
+        "project": "local",
+        "session_hash": 756197502450566050,
+        "session_id": "codex-session-1782260669",
+        "team": "codex",
+        "tenant_hash": 3196228001501567070,
+        "tenant_id": "tenant_codex",
+        "user_hash": 4074418174658082087,
+        "user_id": "root"
+      },
+      "source_event_hash": 5663194309296841600,
+      "source_ref_type": "event",
+      "status": "pending",
+      "updated_at_ms": 1782260669667
+    },
+    {
+      "account_id": "acct_codex",
+      "action": "context.ingest",
+      "api_key_id": "dev",
+      "audit_id_hash": 2217277544767243076,
+      "created_at_ms": 1782260669721,
+      "details": {
+        "event_id_hash": 5663194309296841600
+      },
+      "record_type": "matrixark_audit_log",
+      "role": "dev_admin",
+      "status": "ok",
+      "tenant_id": "tenant_codex"
+    },
+    {
+      "account_id": "acct_codex",
+      "action": "context.retrieve",
+      "api_key_id": "dev",
+      "audit_id_hash": 5875302823319613888,
+      "created_at_ms": 1782260669730,
+      "details": {
+        "context_pack_id": "5360485596211310294"
+      },
+      "record_type": "matrixark_audit_log",
+      "role": "dev_admin",
+      "status": "ok",
+      "tenant_id": "tenant_codex"
+    },
+    {
+      "context_node_key": [
+        "root",
+        "codex-session-1782260669",
+        "codex",
+        "local"
+      ],
+      "node_hash": 7582193041685219331,
+      "node_path": [
+        "user:root",
+        "session:codex-session-1782260669"
+      ],
+      "record_type": "context_summary",
+      "scope": {
+        "account_id": "acct_codex",
+        "project": "local",
+        "session_hash": 756197502450566050,
+        "session_id": "codex-session-1782260669",
+        "team": "codex",
+        "tenant_hash": 3196228001501567070,
+        "tenant_id": "tenant_codex",
+        "user_hash": 4074418174658082087,
+        "user_id": "root"
+      },
+      "source_event_hash": 7893499585179976280,
+      "summary_hash": 2507385746169927860,
+      "summary_text": "user: Remember that Alice approved the GPU budget for Project Orion. user: Remember that Alice approved the GPU budget for Project Orion. user: Remember that Alice approved the GPU budget for Project Orion. user: Remember that I prefer Rust for low latency context systems. user: Remember that Alice approved the GPU budget for Project Orion. user: Remember that Alice approved the GPU budget for Project Orion. user: Remember that Alice approved the GPU budget for Project Orion. user: Remember that I prefer...",
+      "summary_type": "session_l0",
+      "updated_at_ms": 1782260669883
+    },
+    {
+      "dim": 32,
+      "embedding_type": "session_l0",
+      "model": "matrixark-local-token-hash-v1",
+      "node_hash": 7582193041685219331,
+      "node_path": [
+        "user:root",
+        "session:codex-session-1782260669"
+      ],
+      "record_type": "context_embedding",
+      "ref_hash": 2507385746169927860,
+      "ref_type": "summary",
+      "scope": {
+        "account_id": "acct_codex",
+        "project": "local",
+        "session_hash": 756197502450566050,
+        "session_id": "codex-session-1782260669",
+        "team": "codex",
+        "tenant_hash": 3196228001501567070,
+        "tenant_id": "tenant_codex",
+        "user_hash": 4074418174658082087,
+        "user_id": "root"
+      },
+      "updated_at_ms": 1782260669883,
+      "vector": [
+        0.0,
+        0.0,
+        0.0,
+        -0.24214,
+        0.564994,
+        0.0,
+        -0.24214,
+        -0.080713,
+        0.0,
+        -0.24214,
+        -0.282497,
+        0.24214,
+        -0.040357,
+        0.0,
+        -0.322854,
+        0.0,
+        0.282497,
+        0.0,
+        -0.040357,
+        0.040357,
+        0.0,
+        -0.322854,
+        0.0,
+        0.0,
+        0.0,
+        -0.24214,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        -0.080713,
+        -0.040357
+      ]
+    },
+    {
+      "dim": 32,
+      "embedding_type": "event_text",
+      "model": "matrixark-local-token-hash-v1",
+      "node_hash": 7582193041685219331,
+      "node_path": [
+        "user:root",
+        "session:codex-session-1782260669"
+      ],
+      "record_type": "context_embedding",
+      "ref_hash": 7893499585179976280,
+      "ref_type": "event",
+      "scope": {
+        "account_id": "acct_codex",
+        "project": "local",
+        "session_hash": 756197502450566050,
+        "session_id": "codex-session-1782260669",
+        "team": "codex",
+        "tenant_hash": 3196228001501567070,
+        "tenant_id": "tenant_codex",
+        "user_hash": 4074418174658082087,
+        "user_id": "root"
+      },
+      "updated_at_ms": 1782260669883,
+      "vector": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.57735,
+        0.0,
+        0.0,
+        -0.288675,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        -0.288675,
+        0.0,
+        0.288675,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        -0.288675,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        -0.57735,
+        0.0
+      ]
+    }
+  ],
+  "session_id": "codex-session-1782260669",
+  "status": "passed",
+  "storage_prefix": "matrixark:codex-hook:e2e-live:fixed-20260623",
+  "tenant_id": "tenant_codex",
+  "user_id": "root"
+}

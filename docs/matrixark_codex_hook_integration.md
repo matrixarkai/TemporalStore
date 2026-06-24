@@ -89,6 +89,44 @@ Validation report:
 - [matrixark_codex_cpp_hook_e2e.html](matrixark_codex_cpp_hook_e2e.html)
 - [matrixark_codex_cpp_hook_e2e.json](matrixark_codex_cpp_hook_e2e.json)
 
+## 2026-06-23 Live C++ Hook Validation
+
+The Windows hook command path was validated end to end:
+
+```text
+Codex hook payload
+-> commandWindows PowerShell wrapper
+-> WSL matrixark_codex_cpp_hook.sh
+-> matrixark_codex_hook.py
+-> matrixark_ingest / matrixark_retrieve / matrixark_session_commit
+-> C++ TemporalStore direct SDK
+```
+
+Validation result from `tools/run_matrixark_codex_cpp_hook_e2e.py`:
+
+```json
+{
+  "status": "passed",
+  "backend": "temporalstore-direct",
+  "storage_prefix": "matrixark:codex-hook:e2e-live:fixed-20260623",
+  "record_count": 65,
+  "final_selected_ref_count": 9
+}
+```
+
+Record types written in C++ TemporalStore included `context_event`,
+`session_buffer_event`, `context_batch_commit`, `context_summary`,
+`context_embedding`, `context_node`, `context_child_ref`, and audit records.
+
+The hook wrapper now defaults `MATRIXARK_HOOK_AUTOSTART_CPP=1`, so a local C++
+deployment is started automatically when the metaserver is not already listening.
+For interactive Codex safety, the production hook still defaults
+`MATRIXARK_HOOK_FAIL_OPEN=1`; the E2E harness forces fail-closed behavior.
+
+If `.codex/hooks.json` changes, open `/hooks` in Codex and trust the updated
+commands. The direct command path can be tested without waiting for a new Codex
+turn by running the Windows `commandWindows` entry with a JSON payload on stdin.
+
 ## Local JSONL E2E Test
 
 This mode remains useful for unit tests and debugging, but it is not the
