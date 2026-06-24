@@ -442,3 +442,76 @@ fn stable_hash64(value: &str) -> u64 {
     value.hash(&mut hasher);
     hasher.finish()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn payload_text_accepts_claude_and_cursor_shapes() {
+        let claude = json!({
+            "claude": {
+                "prompt": "Remember that Claude owns the release checklist."
+            }
+        });
+        assert_eq!(
+            payload_text(&claude).as_deref(),
+            Some("Remember that Claude owns the release checklist.")
+        );
+
+        let cursor = json!({
+            "cursor": {
+                "prompt": "Cursor edited context retrieval tests."
+            }
+        });
+        assert_eq!(
+            payload_text(&cursor).as_deref(),
+            Some("Cursor edited context retrieval tests.")
+        );
+
+        let transcript = json!({
+            "transcript": [
+                {"content": "first turn"},
+                {"text": "second turn"}
+            ]
+        });
+        assert_eq!(
+            payload_text(&transcript).as_deref(),
+            Some("first turn\nsecond turn")
+        );
+    }
+
+    #[test]
+    fn agent_profiles_and_session_indexes_are_agent_specific() {
+        let root = PathBuf::from("/tmp/agent-hook-test");
+        assert_eq!(agent_profile("claude-ai"), "claude");
+        assert_eq!(agent_profile("cursor"), "cursor");
+        assert_eq!(agent_profile("other-agent"), "generic");
+        assert_eq!(
+            session_index_path(&root, "Claude AI"),
+            root.join("claude-ai-session-index.json")
+        );
+        assert_eq!(
+            session_index_path(&root, "Cursor"),
+            root.join("cursor-session-index.json")
+        );
+    }
+
+    #[test]
+    fn agent_events_map_to_context_source_and_role() {
+        assert_eq!(
+            source_kind_for_event("claude.tool"),
+            ContextSourceKind::Code
+        );
+        assert_eq!(
+            source_kind_for_event("cursor.tool"),
+            ContextSourceKind::Code
+        );
+        assert_eq!(
+            source_kind_for_event("claude.stop"),
+            ContextSourceKind::UserEvent
+        );
+        assert_eq!(role_for_event("cursor.tool"), "tool");
+        assert_eq!(role_for_event("claude.stop"), "assistant");
+    }
+}

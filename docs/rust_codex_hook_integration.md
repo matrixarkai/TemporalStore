@@ -60,9 +60,11 @@ agent hook event
 -> JSON hook report + JSONL event log
 ```
 
-The binary keeps the historical name `codex_context_hook` for compatibility, but
-it accepts `--agent-name` or `MATRIXARK_AGENT_NAME` / `TEMPORALSTORE_AGENT_NAME`.
-Supported built-in profiles are `codex`, `claude`, `cursor`, and `generic`.
+The binary keeps the historical name `codex_context_hook` for compatibility, and
+the repo also ships the neutral `tools/run_rust_agent_context_hook.sh` wrapper.
+Both accept `--agent-name` or `MATRIXARK_AGENT_NAME` /
+`TEMPORALSTORE_AGENT_NAME`. Supported built-in profiles are `codex`, `claude`,
+`cursor`, and `generic`.
 
 ## Project Hook Config
 
@@ -98,7 +100,7 @@ Claude-style prompt ingestion:
 
 ```bash
 CARGO_TARGET_DIR=/tmp/temporalstore-context-workflow-target \
-  cargo run -p temporalstore-rust --bin codex_context_hook -- \
+  tools/run_rust_agent_context_hook.sh \
   --agent-name claude \
   --root /tmp/temporalstore-rust-agent-hook-test \
   --event-log /tmp/temporalstore-rust-agent-hook-test/events.jsonl \
@@ -112,7 +114,7 @@ Cursor-style tool or prompt event:
 
 ```bash
 CARGO_TARGET_DIR=/tmp/temporalstore-context-workflow-target \
-  cargo run -p temporalstore-rust --bin codex_context_hook -- \
+  tools/run_rust_agent_context_hook.sh \
   --agent-name cursor \
   --root /tmp/temporalstore-rust-agent-hook-test \
   --event-log /tmp/temporalstore-rust-agent-hook-test/events.jsonl \
