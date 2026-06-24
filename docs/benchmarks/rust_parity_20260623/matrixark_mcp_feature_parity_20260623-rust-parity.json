@@ -1,0 +1,147 @@
+{
+  "all_ok": true,
+  "comparison": {
+    "checks": {
+      "batch_status_equal": true,
+      "current_location_selected_equal": true,
+      "current_preference_selected_equal": true,
+      "feedback_classification_equal": true,
+      "location_question_type_equal": true,
+      "online_retrieve_selected_equal": true,
+      "preference_question_type_equal": true
+    },
+    "status": "passed"
+  },
+  "failures": [],
+  "results": [
+    {
+      "backend": "cpp",
+      "batch": {
+        "counts": {
+          "dirty_markers": 0,
+          "embeddings": 0,
+          "entities": 0,
+          "events": 0,
+          "indexes": 0,
+          "segments": 0
+        },
+        "location_question_type": "current_state",
+        "location_selected": 21,
+        "preference_question_type": "current_state",
+        "preference_selected": 21,
+        "status": "accepted",
+        "summary_refreshed_count": 3,
+        "tree_traversal": {
+          "enabled": true,
+          "fallback_reason": "",
+          "fallback_to_flat": false,
+          "max_children_scored_per_parent": 10000,
+          "selected_leaf_count": 1,
+          "selected_node_count": 3,
+          "selected_path_count": 3,
+          "summary_embeddings": [
+            "node_l0",
+            "node_l1"
+          ],
+          "top_k_per_layer": 8
+        }
+      },
+      "checks": {
+        "batch_extract_committed": true,
+        "batch_summary_refreshed": true,
+        "current_location_selected": true,
+        "current_preference_selected": true,
+        "feedback_confirmation": true,
+        "online_ingest_new_event": true,
+        "online_retrieve_selected": true,
+        "online_summary_refreshed": true,
+        "post_feedback_retrieve_selected": true,
+        "replay_has_records": true
+      },
+      "elapsed_ms": 639.19,
+      "ok": true,
+      "online": {
+        "classification": "NEW_EVENT",
+        "feedback_classification": "CONFIRMATION",
+        "feedback_prior_refs": 1,
+        "post_feedback_selected": 1,
+        "retrieve_selected": 1,
+        "summary_refreshed_count": 3
+      },
+      "replay": {
+        "context_pack_id": "4262010384936523167",
+        "keys": [
+          "access",
+          "context_pack_id",
+          "events"
+        ]
+      },
+      "storage_prefix": "matrixark:mcp:feature-parity:cpp:20260623-rust-parity"
+    },
+    {
+      "backend": "rust",
+      "batch": {
+        "counts": {
+          "dirty_markers": 0,
+          "embeddings": 0,
+          "entities": 0,
+          "events": 0,
+          "indexes": 0,
+          "segments": 0
+        },
+        "location_question_type": "current_state",
+        "location_selected": 21,
+        "preference_question_type": "current_state",
+        "preference_selected": 21,
+        "status": "accepted",
+        "summary_refreshed_count": 3,
+        "tree_traversal": {
+          "enabled": true,
+          "fallback_reason": "",
+          "fallback_to_flat": false,
+          "max_children_scored_per_parent": 10000,
+          "selected_leaf_count": 1,
+          "selected_node_count": 3,
+          "selected_path_count": 3,
+          "summary_embeddings": [
+            "node_l0",
+            "node_l1"
+          ],
+          "top_k_per_layer": 8
+        }
+      },
+      "checks": {
+        "batch_extract_committed": true,
+        "batch_summary_refreshed": true,
+        "current_location_selected": true,
+        "current_preference_selected": true,
+        "feedback_confirmation": true,
+        "online_ingest_new_event": true,
+        "online_retrieve_selected": true,
+        "online_summary_refreshed": true,
+        "post_feedback_retrieve_selected": true,
+        "replay_has_records": true
+      },
+      "elapsed_ms": 684.03,
+      "ok": true,
+      "online": {
+        "classification": "NEW_EVENT",
+        "feedback_classification": "CONFIRMATION",
+        "feedback_prior_refs": 1,
+        "post_feedback_selected": 1,
+        "retrieve_selected": 1,
+        "summary_refreshed_count": 3
+      },
+      "replay": {
+        "context_pack_id": "385167012630753295",
+        "keys": [
+          "access",
+          "context_pack_id",
+          "events"
+        ]
+      },
+      "storage_prefix": "matrixark:mcp:feature-parity:rust:20260623-rust-parity"
+    }
+  ],
+  "run_id": "20260623-rust-parity"
+}
