@@ -209,13 +209,29 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         self.assertEqual(len(chunks), 2)
         self.assertEqual(chunks[0]["source_ref"], "runbook.md#heading=rollback")
         self.assertEqual(chunks[1]["metadata"]["heading_slug"], "budget")
+        summaries = [
+            record
+            for record in replay["events"]
+            if record.get("record_type") == "context_summary"
+            and record.get("summary_type") == "resource_l0"
+        ]
+        self.assertEqual(len(summaries), 1)
+        self.assertEqual(summaries[0]["source_chunk_hashes"], [8100, 8101])
         embeddings = [
             record
             for record in replay["events"]
             if record.get("record_type") == "context_embedding"
-            and record.get("embedding_type") == "resource_chunk"
+            and record.get("embedding_type") in {"resource_l0", "resource_chunk"}
         ]
-        self.assertEqual([record["ref_hash"] for record in embeddings], [8100, 8101])
+        self.assertIn(("resource_l0", summaries[0]["summary_hash"]), [(record["embedding_type"], record["ref_hash"]) for record in embeddings])
+        self.assertIn(("resource_chunk", 8100), [(record["embedding_type"], record["ref_hash"]) for record in embeddings])
+        indexes = [
+            record["index_name"]
+            for record in replay["events"]
+            if record.get("record_type") == "context_index"
+        ]
+        self.assertIn("source_type:resource", indexes)
+        self.assertIn("resource_type:md", indexes)
 
     def test_skill_ingest_parses_definition_chunks_and_embeddings(self):
         ingest = self.call_tool(
@@ -252,12 +268,20 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         self.assertEqual(skill["name"], "context-debugger")
         self.assertEqual(skill["description"], "Debug MatrixArk context packs.")
         self.assertEqual(skill["metadata"]["resource_type"], "skill")
+        summaries = [
+            record
+            for record in replay["events"]
+            if record.get("record_type") == "context_summary"
+            and record.get("summary_type") == "skill_l0"
+        ]
+        self.assertEqual(len(summaries), 1)
         embeddings = [
             record
             for record in replay["events"]
             if record.get("record_type") == "context_embedding"
-            and record.get("embedding_type") in {"skill_summary", "resource_chunk"}
+            and record.get("embedding_type") in {"skill_l0", "skill_summary", "resource_chunk"}
         ]
+        self.assertIn(("skill_l0", summaries[0]["summary_hash"]), [(record["embedding_type"], record["ref_hash"]) for record in embeddings])
         self.assertIn(("skill_summary", ingest["skill_hash"]), [(record["embedding_type"], record["ref_hash"]) for record in embeddings])
         self.assertIn(("resource_chunk", 9100), [(record["embedding_type"], record["ref_hash"]) for record in embeddings])
 
@@ -306,6 +330,17 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         )
         refs = [(ref["ref_type"], ref["ref_hash"]) for ref in pack["selected_refs"]]
         self.assertIn(("resource_chunk", 9200), refs)
+
+        isolated = self.call_tool(
+            "matrixark_retrieve",
+            {
+                "query": "finance approval for GPU budget requests",
+                "scope": {"user_id": "other-user", "session_id": "s2"},
+                "max_context_tokens": 80,
+            },
+        )
+        self.assertTrue(isolated["insufficient_context"])
+        self.assertFalse(isolated["selected_refs"])
 
     def test_default_session_node_path_stays_shallow(self):
         path = self.server.adapter.default_session_node_path({"account_id": "acct_x", "tenant_id": "tenant_y", "user_id": "alice", "session_id": "thread-1"})
