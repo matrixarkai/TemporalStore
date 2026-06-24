@@ -58,6 +58,7 @@ class RedisCommand {
         kPSetEx,
         kGetSet,
         kGetDel,
+        kGetEx,
         kMGet,
         kMSet,
         kDel,
@@ -80,6 +81,7 @@ class RedisCommand {
         kHGetAll,
         kHKeys,
         kHVals,
+        kHStrlen,
         kHIncrBy,
         kSAdd,
         kSRem,
@@ -89,6 +91,8 @@ class RedisCommand {
         kSMIsMember,
         kLPush,
         kRPush,
+        kLPushX,
+        kRPushX,
         kLPop,
         kRPop,
         kLLen,
@@ -96,7 +100,12 @@ class RedisCommand {
         kLRange,
         kLTrim,
         kZAdd,
+        kZIncrBy,
         kZRem,
+        kZPopMin,
+        kZPopMax,
+        kZRemRangeByScore,
+        kZRemRangeByRank,
         kZCard,
         kZScore,
         kZRank,
@@ -194,6 +203,7 @@ class RedisCommandHandler : public brpc::RedisCommandHandler {
     void PSetEx(RedisClientContext* c);
     void GetSet(RedisClientContext* c);
     void GetDel(RedisClientContext* c);
+    void GetEx(RedisClientContext* c);
     void MGet(RedisClientContext* c);
     void MSet(RedisClientContext* c);
     void Del(RedisClientContext* c);
@@ -215,6 +225,7 @@ class RedisCommandHandler : public brpc::RedisCommandHandler {
     void HGetAll(RedisClientContext* c);
     void HKeys(RedisClientContext* c);
     void HVals(RedisClientContext* c);
+    void HStrlen(RedisClientContext* c);
     void HIncrBy(RedisClientContext* c);
     void SAdd(RedisClientContext* c);
     void SRem(RedisClientContext* c);
@@ -224,6 +235,8 @@ class RedisCommandHandler : public brpc::RedisCommandHandler {
     void SMIsMember(RedisClientContext* c);
     void LPush(RedisClientContext* c);
     void RPush(RedisClientContext* c);
+    void LPushX(RedisClientContext* c);
+    void RPushX(RedisClientContext* c);
     void LPop(RedisClientContext* c);
     void RPop(RedisClientContext* c);
     void LLen(RedisClientContext* c);
@@ -231,7 +244,12 @@ class RedisCommandHandler : public brpc::RedisCommandHandler {
     void LRange(RedisClientContext* c);
     void LTrim(RedisClientContext* c);
     void ZAdd(RedisClientContext* c);
+    void ZIncrBy(RedisClientContext* c);
     void ZRem(RedisClientContext* c);
+    void ZPopMin(RedisClientContext* c);
+    void ZPopMax(RedisClientContext* c);
+    void ZRemRangeByScore(RedisClientContext* c);
+    void ZRemRangeByRank(RedisClientContext* c);
     void ZCard(RedisClientContext* c);
     void ZScore(RedisClientContext* c);
     void ZRank(RedisClientContext* c);

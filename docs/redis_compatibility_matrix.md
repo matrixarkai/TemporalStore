@@ -19,13 +19,13 @@ Current bridge status values:
 | Auth/client | `AUTH`, `CLIENT SETNAME`, `CLIENT GETNAME`, `CLIENT ID` | required | wired | `CLIENT SETNAME` is accepted, `GETNAME` returns null, and `ID` returns a deterministic compatibility value. |
 | Metadata | `INFO`, `COMMAND`, `TYPE` | required | partial | `INFO` and `TYPE` are wired. `COMMAND COUNT/DOCS/INFO` return deterministic compatibility responses; full command metadata is still future work. |
 | DB selection | `SELECT` | required | wired | `SELECT 0` is accepted. Non-zero DB indexes are rejected because isolation is namespace/table/scope based, not Redis logical DB based. |
-| String | `GET`, `SET`, `SETNX`, `SETEX`, `PSETEX`, `GETSET`, `GETDEL`, `MGET`, `MSET`, `DEL`, `UNLINK`, `EXISTS`, `APPEND`, `STRLEN` | required | partial | `GET`, `SET key value`, `SET key value NX`, `SET key value XX`, `SETNX`, `SETEX`, `PSETEX`, `GETSET`, `GETDEL`, `MGET`, `MSET`, `DEL`, `UNLINK`, `EXISTS`, `APPEND`, and `STRLEN` are wired. More edge syntax such as extended `SET` options remains separate work. |
+| String | `GET`, `SET`, `SETNX`, `SETEX`, `PSETEX`, `GETSET`, `GETDEL`, `GETEX`, `MGET`, `MSET`, `DEL`, `UNLINK`, `EXISTS`, `APPEND`, `STRLEN` | required | partial | `GET`, `SET key value`, `SET key value NX`, `SET key value XX`, `SET key value EX/PX`, `SET key value GET`, `SETNX`, `SETEX`, `PSETEX`, `GETSET`, `GETDEL`, `GETEX`, `MGET`, `MSET`, `DEL`, `UNLINK`, `EXISTS`, `APPEND`, and `STRLEN` are wired. `SET EX/PX` combined with `NX/XX` is rejected until the native string module exposes an atomic conditional set-with-ttl primitive. |
 | Counter | `INCR`, `INCRBY`, `DECR`, `DECRBY` | required | wired | Wired through native string storage with integer parsing and overflow checks. |
-| TTL | `EXPIRE`, `PEXPIRE`, `TTL`, `PTTL`, `PERSIST` | required | partial | `EXPIRE`, `PEXPIRE`, `TTL`, `PTTL`, and `PERSIST` are wired. `PSETEX` command syntax remains separate work. |
-| Hash | `HSET`, `HMSET`, `HGET`, `HMGET`, `HGETALL`, `HKEYS`, `HVALS`, `HDEL`, `HEXISTS`, `HLEN`, `HINCRBY` | required | wired | Wired through native hash storage; edge semantics still need redis-py/conformance coverage. |
+| TTL | `EXPIRE`, `PEXPIRE`, `TTL`, `PTTL`, `PERSIST`, `GETEX` | required | partial | `EXPIRE`, `PEXPIRE`, `TTL`, `PTTL`, `PERSIST`, `SET EX/PX`, `SETEX`, `PSETEX`, and `GETEX` are wired. Restart/failover TTL durability still belongs to the production gate. |
+| Hash | `HSET`, `HMSET`, `HGET`, `HMGET`, `HGETALL`, `HKEYS`, `HVALS`, `HSTRLEN`, `HDEL`, `HEXISTS`, `HLEN`, `HINCRBY` | required | wired | Wired through native hash storage; smoke coverage includes field listing, values, field length, integer updates, deletes, and missing-field behavior. |
 | Set | `SADD`, `SREM`, `SMEMBERS`, `SCARD`, `SISMEMBER`, `SMISMEMBER` | required | wired | Wired through native persistent-map set storage; local smoke covers duplicate add counts, membership, multi-membership, cardinality, members, and remove counts. |
-| List | `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LLEN`, `LINDEX`, `LRANGE`, `LTRIM` | required | partial | Wired through encoded values in native string storage. This gives real persistence with minimal storage churn, but does not yet provide a native list model or every Redis list command. |
-| ZSet | `ZADD`, `ZREM`, `ZCARD`, `ZSCORE`, `ZRANK`, `ZREVRANK`, `ZRANGE`, `ZREVRANGE`, `ZRANGEBYSCORE`, `ZCOUNT` | required | partial | Wired through encoded values in native string storage. Supports score/member ordering, range, rank, score, count, remove, `WITHSCORES`, and `ZRANGEBYSCORE LIMIT`; advanced options remain future work. |
+| List | `LPUSH`, `RPUSH`, `LPUSHX`, `RPUSHX`, `LPOP`, `RPOP`, `LLEN`, `LINDEX`, `LRANGE`, `LTRIM` | required | partial | Wired through encoded values in native string storage. This gives real persistence with minimal storage churn, but does not yet provide a native list model or every Redis list command. |
+| ZSet | `ZADD`, `ZINCRBY`, `ZREM`, `ZPOPMIN`, `ZPOPMAX`, `ZREMRANGEBYSCORE`, `ZREMRANGEBYRANK`, `ZCARD`, `ZSCORE`, `ZRANK`, `ZREVRANK`, `ZRANGE`, `ZREVRANGE`, `ZRANGEBYSCORE`, `ZCOUNT` | required | partial | Wired through encoded values in native string storage. Supports score/member ordering, score mutation, pop min/max, range removal, rank, score, count, remove, `WITHSCORES`, and `ZRANGEBYSCORE LIMIT`; advanced options remain future work. |
 | Scan | `SCAN`, `HSCAN`, `SSCAN`, `ZSCAN` | planned | unsupported | Needed for operational migration but can follow first smoke if documented. |
 | Transactions | `MULTI`, `EXEC`, `DISCARD`, `WATCH` | planned | unsupported | Start same-partition only or return explicit unsupported errors. |
 | Cluster | `CLUSTER SLOTS`, `CLUSTER NODES`, `MOVED`, `ASK` | planned | not wired | Required only if exposing Redis Cluster wire compatibility. Proxy-hidden sharding can avoid this initially. |
@@ -43,11 +43,13 @@ The native Redis data-command bridge currently requires the Redis service to hav
 The TemporalStore native Redis bridge is production-ready only for the documented first storage-backed subset:
 
 - Connection/basic: `PING`, `ECHO`, `QUIT`, `AUTH`, `CLIENT SETNAME`, `CLIENT GETNAME`, `CLIENT ID`, `SELECT 0`, `INFO`, `COMMAND COUNT/DOCS/INFO`, `TYPE`
-- String/common: `GET`, `SET key value`, `SET key value NX`, `SET key value XX`, `SETNX`, `SETEX`, `PSETEX`, `GETSET`, `GETDEL`, `MGET`, `MSET`, `DEL`, `UNLINK`, `EXISTS`, `APPEND`, `STRLEN`
+- String/common: `GET`, `SET key value`, `SET key value NX`, `SET key value XX`, `SET key value EX/PX`, `SET key value GET`, `SETNX`, `SETEX`, `PSETEX`, `GETSET`, `GETDEL`, `GETEX`, `MGET`, `MSET`, `DEL`, `UNLINK`, `EXISTS`, `APPEND`, `STRLEN`
 - Counters: `INCR`, `INCRBY`, `DECR`, `DECRBY`
 - TTL: `EXPIRE`, `PEXPIRE`, `TTL`, `PTTL`, `PERSIST`
-- Hash: `HSET`, `HMSET`, `HGET`, `HMGET`, `HDEL`, `HEXISTS`, `HLEN`, `HGETALL`, `HKEYS`, `HVALS`, `HINCRBY`
+- Hash: `HSET`, `HMSET`, `HGET`, `HMGET`, `HDEL`, `HEXISTS`, `HLEN`, `HGETALL`, `HKEYS`, `HVALS`, `HSTRLEN`, `HINCRBY`
 - Set: `SADD`, `SREM`, `SMEMBERS`, `SCARD`, `SISMEMBER`, `SMISMEMBER`
+- List: `LPUSH`, `RPUSH`, `LPUSHX`, `RPUSHX`, `LPOP`, `RPOP`, `LLEN`, `LINDEX`, `LRANGE`, `LTRIM`
+- ZSet: `ZADD`, `ZINCRBY`, `ZREM`, `ZPOPMIN`, `ZPOPMAX`, `ZREMRANGEBYSCORE`, `ZREMRANGEBYRANK`, `ZCARD`, `ZSCORE`, `ZRANK`, `ZREVRANK`, `ZRANGE`, `ZREVRANGE`, `ZRANGEBYSCORE`, `ZCOUNT`
 - Admin/bootstrap: explicit `PARTITION LOAD`/`PARTITION UNLOAD` for local Redis serving
 
 The bridge must not claim full Redis compatibility yet. Unsupported command families return deterministic Redis errors rather than fake success. The current local bridge serializes backend Redis data-command execution while storage concurrency semantics are hardened; this favors correctness over peak Redis QPS.
@@ -60,7 +62,7 @@ RESULT_ROOT=/tmp/temporalstore-redis-sets-lists-zsets-20260611-001020 \
   tools/run_redis_production_gate_ubuntu22.sh
 ```
 
-Result: PASS. Sets are storage-backed. Lists and sorted sets are now storage-backed through encoded native string values while native LIST/ZSET modules remain future work.
+Result: PASS. Sets are storage-backed. Lists and sorted sets are now storage-backed through encoded native string values while native LIST/ZSET modules remain future work. The compatibility smoke now also covers `GETEX`, extended `SET` forms, `HSTRLEN`, `LPUSHX`/`RPUSHX`, `ZINCRBY`, `ZPOPMIN`/`ZPOPMAX`, and zset range removals.
 
 ## Production Gate
 

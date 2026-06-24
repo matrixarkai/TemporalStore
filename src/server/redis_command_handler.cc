@@ -1360,40 +1360,99 @@ void RedisCommandHandler::Get(RedisClientContext* c) {
     c->reply->SetString(get_response.value());
 }
 
+
 void RedisCommandHandler::Set(RedisClientContext* c) {
-    if (c->ArgSize() != 3 && c->ArgSize() != 4) {
-        c->reply->SetError("ERR only SET key value [NX|XX] is supported by the native Redis bridge");
-        return;
-    }
     bool nx = false;
     bool xx = false;
-    if (c->ArgSize() == 4) {
-        const std::string option = c->StrArg(3);
+    bool get = false;
+    bool has_ttl = false;
+    uint64_t ttl_ms = 0;
+    for (size_t i = 3; i < c->ArgSize(); ++i) {
+        const std::string option = c->StrArg(i);
         if (!strcasecmp(option.c_str(), "nx")) {
+            if (nx || xx) {
+                c->reply->SetError("ERR syntax error");
+                return;
+            }
             nx = true;
         } else if (!strcasecmp(option.c_str(), "xx")) {
+            if (nx || xx) {
+                c->reply->SetError("ERR syntax error");
+                return;
+            }
             xx = true;
+        } else if (!strcasecmp(option.c_str(), "get")) {
+            get = true;
+        } else if (!strcasecmp(option.c_str(), "ex") || !strcasecmp(option.c_str(), "px")) {
+            if (has_ttl || i + 1 >= c->ArgSize()) {
+                c->reply->SetError("ERR syntax error");
+                return;
+            }
+            int64_t parsed = 0;
+            if (!ParseInt64Arg(c->StrArg(++i), &parsed) || parsed <= 0) {
+                c->reply->SetError("ERR invalid expire time in set");
+                return;
+            }
+            ttl_ms = !strcasecmp(option.c_str(), "ex") ? parsed * 1000 : parsed;
+            has_ttl = true;
         } else {
             c->reply->SetError("ERR unsupported SET option");
             return;
         }
     }
+
+    if (has_ttl && (nx || xx)) {
+        c->reply->SetError("ERR SET EX/PX with NX/XX is not supported by the native Redis bridge yet");
+        return;
+    }
+
+    bool old_exists = false;
+    std::string old_value;
+    if (get) {
+        CmdResponse get_response_raw;
+        if (!ExecuteRedisSingle(redis_service_, StringGetCmd(c->StrArg(1)), &get_response_raw, c->reply)) {
+            return;
+        }
+        if (IsOkStatus(get_response_raw.response_status())) {
+            str2::GetResponse get_response;
+            if (!ParseStringGetResponse(get_response_raw, &get_response, c->reply)) {
+                return;
+            }
+            old_exists = true;
+            old_value = get_response.value();
+        }
+    }
+
     CmdResponse response;
-    if (!ExecuteRedisSingle(redis_service_, StringSetCmd(c->StrArg(1), c->StrArg(2), nx, xx),
-                            &response, c->reply)) {
+    CmdRequest command = has_ttl ? StringSetExCmd(c->StrArg(1), c->StrArg(2), ttl_ms)
+                                 : StringSetCmd(c->StrArg(1), c->StrArg(2), nx, xx);
+    if (!ExecuteRedisSingle(redis_service_, command, &response, c->reply)) {
         return;
     }
     if (!IsOkStatus(response.response_status())) {
         if ((nx && response.response_status().code() == Code::kAlreadyExists) ||
             (xx && response.response_status().code() == Code::kNotFound)) {
-            c->reply->SetNullString();
+            if (get && old_exists) {
+                c->reply->SetString(old_value);
+            } else {
+                c->reply->SetNullString();
+            }
             return;
         }
         SetRedisStatusError(c->reply, response.response_status());
         return;
     }
+    if (get) {
+        if (old_exists) {
+            c->reply->SetString(old_value);
+        } else {
+            c->reply->SetNullString();
+        }
+        return;
+    }
     c->reply->SetStatus("OK");
 }
+
 
 void RedisCommandHandler::SetNx(RedisClientContext* c) {
     CmdResponse response;
@@ -1488,6 +1547,55 @@ void RedisCommandHandler::GetDel(RedisClientContext* c) {
     str2::GetResponse get_response;
     if (!ParseStringGetResponse(get_item, &get_response, c->reply)) {
         return;
+    }
+    c->reply->SetString(get_response.value());
+}
+
+
+void RedisCommandHandler::GetEx(RedisClientContext* c) {
+    bool persist = false;
+    bool has_ttl = false;
+    uint64_t ttl_ms = 0;
+    if (c->ArgSize() == 3 && !strcasecmp(c->StrArg(2).c_str(), "persist")) {
+        persist = true;
+    } else if (c->ArgSize() == 4 &&
+               (!strcasecmp(c->StrArg(2).c_str(), "ex") ||
+                !strcasecmp(c->StrArg(2).c_str(), "px"))) {
+        int64_t parsed = 0;
+        if (!ParseInt64Arg(c->StrArg(3), &parsed) || parsed <= 0) {
+            c->reply->SetError("ERR invalid expire time in getex");
+            return;
+        }
+        ttl_ms = !strcasecmp(c->StrArg(2).c_str(), "ex") ? parsed * 1000 : parsed;
+        has_ttl = true;
+    } else if (c->ArgSize() != 2) {
+        c->reply->SetError("ERR syntax error");
+        return;
+    }
+
+    CmdResponse get_response_raw;
+    if (!ExecuteRedisSingle(redis_service_, StringGetCmd(c->StrArg(1)), &get_response_raw, c->reply)) {
+        return;
+    }
+    if (!IsOkStatus(get_response_raw.response_status())) {
+        c->reply->SetNullString();
+        return;
+    }
+    str2::GetResponse get_response;
+    if (!ParseStringGetResponse(get_response_raw, &get_response, c->reply)) {
+        return;
+    }
+
+    if (persist || has_ttl) {
+        CmdResponse update_response;
+        CmdRequest update_cmd = persist ? PersistCmd(c->StrArg(1)) : ExpireCmd(c->StrArg(1), ttl_ms);
+        if (!ExecuteRedisSingle(redis_service_, update_cmd, &update_response, c->reply)) {
+            return;
+        }
+        if (!IsOkStatus(update_response.response_status())) {
+            SetRedisStatusError(c->reply, update_response.response_status());
+            return;
+        }
     }
     c->reply->SetString(get_response.value());
 }
@@ -1916,6 +2024,22 @@ void RedisCommandHandler::HVals(RedisClientContext* c) {
     }
 }
 
+
+void RedisCommandHandler::HStrlen(RedisClientContext* c) {
+    CmdResponse response;
+    if (!ExecuteRedisSingle(redis_service_, HashGetExtCmd(c->StrArg(1), c->StrArg(2)), &response,
+                            c->reply)) {
+        return;
+    }
+    hash2::GetResponse get_response;
+    if (!IsOkStatus(response.response_status()) ||
+        !ParseHashGetResponse(response, &get_response, c->reply) || !get_response.exist()) {
+        c->reply->SetInteger(0);
+        return;
+    }
+    c->reply->SetInteger(static_cast<int64_t>(get_response.value().size()));
+}
+
 void RedisCommandHandler::HIncrBy(RedisClientContext* c) {
     int64_t delta = 0;
     if (!ParseInt64Arg(c->StrArg(3), &delta)) {
@@ -2077,6 +2201,61 @@ void RedisCommandHandler::LPush(RedisClientContext* c) {
 void RedisCommandHandler::RPush(RedisClientContext* c) {
     std::vector<std::string> values;
     if (!LoadEncodedList(redis_service_, c->StrArg(1), &values, c->reply)) {
+        return;
+    }
+    for (size_t i = 2; i < c->ArgSize(); ++i) {
+        values.emplace_back(c->StrArg(i));
+    }
+    if (!SaveEncodedList(redis_service_, c->StrArg(1), values, c->reply)) {
+        return;
+    }
+    c->reply->SetInteger(static_cast<int64_t>(values.size()));
+}
+
+
+void RedisCommandHandler::LPushX(RedisClientContext* c) {
+    CmdResponse response;
+    if (!ExecuteRedisSingle(redis_service_, StringGetCmd(c->StrArg(1)), &response, c->reply)) {
+        return;
+    }
+    if (!IsOkStatus(response.response_status())) {
+        c->reply->SetInteger(0);
+        return;
+    }
+    str2::GetResponse get_response;
+    if (!ParseStringGetResponse(response, &get_response, c->reply)) {
+        return;
+    }
+    std::vector<std::string> values;
+    if (!DecodeStringVector(get_response.value(), ListPrefix(), &values)) {
+        SetRedisError(c->reply, "WRONGTYPE Operation against a key holding the wrong kind of value");
+        return;
+    }
+    for (size_t i = 2; i < c->ArgSize(); ++i) {
+        values.insert(values.begin(), c->StrArg(i));
+    }
+    if (!SaveEncodedList(redis_service_, c->StrArg(1), values, c->reply)) {
+        return;
+    }
+    c->reply->SetInteger(static_cast<int64_t>(values.size()));
+}
+
+void RedisCommandHandler::RPushX(RedisClientContext* c) {
+    CmdResponse response;
+    if (!ExecuteRedisSingle(redis_service_, StringGetCmd(c->StrArg(1)), &response, c->reply)) {
+        return;
+    }
+    if (!IsOkStatus(response.response_status())) {
+        c->reply->SetInteger(0);
+        return;
+    }
+    str2::GetResponse get_response;
+    if (!ParseStringGetResponse(response, &get_response, c->reply)) {
+        return;
+    }
+    std::vector<std::string> values;
+    if (!DecodeStringVector(get_response.value(), ListPrefix(), &values)) {
+        SetRedisError(c->reply, "WRONGTYPE Operation against a key holding the wrong kind of value");
         return;
     }
     for (size_t i = 2; i < c->ArgSize(); ++i) {
@@ -2274,6 +2453,78 @@ void RedisCommandHandler::ZRem(RedisClientContext* c) {
     c->reply->SetInteger(removed);
 }
 
+
+void RedisCommandHandler::ZIncrBy(RedisClientContext* c) {
+    double increment = 0;
+    if (!ParseDoubleArg(c->StrArg(2), &increment)) {
+        c->reply->SetError("ERR value is not a valid float");
+        return;
+    }
+    std::vector<ZItem> items;
+    if (!LoadEncodedZSet(redis_service_, c->StrArg(1), &items, c->reply)) {
+        return;
+    }
+    int index = FindZMember(items, c->StrArg(3));
+    double new_score = increment;
+    if (index < 0) {
+        items.push_back({c->StrArg(3), new_score, FormatDouble(new_score)});
+    } else {
+        new_score = items[index].score + increment;
+        if (!std::isfinite(new_score)) {
+            c->reply->SetError("ERR resulting score is not a valid float");
+            return;
+        }
+        items[index].score = new_score;
+        items[index].score_text = FormatDouble(new_score);
+    }
+    if (!SaveEncodedZSet(redis_service_, c->StrArg(1), items, c->reply)) {
+        return;
+    }
+    c->reply->SetString(FormatDouble(new_score));
+}
+
+void RedisCommandHandler::ZPopMin(RedisClientContext* c) {
+    int64_t count = 1;
+    if (c->ArgSize() == 3 && (!ParseInt64Arg(c->StrArg(2), &count) || count < 0)) {
+        c->reply->SetError("ERR value is out of range, must be positive");
+        return;
+    }
+    std::vector<ZItem> items;
+    if (!LoadEncodedZSet(redis_service_, c->StrArg(1), &items, c->reply)) {
+        return;
+    }
+    SortZSet(&items);
+    int64_t n = std::min<int64_t>(count, items.size());
+    c->reply->SetArray(n * 2);
+    for (int64_t i = 0; i < n; ++i) {
+        (*c->reply)[i * 2].SetString(items[i].member);
+        (*c->reply)[i * 2 + 1].SetString(items[i].score_text);
+    }
+    items.erase(items.begin(), items.begin() + n);
+    SaveEncodedZSet(redis_service_, c->StrArg(1), items, c->reply);
+}
+
+void RedisCommandHandler::ZPopMax(RedisClientContext* c) {
+    int64_t count = 1;
+    if (c->ArgSize() == 3 && (!ParseInt64Arg(c->StrArg(2), &count) || count < 0)) {
+        c->reply->SetError("ERR value is out of range, must be positive");
+        return;
+    }
+    std::vector<ZItem> items;
+    if (!LoadEncodedZSet(redis_service_, c->StrArg(1), &items, c->reply)) {
+        return;
+    }
+    SortZSet(&items, true);
+    int64_t n = std::min<int64_t>(count, items.size());
+    c->reply->SetArray(n * 2);
+    for (int64_t i = 0; i < n; ++i) {
+        (*c->reply)[i * 2].SetString(items[i].member);
+        (*c->reply)[i * 2 + 1].SetString(items[i].score_text);
+    }
+    items.erase(items.begin(), items.begin() + n);
+    SaveEncodedZSet(redis_service_, c->StrArg(1), items, c->reply);
+}
+
 void RedisCommandHandler::ZCard(RedisClientContext* c) {
     std::vector<ZItem> items;
     if (!LoadEncodedZSet(redis_service_, c->StrArg(1), &items, c->reply)) {
@@ -2417,6 +2668,54 @@ void RedisCommandHandler::ZRangeByScore(RedisClientContext* c) {
             (*c->reply)[i * 2 + 1].SetString(item.score_text);
         }
     }
+}
+
+
+void RedisCommandHandler::ZRemRangeByScore(RedisClientContext* c) {
+    double min_score = 0;
+    double max_score = 0;
+    if (!ParseZRangeBound(c->StrArg(2), &min_score) ||
+        !ParseZRangeBound(c->StrArg(3), &max_score)) {
+        c->reply->SetError("ERR min or max is not a float");
+        return;
+    }
+    std::vector<ZItem> items;
+    if (!LoadEncodedZSet(redis_service_, c->StrArg(1), &items, c->reply)) {
+        return;
+    }
+    size_t old_size = items.size();
+    items.erase(std::remove_if(items.begin(), items.end(), [min_score, max_score](const ZItem& item) {
+        return item.score >= min_score && item.score <= max_score;
+    }), items.end());
+    if (!SaveEncodedZSet(redis_service_, c->StrArg(1), items, c->reply)) {
+        return;
+    }
+    c->reply->SetInteger(static_cast<int64_t>(old_size - items.size()));
+}
+
+void RedisCommandHandler::ZRemRangeByRank(RedisClientContext* c) {
+    int64_t start = 0;
+    int64_t stop = 0;
+    if (!ParseInt64Arg(c->StrArg(2), &start) || !ParseInt64Arg(c->StrArg(3), &stop)) {
+        c->reply->SetError("ERR value is not an integer or out of range");
+        return;
+    }
+    std::vector<ZItem> items;
+    if (!LoadEncodedZSet(redis_service_, c->StrArg(1), &items, c->reply)) {
+        return;
+    }
+    SortZSet(&items);
+    auto range = NormalizeRange(start, stop, items.size());
+    if (items.empty() || range.first > range.second || range.first >= static_cast<int64_t>(items.size())) {
+        c->reply->SetInteger(0);
+        return;
+    }
+    int64_t removed = range.second - range.first + 1;
+    items.erase(items.begin() + range.first, items.begin() + range.second + 1);
+    if (!SaveEncodedZSet(redis_service_, c->StrArg(1), items, c->reply)) {
+        return;
+    }
+    c->reply->SetInteger(removed);
 }
 
 void RedisCommandHandler::ZCount(RedisClientContext* c) {
