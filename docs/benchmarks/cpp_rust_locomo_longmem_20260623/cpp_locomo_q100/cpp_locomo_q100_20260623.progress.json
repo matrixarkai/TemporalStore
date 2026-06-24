@@ -1,0 +1,7 @@
+{
+  "partial": false,
+  "questions_completed": 100,
+  "report_json": "docs/benchmarks/cpp_rust_locomo_longmem_20260623/cpp_locomo_q100/cpp_locomo_q100_20260623.report.json",
+  "result_json": "docs/benchmarks/cpp_rust_locomo_longmem_20260623/cpp_locomo_q100/cpp_locomo_q100_20260623.result.json",
+  "updated_at_ms": 1782273728935
+}
