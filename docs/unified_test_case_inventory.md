@@ -190,6 +190,7 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `control_scheduler_token_stale_rejection` | Rust-executable/C++-static gate for metaserver scheduler-issued lifecycle tokens and stale generation rejection. |
 | `control_datanode_lifecycle_restart_recovery` | Rust-executable/C++-static gate for data-node lifecycle, snapshot restore, and restart diagnostics. |
 | `control_client_retry_budget_topology_refresh` | Rust-executable/C++-static gate for client retry budgets, topology refresh, stale route invalidation, and no duplicate unsafe writes. |
+| `cross_storage_control_agent_parity` | Rust-executable/C++-static gate tying storage dump/load/cache recovery, client/proxy topology/admission, data-node lifecycle, metaserver scheduler tokens, and Context agent resource/skill parser workflow evidence into one cross-subsystem contract. |
 | `ingestion_kafka_consumer_group_runtime_rebalance` | Rust-executable/C++-static gate for Kafka consumer-group runtime assignment, rebalance-required detection, and backpressure. |
 | `ingestion_flink_checkpoint_restart_failover` | Rust-executable/C++-static gate for Flink checkpoint lifecycle across restart/failover idempotence. |
 | `ingestion_dead_letter_lag_report_contract` | Rust-executable/C++-static gate for dead-letter export, lag metrics, committed offsets, and valid-record continuation. |

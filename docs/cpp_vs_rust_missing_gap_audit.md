@@ -64,6 +64,20 @@ legacy C++ wire are intentionally not part of the Rust target. The Rust open-sou
 
 ## What Was Closed In The Latest Pass
 
+This pass added a cross-subsystem shared parity gate:
+
+1. `cross_storage_control_agent_parity` is now a required unified C++/Rust case.
+2. The case ties storage dump/load/cache recovery, client/proxy topology refresh and admission,
+   data-node lifecycle barriers, metaserver scheduler tokens, and Context agent resource/skill
+   parser workflow evidence into one contract.
+3. The Rust control-plane parity validator now checks concrete evidence snippets across
+   `engine.rs`, `client.rs`, `proxy.rs`, `data_node.rs`, `metaserver.rs`, and
+   `context_workflow.rs`.
+4. The C++ side remains a static surface gate until a native cross-subsystem corpus runner is
+   wired, but the required C++ source families are explicitly listed in the shared corpus.
+
+## Previous Client/Proxy/Metaserver/Nodeserver Pass
+
 This pass closed the twelfth client/proxy/metaserver/nodeserver C++ parity cycle:
 
 1. Table writes now check whether their cached table topology is due for MetaSync before selecting

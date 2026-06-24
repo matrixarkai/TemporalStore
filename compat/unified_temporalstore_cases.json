@@ -111,6 +111,7 @@
       "control_scheduler_token_stale_rejection",
       "control_datanode_lifecycle_restart_recovery",
       "control_client_retry_budget_topology_refresh",
+      "cross_storage_control_agent_parity",
       "ingestion_kafka_consumer_group_runtime_rebalance",
       "ingestion_flink_checkpoint_restart_failover",
       "ingestion_dead_letter_lag_report_contract",
@@ -264,7 +265,8 @@
           "cpp_client_control_plane_parity",
           "cpp_proxy_control_plane_parity",
           "cpp_data_node_lifecycle_parity",
-          "cpp_metaserver_control_plane_parity"
+          "cpp_metaserver_control_plane_parity",
+          "cpp_cross_subsystem_parity"
         ],
         "status": "temporary_static_surface_gate",
         "blocker": "Native C++ control-plane corpus runner is not wired yet; client/proxy/data-node/metaserver source and harness paths remain required.",
@@ -4247,6 +4249,27 @@
             ],
             "rust_runner": "cargo test -p temporalstore-rust ingestion_batch_reports_duplicate_kafka_offsets_without_nooping_valid_records -- --test-threads=1",
             "rust_validator": "python3 tools/validate_ingestion_ops_parity_evidence.py"
+          }
+        }
+      ]
+    },
+    {
+      "name": "cross_storage_control_agent_parity",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "storage_client_proxy_datanode_meta_agent_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_cross_subsystem_parity",
+            "mode": "rust_executable_cxx_static",
+            "description": "Shared C++/Rust cross-subsystem parity case tying storage dump/load and cache recovery, client/proxy topology refresh and admission, data-node lifecycle barriers, metaserver scheduler tokens, and Context agent resource/skill parser workflow evidence into one gate.",
+            "required_paths": [
+              "docs/cross_storage_control_agent_parity.md"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust context_resource context_skill runtime_load_reload_unload_records_lifecycle_transitions proxy_policy_blocks_writes_not_serving_and_drop_percent direct_client_refreshes_cached_route_after_failure metaserver_scheduler_drives_load_reload_unload_lifecycle_workflow -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py && python3 tools/validate_raft_storage_parity_evidence.py",
+            "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-cross-subsystem-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native"
           }
         }
       ]

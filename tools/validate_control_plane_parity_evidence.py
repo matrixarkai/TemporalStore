@@ -335,6 +335,61 @@ AREAS: tuple[ParityArea, ...] = (
             ),
         ),
     ),
+    ParityArea(
+        name="cross_storage_control_agent_parity_shared",
+        corpus_case="cross_storage_control_agent_parity",
+        suite="cpp_cross_subsystem_parity",
+        rust_evidence=(
+            RustEvidence(
+                "crates/temporalstore-rust/src/engine.rs",
+                (
+                    "SlotDumpManifest",
+                    "StorageLifecycleReport",
+                    "StorageRecoveryBoundaryReport",
+                ),
+            ),
+            RustEvidence(
+                "crates/temporalstore-rust/src/client.rs",
+                (
+                    "refresh_stale_routes_from_meta",
+                    "safe_budget_free_write_retry",
+                    "start_meta_sync_loop_handle",
+                ),
+            ),
+            RustEvidence(
+                "crates/temporalstore-rust/src/proxy.rs",
+                (
+                    "check_admission_for_commands",
+                    "refresh_topology_from_meta",
+                    "ProxyCppMigrationContract",
+                ),
+            ),
+            RustEvidence(
+                "crates/temporalstore-rust/src/data_node.rs",
+                (
+                    "runtime_auto_persists_lifecycle_snapshot_across_transitions",
+                    "runtime_rejects_foreground_writes_during_lifecycle_transition",
+                    "lifecycle_write_blocked",
+                ),
+            ),
+            RustEvidence(
+                "crates/temporalstore-rust/src/bin/metaserver.rs",
+                (
+                    "metaserver_scheduler_drives_load_reload_unload_lifecycle_workflow",
+                    "metaserver_scheduler_restores_execution_tokens_from_snapshot_file",
+                    "fetch_node_lifecycle",
+                ),
+            ),
+            RustEvidence(
+                "crates/temporalstore-rust/src/context_workflow.rs",
+                (
+                    "ContextSkillParseReport",
+                    "parse_context_skill_markdown",
+                    "context_resource_chunk_embedding",
+                ),
+            ),
+        ),
+    ),
 )
 
 
