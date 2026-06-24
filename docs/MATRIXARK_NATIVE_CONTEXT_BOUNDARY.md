@@ -23,6 +23,9 @@ Both C++ and Rust should implement the same behavior behind the shared test corp
 - `write_matrixark_record`
 - `write_matrixark_records`
 - `read_matrixark_record`
+- `read_matrixark_records`
+
+Every command result includes `elapsed_ms` so MCP and benchmark callers can report native storage latency without measuring from Python only.
 
 Records are stored with this canonical shape:
 

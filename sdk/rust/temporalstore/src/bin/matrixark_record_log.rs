@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::io::{self, BufRead, Read, Write};
+use std::time::Instant;
 
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -17,6 +18,7 @@ struct Command {
     record_type: Option<String>,
     tenant_hash: Option<u64>,
     record_id: Option<String>,
+    record_ids: Option<Vec<String>>,
     metaserver: Option<String>,
     namespace: Option<String>,
     table: Option<String>,
@@ -160,6 +162,18 @@ fn write_matrixark_record(
     Ok(json!({"key": key, "field": field, "record_type": record_type, "record_id": record_id}))
 }
 
+fn read_matrixark_record(
+    client: &Client,
+    record_type: &str,
+    tenant_hash: u64,
+    record_id: &str,
+) -> Result<Value, String> {
+    let key = matrixark_storage_key(record_type, tenant_hash);
+    let field = matrixark_storage_field(record_id);
+    let value = client.hget(&key, &field).map_err(|err| err.to_string())?;
+    Ok(json!({"key": key, "field": field, "record_id": record_id, "value": value}))
+}
+
 fn run_with_client(client: &Client, command: Command) -> Result<Value, String> {
     match command.op.as_str() {
         "put_string" => {
@@ -236,10 +250,28 @@ fn run_with_client(client: &Client, command: Command) -> Result<Value, String> {
                 .tenant_hash
                 .ok_or_else(|| "missing tenant_hash".to_string())?;
             let record_id = required(command.record_id, "record_id")?;
-            let key = matrixark_storage_key(&record_type, tenant_hash);
-            let field = matrixark_storage_field(&record_id);
-            let value = client.hget(&key, &field).map_err(|err| err.to_string())?;
-            Ok(json!({"ok": true, "key": key, "field": field, "value": value}))
+            let read = read_matrixark_record(client, &record_type, tenant_hash, &record_id)?;
+            Ok(json!({"ok": true, "read": read}))
+        }
+        "read_matrixark_records" => {
+            let record_type = required(command.record_type, "record_type")?;
+            let tenant_hash = command
+                .tenant_hash
+                .ok_or_else(|| "missing tenant_hash".to_string())?;
+            let record_ids = command
+                .record_ids
+                .as_ref()
+                .ok_or_else(|| "missing record_ids".to_string())?;
+            let mut reads = Vec::with_capacity(record_ids.len());
+            for record_id in record_ids {
+                reads.push(read_matrixark_record(
+                    client,
+                    &record_type,
+                    tenant_hash,
+                    record_id,
+                )?);
+            }
+            Ok(json!({"ok": true, "read": reads.len(), "records": reads}))
         }
         "hget" => {
             let value = client
@@ -259,14 +291,20 @@ fn run(command: Command) -> Result<Value, String> {
     run_with_client(&client, command)
 }
 
-fn print_result(result: Result<Value, String>) -> bool {
+fn print_result(result: Result<Value, String>, elapsed_ms: u128) -> bool {
     match result {
-        Ok(value) => {
+        Ok(mut value) => {
+            if let Some(object) = value.as_object_mut() {
+                object.insert("elapsed_ms".to_string(), json!(elapsed_ms));
+            }
             println!("{}", value);
             true
         }
         Err(err) => {
-            println!("{}", json!({"ok": false, "error": err}));
+            println!(
+                "{}",
+                json!({"ok": false, "error": err, "elapsed_ms": elapsed_ms})
+            );
             false
         }
     }
@@ -309,11 +347,12 @@ fn serve() -> i32 {
                 }
             }
         }
+        let started = Instant::now();
         let result = clients
             .get(&key)
             .ok_or_else(|| "missing cached TemporalStore client".to_string())
             .and_then(|client| run_with_client(client, command));
-        print_result(result);
+        print_result(result, started.elapsed().as_millis());
         let _ = stdout.flush();
     }
     0
@@ -332,7 +371,8 @@ fn single_shot() -> i32 {
             return 1;
         }
     };
-    if print_result(run(command)) {
+    let started = Instant::now();
+    if print_result(run(command), started.elapsed().as_millis()) {
         0
     } else {
         1
@@ -393,5 +433,14 @@ mod tests {
         assert!(matrixark_record_id(&record, None).is_err());
         assert!(matrixark_record_type(&json!({}), None).is_err());
         assert!(matrixark_tenant_hash(&json!({}), None).is_err());
+    }
+
+    #[test]
+    fn matrixark_record_storage_key_is_shared_for_batch_read_write() {
+        assert_eq!(
+            matrixark_storage_key("context_pack_audit", 77),
+            "matrixark:record:context_pack_audit:77"
+        );
+        assert_eq!(matrixark_storage_field("query-1"), "query-1");
     }
 }
