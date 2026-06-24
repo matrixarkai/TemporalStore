@@ -29,6 +29,11 @@ class RedisCommand {
         kInfo,
         kAuth,
         kPing,
+        kEcho,
+        kQuit,
+        kClient,
+        kCommand,
+        kSelect,
         kBgSave,
         kConfig,
         kPSlotAdd,
@@ -45,6 +50,7 @@ class RedisCommand {
         kPauseWrite,
         kFlushAll,
         kPartition,
+        kType,
         kGet,
         kSet,
         kSetNx,
@@ -55,6 +61,7 @@ class RedisCommand {
         kMGet,
         kMSet,
         kDel,
+        kUnlink,
         kExists,
         kExpire,
         kPExpire,
@@ -166,6 +173,11 @@ class RedisCommandHandler : public brpc::RedisCommandHandler {
 
     // each function down below handles a command
     void Ping(RedisClientContext* c);
+    void Echo(RedisClientContext* c);
+    void Quit(RedisClientContext* c);
+    void Client(RedisClientContext* c);
+    void Command(RedisClientContext* c);
+    void Select(RedisClientContext* c);
     void Config(RedisClientContext* c);
     void ConfigSet(RedisClientContext* c);
     void SlaveOf(RedisClientContext* c);
@@ -174,6 +186,7 @@ class RedisCommandHandler : public brpc::RedisCommandHandler {
     void PartitionLoad(RedisClientContext* c);
     void PartitionUnload(RedisClientContext* c);
     void Auth(RedisClientContext* c);
+    void Type(RedisClientContext* c);
     void Get(RedisClientContext* c);
     void Set(RedisClientContext* c);
     void SetNx(RedisClientContext* c);

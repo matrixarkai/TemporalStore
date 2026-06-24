@@ -84,8 +84,16 @@ k() { printf '%s:%s' "${KEY_PREFIX}" "$1"; }
 
 expect_eq ping PONG PING
 expect_eq echo hello ECHO hello
+expect_eq select_db0 OK SELECT 0
+expect_error select_nonzero SELECT 1
+expect_eq client_setname OK CLIENT SETNAME matrixark-smoke
+expect_eq client_getname "" CLIENT GETNAME
+expect_eq client_id 0 CLIENT ID
+expect_eq command_count 0 COMMAND COUNT
 expect_eq set OK SET "$(k string)" v1
 expect_eq get v1 GET "$(k string)"
+expect_eq type_string string TYPE "$(k string)"
+expect_eq type_missing none TYPE "$(k missing)"
 expect_eq set_nx_missing OK SET "$(k nx)" first NX
 expect_eq set_nx_existing "" SET "$(k nx)" second NX
 expect_eq get_nx first GET "$(k nx)"
@@ -135,7 +143,10 @@ expect_eq persist 1 PERSIST "$(k nx)"
 expect_eq ttl_after_persist -1 TTL "$(k nx)"
 expect_eq del_existing 1 DEL "$(k string)"
 expect_eq ttl_missing -2 TTL "$(k string)"
+expect_eq unlink_existing 1 UNLINK "$(k counter)"
+expect_eq type_after_unlink none TYPE "$(k counter)"
 expect_eq hset 2 HSET "$(k hash)" f1 v1 f2 v2
+expect_eq type_hash hash TYPE "$(k hash)"
 expect_eq hset_existing 0 HSET "$(k hash)" f1 v1b
 expect_eq hget v1b HGET "$(k hash)" f1
 expect_eq hmget $'v1b\nv2' HMGET "$(k hash)" f1 f2
@@ -155,6 +166,7 @@ expect_eq hexists_after_hdel 0 HEXISTS "$(k hash)" f1
 expect_eq hmset OK HMSET "$(k hash2)" a 1 b 2
 expect_eq hmget_hmset $'1\n2' HMGET "$(k hash2)" a b
 expect_eq sadd 2 SADD "$(k set)" a b a
+expect_eq type_set set TYPE "$(k set)"
 expect_eq scard 2 SCARD "$(k set)"
 expect_eq sismember_present 1 SISMEMBER "$(k set)" a
 expect_eq sismember_missing 0 SISMEMBER "$(k set)" missing
@@ -164,6 +176,7 @@ expect_contains_line smembers_b b SMEMBERS "$(k set)"
 expect_eq srem 1 SREM "$(k set)" a missing
 expect_eq scard_after_srem 1 SCARD "$(k set)"
 expect_eq lpush 3 LPUSH "$(k list)" a b c
+expect_eq type_list list TYPE "$(k list)"
 expect_eq rpush 5 RPUSH "$(k list)" d e
 expect_eq llen 5 LLEN "$(k list)"
 expect_eq lindex c LINDEX "$(k list)" 0
@@ -173,6 +186,7 @@ expect_eq rpop e RPOP "$(k list)"
 expect_eq ltrim OK LTRIM "$(k list)" 0 1
 expect_eq lrange_after_ltrim $'b\na' LRANGE "$(k list)" 0 -1
 expect_eq zadd 3 ZADD "$(k zset)" 1 alice 2 bob 1.5 carol
+expect_eq type_zset zset TYPE "$(k zset)"
 expect_eq zadd_update 0 ZADD "$(k zset)" 3 bob
 expect_eq zcard 3 ZCARD "$(k zset)"
 expect_eq zscore 3 ZSCORE "$(k zset)" bob
