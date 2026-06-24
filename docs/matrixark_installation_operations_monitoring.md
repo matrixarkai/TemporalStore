@@ -40,7 +40,7 @@ agent_name = codex
 user_id = deeproute
 
 [temporalstore]
-backend = cpp
+backend = cpp        # cpp | rust
 mode = local-single-node
 storage = async
 raft = false
@@ -99,7 +99,8 @@ The local Docker distribution should expose the same pieces:
 
 ```text
 matrixark-server        MCP/API + context runtime
-temporalstore-data      local C++ or Rust TemporalStore backend
+temporalstore-data      local C++ TemporalStore backend
+temporalstore-rust      optional Rust TemporalStore backend
 matrixark-models        optional OSS embedding/reader/VLM model cache
 matrixark-monitoring    static console + health.json
 prometheus              metrics scrape and alert rules
@@ -119,8 +120,42 @@ The installation target is to wrap those into one command:
 matrixark-server init --home ~/.matrixark
 matrixark-server doctor
 matrixark-server start --backend cpp --local
+matrixark-server start --backend rust --local
 matrixark-server apply-key --agent codex
 ```
+
+## C++ And Rust Store Parity
+
+MatrixArk should operate against either TemporalStore implementation through the same product contract. The caller should not change API payloads, access scopes, ContextPack shape, monitoring views, or benchmark commands when switching backends.
+
+| Area | C++ TemporalStore | Rust TemporalStore | Required parity |
+| --- | --- | --- | --- |
+| Local developer mode | Native process, direct SDK, or proxy/gateway. | Long-lived Rust gateway or binding; CLI-per-operation is debug only. | Same `backend=cpp|rust` switch in config and Docker. |
+| Serving data | ContextNode, ContextSummary, ContextEmbedding, ContextEvent, ContextEntity, ContextIndex, ResourceChunk, SkillManifest, ContextPackAudit. | Same logical records and wire shape. | Same record keys, timestamps, ids, and replay output. |
+| Ingestion | API, MCP, hook, batch/session commit, streaming, resource, skill, feedback. | Same ingestion APIs. | Same idempotency behavior and audit refs. |
+| Retrieval | Tree-first traversal, secondary-index filtering, event/entity/resource/skill selection, token-budget packing. | Same retrieval semantics. | Same selected refs and dropped-ref reasons for parity tests. |
+| Storage mode | Local single node, multi data node, async oplog, future Raft HA. | Local single node first, then gateway-backed async writes and future HA mode. | Same health state and metrics labels. |
+| Benchmarking | LOCOMO, LongMemEval, scale tests, resource/skill tests. | Same unified tests. | Same artifacts: result JSON, report JSON/MD, hypotheses JSONL, ContextPack JSONL, judge JSONL. |
+
+Backend selection should be explicit:
+
+```bash
+export MATRIXARK_TEMPORALSTORE_BACKEND=cpp
+python3 tools/matrixark_mcp_server.py --event-log "$MATRIXARK_MCP_EVENT_LOG"
+
+export MATRIXARK_TEMPORALSTORE_BACKEND=rust
+python3 tools/matrixark_mcp_server.py --event-log "$MATRIXARK_MCP_EVENT_LOG"
+```
+
+Production Rust must not spawn a Rust CLI once per storage operation. That path is useful for feature parity tests, but product runs need a long-lived process, gateway, or in-process binding so latency and concurrency are comparable with C++.
+
+Parity gates:
+
+1. Same message/resource/skill input produces the same logical records.
+2. Same query produces equivalent ContextPack sections, selected refs, dropped refs, and audit reasons.
+3. Same LOCOMO/LongMemEval subset writes the same artifact types for both backends.
+4. Same monitoring UI can inspect either backend using `temporalstore.backend`.
+5. Same access-management rules apply before record reads and writes.
 
 ## Operations Console
 
@@ -156,7 +191,14 @@ Minimum health payload:
 {
   "status": "ready",
   "server": {"uptime_s": 120, "version": "dev"},
-  "temporalstore": {"backend": "cpp", "mode": "local-single-node", "status": "ready"},
+  "temporalstore": {
+    "backend": "cpp",
+    "mode": "local-single-node",
+    "status": "ready",
+    "storage": "async",
+    "raft": false,
+    "gateway": "ready"
+  },
   "models": {"embedding": "ready", "reader": "deterministic"},
   "context_ops": {
     "ingest_ok": true,
@@ -172,6 +214,8 @@ Diagnostic commands:
 
 ```bash
 matrixark-server doctor
+matrixark-server doctor --backend cpp
+matrixark-server doctor --backend rust
 matrixark-server list-keys
 matrixark-server inspect-node tenant:tenant_codex/user:deeproute/session:thread-1
 matrixark-server replay <context_pack_id>
@@ -205,6 +249,9 @@ matrixark_resource_parse_total{type,status}
 matrixark_skill_selected_total{tenant}
 matrixark_access_denied_total{reason}
 matrixark_temporalstore_write_latency_ms_bucket{backend}
+matrixark_temporalstore_read_latency_ms_bucket{backend}
+matrixark_temporalstore_backend_status{backend,mode}
+matrixark_temporalstore_gateway_restarts_total{backend}
 ```
 
 ## Runbooks
@@ -226,6 +273,9 @@ Common fixes:
 - Slow retrieval: check model encode latency, TemporalStore write/audit backlog, and tree traversal fallback.
 - Resource miss: inspect parser output, chunk hashes, L0 summary, chunk embeddings, and resource access scope.
 - Skill miss: inspect skill triggers, owner scope, status, precedence, and selected-skill audit.
+- Backend mismatch: run the same parity fixture with `backend=cpp` and `backend=rust`; compare ContextPack JSONL, selected refs, dropped refs, and audit rows.
+- Rust slow path: verify the Rust backend is a long-lived gateway/binding, not CLI-per-operation.
+- C++ slow path: verify async oplog, batch append, audit buffering, and data-node count before raising retrieval worker concurrency.
 
 ## Product Parity Target
 
