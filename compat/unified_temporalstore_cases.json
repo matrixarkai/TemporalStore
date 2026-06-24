@@ -5176,6 +5176,26 @@
       ]
     },
     {
+      "name": "context_cpp_wire_model_descriptor_roundtrip",
+      "shard_id": 58,
+      "steps": [
+        {
+          "command": {
+            "description": "Shared C++/Rust Context model descriptor and wire-payload case for Context model IDs, key families, aliases, and C++ JSON payload round trips for node, event, entity, child, embedding, summary, compression, index, audit, and dirty-marker models.",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "src/model/model_context.cc"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust context_models_round_trip_cpp_wire_payloads_and_type_alias --lib -- --test-threads=1",
+            "rust_validator": "tools/run_context_workflow_local.sh",
+            "suite": "cpp_context_pipeline_parity"
+          },
+          "name": "context_cpp_wire_model_descriptor_roundtrip_shared"
+        }
+      ]
+    },
+    {
       "name": "context_embeddings_summaries_l0_l1_pipeline",
       "shard_id": 59,
       "steps": [
@@ -7175,6 +7195,7 @@
       "storage_stream_cross_block_large_values",
       "storage_stream_random_size_reopen_scan",
       "context_events_segments_entities_child_refs",
+      "context_cpp_wire_model_descriptor_roundtrip",
       "context_embeddings_summaries_l0_l1_pipeline",
       "context_compression_secondary_index_query_debug_flow",
       "control_multi_proxy_convergence_and_quarantine",

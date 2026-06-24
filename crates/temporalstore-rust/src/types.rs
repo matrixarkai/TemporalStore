@@ -1732,6 +1732,7 @@ pub struct BatchExecuteResponse {
 mod tests {
     use super::*;
 
+    // shared-corpus: context_cpp_wire_model_descriptor_roundtrip
     #[test]
     fn context_models_round_trip_cpp_wire_payloads_and_type_alias() {
         assert_eq!(

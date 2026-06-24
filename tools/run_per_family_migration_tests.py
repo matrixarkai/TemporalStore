@@ -107,12 +107,14 @@ FAMILIES: dict[str, FamilyConfig] = {
         "context",
         (
             "context_events_segments_entities_child_refs",
+            "context_cpp_wire_model_descriptor_roundtrip",
             "context_embeddings_summaries_l0_l1_pipeline",
             "context_compression_secondary_index_query_debug_flow",
             "context_event_index_audit_dirty_models",
         ),
         (
             "crates/temporalstore-rust/src/engine.rs::context_models_match_cpp_keys_timeline_pages_and_filters",
+            "crates/temporalstore-rust/src/types.rs::context_models_round_trip_cpp_wire_payloads_and_type_alias",
         ),
         "cargo test -p temporalstore-rust context_models_match_cpp_keys_timeline_pages_and_filters -- --test-threads=1",
         ("cpp_context_pipeline_parity",),
