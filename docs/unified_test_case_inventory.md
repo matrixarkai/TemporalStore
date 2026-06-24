@@ -6,22 +6,41 @@ shared cases feed.
 
 ## Summary
 
-The canonical shared test corpus is stored in the Rust repo first:
+The canonical shared test corpus is being externalized into the standalone
+`TemporalStoreTestCorpus` repository so C++ and Rust can consume the same case
+files, schemas, result contract, and comparator. During the transition, the Rust
+repo keeps a local fallback copy:
 
 ```text
 compat/unified_temporalstore_cases.json
 ```
 
+When the external repository is checked out, run the existing Rust validator
+against it with either:
+
+```bash
+python3 tools/run_temporalstore_unified_tests.py \
+  --validate-only \
+  --corpus ../TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json
+```
+
+or:
+
+```bash
+TEMPORALSTORE_TEST_CORPUS=../TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json \
+  python3 tools/run_temporalstore_unified_tests.py --validate-only
+```
+
 Current inventory:
 
 ```text
-total cases: 116
-total steps: 204
-executable shared behavior cases: 32
-executable shared behavior steps: 113
-C++ existing-test parity surface cases: 84
+total cases: 120
+total steps: 216
+executable shared behavior cases: 39
+executable shared behavior steps: 125
+C++ existing-test parity surface cases: 81
 C++ existing-test parity surface steps: 91
-C++ required source/test/harness paths: 164 unique paths
+C++ required source/test/harness paths: 168 unique paths
 required command kinds: 59
 required response kinds: 19
 ```

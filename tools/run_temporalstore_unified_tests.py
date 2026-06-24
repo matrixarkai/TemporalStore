@@ -20,7 +20,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CORPUS = ROOT / "compat" / "unified_temporalstore_cases.json"
+DEFAULT_CORPUS = Path(
+    os.environ.get("TEMPORALSTORE_TEST_CORPUS", ROOT / "compat" / "unified_temporalstore_cases.json")
+)
 DEFAULT_CPP_RUNNER_RELATIVE = Path("tools") / "run_temporalstore_unified_tests.sh"
 CPP_RAFT_PARITY_SUITE = "cpp_data_raft_parity"
 COMBINED_RAFT_GATE_CASES = {
@@ -117,7 +119,7 @@ COMPARISON_OUTPUT_FIELDS = {
     "latency_deltas",
 }
 
-CPP_RUNNER_TEMPLATE = """#!/usr/bin/env bash
+CPP_RUNNER_TEMPLATE = r"""#!/usr/bin/env bash
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
