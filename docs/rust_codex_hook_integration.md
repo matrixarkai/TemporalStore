@@ -1,9 +1,10 @@
-# Rust TemporalStore Codex Hook Integration
+# Rust TemporalStore Agent Hook Integration
 
-Last validated: 2026-06-23
+Last validated: 2026-06-24
 
-This mirrors the C++ MatrixArk Codex hook flow, but uses the Rust TemporalStore
-context pipeline directly. Codex lifecycle events are converted into
+This mirrors the C++ MatrixArk agent hook flow, but uses the Rust TemporalStore
+context pipeline directly. Codex, Claude, Cursor, and generic agent lifecycle
+events are converted into
 `ContextNode`, `ContextEvent`, `ContextIndexRef`, `ContextSummaryDirtyMarker`,
 retrieval blocks, prompt injection, and `ContextPackAudit` records through
 `TemporalEngine`.
@@ -16,27 +17,40 @@ That parity path is documented in
 ## Hook Shape
 
 Codex sends JSON to stdin for hook events such as `UserPromptSubmit` and `Stop`.
-The Rust hook accepts the same tolerant payload fields used by the C++ hook:
+Claude/Cursor style integrations can send equivalent JSON payloads. The Rust
+hook accepts the same tolerant payload fields used by the C++ hook plus common
+agent aliases:
 
 ```text
 prompt
 user_prompt
+userPrompt
 input
 text
 message
+query
+instruction
 params.prompt
 params.input
 params.text
 turn.input
+request.prompt
+request.input
+request.text
+conversation.last_message
+cursor.prompt
+claude.prompt
 messages[].content
 items[].content
+transcript[].content
+conversation[].content
 raw text payloads
 ```
 
 The Rust path is:
 
 ```text
-Codex hook event
+agent hook event
 -> codex_context_hook
 -> extract_context
 -> TemporalEngine durable ContextNode/Event/IndexRef/DirtyMarker writes
@@ -45,6 +59,10 @@ Codex hook event
 -> ContextPackAudit
 -> JSON hook report + JSONL event log
 ```
+
+The binary keeps the historical name `codex_context_hook` for compatibility, but
+it accepts `--agent-name` or `MATRIXARK_AGENT_NAME` / `TEMPORALSTORE_AGENT_NAME`.
+Supported built-in profiles are `codex`, `claude`, `cursor`, and `generic`.
 
 ## Project Hook Config
 
@@ -59,6 +77,7 @@ wsl -d <your-ubuntu-distro> -- bash -lc \
    tools/run_rust_codex_context_hook.sh --event UserPromptSubmit \
      --root /tmp/temporalstore-rust-codex-hook \
      --event-log /tmp/temporalstore-rust-codex-hook/events.jsonl \
+     --agent-name codex \
      --account-id acct_codex \
      --tenant-id tenant_codex \
      --user-id <user-id> \
@@ -69,6 +88,40 @@ After changing hooks, open `/hooks` in Codex and trust the project hook
 definition. Codex records trust by hook hash, so edited hook commands must be
 trusted again.
 
+## Claude And Cursor
+
+Claude or Cursor can call the same binary with a different agent profile. Each
+agent gets its own session index under `--root/<agent>-session-index.json`, while
+all events still use the same Rust TemporalStore context models.
+
+Claude-style prompt ingestion:
+
+```bash
+CARGO_TARGET_DIR=/tmp/temporalstore-context-workflow-target \
+  cargo run -p temporalstore-rust --bin codex_context_hook -- \
+  --agent-name claude \
+  --root /tmp/temporalstore-rust-agent-hook-test \
+  --event-log /tmp/temporalstore-rust-agent-hook-test/events.jsonl \
+  --event UserPromptSubmit \
+  --session-id claude-thread-local <<'JSON'
+{"claude":{"prompt":"Remember that Maya owns the Claude release checklist."}}
+JSON
+```
+
+Cursor-style tool or prompt event:
+
+```bash
+CARGO_TARGET_DIR=/tmp/temporalstore-context-workflow-target \
+  cargo run -p temporalstore-rust --bin codex_context_hook -- \
+  --agent-name cursor \
+  --root /tmp/temporalstore-rust-agent-hook-test \
+  --event-log /tmp/temporalstore-rust-agent-hook-test/events.jsonl \
+  --event cursor.tool \
+  --session-id cursor-workspace-local <<'JSON'
+{"cursor":{"prompt":"The edited file adds context retrieval tests."}}
+JSON
+```
+
 ## Manual Validation
 
 Build or run the hook:
@@ -76,6 +129,7 @@ Build or run the hook:
 ```bash
 CARGO_TARGET_DIR=/tmp/temporalstore-context-workflow-target \
   cargo run -p temporalstore-rust --bin codex_context_hook -- \
+  --agent-name codex \
   --root /tmp/temporalstore-rust-codex-hook-test \
   --event-log /tmp/temporalstore-rust-codex-hook-test/events.jsonl \
   --event UserPromptSubmit \
@@ -89,6 +143,7 @@ Then query the same session:
 ```bash
 CARGO_TARGET_DIR=/tmp/temporalstore-context-workflow-target \
   cargo run -p temporalstore-rust --bin codex_context_hook -- \
+  --agent-name codex \
   --root /tmp/temporalstore-rust-codex-hook-test \
   --event-log /tmp/temporalstore-rust-codex-hook-test/events.jsonl \
   --event UserPromptSubmit \
@@ -118,6 +173,8 @@ The hook prints one JSON object per event:
 {
   "status": "ok",
   "backend": "rust-temporalstore",
+  "agent_name": "codex",
+  "agent_profile": "codex",
   "event": "UserPromptSubmit",
   "lifecycle_stage": {
     "before_llm_retrieve": true,
@@ -140,9 +197,9 @@ The hook prints one JSON object per event:
 ```
 
 The JSONL event log is stored at the configured `--event-log` path. A small
-session node index is stored under `--root/codex-session-index.json` so separate
-hook processes can retrieve prior Rust TemporalStore nodes for the same Codex
-session.
+session node index is stored under `--root/<agent>-session-index.json` so
+separate hook processes can retrieve prior Rust TemporalStore nodes for the same
+agent session.
 
 ## Difference From C++ Hook
 

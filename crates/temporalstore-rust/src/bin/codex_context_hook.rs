@@ -16,6 +16,7 @@ use temporalstore_rust::{
 
 #[derive(Debug, Clone)]
 struct Args {
+    agent_name: String,
     event: String,
     root: PathBuf,
     event_log: PathBuf,
@@ -68,7 +69,8 @@ fn main() {
     ));
     let now_ms = now_ms();
     let source_id = format!(
-        "codex:{}:{}:{:016x}",
+        "{}:{}:{}:{:016x}",
+        args.agent_name,
         args.session_id,
         args.event,
         stable_hash64(&text)
@@ -84,8 +86,13 @@ fn main() {
                 tenant_hash,
                 source_kind: source_kind_for_event(&args.event),
                 source_id: source_id.clone(),
-                title: format!("Codex {} {}", args.event, args.session_id),
-                body: format!("{}: {}", role_for_event(&args.event), text),
+                title: format!("{} {} {}", args.agent_name, args.event, args.session_id),
+                body: format!(
+                    "agent={}; role={}: {}",
+                    args.agent_name,
+                    role_for_event(&args.event),
+                    text
+                ),
                 timestamp_ms: now_ms,
                 provider: ContextModelProviderConfig::default(),
             },
@@ -103,11 +110,16 @@ fn main() {
         });
         if extract.status.ok && extract.node.node_hash != 0 {
             extracted_node_hash = Some(extract.node.node_hash);
-            remember_session_node(&args.root, &args.session_id, extract.node.node_hash);
+            remember_session_node(
+                &args.root,
+                &args.agent_name,
+                &args.session_id,
+                extract.node.node_hash,
+            );
         }
     }
 
-    let mut node_hashes = session_nodes(&args.root, &args.session_id);
+    let mut node_hashes = session_nodes(&args.root, &args.agent_name, &args.session_id);
     if let Some(node_hash) = extracted_node_hash {
         node_hashes.push(node_hash);
     }
@@ -150,7 +162,7 @@ fn main() {
             "status": if inject.status.ok { "ok" } else { "failed" },
             "code": inject.status.code,
             "message": inject.status.message,
-            "context_pack_id": format!("rust-codex-pack-{:016x}", stable_hash64(&inject.audit.query_id)),
+            "context_pack_id": format!("rust-agent-pack-{:016x}", stable_hash64(&inject.audit.query_id)),
             "selected_ref_count": inject.audit.selected_refs.len(),
             "blocked_ref_count": inject.audit.blocked_refs.len(),
             "selected_block_count": inject.selected_blocks.len(),
@@ -164,6 +176,8 @@ fn main() {
     let report = json!({
         "status": "ok",
         "backend": "rust-temporalstore",
+        "agent_name": args.agent_name,
+        "agent_profile": agent_profile(&args.agent_name),
         "event": args.event,
         "lifecycle_stage": {
             "before_llm_retrieve": args.event == "UserPromptSubmit",
@@ -182,7 +196,7 @@ fn main() {
         "retrieve": retrieve_status,
         "node_index": {
             "session_node_count": node_hashes.len(),
-            "path": args.root.join("codex-session-index.json"),
+            "path": session_index_path(&args.root, &args.agent_name),
         },
         "root": args.root,
         "event_log": args.event_log,
@@ -196,7 +210,11 @@ fn main() {
 
 fn parse_args() -> Args {
     let mut args = std::env::args().skip(1);
+    let agent_name = std::env::var("MATRIXARK_AGENT_NAME")
+        .or_else(|_| std::env::var("TEMPORALSTORE_AGENT_NAME"))
+        .unwrap_or_else(|_| "codex".to_string());
     let mut parsed = Args {
+        agent_name,
         event: std::env::var("CODEX_HOOK_EVENT").unwrap_or_else(|_| "UserPromptSubmit".to_string()),
         root: PathBuf::from(
             std::env::var("TEMPORALSTORE_RUST_CODEX_HOOK_ROOT")
@@ -223,6 +241,9 @@ fn parse_args() -> Args {
     };
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--agent-name" | "--agent" => {
+                parsed.agent_name = args.next().unwrap_or(parsed.agent_name)
+            }
             "--event" => parsed.event = args.next().unwrap_or(parsed.event),
             "--root" => parsed.root = PathBuf::from(args.next().unwrap_or_default()),
             "--event-log" => parsed.event_log = PathBuf::from(args.next().unwrap_or_default()),
@@ -258,13 +279,22 @@ fn payload_text(payload: &Value) -> Option<String> {
     for path in [
         &["prompt"][..],
         &["user_prompt"][..],
+        &["userPrompt"][..],
         &["input"][..],
         &["text"][..],
         &["message"][..],
+        &["query"][..],
+        &["instruction"][..],
         &["params", "prompt"][..],
         &["params", "input"][..],
         &["params", "text"][..],
         &["turn", "input"][..],
+        &["request", "prompt"][..],
+        &["request", "input"][..],
+        &["request", "text"][..],
+        &["conversation", "last_message"][..],
+        &["cursor", "prompt"][..],
+        &["claude", "prompt"][..],
         &["raw_text"][..],
     ] {
         if let Some(value) = string_at(payload, path) {
@@ -273,7 +303,7 @@ fn payload_text(payload: &Value) -> Option<String> {
             }
         }
     }
-    for key in ["messages", "items", "input"] {
+    for key in ["messages", "items", "input", "transcript", "conversation"] {
         if let Some(items) = payload.get(key).and_then(Value::as_array) {
             let parts = items
                 .iter()
@@ -309,22 +339,26 @@ fn string_at(value: &Value, path: &[&str]) -> Option<String> {
 
 fn source_kind_for_event(event: &str) -> ContextSourceKind {
     match event {
-        "PostToolUse" | "PreToolUse" | "PermissionRequest" => ContextSourceKind::Code,
-        "Stop" | "PostCompact" | "SubagentStop" => ContextSourceKind::UserEvent,
+        "PostToolUse" | "PreToolUse" | "PermissionRequest" | "ToolCall" | "ToolResult"
+        | "cursor.tool" | "claude.tool" => ContextSourceKind::Code,
+        "Stop" | "PostCompact" | "SubagentStop" | "SessionEnd" | "ConversationStop"
+        | "cursor.stop" | "claude.stop" => ContextSourceKind::UserEvent,
         _ => ContextSourceKind::Chat,
     }
 }
 
 fn role_for_event(event: &str) -> &'static str {
     match event {
-        "PostToolUse" | "PreToolUse" | "PermissionRequest" => "tool",
-        "Stop" | "PostCompact" | "SubagentStop" => "assistant",
+        "PostToolUse" | "PreToolUse" | "PermissionRequest" | "ToolCall" | "ToolResult"
+        | "cursor.tool" | "claude.tool" => "tool",
+        "Stop" | "PostCompact" | "SubagentStop" | "SessionEnd" | "ConversationStop"
+        | "cursor.stop" | "claude.stop" => "assistant",
         _ => "user",
     }
 }
 
-fn session_nodes(root: &PathBuf, session_id: &str) -> Vec<u64> {
-    let path = root.join("codex-session-index.json");
+fn session_nodes(root: &PathBuf, agent_name: &str, session_id: &str) -> Vec<u64> {
+    let path = session_index_path(root, agent_name);
     fs::read_to_string(path)
         .ok()
         .and_then(|text| serde_json::from_str::<SessionIndex>(&text).ok())
@@ -332,8 +366,8 @@ fn session_nodes(root: &PathBuf, session_id: &str) -> Vec<u64> {
         .unwrap_or_default()
 }
 
-fn remember_session_node(root: &PathBuf, session_id: &str, node_hash: u64) {
-    let path = root.join("codex-session-index.json");
+fn remember_session_node(root: &PathBuf, agent_name: &str, session_id: &str, node_hash: u64) {
+    let path = session_index_path(root, agent_name);
     let mut index = fs::read_to_string(&path)
         .ok()
         .and_then(|text| serde_json::from_str::<SessionIndex>(&text).ok())
@@ -346,6 +380,41 @@ fn remember_session_node(root: &PathBuf, session_id: &str, node_hash: u64) {
         path,
         serde_json::to_vec_pretty(&index).expect("session index should serialize"),
     );
+}
+
+fn session_index_path(root: &PathBuf, agent_name: &str) -> PathBuf {
+    root.join(format!(
+        "{}-session-index.json",
+        sanitize_agent_name(agent_name)
+    ))
+}
+
+fn sanitize_agent_name(agent_name: &str) -> String {
+    let value = agent_name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    let trimmed = value.trim_matches('-');
+    if trimmed.is_empty() {
+        "agent".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn agent_profile(agent_name: &str) -> &'static str {
+    match agent_name.to_ascii_lowercase().as_str() {
+        "codex" => "codex",
+        "claude" | "claude-ai" | "claude_code" | "claude-code" => "claude",
+        "cursor" | "cursor-ai" => "cursor",
+        _ => "generic",
+    }
 }
 
 fn append_event_log(path: &PathBuf, report: &Value) {
