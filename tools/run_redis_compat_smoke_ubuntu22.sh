@@ -100,6 +100,15 @@ expect_eq get_nx first GET "$(k nx)"
 expect_eq set_xx_missing "" SET "$(k xx)" value XX
 expect_eq set_xx_existing OK SET "$(k nx)" updated XX
 expect_eq get_xx updated GET "$(k nx)"
+expect_eq set_ex_option OK SET "$(k setexopt)" ttlv EX 60
+expect_eq get_set_ex_option ttlv GET "$(k setexopt)"
+expect_eq set_px_option OK SET "$(k setpxopt)" pxttl PX 60000
+expect_eq get_set_px_option pxttl GET "$(k setpxopt)"
+expect_eq set_get_existing updated SET "$(k nx)" get-replaced GET
+expect_eq get_after_set_get get-replaced GET "$(k nx)"
+expect_eq set_get_missing "" SET "$(k setgetmissing)" first GET
+expect_eq get_set_get_missing first GET "$(k setgetmissing)"
+expect_error set_ttl_conditional SET "$(k setbad)" v EX 60 NX
 expect_eq setnx_missing 1 SETNX "$(k setnx)" once
 expect_eq setnx_existing 0 SETNX "$(k setnx)" twice
 expect_eq get_setnx once GET "$(k setnx)"
@@ -119,6 +128,9 @@ expect_eq setex OK SETEX "$(k setex)" 60 v2
 expect_eq get_setex v2 GET "$(k setex)"
 expect_eq psetex OK PSETEX "$(k psetex)" 60000 v3
 expect_eq get_psetex v3 GET "$(k psetex)"
+expect_eq getex_plain v3 GETEX "$(k psetex)"
+expect_eq getex_ex v3 GETEX "$(k psetex)" EX 60
+expect_eq getex_persist v3 GETEX "$(k psetex)" PERSIST
 expect_eq mset OK MSET "$(k m1)" a "$(k m2)" b
 expect_eq mget $'a\nb' MGET "$(k m1)" "$(k m2)"
 expect_eq mget_missing $'a\n\nb' MGET "$(k m1)" "$(k missing)" "$(k m2)"
@@ -161,6 +173,8 @@ expect_contains_line hkeys_f1 f1 HKEYS "$(k hash)"
 expect_contains_line hkeys_f2 f2 HKEYS "$(k hash)"
 expect_contains_line hvals_v1 v1b HVALS "$(k hash)"
 expect_contains_line hvals_v2 v2 HVALS "$(k hash)"
+expect_eq hstrlen 3 HSTRLEN "$(k hash)" f1
+expect_eq hstrlen_missing 0 HSTRLEN "$(k hash)" nofield
 expect_eq hdel 1 HDEL "$(k hash)" f1
 expect_eq hexists_after_hdel 0 HEXISTS "$(k hash)" f1
 expect_eq hmset OK HMSET "$(k hash2)" a 1 b 2
@@ -175,37 +189,51 @@ expect_contains_line smembers_a a SMEMBERS "$(k set)"
 expect_contains_line smembers_b b SMEMBERS "$(k set)"
 expect_eq srem 1 SREM "$(k set)" a missing
 expect_eq scard_after_srem 1 SCARD "$(k set)"
+expect_eq lpushx_missing 0 LPUSHX "$(k listxmissing)" ghost
+expect_eq rpushx_missing 0 RPUSHX "$(k listxmissing)" ghost
 expect_eq lpush 3 LPUSH "$(k list)" a b c
 expect_eq type_list list TYPE "$(k list)"
-expect_eq rpush 5 RPUSH "$(k list)" d e
-expect_eq llen 5 LLEN "$(k list)"
-expect_eq lindex c LINDEX "$(k list)" 0
-expect_eq lrange $'c\nb\na\nd\ne' LRANGE "$(k list)" 0 -1
-expect_eq lpop c LPOP "$(k list)"
-expect_eq rpop e RPOP "$(k list)"
+expect_eq lpushx_existing 4 LPUSHX "$(k list)" head
+expect_eq rpush 6 RPUSH "$(k list)" d e
+expect_eq rpushx_existing 7 RPUSHX "$(k list)" tail
+expect_eq llen 7 LLEN "$(k list)"
+expect_eq lindex head LINDEX "$(k list)" 0
+expect_eq lrange $'head\nc\nb\na\nd\ne\ntail' LRANGE "$(k list)" 0 -1
+expect_eq lpop head LPOP "$(k list)"
+expect_eq rpop tail RPOP "$(k list)"
 expect_eq ltrim OK LTRIM "$(k list)" 0 1
-expect_eq lrange_after_ltrim $'b\na' LRANGE "$(k list)" 0 -1
+expect_eq lrange_after_ltrim $'c\nb' LRANGE "$(k list)" 0 -1
 expect_eq zadd 3 ZADD "$(k zset)" 1 alice 2 bob 1.5 carol
 expect_eq type_zset zset TYPE "$(k zset)"
 expect_eq zadd_update 0 ZADD "$(k zset)" 3 bob
 expect_eq zcard 3 ZCARD "$(k zset)"
 expect_eq zscore 3 ZSCORE "$(k zset)" bob
+expect_eq zincrby 4.5 ZINCRBY "$(k zset)" 1.5 bob
+expect_eq zscore_after_zincrby 4.5 ZSCORE "$(k zset)" bob
 expect_eq zrank 2 ZRANK "$(k zset)" bob
 expect_eq zrevrank 0 ZREVRANK "$(k zset)" bob
 expect_eq zrange $'alice\ncarol\nbob' ZRANGE "$(k zset)" 0 -1
 expect_eq zrevrange $'bob\ncarol\nalice' ZREVRANGE "$(k zset)" 0 -1
-expect_eq zrange_withscores $'alice\n1\ncarol\n1.5\nbob\n3' ZRANGE "$(k zset)" 0 -1 WITHSCORES
-expect_eq zrangebyscore $'carol\nbob' ZRANGEBYSCORE "$(k zset)" 1.1 3
-expect_eq zrangebyscore_withscores $'carol\n1.5\nbob\n3' ZRANGEBYSCORE "$(k zset)" 1.1 3 WITHSCORES
-expect_eq zrangebyscore_limit bob ZRANGEBYSCORE "$(k zset)" 1 3 LIMIT 2 1
-expect_eq zrangebyscore_withscores_limit $'carol\n1.5' ZRANGEBYSCORE "$(k zset)" 1 3 WITHSCORES LIMIT 1 1
-expect_eq zcount 2 ZCOUNT "$(k zset)" 1.1 3
-expect_eq zrem 1 ZREM "$(k zset)" carol missing
-expect_eq zcard_after_zrem 2 ZCARD "$(k zset)"
+expect_eq zrange_withscores $'alice\n1\ncarol\n1.5\nbob\n4.5' ZRANGE "$(k zset)" 0 -1 WITHSCORES
+expect_eq zrangebyscore $'carol\nbob' ZRANGEBYSCORE "$(k zset)" 1.1 5
+expect_eq zrangebyscore_withscores $'carol\n1.5\nbob\n4.5' ZRANGEBYSCORE "$(k zset)" 1.1 5 WITHSCORES
+expect_eq zrangebyscore_limit bob ZRANGEBYSCORE "$(k zset)" 1 5 LIMIT 2 1
+expect_eq zrangebyscore_withscores_limit $'carol\n1.5' ZRANGEBYSCORE "$(k zset)" 1 5 WITHSCORES LIMIT 1 1
+expect_eq zcount 2 ZCOUNT "$(k zset)" 1.1 5
+expect_eq zremrangebyscore 1 ZREMRANGEBYSCORE "$(k zset)" 1.4 1.6
+expect_eq zremrangebyrank 1 ZREMRANGEBYRANK "$(k zset)" 0 0
+expect_eq zcard_after_zremrange 1 ZCARD "$(k zset)"
+expect_eq zrem 0 ZREM "$(k zset)" carol missing
+expect_eq zcard_after_zrem 1 ZCARD "$(k zset)"
+expect_eq zadd_pop 3 ZADD "$(k zpop)" 1 low 2 mid 3 high
+expect_eq zpopmin $'low\n1\nmid\n2' ZPOPMIN "$(k zpop)" 2
+expect_eq zpopmax $'high\n3' ZPOPMAX "$(k zpop)"
 expect_error unsupported_bgsave BGSAVE
 expect_error unsupported_flushall FLUSHALL
 expect_error unsupported_pslotinfo PSLOTINFO
 expect_error unsupported_scan SCAN 0
+expect_error unsupported_keys KEYS "*"
+expect_error unsupported_dbsize DBSIZE
 expect_error unsupported_multi MULTI
 expect_error unsupported_eval EVAL "return 1" 0
 expect_error unsupported_xadd XADD "$(k stream)" "*" f v

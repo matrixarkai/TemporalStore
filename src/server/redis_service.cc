@@ -84,6 +84,8 @@ void RedisServiceImpl::InitCommands() {
                     &RedisCommandHandler::GetSet);
     RegisterCommand("getdel", RedisCommand::CmdType::kGetDel, 2, "w", 1, 1, 1,
                     &RedisCommandHandler::GetDel);
+    RegisterCommand("getex", RedisCommand::CmdType::kGetEx, -2, "w", 1, 1, 1,
+                    &RedisCommandHandler::GetEx);
     RegisterCommand("mget", RedisCommand::CmdType::kMGet, -2, "rF", 1, -1, 1,
                     &RedisCommandHandler::MGet);
     RegisterCommand("mset", RedisCommand::CmdType::kMSet, -3, "wm", 1, -1, 2,
@@ -136,6 +138,8 @@ void RedisServiceImpl::InitCommands() {
                     &RedisCommandHandler::HKeys);
     RegisterCommand("hvals", RedisCommand::CmdType::kHVals, 2, "r", 1, 1, 1,
                     &RedisCommandHandler::HVals);
+    RegisterCommand("hstrlen", RedisCommand::CmdType::kHStrlen, 3, "rF", 1, 1, 1,
+                    &RedisCommandHandler::HStrlen);
     RegisterCommand("hincrby", RedisCommand::CmdType::kHIncrBy, 4, "wm", 1, 1, 1,
                     &RedisCommandHandler::HIncrBy);
     RegisterCommand("sadd", RedisCommand::CmdType::kSAdd, -3, "wm", 1, 1, 1,
@@ -154,6 +158,10 @@ void RedisServiceImpl::InitCommands() {
                     &RedisCommandHandler::LPush);
     RegisterCommand("rpush", RedisCommand::CmdType::kRPush, -3, "wm", 1, 1, 1,
                     &RedisCommandHandler::RPush);
+    RegisterCommand("lpushx", RedisCommand::CmdType::kLPushX, -3, "wm", 1, 1, 1,
+                    &RedisCommandHandler::LPushX);
+    RegisterCommand("rpushx", RedisCommand::CmdType::kRPushX, -3, "wm", 1, 1, 1,
+                    &RedisCommandHandler::RPushX);
     RegisterCommand("lpop", RedisCommand::CmdType::kLPop, -2, "w", 1, 1, 1,
                     &RedisCommandHandler::LPop);
     RegisterCommand("rpop", RedisCommand::CmdType::kRPop, -2, "w", 1, 1, 1,
@@ -168,8 +176,18 @@ void RedisServiceImpl::InitCommands() {
                     &RedisCommandHandler::LTrim);
     RegisterCommand("zadd", RedisCommand::CmdType::kZAdd, -4, "wm", 1, 1, 1,
                     &RedisCommandHandler::ZAdd);
+    RegisterCommand("zincrby", RedisCommand::CmdType::kZIncrBy, 4, "wm", 1, 1, 1,
+                    &RedisCommandHandler::ZIncrBy);
     RegisterCommand("zrem", RedisCommand::CmdType::kZRem, -3, "w", 1, 1, 1,
                     &RedisCommandHandler::ZRem);
+    RegisterCommand("zpopmin", RedisCommand::CmdType::kZPopMin, -2, "w", 1, 1, 1,
+                    &RedisCommandHandler::ZPopMin);
+    RegisterCommand("zpopmax", RedisCommand::CmdType::kZPopMax, -2, "w", 1, 1, 1,
+                    &RedisCommandHandler::ZPopMax);
+    RegisterCommand("zremrangebyscore", RedisCommand::CmdType::kZRemRangeByScore, 4, "w", 1, 1, 1,
+                    &RedisCommandHandler::ZRemRangeByScore);
+    RegisterCommand("zremrangebyrank", RedisCommand::CmdType::kZRemRangeByRank, 4, "w", 1, 1, 1,
+                    &RedisCommandHandler::ZRemRangeByRank);
     RegisterCommand("zcard", RedisCommand::CmdType::kZCard, 2, "rF", 1, 1, 1,
                     &RedisCommandHandler::ZCard);
     RegisterCommand("zscore", RedisCommand::CmdType::kZScore, 3, "rF", 1, 1, 1,
@@ -186,7 +204,7 @@ void RedisServiceImpl::InitCommands() {
                     &RedisCommandHandler::ZRangeByScore);
     RegisterCommand("zcount", RedisCommand::CmdType::kZCount, 4, "rF", 1, 1, 1,
                     &RedisCommandHandler::ZCount);
-    for (const char* name : {"scan", "type", "dbsize", "multi", "exec", "discard", "watch",
+    for (const char* name : {"scan", "keys", "dbsize", "multi", "exec", "discard", "watch",
                              "unwatch", "eval", "publish", "subscribe", "xadd", "xread"}) {
         RegisterCommand(name, RedisCommand::CmdType::kUnsupported, -1, "", 0, 0, 0,
                         &RedisCommandHandler::Unsupported);
