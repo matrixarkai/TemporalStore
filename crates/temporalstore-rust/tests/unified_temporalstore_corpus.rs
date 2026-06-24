@@ -11,7 +11,7 @@ use temporalstore_rust::engine::SlotDumpFollowerReplayCursor;
 use temporalstore_rust::http::{json_response, parse_json, serve};
 use temporalstore_rust::{
     execute_redis_command, production_readiness_report, ClientOptions, Command,
-    CommandResponse, ExecuteRequest, RespValue, ScanStreamRequest,
+    CommandResponse, EndToEndWorkflow, ExecuteRequest, RespValue, ScanStreamRequest,
     SharedStoreReplicator, SharedStoreStorageMode, Status, StorageLifecycleRequest, StreamKind,
     StreamReadRequest, StreamReadResponse, TableOptions, TemporalEngine, TemporalStoreClient,
 };
@@ -395,6 +395,10 @@ fn maybe_run_shared_harness_command(case: &UnifiedCase, step: &UnifiedStep) -> b
             verify_redis_feature_module_flow();
             true
         }
+        "raft_linearizable_hash_failover" => {
+            verify_raft_linearizable_hash_failover();
+            true
+        }
         _ => false,
     }
 }
@@ -571,6 +575,93 @@ fn verify_redis_feature_module_flow() {
         run(vec![s("FQUERY"), s("rf"), s("0"), s("400"), s("10")]),
         RespValue::Array(Vec::new())
     );
+}
+
+fn verify_raft_linearizable_hash_failover() {
+    let workflow = EndToEndWorkflow::new(1, [1, 2, 3]);
+    let checker = Arc::new(Mutex::new(SimpleKvChecker::default()));
+
+    for _ in 0..16 {
+        let value = checker.lock().unwrap().next_write_value();
+        workflow
+            .proxy()
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashSet {
+                    key: "consistent-key".to_string(),
+                    field: "field".to_string(),
+                    value: value.to_string().into_bytes(),
+                },
+            })
+            .unwrap();
+        checker.lock().unwrap().finish_write(value);
+
+        let response = workflow
+            .proxy()
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::HashGet {
+                    key: "consistent-key".to_string(),
+                    field: "field".to_string(),
+                },
+            })
+            .unwrap();
+        let CommandResponse::Bytes { value: Some(value) } = response.response else {
+            panic!("expected hash value");
+        };
+        let value = std::str::from_utf8(&value).unwrap().parse::<u64>().unwrap();
+        assert!(checker.lock().unwrap().finish_read(value));
+    }
+
+    workflow.set_data_node_alive(1, false).unwrap();
+    let value = checker.lock().unwrap().next_write_value();
+    workflow
+        .proxy()
+        .execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashSet {
+                key: "consistent-key".to_string(),
+                field: "field".to_string(),
+                value: value.to_string().into_bytes(),
+            },
+        })
+        .unwrap();
+    checker.lock().unwrap().finish_write(value);
+    assert_eq!(
+        workflow
+            .read_data_node(
+                2,
+                Command::HashGet {
+                    key: "consistent-key".to_string(),
+                    field: "field".to_string(),
+                },
+            )
+            .unwrap(),
+        CommandResponse::Bytes {
+            value: Some(value.to_string().into_bytes())
+        }
+    );
+}
+
+#[derive(Default)]
+struct SimpleKvChecker {
+    version: u64,
+    committed: u64,
+}
+
+impl SimpleKvChecker {
+    fn next_write_value(&mut self) -> u64 {
+        self.version += 1;
+        self.version
+    }
+
+    fn finish_write(&mut self, value: u64) {
+        self.committed = self.committed.max(value);
+    }
+
+    fn finish_read(&self, value: u64) -> bool {
+        value > 0 && value <= self.committed
+    }
 }
 
 fn maybe_run_storage_parity_command(case: &UnifiedCase, step: &UnifiedStep) -> bool {

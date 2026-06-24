@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "description": "Grandfathered Rust attributed tests present before the shared-corpus product-test guard. New tests must declare either shared-corpus:<case> or rust-internal:<reason>.",
-  "rust_attributed_tests": 523,
+  "rust_attributed_tests": 522,
   "grandfathered_tests": [
     "crates/temporalstore-rust/src/bin/external_chaos_gate.rs::quick_plan_covers_external_process_and_storage_chaos",
     "crates/temporalstore-rust/src/bin/external_chaos_gate.rs::full_plan_adds_scale_pressure",
@@ -523,7 +523,6 @@
     "crates/temporalstore-rust/tests/storage_crash_harness.rs::storage_crash_harness_recovers_after_abrupt_process_abort",
     "crates/temporalstore-rust/tests/storage_crash_harness.rs::storage_crash_harness_reports_corrupt_page_after_process_abort",
     "crates/temporalstore-rust/tests/storage_migration_corpus.rs::rust_storage_replays_cpp_migration_corpus_across_lifecycle_paths",
-    "crates/temporalstore-rust/tests/temporalstore_compat.rs::consistency_bench_style_hash_writes_are_linearizable_through_raft",
     "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs::rust_executes_shared_cpp_rust_temporalstore_corpus",
     "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs::rust_client_executes_shared_cpp_rust_temporalstore_corpus"
   ]

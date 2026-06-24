@@ -212,6 +212,7 @@
       "storage_cache_refill",
       "storage_shared_store_replay",
       "storage_stream_reopen_scan",
+      "raft_linearizable_hash_failover",
       "ops_readiness_service_summary",
       "redis_feature_module_flow"
     ],
@@ -3733,6 +3734,15 @@
       "rust_parity_gate": "tools/run_raft_distributed_parity.sh",
       "rust_parity_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
       "steps": [
+        {
+          "name": "raft_linearizable_hash_failover",
+          "skip_client": true,
+          "command": {
+            "kind": "raft_linearizable_hash_failover",
+            "scenario": "data_node_mixed_rw_failover",
+            "description": "Runs the Rust-native data-node Raft/proxy workflow with repeated hash writes, linearizable reads, failover, and secondary read validation."
+          }
+        },
         {
           "name": "data_raft_mixed_rw",
           "command": {
