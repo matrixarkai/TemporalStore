@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """MatrixArk skill parsing helpers.
 
 Skills are structured prompt/tool resources: a manifest plus bounded sections
@@ -8,6 +8,7 @@ front matter, section lists, and skill bundle directories.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,16 +55,21 @@ def parse_skill(
 ) -> ParsedSkill:
     raw_uri_text = str(raw_uri)
     bundle_files: list[str] = []
+    bundle_manifest: Json = {}
+    bundle_root = ""
     if text is None:
         path = Path(raw_uri_text)
         if path.is_dir():
+            bundle_root = str(path)
             bundle_files = sorted(str(item.relative_to(path)) for item in path.rglob("*") if item.is_file())[:200]
-            skill_path = path / "SKILL.md"
+            bundle_manifest = _load_bundle_manifest(path)
+            skill_path = _find_skill_entrypoint(path)
             raw_uri_text = str(skill_path)
         else:
             skill_path = path
         text = skill_path.read_text(encoding="utf-8")
     front_matter, body = _split_front_matter(text)
+    front_matter = {**bundle_manifest, **front_matter}
     skill_text = body.strip() or text.strip()
     name = str(front_matter.get("name") or front_matter.get("id") or _first_heading(skill_text) or Path(raw_uri_text).stem or "skill")
     description = str(front_matter.get("description") or front_matter.get("summary") or _first_paragraph(skill_text) or name)
@@ -103,6 +109,8 @@ def parse_skill(
         "version": version,
         "category": category,
         "bundle_files": bundle_files,
+        "bundle_root": bundle_root,
+        "bundle_manifest": bundle_manifest,
         "section_count": len(chunks),
     }
     return ParsedSkill(
@@ -115,6 +123,40 @@ def parse_skill(
         metadata=metadata,
         chunks=chunks,
     )
+
+
+def _find_skill_entrypoint(path: Path) -> Path:
+    for candidate in ["SKILL.md", "skill.md", "README.md", "readme.md"]:
+        skill_path = path / candidate
+        if skill_path.exists():
+            return skill_path
+    raise FileNotFoundError(f"skill bundle has no SKILL.md or README.md: {path}")
+
+
+def _load_bundle_manifest(path: Path) -> Json:
+    for rel in ["skill.json", "manifest.json", ".codex-plugin/plugin.json"]:
+        manifest_path = path / rel
+        if not manifest_path.exists():
+            continue
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        normalized: Json = {}
+        for key in ["name", "id", "description", "summary", "version", "status", "precedence", "category", "domain", "owner_scope", "scope", "visibility"]:
+            if key in data:
+                normalized[key] = data[key]
+        if "triggers" in data:
+            normalized["triggers"] = data["triggers"]
+        if "tools" in data:
+            normalized["tools"] = data["tools"]
+        if "allowed_tools" in data:
+            normalized["allowed_tools"] = data["allowed_tools"]
+        normalized["manifest_uri"] = str(manifest_path)
+        return normalized
+    return {}
 
 
 def _normalize_terms(values: list[str]) -> list[str]:
