@@ -182,6 +182,131 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         self.assertEqual(second_ingest["node_materialization"]["nodes_created"], 0)
         self.assertEqual(second_ingest["node_materialization"]["child_refs_created"], 0)
 
+    def test_resource_ingest_parses_chunks_and_embeddings(self):
+        ingest = self.call_tool(
+            "matrixark_ingest",
+            {
+                "kind": "resource",
+                "raw_uri": "runbook.md",
+                "resource_type": "md",
+                "messages": [
+                    {
+                        "role": "tool",
+                        "content": "# Rollback\n\nRollback is confirmed after health checks.\n\n## Budget\n\nFinance approved GPU capacity.",
+                    }
+                ],
+                "scope": {"user_id": "u1", "session_id": "s1"},
+                "metadata": {"node_path": ["user:u1", "resources", "runbook"]},
+                "chunk_hash_base": 8100,
+            },
+        )
+        self.assertEqual(ingest["status"], "accepted")
+        self.assertEqual(ingest["resource_chunk_count"], 2)
+        self.assertEqual(ingest["resource_chunks"], [8100, 8101])
+
+        replay = self.call_tool("matrixark_replay", {"context_pack_id": "debug"})
+        chunks = [record for record in replay["events"] if record.get("record_type") == "resource_chunk"]
+        self.assertEqual(len(chunks), 2)
+        self.assertEqual(chunks[0]["source_ref"], "runbook.md#heading=rollback")
+        self.assertEqual(chunks[1]["metadata"]["heading_slug"], "budget")
+        embeddings = [
+            record
+            for record in replay["events"]
+            if record.get("record_type") == "context_embedding"
+            and record.get("embedding_type") == "resource_chunk"
+        ]
+        self.assertEqual([record["ref_hash"] for record in embeddings], [8100, 8101])
+
+    def test_skill_ingest_parses_definition_chunks_and_embeddings(self):
+        ingest = self.call_tool(
+            "matrixark_ingest",
+            {
+                "kind": "skill",
+                "raw_uri": "skills/context/SKILL.md",
+                "messages": [
+                    {
+                        "role": "tool",
+                        "content": (
+                            "---\n"
+                            "name: context-debugger\n"
+                            "description: Debug MatrixArk context packs.\n"
+                            "---\n"
+                            "# Context Debugger\n\n"
+                            "Use this skill to inspect selected refs.\n\n"
+                            "## Steps\n\n"
+                            "Open replay and verify evidence."
+                        ),
+                    }
+                ],
+                "scope": {"user_id": "u1", "session_id": "s1"},
+                "metadata": {"node_path": ["user:u1", "skills", "context-debugger"]},
+                "chunk_hash_base": 9100,
+            },
+        )
+        self.assertEqual(ingest["status"], "accepted")
+        self.assertIsInstance(ingest["skill_hash"], int)
+        self.assertEqual(ingest["resource_chunks"], [9100, 9101])
+
+        replay = self.call_tool("matrixark_replay", {"context_pack_id": "debug"})
+        skill = next(record for record in replay["events"] if record.get("record_type") == "skill_manifest")
+        self.assertEqual(skill["name"], "context-debugger")
+        self.assertEqual(skill["description"], "Debug MatrixArk context packs.")
+        self.assertEqual(skill["metadata"]["resource_type"], "skill")
+        embeddings = [
+            record
+            for record in replay["events"]
+            if record.get("record_type") == "context_embedding"
+            and record.get("embedding_type") in {"skill_summary", "resource_chunk"}
+        ]
+        self.assertIn(("skill_summary", ingest["skill_hash"]), [(record["embedding_type"], record["ref_hash"]) for record in embeddings])
+        self.assertIn(("resource_chunk", 9100), [(record["embedding_type"], record["ref_hash"]) for record in embeddings])
+
+        pack = self.call_tool(
+            "matrixark_retrieve",
+            {
+                "query": "which skill helps inspect selected refs and replay evidence?",
+                "scope": {"user_id": "u1", "session_id": "s1"},
+                "max_context_tokens": 80,
+            },
+        )
+        selected_types = {ref["ref_type"] for ref in pack["selected_refs"]}
+        self.assertTrue({"skill", "skill_section"}.intersection(selected_types))
+        self.assertNotIn(
+            ("resource_chunk", 9100),
+            [(ref["ref_type"], ref["ref_hash"]) for ref in pack["selected_refs"]],
+        )
+
+    def test_resource_chunks_are_retrievable_as_context_pack_refs(self):
+        ingest = self.call_tool(
+            "matrixark_ingest",
+            {
+                "kind": "resource",
+                "raw_uri": "finance-runbook.txt",
+                "resource_type": "txt",
+                "messages": [
+                    {
+                        "role": "tool",
+                        "content": "GPU budget requests require finance approval.\n\nRollback notes are tracked separately.",
+                    }
+                ],
+                "scope": {"user_id": "u2", "session_id": "s2"},
+                "metadata": {"node_path": ["user:u2", "resources", "finance-runbook"]},
+                "chunk_hash_base": 9200,
+            },
+        )
+        self.assertEqual(ingest["resource_chunks"], [9200, 9201])
+
+        pack = self.call_tool(
+            "matrixark_retrieve",
+            {
+                "query": "finance approval for GPU budget requests",
+                "scope": {"user_id": "u2", "session_id": "s2"},
+                "max_context_tokens": 80,
+            },
+        )
+        refs = [(ref["ref_type"], ref["ref_hash"]) for ref in pack["selected_refs"]]
+        self.assertIn(("resource_chunk", 9200), refs)
+
     def test_default_session_node_path_stays_shallow(self):
         path = self.server.adapter.default_session_node_path({"account_id": "acct_x", "tenant_id": "tenant_y", "user_id": "alice", "session_id": "thread-1"})
         self.assertEqual(path, ["user:alice", "session:thread-1"])
