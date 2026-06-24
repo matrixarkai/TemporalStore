@@ -1762,3 +1762,145 @@ fn parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval() {
             && family.checked_ref_count == family.found_ref_count
             && family.missing_refs.is_empty()));
 }
+
+// shared-corpus: context_resource_skill_live_embedding_summary_retrieval
+#[test]
+fn resource_ingest_uses_live_embeddings_and_summary_retrieval() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = thread::spawn(move || {
+        for expected_path in ["/v1/chat/completions", "/v1/embeddings", "/v1/embeddings"] {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                let read = stream.read(&mut chunk).unwrap();
+                if read == 0 {
+                    break;
+                }
+                buffer.extend_from_slice(&chunk[..read]);
+                if let Some(header_end) = buffer.windows(4).position(|window| window == b"\r\n\r\n")
+                {
+                    let request = String::from_utf8_lossy(&buffer[..header_end + 4]);
+                    if request.contains(format!("POST {expected_path} HTTP/1.1").as_str()) {
+                        assert!(request.contains("Authorization: Bearer test-context-key"));
+                        let content_length = request
+                            .lines()
+                            .find_map(|line| {
+                                line.strip_prefix("content-length:")
+                                    .or_else(|| line.strip_prefix("Content-Length:"))
+                                    .and_then(|value| value.trim().parse::<usize>().ok())
+                            })
+                            .unwrap_or_default();
+                        if buffer.len() >= header_end + 4 + content_length {
+                            break;
+                        }
+                    }
+                }
+            }
+            let body_start = buffer
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .map(|index| index + 4)
+                .unwrap_or(buffer.len());
+            let request_body: serde_json::Value =
+                serde_json::from_slice(&buffer[body_start..]).unwrap();
+            let body = if expected_path.ends_with("chat/completions") {
+                assert_eq!(request_body["model"], "resource-chat-live-test");
+                serde_json::json!({
+                    "choices": [{
+                        "message": {
+                            "content": "{\"l0\":\"payment latency runbook\",\"l1\":\"kind=Document; facts=payment timeout rollback p95 latency\"}"
+                        }
+                    }]
+                })
+                .to_string()
+            } else {
+                assert_eq!(request_body["model"], "resource-embedding-live-test");
+                let count = request_body["input"].as_array().unwrap().len();
+                let data = (0..count)
+                    .map(|index| {
+                        serde_json::json!({
+                            "embedding": [1.0_f32, index as f32, 0.25_f32, 0.0_f32]
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                serde_json::json!({ "data": data }).to_string()
+            };
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
+            stream.flush().unwrap();
+        }
+    });
+
+    std::env::set_var("TS_CONTEXT_TEST_KEY", "test-context-key");
+    let engine = test_engine();
+    let provider = ContextModelProviderConfig {
+        provider_name: "resource-live".to_string(),
+        provider_kind: ContextProviderKind::OpenAiCompatible,
+        base_url: format!("http://{addr}/v1"),
+        api_key_env: "TS_CONTEXT_TEST_KEY".to_string(),
+        model: "resource-chat-live-test".to_string(),
+        embedding_model: "resource-embedding-live-test".to_string(),
+        mock_mode: false,
+        ..ContextModelProviderConfig::default()
+    };
+    let report = ingest_resource_skill_context(
+        &engine,
+        ContextResourceSkillIngestRequest {
+            shard_id: 1,
+            tenant_hash: 77,
+            resources: vec![ContextResourceParseRequest {
+                raw_uri: "viking://resources/payment-runbook.md".to_string(),
+                resource_type: Some("md".to_string()),
+                text: "# Payment Runbook\n\nPayment dependency timeout requires rollback and p95 latency validation."
+                    .to_string(),
+                max_chunk_chars: 1_400,
+                overlap_chars: 120,
+                chunk_hash_base: None,
+                owner_scope: "team:payments".to_string(),
+                version: "v1".to_string(),
+                watch_interval_minutes: 0,
+                parser_name: "unit-test-parser".to_string(),
+            }],
+            skills: Vec::new(),
+            query: "payment timeout p95 rollback".to_string(),
+            start_time_ms: 0,
+            end_time_ms: 10_000,
+            max_events: 4,
+            provider,
+        },
+    );
+    assert!(report.status.ok, "{:?}", report.status);
+    assert_eq!(report.embedding_evidence.extract_count, 1);
+    assert_eq!(report.embedding_evidence.requested_vector_count, 3);
+    assert_eq!(report.embedding_evidence.generated_vector_count, 3);
+    assert_eq!(report.embedding_evidence.live_call_count, 1);
+    assert_eq!(report.embedding_evidence.mock_generation_count, 0);
+    assert!(report.embedding_evidence.production_evidence_ready);
+    assert_eq!(
+        report.embedding_evidence.provider_names,
+        vec!["resource-live".to_string()]
+    );
+    assert_eq!(report.embedding_evidence.vector_dimensions, vec![4]);
+    assert_eq!(report.embedding_refs.len(), 3);
+    let traversal = &report
+        .retrieval
+        .query_understanding_debug
+        .tree_traversal_summary;
+    assert_eq!(traversal.query_embedding_provider, "resource-live");
+    assert_eq!(traversal.query_embedding_dimension, 4);
+    assert_eq!(traversal.summary_embedding_candidate_count, 1);
+    assert_eq!(traversal.summary_embedding_selected_count, 1);
+    assert!(traversal
+        .summary_embeddings
+        .iter()
+        .any(|entry| entry.starts_with("node:") && entry.contains(":score:")));
+    handle.join().unwrap();
+    std::env::remove_var("TS_CONTEXT_TEST_KEY");
+}

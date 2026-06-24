@@ -523,6 +523,20 @@ pub struct ContextResourceSkillSecondaryIndexReport {
     pub missing_refs: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ContextResourceSkillEmbeddingEvidenceReport {
+    pub extract_count: usize,
+    pub requested_vector_count: usize,
+    pub generated_vector_count: usize,
+    pub live_call_count: usize,
+    pub mock_generation_count: usize,
+    pub fallback_generation_count: usize,
+    pub production_evidence_ready: bool,
+    pub provider_names: Vec<String>,
+    pub embedding_models: Vec<String>,
+    pub vector_dimensions: Vec<usize>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextResourceSkillSecondaryIndexValidationRequest {
     pub shard_id: ShardId,
@@ -563,6 +577,8 @@ pub struct ContextResourceSkillIngestReport {
     pub skill_selection: ContextSkillSelectionReport,
     pub ingest: ContextIngestExtractReport,
     pub embedding_refs: Vec<u64>,
+    #[serde(default)]
+    pub embedding_evidence: ContextResourceSkillEmbeddingEvidenceReport,
     pub fanout: ContextResourceSkillModelFanoutReport,
     pub secondary_indexes: ContextResourceSkillSecondaryIndexReport,
     pub retrieval: ContextRetrieveReport,
@@ -2066,6 +2082,7 @@ pub fn ingest_resource_skill_context(
     secondary_indexes.summary_refs.dedup();
     embedding_refs.sort_unstable();
     embedding_refs.dedup();
+    let embedding_evidence = context_resource_skill_embedding_evidence(&ingest.extracts);
 
     verify_resource_skill_fanout(
         engine,
@@ -2114,6 +2131,7 @@ pub fn ingest_resource_skill_context(
         skill_selection,
         ingest,
         embedding_refs,
+        embedding_evidence,
         fanout,
         secondary_indexes,
         retrieval,
@@ -2419,6 +2437,53 @@ fn verify_resource_skill_fanout(
     secondary_indexes.missing_refs.sort();
     secondary_indexes.missing_refs.dedup();
     secondary_indexes.query_back_ok = secondary_indexes.missing_refs.is_empty();
+}
+
+fn context_resource_skill_embedding_evidence(
+    extracts: &[ContextExtractReport],
+) -> ContextResourceSkillEmbeddingEvidenceReport {
+    let mut report = ContextResourceSkillEmbeddingEvidenceReport {
+        extract_count: extracts.len(),
+        production_evidence_ready: !extracts.is_empty(),
+        ..ContextResourceSkillEmbeddingEvidenceReport::default()
+    };
+    for extract in extracts {
+        let generation = &extract.embedding_generation;
+        report.requested_vector_count = report
+            .requested_vector_count
+            .saturating_add(generation.requested_vector_count);
+        report.generated_vector_count = report
+            .generated_vector_count
+            .saturating_add(generation.generated_vector_count);
+        report.live_call_count = report
+            .live_call_count
+            .saturating_add(generation.live_call_count);
+        if generation.mock_mode {
+            report.mock_generation_count = report.mock_generation_count.saturating_add(1);
+        }
+        if generation.fallback_used {
+            report.fallback_generation_count = report.fallback_generation_count.saturating_add(1);
+        }
+        report.provider_names.push(generation.provider_name.clone());
+        report
+            .embedding_models
+            .push(generation.embedding_model.clone());
+        if generation.vector_dimension > 0 {
+            report.vector_dimensions.push(generation.vector_dimension);
+        }
+        report.production_evidence_ready &= generation.production_evidence_ready
+            && !generation.mock_mode
+            && generation.live_call_count > 0
+            && generation.generated_vector_count == generation.requested_vector_count
+            && generation.vector_dimension > 0;
+    }
+    report.provider_names.sort();
+    report.provider_names.dedup();
+    report.embedding_models.sort();
+    report.embedding_models.dedup();
+    report.vector_dimensions.sort_unstable();
+    report.vector_dimensions.dedup();
+    report
 }
 
 fn verify_secondary_index_refs(
