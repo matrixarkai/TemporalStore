@@ -1,0 +1,306 @@
+# MatrixArk Agent Integrations
+
+Date: 2026-06-24
+
+## Goal
+
+MatrixArk should integrate with Codex, Claude Desktop, Cursor, and vertical AI
+agent products through one stable context boundary:
+
+```text
+Agent local context
+-> MatrixArk MCP or HTTP API
+-> TemporalStore-backed context retrieval / ingestion / feedback
+-> ContextPack returned to the agent
+-> agent combines ContextPack with local files, buffers, tools, and prompt
+```
+
+MatrixArk does not replace the agent's local context engine.  It adds durable,
+time-aware, cross-session, cross-device, team-governed context that local prompt
+assembly usually does not have.
+
+## Integration Modes
+
+### 1. MCP Tool Integration
+
+Best for Codex, Claude Desktop, Cursor, and other MCP-capable agents.
+
+The agent explicitly calls:
+
+```text
+matrixark_retrieve
+matrixark_ingest
+matrixark_feedback
+matrixark_session_commit
+matrixark_replay
+```
+
+This is the safest default because the agent can decide when remote context is
+useful and how much token budget to allocate.
+
+### 2. Hook Integration
+
+Best for enterprise agent platforms and local tools that expose lifecycle hooks.
+
+Typical hook points:
+
+```text
+Before LLM:
+  ingest current user message
+  retrieve ContextPack
+
+After LLM:
+  ingest assistant answer, tool result, accepted refs, rejected refs
+
+On Stop / task finished:
+  commit pending same-session buffer
+
+On PostCompact:
+  ingest compacted summary
+  commit pending same-session buffer
+
+Idle timeout:
+  background commit
+```
+
+Hooks are useful when the customer wants automatic capture.  MCP is better when
+the agent wants explicit control.
+
+### 3. HTTP API Integration
+
+Best for SaaS agents, enterprise gateways, and vertical Cursor-like products.
+
+The public API shape remains simple:
+
+```json
+{
+  "messages": [{"role": "user", "content": "Alice approved the GPU request."}],
+  "scope": {
+    "account_id": "acct_acme",
+    "tenant_id": "tenant_prod",
+    "user_id": "user_123",
+    "session_id": "thread_456"
+  },
+  "metadata": {"source": "cursor", "task_type": "code_review"}
+}
+```
+
+The caller does not need to know MatrixArk internal data models.  MatrixArk owns
+extraction into `ContextNode`, `ContextEvent`, `ContextEntity`,
+`ContextSummary`, `ContextIndex`, `ResourceChunk`, and `ContextPackAudit`.
+
+## Client Setup
+
+Generate config snippets:
+
+```bash
+cd /root/src/github-services/TemporalStore
+python3 tools/matrixark_agent_config.py --client all
+```
+
+### Codex Desktop
+
+Add to `C:\Users\<you>\.codex\config.toml`:
+
+```toml
+[mcp_servers.matrixark]
+command = 'wsl.exe'
+args = [ '--cd', '/root/src/github-services/TemporalStore', '-e', 'bash', '-lc', 'exec tools/matrixark_mcp_cpp_server.sh' ]
+startup_timeout_sec = 120
+```
+
+Codex can then call MatrixArk MCP tools.  MCP calls are explicit; they do not
+fire for every message unless Codex is instructed or a hook is configured.
+
+### Claude Desktop
+
+Add to Claude Desktop's MCP config file:
+
+```json
+{
+  "mcpServers": {
+    "matrixark": {
+      "args": [
+        "--cd",
+        "/root/src/github-services/TemporalStore",
+        "-e",
+        "bash",
+        "-lc",
+        "exec tools/matrixark_mcp_cpp_server.sh"
+      ],
+      "command": "wsl.exe",
+      "env": {
+        "MATRIXARK_LOCAL_MODE": "cluster",
+        "MATRIXARK_MCP_BACKEND": "temporalstore-direct",
+        "MATRIXARK_RETRIEVAL_TIMEOUT_MS": "5000"
+      }
+    }
+  }
+}
+```
+
+Claude should use `matrixark_retrieve` before answering when prior durable memory
+or shared resources may matter, and `matrixark_ingest` or
+`matrixark_feedback` after the answer when a new durable fact, correction,
+commitment, or accepted/rejected reference should be remembered.
+
+### Cursor
+
+Use the same MCP server shape:
+
+```json
+{
+  "mcpServers": {
+    "matrixark": {
+      "command": "wsl.exe",
+      "args": [
+        "--cd",
+        "/root/src/github-services/TemporalStore",
+        "-e",
+        "bash",
+        "-lc",
+        "exec tools/matrixark_mcp_cpp_server.sh"
+      ],
+      "env": {
+        "MATRIXARK_LOCAL_MODE": "cluster",
+        "MATRIXARK_MCP_BACKEND": "temporalstore-direct",
+        "MATRIXARK_RETRIEVAL_TIMEOUT_MS": "5000"
+      }
+    }
+  }
+}
+```
+
+Cursor should keep using its local codebase context.  MatrixArk should be called
+for durable context such as historical decisions, team runbooks, project memory,
+prior debugging outcomes, approvals, resource chunks, and skills.
+
+### Vertical Agents
+
+Vertical agents can integrate through MCP or HTTP.  They should send:
+
+```text
+required:
+  messages or raw query
+  account_id or tenant_id
+  user_id or session_id
+
+strongly recommended:
+  session_id
+  source
+  task_type
+  max_context_tokens
+  local_context refs or summary
+  accepted_refs / rejected_refs after final answer
+```
+
+If a session id is missing, MatrixArk can fall back to user scope, but
+confirmation detection and same-session batch extraction are much better when
+`session_id` is present.
+
+## Runtime Flow
+
+```mermaid
+flowchart TD
+  A["Agent receives user query"] --> B["Local context scan: open files, buffers, tools"]
+  B --> C["matrixark_retrieve(query, scope, token budget, local refs)"]
+  C --> D["MatrixArk query understanding"]
+  D --> E["Tree-first ContextNode traversal using L0/L1 embeddings"]
+  E --> F["TemporalStore event/entity/resource/skill retrieval"]
+  F --> G["Staleness scoring + token-budget packing"]
+  G --> H["ContextPack"]
+  H --> I["Agent combines local context + ContextPack"]
+  I --> J["LLM answer/tool calls"]
+  J --> K["matrixark_ingest / feedback / session_commit"]
+  K --> L["Async summaries, embeddings, compression, audit"]
+```
+
+## Context Combination Policy
+
+Agents should not blindly append MatrixArk context on top of unchanged local
+context forever.  They should budget both:
+
+```text
+local_context_tokens
+remote_context_tokens
+max_prompt_tokens
+```
+
+Recommended policy:
+
+```text
+code-local question:
+  local files first
+  MatrixArk only for prior decisions, team memory, resources, skills
+
+cross-session question:
+  MatrixArk first
+  local files only if current code state matters
+
+current-state question:
+  ContextEntity + fresh ContextEvent first
+  stale blockers included only as warnings/evidence
+
+resource/runbook question:
+  selected ResourceChunk + citation
+  do not inject full raw files by default
+```
+
+This is how MatrixArk lowers token usage: it returns a dense, replayable
+ContextPack instead of forcing the agent to stuff every old thread, file, or
+resource into the prompt.
+
+## Access And Isolation
+
+Every integration must carry scope:
+
+```text
+account_id
+tenant_id
+user_id and/or session_id
+optional team/project/source labels
+```
+
+MatrixArk API keys enforce:
+
+```text
+scopes/roles
+account and tenant isolation
+allowed users and sessions
+audit logs
+key rotation and revocation
+optional SSO mapping
+```
+
+Claude, Cursor, Codex, and vertical agents should never share one global key for
+all users in production.  Use tenant-scoped or service-scoped keys and pass the
+actual end-user/session scope on every request.
+
+## What Is Automatic Today
+
+```text
+MCP:
+  tools are available to the agent, but calls are explicit
+
+Codex hook:
+  can auto-ingest user messages / tool results / stop events when configured
+
+MatrixArk:
+  extracts internal event/entity/segment/index data
+  writes TemporalStore records
+  refreshes summaries asynchronously
+  returns ContextPacks
+```
+
+## What Remains Product Backlog
+
+```text
+Claude and Cursor first-party hook packages
+Cursor project-level config templates
+Claude Desktop installer helper
+HTTP gateway parity with MCP tools
+per-agent default retrieval policies
+automatic local-context token budget negotiation
+enterprise SSO provisioning
+```
+
