@@ -1,0 +1,7 @@
+leader=127.0.0.1:28300
+replication_mode=raft_consensus
+storage_async=false
+server_count=3
+replica_count=3
+result_dir=/tmp/matrixark-raft-dataset-slice-20260623_170921
+artifact_dir=/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170921

@@ -1,0 +1,363 @@
+[
+  {
+    "answer": "Business Administration",
+    "answer_bearing_ref": 5197428152287269682,
+    "answer_bearing_tokens": 7,
+    "answer_hit": false,
+    "answer_support_hit": false,
+    "answer_support_score": 0.06259,
+    "category": "single-session-user",
+    "context_pack_id": "8737987993118306346",
+    "evidence_hit": false,
+    "failure_reason": "evidence_miss_with_context",
+    "latency_ms": 84.338,
+    "prediction": "3: sharegpt_Cr2tc1f_0 turn:3 [2023/05/20 (Sat) 05:50] [INT.",
+    "question": "What degree did I graduate with?",
+    "question_id": "e47becba",
+    "question_type": "fact",
+    "reader_model": "matrixark-context-substring-v1",
+    "reader_provider": "deterministic",
+    "selected_ref_count": 12,
+    "selected_refs": [
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.253547,
+        "entity_name": "correction",
+        "entity_type": "correction",
+        "final_score": 0.689424,
+        "keyword_score": 0,
+        "metadata": {},
+        "node_hash": 1106235342424103349,
+        "node_path": [
+          "longmemeval_s",
+          "e47becba",
+          "sharegpt_Cr2tc1f_0"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.514725,
+        "packing_policy": "fact",
+        "packing_score": 0.829424,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 4616175504355509459,
+        "ref_type": "entity",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 2644279927388143021,
+          "session_id": "lme-0-sharegpt_Cr2tc1f_0-b0",
+          "team": "longmemeval_s",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 2394587534346675714,
+          "user_id": "longmemeval-0"
+        },
+        "score": 0.689424,
+        "sparse_score": 0.0,
+        "text": "correction: correction = of an explosion, several blocks away, fireworks shoot up into the sky, creating a spectacle that draws the attention of the police and bysta",
+        "time_score": 1.0,
+        "token_estimate": 26,
+        "updated_at_ms": 1782259843654
+      },
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.412082,
+        "event_type": "correction",
+        "final_score": 0.685327,
+        "keyword_score": 1,
+        "metadata": {
+          "node_path": [
+            "longmemeval_s",
+            "e47becba",
+            "sharegpt_Cr2tc1f_0"
+          ]
+        },
+        "node_hash": 1106235342424103349,
+        "node_path": [
+          "longmemeval_s",
+          "e47becba",
+          "sharegpt_Cr2tc1f_0"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.508323,
+        "packing_policy": "fact",
+        "packing_score": 0.825327,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 8041505744086107462,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 2644279927388143021,
+          "session_id": "lme-0-sharegpt_Cr2tc1f_0-b0",
+          "team": "longmemeval_s",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 2394587534346675714,
+          "user_id": "longmemeval-0"
+        },
+        "score": 0.685327,
+        "sparse_score": 0.2,
+        "text": "user: sharegpt_Cr2tc1f_0 turn:0 [2023/05/20 (Sat) 05:50] Rewrite the script for the bank heist and escape scenes in Heat, but replace Neil McCauley with the Joker from the Dark Knight.",
+        "time_score": 1.0,
+        "token_estimate": 33,
+        "updated_at_ms": 1782259843654
+      },
+      {
+        "business_score": 1.0,
+        "coordinate_tuples": [
+          [
+            3,
+            3
+          ]
+        ],
+        "embedding_score": 0.551323,
+        "final_score": 0.782375,
+        "keyword_score": 1,
+        "node_hash": 1106235342424103349,
+        "node_path": [
+          "longmemeval_s",
+          "e47becba",
+          "sharegpt_Cr2tc1f_0"
+        ],
+        "node_score": 0.0,
+        "non_contiguous": false,
+        "origin_score": 0.6599605000000001,
+        "packing_policy": "fact",
+        "packing_score": 0.812375,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 5197428152287269682,
+        "ref_type": "segment",
+        "saliency_score": 1.0,
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 2644279927388143021,
+          "session_id": "lme-0-sharegpt_Cr2tc1f_0-b0",
+          "team": "longmemeval_s",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 2394587534346675714,
+          "user_id": "longmemeval-0"
+        },
+        "score": 0.782375,
+        "sparse_score": 0.2,
+        "text": "3: sharegpt_Cr2tc1f_0 turn:3 [2023/05/20 (Sat) 05:50] [INT. GETAWAY CAR - DAY] Joker: (grinning) Time for a little diversion. Chris, take the wheel. The Joker pulls out a remote control and presses a button. Instead of an explosion, several blocks away, fireworks shoot up into the sky, creating a spectacle that draws the attention of the police and bystanders alike. [EXT. CITY STREETS - DAY] With the police moment...",
+        "time_score": 1.0,
+        "token_estimate": 70,
+        "topic": "correction",
+        "updated_at_ms": 1782259843654
+      },
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.197599,
+        "event_type": "correction",
+        "final_score": 0.647578,
+        "keyword_score": 1,
+        "metadata": {
+          "node_path": [
+            "longmemeval_s",
+            "e47becba",
+            "sharegpt_Cr2tc1f_0"
+          ]
+        },
+        "node_hash": 1106235342424103349,
+        "node_path": [
+          "longmemeval_s",
+          "e47becba",
+          "sharegpt_Cr2tc1f_0"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.44934,
+        "packing_policy": "fact",
+        "packing_score": 0.787578,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 2459068851447813745,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 2644279927388143021,
+          "session_id": "lme-0-sharegpt_Cr2tc1f_0-b0",
+          "team": "longmemeval_s",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 2394587534346675714,
+          "user_id": "longmemeval-0"
+        },
+        "score": 0.647578,
+        "sparse_score": 0.2,
+        "text": "assistant: sharegpt_Cr2tc1f_0 turn:3 [2023/05/20 (Sat) 05:50] [INT. GETAWAY CAR - DAY]\n\nJoker: (grinning) Time for a little diversion. Chris, take the wheel.\n\nThe Joker pulls out a remote control and presses a button. Instead of an explosion, several blocks away, fireworks shoot up into the sky, creating a spectacle that draws the attention of the police and bystanders alike.\n\n[EXT. CITY STREETS - DAY]\n\nWith the police momentarily distracted, the robbers make a sharp turn into a hidden alley.\n\n[INT. HIDDEN ALLEY - DAY]\n\nThe robbers abandon their getaway car and hastily transfer their bags into a nondescript white van. Joker throws a smoke bomb into the alley, creating a smokescreen.\n\n[INT. LT. HANNA'S CAR - DAY]\n\nLt. Hanna, unable to see through the thick smoke, stops his car and gets out.\n\n[EXT. HIDDEN ALLEY - DAY]\n\nAs the smoke begins to clear, Lt. Hanna walks cautiously into the alley, gun drawn. He discovers the abandoned getaway car, its engine still running.\n\nLt. Hanna: (into radio) The suspects have switched vehicles. I've lost visual. Notify all units to be on the lookout for a white van.\n\n[INT. WHITE VAN - DAY]\n\nThe Joker removes his mask, revealing a disturbing grin. He looks at Chris and Michael, who are still tense from the heist.\n\nJoker: (musing) You see, it's not just about the money. It's about sending a message. And today, we sent a message loud and clear. Chaos is inevitable, and I am its harbinger.\n\nChris and Michael exchange uneasy glances but say nothing.\n\n[EXT. CITY STREETS - DAY]\n\nThe white van merges back into traffic, blending in with the other vehicles as it drives away from the scene of the crime, leaving Lt. ...[truncated]",
+        "time_score": 1.0,
+        "token_estimate": 286,
+        "updated_at_ms": 1782259843654
+      },
+      {
+        "business_score": 1.0,
+        "embedding_score": -0.084182,
+        "event_type": "confirmation",
+        "final_score": 0.642784,
+        "keyword_score": 2,
+        "metadata": {
+          "node_path": [
+            "longmemeval_s",
+            "e47becba",
+            "85a1be56_1"
+          ]
+        },
+        "node_hash": 5820882453360882459,
+        "node_path": [
+          "longmemeval_s",
+          "e47becba",
+          "85a1be56_1"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.44185,
+        "packing_policy": "fact",
+        "packing_score": 0.782784,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 5401656628795593166,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 6002600522848105627,
+          "session_id": "lme-0-85a1be56_1-b0",
+          "team": "longmemeval_s",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 2394587534346675714,
+          "user_id": "longmemeval-0"
+        },
+        "score": 0.642784,
+        "sparse_score": 0.4,
+        "text": "assistant: 85a1be56_1 turn:5 [2023/05/20 (Sat) 02:57] Foam rolling is an excellent addition to your fitness routine! It's great to hear that it's been helping with reducing muscle soreness. Consistency is key, so it's awesome that you're aiming to use it at least three times a week.\n\nUsing a foam roller after your morning yoga sessions is a great way to enhance your stretching routine. It can help:\n\n1. **Reduce muscle soreness**: As you've already experienced, foam rolling can help reduce muscle soreness and inflammation.\n2. **Improve circulation**: Foam rolling can help increase blood flow to the affected areas, which can aid in the removal of waste products and promote healing.\n3. **Break up adhesions**: Foam rolling can help break up adhesions and knots in the muscles, which can improve range of motion and reduce stiffness.\n4. **Enhance recovery**: Foam rolling can help speed up the recovery process by reducing muscle spasms and promoting relaxation.\n\nRemember to focus on areas that feel tight or sore, and don't be afraid to experiment with different rolling techniques and pressures to find what works best for you.\n\nAs you continue to use your foam roller, keep in mind the following tips:\n\n* Start with gentle pressure and gradually increase as needed.\n* Roll slowly and control the movement to target specific areas.\n* Breathe deeply and relax while rolling to get the most benefit.\n* Don't roll over bony areas or joints.\n* Clean and maintain your foam roller regularly to prevent bacterial growth.\n\nIt's great that you're taking proactive steps to prioritize your fitness and recovery. Keep up the good work, and don't hesitate t ...[truncated]",
+        "time_score": 1.0,
+        "token_estimate": 282,
+        "updated_at_ms": 1782259842877
+      },
+      {
+        "business_score": 0.76,
+        "embedding_score": 0.25,
+        "entity_name": "job_status",
+        "entity_type": "job_status",
+        "final_score": 0.6408,
+        "keyword_score": 0,
+        "metadata": {},
+        "node_hash": 5820882453360882459,
+        "node_path": [
+          "longmemeval_s",
+          "e47becba",
+          "85a1be56_1"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.5137499999999999,
+        "packing_policy": "fact",
+        "packing_score": 0.7808,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 7881228099479230097,
+        "ref_type": "entity",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 6002600522848105627,
+          "session_id": "lme-0-85a1be56_1-b0",
+          "team": "longmemeval_s",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 2394587534346675714,
+          "user_id": "longmemeval-0"
+        },
+        "score": 0.6408,
+        "sparse_score": 0.0,
+        "text": "job_status: job_status = best for you",
+        "time_score": 1.0,
+        "token_estimate": 5,
+        "updated_at_ms": 1782259842877
+      },
+      {
+        "business_score": 0.76,
+        "embedding_score": 0.25,
+        "entity_name": "job_status",
+        "entity_type": "job_status",
+        "final_score": 0.6408,
+        "keyword_score": 0,
+        "metadata": {},
+        "node_hash": 8046672787949875335,
+        "node_path": [
+          "longmemeval_s",
+          "e47becba",
+          "sharegpt_Jcy1CVN_0"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.5137499999999999,
+        "packing_policy": "fact",
+        "packing_score": 0.7808,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 3543740472310889180,
+        "ref_type": "entity",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 7845363234856548576,
+          "session_id": "lme-0-sharegpt_Jcy1CVN_0-b0",
+          "team": "longmemeval_s",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 2394587534346675714,
+          "user_id": "longmemeval-0"
+        },
+        "score": 0.6408,
+        "sparse_score": 0.0,
+        "text": "job_status: job_status = of inflammation in secondary effects",
+        "time_score": 1.0,
+        "token_estimate": 7,
+        "updated_at_ms": 1782259843274
+      },
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.123091,
+        "event_type": "confirmation",
+        "final_score": 0.634464,
+        "keyword_score": 1,
+        "metadata": {
+          "node_path": [
+            "longmemeval_s",
+            "e47becba",
+            "85a1be56_1"
+          ]
+        },
+        "node_hash": 5820882453360882459,
+        "node_path": [
+          "longmemeval_s",
+          "e47becba",
+          "85a1be56_1"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.42885,
+        "packing_policy": "fact",
+        "packing_score": 0.774464,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 1396699582272357751,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 6002600522848105627,
+          "session_id": "lme-0-85a1be56_1-b0",
+          "team": "longmemeval_s",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 2394587534346675714,
+          "user_id": "longmemeval-0"
+        },
+        "score": 0.634464,
+        "sparse_score": 0.2,
+        "text": "user: 85a1be56_1 turn:8 [2023/05/20 (Sat) 02:57] I'm also experimenting with essential oils for stress relief, and I recently got a new diffuser on March 22nd. It's been a game-changer for unwinding before bed. I've been using a lavender and chamomile blend that I got from a local health food store.",
+        "time_score": 1.0,
+        "token_estimate": 58,
+        "updated_at_ms": 1782259842877
+      }
+    ],
+    "used_context_tokens": 1199
+  }
+]
