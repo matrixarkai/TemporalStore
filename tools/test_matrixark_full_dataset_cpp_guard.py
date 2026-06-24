@@ -1,27 +1,8 @@
 #!/usr/bin/env python3
-"""Compatibility wrapper for shared full-dataset C++ benchmark guard tests."""
-
 from __future__ import annotations
 
-import subprocess
-import sys
-from pathlib import Path
-
-
-ROOT = Path(__file__).resolve().parents[1]
-
-
-def main() -> int:
-    candidates = [
-        ROOT / "third_party" / "TemporalStoreTestCorpus" / "tools" / "test_matrixark_full_dataset_cpp_guard.py",
-        ROOT.parent / "TemporalStoreTestCorpus" / "tools" / "test_matrixark_full_dataset_cpp_guard.py",
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            return subprocess.run([sys.executable, str(candidate)], cwd=ROOT, check=False).returncode
-    checked = "\n".join(str(candidate) for candidate in candidates)
-    raise SystemExit(f"shared full-dataset C++ benchmark guard test not found. Checked:\n{checked}")
+from _shared_matrixark_runner import main
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main("test_matrixark_full_dataset_cpp_guard.py"))
