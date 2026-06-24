@@ -4704,6 +4704,11 @@
             "suite": "cpp_data_raft_parity",
             "mode": "stress",
             "description": "ByteRaft fault case: packet-loss/partition isolates a follower, majority continues, stale side is unsafe for reads/writes, and healed follower catches up.",
+            "acceptance_criteria": [
+              "majority continues committing writes during packet loss or partition",
+              "minority rejects stale reads and writes while isolated",
+              "healed peer catches up before becoming read-eligible"
+            ],
             "required_paths": [
               "tools/run_raft_production_gate_ubuntu22.sh",
               "tools/run_data_raft_failover_ubuntu22.sh",
@@ -4730,6 +4735,11 @@
             "suite": "cpp_data_raft_parity",
             "mode": "stress",
             "description": "ByteRaft fault case: slow disk/WAL fsync activates backpressure, preserves committed writes, and reports lag/pressure evidence.",
+            "acceptance_criteria": [
+              "backpressure activates when WAL fsync is slow",
+              "no committed write is lost during or after pressure",
+              "lag and latency counters show WAL pressure"
+            ],
             "required_paths": [
               "tools/run_raft_production_gate_ubuntu22.sh",
               "tools/run_data_raft_failover_ubuntu22.sh",
@@ -4756,6 +4766,11 @@
             "suite": "cpp_data_raft_parity",
             "mode": "stress",
             "description": "ByteRaft fault case: snapshot trigger/install during membership change preserves snapshot floor, membership generation, and restart recovery.",
+            "acceptance_criteria": [
+              "snapshot floor remains consistent with committed membership state",
+              "membership generation remains consistent across snapshot install",
+              "restart preserves the snapshot floor and membership generation"
+            ],
             "required_paths": [
               "tools/run_raft_production_gate_ubuntu22.sh",
               "tools/run_data_raft_failover_ubuntu22.sh",
@@ -4786,6 +4801,11 @@
             "suite": "cpp_data_raft_parity",
             "mode": "stress",
             "description": "ByteRaft fault case: leader transfer under write load commits each accepted write once or fails safely, and final leader owns all committed entries.",
+            "acceptance_criteria": [
+              "writes commit exactly once or fail safely during leader transfer",
+              "no accepted committed write is lost or duplicated",
+              "final leader has all committed entries after transfer"
+            ],
             "required_paths": [
               "tools/run_raft_production_gate_ubuntu22.sh",
               "tools/run_data_raft_failover_ubuntu22.sh",
@@ -4812,6 +4832,11 @@
             "suite": "cpp_data_raft_parity",
             "mode": "stress",
             "description": "ByteRaft fault case: follower rejoining with compacted logs installs snapshot, replays retained tail, and becomes read-eligible only after catch-up.",
+            "acceptance_criteria": [
+              "rejoining follower installs snapshot when logs are compacted",
+              "follower replays retained log tail after snapshot install",
+              "follower becomes read-eligible only after catch-up"
+            ],
             "required_paths": [
               "tools/run_raft_production_gate_ubuntu22.sh",
               "tools/run_data_raft_failover_ubuntu22.sh",
@@ -4838,6 +4863,11 @@
             "suite": "cpp_data_raft_parity",
             "mode": "stress",
             "description": "ByteRaft fault case: rolling restart during pending joint consensus preserves membership state and completes or rolls back safely.",
+            "acceptance_criteria": [
+              "pending joint consensus state survives rolling restarts",
+              "joint consensus either completes safely or rolls back safely",
+              "membership state is not lost or partially applied after restart"
+            ],
             "required_paths": [
               "tools/run_raft_production_gate_ubuntu22.sh",
               "tools/run_data_raft_failover_ubuntu22.sh",

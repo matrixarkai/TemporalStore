@@ -196,6 +196,20 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `benchmark_longmemeval_rust_full_replay_contract` | Shared benchmark contract for LongMemEval_s full Rust TemporalStore replay, deterministic/OSS reader modes, and VikingMem-style archive fields. |
 | `benchmark_cpp_rust_vikingmem_report_comparator` | Shared benchmark contract for comparing C++ and Rust `matrixark_vikingmem_context_benchmark_report_v1` archives case-by-case. |
 
+### ByteRaft Fault Acceptance Criteria
+
+The ByteRaft-derived fault cases carry machine-validated
+`acceptance_criteria` in the shared corpus:
+
+| Scenario | Acceptance |
+| --- | --- |
+| Packet loss / partition | Majority continues committing; minority rejects stale reads/writes; healed peer catches up before read eligibility. |
+| Slow WAL fsync | Backpressure activates; no committed write is lost; lag and latency counters show WAL pressure. |
+| Snapshot during membership change | Snapshot floor and membership generation remain consistent; restart preserves both. |
+| Leader transfer under high write load | Writes commit exactly once or fail safely; no committed write is lost or duplicated; final leader has all committed entries. |
+| Follower rejoin with compacted logs | Follower installs snapshot, replays retained tail, and becomes read-eligible only after catch-up. |
+| Rolling restart with pending joint consensus | Joint state survives restart and either completes safely or rolls back safely without losing membership state. |
+
 ## Unified Benchmark Report Contract
 
 The benchmark cases are `existing_test` entries because full LOCOMO/LongMemEval_s scoring is an
