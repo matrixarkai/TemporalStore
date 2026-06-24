@@ -85,6 +85,8 @@ DEFAULT_BUSINESS_TYPE_WEIGHTS: Json = {
     "location": 0.7,
     "current_plan": 0.78,
     "family_profile": 0.72,
+    "skill": 0.84,
+    "resource": 0.68,
     "dialogue_batch": 0.45,
     "session": 0.45,
 }
@@ -95,6 +97,10 @@ MATRIXARK_CONTEXT_SCOPES = {
     "context:feedback",
     "context:replay",
     "resource:ingest",
+    "resource:read",
+    "resource:manage",
+    "skill:read",
+    "skill:manage",
 }
 MATRIXARK_ALL_SCOPES = MATRIXARK_CONTEXT_SCOPES | MATRIXARK_ADMIN_SCOPES
 MATRIXARK_TOOL_SCOPES: dict[str, set[str]] = {
@@ -103,6 +109,9 @@ MATRIXARK_TOOL_SCOPES: dict[str, set[str]] = {
     "matrixark_session_commit": {"context:ingest"},
     "matrixark_refresh_summaries": {"context:ingest"},
     "matrixark_retrieve": {"context:retrieve"},
+    "matrixark_list_resources": {"resource:read"},
+    "matrixark_list_skills": {"skill:read"},
+    "matrixark_update_skill": {"skill:manage"},
     "matrixark_feedback": {"context:feedback"},
     "matrixark_replay": {"context:replay"},
     "matrixark_admin_create_account": {"admin:account"},
@@ -2880,6 +2889,125 @@ class MatrixArkLocalAdapter:
             raise MatrixArkError("refreshed_at_ms must be an integer")
         return self.refresh_dirty_node_summaries(scope=scope, limit=limit, refreshed_at_ms=refreshed_at_ms)
 
+    def latest_skill_controls(self, records: list[Json] | None = None) -> dict[int, Json]:
+        controls: dict[int, Json] = {}
+        for record in reversed(records if records is not None else self.read_all()):
+            if record.get("record_type") != "skill_registry_update":
+                continue
+            try:
+                skill_hash = int(record.get("skill_hash"))
+            except (TypeError, ValueError):
+                continue
+            if skill_hash not in controls:
+                controls[skill_hash] = record
+        return controls
+
+    def list_resources(self, args: Json) -> Json:
+        scope = optional_object(args, "scope")
+        limit = args.get("limit", 100)
+        if not isinstance(limit, int) or limit <= 0:
+            raise MatrixArkError("limit must be a positive integer")
+        resource_type_filter = optional_string(args, "resource_type", "")
+        resources: dict[int, Json] = {}
+        for record in reversed(self.read_all()):
+            if record.get("record_type") != "resource_manifest":
+                continue
+            if not scope_matches(record.get("scope", {}), scope):
+                continue
+            if resource_type_filter and record.get("resource_type") != resource_type_filter:
+                continue
+            resource_hash = int(record.get("resource_hash") or 0)
+            if resource_hash in resources:
+                continue
+            resources[resource_hash] = {
+                "resource_hash": resource_hash,
+                "raw_uri": record.get("raw_uri", ""),
+                "resource_type": record.get("resource_type", ""),
+                "chunk_count": record.get("chunk_count", 0),
+                "token_estimate": record.get("token_estimate", 0),
+                "node_hash": record.get("node_hash", 0),
+                "node_path": record.get("node_path", []),
+                "scope": record.get("scope", {}),
+                "updated_at_ms": record.get("updated_at_ms", 0),
+            }
+            if len(resources) >= limit:
+                break
+        return {"status": "ok", "resources": list(resources.values()), "count": len(resources)}
+
+    def list_skills(self, args: Json) -> Json:
+        scope = optional_object(args, "scope")
+        limit = args.get("limit", 100)
+        if not isinstance(limit, int) or limit <= 0:
+            raise MatrixArkError("limit must be a positive integer")
+        include_disabled = bool(args.get("include_disabled", False))
+        controls = self.latest_skill_controls()
+        skills: dict[int, Json] = {}
+        for record in reversed(self.read_all()):
+            if record.get("record_type") != "skill_manifest":
+                continue
+            if not scope_matches(record.get("scope", {}), scope):
+                continue
+            skill_hash = int(record.get("skill_hash") or 0)
+            if skill_hash in skills:
+                continue
+            control = controls.get(skill_hash, {})
+            status = str(control.get("status") or record.get("status") or "active")
+            if status == "disabled" and not include_disabled:
+                continue
+            skills[skill_hash] = {
+                "skill_hash": skill_hash,
+                "name": record.get("name", ""),
+                "description": record.get("description", ""),
+                "raw_uri": record.get("raw_uri", ""),
+                "owner_scope": control.get("owner_scope", record.get("owner_scope", "user")),
+                "version": control.get("version", record.get("version", "1")),
+                "status": status,
+                "precedence": control.get("precedence", record.get("precedence", "normal")),
+                "triggers": control.get("triggers", record.get("triggers", [])),
+                "allowed_tools": control.get("allowed_tools", record.get("allowed_tools", [])),
+                "node_hash": record.get("node_hash", 0),
+                "node_path": record.get("node_path", []),
+                "scope": record.get("scope", {}),
+                "updated_at_ms": control.get("updated_at_ms", record.get("updated_at_ms", 0)),
+            }
+            if len(skills) >= limit:
+                break
+        return {"status": "ok", "skills": list(skills.values()), "count": len(skills)}
+
+    def update_skill(self, args: Json) -> Json:
+        skill_hash = args.get("skill_hash")
+        if not isinstance(skill_hash, int) or skill_hash <= 0:
+            raise MatrixArkError("skill_hash must be a positive integer")
+        status = optional_string(args, "status", "")
+        if status and status not in {"active", "disabled"}:
+            raise MatrixArkError("status must be active or disabled")
+        precedence = optional_string(args, "precedence", "")
+        if precedence and precedence not in {"low", "normal", "high", "critical"}:
+            raise MatrixArkError("precedence must be low, normal, high, or critical")
+        current = None
+        for record in reversed(self.read_all()):
+            if record.get("record_type") == "skill_manifest" and record.get("skill_hash") == skill_hash:
+                current = record
+                break
+        if current is None:
+            raise MatrixArkError("skill_hash not found")
+        update = {
+            "record_type": "skill_registry_update",
+            "skill_hash": skill_hash,
+            "status": status or current.get("status", "active"),
+            "precedence": precedence or current.get("precedence", "normal"),
+            "owner_scope": optional_string(args, "owner_scope", str(current.get("owner_scope") or "user")),
+            "version": optional_string(args, "version", str(current.get("version") or "1")),
+            "triggers": optional_string_list(args, "triggers", list(current.get("triggers", []))),
+            "allowed_tools": optional_string_list(args, "allowed_tools", list(current.get("allowed_tools", []))),
+            "scope": current.get("scope", {}),
+            "node_hash": current.get("node_hash", 0),
+            "node_path": current.get("node_path", []),
+            "updated_at_ms": now_ms(),
+        }
+        self.append(update)
+        return {"status": "updated", **update}
+
     def ingest(self, args: Json, *, hook: Json | None = None) -> Json:
         envelope = normalize_envelope(args, default_kind="message")
         hook = validate_hook(hook)
@@ -3792,6 +3920,7 @@ class MatrixArkLocalAdapter:
         reference_time_ms = raw_reference_time_ms
         auxiliary_quota = integer_arg(ranking, "auxiliary_quota", 2, minimum=0)
         records = self.read_all()
+        skill_controls = self.latest_skill_controls(records)
         if deadline_exceeded():
             return self.deadline_fallback_pack(
                 query=query,
@@ -4126,27 +4255,37 @@ class MatrixArkLocalAdapter:
             if record.get("record_type") == "skill_manifest":
                 ref_type = "skill"
                 ref_hash = int(record.get("skill_hash") or 0)
+                control = skill_controls.get(ref_hash, {})
+                if str(control.get("status") or record.get("status") or "active") != "active":
+                    continue
                 text = " ".join(
                     [
                         f"skill {record.get('name', '')}: {record.get('description', '')}",
-                        "triggers " + " ".join(str(item) for item in record.get("triggers", [])[:8]),
-                        "tools " + " ".join(str(item) for item in record.get("allowed_tools", [])[:8]),
+                        "triggers " + " ".join(str(item) for item in control.get("triggers", record.get("triggers", []))[:8]),
+                        "tools " + " ".join(str(item) for item in control.get("allowed_tools", record.get("allowed_tools", []))[:8]),
                     ]
                 )
                 embedding_score = cosine(query_embedding, skill_embedding_vectors.get(ref_hash, embedding_for_text(text)))
                 business_type = "skill"
+                metadata = {**record.get("metadata", {}), "skill_registry": control}
             elif record.get("record_type") == "skill_section":
                 ref_type = "skill_section"
                 ref_hash = int(record.get("section_hash") or 0)
+                parent_skill_hash = int(record.get("skill_hash") or 0)
+                control = skill_controls.get(parent_skill_hash, {})
+                if str(control.get("status") or "active") != "active":
+                    continue
                 text = f"skill section {record.get('heading', '')}: {record.get('text', '')}"
                 embedding_score = cosine(query_embedding, resource_embedding_vectors.get(ref_hash, embedding_for_text(text)))
                 business_type = "skill"
+                metadata = {**record.get("metadata", {}), "skill_registry": control}
             else:
                 ref_type = "resource_chunk"
                 ref_hash = int(record.get("chunk_hash") or 0)
                 text = f"resource {record.get('raw_uri', '')} {record.get('source_ref', '')}: {record.get('text', '')}"
                 embedding_score = cosine(query_embedding, resource_embedding_vectors.get(ref_hash, embedding_for_text(text)))
                 business_type = str(record.get("resource_type") or "resource")
+                metadata = record.get("metadata", {})
             sparse_score = sparse_lexical_score(query_terms, text)
             keyword_score = len(query_terms.intersection(tokens(text)))
             node_score = node_scores.get(record.get("node_hash"), {}).get("score", 0.0)
@@ -4166,7 +4305,7 @@ class MatrixArkLocalAdapter:
                         "embedding_score": embedding_score,
                         "node_score": node_score,
                         "event_type": business_type,
-                        "metadata": record.get("metadata", {}),
+                        "metadata": metadata,
                         "scope": record.get("scope", {}),
                         "updated_at_ms": record.get("updated_at_ms", now_ms()),
                         "text": clip_context_text(text),
@@ -5548,7 +5687,7 @@ TOOLS: list[Json] = [
             "properties": {
                 "kind": {
                     "type": "string",
-                    "enum": ["message", "feedback", "resource", "business_data"],
+                    "enum": ["message", "feedback", "resource", "skill", "business_data"],
                     "default": "message",
                     "description": "Optional envelope kind. Defaults to message.",
                 },
@@ -5579,6 +5718,53 @@ TOOLS: list[Json] = [
                     "minimum": 0,
                     "description": "Optional idle timeout. If previous pending same-session messages are older than this, MatrixArk commits that window before ingesting the new message.",
                 },
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_list_resources",
+        "description": "List governed MatrixArk resources visible to the current account/tenant/user/session scope.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "scope": SCOPE_SCHEMA,
+                "api_key": API_KEY_SCHEMA,
+                "resource_type": {"type": "string", "description": "Optional filter such as md, txt, pdf."},
+                "limit": {"type": "integer", "default": 100},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_list_skills",
+        "description": "List governed MatrixArk skills visible to the current account/tenant/user/session scope.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "scope": SCOPE_SCHEMA,
+                "api_key": API_KEY_SCHEMA,
+                "include_disabled": {"type": "boolean", "default": False},
+                "limit": {"type": "integer", "default": 100},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_update_skill",
+        "description": "Update a skill registry entry without rewriting the original SKILL.md manifest.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["skill_hash"],
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "skill_hash": {"type": "integer"},
+                "status": {"type": "string", "enum": ["active", "disabled"]},
+                "precedence": {"type": "string", "enum": ["low", "normal", "high", "critical"]},
+                "owner_scope": {"type": "string"},
+                "version": {"type": "string"},
+                "triggers": {"type": "array", "items": {"type": "string"}},
+                "allowed_tools": {"type": "array", "items": {"type": "string"}},
             },
             "additionalProperties": True,
         },
@@ -6079,6 +6265,18 @@ class MatrixArkMcpServer:
         if name == "matrixark_retrieve":
             result = self.adapter.retrieve(args)
             self.access.append_audit("context.retrieve", identity, status="ok", details={"context_pack_id": result.get("context_pack_id")})
+            return {**result, "access": args.get("_matrixark_auth", {})}
+        if name == "matrixark_list_resources":
+            result = self.adapter.list_resources(args)
+            self.access.append_audit("resource.list", identity, status="ok", details={"count": result.get("count")})
+            return {**result, "access": args.get("_matrixark_auth", {})}
+        if name == "matrixark_list_skills":
+            result = self.adapter.list_skills(args)
+            self.access.append_audit("skill.list", identity, status="ok", details={"count": result.get("count")})
+            return {**result, "access": args.get("_matrixark_auth", {})}
+        if name == "matrixark_update_skill":
+            result = self.adapter.update_skill(args)
+            self.access.append_audit("skill.update", identity, status="ok", details={"skill_hash": result.get("skill_hash"), "skill_status": result.get("status")})
             return {**result, "access": args.get("_matrixark_auth", {})}
         if name == "matrixark_feedback":
             result = self.adapter.feedback(args, hook=hook)

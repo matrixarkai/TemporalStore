@@ -48,6 +48,9 @@ class MatrixArkMcpServerTest(unittest.TestCase):
                 "matrixark_session_commit",
                 "matrixark_refresh_summaries",
                 "matrixark_retrieve",
+                "matrixark_list_resources",
+                "matrixark_list_skills",
+                "matrixark_update_skill",
                 "matrixark_feedback",
                 "matrixark_replay",
                 "matrixark_admin_create_account",
@@ -90,6 +93,10 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         self.assertIn("local_context", retrieve["inputSchema"]["properties"])
         self.assertIn("local_context_tokens", retrieve["inputSchema"]["properties"])
         self.assertIn("shared prompt context budget", retrieve["inputSchema"]["properties"]["max_context_tokens"]["description"])
+        self.assertIn("skill", ingest["inputSchema"]["properties"]["kind"]["enum"])
+        self.assertIn("matrixark_list_resources", names)
+        self.assertIn("matrixark_list_skills", names)
+        self.assertIn("matrixark_update_skill", names)
         session_commit = next(tool for tool in response["result"]["tools"] if tool["name"] == "matrixark_session_commit")
         self.assertIn("commit_reason", session_commit["inputSchema"]["properties"])
         self.assertIn("idle_timeout_ms", session_commit["inputSchema"]["properties"])
@@ -232,6 +239,13 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         ]
         self.assertIn("source_type:resource", indexes)
         self.assertIn("resource_type:md", indexes)
+        resources = self.call_tool(
+            "matrixark_list_resources",
+            {"scope": {"user_id": "u1", "session_id": "s1"}},
+        )
+        self.assertEqual(resources["count"], 1)
+        self.assertEqual(resources["resources"][0]["raw_uri"], "runbook.md")
+        self.assertEqual(resources["resources"][0]["chunk_count"], 2)
 
     def test_skill_ingest_parses_definition_chunks_and_embeddings(self):
         ingest = self.call_tool(
@@ -299,6 +313,42 @@ class MatrixArkMcpServerTest(unittest.TestCase):
             ("resource_chunk", 9100),
             [(ref["ref_type"], ref["ref_hash"]) for ref in pack["selected_refs"]],
         )
+
+        skills = self.call_tool(
+            "matrixark_list_skills",
+            {"scope": {"user_id": "u1", "session_id": "s1"}},
+        )
+        self.assertEqual(skills["count"], 1)
+        self.assertEqual(skills["skills"][0]["name"], "context-debugger")
+        self.assertEqual(skills["skills"][0]["status"], "active")
+
+        update = self.call_tool(
+            "matrixark_update_skill",
+            {
+                "skill_hash": ingest["skill_hash"],
+                "status": "disabled",
+                "precedence": "low",
+                "triggers": ["manual replay only"],
+                "allowed_tools": ["matrixark_replay"],
+            },
+        )
+        self.assertEqual(update["status"], "disabled")
+
+        after_disable = self.call_tool(
+            "matrixark_retrieve",
+            {
+                "query": "which skill helps inspect selected refs and replay evidence?",
+                "scope": {"user_id": "u1", "session_id": "s1"},
+                "max_context_tokens": 80,
+            },
+        )
+        self.assertFalse({"skill", "skill_section"}.intersection({ref["ref_type"] for ref in after_disable["selected_refs"]}))
+        visible_disabled = self.call_tool(
+            "matrixark_list_skills",
+            {"scope": {"user_id": "u1", "session_id": "s1"}, "include_disabled": True},
+        )
+        self.assertEqual(visible_disabled["skills"][0]["status"], "disabled")
+        self.assertEqual(visible_disabled["skills"][0]["triggers"], ["manual replay only"])
 
     def test_resource_chunks_are_retrievable_as_context_pack_refs(self):
         ingest = self.call_tool(
