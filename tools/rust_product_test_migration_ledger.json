@@ -9,16 +9,16 @@
     "duplicate/remove": "Redundant tests that should be deleted or folded into a shared case; none explicitly identified in this first ledger."
   },
   "summary": {
-    "grandfathered_tests": 522,
+    "grandfathered_tests": 519,
     "by_classification": {
-      "move_to_shared": 515,
+      "move_to_shared": 512,
       "rust_internal": 7
     },
     "by_family": {
       "ops/scale": 22,
       "control plane": 91,
       "storage/cache": 174,
-      "Redis/admin": 39,
+      "Redis/admin": 36,
       "Raft": 140,
       "ingestion": 10,
       "context": 7,
@@ -39,7 +39,7 @@
         "move_to_shared": 174
       },
       "Redis/admin": {
-        "move_to_shared": 39
+        "move_to_shared": 36
       },
       "Raft": {
         "move_to_shared": 140
@@ -1411,15 +1411,6 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/engine.rs::string_round_trip",
-      "file": "crates/temporalstore-rust/src/engine.rs",
-      "test_name": "string_round_trip",
-      "family": "Redis/admin",
-      "classification": "move_to_shared",
-      "next_migration_target": "Redis/admin/API shared command-response corpus",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
       "test_id": "crates/temporalstore-rust/src/engine.rs::durable_writes_stamp_stable_object_ids_on_page_addresses",
       "file": "crates/temporalstore-rust/src/engine.rs",
       "test_name": "durable_writes_stamp_stable_object_ids_on_page_addresses",
@@ -1543,24 +1534,6 @@
       "family": "storage/cache",
       "classification": "move_to_shared",
       "next_migration_target": "storage/cache shared cases for dump/load, recovery, GC, cache pressure, shared-store replay",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/src/engine.rs::set_members_round_trip",
-      "file": "crates/temporalstore-rust/src/engine.rs",
-      "test_name": "set_members_round_trip",
-      "family": "Redis/admin",
-      "classification": "move_to_shared",
-      "next_migration_target": "Redis/admin/API shared command-response corpus",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/src/engine.rs::hash_multi_get_set_and_incrby_match_extension_api",
-      "file": "crates/temporalstore-rust/src/engine.rs",
-      "test_name": "hash_multi_get_set_and_incrby_match_extension_api",
-      "family": "Redis/admin",
-      "classification": "move_to_shared",
-      "next_migration_target": "Redis/admin/API shared command-response corpus",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {

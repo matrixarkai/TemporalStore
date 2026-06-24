@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "description": "Grandfathered Rust attributed tests present before the shared-corpus product-test guard. New tests must declare either shared-corpus:<case> or rust-internal:<reason>.",
-  "rust_attributed_tests": 522,
+  "rust_attributed_tests": 519,
   "grandfathered_tests": [
     "crates/temporalstore-rust/src/bin/external_chaos_gate.rs::quick_plan_covers_external_process_and_storage_chaos",
     "crates/temporalstore-rust/src/bin/external_chaos_gate.rs::full_plan_adds_scale_pressure",
@@ -152,7 +152,6 @@
     "crates/temporalstore-rust/src/engine.rs::crash_recovery_report_covers_oplog_index_page_and_zone_manifest",
     "crates/temporalstore-rust/src/engine.rs::crash_recovery_report_marks_stale_segment_density_after_overwrite",
     "crates/temporalstore-rust/src/engine.rs::crash_recovery_rebuilds_missing_zone_manifest_from_page_stream",
-    "crates/temporalstore-rust/src/engine.rs::string_round_trip",
     "crates/temporalstore-rust/src/engine.rs::durable_writes_stamp_stable_object_ids_on_page_addresses",
     "crates/temporalstore-rust/src/engine.rs::string_setex_sets_value_and_ttl",
     "crates/temporalstore-rust/src/engine.rs::expiry_sweep_removes_expired_records_without_lazy_read",
@@ -167,8 +166,6 @@
     "crates/temporalstore-rust/src/engine.rs::async_storage_string_write_stays_on_hot_memory_path",
     "crates/temporalstore-rust/src/engine.rs::durable_execute_overrides_async_storage_for_raft_local_file_path",
     "crates/temporalstore-rust/src/engine.rs::durable_index_survives_restart_and_points_to_page_file",
-    "crates/temporalstore-rust/src/engine.rs::set_members_round_trip",
-    "crates/temporalstore-rust/src/engine.rs::hash_multi_get_set_and_incrby_match_extension_api",
     "crates/temporalstore-rust/src/engine.rs::hash_incrby_rejects_non_integer_and_overflow_like_cpp",
     "crates/temporalstore-rust/src/engine.rs::feature_append_packs_many_timestamp_values_into_one_page",
     "crates/temporalstore-rust/src/engine.rs::feature_append_chunks_and_persists_timestamped_kv_pages",

@@ -7,6 +7,7 @@
       "common_string_hash_core",
       "common_lifecycle_delete_ttl",
       "hash_single_field_and_delete",
+      "hash_multi_set_get_incrby",
       "redis_compatible_set_core",
       "feature_packed_timestamped_pages",
       "sequence_cpp_feature_rows",
@@ -608,6 +609,77 @@
                 53
               ]
             ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "hash_multi_set_get_incrby",
+      "shard_id": 1,
+      "family": "Redis/admin",
+      "description": "Shared C++/Rust hash extension case covering HMSET/HMGET missing fields and HINCRBY on a numeric field.",
+      "steps": [
+        {
+          "name": "hash_multi_set_numeric_field",
+          "command": {
+            "kind": "hash_multi_set",
+            "key": "unified:hash:multi",
+            "entries": [
+              [
+                "f1",
+                [
+                  118,
+                  49
+                ]
+              ],
+              [
+                "f2",
+                [
+                  55
+                ]
+              ]
+            ]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "hash_multi_get_with_missing",
+          "command": {
+            "kind": "hash_multi_get",
+            "key": "unified:hash:multi",
+            "fields": [
+              "f1",
+              "missing",
+              "f2"
+            ]
+          },
+          "expect": {
+            "kind": "values",
+            "values": [
+              [
+                118,
+                49
+              ],
+              null,
+              [
+                55
+              ]
+            ]
+          }
+        },
+        {
+          "name": "hash_incr_numeric_field",
+          "command": {
+            "kind": "hash_incr_by",
+            "key": "unified:hash:multi",
+            "field": "f2",
+            "increment": 5
+          },
+          "expect": {
+            "kind": "integer",
+            "value": 12
           }
         }
       ]

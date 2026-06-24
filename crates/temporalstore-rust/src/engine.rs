@@ -12301,36 +12301,6 @@ mod tests {
     }
 
     #[test]
-    fn string_round_trip() {
-        let engine = TemporalEngine::default();
-        engine.load_shard(1);
-        assert!(
-            engine
-                .execute(ExecuteRequest {
-                    shard_id: 1,
-                    command: Command::StringSet {
-                        key: "k".to_string(),
-                        value: b"v".to_vec(),
-                    },
-                })
-                .status
-                .ok
-        );
-        let response = engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::StringGet {
-                key: "k".to_string(),
-            },
-        });
-        assert_eq!(
-            response.response,
-            CommandResponse::Bytes {
-                value: Some(b"v".to_vec())
-            }
-        );
-    }
-
-    #[test]
     fn durable_writes_stamp_stable_object_ids_on_page_addresses() {
         let engine = TemporalEngine::default();
         assert!(
@@ -13163,86 +13133,6 @@ mod tests {
             }
         );
         assert_eq!(restarted.page_store().stats().reads, 1);
-    }
-
-    #[test]
-    fn set_members_round_trip() {
-        let engine = TemporalEngine::default();
-        engine.load_shard(1);
-        engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::SetAdd {
-                key: "group".to_string(),
-                member: b"alice".to_vec(),
-            },
-        });
-        engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::SetAdd {
-                key: "group".to_string(),
-                member: b"bob".to_vec(),
-            },
-        });
-        let response = engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::SetMembers {
-                key: "group".to_string(),
-            },
-        });
-        assert_eq!(
-            response.response,
-            CommandResponse::Members {
-                members: vec![b"alice".to_vec(), b"bob".to_vec()]
-            }
-        );
-    }
-
-    #[test]
-    fn hash_multi_get_set_and_incrby_match_extension_api() {
-        let engine = TemporalEngine::default();
-        engine.load_shard(1);
-        assert_eq!(
-            engine
-                .execute(ExecuteRequest {
-                    shard_id: 1,
-                    command: Command::HashMultiSet {
-                        key: "h".to_string(),
-                        entries: vec![
-                            ("f1".to_string(), b"v1".to_vec()),
-                            ("f2".to_string(), b"7".to_vec()),
-                        ],
-                    },
-                })
-                .response,
-            CommandResponse::Empty
-        );
-        assert_eq!(
-            engine
-                .execute(ExecuteRequest {
-                    shard_id: 1,
-                    command: Command::HashMultiGet {
-                        key: "h".to_string(),
-                        fields: vec!["f1".to_string(), "missing".to_string(), "f2".to_string()],
-                    },
-                })
-                .response,
-            CommandResponse::Values {
-                values: vec![Some(b"v1".to_vec()), None, Some(b"7".to_vec())]
-            }
-        );
-        assert_eq!(
-            engine
-                .execute(ExecuteRequest {
-                    shard_id: 1,
-                    command: Command::HashIncrBy {
-                        key: "h".to_string(),
-                        field: "f2".to_string(),
-                        increment: 5,
-                    },
-                })
-                .response,
-            CommandResponse::Integer { value: 12 }
-        );
     }
 
     #[test]
