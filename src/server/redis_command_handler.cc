@@ -10,6 +10,7 @@
 #include <ctime>
 #include <memory>
 #include <pthread.h>
+#include <set>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -327,6 +328,15 @@ bool ParseHashGetResponse(const CmdResponse& response, hash2::GetResponse* parse
     return false;
 }
 
+bool ParseSetMembersResponse(const CmdResponse& response, set::SMembersResponse* parsed,
+                             brpc::RedisReply* reply) {
+    if (parsed->ParseFromString(response.response_bytes())) {
+        return true;
+    }
+    SetRedisError(reply, "failed to parse SMEMBERS response");
+    return false;
+}
+
 bool ParseInt64Arg(const std::string& arg, int64_t* value) {
     try {
         size_t pos = 0;
@@ -339,6 +349,32 @@ bool ParseInt64Arg(const std::string& arg, int64_t* value) {
     } catch (...) {
         return false;
     }
+}
+
+void SetStringArrayReply(brpc::RedisReply* reply, const std::vector<std::string>& values) {
+    reply->SetArray(values.size());
+    for (size_t i = 0; i < values.size(); ++i) {
+        (*reply)[i].SetString(values[i]);
+    }
+}
+
+bool LoadSetValues(RedisServiceImpl* redis_service, const std::string& key,
+                   std::vector<std::string>* values, brpc::RedisReply* reply) {
+    CmdResponse response;
+    if (!ExecuteRedisSingle(redis_service, SetMembersCmd(key), &response, reply)) {
+        return false;
+    }
+    if (!IsOkStatus(response.response_status())) {
+        values->clear();
+        return true;
+    }
+    set::SMembersResponse members_response;
+    if (!ParseSetMembersResponse(response, &members_response, reply)) {
+        return false;
+    }
+    values->assign(members_response.members().begin(), members_response.members().end());
+    std::sort(values->begin(), values->end());
+    return true;
 }
 
 bool ParseDoubleArg(const std::string& arg, double* value) {
@@ -1877,6 +1913,33 @@ void RedisCommandHandler::HSet(RedisClientContext* c) {
     c->reply->SetInteger(added);
 }
 
+void RedisCommandHandler::HSetNx(RedisClientContext* c) {
+    CmdResponse get_response_raw;
+    if (!ExecuteRedisSingle(redis_service_, HashGetExtCmd(c->StrArg(1), c->StrArg(2)),
+                            &get_response_raw, c->reply)) {
+        return;
+    }
+    hash2::GetResponse get_response;
+    if (IsOkStatus(get_response_raw.response_status()) &&
+        ParseHashGetResponse(get_response_raw, &get_response, c->reply) &&
+        get_response.exist()) {
+        c->reply->SetInteger(0);
+        return;
+    }
+
+    CmdResponse set_response;
+    if (!ExecuteRedisSingle(redis_service_,
+                            HashSetCmd(c->StrArg(1), c->StrArg(2), c->StrArg(3)),
+                            &set_response, c->reply)) {
+        return;
+    }
+    if (!IsOkStatus(set_response.response_status())) {
+        SetRedisStatusError(c->reply, set_response.response_status());
+        return;
+    }
+    c->reply->SetInteger(1);
+}
+
 void RedisCommandHandler::HGet(RedisClientContext* c) {
     CmdResponse response;
     if (!ExecuteRedisSingle(redis_service_, HashGetExtCmd(c->StrArg(1), c->StrArg(2)), &response,
@@ -2184,6 +2247,136 @@ void RedisCommandHandler::SMIsMember(RedisClientContext* c) {
     }
 }
 
+void RedisCommandHandler::SPop(RedisClientContext* c) {
+    int64_t count = 1;
+    bool count_mode = c->ArgSize() == 3;
+    if (count_mode && (!ParseInt64Arg(c->StrArg(2), &count) || count < 0)) {
+        c->reply->SetError("ERR value is out of range, must be positive");
+        return;
+    }
+    std::vector<std::string> members;
+    if (!LoadSetValues(redis_service_, c->StrArg(1), &members, c->reply)) {
+        return;
+    }
+    if (members.empty()) {
+        if (count_mode) {
+            c->reply->SetArray(0);
+        } else {
+            c->reply->SetNullString();
+        }
+        return;
+    }
+    int64_t n = std::min<int64_t>(count, members.size());
+    std::vector<std::string> selected(members.begin(), members.begin() + n);
+    CmdResponse rem_response;
+    if (!ExecuteRedisSingle(redis_service_, SetRemCmd(c->StrArg(1), selected), &rem_response,
+                            c->reply)) {
+        return;
+    }
+    if (!IsOkStatus(rem_response.response_status())) {
+        SetRedisStatusError(c->reply, rem_response.response_status());
+        return;
+    }
+    if (count_mode) {
+        SetStringArrayReply(c->reply, selected);
+    } else {
+        c->reply->SetString(selected.front());
+    }
+}
+
+void RedisCommandHandler::SRandMember(RedisClientContext* c) {
+    int64_t count = 1;
+    bool count_mode = c->ArgSize() == 3;
+    if (count_mode && !ParseInt64Arg(c->StrArg(2), &count)) {
+        c->reply->SetError("ERR value is not an integer or out of range");
+        return;
+    }
+    std::vector<std::string> members;
+    if (!LoadSetValues(redis_service_, c->StrArg(1), &members, c->reply)) {
+        return;
+    }
+    if (members.empty()) {
+        if (count_mode) {
+            c->reply->SetArray(0);
+        } else {
+            c->reply->SetNullString();
+        }
+        return;
+    }
+    if (!count_mode) {
+        c->reply->SetString(members.front());
+        return;
+    }
+    std::vector<std::string> selected;
+    if (count >= 0) {
+        int64_t n = std::min<int64_t>(count, members.size());
+        selected.assign(members.begin(), members.begin() + n);
+    } else {
+        int64_t n = -count;
+        selected.reserve(n);
+        for (int64_t i = 0; i < n; ++i) {
+            selected.emplace_back(members[i % members.size()]);
+        }
+    }
+    SetStringArrayReply(c->reply, selected);
+}
+
+void RedisCommandHandler::SInter(RedisClientContext* c) {
+    std::set<std::string> result;
+    for (size_t i = 1; i < c->ArgSize(); ++i) {
+        std::vector<std::string> members;
+        if (!LoadSetValues(redis_service_, c->StrArg(i), &members, c->reply)) {
+            return;
+        }
+        std::set<std::string> current(members.begin(), members.end());
+        if (i == 1) {
+            result = std::move(current);
+        } else {
+            for (auto it = result.begin(); it != result.end();) {
+                if (current.find(*it) == current.end()) {
+                    it = result.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+        if (result.empty()) {
+            break;
+        }
+    }
+    SetStringArrayReply(c->reply, std::vector<std::string>(result.begin(), result.end()));
+}
+
+void RedisCommandHandler::SUnion(RedisClientContext* c) {
+    std::set<std::string> result;
+    for (size_t i = 1; i < c->ArgSize(); ++i) {
+        std::vector<std::string> members;
+        if (!LoadSetValues(redis_service_, c->StrArg(i), &members, c->reply)) {
+            return;
+        }
+        result.insert(members.begin(), members.end());
+    }
+    SetStringArrayReply(c->reply, std::vector<std::string>(result.begin(), result.end()));
+}
+
+void RedisCommandHandler::SDiff(RedisClientContext* c) {
+    std::vector<std::string> first;
+    if (!LoadSetValues(redis_service_, c->StrArg(1), &first, c->reply)) {
+        return;
+    }
+    std::set<std::string> result(first.begin(), first.end());
+    for (size_t i = 2; i < c->ArgSize(); ++i) {
+        std::vector<std::string> members;
+        if (!LoadSetValues(redis_service_, c->StrArg(i), &members, c->reply)) {
+            return;
+        }
+        for (const auto& member : members) {
+            result.erase(member);
+        }
+    }
+    SetStringArrayReply(c->reply, std::vector<std::string>(result.begin(), result.end()));
+}
+
 void RedisCommandHandler::LPush(RedisClientContext* c) {
     std::vector<std::string> values;
     if (!LoadEncodedList(redis_service_, c->StrArg(1), &values, c->reply)) {
@@ -2403,6 +2596,65 @@ void RedisCommandHandler::LTrim(RedisClientContext* c) {
     c->reply->SetStatus("OK");
 }
 
+void RedisCommandHandler::LSet(RedisClientContext* c) {
+    int64_t index = 0;
+    if (!ParseInt64Arg(c->StrArg(2), &index)) {
+        c->reply->SetError("ERR value is not an integer or out of range");
+        return;
+    }
+    std::vector<std::string> values;
+    if (!LoadEncodedList(redis_service_, c->StrArg(1), &values, c->reply)) {
+        return;
+    }
+    index = NormalizeIndex(index, values.size());
+    if (index < 0 || index >= static_cast<int64_t>(values.size())) {
+        c->reply->SetError("ERR index out of range");
+        return;
+    }
+    values[index] = c->StrArg(3);
+    if (!SaveEncodedList(redis_service_, c->StrArg(1), values, c->reply)) {
+        return;
+    }
+    c->reply->SetStatus("OK");
+}
+
+void RedisCommandHandler::LRem(RedisClientContext* c) {
+    int64_t count = 0;
+    if (!ParseInt64Arg(c->StrArg(2), &count)) {
+        c->reply->SetError("ERR value is not an integer or out of range");
+        return;
+    }
+    std::vector<std::string> values;
+    if (!LoadEncodedList(redis_service_, c->StrArg(1), &values, c->reply)) {
+        return;
+    }
+    const std::string element = c->StrArg(3);
+    int64_t removed = 0;
+    auto remove_one = [&](size_t index) {
+        values.erase(values.begin() + index);
+        ++removed;
+    };
+    if (count >= 0) {
+        for (size_t i = 0; i < values.size();) {
+            if (values[i] == element && (count == 0 || removed < count)) {
+                remove_one(i);
+            } else {
+                ++i;
+            }
+        }
+    } else {
+        for (int64_t i = static_cast<int64_t>(values.size()) - 1; i >= 0 && removed < -count; --i) {
+            if (values[i] == element) {
+                remove_one(static_cast<size_t>(i));
+            }
+        }
+    }
+    if (!SaveEncodedList(redis_service_, c->StrArg(1), values, c->reply)) {
+        return;
+    }
+    c->reply->SetInteger(removed);
+}
+
 void RedisCommandHandler::ZAdd(RedisClientContext* c) {
     if ((c->ArgSize() - 2) % 2 != 0) {
         c->reply->SetError("ERR wrong number of arguments for 'zadd' command");
@@ -2546,6 +2798,22 @@ void RedisCommandHandler::ZScore(RedisClientContext* c) {
     c->reply->SetString(items[index].score_text);
 }
 
+void RedisCommandHandler::ZMScore(RedisClientContext* c) {
+    std::vector<ZItem> items;
+    if (!LoadEncodedZSet(redis_service_, c->StrArg(1), &items, c->reply)) {
+        return;
+    }
+    c->reply->SetArray(c->ArgSize() - 2);
+    for (size_t i = 2; i < c->ArgSize(); ++i) {
+        int index = FindZMember(items, c->StrArg(i));
+        if (index < 0) {
+            (*c->reply)[i - 2].SetNullString();
+        } else {
+            (*c->reply)[i - 2].SetString(items[index].score_text);
+        }
+    }
+}
+
 void RedisCommandHandler::ZRank(RedisClientContext* c) {
     std::vector<ZItem> items;
     if (!LoadEncodedZSet(redis_service_, c->StrArg(1), &items, c->reply)) {
@@ -2643,6 +2911,46 @@ void RedisCommandHandler::ZRangeByScore(RedisClientContext* c) {
         return;
     }
     SortZSet(&items);
+    bool with_scores = WithScoresArg(c, 4);
+    int64_t offset = 0;
+    int64_t count = LLONG_MAX;
+    size_t limit_index = with_scores ? 5 : 4;
+    if (!ParseLimitArgs(c, limit_index, &offset, &count, c->reply)) {
+        return;
+    }
+    std::vector<ZItem> selected;
+    for (const auto& item : items) {
+        if (item.score >= min_score && item.score <= max_score) {
+            selected.push_back(item);
+        }
+    }
+    size_t begin = std::min(static_cast<size_t>(offset), selected.size());
+    size_t end = count < 0 ? selected.size()
+                           : std::min(selected.size(), begin + static_cast<size_t>(count));
+    size_t result_size = end - begin;
+    c->reply->SetArray(with_scores ? result_size * 2 : result_size);
+    for (size_t i = 0; i < result_size; ++i) {
+        const auto& item = selected[begin + i];
+        (*c->reply)[with_scores ? i * 2 : i].SetString(item.member);
+        if (with_scores) {
+            (*c->reply)[i * 2 + 1].SetString(item.score_text);
+        }
+    }
+}
+
+void RedisCommandHandler::ZRevRangeByScore(RedisClientContext* c) {
+    double max_score = 0;
+    double min_score = 0;
+    if (!ParseZRangeBound(c->StrArg(2), &max_score) ||
+        !ParseZRangeBound(c->StrArg(3), &min_score)) {
+        c->reply->SetError("ERR min or max is not a float");
+        return;
+    }
+    std::vector<ZItem> items;
+    if (!LoadEncodedZSet(redis_service_, c->StrArg(1), &items, c->reply)) {
+        return;
+    }
+    SortZSet(&items, true);
     bool with_scores = WithScoresArg(c, 4);
     int64_t offset = 0;
     int64_t count = LLONG_MAX;

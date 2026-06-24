@@ -73,6 +73,7 @@ class RedisCommand {
         kStrlen,
         kIncrBy,
         kHSet,
+        kHSetNx,
         kHGet,
         kHMGet,
         kHDel,
@@ -89,6 +90,11 @@ class RedisCommand {
         kSCard,
         kSIsMember,
         kSMIsMember,
+        kSPop,
+        kSRandMember,
+        kSInter,
+        kSUnion,
+        kSDiff,
         kLPush,
         kRPush,
         kLPushX,
@@ -99,6 +105,8 @@ class RedisCommand {
         kLIndex,
         kLRange,
         kLTrim,
+        kLSet,
+        kLRem,
         kZAdd,
         kZIncrBy,
         kZRem,
@@ -113,7 +121,9 @@ class RedisCommand {
         kZRange,
         kZRevRange,
         kZRangeByScore,
+        kZRevRangeByScore,
         kZCount,
+        kZMScore,
         kUnsupported,
     };
 
@@ -217,6 +227,7 @@ class RedisCommandHandler : public brpc::RedisCommandHandler {
     void Strlen(RedisClientContext* c);
     void IncrBy(RedisClientContext* c);
     void HSet(RedisClientContext* c);
+    void HSetNx(RedisClientContext* c);
     void HGet(RedisClientContext* c);
     void HMGet(RedisClientContext* c);
     void HDel(RedisClientContext* c);
@@ -233,6 +244,11 @@ class RedisCommandHandler : public brpc::RedisCommandHandler {
     void SCard(RedisClientContext* c);
     void SIsMember(RedisClientContext* c);
     void SMIsMember(RedisClientContext* c);
+    void SPop(RedisClientContext* c);
+    void SRandMember(RedisClientContext* c);
+    void SInter(RedisClientContext* c);
+    void SUnion(RedisClientContext* c);
+    void SDiff(RedisClientContext* c);
     void LPush(RedisClientContext* c);
     void RPush(RedisClientContext* c);
     void LPushX(RedisClientContext* c);
@@ -243,6 +259,8 @@ class RedisCommandHandler : public brpc::RedisCommandHandler {
     void LIndex(RedisClientContext* c);
     void LRange(RedisClientContext* c);
     void LTrim(RedisClientContext* c);
+    void LSet(RedisClientContext* c);
+    void LRem(RedisClientContext* c);
     void ZAdd(RedisClientContext* c);
     void ZIncrBy(RedisClientContext* c);
     void ZRem(RedisClientContext* c);
@@ -257,7 +275,9 @@ class RedisCommandHandler : public brpc::RedisCommandHandler {
     void ZRange(RedisClientContext* c);
     void ZRevRange(RedisClientContext* c);
     void ZRangeByScore(RedisClientContext* c);
+    void ZRevRangeByScore(RedisClientContext* c);
     void ZCount(RedisClientContext* c);
+    void ZMScore(RedisClientContext* c);
     void Unsupported(RedisClientContext* c);
 
  private:

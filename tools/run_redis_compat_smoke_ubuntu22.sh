@@ -160,6 +160,9 @@ expect_eq type_after_unlink none TYPE "$(k counter)"
 expect_eq hset 2 HSET "$(k hash)" f1 v1 f2 v2
 expect_eq type_hash hash TYPE "$(k hash)"
 expect_eq hset_existing 0 HSET "$(k hash)" f1 v1b
+expect_eq hsetnx_existing 0 HSETNX "$(k hash)" f1 should-not-set
+expect_eq hsetnx_missing 1 HSETNX "$(k hash)" f3 v3
+expect_eq hget_hsetnx v3 HGET "$(k hash)" f3
 expect_eq hget v1b HGET "$(k hash)" f1
 expect_eq hmget $'v1b\nv2' HMGET "$(k hash)" f1 f2
 expect_eq hmget_missing $'v1b\n\nv2' HMGET "$(k hash)" f1 nofield f2
@@ -180,6 +183,7 @@ expect_eq hexists_after_hdel 0 HEXISTS "$(k hash)" f1
 expect_eq hmset OK HMSET "$(k hash2)" a 1 b 2
 expect_eq hmget_hmset $'1\n2' HMGET "$(k hash2)" a b
 expect_eq sadd 2 SADD "$(k set)" a b a
+expect_eq sadd_other 3 SADD "$(k set2)" b c d
 expect_eq type_set set TYPE "$(k set)"
 expect_eq scard 2 SCARD "$(k set)"
 expect_eq sismember_present 1 SISMEMBER "$(k set)" a
@@ -187,8 +191,16 @@ expect_eq sismember_missing 0 SISMEMBER "$(k set)" missing
 expect_eq smismember $'1\n0\n1' SMISMEMBER "$(k set)" a missing b
 expect_contains_line smembers_a a SMEMBERS "$(k set)"
 expect_contains_line smembers_b b SMEMBERS "$(k set)"
+expect_contains_line sinter_b b SINTER "$(k set)" "$(k set2)"
+expect_contains_line sunion_a a SUNION "$(k set)" "$(k set2)"
+expect_contains_line sunion_d d SUNION "$(k set)" "$(k set2)"
+expect_contains_line sdiff_a a SDIFF "$(k set)" "$(k set2)"
+expect_eq srandmember a SRANDMEMBER "$(k set)"
+expect_eq srandmember_count $'a\nb' SRANDMEMBER "$(k set)" 2
 expect_eq srem 1 SREM "$(k set)" a missing
 expect_eq scard_after_srem 1 SCARD "$(k set)"
+expect_eq spop b SPOP "$(k set)"
+expect_eq scard_after_spop 0 SCARD "$(k set)"
 expect_eq lpushx_missing 0 LPUSHX "$(k listxmissing)" ghost
 expect_eq rpushx_missing 0 RPUSHX "$(k listxmissing)" ghost
 expect_eq lpush 3 LPUSH "$(k list)" a b c
@@ -198,6 +210,11 @@ expect_eq rpush 6 RPUSH "$(k list)" d e
 expect_eq rpushx_existing 7 RPUSHX "$(k list)" tail
 expect_eq llen 7 LLEN "$(k list)"
 expect_eq lindex head LINDEX "$(k list)" 0
+expect_eq rpush_listmut 5 RPUSH "$(k listmut)" a b b c b
+expect_eq lset OK LSET "$(k listmut)" 0 newhead
+expect_eq lindex_after_lset newhead LINDEX "$(k listmut)" 0
+expect_eq lrem_dupes 3 LREM "$(k listmut)" 0 b
+expect_eq lrange_after_lrem $'newhead\nc' LRANGE "$(k listmut)" 0 -1
 expect_eq lrange $'head\nc\nb\na\nd\ne\ntail' LRANGE "$(k list)" 0 -1
 expect_eq lpop head LPOP "$(k list)"
 expect_eq rpop tail RPOP "$(k list)"
@@ -208,6 +225,7 @@ expect_eq type_zset zset TYPE "$(k zset)"
 expect_eq zadd_update 0 ZADD "$(k zset)" 3 bob
 expect_eq zcard 3 ZCARD "$(k zset)"
 expect_eq zscore 3 ZSCORE "$(k zset)" bob
+expect_eq zmscore $'1\n3' ZMSCORE "$(k zset)" alice bob missing
 expect_eq zincrby 4.5 ZINCRBY "$(k zset)" 1.5 bob
 expect_eq zscore_after_zincrby 4.5 ZSCORE "$(k zset)" bob
 expect_eq zrank 2 ZRANK "$(k zset)" bob
@@ -217,6 +235,8 @@ expect_eq zrevrange $'bob\ncarol\nalice' ZREVRANGE "$(k zset)" 0 -1
 expect_eq zrange_withscores $'alice\n1\ncarol\n1.5\nbob\n4.5' ZRANGE "$(k zset)" 0 -1 WITHSCORES
 expect_eq zrangebyscore $'carol\nbob' ZRANGEBYSCORE "$(k zset)" 1.1 5
 expect_eq zrangebyscore_withscores $'carol\n1.5\nbob\n4.5' ZRANGEBYSCORE "$(k zset)" 1.1 5 WITHSCORES
+expect_eq zrevrangebyscore $'bob\ncarol' ZREVRANGEBYSCORE "$(k zset)" 5 1.1
+expect_eq zrevrangebyscore_withscores $'bob\n4.5\ncarol\n1.5' ZREVRANGEBYSCORE "$(k zset)" 5 1.1 WITHSCORES
 expect_eq zrangebyscore_limit bob ZRANGEBYSCORE "$(k zset)" 1 5 LIMIT 2 1
 expect_eq zrangebyscore_withscores_limit $'carol\n1.5' ZRANGEBYSCORE "$(k zset)" 1 5 WITHSCORES LIMIT 1 1
 expect_eq zcount 2 ZCOUNT "$(k zset)" 1.1 5
@@ -232,11 +252,17 @@ expect_error unsupported_bgsave BGSAVE
 expect_error unsupported_flushall FLUSHALL
 expect_error unsupported_pslotinfo PSLOTINFO
 expect_error unsupported_scan SCAN 0
+expect_error unsupported_hscan HSCAN "$(k hash)" 0
+expect_error unsupported_sscan SSCAN "$(k set2)" 0
+expect_error unsupported_zscan ZSCAN "$(k zset)" 0
 expect_error unsupported_keys KEYS "*"
 expect_error unsupported_dbsize DBSIZE
 expect_error unsupported_multi MULTI
 expect_error unsupported_eval EVAL "return 1" 0
+expect_error unsupported_evalsha EVALSHA abcdef 0
+expect_error unsupported_cluster CLUSTER NODES
 expect_error unsupported_xadd XADD "$(k stream)" "*" f v
+expect_error unsupported_xgroup XGROUP CREATE "$(k stream)" g "$"
 
 python3 - "${REDIS_HOST}" "${REDIS_PORT}" "${REDIS_AUTH}" "${KEY_PREFIX}" "${RESULT_DIR}" <<'RESPPY'
 import socket
