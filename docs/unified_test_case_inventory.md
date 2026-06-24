@@ -119,6 +119,8 @@ C++ execution should progressively cover every executable case.
 | `storage_dump_load_recovery` | Rust executes the C++ migration storage corpus through slot dump/load, restart, recovery, and logical reads. |
 | `storage_fault_matrix` | Rust validates checksum mismatch, partial manifest, missing segment, stale manifest, and corrupt page-segment rejection. |
 | `storage_follower_safe_gc` | Rust runs storage lifecycle with a lagging follower cursor and verifies recovery stays clean. |
+| `storage_shared_store_oplog_cursor_retention` | Shared-store oplog GC refuses to reclaim oplog objects still needed by a saved follower replay cursor. |
+| `storage_shared_store_checkpoint_cursor_retention` | Shared-store checkpoint GC retains the checkpoint generation anchoring a saved follower replay cursor. |
 | `storage_cache_refill` | Rust invalidates cache, warms from page-store refs, and verifies memory refill stats. |
 | `storage_shared_store_sync_replay` | Rust replays the C++ migration storage corpus through sync local shared-store replication. |
 | `storage_shared_store_async_replay` | Rust replays the C++ migration storage corpus through async local shared-store replication. |

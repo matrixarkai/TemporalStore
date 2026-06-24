@@ -1629,6 +1629,7 @@ mod tests {
         assert_eq!(replicator.list_checkpoints(1).await.unwrap().len(), 1);
     }
 
+    // shared-corpus: storage_shared_store_oplog_cursor_retention
     #[tokio::test]
     async fn shared_store_gc_refuses_oplog_needed_by_replay_cursor() {
         let dir = tempfile::tempdir().unwrap();
@@ -1672,6 +1673,7 @@ mod tests {
         assert_eq!(safe.retained_for_cursor_oplog_index, Some(1));
     }
 
+    // shared-corpus: storage_shared_store_checkpoint_cursor_retention
     #[tokio::test]
     async fn shared_store_checkpoint_gc_retains_cursor_anchor_checkpoint() {
         let dir = tempfile::tempdir().unwrap();
