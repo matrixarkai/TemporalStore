@@ -25,8 +25,9 @@ String:
 - `GET` -> `StringGet`
 - Redis-compatible `MGET`, `MSET`, `MSETNX`, `GETDEL`, `GETSET`, `DEL`, `EXPIRE`,
   `PEXPIRE`, `TTL`, `PTTL`, `APPEND`, `STRLEN`, `INCR`, `DECR`, `INCRBY`, `DECRBY`,
-  `GETRANGE`, `SETRANGE`, `TYPE`, state-backed `DBSIZE`, `KEYS`, and `SCAN` for keys
-  mutated through the RESP adapter
+  `GETRANGE`, `SETRANGE`, `TYPE`, `TOUCH`, `UNLINK`, `RANDOMKEY`, `FLUSHDB`,
+  `FLUSHALL`, state-backed `DBSIZE`, `KEYS`, and `SCAN` for keys mutated through the
+  RESP adapter
 
 Hash:
 
@@ -39,23 +40,25 @@ Hash:
 - `LEN` -> `HashLen`
 - `INCRBY` -> `HashIncrBy`, including C++-style rejection of non-integer values and i64 overflow
 - Redis-compatible `HSET`, `HSETNX`, `HGET`, `HEXISTS`, `HDEL`, `HMGET`, `HMSET`,
-  `HGETALL`, `HKEYS`, `HVALS`, `HLEN`, `HSTRLEN`, and `HINCRBY`
+  `HGETALL`, `HKEYS`, `HVALS`, `HLEN`, `HSTRLEN`, `HSCAN`, and `HINCRBY`
 
 Set:
 
 - `SADD` -> `SetAdd`
 - `SMEMBERS` -> `SetMembers`
 - Rust additionally has `SetRemove` / Redis `SREM`, plus Redis-compatible `SCARD`,
-  `SISMEMBER`, and `SMISMEMBER`
+  `SISMEMBER`, `SMISMEMBER`, `SSCAN`, `SPOP`, `SRANDMEMBER`, `SMOVE`, `SDIFF`,
+  `SINTER`, and `SUNION`
 
 Redis list/sorted-set compatibility:
 
 - List commands are stored through the TemporalStore string engine path with a self-describing
   Redis compatibility envelope: `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LLEN`, `LINDEX`, `LRANGE`,
-  `LSET`, `LTRIM`, and `LREM`.
+  `LSET`, `LTRIM`, `LREM`, and `LPOS`.
 - Sorted-set commands are stored through the TemporalStore string engine path with a self-describing
   Redis compatibility envelope: `ZADD`, `ZRANGE`, `ZREVRANGE`, `ZRANGEBYSCORE`, `ZCARD`,
-  `ZSCORE`, `ZCOUNT`, `ZINCRBY`, `ZRANK`, `ZREVRANK`, and `ZREM`.
+  `ZSCORE`, `ZCOUNT`, `ZINCRBY`, `ZRANK`, `ZREVRANK`, `ZREM`, `ZPOPMIN`,
+  `ZPOPMAX`, `ZREMRANGEBYSCORE`, `ZREMRANGEBYRANK`, and `ZSCAN`.
 - `COMMAND` introspection is guarded by a Rust test that sends a valid sample command for every
   advertised command and fails if any entry falls through to `ERR syntax error`.
 

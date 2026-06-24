@@ -393,6 +393,52 @@ pub fn execute_redis_command_with_state(
             }
             RespValue::Integer(removed)
         }
+        "UNLINK" if args.len() >= 2 => {
+            let mut removed = 0;
+            for key_arg in args.iter().skip(1) {
+                let key = string_arg(key_arg);
+                match execute(Command::CommonExists { key: key.clone() }) {
+                    Ok(CommandResponse::Integer { value }) if value > 0 => {
+                        if let Err(err) = execute(Command::CommonDelete { key: key.clone() }) {
+                            return RespValue::Error(format!("ERR {err}"));
+                        }
+                        state.keyspace.remove(&key);
+                        removed += 1;
+                    }
+                    Ok(CommandResponse::Integer { .. }) => {}
+                    Ok(_) => return RespValue::Error("ERR invalid exists response".to_string()),
+                    Err(err) => return RespValue::Error(format!("ERR {err}")),
+                }
+            }
+            RespValue::Integer(removed)
+        }
+        "TOUCH" if args.len() >= 2 => {
+            let mut touched = 0;
+            for key in args.iter().skip(1) {
+                match execute(Command::CommonExists {
+                    key: string_arg(key),
+                }) {
+                    Ok(CommandResponse::Integer { value }) => touched += value,
+                    Ok(_) => return RespValue::Error("ERR invalid exists response".to_string()),
+                    Err(err) => return RespValue::Error(format!("ERR {err}")),
+                }
+            }
+            RespValue::Integer(touched)
+        }
+        "RANDOMKEY" if args.len() == 1 => sorted_matching_keys("*", state)
+            .into_iter()
+            .next()
+            .map(|key| RespValue::Bulk(Some(key.into_bytes())))
+            .unwrap_or(RespValue::Bulk(None)),
+        "FLUSHDB" | "FLUSHALL" if args.len() == 1 || args.len() == 2 => {
+            for key in state.keyspace.iter().cloned().collect::<Vec<_>>() {
+                if let Err(err) = execute(Command::CommonDelete { key }) {
+                    return RespValue::Error(format!("ERR {err}"));
+                }
+            }
+            state.keyspace.clear();
+            RespValue::SimpleString("OK".to_string())
+        }
         "EXPIRE" if args.len() == 3 => expire_response(&args, 1000, execute),
         "PEXPIRE" if args.len() == 3 => expire_response(&args, 1, execute),
         "TTL" if args.len() == 2 => match execute(Command::CommonTtl {
@@ -624,6 +670,36 @@ pub fn execute_redis_command_with_state(
             Ok(_) => RespValue::Error("ERR invalid hvals response".to_string()),
             Err(err) => RespValue::Error(format!("ERR {err}")),
         },
+        "HSCAN" if args.len() >= 3 => {
+            let cursor = match parse_usize(&args[2], "cursor") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let (pattern, count) = match parse_scan_tail_options(&args[3..]) {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            match execute(Command::HashGetAll {
+                key: string_arg(&args[1]),
+            }) {
+                Ok(CommandResponse::HashEntries { mut entries }) => {
+                    entries.sort_by(|left, right| left.0.cmp(&right.0));
+                    let values = entries
+                        .into_iter()
+                        .filter(|(field, _)| redis_pattern_matches(&pattern, field))
+                        .flat_map(|(field, value)| {
+                            [
+                                RespValue::Bulk(Some(field.into_bytes())),
+                                RespValue::Bulk(Some(value)),
+                            ]
+                        })
+                        .collect();
+                    redis_cursor_page_response(cursor, count, values)
+                }
+                Ok(_) => RespValue::Error("ERR invalid hscan response".to_string()),
+                Err(err) => RespValue::Error(format!("ERR {err}")),
+            }
+        }
         "HLEN" if args.len() == 2 => integer_response(execute(Command::HashLen {
             key: string_arg(&args[1]),
         })),
@@ -742,6 +818,135 @@ pub fn execute_redis_command_with_state(
             }
             RespValue::Integer(removed)
         }
+        "SPOP" if args.len() == 2 || args.len() == 3 => {
+            let key = string_arg(&args[1]);
+            let count = match args.get(2) {
+                Some(value) => match parse_usize(value, "count") {
+                    Ok(value) => Some(value),
+                    Err(err) => return RespValue::Error(err),
+                },
+                None => None,
+            };
+            let members = match sorted_set_members(&key, &mut execute) {
+                Ok(members) => members,
+                Err(err) => return RespValue::Error(err),
+            };
+            let selected = members
+                .into_iter()
+                .take(count.unwrap_or(1))
+                .collect::<Vec<_>>();
+            for member in &selected {
+                if let Err(err) = execute(Command::SetRemove {
+                    key: key.clone(),
+                    member: member.clone(),
+                }) {
+                    return RespValue::Error(format!("ERR {err}"));
+                }
+            }
+            match count {
+                Some(_) => RespValue::Array(
+                    selected
+                        .into_iter()
+                        .map(|member| RespValue::Bulk(Some(member)))
+                        .collect(),
+                ),
+                None => RespValue::Bulk(selected.into_iter().next()),
+            }
+        }
+        "SRANDMEMBER" if args.len() == 2 || args.len() == 3 => {
+            let count = match args.get(2) {
+                Some(value) => match parse_i64_arg(value, "count") {
+                    Ok(value) => Some(value),
+                    Err(err) => return RespValue::Error(err),
+                },
+                None => None,
+            };
+            match sorted_set_members(&string_arg(&args[1]), &mut execute) {
+                Ok(members) => match count {
+                    Some(count) if count >= 0 => RespValue::Array(
+                        members
+                            .into_iter()
+                            .take(count as usize)
+                            .map(|member| RespValue::Bulk(Some(member)))
+                            .collect(),
+                    ),
+                    Some(count) => {
+                        let take = count.unsigned_abs() as usize;
+                        let mut out = Vec::new();
+                        for index in 0..take {
+                            if members.is_empty() {
+                                break;
+                            }
+                            out.push(RespValue::Bulk(Some(
+                                members[index % members.len()].clone(),
+                            )));
+                        }
+                        RespValue::Array(out)
+                    }
+                    None => RespValue::Bulk(members.into_iter().next()),
+                },
+                Err(err) => RespValue::Error(err),
+            }
+        }
+        "SSCAN" if args.len() >= 3 => {
+            let cursor = match parse_usize(&args[2], "cursor") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let (pattern, count) = match parse_scan_tail_options(&args[3..]) {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            match sorted_set_members(&string_arg(&args[1]), &mut execute) {
+                Ok(members) => redis_cursor_page_response(
+                    cursor,
+                    count,
+                    members
+                        .into_iter()
+                        .filter(|member| redis_pattern_matches(&pattern, &string_arg(member)))
+                        .map(|member| RespValue::Bulk(Some(member)))
+                        .collect(),
+                ),
+                Err(err) => RespValue::Error(err),
+            }
+        }
+        "SMOVE" if args.len() == 4 => {
+            let source = string_arg(&args[1]);
+            let destination = string_arg(&args[2]);
+            let member = args[3].clone();
+            match execute(Command::SetMembers {
+                key: source.clone(),
+            }) {
+                Ok(CommandResponse::Members { members }) if members.contains(&member) => {
+                    if let Err(err) = execute(Command::SetRemove {
+                        key: source,
+                        member: member.clone(),
+                    }) {
+                        return RespValue::Error(format!("ERR {err}"));
+                    }
+                    if let Err(err) = execute(Command::SetAdd {
+                        key: destination.clone(),
+                        member,
+                    }) {
+                        return RespValue::Error(format!("ERR {err}"));
+                    }
+                    state.keyspace.insert(destination);
+                    RespValue::Integer(1)
+                }
+                Ok(CommandResponse::Members { .. }) => RespValue::Integer(0),
+                Ok(_) => RespValue::Error("ERR invalid smove response".to_string()),
+                Err(err) => RespValue::Error(format!("ERR {err}")),
+            }
+        }
+        "SDIFF" if args.len() >= 2 => {
+            set_algebra_response(&args[1..], SetAlgebraOp::Diff, &mut execute)
+        }
+        "SINTER" if args.len() >= 2 => {
+            set_algebra_response(&args[1..], SetAlgebraOp::Inter, &mut execute)
+        }
+        "SUNION" if args.len() >= 2 => {
+            set_algebra_response(&args[1..], SetAlgebraOp::Union, &mut execute)
+        }
         "LPUSH" if args.len() >= 3 => {
             let response = list_push_response(&args, true, &mut execute);
             if matches!(response, RespValue::Integer(_)) {
@@ -781,6 +986,14 @@ pub fn execute_redis_command_with_state(
                 }
                 Err(err) => RespValue::Error(err),
             },
+            Err(err) => RespValue::Error(err),
+        },
+        "LPOS" if args.len() == 3 => match load_redis_list(&string_arg(&args[1]), &mut execute) {
+            Ok(values) => values
+                .iter()
+                .position(|value| value == &args[2])
+                .map(|index| RespValue::Integer(index as i64))
+                .unwrap_or(RespValue::Bulk(None)),
             Err(err) => RespValue::Error(err),
         },
         "LRANGE" if args.len() == 4 => {
@@ -920,6 +1133,10 @@ pub fn execute_redis_command_with_state(
                 Err(err) => RespValue::Error(err),
             }
         }
+        "ZPOPMIN" if args.len() == 2 || args.len() == 3 => {
+            zpop_response(&args, false, &mut execute)
+        }
+        "ZPOPMAX" if args.len() == 2 || args.len() == 3 => zpop_response(&args, true, &mut execute),
         "ZCOUNT" if args.len() == 4 => {
             let min = match parse_f64_arg(&args[2], "min") {
                 Ok(value) => value,
@@ -941,6 +1158,35 @@ pub fn execute_redis_command_with_state(
         }
         "ZRANGEBYSCORE" if args.len() == 4 || args.len() == 5 => {
             zrange_by_score_response(&args, &mut execute)
+        }
+        "ZREMRANGEBYSCORE" if args.len() == 4 => zremrangebyscore_response(&args, &mut execute),
+        "ZREMRANGEBYRANK" if args.len() == 4 => zremrangebyrank_response(&args, &mut execute),
+        "ZSCAN" if args.len() >= 3 => {
+            let cursor = match parse_usize(&args[2], "cursor") {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            let (pattern, count) = match parse_scan_tail_options(&args[3..]) {
+                Ok(value) => value,
+                Err(err) => return RespValue::Error(err),
+            };
+            match load_redis_zset(&string_arg(&args[1]), &mut execute) {
+                Ok(mut values) => {
+                    sort_zset_values(&mut values);
+                    let values = values
+                        .into_iter()
+                        .filter(|(member, _)| redis_pattern_matches(&pattern, &string_arg(member)))
+                        .flat_map(|(member, score)| {
+                            [
+                                RespValue::Bulk(Some(member)),
+                                RespValue::Bulk(Some(format_redis_score(score).into_bytes())),
+                            ]
+                        })
+                        .collect();
+                    redis_cursor_page_response(cursor, count, values)
+                }
+                Err(err) => RespValue::Error(err),
+            }
         }
         "KEYS" if args.len() == 2 => redis_keys_response(&args[1], state),
         "SCAN" if args.len() >= 2 => redis_scan_response(&args, state),
@@ -1809,6 +2055,16 @@ fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             flags: WRITE,
         },
         RedisCommandDescriptor {
+            name: "FLUSHALL",
+            arity: -1,
+            flags: ADMIN,
+        },
+        RedisCommandDescriptor {
+            name: "FLUSHDB",
+            arity: -1,
+            flags: ADMIN,
+        },
+        RedisCommandDescriptor {
             name: "GET",
             arity: 2,
             flags: READ,
@@ -1879,6 +2135,11 @@ fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             flags: WRITE,
         },
         RedisCommandDescriptor {
+            name: "HSCAN",
+            arity: -3,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
             name: "HSETNX",
             arity: 4,
             flags: WRITE,
@@ -1922,6 +2183,11 @@ fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             name: "LPUSH",
             arity: -3,
             flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "LPOS",
+            arity: 3,
+            flags: READ,
         },
         RedisCommandDescriptor {
             name: "LRANGE",
@@ -1984,6 +2250,11 @@ fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             flags: READ,
         },
         RedisCommandDescriptor {
+            name: "RANDOMKEY",
+            arity: 1,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
             name: "RPOP",
             arity: -2,
             flags: WRITE,
@@ -2001,6 +2272,11 @@ fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
         RedisCommandDescriptor {
             name: "SCARD",
             arity: 2,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "SDIFF",
+            arity: -2,
             flags: READ,
         },
         RedisCommandDescriptor {
@@ -2039,6 +2315,11 @@ fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             flags: READ,
         },
         RedisCommandDescriptor {
+            name: "SINTER",
+            arity: -2,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
             name: "SLAVEOF",
             arity: 3,
             flags: ADMIN,
@@ -2054,13 +2335,38 @@ fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             flags: READ,
         },
         RedisCommandDescriptor {
+            name: "SMOVE",
+            arity: 4,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "SPOP",
+            arity: -2,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "SRANDMEMBER",
+            arity: -2,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
             name: "SREM",
             arity: -3,
             flags: WRITE,
         },
         RedisCommandDescriptor {
+            name: "SSCAN",
+            arity: -3,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
             name: "STRLEN",
             arity: 2,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "SUNION",
+            arity: -2,
             flags: READ,
         },
         RedisCommandDescriptor {
@@ -2072,6 +2378,16 @@ fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             name: "TYPE",
             arity: 2,
             flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "TOUCH",
+            arity: -2,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "UNLINK",
+            arity: -2,
+            flags: WRITE,
         },
         RedisCommandDescriptor {
             name: "ZADD",
@@ -2094,6 +2410,16 @@ fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             flags: WRITE,
         },
         RedisCommandDescriptor {
+            name: "ZPOPMAX",
+            arity: -2,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "ZPOPMIN",
+            arity: -2,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
             name: "ZRANGE",
             arity: -4,
             flags: READ,
@@ -2109,6 +2435,16 @@ fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
             flags: WRITE,
         },
         RedisCommandDescriptor {
+            name: "ZREMRANGEBYRANK",
+            arity: 4,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
+            name: "ZREMRANGEBYSCORE",
+            arity: 4,
+            flags: WRITE,
+        },
+        RedisCommandDescriptor {
             name: "ZRANK",
             arity: 3,
             flags: READ,
@@ -2121,6 +2457,11 @@ fn redis_supported_commands() -> &'static [RedisCommandDescriptor] {
         RedisCommandDescriptor {
             name: "ZREVRANK",
             arity: 3,
+            flags: READ,
+        },
+        RedisCommandDescriptor {
+            name: "ZSCAN",
+            arity: -3,
             flags: READ,
         },
         RedisCommandDescriptor {
@@ -2460,6 +2801,73 @@ fn list_rem_response(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SetAlgebraOp {
+    Diff,
+    Inter,
+    Union,
+}
+
+fn sorted_set_members(
+    key: &str,
+    execute: &mut impl FnMut(Command) -> Result<CommandResponse, String>,
+) -> Result<Vec<Vec<u8>>, String> {
+    match execute(Command::SetMembers {
+        key: key.to_string(),
+    }) {
+        Ok(CommandResponse::Members { mut members }) => {
+            members.sort();
+            Ok(members)
+        }
+        Ok(_) => Err("ERR invalid smembers response".to_string()),
+        Err(err) => Err(format!("ERR {err}")),
+    }
+}
+
+fn set_algebra_response(
+    keys: &[Vec<u8>],
+    op: SetAlgebraOp,
+    execute: &mut impl FnMut(Command) -> Result<CommandResponse, String>,
+) -> RespValue {
+    let mut sets = Vec::new();
+    for key in keys {
+        match sorted_set_members(&string_arg(key), execute) {
+            Ok(members) => sets.push(members.into_iter().collect::<HashSet<_>>()),
+            Err(err) => return RespValue::Error(err),
+        }
+    }
+    let mut result = match op {
+        SetAlgebraOp::Diff => sets.first().cloned().unwrap_or_default(),
+        SetAlgebraOp::Inter => sets.first().cloned().unwrap_or_default(),
+        SetAlgebraOp::Union => HashSet::new(),
+    };
+    match op {
+        SetAlgebraOp::Diff => {
+            for set in sets.iter().skip(1) {
+                result.retain(|member| !set.contains(member));
+            }
+        }
+        SetAlgebraOp::Inter => {
+            for set in sets.iter().skip(1) {
+                result.retain(|member| set.contains(member));
+            }
+        }
+        SetAlgebraOp::Union => {
+            for set in sets {
+                result.extend(set);
+            }
+        }
+    }
+    let mut result = result.into_iter().collect::<Vec<_>>();
+    result.sort();
+    RespValue::Array(
+        result
+            .into_iter()
+            .map(|member| RespValue::Bulk(Some(member)))
+            .collect(),
+    )
+}
+
 fn load_redis_list(
     key: &str,
     execute: &mut impl FnMut(Command) -> Result<CommandResponse, String>,
@@ -2719,6 +3127,102 @@ fn zrange_by_score_response(
     }
 }
 
+fn zpop_response(
+    args: &[Vec<u8>],
+    reverse: bool,
+    execute: &mut impl FnMut(Command) -> Result<CommandResponse, String>,
+) -> RespValue {
+    let key = string_arg(&args[1]);
+    let count = match args.get(2) {
+        Some(value) => match parse_usize(value, "count") {
+            Ok(value) => value,
+            Err(err) => return RespValue::Error(err),
+        },
+        None => 1,
+    };
+    let mut values = match load_redis_zset(&key, execute) {
+        Ok(values) => values,
+        Err(err) => return RespValue::Error(err),
+    };
+    sort_zset_values(&mut values);
+    if reverse {
+        values.reverse();
+    }
+    let selected = values.iter().take(count).cloned().collect::<Vec<_>>();
+    values.retain(|(member, _)| !selected.iter().any(|(selected, _)| selected == member));
+    match store_redis_zset(&key, &values, execute) {
+        Ok(()) => RespValue::Array(
+            selected
+                .into_iter()
+                .flat_map(|(member, score)| {
+                    [
+                        RespValue::Bulk(Some(member)),
+                        RespValue::Bulk(Some(format_redis_score(score).into_bytes())),
+                    ]
+                })
+                .collect(),
+        ),
+        Err(err) => RespValue::Error(err),
+    }
+}
+
+fn zremrangebyscore_response(
+    args: &[Vec<u8>],
+    execute: &mut impl FnMut(Command) -> Result<CommandResponse, String>,
+) -> RespValue {
+    let min = match parse_f64_arg(&args[2], "min") {
+        Ok(value) => value,
+        Err(err) => return RespValue::Error(err),
+    };
+    let max = match parse_f64_arg(&args[3], "max") {
+        Ok(value) => value,
+        Err(err) => return RespValue::Error(err),
+    };
+    let key = string_arg(&args[1]);
+    let mut values = match load_redis_zset(&key, execute) {
+        Ok(values) => values,
+        Err(err) => return RespValue::Error(err),
+    };
+    let before = values.len();
+    values.retain(|(_, score)| *score < min || *score > max);
+    let removed = before.saturating_sub(values.len()) as i64;
+    match store_redis_zset(&key, &values, execute) {
+        Ok(()) => RespValue::Integer(removed),
+        Err(err) => RespValue::Error(err),
+    }
+}
+
+fn zremrangebyrank_response(
+    args: &[Vec<u8>],
+    execute: &mut impl FnMut(Command) -> Result<CommandResponse, String>,
+) -> RespValue {
+    let start = match parse_i64_arg(&args[2], "start") {
+        Ok(value) => value,
+        Err(err) => return RespValue::Error(err),
+    };
+    let stop = match parse_i64_arg(&args[3], "stop") {
+        Ok(value) => value,
+        Err(err) => return RespValue::Error(err),
+    };
+    let key = string_arg(&args[1]);
+    let mut values = match load_redis_zset(&key, execute) {
+        Ok(values) => values,
+        Err(err) => return RespValue::Error(err),
+    };
+    sort_zset_values(&mut values);
+    let (start, stop) = normalize_range(start, stop, values.len());
+    let removed_members = values[start..stop]
+        .iter()
+        .map(|(member, _)| member.clone())
+        .collect::<HashSet<_>>();
+    let removed = removed_members.len() as i64;
+    values.retain(|(member, _)| !removed_members.contains(member));
+    match store_redis_zset(&key, &values, execute) {
+        Ok(()) => RespValue::Integer(removed),
+        Err(err) => RespValue::Error(err),
+    }
+}
+
 fn redis_keys_response(pattern: &[u8], state: &RedisCommandState) -> RespValue {
     let pattern = string_arg(pattern);
     RespValue::Array(
@@ -2780,6 +3284,51 @@ fn redis_scan_response(args: &[Vec<u8>], state: &RedisCommandState) -> RespValue
                 .map(|key| RespValue::Bulk(Some(key.into_bytes())))
                 .collect(),
         ),
+    ])
+}
+
+fn parse_scan_tail_options(args: &[Vec<u8>]) -> Result<(String, usize), String> {
+    let mut pattern = "*".to_string();
+    let mut count = 10usize;
+    let mut index = 0;
+    while index < args.len() {
+        match upper(&args[index]).as_str() {
+            "MATCH" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("ERR syntax error".to_string());
+                };
+                pattern = string_arg(value);
+                index += 2;
+            }
+            "COUNT" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("ERR syntax error".to_string());
+                };
+                count = parse_usize(value, "count")?.max(1);
+                index += 2;
+            }
+            _ => return Err("ERR syntax error".to_string()),
+        }
+    }
+    Ok((pattern, count))
+}
+
+fn redis_cursor_page_response(cursor: usize, count: usize, values: Vec<RespValue>) -> RespValue {
+    let selected = values
+        .iter()
+        .skip(cursor)
+        .take(count)
+        .cloned()
+        .collect::<Vec<_>>();
+    let next_cursor = cursor.saturating_add(selected.len());
+    let next_cursor = if next_cursor >= values.len() {
+        0
+    } else {
+        next_cursor
+    };
+    RespValue::Array(vec![
+        RespValue::Bulk(Some(next_cursor.to_string().into_bytes())),
+        RespValue::Array(selected),
     ])
 }
 
@@ -3341,12 +3890,76 @@ mod tests {
             RespValue::Integer(2)
         );
         assert_eq!(
+            run(&mut state, vec!["HSCAN", "redis:core:hash", "0"]),
+            RespValue::Array(vec![
+                RespValue::Bulk(Some(b"0".to_vec())),
+                RespValue::Array(vec![
+                    RespValue::Bulk(Some(b"field".to_vec())),
+                    RespValue::Bulk(Some(b"v1".to_vec())),
+                ]),
+            ])
+        );
+        assert_eq!(
             run(&mut state, vec!["TYPE", "redis:core:hash"]),
             RespValue::SimpleString("hash".to_string())
         );
         assert_eq!(
             run(&mut state, vec!["SADD", "redis:core:set", "a", "b"]),
             RespValue::Integer(2)
+        );
+        assert_eq!(
+            run(&mut state, vec!["SADD", "redis:core:other-set", "b", "c"]),
+            RespValue::Integer(2)
+        );
+        assert_eq!(
+            run(
+                &mut state,
+                vec!["SDIFF", "redis:core:set", "redis:core:other-set"]
+            ),
+            RespValue::Array(vec![RespValue::Bulk(Some(b"a".to_vec()))])
+        );
+        assert_eq!(
+            run(
+                &mut state,
+                vec!["SINTER", "redis:core:set", "redis:core:other-set"]
+            ),
+            RespValue::Array(vec![RespValue::Bulk(Some(b"b".to_vec()))])
+        );
+        assert_eq!(
+            run(
+                &mut state,
+                vec!["SUNION", "redis:core:set", "redis:core:other-set"]
+            ),
+            RespValue::Array(vec![
+                RespValue::Bulk(Some(b"a".to_vec())),
+                RespValue::Bulk(Some(b"b".to_vec())),
+                RespValue::Bulk(Some(b"c".to_vec())),
+            ])
+        );
+        assert_eq!(
+            run(&mut state, vec!["SRANDMEMBER", "redis:core:set"]),
+            RespValue::Bulk(Some(b"a".to_vec()))
+        );
+        assert_eq!(
+            run(&mut state, vec!["SSCAN", "redis:core:set", "0"]),
+            RespValue::Array(vec![
+                RespValue::Bulk(Some(b"0".to_vec())),
+                RespValue::Array(vec![
+                    RespValue::Bulk(Some(b"a".to_vec())),
+                    RespValue::Bulk(Some(b"b".to_vec())),
+                ]),
+            ])
+        );
+        assert_eq!(
+            run(
+                &mut state,
+                vec!["SMOVE", "redis:core:set", "redis:core:set-dest", "a"]
+            ),
+            RespValue::Integer(1)
+        );
+        assert_eq!(
+            run(&mut state, vec!["SPOP", "redis:core:set-dest"]),
+            RespValue::Bulk(Some(b"a".to_vec()))
         );
         assert_eq!(
             run(&mut state, vec!["TYPE", "redis:core:set"]),
@@ -3370,6 +3983,10 @@ mod tests {
                 RespValue::Bulk(Some(b"c".to_vec())),
                 RespValue::Bulk(Some(b"a".to_vec())),
             ])
+        );
+        assert_eq!(
+            run(&mut state, vec!["LPOS", "redis:core:list", "a"]),
+            RespValue::Integer(2)
         );
         assert_eq!(
             run(&mut state, vec!["TYPE", "redis:core:list"]),
@@ -3407,15 +4024,71 @@ mod tests {
             RespValue::Integer(0)
         );
         assert_eq!(
+            run(
+                &mut state,
+                vec!["ZSCAN", "redis:core:zset", "0", "COUNT", "4"]
+            ),
+            RespValue::Array(vec![
+                RespValue::Bulk(Some(b"4".to_vec())),
+                RespValue::Array(vec![
+                    RespValue::Bulk(Some(b"a".to_vec())),
+                    RespValue::Bulk(Some(b"1".to_vec())),
+                    RespValue::Bulk(Some(b"c".to_vec())),
+                    RespValue::Bulk(Some(b"3".to_vec())),
+                ]),
+            ])
+        );
+        assert_eq!(
+            run(&mut state, vec!["ZPOPMIN", "redis:core:zset"]),
+            RespValue::Array(vec![
+                RespValue::Bulk(Some(b"a".to_vec())),
+                RespValue::Bulk(Some(b"1".to_vec())),
+            ])
+        );
+        assert_eq!(
+            run(&mut state, vec!["ZPOPMAX", "redis:core:zset"]),
+            RespValue::Array(vec![
+                RespValue::Bulk(Some(b"b".to_vec())),
+                RespValue::Bulk(Some(b"4".to_vec())),
+            ])
+        );
+        assert_eq!(
+            run(
+                &mut state,
+                vec!["ZREMRANGEBYSCORE", "redis:core:zset", "3", "3"]
+            ),
+            RespValue::Integer(1)
+        );
+        assert_eq!(
+            run(
+                &mut state,
+                vec!["ZREMRANGEBYRANK", "redis:core:zset", "0", "0"]
+            ),
+            RespValue::Integer(0)
+        );
+        assert_eq!(
             run(&mut state, vec!["TYPE", "redis:core:zset"]),
             RespValue::SimpleString("zset".to_string())
+        );
+        assert_eq!(
+            run(&mut state, vec!["RANDOMKEY"]),
+            RespValue::Bulk(Some(b"redis:core:hash".to_vec()))
+        );
+        assert_eq!(
+            run(
+                &mut state,
+                vec!["TOUCH", "redis:core:string", "redis:core:missing"]
+            ),
+            RespValue::Integer(1)
         );
         assert_eq!(
             run(&mut state, vec!["KEYS", "redis:core:*"]),
             RespValue::Array(vec![
                 RespValue::Bulk(Some(b"redis:core:hash".to_vec())),
                 RespValue::Bulk(Some(b"redis:core:list".to_vec())),
+                RespValue::Bulk(Some(b"redis:core:other-set".to_vec())),
                 RespValue::Bulk(Some(b"redis:core:set".to_vec())),
+                RespValue::Bulk(Some(b"redis:core:set-dest".to_vec())),
                 RespValue::Bulk(Some(b"redis:core:string".to_vec())),
                 RespValue::Bulk(Some(b"redis:core:zset".to_vec())),
             ])
@@ -3437,12 +4110,21 @@ mod tests {
             run(&mut state, vec!["TYPE", "redis:core:missing"]),
             RespValue::SimpleString("none".to_string())
         );
-        assert_eq!(run(&mut state, vec!["DBSIZE"]), RespValue::Integer(5));
+        assert_eq!(run(&mut state, vec!["DBSIZE"]), RespValue::Integer(7));
         assert_eq!(
             run(&mut state, vec!["DEL", "redis:core:string"]),
             RespValue::Integer(1)
         );
-        assert_eq!(run(&mut state, vec!["DBSIZE"]), RespValue::Integer(4));
+        assert_eq!(
+            run(&mut state, vec!["UNLINK", "redis:core:other-set"]),
+            RespValue::Integer(1)
+        );
+        assert_eq!(run(&mut state, vec!["DBSIZE"]), RespValue::Integer(5));
+        assert_eq!(
+            run(&mut state, vec!["FLUSHDB"]),
+            RespValue::SimpleString("OK".to_string())
+        );
+        assert_eq!(run(&mut state, vec!["DBSIZE"]), RespValue::Integer(0));
     }
 
     #[test]
@@ -3490,6 +4172,8 @@ mod tests {
             "ECHO" => vec!["ECHO", "hello"],
             "EXISTS" => vec!["EXISTS", "advertised:missing"],
             "EXPIRE" => vec!["EXPIRE", "advertised:missing", "10"],
+            "FLUSHALL" => vec!["FLUSHALL"],
+            "FLUSHDB" => vec!["FLUSHDB"],
             "GET" => vec!["GET", "advertised:missing"],
             "GETDEL" => vec!["GETDEL", "advertised:missing"],
             "GETRANGE" => vec!["GETRANGE", "advertised:missing", "0", "-1"],
@@ -3504,6 +4188,7 @@ mod tests {
             "HMGET" => vec!["HMGET", "advertised:hash", "missing"],
             "HMSET" => vec!["HMSET", "advertised:hash", "a", "1"],
             "HSET" => vec!["HSET", "advertised:hash", "b", "2"],
+            "HSCAN" => vec!["HSCAN", "advertised:hash", "0"],
             "HSETNX" => vec!["HSETNX", "advertised:hash", "c", "3"],
             "HSTRLEN" => vec!["HSTRLEN", "advertised:hash", "a"],
             "HVALS" => vec!["HVALS", "advertised:hash"],
@@ -3513,6 +4198,7 @@ mod tests {
             "LLEN" => vec!["LLEN", "advertised:list"],
             "LPOP" => vec!["LPOP", "advertised:list"],
             "LPUSH" => vec!["LPUSH", "advertised:list", "a"],
+            "LPOS" => vec!["LPOS", "advertised:list", "a"],
             "LREM" => vec!["LREM", "advertised:list", "0", "a"],
             "LRANGE" => vec!["LRANGE", "advertised:list", "0", "-1"],
             "LSET" => vec!["LSET", "advertised:list", "0", "b"],
@@ -3525,10 +4211,12 @@ mod tests {
             "PING" => vec!["PING"],
             "PSETEX" => vec!["PSETEX", "advertised:psetex", "10", "v"],
             "PTTL" => vec!["PTTL", "advertised:missing"],
+            "RANDOMKEY" => vec!["RANDOMKEY"],
             "RPOP" => vec!["RPOP", "advertised:list"],
             "RPUSH" => vec!["RPUSH", "advertised:list", "z"],
             "SADD" => vec!["SADD", "advertised:set", "a"],
             "SCARD" => vec!["SCARD", "advertised:set"],
+            "SDIFF" => vec!["SDIFF", "advertised:set", "advertised:other"],
             "SCAN" => vec!["SCAN", "0"],
             "SELECT" => vec!["SELECT", "0"],
             "SET" => vec!["SET", "advertised:set-string", "v"],
@@ -3536,23 +4224,36 @@ mod tests {
             "SETNX" => vec!["SETNX", "advertised:setnx", "v"],
             "SETRANGE" => vec!["SETRANGE", "advertised:setrange", "0", "x"],
             "SISMEMBER" => vec!["SISMEMBER", "advertised:set", "a"],
+            "SINTER" => vec!["SINTER", "advertised:set", "advertised:other"],
             "SLAVEOF" => vec!["SLAVEOF", "no", "one"],
             "SMEMBERS" => vec!["SMEMBERS", "advertised:set"],
             "SMISMEMBER" => vec!["SMISMEMBER", "advertised:set", "a"],
+            "SMOVE" => vec!["SMOVE", "advertised:set", "advertised:other", "a"],
+            "SPOP" => vec!["SPOP", "advertised:set"],
+            "SRANDMEMBER" => vec!["SRANDMEMBER", "advertised:set"],
             "SREM" => vec!["SREM", "advertised:set", "a"],
+            "SSCAN" => vec!["SSCAN", "advertised:set", "0"],
             "STRLEN" => vec!["STRLEN", "advertised:missing"],
+            "SUNION" => vec!["SUNION", "advertised:set", "advertised:other"],
             "TTL" => vec!["TTL", "advertised:missing"],
+            "TOUCH" => vec!["TOUCH", "advertised:missing"],
             "TYPE" => vec!["TYPE", "advertised:missing"],
+            "UNLINK" => vec!["UNLINK", "advertised:missing"],
             "ZADD" => vec!["ZADD", "advertised:zset", "1", "a"],
             "ZCARD" => vec!["ZCARD", "advertised:zset"],
             "ZCOUNT" => vec!["ZCOUNT", "advertised:zset", "0", "10"],
             "ZINCRBY" => vec!["ZINCRBY", "advertised:zset", "1", "a"],
+            "ZPOPMAX" => vec!["ZPOPMAX", "advertised:zset"],
+            "ZPOPMIN" => vec!["ZPOPMIN", "advertised:zset"],
             "ZRANGE" => vec!["ZRANGE", "advertised:zset", "0", "-1"],
             "ZRANGEBYSCORE" => vec!["ZRANGEBYSCORE", "advertised:zset", "0", "10"],
             "ZRANK" => vec!["ZRANK", "advertised:zset", "a"],
             "ZREM" => vec!["ZREM", "advertised:zset", "a"],
+            "ZREMRANGEBYRANK" => vec!["ZREMRANGEBYRANK", "advertised:zset", "0", "1"],
+            "ZREMRANGEBYSCORE" => vec!["ZREMRANGEBYSCORE", "advertised:zset", "0", "10"],
             "ZREVRANGE" => vec!["ZREVRANGE", "advertised:zset", "0", "-1"],
             "ZREVRANK" => vec!["ZREVRANK", "advertised:zset", "a"],
+            "ZSCAN" => vec!["ZSCAN", "advertised:zset", "0"],
             "ZSCORE" => vec!["ZSCORE", "advertised:zset", "a"],
             other => panic!("missing sample command for {other}"),
         }
