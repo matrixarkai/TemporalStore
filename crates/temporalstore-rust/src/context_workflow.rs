@@ -246,6 +246,33 @@ pub struct ContextResourceSkillSecondaryIndexReport {
     pub missing_refs: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextResourceSkillSecondaryIndexValidationRequest {
+    pub shard_id: ShardId,
+    pub tenant_hash: u64,
+    pub start_time_ms: u64,
+    pub end_time_ms: u64,
+    pub secondary_indexes: ContextResourceSkillSecondaryIndexReport,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextSecondaryIndexFamilyValidationReport {
+    pub index_name: String,
+    pub checked_ref_count: usize,
+    pub found_ref_count: usize,
+    pub missing_refs: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextResourceSkillSecondaryIndexValidationReport {
+    pub status: Status,
+    pub query_back_ok: bool,
+    pub checked_ref_count: usize,
+    pub found_ref_count: usize,
+    pub missing_refs: Vec<String>,
+    pub families: Vec<ContextSecondaryIndexFamilyValidationReport>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContextResourceSkillIngestReport {
     pub status: Status,
@@ -1733,6 +1760,70 @@ pub fn ingest_resource_skill_context(
     }
 }
 
+pub fn validate_resource_skill_secondary_indexes(
+    engine: &TemporalEngine,
+    request: ContextResourceSkillSecondaryIndexValidationRequest,
+) -> ContextResourceSkillSecondaryIndexValidationReport {
+    let family_inputs: [(&str, &[String]); 5] = [
+        ("resource_ref", &request.secondary_indexes.resource_refs),
+        ("skill_ref", &request.secondary_indexes.skill_refs),
+        ("entity_ref", &request.secondary_indexes.entity_refs),
+        ("source_ref", &request.secondary_indexes.source_refs),
+        ("summary_ref", &request.secondary_indexes.summary_refs),
+    ];
+    let mut checked_ref_count = 0;
+    let mut found_ref_count = 0;
+    let mut missing_refs = Vec::new();
+    let mut families = Vec::new();
+
+    for (index_name, refs) in family_inputs {
+        let family_missing = query_missing_secondary_index_refs(
+            engine,
+            request.shard_id,
+            request.tenant_hash,
+            index_name,
+            refs,
+            request.start_time_ms,
+            request.end_time_ms,
+        );
+        checked_ref_count += refs.len();
+        found_ref_count += refs.len().saturating_sub(family_missing.len());
+        missing_refs.extend(family_missing.iter().cloned());
+        families.push(ContextSecondaryIndexFamilyValidationReport {
+            index_name: index_name.to_string(),
+            checked_ref_count: refs.len(),
+            found_ref_count: refs.len().saturating_sub(family_missing.len()),
+            missing_refs: family_missing,
+        });
+    }
+
+    missing_refs.sort();
+    missing_refs.dedup();
+    let query_back_ok = checked_ref_count > 0 && missing_refs.is_empty();
+    let status = if query_back_ok {
+        Status::ok()
+    } else if checked_ref_count == 0 {
+        Status::error(
+            "context_resource_skill_secondary_index_empty",
+            "resource/skill ingest produced no secondary index refs to validate",
+        )
+    } else {
+        Status::error(
+            "context_resource_skill_secondary_index_missing",
+            "resource/skill secondary indexes were not fully queryable",
+        )
+    };
+
+    ContextResourceSkillSecondaryIndexValidationReport {
+        status,
+        query_back_ok,
+        checked_ref_count,
+        found_ref_count,
+        missing_refs,
+        families,
+    }
+}
+
 fn verify_resource_skill_fanout(
     engine: &TemporalEngine,
     shard_id: ShardId,
@@ -1979,26 +2070,52 @@ fn verify_secondary_index_refs(
     end_time_ms: u64,
     report: &mut ContextResourceSkillSecondaryIndexReport,
 ) {
-    for value in refs {
-        let response = engine.execute(ExecuteRequest {
+    report
+        .missing_refs
+        .extend(query_missing_secondary_index_refs(
+            engine,
             shard_id,
-            command: Command::ContextQueryIndex {
-                tenant_hash,
-                index_name: index_name.to_string(),
-                index_value_hash: stable_hash64(value),
-                scope_hash: 0,
-                start_time_ms,
-                end_time_ms,
-                limit: Some(8),
-            },
-        });
-        if !matches!(
-            response.response,
-            CommandResponse::ContextIndexRefs { ref refs, .. } if !refs.is_empty()
-        ) {
-            report.missing_refs.push(format!("{index_name}:{value}"));
-        }
-    }
+            tenant_hash,
+            index_name,
+            refs,
+            start_time_ms,
+            end_time_ms,
+        ));
+}
+
+fn query_missing_secondary_index_refs(
+    engine: &TemporalEngine,
+    shard_id: ShardId,
+    tenant_hash: u64,
+    index_name: &str,
+    refs: &[String],
+    start_time_ms: u64,
+    end_time_ms: u64,
+) -> Vec<String> {
+    refs.iter()
+        .filter_map(|value| {
+            let response = engine.execute(ExecuteRequest {
+                shard_id,
+                command: Command::ContextQueryIndex {
+                    tenant_hash,
+                    index_name: index_name.to_string(),
+                    index_value_hash: stable_hash64(value),
+                    scope_hash: 0,
+                    start_time_ms,
+                    end_time_ms,
+                    limit: Some(8),
+                },
+            });
+            if matches!(
+                response.response,
+                CommandResponse::ContextIndexRefs { ref refs, .. } if !refs.is_empty()
+            ) {
+                None
+            } else {
+                Some(format!("{index_name}:{value}"))
+            }
+        })
+        .collect()
 }
 
 pub fn parse_context_resource(request: ContextResourceParseRequest) -> ContextResourceParseReport {

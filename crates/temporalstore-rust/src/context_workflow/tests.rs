@@ -1401,11 +1401,12 @@ fn parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval() {
             || block.text.contains("payment gateway canary")));
 
     let embedding_refs = report.embedding_refs.clone();
-    let resource_refs = report.secondary_indexes.resource_refs.clone();
-    let skill_refs = report.secondary_indexes.skill_refs.clone();
-    let entity_refs = report.secondary_indexes.entity_refs.clone();
-    let source_refs = report.secondary_indexes.source_refs.clone();
-    let summary_refs = report.secondary_indexes.summary_refs.clone();
+    let secondary_indexes = report.secondary_indexes.clone();
+    let checked_ref_count = secondary_indexes.resource_refs.len()
+        + secondary_indexes.skill_refs.len()
+        + secondary_indexes.entity_refs.len()
+        + secondary_indexes.source_refs.len()
+        + secondary_indexes.summary_refs.len();
     drop(engine);
 
     let restored = TemporalEngine::with_local_dirs(1024 * 1024, &cache_dir, &page_dir, &index_dir);
@@ -1424,33 +1425,30 @@ fn parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval() {
             if embeddings.len() >= report.ingest.accepted * 3
                 && embeddings.iter().all(|embedding| embedding.vector.len() == 16)
     ));
-    for (index_name, refs) in [
-        ("resource_ref", resource_refs),
-        ("skill_ref", skill_refs),
-        ("entity_ref", entity_refs),
-        ("source_ref", source_refs),
-        ("summary_ref", summary_refs),
-    ] {
-        for value in refs {
-            let response = restored.execute(ExecuteRequest {
-                shard_id: 1,
-                command: Command::ContextQueryIndex {
-                    tenant_hash: 42,
-                    index_name: index_name.to_string(),
-                    index_value_hash: stable_hash64(&value),
-                    scope_hash: 0,
-                    start_time_ms: 0,
-                    end_time_ms: 10_000,
-                    limit: Some(8),
-                },
-            });
-            assert!(
-                matches!(
-                    response.response,
-                    CommandResponse::ContextIndexRefs { ref refs, .. } if !refs.is_empty()
-                ),
-                "missing {index_name}:{value}"
-            );
-        }
-    }
+    let validation = validate_resource_skill_secondary_indexes(
+        &restored,
+        ContextResourceSkillSecondaryIndexValidationRequest {
+            shard_id: 1,
+            tenant_hash: 42,
+            start_time_ms: 0,
+            end_time_ms: 10_000,
+            secondary_indexes,
+        },
+    );
+    assert!(
+        validation.status.ok,
+        "secondary index validation failed: {:?}",
+        validation
+    );
+    assert!(validation.query_back_ok);
+    assert_eq!(validation.checked_ref_count, checked_ref_count);
+    assert_eq!(validation.found_ref_count, checked_ref_count);
+    assert!(validation.missing_refs.is_empty());
+    assert_eq!(validation.families.len(), 5);
+    assert!(validation
+        .families
+        .iter()
+        .all(|family| family.checked_ref_count > 0
+            && family.checked_ref_count == family.found_ref_count
+            && family.missing_refs.is_empty()));
 }
