@@ -1334,8 +1334,18 @@ fn context_skill_parser_extracts_frontmatter_and_capability_sections() {
 // shared-corpus: context_resource_skill_parser_openviking_parity
 #[test]
 fn parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval() {
-    let engine = test_engine();
-    let resource = parse_context_resource(ContextResourceParseRequest {
+    let dir = tempfile::tempdir().unwrap();
+    let cache_dir = dir.path().join("cache");
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(1024 * 1024, &cache_dir, &page_dir, &index_dir);
+    engine.load_shard(1);
+    let report = ingest_resource_skill_context(
+        &engine,
+        ContextResourceSkillIngestRequest {
+            shard_id: 1,
+            tenant_hash: 42,
+            resources: vec![ContextResourceParseRequest {
             raw_uri: "viking://resources/runbook.md".to_string(),
             resource_type: Some("md".to_string()),
             text: "# Incident\n\nCheckout latency increased because the payment dependency timed out.\n\n## Fix\n\nRollback the payment gateway canary and verify p95 latency."
@@ -1343,56 +1353,13 @@ fn parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval() {
             max_chunk_chars: 220,
             overlap_chars: 40,
             chunk_hash_base: None,
-        });
-    let skill = parse_context_skill_markdown(
-            "skills/payment-incident/SKILL.md",
-            "---\nname: payment-incident\ndescription: Debug payment incident context.\n---\n\n# Payment Incident\n\n## When To Use\n\nUse when checkout latency or payment risk spikes.\n",
-        );
-    let mut sources = Vec::new();
-    for chunk in resource.chunks.iter().chain(skill.resource.chunks.iter()) {
-        sources.push(ContextExtractRequest {
-            shard_id: 1,
-            tenant_hash: 42,
-            source_kind: ContextSourceKind::Document,
-            source_id: chunk.source_ref.clone(),
-            title: chunk
-                .metadata
-                .get("heading")
-                .cloned()
-                .unwrap_or_else(|| chunk.source_ref.clone()),
-            body: chunk.text.clone(),
-            timestamp_ms: 1_000 + sources.len() as u64,
-            provider: ContextModelProviderConfig::default(),
-        });
-    }
-    let mut embedding_refs = Vec::new();
-    for (index, chunk) in resource
-        .chunks
-        .iter()
-        .chain(skill.resource.chunks.iter())
-        .enumerate()
-    {
-        let embedding = context_resource_chunk_embedding(
-            chunk,
-            &resource.embedding_model,
-            2_000 + index as u64,
-        );
-        embedding_refs.push(embedding.ref_hash);
-        let response = engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::ContextUpsertEmbedding {
-                tenant_hash: 42,
-                embedding,
             },
-        });
-        assert!(response.status.ok);
-    }
-    let ingest = ingest_extract_context(
-        &engine,
-        ContextIngestExtractRequest {
-            shard_id: 1,
-            tenant_hash: 42,
-            sources,
+            ],
+            skills: vec![ContextSkillIngestInput {
+                raw_uri: "skills/payment-incident/SKILL.md".to_string(),
+                text: "---\nname: payment-incident\ndescription: Debug payment incident context.\n---\n\n# Payment Incident\n\n## When To Use\n\nUse when checkout latency or payment risk spikes.\n"
+                    .to_string(),
+            }],
             query: "payment dependency rollback p95 latency".to_string(),
             start_time_ms: 0,
             end_time_ms: 10_000,
@@ -1400,16 +1367,50 @@ fn parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval() {
             provider: ContextModelProviderConfig::default(),
         },
     );
-    assert!(ingest.status.ok, "{}", ingest.status.message);
-    assert_eq!(ingest.failed, 0);
-    let retrieve = retrieve_context(&engine, ingest.retrieve_request);
-    assert!(retrieve.status.ok);
-    assert!(retrieve
+    assert!(
+        report.status.ok,
+        "status={:?} fanout={:?} secondary_indexes={:?}",
+        report.status, report.fanout, report.secondary_indexes
+    );
+    assert_eq!(report.ingest.failed, 0);
+    assert!(report.fanout.query_back_ok, "{:?}", report.fanout);
+    assert!(
+        report.secondary_indexes.query_back_ok,
+        "{:?}",
+        report.secondary_indexes
+    );
+    assert_eq!(report.fanout.node_count, report.ingest.accepted);
+    assert_eq!(report.fanout.event_count, report.ingest.accepted);
+    assert_eq!(report.fanout.segment_count, report.ingest.accepted);
+    assert_eq!(report.fanout.entity_count, report.ingest.accepted);
+    assert_eq!(report.fanout.child_ref_count, report.ingest.accepted);
+    assert_eq!(report.fanout.compression_count, report.ingest.accepted);
+    assert_eq!(report.fanout.summary_count, report.ingest.accepted * 2);
+    assert_eq!(report.fanout.embedding_count, report.ingest.accepted * 3);
+    assert_eq!(report.fanout.dirty_marker_count, report.ingest.accepted);
+    assert!(!report.secondary_indexes.resource_refs.is_empty());
+    assert!(!report.secondary_indexes.skill_refs.is_empty());
+    assert!(!report.secondary_indexes.entity_refs.is_empty());
+    assert!(!report.secondary_indexes.source_refs.is_empty());
+    assert!(!report.secondary_indexes.summary_refs.is_empty());
+    assert!(report
+        .retrieval
         .blocks
         .iter()
         .any(|block| block.text.contains("payment dependency timed out")
             || block.text.contains("payment gateway canary")));
-    let embeddings = engine.execute(ExecuteRequest {
+
+    let embedding_refs = report.embedding_refs.clone();
+    let resource_refs = report.secondary_indexes.resource_refs.clone();
+    let skill_refs = report.secondary_indexes.skill_refs.clone();
+    let entity_refs = report.secondary_indexes.entity_refs.clone();
+    let source_refs = report.secondary_indexes.source_refs.clone();
+    let summary_refs = report.secondary_indexes.summary_refs.clone();
+    drop(engine);
+
+    let restored = TemporalEngine::with_local_dirs(1024 * 1024, &cache_dir, &page_dir, &index_dir);
+    restored.load_shard(1);
+    let embeddings = restored.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::ContextQueryEmbeddings {
             tenant_hash: 42,
@@ -1420,7 +1421,36 @@ fn parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval() {
     assert!(matches!(
         embeddings.response,
         CommandResponse::ContextEmbeddings { ref embeddings }
-            if embeddings.len() >= resource.chunks.len() + skill.resource.chunks.len()
+            if embeddings.len() >= report.ingest.accepted * 3
                 && embeddings.iter().all(|embedding| embedding.vector.len() == 16)
     ));
+    for (index_name, refs) in [
+        ("resource_ref", resource_refs),
+        ("skill_ref", skill_refs),
+        ("entity_ref", entity_refs),
+        ("source_ref", source_refs),
+        ("summary_ref", summary_refs),
+    ] {
+        for value in refs {
+            let response = restored.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextQueryIndex {
+                    tenant_hash: 42,
+                    index_name: index_name.to_string(),
+                    index_value_hash: stable_hash64(&value),
+                    scope_hash: 0,
+                    start_time_ms: 0,
+                    end_time_ms: 10_000,
+                    limit: Some(8),
+                },
+            });
+            assert!(
+                matches!(
+                    response.response,
+                    CommandResponse::ContextIndexRefs { ref refs, .. } if !refs.is_empty()
+                ),
+                "missing {index_name}:{value}"
+            );
+        }
+    }
 }
