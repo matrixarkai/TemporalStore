@@ -489,7 +489,7 @@ long-retention audits should move to MatrixDB or an offline warehouse.
 
 ## Unified Test Matrix
 
-The shared corpus is `sdk/unified/temporalstore_unified_corpus.json`.
+The shared corpus is `third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json`.
 
 Important context cases:
 
@@ -582,14 +582,14 @@ cd /mnt/c/Users/Deeproute/Documents/Codex/2026-06-07/what-s-the-topology-for-all
 Schema and corpus:
 
 ```bash
-python3 -m json.tool sdk/unified/temporalstore_unified_corpus.json >/tmp/temporalstore_unified_corpus.json
+python3 -m json.tool third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json >/tmp/temporalstore_external_unified_cases.json
 python3 tools/run_temporalstore_unified_tests.py --validate-only
 ```
 
 C++ unified contract:
 
 ```bash
-bash tools/run_cpp_unified_context_contract.sh sdk/unified/temporalstore_unified_corpus.json
+bash tools/run_cpp_unified_context_contract.sh third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json
 ```
 
 Monitoring UI:

@@ -29,14 +29,11 @@ def default_corpus_path() -> Path:
     candidates = [
         ROOT / "third_party" / "TemporalStoreTestCorpus" / "cases" / "unified_temporalstore_cases.json",
         ROOT.parent / "TemporalStoreTestCorpus" / "cases" / "unified_temporalstore_cases.json",
-        ROOT.parent / "TemporalStore" / "compat" / "unified_temporalstore_cases.json",
-        ROOT.parent / "TemporalStore" / "sdk" / "unified" / "temporalstore_unified_corpus.json",
-        ROOT / "sdk" / "unified" / "temporalstore_unified_corpus.json",
     ]
     for candidate in candidates:
         if candidate.exists():
             return candidate
-    return candidates[-1]
+    return candidates[0]
 
 
 DEFAULT_CORPUS = default_corpus_path()
@@ -160,7 +157,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "${CORPUS}" ]]; then
-  CORPUS="${ROOT}/sdk/unified/temporalstore_unified_corpus.json"
+  CORPUS="$(python3 "${ROOT}/tools/resolve_temporalstore_test_corpus.py")"
 fi
 if [[ ! -f "${CORPUS}" ]]; then
   echo "unified TemporalStore corpus not found: ${CORPUS}" >&2
@@ -174,7 +171,7 @@ Set it to the C++ TemporalStore corpus executor. The command may use a
 {corpus} placeholder. Example:
 
   TS_CPP_UNIFIED_NATIVE_CMD='bazel run //temporalstore:corpus_runner -- {corpus}' \
-    tools/run_temporalstore_unified_tests.sh --corpus /path/to/compat/unified_temporalstore_cases.json
+    tools/run_temporalstore_unified_tests.sh --corpus /path/to/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json
 MSG
   exit 2
 fi

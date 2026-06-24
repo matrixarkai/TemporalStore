@@ -50,7 +50,7 @@ PYTHONPATH="${ROOT}/sdk/python" \
 
 (
   cd "${ROOT}/sdk/rust/temporalstore"
-  TEMPORALSTORE_UNIFIED_CORPUS="${ROOT}/sdk/unified/temporalstore_unified_corpus.json" \
+  TEMPORALSTORE_UNIFIED_CORPUS="$(python3 "${ROOT}/tools/resolve_temporalstore_test_corpus.py")" \
     cargo test --no-default-features --features proxy --test unified_corpus
 ) | tee "${RESULT_DIR}/rust_proxy.out"
 

@@ -8,14 +8,14 @@ one command API, and one output report format.
 The shared input is:
 
 ```bash
-sdk/unified/temporalstore_unified_corpus.json
+third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json
 ```
 
 The unified runner is:
 
 ```bash
 python3 tools/run_unified_parity_tests.py \
-  --corpus sdk/unified/temporalstore_unified_corpus.json \
+  --corpus third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json \
   --result-dir /tmp/temporalstore-unified-parity
 ```
 
@@ -126,7 +126,7 @@ The unified runner executes the same corpus through three stages:
 When adding a context feature:
 
 1. Add the C++ implementation or contract behavior.
-2. Add a corpus step under `sdk/unified/temporalstore_unified_corpus.json`.
+2. Add a corpus step under `third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json`.
 3. Add the command kind to `coverage.required_command_kinds`.
 4. Add or update a named case if the feature is a flow, not just a field.
 5. Run:

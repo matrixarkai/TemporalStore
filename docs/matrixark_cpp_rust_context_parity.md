@@ -11,7 +11,7 @@ Any new C++ context command, record type, or serving behavior must update the
 shared corpus in:
 
 ```bash
-sdk/unified/temporalstore_unified_corpus.json
+third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json
 ```
 
 The corpus is the parity contract between:
@@ -51,7 +51,7 @@ The wrapper calls the unified test API:
 
 ```bash
 python3 tools/run_unified_parity_tests.py \
-  --corpus sdk/unified/temporalstore_unified_corpus.json \
+  --corpus third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json \
   --result-dir /tmp/temporalstore-unified-parity
 ```
 
@@ -66,14 +66,14 @@ You can still run individual stages while debugging:
 
 ```bash
 python3 tools/run_temporalstore_unified_tests.py \
-  --corpus sdk/unified/temporalstore_unified_corpus.json \
+  --corpus third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json \
   --validate-only
 
 bash tools/run_cpp_unified_context_contract.sh \
-  sdk/unified/temporalstore_unified_corpus.json
+  third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json
 
 cd sdk/rust/temporalstore && \
-  TEMPORALSTORE_UNIFIED_CORPUS=/root/src/github-services/TemporalStore/sdk/unified/temporalstore_unified_corpus.json \
+  TEMPORALSTORE_UNIFIED_CORPUS=/root/src/github-services/TemporalStore/third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json \
   cargo test --no-default-features --features proxy --test unified_corpus
 ```
 
@@ -81,7 +81,7 @@ cd sdk/rust/temporalstore && \
 
 When C++ adds or changes a context feature:
 
-1. Add or update one corpus command under `sdk/unified/temporalstore_unified_corpus.json`.
+1. Add or update one corpus command under `third_party/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json`.
 2. Add the command kind to `coverage.required_command_kinds`.
 3. If it is a new product-level behavior, add or update a named case in `coverage.required_case_names`.
 4. Make sure `tools/run_rust_unified_tests.sh` passes.
