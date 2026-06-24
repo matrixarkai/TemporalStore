@@ -76,6 +76,8 @@ Output shape:
 - `capability_refs`: capability sections such as `when-to-use`, `tools`, `instructions`, `resources`, `references`, `examples`, and `capabilities`.
 - `tool_refs`: normalized bullet/numbered-list entries from `Tools`, `Tooling`, or `Commands` sections.
 - `instruction_refs`: normalized bullet/numbered-list entries from `Instructions`, `Workflow`, `Steps`, or `When To Use` sections.
+- `resource_refs`: normalized resource/reference ids from `Resources` or `References` sections.
+- `example_refs`: normalized example text from `Examples` sections for prompt/debug trace parity.
 - `resource`: the underlying `ContextResourceParseReport` with `resource_type=skill`.
 
 ## Data Flow
@@ -97,7 +99,7 @@ flowchart LR
   J --> K["ContextBlock evidence and ContextPackAudit injection"]
 ```
 
-The focused Rust tests verify resource refs, `SKILL.md` front matter, capability sections, tool refs, instruction refs, chunk embeddings, and end-to-end ingestion/retrieval. `parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval` parses one markdown resource and one skill, converts every parsed chunk into a `ContextExtractRequest`, persists each chunk embedding through `ContextUpsertEmbedding`, runs `ingest_extract_context`, verifies `retrieve_context` returns evidence about payment dependency rollback and p95 latency, and queries the embeddings back through `ContextQueryEmbeddings`.
+The focused Rust tests verify resource refs, `SKILL.md` front matter, capability sections, tool refs, instruction refs, resource/reference refs, example refs, chunk embeddings, and end-to-end ingestion/retrieval. `parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval` parses one markdown resource and one skill, converts every parsed chunk into a `ContextExtractRequest`, persists each chunk embedding through `ContextUpsertEmbedding`, runs `ingest_extract_context`, verifies `retrieve_context` returns evidence about payment dependency rollback and p95 latency, and queries the embeddings back through `ContextQueryEmbeddings`.
 
 ## C++ Parity Notes
 

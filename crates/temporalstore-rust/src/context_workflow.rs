@@ -161,6 +161,8 @@ pub struct ContextSkillParseReport {
     pub capability_refs: Vec<String>,
     pub tool_refs: Vec<String>,
     pub instruction_refs: Vec<String>,
+    pub resource_refs: Vec<String>,
+    pub example_refs: Vec<String>,
     pub resource: ContextResourceParseReport,
 }
 
@@ -1484,6 +1486,8 @@ pub fn parse_context_skill_markdown(
         &["instructions", "workflow", "steps", "when to use"],
         false,
     );
+    let resource_refs = parse_skill_section_items(&text, &["resources", "references"], true);
+    let example_refs = parse_skill_section_items(&text, &["examples"], false);
     let resource = parse_context_resource(ContextResourceParseRequest {
         raw_uri: raw_uri.clone(),
         resource_type: Some("skill".to_string()),
@@ -1518,6 +1522,8 @@ pub fn parse_context_skill_markdown(
         capability_refs,
         tool_refs,
         instruction_refs,
+        resource_refs,
+        example_refs,
         resource,
     }
 }
@@ -5352,7 +5358,7 @@ mod tests {
     fn context_skill_parser_extracts_frontmatter_and_capability_sections() {
         let skill = parse_context_skill_markdown(
             "skills/context-debug/SKILL.md",
-            "---\nname: context-debug\ndescription: Trace context ingestion and retrieval.\n---\n\n# Context Debug\n\n## When To Use\n\n- Use for context trace debugging.\n\n## Tools\n\n- context_workflow_harness\n- `codex_context_hook` captures prompt context.\n",
+            "---\nname: context-debug\ndescription: Trace context ingestion and retrieval.\n---\n\n# Context Debug\n\n## When To Use\n\n- Use for context trace debugging.\n\n## Tools\n\n- context_workflow_harness\n- `codex_context_hook` captures prompt context.\n\n## Resources\n\n- viking://resources/context-debug.md\n\n## Examples\n\n- Query the context debug flow for stale entity filters.\n",
         );
         assert!(skill.status.ok);
         assert_eq!(skill.skill_name, "context-debug");
@@ -5366,6 +5372,12 @@ mod tests {
             .tool_refs
             .contains(&"context_workflow_harness".to_string()));
         assert!(skill.tool_refs.contains(&"codex_context_hook".to_string()));
+        assert!(skill
+            .resource_refs
+            .contains(&"viking://resources/context-debug.md".to_string()));
+        assert!(skill
+            .example_refs
+            .contains(&"Query the context debug flow for stale entity filters".to_string()));
         assert!(skill.resource.chunks.iter().all(|chunk| chunk
             .metadata
             .get("resource_type")
