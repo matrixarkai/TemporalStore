@@ -484,6 +484,7 @@ fn push_missing(missing: &mut Vec<String>, ready: bool, capability: &str) {
 mod tests {
     use super::*;
 
+    // shared-corpus: ops_grafana_metrics_cpp_parity
     #[test]
     fn grafana_metrics_parity_contract_covers_dashboard_alerts_and_emitters() {
         let root = repo_root();

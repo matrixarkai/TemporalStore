@@ -159,6 +159,8 @@ pub struct ContextSkillParseReport {
     pub description: String,
     pub source_ref: String,
     pub capability_refs: Vec<String>,
+    pub tool_refs: Vec<String>,
+    pub instruction_refs: Vec<String>,
     pub resource: ContextResourceParseReport,
 }
 
@@ -1476,6 +1478,12 @@ pub fn parse_context_skill_markdown(
         .get("description")
         .cloned()
         .unwrap_or_else(|| first_markdown_paragraph(&text));
+    let tool_refs = parse_skill_section_items(&text, &["tools", "tooling", "commands"], true);
+    let instruction_refs = parse_skill_section_items(
+        &text,
+        &["instructions", "workflow", "steps", "when to use"],
+        false,
+    );
     let resource = parse_context_resource(ContextResourceParseRequest {
         raw_uri: raw_uri.clone(),
         resource_type: Some("skill".to_string()),
@@ -1508,6 +1516,8 @@ pub fn parse_context_skill_markdown(
         description,
         source_ref: raw_uri,
         capability_refs,
+        tool_refs,
+        instruction_refs,
         resource,
     }
 }
@@ -2855,6 +2865,68 @@ fn parse_skill_front_matter(text: &str) -> BTreeMap<String, String> {
         }
     }
     metadata
+}
+
+fn parse_skill_section_items(
+    text: &str,
+    section_slugs: &[&str],
+    first_token_only: bool,
+) -> Vec<String> {
+    let wanted = section_slugs
+        .iter()
+        .map(|slug| slugify_context_resource(slug))
+        .collect::<Vec<_>>();
+    let mut active = false;
+    let mut refs = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let hash_count = trimmed.chars().take_while(|ch| *ch == '#').count();
+        let is_heading = (1..=6).contains(&hash_count)
+            && trimmed.as_bytes().get(hash_count) == Some(&b' ')
+            && trimmed.len() > hash_count + 1;
+        if is_heading {
+            let heading = trimmed[hash_count..].trim();
+            active = wanted
+                .iter()
+                .any(|wanted_slug| slugify_context_resource(heading) == *wanted_slug);
+            continue;
+        }
+        if !active {
+            continue;
+        }
+        if let Some(item) = parse_markdown_list_item(trimmed, first_token_only) {
+            refs.push(item);
+        }
+    }
+    refs.sort();
+    refs.dedup();
+    refs
+}
+
+fn parse_markdown_list_item(trimmed: &str, first_token_only: bool) -> Option<String> {
+    let item = trimmed
+        .strip_prefix("- ")
+        .or_else(|| trimmed.strip_prefix("* "))
+        .or_else(|| trimmed.strip_prefix("+ "))
+        .or_else(|| {
+            let (prefix, rest) = trimmed.split_once(". ")?;
+            prefix
+                .chars()
+                .all(|ch| ch.is_ascii_digit())
+                .then_some(rest)
+        })?
+        .trim();
+    (!item.is_empty()).then(|| {
+        let value = if first_token_only {
+            item.split_whitespace().next().unwrap_or(item)
+        } else {
+            item
+        };
+        value
+            .trim_matches('`')
+            .trim_matches(|ch: char| matches!(ch, ',' | ';' | ':' | '.'))
+            .to_string()
+    })
 }
 
 fn infer_skill_name_from_uri(raw_uri: &str) -> String {
@@ -5280,13 +5352,20 @@ mod tests {
     fn context_skill_parser_extracts_frontmatter_and_capability_sections() {
         let skill = parse_context_skill_markdown(
             "skills/context-debug/SKILL.md",
-            "---\nname: context-debug\ndescription: Trace context ingestion and retrieval.\n---\n\n# Context Debug\n\n## When To Use\n\nUse for context trace debugging.\n\n## Tools\n\n- context_workflow_harness\n",
+            "---\nname: context-debug\ndescription: Trace context ingestion and retrieval.\n---\n\n# Context Debug\n\n## When To Use\n\n- Use for context trace debugging.\n\n## Tools\n\n- context_workflow_harness\n- `codex_context_hook` captures prompt context.\n",
         );
         assert!(skill.status.ok);
         assert_eq!(skill.skill_name, "context-debug");
         assert_eq!(skill.description, "Trace context ingestion and retrieval.");
         assert!(skill.capability_refs.contains(&"when-to-use".to_string()));
         assert!(skill.capability_refs.contains(&"tools".to_string()));
+        assert!(skill
+            .instruction_refs
+            .contains(&"Use for context trace debugging".to_string()));
+        assert!(skill
+            .tool_refs
+            .contains(&"context_workflow_harness".to_string()));
+        assert!(skill.tool_refs.contains(&"codex_context_hook".to_string()));
         assert!(skill.resource.chunks.iter().all(|chunk| chunk
             .metadata
             .get("resource_type")
