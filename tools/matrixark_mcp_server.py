@@ -25,10 +25,10 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from tools.matrixark_resource_parser import ResourceParserError, embedding_text_for_chunk, parse_resource, summarize_resource_chunks
+    from tools.matrixark_resource_parser import ResourceParserError, content_hash, embedding_text_for_chunk, parse_resource, summarize_resource_chunks
     from tools.matrixark_skill_parser import parse_skill
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_resource_parser import ResourceParserError, embedding_text_for_chunk, parse_resource, summarize_resource_chunks
+    from matrixark_resource_parser import ResourceParserError, content_hash, embedding_text_for_chunk, parse_resource, summarize_resource_chunks
     from matrixark_skill_parser import parse_skill
 
 
@@ -3260,6 +3260,24 @@ class MatrixArkLocalAdapter:
                 parsed_chunks = []
             if not parsed_chunks:
                 raise MatrixArkError(resource_parse_error or "resource ingestion produced no chunks")
+            original_chunk_count = len(parsed_chunks)
+            deduped_source_refs: list[str] = []
+            seen_content_hashes: set[str] = set()
+            unique_chunks = []
+            for chunk in parsed_chunks:
+                chunk_content_hash = str(chunk.metadata.get("content_hash") or content_hash(chunk.text))
+                if chunk_content_hash in seen_content_hashes:
+                    deduped_source_refs.append(chunk.source_ref)
+                    continue
+                seen_content_hashes.add(chunk_content_hash)
+                unique_chunks.append(chunk)
+            parsed_chunks = unique_chunks
+            deduped_chunk_count = original_chunk_count - len(parsed_chunks)
+            if not parsed_chunks:
+                raise MatrixArkError("resource ingestion produced only duplicate chunks")
+            resource_version_value = str(parsed_chunks[0].metadata.get("resource_version") or "")
+            resource_content_hash = content_hash("\n".join(str(chunk.metadata.get("content_hash") or content_hash(chunk.text)) for chunk in parsed_chunks))
+            superseded_chunk_count = sum(1 for chunk in parsed_chunks if chunk.metadata.get("supersedes_chunk_hash"))
             chunk_vectors = embeddings_for_texts([embedding_text_for_chunk(chunk) for chunk in parsed_chunks])
             resource_kind = "skill" if skill_hash is not None else "resource"
             resource_l0_text = summarize_text(
@@ -3344,7 +3362,15 @@ class MatrixArkLocalAdapter:
                         "node_path": node_path,
                         "raw_uri": raw_uri,
                         "resource_type": resource_type or parsed_chunks[0].metadata.get("resource_type", "txt"),
+                        "resource_version": resource_version_value,
+                        "content_hash": resource_content_hash,
                         "chunk_count": len(parsed_chunks),
+                        "original_chunk_count": original_chunk_count,
+                        "deduped_chunk_count": deduped_chunk_count,
+                        "deduped_source_refs": deduped_source_refs[:50],
+                        "superseded_chunk_count": superseded_chunk_count,
+                        "summary_dirty_hashes": resource_dirty_hashes,
+                        "async_parent_summary_required": bool(resource_dirty_hashes),
                         "token_estimate": sum(chunk.token_estimate for chunk in parsed_chunks),
                         "scope": envelope["scope"],
                         "updated_at_ms": envelope["ingestion_time_ms"],
@@ -3550,6 +3576,12 @@ class MatrixArkLocalAdapter:
             "node_materialization": node_materialization,
             "resource_chunks": resource_chunk_hashes,
             "resource_chunk_count": len(resource_chunk_hashes),
+            "resource_original_chunk_count": original_chunk_count if envelope["kind"] in {"resource", "skill"} else 0,
+            "resource_deduped_chunk_count": deduped_chunk_count if envelope["kind"] in {"resource", "skill"} else 0,
+            "resource_deduped_source_refs": deduped_source_refs[:20] if envelope["kind"] in {"resource", "skill"} else [],
+            "resource_version": resource_version_value if envelope["kind"] in {"resource", "skill"} else "",
+            "resource_content_hash": resource_content_hash if envelope["kind"] in {"resource", "skill"} else "",
+            "resource_superseded_chunk_count": superseded_chunk_count if envelope["kind"] in {"resource", "skill"} else 0,
             "skill_hash": skill_hash,
             "session_buffer": {
                 "buffer_key": list(session_buffer_key(envelope)),

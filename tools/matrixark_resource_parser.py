@@ -26,9 +26,9 @@ from typing import Any
 Json = dict[str, Any]
 
 SUPPORTED_TEXT_TYPES = {"md", "txt", "log", "html", "csv", "tsv", "json", "jsonl", "skill"}
-SUPPORTED_BINARY_TYPES = {"pdf", "docx", "png", "jpg", "jpeg", "webp", "gif"}
+SUPPORTED_BINARY_TYPES = {"pdf", "docx", "pptx", "xlsx", "png", "jpg", "jpeg", "webp", "gif"}
 SUPPORTED_FILE_TYPES = SUPPORTED_TEXT_TYPES | SUPPORTED_BINARY_TYPES
-SUPPORTED_DIRECTORY_TYPES = {"md", "txt", "pdf", "html", "csv", "tsv", "json", "jsonl", "docx", "skill"}
+SUPPORTED_DIRECTORY_TYPES = {"md", "txt", "pdf", "html", "csv", "tsv", "json", "jsonl", "docx", "pptx", "xlsx", "skill"}
 SKIP_DIRECTORY_NAMES = {".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv", "target", "build", "dist"}
 DEFAULT_MAX_FILE_BYTES = int(os.environ.get("MATRIXARK_RESOURCE_MAX_FILE_BYTES", str(20 * 1024 * 1024)))
 DEFAULT_MAX_DIRECTORY_FILES = int(os.environ.get("MATRIXARK_RESOURCE_MAX_DIRECTORY_FILES", "256"))
@@ -222,7 +222,7 @@ def parse_resource(
     """Parse supported resources into bounded serving chunks.
 
     Supported local/inline resource types: md, txt, pdf, html, csv, tsv, json,
-    jsonl, docx, and skill. Unsupported binary files fail loudly instead of
+    jsonl, docx, pptx, xlsx, image OCR/VLM, and skill. Unsupported binary files fail loudly instead of
     silently storing useless bytes.
     """
     if max_chunk_chars < 256:
@@ -269,6 +269,7 @@ def parse_resource(
             if not piece:
                 continue
             piece_hash = content_hash(piece)
+            piece_tokens = token_estimate(piece)
             metadata = {key: value for key, value in unit.items() if key != "text"}
             metadata.update(
                 {
@@ -278,6 +279,10 @@ def parse_resource(
                     "unit_index": unit_index,
                     "split_index": split_index,
                     "char_count": len(piece),
+                    "token_count": piece_tokens,
+                    "splitter": "token_aware_v1",
+                    "max_chunk_tokens": max_chunk_tokens,
+                    "overlap_tokens": overlap_tokens,
                     "content_hash": piece_hash,
                     "keywords": keywords_for_text(piece),
                 }
@@ -300,7 +305,7 @@ def parse_resource(
                     chunk_hash=chunk_hash,
                     source_ref=source_ref,
                     text=piece,
-                    token_estimate=token_estimate(piece),
+                    token_estimate=piece_tokens,
                     metadata=metadata,
                 )
             )
@@ -330,6 +335,10 @@ def _parse_units(
             return _parse_pdf_units(path, raw_uri)
         if kind == "docx":
             return _parse_docx_units(path, raw_uri)
+        if kind == "pptx":
+            return _parse_pptx_units(path, raw_uri)
+        if kind == "xlsx":
+            return _parse_xlsx_units(path, raw_uri)
         if kind in {"png", "jpg", "jpeg", "webp", "gif"}:
             return _image_units(path, raw_uri, kind)
         text = _read_text_file(path, max_file_bytes)
@@ -637,7 +646,7 @@ def _image_units(path: Path, raw_uri: str, kind: str) -> list[Json]:
         return [
             {
                 "text": ocr["text"],
-                "unit_kind": "image_ocr",
+                "unit_kind": "image_vlm" if ocr.get("provider") == "vlm_command" else "image_ocr",
                 "ocr_provider": ocr.get("provider", ""),
                 "ocr_status": "ok",
                 "image_index": 0,
@@ -779,6 +788,29 @@ def _ocr_pdf_units(path: Path, raw_uri: str) -> list[Json]:
 
 
 def _ocr_path_text(path: Path, *, kind: str) -> Json:
+    vlm_command = os.environ.get("MATRIXARK_RESOURCE_VLM_COMMAND", "").strip()
+    if vlm_command:
+        argv = [part.format(path=str(path), kind=kind) for part in shlex.split(vlm_command)]
+        if not argv:
+            return {"text": "", "provider": "vlm_command", "error": "empty VLM command"}
+        try:
+            result = subprocess.run(
+                argv,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=DEFAULT_OCR_TIMEOUT_S,
+                check=False,
+            )
+        except Exception as exc:
+            return {"text": "", "provider": "vlm_command", "error": str(exc)}
+        if result.returncode == 0 and result.stdout.strip():
+            return {"text": compact_ws(result.stdout), "provider": "vlm_command"}
+        return {
+            "text": "",
+            "provider": "vlm_command",
+            "error": compact_ws(result.stderr or result.stdout or f"VLM command exited {result.returncode}"),
+        }
     command = os.environ.get("MATRIXARK_RESOURCE_OCR_COMMAND", "").strip()
     if command:
         argv = [part.format(path=str(path), kind=kind) for part in shlex.split(command)]
@@ -812,6 +844,98 @@ def _ocr_path_text(path: Path, *, kind: str) -> Json:
     except Exception as exc:
         return {"text": "", "provider": "pytesseract", "error": str(exc)}
     return {"text": text, "provider": "pytesseract", "error": "" if text else "OCR produced no text"}
+
+
+def _parse_pptx_units(path: Path, raw_uri: str) -> list[Json]:
+    try:
+        from pptx import Presentation  # type: ignore
+    except Exception as exc:  # pragma: no cover - optional dependency path.
+        raise ResourceParserError(f"Unable to parse PPTX resource. Install python-pptx: {exc}")
+    presentation = Presentation(str(path))
+    units: list[Json] = []
+    for slide_index, slide in enumerate(presentation.slides, start=1):
+        parts: list[str] = []
+        for shape in slide.shapes:
+            text = getattr(shape, "text", "")
+            if isinstance(text, str) and text.strip():
+                parts.append(text.strip())
+        try:
+            notes = slide.notes_slide.notes_text_frame.text
+            if notes and notes.strip():
+                parts.append("speaker notes: " + notes.strip())
+        except Exception:
+            pass
+        text = compact_ws("\n".join(parts))
+        if text:
+            title = parts[0].splitlines()[0][:120] if parts else f"slide {slide_index}"
+            units.append(
+                {
+                    "text": text,
+                    "slide_number": slide_index,
+                    "heading": title,
+                    "heading_slug": slugify(title),
+                    "unit_kind": "pptx_slide",
+                }
+            )
+    if not units:
+        raise ResourceParserError(f"PPTX resource has no extractable slide text: {raw_uri}")
+    return units
+
+
+def _parse_xlsx_units(path: Path, raw_uri: str) -> list[Json]:
+    try:
+        import openpyxl  # type: ignore
+    except Exception as exc:  # pragma: no cover - optional dependency path.
+        raise ResourceParserError(f"Unable to parse XLSX resource. Install openpyxl: {exc}")
+    workbook = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
+    units: list[Json] = []
+    chunk_size = max(1, DEFAULT_TABLE_ROWS_PER_CHUNK)
+    for worksheet in workbook.worksheets:
+        rows_iter = worksheet.iter_rows(values_only=True)
+        try:
+            header_row = next(rows_iter)
+        except StopIteration:
+            continue
+        columns = [str(value).strip() if value is not None and str(value).strip() else f"column_{idx + 1}" for idx, value in enumerate(header_row)]
+        row_buffer: list[tuple[int, list[Any]]] = []
+
+        def flush() -> None:
+            if not row_buffer:
+                return
+            rendered_rows: list[str] = []
+            for row_number, row_values in row_buffer:
+                clean = []
+                for idx, value in enumerate(row_values):
+                    if value is None or not str(value).strip():
+                        continue
+                    key = columns[idx] if idx < len(columns) else f"column_{idx + 1}"
+                    clean.append(f"{key}: {value}")
+                if clean:
+                    rendered_rows.append(f"row {row_number}: " + "; ".join(clean))
+            if rendered_rows:
+                units.append(
+                    {
+                        "text": "\n".join(rendered_rows),
+                        "sheet_name": worksheet.title,
+                        "row_start": row_buffer[0][0],
+                        "row_end": row_buffer[-1][0],
+                        "row_count": len(row_buffer),
+                        "columns": columns,
+                        "unit_kind": "xlsx_row_group" if len(row_buffer) > 1 else "xlsx_row",
+                    }
+                )
+            row_buffer.clear()
+
+        for row_number, row_values in enumerate(rows_iter, start=2):
+            if not any(value is not None and str(value).strip() for value in row_values):
+                continue
+            row_buffer.append((row_number, list(row_values)))
+            if len(row_buffer) >= chunk_size:
+                flush()
+        flush()
+    if not units:
+        raise ResourceParserError(f"XLSX resource has no extractable table rows: {raw_uri}")
+    return units
 
 
 def _parse_docx_units(path: Path, raw_uri: str) -> list[Json]:
