@@ -3113,6 +3113,8 @@ class MatrixArkLocalAdapter:
                         resource_type=resource_type or None,
                         text=parse_text,
                         chunk_hash_base=args.get("chunk_hash_base") if isinstance(args.get("chunk_hash_base"), int) else None,
+                        resource_version=args.get("resource_version") if isinstance(args.get("resource_version"), str) else None,
+                        supersedes_chunk_hashes=args.get("supersedes_chunk_hashes") if isinstance(args.get("supersedes_chunk_hashes"), dict) else None,
                     )
             except ResourceParserError as exc:
                 resource_parse_error = str(exc)

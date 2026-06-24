@@ -206,6 +206,8 @@ class MatrixArkMcpServerTest(unittest.TestCase):
                 "scope": {"user_id": "u1", "session_id": "s1"},
                 "metadata": {"node_path": ["user:u1", "resources", "runbook"]},
                 "chunk_hash_base": 8100,
+                "resource_version": "runbook-v2",
+                "supersedes_chunk_hashes": {"runbook.md#heading=rollback": 8099},
             },
         )
         self.assertEqual(ingest["status"], "accepted")
@@ -216,6 +218,8 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         chunks = [record for record in replay["events"] if record.get("record_type") == "resource_chunk"]
         self.assertEqual(len(chunks), 2)
         self.assertEqual(chunks[0]["source_ref"], "runbook.md#heading=rollback")
+        self.assertEqual(chunks[0]["metadata"]["resource_version"], "runbook-v2")
+        self.assertEqual(chunks[0]["metadata"]["supersedes_chunk_hash"], 8099)
         self.assertEqual(chunks[1]["metadata"]["heading_slug"], "budget")
         self.assertIn("embedding_text", chunks[1]["metadata"])
         self.assertIn("path: Rollback / Budget", chunks[1]["metadata"]["embedding_text"])
