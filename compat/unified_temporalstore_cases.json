@@ -20,6 +20,7 @@
       "common_not_found_and_empty_reads",
       "timestamped_query_bounds",
       "feature_policy_filter_aggregate_lifecycle",
+      "redis_feature_module_flow",
       "feature_nested_proto_aggregate_semantics",
       "sequence_batch_filter_groups",
       "context_missing_node_semantics",
@@ -121,6 +122,7 @@
       "benchmark_longmemeval_rust_full_replay_contract",
       "benchmark_cpp_rust_vikingmem_report_comparator",
       "ops_scale_readiness_slo_gate",
+      "ops_production_readiness_service_summary",
       "ops_grafana_metrics_cpp_parity",
       "context_resource_skill_parser_openviking_parity"
     ],
@@ -209,7 +211,9 @@
       "storage_follower_safe_gc",
       "storage_cache_refill",
       "storage_shared_store_replay",
-      "storage_stream_reopen_scan"
+      "storage_stream_reopen_scan",
+      "ops_readiness_service_summary",
+      "redis_feature_module_flow"
     ],
     "required_response_kinds": [
       "empty",
@@ -5275,6 +5279,40 @@
             "migration_case": "cpp_logical_storage_models_packed_timestamped_pages",
             "description": "Storage shared case: async local shared-store replay preserves converted pages and oplog/index-log ordering under delayed follower catch-up.",
             "mode": "Async"
+          }
+        }
+      ]
+    },
+    {
+      "name": "redis_feature_module_flow",
+      "shard_id": 94,
+      "family": "Redis/admin",
+      "description": "Shared C++/Rust Redis Feature module flow covering FAPPEND, FAGG, FQUERY, filter strings, insert-if-absent policy, FREPLACE, and FDEL.",
+      "steps": [
+        {
+          "name": "redis_feature_module_flow",
+          "skip_client": true,
+          "command": {
+            "kind": "redis_feature_module_flow",
+            "scenario": "feature_module_flow",
+            "description": "Runs the Redis-compatible Feature command flow through the product Redis command parser and engine executor."
+          }
+        }
+      ]
+    },
+    {
+      "name": "ops_production_readiness_service_summary",
+      "shard_id": 95,
+      "family": "ops/scale",
+      "description": "Shared C++/Rust readiness API surface case covering service summaries, gate ordering, owners, blocker state, and scale gate readiness.",
+      "steps": [
+        {
+          "name": "production_readiness_service_summary",
+          "skip_client": true,
+          "command": {
+            "kind": "ops_readiness_service_summary",
+            "scenario": "production_readiness_service_summary",
+            "description": "Verifies production readiness service report surfaces and typed gate fields."
           }
         }
       ]

@@ -6,10 +6,12 @@ use std::{fs, path::Path};
 
 use serde::Deserialize;
 use serde_json::Value;
+use temporalstore_rust::types::SequenceFeatureRow;
 use temporalstore_rust::engine::SlotDumpFollowerReplayCursor;
 use temporalstore_rust::http::{json_response, parse_json, serve};
 use temporalstore_rust::{
-    ClientOptions, Command, CommandResponse, ExecuteRequest, ScanStreamRequest,
+    execute_redis_command, production_readiness_report, ClientOptions, Command,
+    CommandResponse, ExecuteRequest, RespValue, ScanStreamRequest,
     SharedStoreReplicator, SharedStoreStorageMode, Status, StorageLifecycleRequest, StreamKind,
     StreamReadRequest, StreamReadResponse, TableOptions, TemporalEngine, TemporalStoreClient,
 };
@@ -84,6 +86,12 @@ struct StorageUnifiedCommand {
     migration_case: Option<String>,
     #[serde(default)]
     mode: Option<SharedStoreStorageMode>,
+    #[serde(default)]
+    scenario: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SharedHarnessCommand {
     #[serde(default)]
     scenario: Option<String>,
 }
@@ -246,6 +254,9 @@ fn run_engine_case(case: &UnifiedCase) {
         if maybe_run_storage_parity_command(case, step) {
             continue;
         }
+        if maybe_run_shared_harness_command(case, step) {
+            continue;
+        }
         if command_kind(&step.command) == "existing_test" {
             continue;
         }
@@ -357,6 +368,209 @@ fn step_command(case: &UnifiedCase, step: &UnifiedStep) -> Command {
 
 fn is_storage_parity_command(command: &Value) -> bool {
     command_kind(command).starts_with("storage_")
+}
+
+fn maybe_run_shared_harness_command(case: &UnifiedCase, step: &UnifiedStep) -> bool {
+    let kind = command_kind(&step.command);
+    match kind {
+        "ops_readiness_service_summary" => {
+            verify_ops_readiness_service_summary();
+            true
+        }
+        "redis_feature_module_flow" => {
+            let command: SharedHarnessCommand = serde_json::from_value(step.command.clone())
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "case={} step={} invalid shared harness command: {error}",
+                        case.name, step.name
+                    )
+                });
+            assert_eq!(
+                command.scenario.as_deref(),
+                Some("feature_module_flow"),
+                "case={} step={} unsupported Redis/Feature scenario",
+                case.name,
+                step.name
+            );
+            verify_redis_feature_module_flow();
+            true
+        }
+        _ => false,
+    }
+}
+
+fn verify_ops_readiness_service_summary() {
+    let report = production_readiness_report();
+    assert_eq!(
+        report.known_services(),
+        vec![
+            "client",
+            "proxy",
+            "ingestion",
+            "data_node",
+            "metaserver",
+            "storage_cache",
+            "feature_modules",
+            "context_workflow",
+            "fault_tolerance",
+            "deployment_ops",
+            "scale_testing",
+            "raft_replication"
+        ]
+    );
+    let gates = report.service_gate_reports();
+    assert_eq!(gates.len(), 12);
+    for (order, service, owner) in [
+        (1, "client", "client_sdk"),
+        (2, "proxy", "proxy_runtime"),
+        (3, "ingestion", "ingestion_connectors"),
+        (4, "data_node", "data_node_runtime"),
+        (5, "metaserver", "metaserver_control_plane"),
+        (6, "storage_cache", "storage_runtime"),
+        (7, "feature_modules", "feature_api"),
+        (8, "context_workflow", "context_ai_workflow"),
+        (9, "fault_tolerance", "reliability"),
+        (10, "deployment_ops", "platform_ops"),
+        (11, "scale_testing", "performance"),
+        (12, "raft_replication", "consensus_runtime"),
+    ] {
+        assert!(
+            gates.iter().any(|gate| gate.remediation_order == order
+                && gate.service == service
+                && gate.owner == owner),
+            "missing service gate {order}/{service}/{owner}"
+        );
+    }
+    assert!(gates.iter().all(|gate| gate.gate_status == "ready"));
+    assert!(report.next_blocked_service().is_none());
+    let data_node = report
+        .service_summary("data_node")
+        .expect("data node service summary should be exported");
+    assert!(data_node.ready);
+    assert!(data_node.areas.contains(&"dataserver".to_string()));
+    assert!(data_node
+        .areas
+        .contains(&"data_node_distributed_raft".to_string()));
+    assert!(data_node.blocker_classes.is_empty());
+    assert!(data_node.next_action.contains("ready"));
+    assert!(report.failed_capabilities_for_service("data_node").is_empty());
+    assert!(report.service_ready("data_node"));
+    let gate = report
+        .service_gate_report("data_node")
+        .expect("data node service gate report should be exported");
+    assert!(gate.ready);
+    assert_eq!(gate.gate_status, "ready");
+    assert_eq!(gate.severity, "ready");
+    assert_eq!(gate.remediation_order, 4);
+    assert_eq!(gate.owner, "data_node_runtime");
+    assert!(gate.failed_capabilities.is_empty());
+    let scale_gate = report
+        .service_gate_report("scale_testing")
+        .expect("scale testing service gate report should be exported");
+    assert!(scale_gate.ready);
+    assert_eq!(scale_gate.gate_status, "ready");
+    assert_eq!(scale_gate.blocker_count, 0);
+}
+
+fn verify_redis_feature_module_flow() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let run = |args: Vec<Vec<u8>>| {
+        execute_redis_command(args, 1, |command| {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command,
+            });
+            if response.status.ok {
+                Ok(response.response)
+            } else {
+                Err(response.status.message)
+            }
+        })
+    };
+    let s = |value: &str| value.as_bytes().to_vec();
+
+    assert_eq!(
+        run(vec![s("FAPPEND"), s("rf"), s("100"), s("2")]),
+        RespValue::SimpleString("OK".to_string())
+    );
+    assert_eq!(
+        run(vec![s("FAPPEND"), s("rf"), s("200"), s("3")]),
+        RespValue::SimpleString("OK".to_string())
+    );
+    assert_eq!(
+        run(vec![s("FAGG"), s("rf"), s("0"), s("300"), s("sum")]),
+        RespValue::Integer(5)
+    );
+    assert_eq!(
+        run(vec![s("FQUERY"), s("rf"), s("0"), s("300"), s("10")]),
+        RespValue::Array(vec![
+            RespValue::Array(vec![RespValue::Integer(100), RespValue::Bulk(Some(s("2")))]),
+            RespValue::Array(vec![RespValue::Integer(200), RespValue::Bulk(Some(s("3")))]),
+        ])
+    );
+
+    let encoded = SequenceFeatureRow {
+        timestamp_ms: 300,
+        gid: 42,
+        action_type: 3,
+        duration: 90,
+        author_id: 7,
+    }
+    .encode_cpp_feature_value();
+    assert_eq!(
+        run(vec![s("FAPPEND"), s("rf"), s("300"), encoded.clone()]),
+        RespValue::SimpleString("OK".to_string())
+    );
+    assert_eq!(
+        run(vec![
+            s("FQUERYFILTERSTR"),
+            s("rf"),
+            s("0"),
+            s("400"),
+            s("10"),
+            s("action_type = 3"),
+            s("duration > 80"),
+        ]),
+        RespValue::Array(vec![RespValue::Array(vec![
+            RespValue::Integer(300),
+            RespValue::Bulk(Some(encoded)),
+        ])])
+    );
+
+    assert_eq!(
+        run(vec![
+            s("FAPPENDPOLICY"),
+            s("rf"),
+            s("300"),
+            s("ignored"),
+            s("insert_if_absent"),
+        ]),
+        RespValue::Integer(0)
+    );
+    assert_eq!(
+        run(vec![
+            s("FREPLACE"),
+            s("rf"),
+            s("0"),
+            s("250"),
+            s("150"),
+            s("10")
+        ]),
+        RespValue::SimpleString("OK".to_string())
+    );
+    assert_eq!(
+        run(vec![s("FAGG"), s("rf"), s("0"), s("400"), s("sum")]),
+        RespValue::Integer(10)
+    );
+    assert_eq!(
+        run(vec![s("FDEL"), s("rf")]),
+        RespValue::SimpleString("OK".to_string())
+    );
+    assert_eq!(
+        run(vec![s("FQUERY"), s("rf"), s("0"), s("400"), s("10")]),
+        RespValue::Array(Vec::new())
+    );
 }
 
 fn maybe_run_storage_parity_command(case: &UnifiedCase, step: &UnifiedStep) -> bool {

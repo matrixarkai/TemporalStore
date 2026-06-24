@@ -9,20 +9,20 @@
     "duplicate/remove": "Redundant tests that should be deleted or folded into a shared case; none explicitly identified in this first ledger."
   },
   "summary": {
-    "grandfathered_tests": 525,
+    "grandfathered_tests": 523,
     "by_classification": {
-      "move_to_shared": 518,
+      "move_to_shared": 516,
       "rust_internal": 7
     },
     "by_family": {
       "ops/scale": 22,
       "control plane": 91,
       "storage/cache": 174,
-      "Redis/admin": 41,
+      "Redis/admin": 40,
       "Raft": 140,
       "ingestion": 10,
       "context": 7,
-      "Feature": 14,
+      "Feature": 13,
       "Sequence": 5,
       "Risk": 9,
       "IPS": 5,
@@ -39,7 +39,7 @@
         "move_to_shared": 174
       },
       "Redis/admin": {
-        "move_to_shared": 41
+        "move_to_shared": 40
       },
       "Raft": {
         "move_to_shared": 140
@@ -51,7 +51,7 @@
         "move_to_shared": 7
       },
       "Feature": {
-        "move_to_shared": 14
+        "move_to_shared": 13
       },
       "Sequence": {
         "move_to_shared": 5
@@ -4750,30 +4750,12 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/tests/temporalstore_compat.rs::production_readiness_service_summary_is_public_api",
-      "file": "crates/temporalstore-rust/tests/temporalstore_compat.rs",
-      "test_name": "production_readiness_service_summary_is_public_api",
-      "family": "Redis/admin",
-      "classification": "move_to_shared",
-      "next_migration_target": "Redis/admin/API shared command-response corpus",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
       "test_id": "crates/temporalstore-rust/tests/temporalstore_compat.rs::consistency_bench_style_hash_writes_are_linearizable_through_raft",
       "file": "crates/temporalstore-rust/tests/temporalstore_compat.rs",
       "test_name": "consistency_bench_style_hash_writes_are_linearizable_through_raft",
       "family": "Redis/admin",
       "classification": "move_to_shared",
       "next_migration_target": "Redis/admin/API shared command-response corpus",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/tests/temporalstore_compat.rs::cxx_redis_feature_commands_cover_module_flow",
-      "file": "crates/temporalstore-rust/tests/temporalstore_compat.rs",
-      "test_name": "cxx_redis_feature_commands_cover_module_flow",
-      "family": "Feature",
-      "classification": "move_to_shared",
-      "next_migration_target": "Feature shared cases for packed timestamped pages and nested point/proto semantics",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
