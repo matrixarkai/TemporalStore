@@ -76,13 +76,13 @@ aliases and leaves three concrete missing surfaces: `docker-compose.context-benc
 Current inventory:
 
 ```text
-total cases: 143
-total steps: 305
-executable shared behavior cases: 143
-executable shared behavior steps: 305
-C++ existing-test parity surface cases: 93
-C++ existing-test parity surface steps: 100
-C++ required source/test/harness paths: 181 unique paths
+total cases: 146
+total steps: 308
+executable shared behavior cases: 146
+executable shared behavior steps: 308
+C++ existing-test parity surface cases: 96
+C++ existing-test parity surface steps: 103
+C++ required source/test/harness paths: 184 unique paths
 required command kinds: 66
 required response kinds: 19
 ```
@@ -109,10 +109,12 @@ Current grandfathered Rust test dispositions:
 The next migration target is the Raft ByteRaft-derived process/fault/readiness family, followed by
 storage/cache recovery cases and Context pipeline model cases.
 
-Recent shared-case additions moved three Rust data-node Raft API tests into the common contract:
-`server_raft_status_admin_routes`, `server_raft_apply_health_route`, and
-`server_raft_membership_apply_route`. C++ currently contributes static server/Raft source and test
-surfaces for those cases until a native C++ shared runner executes the same case IDs.
+Recent shared-case additions moved six Rust data-node Raft API tests into the common contract:
+`server_raft_status_admin_routes`, `server_raft_apply_health_route`,
+`server_raft_membership_apply_route`, `server_raft_control_scale_up_down`,
+`server_raft_control_accept_leadership`, and `server_raft_admin_wait_applied`. C++ currently
+contributes static server/Raft source and test surfaces for those cases until a native C++ shared
+runner executes the same case IDs.
 
 Focused C++ Raft-to-Rust validation uses the same corpus entries:
 
@@ -380,10 +382,10 @@ Yes. Current Rust-local attributed test count is:
 
 ```text
 Rust attributed tests: 536
-shared-corpus marked Rust tests: 25
-shared corpus cases: 128
-shared corpus steps: 227
-C++ existing-test surfaces: 170
+shared-corpus marked Rust tests: 41
+shared corpus cases: 146
+shared corpus steps: 308
+C++ existing-test surfaces: 180
 ```
 
 The detailed reduction split and new-test guard live in
@@ -392,7 +394,7 @@ The detailed reduction split and new-test guard live in
 ```text
 product behavior to move into shared corpus: 533
 Rust-only internals that can remain local: 7
-existing Rust tests already marked with shared-corpus references: 35
+existing Rust tests already marked with shared-corpus references: 41
 ```
 
 The Rust-attributed tests are a migration backlog, not the desired final state. They should be

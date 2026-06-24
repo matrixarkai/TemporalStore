@@ -7052,6 +7052,72 @@
           "name": "server_raft_membership_apply_route_shared"
         }
       ]
+    },
+    {
+      "description": "Shared C++/Rust data-node Raft control case for voter remove/add scale transitions while serving reads and writes.",
+      "family": "Raft",
+      "name": "server_raft_control_scale_up_down",
+      "shard_id": 74,
+      "steps": [
+        {
+          "command": {
+            "description": "Data-node Raft scale down/up route parity.",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "src/metaserver_v2/service/raft_control_service.h"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust server_raft_control_scale_up_down_preserves_serving -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-api-validation --log <server-raft-api.json>",
+            "suite": "cpp_data_raft_parity"
+          },
+          "name": "server_raft_control_scale_up_down_shared"
+        }
+      ]
+    },
+    {
+      "description": "Shared C++/Rust data-node Raft control case for accepting leadership only on the requested node and rejecting stale transfer requests.",
+      "family": "Raft",
+      "name": "server_raft_control_accept_leadership",
+      "shard_id": 75,
+      "steps": [
+        {
+          "command": {
+            "description": "Data-node Raft leadership-transfer route parity.",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "src/metaserver_v2/raft_connector.h"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust server_raft_control_accept_leadership_matches_raft_node_route -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-api-validation --log <server-raft-api.json>",
+            "suite": "cpp_data_raft_parity"
+          },
+          "name": "server_raft_control_accept_leadership_shared"
+        }
+      ]
+    },
+    {
+      "description": "Shared C++/Rust data-node Raft admin case for wait-applied lag reporting and local catch-up success.",
+      "family": "Raft",
+      "name": "server_raft_admin_wait_applied",
+      "shard_id": 76,
+      "steps": [
+        {
+          "command": {
+            "description": "Data-node Raft wait-applied and local-catch-up route parity.",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "src/server/meta_tinker.cc"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust server_raft_admin_wait_applied_reports_lag_and_success_after_catchup -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-api-validation --log <server-raft-api.json>",
+            "suite": "cpp_data_raft_parity"
+          },
+          "name": "server_raft_admin_wait_applied_shared"
+        }
+      ]
     }
   ],
   "coverage": {
@@ -7294,7 +7360,10 @@
       "stream_object_store_backend_detection",
       "server_raft_status_admin_routes",
       "server_raft_apply_health_route",
-      "server_raft_membership_apply_route"
+      "server_raft_membership_apply_route",
+      "server_raft_control_scale_up_down",
+      "server_raft_control_accept_leadership",
+      "server_raft_admin_wait_applied"
     ],
     "required_command_kinds": [
       "string_set",

@@ -4260,6 +4260,7 @@ mod tests {
         assert_eq!(state.runtime.status().majority, 2);
     }
 
+    // shared-corpus: server_raft_control_scale_up_down
     #[test]
     fn server_raft_control_scale_up_down_preserves_serving() {
         let dir = tempdir().unwrap();
@@ -4355,6 +4356,7 @@ mod tests {
         }
     }
 
+    // shared-corpus: server_raft_control_accept_leadership
     #[test]
     fn server_raft_control_accept_leadership_matches_raft_node_route() {
         let dir = tempdir().unwrap();
@@ -4387,6 +4389,7 @@ mod tests {
         assert_eq!(state.runtime.status().leader_id, 2);
     }
 
+    // shared-corpus: server_raft_admin_wait_applied
     #[test]
     fn server_raft_admin_wait_applied_reports_lag_and_success_after_catchup() {
         let dir = tempdir().unwrap();
