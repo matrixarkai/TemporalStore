@@ -2709,7 +2709,7 @@ class MatrixArkLocalAdapter:
             record_path = node_path_tuple(record.get("node_path", []))
             if not record_path or not starts_with_path(record_path, prefix):
                 continue
-            if record.get("record_type") == "context_summary" and record.get("summary_type") in {"node_l0", "node_l1", "batch_l0", "session_l0"}:
+            if record.get("record_type") == "context_summary" and record.get("summary_type") in {"node_l0", "node_l1", "batch_l0", "session_l0", "resource_l0", "skill_l0"}:
                 if len(child_summaries) >= max_child_summaries:
                     continue
                 try:
@@ -3106,6 +3106,7 @@ class MatrixArkLocalAdapter:
             updated_at_ms=envelope["ingestion_time_ms"],
         )
         resource_chunk_hashes: list[int] = []
+        resource_dirty_hashes: list[int] = []
         resource_parse_error = ""
         skill_hash = None
         if envelope["kind"] in {"resource", "skill"}:
@@ -3212,6 +3213,15 @@ class MatrixArkLocalAdapter:
                     "scope": envelope["scope"],
                     "updated_at_ms": envelope["ingestion_time_ms"],
                 }
+            )
+            resource_dirty_hashes = self.mark_node_summary_dirty(
+                node_path=node_path,
+                scope=envelope["scope"],
+                updated_at_ms=envelope["ingestion_time_ms"],
+                source_ref_type=f"{resource_kind}_summary",
+                source_hash_field="source_summary_hash",
+                source_hash=resource_summary_hash,
+                dirty_reason=f"{resource_kind}_update",
             )
             resource_indexes = ordered_unique(
                 [
@@ -3448,6 +3458,12 @@ class MatrixArkLocalAdapter:
             "prior_summary_count": extraction.get("prior_summary_count", 0),
             "quality_warning": extraction.get("quality_warning", ""),
             "summary_refresh": summary_refresh,
+            "resource_summary_refresh": {
+                "status": "dirty_marked" if resource_dirty_hashes else "not_applicable",
+                "dirty_hashes": resource_dirty_hashes,
+                "refresh_result": None,
+                "async_required": bool(resource_dirty_hashes),
+            },
             "node_materialization": node_materialization,
             "resource_chunks": resource_chunk_hashes,
             "resource_chunk_count": len(resource_chunk_hashes),

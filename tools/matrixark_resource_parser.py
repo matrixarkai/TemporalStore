@@ -15,6 +15,8 @@ import html
 import json
 import os
 import re
+import shlex
+import subprocess
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from pathlib import Path
@@ -35,6 +37,7 @@ DEFAULT_MAX_TOTAL_CHUNKS = int(os.environ.get("MATRIXARK_RESOURCE_MAX_TOTAL_CHUN
 DEFAULT_MAX_INLINE_TEXT_CHARS = int(os.environ.get("MATRIXARK_RESOURCE_MAX_INLINE_TEXT_CHARS", str(5 * 1024 * 1024)))
 DEFAULT_TABLE_ROWS_PER_CHUNK = int(os.environ.get("MATRIXARK_RESOURCE_TABLE_ROWS_PER_CHUNK", "20"))
 DEFAULT_JSON_RECORDS_PER_CHUNK = int(os.environ.get("MATRIXARK_RESOURCE_JSON_RECORDS_PER_CHUNK", "20"))
+DEFAULT_OCR_TIMEOUT_S = float(os.environ.get("MATRIXARK_RESOURCE_OCR_TIMEOUT_S", "30"))
 
 
 class ResourceParserError(RuntimeError):
@@ -327,6 +330,8 @@ def _parse_units(
             return _parse_pdf_units(path, raw_uri)
         if kind == "docx":
             return _parse_docx_units(path, raw_uri)
+        if kind in {"png", "jpg", "jpeg", "webp", "gif"}:
+            return _image_units(path, raw_uri, kind)
         text = _read_text_file(path, max_file_bytes)
     if text is not None and len(text) > max_inline_text_chars:
         raise ResourceParserError(f"inline resource text too large: {len(text)} chars, max is {max_inline_text_chars}")
@@ -343,7 +348,7 @@ def _parse_units(
     if kind in {"txt", "log"}:
         return _paragraph_units(text, raw_uri)
     if kind in {"png", "jpg", "jpeg", "webp", "gif"}:
-        return _binary_stub_units(raw_uri, kind)
+        return _binary_stub_units(raw_uri, kind, reason="inline image bytes are not accepted; pass a local image path for OCR/VLM parsing")
     return _paragraph_units(text, raw_uri)
 
 
@@ -614,14 +619,34 @@ def _record_group_units(records: list[tuple[int, str, str]], family: str) -> lis
     return units
 
 
-def _binary_stub_units(raw_uri: str, kind: str) -> list[Json]:
+def _binary_stub_units(raw_uri: str, kind: str, *, reason: str = "") -> list[Json]:
     return [
         {
             "text": f"Binary {kind} resource at {raw_uri}. Use a VLM or OCR provider to extract visual content.",
             "unit_kind": "binary_stub",
             "needs_vlm": True,
+            "ocr_status": "unavailable",
+            "ocr_reason": reason or "no OCR/VLM provider returned text",
         }
     ]
+
+
+def _image_units(path: Path, raw_uri: str, kind: str) -> list[Json]:
+    ocr = _ocr_path_text(path, kind=kind)
+    if ocr.get("text"):
+        return [
+            {
+                "text": ocr["text"],
+                "unit_kind": "image_ocr",
+                "ocr_provider": ocr.get("provider", ""),
+                "ocr_status": "ok",
+                "image_index": 0,
+            }
+        ]
+    units = _binary_stub_units(raw_uri, kind, reason=str(ocr.get("error") or "OCR/VLM provider not configured"))
+    units[0]["unit_kind"] = "image_ocr_stub"
+    units[0]["image_index"] = 0
+    return units
 
 
 def _parse_directory_units(
@@ -707,10 +732,86 @@ def _parse_pdf_units(path: Path, raw_uri: str) -> list[Json]:
             return units
     except Exception as exc:  # pragma: no cover - optional dependency path.
         errors.append(f"pdfplumber: {exc}")
-    raise ResourceParserError(
-        "Unable to parse PDF resource. Install pypdf or pdfplumber, or provide extracted text. "
-        + "; ".join(errors)
+    ocr_units = _ocr_pdf_units(path, raw_uri)
+    if ocr_units:
+        return ocr_units
+    stub = _binary_stub_units(
+        raw_uri,
+        "pdf",
+        reason="; ".join(errors) or "PDF has no extractable text and OCR/VLM provider is not configured",
     )
+    stub[0]["unit_kind"] = "pdf_ocr_stub"
+    stub[0]["needs_ocr"] = True
+    return stub
+
+
+def _ocr_pdf_units(path: Path, raw_uri: str) -> list[Json]:
+    whole_pdf = _ocr_path_text(path, kind="pdf")
+    if whole_pdf.get("text"):
+        units = _paragraph_units(str(whole_pdf["text"]), raw_uri)
+        for unit in units:
+            unit["unit_kind"] = "pdf_ocr"
+            unit["ocr_provider"] = whole_pdf.get("provider", "")
+            unit["ocr_status"] = "ok"
+        return units
+    try:
+        from pdf2image import convert_from_path  # type: ignore
+        import pytesseract  # type: ignore
+    except Exception:
+        return []
+    units: list[Json] = []
+    try:
+        for index, image in enumerate(convert_from_path(str(path)), start=1):
+            page_text = compact_ws(pytesseract.image_to_string(image) or "")
+            if page_text:
+                units.append(
+                    {
+                        "text": page_text,
+                        "page": index,
+                        "unit_kind": "pdf_page_ocr",
+                        "ocr_provider": "pytesseract+pdf2image",
+                        "ocr_status": "ok",
+                    }
+                )
+    except Exception:
+        return []
+    return units
+
+
+def _ocr_path_text(path: Path, *, kind: str) -> Json:
+    command = os.environ.get("MATRIXARK_RESOURCE_OCR_COMMAND", "").strip()
+    if command:
+        argv = [part.format(path=str(path), kind=kind) for part in shlex.split(command)]
+        if not argv:
+            return {"text": "", "provider": "command", "error": "empty OCR command"}
+        try:
+            result = subprocess.run(
+                argv,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=DEFAULT_OCR_TIMEOUT_S,
+                check=False,
+            )
+        except Exception as exc:
+            return {"text": "", "provider": "command", "error": str(exc)}
+        if result.returncode == 0 and result.stdout.strip():
+            return {"text": compact_ws(result.stdout), "provider": "command"}
+        return {
+            "text": "",
+            "provider": "command",
+            "error": compact_ws(result.stderr or result.stdout or f"OCR command exited {result.returncode}"),
+        }
+    try:
+        from PIL import Image  # type: ignore
+        import pytesseract  # type: ignore
+    except Exception as exc:
+        return {"text": "", "provider": "pytesseract", "error": f"pytesseract/Pillow unavailable: {exc}"}
+    try:
+        text = compact_ws(pytesseract.image_to_string(Image.open(path)) or "")
+    except Exception as exc:
+        return {"text": "", "provider": "pytesseract", "error": str(exc)}
+    return {"text": text, "provider": "pytesseract", "error": "" if text else "OCR produced no text"}
 
 
 def _parse_docx_units(path: Path, raw_uri: str) -> list[Json]:
