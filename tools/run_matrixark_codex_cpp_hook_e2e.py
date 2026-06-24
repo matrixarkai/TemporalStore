@@ -63,16 +63,20 @@ def run_hook(args: argparse.Namespace, *, event: str, payload: Json, query: str 
         {
             "MATRIXARK_REPO_ROOT": str(args.repo_root),
             "MATRIXARK_MCP_BACKEND": "temporalstore-direct",
+            "MATRIXARK_HOOK_FAIL_OPEN": "0",
             "MATRIXARK_TEMPORALSTORE_PREFIX": args.storage_prefix,
             "MATRIXARK_TEMPORALSTORE_METASERVER": args.metaserver,
             "MATRIXARK_TEMPORALSTORE_NAMESPACE": args.namespace,
             "MATRIXARK_TEMPORALSTORE_TABLE": args.table,
             "TEMPORALSTORE_LIB": args.temporalstore_lib,
-            "MATRIXARK_EMBEDDING_PROVIDER": "oss",
-            "MATRIXARK_REQUIRE_OSS_EMBEDDINGS": "1",
-            "MATRIXARK_EMBEDDING_MODEL_PATH": str(args.repo_root / ".local" / "context-oss-models" / "sentence-transformers" / "all-MiniLM-L6-v2"),
-            "MATRIXARK_UNDERSTANDING_PROVIDER": "oss_encoder",
-            "MATRIXARK_REQUIRE_OSS_UNDERSTANDING": "1",
+            "MATRIXARK_EMBEDDING_PROVIDER": os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "hash"),
+            "MATRIXARK_REQUIRE_OSS_EMBEDDINGS": os.environ.get("MATRIXARK_REQUIRE_OSS_EMBEDDINGS", "0"),
+            "MATRIXARK_EMBEDDING_MODEL_PATH": os.environ.get(
+                "MATRIXARK_EMBEDDING_MODEL_PATH",
+                str(args.repo_root / ".local" / "context-oss-models" / "sentence-transformers" / "all-MiniLM-L6-v2"),
+            ),
+            "MATRIXARK_UNDERSTANDING_PROVIDER": os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER", "rules"),
+            "MATRIXARK_REQUIRE_OSS_UNDERSTANDING": os.environ.get("MATRIXARK_REQUIRE_OSS_UNDERSTANDING", "0"),
         }
     )
     proc = subprocess.run(
