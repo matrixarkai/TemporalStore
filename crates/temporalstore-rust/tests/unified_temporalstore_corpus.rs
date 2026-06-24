@@ -9,9 +9,9 @@ use serde_json::Value;
 use temporalstore_rust::engine::SlotDumpFollowerReplayCursor;
 use temporalstore_rust::http::{json_response, parse_json, serve};
 use temporalstore_rust::{
-    ClientOptions, Command, CommandResponse, ExecuteRequest, SharedStoreReplicator,
-    SharedStoreStorageMode, Status, StorageLifecycleRequest, TableOptions, TemporalEngine,
-    TemporalStoreClient,
+    ClientOptions, Command, CommandResponse, ExecuteRequest, ScanStreamRequest,
+    SharedStoreReplicator, SharedStoreStorageMode, Status, StorageLifecycleRequest, StreamKind,
+    StreamReadRequest, StreamReadResponse, TableOptions, TemporalEngine, TemporalStoreClient,
 };
 use temporalstore_snapshot::FileObjectStore;
 
@@ -80,9 +80,12 @@ struct StorageMigrationStep {
 
 #[derive(Debug, Deserialize)]
 struct StorageUnifiedCommand {
-    migration_case: String,
+    #[serde(default)]
+    migration_case: Option<String>,
     #[serde(default)]
     mode: Option<SharedStoreStorageMode>,
+    #[serde(default)]
+    scenario: Option<String>,
 }
 
 #[test]
@@ -368,13 +371,25 @@ fn maybe_run_storage_parity_command(case: &UnifiedCase, step: &UnifiedStep) -> b
                 case.name, step.name
             )
         });
-    let storage_case = load_storage_migration_case(&command.migration_case);
     match kind {
-        "storage_dump_load_recovery" => verify_storage_dump_load_recovery(&storage_case),
-        "storage_fault_matrix" => verify_storage_fault_matrix(&storage_case),
-        "storage_follower_safe_gc" => verify_storage_follower_safe_gc(&storage_case),
-        "storage_cache_refill" => verify_storage_cache_refill(&storage_case),
+        "storage_dump_load_recovery" => {
+            let storage_case = load_storage_migration_case(&command.required_migration_case());
+            verify_storage_dump_load_recovery(&storage_case)
+        }
+        "storage_fault_matrix" => {
+            let storage_case = load_storage_migration_case(&command.required_migration_case());
+            verify_storage_fault_matrix(&storage_case)
+        }
+        "storage_follower_safe_gc" => {
+            let storage_case = load_storage_migration_case(&command.required_migration_case());
+            verify_storage_follower_safe_gc(&storage_case)
+        }
+        "storage_cache_refill" => {
+            let storage_case = load_storage_migration_case(&command.required_migration_case());
+            verify_storage_cache_refill(&storage_case)
+        }
         "storage_shared_store_replay" => {
+            let storage_case = load_storage_migration_case(&command.required_migration_case());
             let mode = command.mode.unwrap_or(SharedStoreStorageMode::Sync);
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -382,12 +397,21 @@ fn maybe_run_storage_parity_command(case: &UnifiedCase, step: &UnifiedStep) -> b
                 .expect("storage replay runtime should start");
             runtime.block_on(verify_storage_shared_store_replay(&storage_case, mode));
         }
+        "storage_stream_reopen_scan" => verify_storage_stream_reopen_scan(&command),
         other => panic!(
             "case={} step={} unsupported storage command {other}",
             case.name, step.name
         ),
     }
     true
+}
+
+impl StorageUnifiedCommand {
+    fn required_migration_case(&self) -> String {
+        self.migration_case
+            .clone()
+            .expect("storage migration command should name migration_case")
+    }
 }
 
 fn load_storage_migration_case(case_name: &str) -> StorageMigrationCase {
@@ -617,6 +641,183 @@ async fn verify_storage_shared_store_replay(
     );
     execute_storage_steps(&follower, case.shard_id, &case.expected_reads, &case.name);
     assert_clean_storage_recovery(&follower, case.shard_id, &case.name);
+}
+
+fn verify_storage_stream_reopen_scan(command: &StorageUnifiedCommand) {
+    match command.scenario.as_deref() {
+        Some("random_size_reopen_scan") => verify_random_size_reopen_scan(),
+        Some("cross_block_large_values") => verify_cross_block_large_values(),
+        other => panic!("unsupported storage stream scenario {other:?}"),
+    }
+}
+
+fn verify_random_size_reopen_scan() {
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine = new_engine(dir.path(), &page_dir, &index_dir, 1);
+
+    let mut expected = Vec::new();
+    for i in 0..24usize {
+        let len = 1 + ((i * 7919) % 32_768);
+        let value = deterministic_bytes(i as u64, len);
+        let key = format!("stream-random-{i:03}");
+        execute_storage_steps(
+            &engine,
+            1,
+            &[StorageMigrationStep {
+                name: format!("set-{i}"),
+                storage_mutation: true,
+                command: Command::StringSet {
+                    key: key.clone(),
+                    value: value.clone(),
+                },
+                expect: Some(CommandResponse::Empty),
+            }],
+            "storage_stream_random_size_reopen_scan",
+        );
+        expected.push((key, value));
+    }
+
+    drop(engine);
+    let reopened = new_engine(dir.path(), &page_dir, &index_dir, 1);
+    for (key, value) in &expected {
+        let response = reopened.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet { key: key.clone() },
+        });
+        assert!(response.status.ok, "{}", response.status.message);
+        assert_eq!(
+            response.response,
+            CommandResponse::Bytes {
+                value: Some(value.clone())
+            }
+        );
+    }
+
+    let page = reopened.read_stream(StreamReadRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::Page,
+        page_segment_id: 0,
+        offset: 0,
+        size: 1024 * 1024,
+    });
+    assert_stream_ok(&page, "random_size_reopen_scan/page");
+    assert!(!page.data.is_empty());
+    for (_, value) in expected.iter().take(8) {
+        assert!(
+            page.data.windows(value.len()).any(|window| window == value),
+            "page stream should contain deterministic value of len {}",
+            value.len()
+        );
+    }
+
+    let scan = reopened.scan_stream(ScanStreamRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::Page,
+        page_segment_id: 0,
+        start_offset: 0,
+        end_offset: u64::MAX,
+        max_bytes: 1024 * 1024,
+    });
+    assert!(scan.status.ok, "{}", scan.status.message);
+    assert!(!scan.records.is_empty());
+    assert!(scan.end_of_stream);
+}
+
+fn verify_cross_block_large_values() {
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache-a"),
+        &page_dir,
+        &index_dir,
+    );
+    engine.load_shard(1);
+
+    let large = deterministic_bytes(42, 512 * 1024);
+    for i in 0..3 {
+        execute_storage_steps(
+            &engine,
+            1,
+            &[StorageMigrationStep {
+                name: format!("set-large-{i}"),
+                storage_mutation: true,
+                command: Command::StringSet {
+                    key: format!("stream-cross-block-{i}"),
+                    value: large.clone(),
+                },
+                expect: Some(CommandResponse::Empty),
+            }],
+            "storage_stream_cross_block_large_values",
+        );
+    }
+
+    drop(engine);
+    let reopened = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache-b"),
+        &page_dir,
+        &index_dir,
+    );
+    reopened.load_shard(1);
+    for i in 0..3 {
+        let response = reopened.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: format!("stream-cross-block-{i}"),
+            },
+        });
+        assert!(response.status.ok, "{}", response.status.message);
+        assert_eq!(
+            response.response,
+            CommandResponse::Bytes {
+                value: Some(large.clone())
+            }
+        );
+    }
+
+    let first_chunk = reopened.read_stream(StreamReadRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::Page,
+        page_segment_id: 0,
+        offset: 0,
+        size: 256 * 1024,
+    });
+    assert_stream_ok(&first_chunk, "cross_block_large_values/first");
+    assert_eq!(first_chunk.data, large[..256 * 1024].to_vec());
+
+    let second_chunk = reopened.read_stream(StreamReadRequest {
+        shard_id: 1,
+        stream_kind: StreamKind::Page,
+        page_segment_id: 0,
+        offset: 256 * 1024,
+        size: 256 * 1024,
+    });
+    assert_stream_ok(&second_chunk, "cross_block_large_values/second");
+    assert_eq!(second_chunk.data, large[256 * 1024..].to_vec());
+}
+
+fn assert_stream_ok(response: &StreamReadResponse, label: &str) {
+    assert!(
+        response.status.ok,
+        "{label} stream read failed: {}",
+        response.status.message
+    );
+}
+
+fn deterministic_bytes(seed: u64, len: usize) -> Vec<u8> {
+    let mut x = seed ^ 0x9e37_79b9_7f4a_7c15;
+    (0..len)
+        .map(|_| {
+            x ^= x << 7;
+            x ^= x >> 9;
+            x ^= x << 8;
+            (x & 0xff) as u8
+        })
+        .collect()
 }
 
 fn execute_storage_steps(

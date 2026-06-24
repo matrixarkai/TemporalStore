@@ -104,6 +104,8 @@
       "storage_byteraft_cache_refill_pressure",
       "storage_byteraft_shared_store_sync_replay",
       "storage_byteraft_shared_store_async_replay",
+      "storage_stream_cross_block_large_values",
+      "storage_stream_random_size_reopen_scan",
       "context_events_segments_entities_child_refs",
       "context_embeddings_summaries_l0_l1_pipeline",
       "context_compression_secondary_index_query_debug_flow",
@@ -206,7 +208,8 @@
       "storage_fault_matrix",
       "storage_follower_safe_gc",
       "storage_cache_refill",
-      "storage_shared_store_replay"
+      "storage_shared_store_replay",
+      "storage_stream_reopen_scan"
     ],
     "required_response_kinds": [
       "empty",
@@ -5272,6 +5275,40 @@
             "migration_case": "cpp_logical_storage_models_packed_timestamped_pages",
             "description": "Storage shared case: async local shared-store replay preserves converted pages and oplog/index-log ordering under delayed follower catch-up.",
             "mode": "Async"
+          }
+        }
+      ]
+    },
+    {
+      "name": "storage_stream_random_size_reopen_scan",
+      "shard_id": 92,
+      "family": "storage/cache",
+      "description": "Shared C++/Rust storage stream case: random-size string values survive reopen and page stream scan exposes persisted bytes.",
+      "steps": [
+        {
+          "name": "random_size_reopen_scan",
+          "skip_client": true,
+          "command": {
+            "kind": "storage_stream_reopen_scan",
+            "scenario": "random_size_reopen_scan",
+            "description": "Writes deterministic random-size values, reopens storage, verifies logical reads, page stream bytes, and stream scan records."
+          }
+        }
+      ]
+    },
+    {
+      "name": "storage_stream_cross_block_large_values",
+      "shard_id": 93,
+      "family": "storage/cache",
+      "description": "Shared C++/Rust storage stream case: large cross-block values survive reopen and page stream chunk reads preserve byte boundaries.",
+      "steps": [
+        {
+          "name": "cross_block_large_values",
+          "skip_client": true,
+          "command": {
+            "kind": "storage_stream_reopen_scan",
+            "scenario": "cross_block_large_values",
+            "description": "Writes repeated 512 KiB deterministic values, reopens storage, verifies logical reads and two 256 KiB page stream chunks."
           }
         }
       ]

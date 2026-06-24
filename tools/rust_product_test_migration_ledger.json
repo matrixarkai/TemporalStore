@@ -9,61 +9,61 @@
     "duplicate/remove": "Redundant tests that should be deleted or folded into a shared case; none explicitly identified in this first ledger."
   },
   "summary": {
-    "grandfathered_tests": 527,
+    "grandfathered_tests": 525,
     "by_classification": {
-      "move_to_shared": 520,
+      "move_to_shared": 518,
       "rust_internal": 7
     },
     "by_family": {
-      "Feature": 14,
-      "IPS": 5,
-      "Raft": 140,
-      "Redis/admin": 43,
-      "Risk": 9,
-      "Sequence": 5,
-      "context": 7,
-      "control plane": 91,
-      "ingestion": 10,
       "ops/scale": 22,
-      "rust internals": 7,
-      "storage/cache": 174
+      "control plane": 91,
+      "storage/cache": 174,
+      "Redis/admin": 41,
+      "Raft": 140,
+      "ingestion": 10,
+      "context": 7,
+      "Feature": 14,
+      "Sequence": 5,
+      "Risk": 9,
+      "IPS": 5,
+      "rust internals": 7
     },
     "by_family_and_classification": {
-      "Feature": {
-        "move_to_shared": 14
-      },
-      "IPS": {
-        "move_to_shared": 5
-      },
-      "Raft": {
-        "move_to_shared": 140
-      },
-      "Redis/admin": {
-        "move_to_shared": 43
-      },
-      "Risk": {
-        "move_to_shared": 9
-      },
-      "Sequence": {
-        "move_to_shared": 5
-      },
-      "context": {
-        "move_to_shared": 7
+      "ops/scale": {
+        "move_to_shared": 22
       },
       "control plane": {
         "move_to_shared": 91
       },
+      "storage/cache": {
+        "move_to_shared": 174
+      },
+      "Redis/admin": {
+        "move_to_shared": 41
+      },
+      "Raft": {
+        "move_to_shared": 140
+      },
       "ingestion": {
         "move_to_shared": 10
       },
-      "ops/scale": {
-        "move_to_shared": 22
+      "context": {
+        "move_to_shared": 7
+      },
+      "Feature": {
+        "move_to_shared": 14
+      },
+      "Sequence": {
+        "move_to_shared": 5
+      },
+      "Risk": {
+        "move_to_shared": 9
+      },
+      "IPS": {
+        "move_to_shared": 5
       },
       "rust internals": {
         "rust_internal": 7
-      },
-      "storage/cache": {
-        "move_to_shared": 174
       }
     },
     "next_migration_target": "Raft ByteRaft-derived process/fault/readiness cases, then storage/cache recovery and context pipeline model cases."
@@ -4774,24 +4774,6 @@
       "family": "Feature",
       "classification": "move_to_shared",
       "next_migration_target": "Feature shared cases for packed timestamped pages and nested point/proto semantics",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/tests/temporalstore_compat.rs::cxx_stream_random_size_reopen_and_scan_matches_stream_test",
-      "file": "crates/temporalstore-rust/tests/temporalstore_compat.rs",
-      "test_name": "cxx_stream_random_size_reopen_and_scan_matches_stream_test",
-      "family": "Redis/admin",
-      "classification": "move_to_shared",
-      "next_migration_target": "Redis/admin/API shared command-response corpus",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/tests/temporalstore_compat.rs::cxx_stream_cross_block_large_values_survive_reopen",
-      "file": "crates/temporalstore-rust/tests/temporalstore_compat.rs",
-      "test_name": "cxx_stream_cross_block_large_values_survive_reopen",
-      "family": "Redis/admin",
-      "classification": "move_to_shared",
-      "next_migration_target": "Redis/admin/API shared command-response corpus",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
