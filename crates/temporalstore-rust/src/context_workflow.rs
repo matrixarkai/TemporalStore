@@ -158,6 +158,8 @@ pub struct ContextSkillParseReport {
     pub skill_name: String,
     pub description: String,
     pub source_ref: String,
+    pub front_matter: BTreeMap<String, String>,
+    pub tag_refs: Vec<String>,
     pub capability_refs: Vec<String>,
     pub tool_refs: Vec<String>,
     pub instruction_refs: Vec<String>,
@@ -1480,6 +1482,10 @@ pub fn parse_context_skill_markdown(
         .get("description")
         .cloned()
         .unwrap_or_else(|| first_markdown_paragraph(&text));
+    let tag_refs = parse_skill_front_matter_list(
+        &front_matter,
+        &["tags", "tag", "categories", "category"],
+    );
     let tool_refs = parse_skill_section_items(&text, &["tools", "tooling", "commands"], true);
     let instruction_refs = parse_skill_section_items(
         &text,
@@ -1519,6 +1525,8 @@ pub fn parse_context_skill_markdown(
         skill_name,
         description,
         source_ref: raw_uri,
+        front_matter,
+        tag_refs,
         capability_refs,
         tool_refs,
         instruction_refs,
@@ -2871,6 +2879,37 @@ fn parse_skill_front_matter(text: &str) -> BTreeMap<String, String> {
         }
     }
     metadata
+}
+
+fn parse_skill_front_matter_list(
+    metadata: &BTreeMap<String, String>,
+    keys: &[&str],
+) -> Vec<String> {
+    let mut values = Vec::new();
+    for key in keys {
+        let Some(raw) = metadata.get(*key) else {
+            continue;
+        };
+        for item in raw
+            .trim()
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .split(',')
+        {
+            let value = item
+                .trim()
+                .trim_matches('"')
+                .trim_matches('\'')
+                .trim_matches('`')
+                .trim();
+            if !value.is_empty() {
+                values.push(value.to_string());
+            }
+        }
+    }
+    values.sort();
+    values.dedup();
+    values
 }
 
 fn parse_skill_section_items(
@@ -5358,11 +5397,18 @@ mod tests {
     fn context_skill_parser_extracts_frontmatter_and_capability_sections() {
         let skill = parse_context_skill_markdown(
             "skills/context-debug/SKILL.md",
-            "---\nname: context-debug\ndescription: Trace context ingestion and retrieval.\n---\n\n# Context Debug\n\n## When To Use\n\n- Use for context trace debugging.\n\n## Tools\n\n- context_workflow_harness\n- `codex_context_hook` captures prompt context.\n\n## Resources\n\n- viking://resources/context-debug.md\n\n## Examples\n\n- Query the context debug flow for stale entity filters.\n",
+            "---\nname: context-debug\ndescription: Trace context ingestion and retrieval.\ntags: [context, debug, openviking]\n---\n\n# Context Debug\n\n## When To Use\n\n- Use for context trace debugging.\n\n## Tools\n\n- context_workflow_harness\n- `codex_context_hook` captures prompt context.\n\n## Resources\n\n- viking://resources/context-debug.md\n\n## Examples\n\n- Query the context debug flow for stale entity filters.\n",
         );
         assert!(skill.status.ok);
         assert_eq!(skill.skill_name, "context-debug");
         assert_eq!(skill.description, "Trace context ingestion and retrieval.");
+        assert_eq!(
+            skill.front_matter.get("tags").map(String::as_str),
+            Some("[context, debug, openviking]")
+        );
+        assert!(skill.tag_refs.contains(&"context".to_string()));
+        assert!(skill.tag_refs.contains(&"debug".to_string()));
+        assert!(skill.tag_refs.contains(&"openviking".to_string()));
         assert!(skill.capability_refs.contains(&"when-to-use".to_string()));
         assert!(skill.capability_refs.contains(&"tools".to_string()));
         assert!(skill

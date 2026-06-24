@@ -73,6 +73,8 @@ Output shape:
 
 - `skill_name`: `name` from front matter, or inferred from the path.
 - `description`: front matter `description`, or first non-heading paragraph.
+- `front_matter`: normalized `SKILL.md` front-matter key/value metadata for routing and debug traces.
+- `tag_refs`: normalized values from `tags`, `tag`, `categories`, or `category` front-matter fields.
 - `capability_refs`: capability sections such as `when-to-use`, `tools`, `instructions`, `resources`, `references`, `examples`, and `capabilities`.
 - `tool_refs`: normalized bullet/numbered-list entries from `Tools`, `Tooling`, or `Commands` sections.
 - `instruction_refs`: normalized bullet/numbered-list entries from `Instructions`, `Workflow`, `Steps`, or `When To Use` sections.
@@ -99,7 +101,7 @@ flowchart LR
   J --> K["ContextBlock evidence and ContextPackAudit injection"]
 ```
 
-The focused Rust tests verify resource refs, `SKILL.md` front matter, capability sections, tool refs, instruction refs, resource/reference refs, example refs, chunk embeddings, and end-to-end ingestion/retrieval. `parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval` parses one markdown resource and one skill, converts every parsed chunk into a `ContextExtractRequest`, persists each chunk embedding through `ContextUpsertEmbedding`, runs `ingest_extract_context`, verifies `retrieve_context` returns evidence about payment dependency rollback and p95 latency, and queries the embeddings back through `ContextQueryEmbeddings`.
+The focused Rust tests verify resource refs, `SKILL.md` front matter, tag refs, capability sections, tool refs, instruction refs, resource/reference refs, example refs, chunk embeddings, and end-to-end ingestion/retrieval. `parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval` parses one markdown resource and one skill, converts every parsed chunk into a `ContextExtractRequest`, persists each chunk embedding through `ContextUpsertEmbedding`, runs `ingest_extract_context`, verifies `retrieve_context` returns evidence about payment dependency rollback and p95 latency, and queries the embeddings back through `ContextQueryEmbeddings`.
 
 ## C++ Parity Notes
 
