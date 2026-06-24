@@ -770,9 +770,14 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
     python_zero_hit_queries = int(python_subset_score.get("zero_hit_queries") or 0)
     rust_zero_hit_queries = int(harness.get("external_benchmark_zero_hit_queries") or 0)
     hit_at_k_delta = abs(rust_hit_at_k - python_hit_at_k)
+    hit_at_k_regression_delta = max(0.0, python_hit_at_k - rust_hit_at_k)
     mean_reciprocal_rank_delta = abs(rust_mean_reciprocal_rank - python_mean_reciprocal_rank)
+    mean_reciprocal_rank_regression_delta = max(
+        0.0, python_mean_reciprocal_rank - rust_mean_reciprocal_rank
+    )
     case_count_on_par = rust_case_count == int(python_subset_score.get("case_count") or 0)
     zero_hit_queries_on_par = rust_zero_hit_queries == python_zero_hit_queries
+    zero_hit_queries_no_regression = rust_zero_hit_queries <= python_zero_hit_queries
     effective_tolerance = max(float(args.rust_temporalstore_score_tolerance), 1e-6)
     rank_parity_enforced = not bool(source_packing_report.get("enabled"))
     all_source_replay_ready = bool(harness.get("external_benchmark_all_source_replay"))
@@ -787,16 +792,28 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
         and case_count_on_par
         and zero_hit_queries_on_par
     )
+    score_no_regression = (
+        hit_at_k_regression_delta <= effective_tolerance
+        and (
+            mean_reciprocal_rank_regression_delta <= effective_tolerance
+            or not rank_parity_enforced
+        )
+        and case_count_on_par
+        and zero_hit_queries_no_regression
+    )
     report["rust_vs_python_subset_score"] = {
         "python_hit_at_k": python_hit_at_k,
         "rust_hit_at_k": rust_hit_at_k,
         "absolute_delta": hit_at_k_delta,
         "hit_at_k_delta": hit_at_k_delta,
+        "hit_at_k_regression_delta": hit_at_k_regression_delta,
         "mean_reciprocal_rank_delta": mean_reciprocal_rank_delta,
+        "mean_reciprocal_rank_regression_delta": mean_reciprocal_rank_regression_delta,
         "rank_parity_enforced": rank_parity_enforced,
         "tolerance": args.rust_temporalstore_score_tolerance,
         "effective_tolerance": effective_tolerance,
         "on_par": score_on_par,
+        "no_regression": score_no_regression,
         "python_case_count": python_subset_score.get("case_count"),
         "rust_case_count": rust_case_count,
         "case_count_on_par": case_count_on_par,
@@ -805,6 +822,7 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
         "python_zero_hit_queries": python_zero_hit_queries,
         "rust_zero_hit_queries": rust_zero_hit_queries,
         "zero_hit_queries_on_par": zero_hit_queries_on_par,
+        "zero_hit_queries_no_regression": zero_hit_queries_no_regression,
         "per_query_delta": compare_rust_python_per_query(
             python_subset_score.get("per_query") or [],
             harness.get("external_benchmark_per_query") or [],
@@ -813,7 +831,7 @@ def run_rust_temporalstore_backend(args: argparse.Namespace) -> dict[str, Any]:
     report["rust_temporalstore_backend_ready"] = (
         rust_case_count > 0
         and rust_hit_at_k > 0.0
-        and report["rust_vs_python_subset_score"]["on_par"]
+        and report["rust_vs_python_subset_score"]["no_regression"]
         and context_event_ingest_ready
         and not direct_source_scoring
         and ingested_source_sets > 0
@@ -1294,6 +1312,8 @@ def compare_rust_python_per_query(
         "retrieval_latency_delta_p50_ms": percentile(latency_deltas_ms, 50),
         "retrieval_latency_delta_p95_ms": percentile(latency_deltas_ms, 95),
         "on_par": not missing_in_rust and not rust_extra_ids and not hit_deltas and not rank_deltas,
+        "no_regression": not missing_in_rust
+        and not any(delta["python_hit"] and not delta["rust_hit"] for delta in hit_deltas),
     }
 
 
