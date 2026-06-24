@@ -217,6 +217,41 @@ class MatrixArkResourceParserTest(unittest.TestCase):
         self.assertEqual(chunks[0].metadata["relative_path"], "good.txt")
         self.assertGreaterEqual(chunks[0].metadata["directory_skipped_files"], 2)
 
+
+    def test_production_limits_reject_inline_text_unsupported_files_and_hidden_leafs(self):
+        with self.assertRaises(ResourceParserError):
+            parse_resource("inline.txt", resource_type="txt", text="x" * 32, max_inline_text_chars=16)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "resources"
+            root.mkdir()
+            (root / "good.txt").write_text("good context", encoding="utf-8")
+            (root / ".env").write_text("secret", encoding="utf-8")
+            (root / "binary.exe").write_bytes(b"MZ")
+            with self.assertRaises(ResourceParserError):
+                parse_resource(root / "binary.exe")
+            chunks = parse_resource(root, resource_type="directory", chunk_hash_base=2300)
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0].metadata["relative_path"], "good.txt")
+        self.assertGreaterEqual(chunks[0].metadata["directory_skipped_files"], 2)
+
+    def test_skill_bundle_skips_hidden_files_and_enforces_text_limit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "skill_bundle"
+            root.mkdir()
+            (root / "SKILL.md").write_text("# Good Skill\n\nBody.", encoding="utf-8")
+            (root / ".secret").write_text("hidden", encoding="utf-8")
+            vendor = root / "node_modules"
+            vendor.mkdir()
+            (vendor / "ignored.md").write_text("ignored", encoding="utf-8")
+            skill = parse_skill(root, chunk_hash_base=2400)
+        self.assertEqual(skill.metadata["bundle_files"], ["SKILL.md"])
+
+        with self.assertRaises(ValueError):
+            parse_skill("skills/too-large/SKILL.md", text="# Big\n" + ("x" * 32), max_text_chars=16)
+        with self.assertRaises(ValueError):
+            parse_skill("skills/bad/SKILL.md", text="# Bad", max_text_chars=0)
+
     def test_skill_invalid_status_scope_precedence_default_safely(self):
         skill = parse_skill(
             "skills/bad/SKILL.md",

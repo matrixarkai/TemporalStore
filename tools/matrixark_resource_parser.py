@@ -23,12 +23,16 @@ from typing import Any
 
 Json = dict[str, Any]
 
+SUPPORTED_TEXT_TYPES = {"md", "txt", "log", "html", "csv", "tsv", "json", "jsonl", "skill"}
+SUPPORTED_BINARY_TYPES = {"pdf", "docx", "png", "jpg", "jpeg", "webp", "gif"}
+SUPPORTED_FILE_TYPES = SUPPORTED_TEXT_TYPES | SUPPORTED_BINARY_TYPES
 SUPPORTED_DIRECTORY_TYPES = {"md", "txt", "pdf", "html", "csv", "tsv", "json", "jsonl", "docx", "skill"}
 SKIP_DIRECTORY_NAMES = {".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv", "target", "build", "dist"}
 DEFAULT_MAX_FILE_BYTES = int(os.environ.get("MATRIXARK_RESOURCE_MAX_FILE_BYTES", str(20 * 1024 * 1024)))
 DEFAULT_MAX_DIRECTORY_FILES = int(os.environ.get("MATRIXARK_RESOURCE_MAX_DIRECTORY_FILES", "256"))
 DEFAULT_MAX_DIRECTORY_DEPTH = int(os.environ.get("MATRIXARK_RESOURCE_MAX_DIRECTORY_DEPTH", "8"))
 DEFAULT_MAX_TOTAL_CHUNKS = int(os.environ.get("MATRIXARK_RESOURCE_MAX_TOTAL_CHUNKS", "2048"))
+DEFAULT_MAX_INLINE_TEXT_CHARS = int(os.environ.get("MATRIXARK_RESOURCE_MAX_INLINE_TEXT_CHARS", str(5 * 1024 * 1024)))
 
 
 class ResourceParserError(RuntimeError):
@@ -124,6 +128,7 @@ def parse_resource(
     max_directory_files: int = DEFAULT_MAX_DIRECTORY_FILES,
     max_directory_depth: int = DEFAULT_MAX_DIRECTORY_DEPTH,
     max_total_chunks: int = DEFAULT_MAX_TOTAL_CHUNKS,
+    max_inline_text_chars: int = DEFAULT_MAX_INLINE_TEXT_CHARS,
 ) -> list[ParsedResourceChunk]:
     """Parse supported resources into bounded serving chunks.
 
@@ -137,6 +142,10 @@ def parse_resource(
         raise ResourceParserError("overlap_chars must be non-negative and smaller than max_chunk_chars")
     if max_total_chunks <= 0:
         raise ResourceParserError("max_total_chunks must be positive")
+    if max_inline_text_chars <= 0:
+        raise ResourceParserError("max_inline_text_chars must be positive")
+    if text is not None and len(text) > max_inline_text_chars:
+        raise ResourceParserError(f"inline resource text too large: {len(text)} chars, max is {max_inline_text_chars}")
     raw_uri_text = str(raw_uri)
     kind = infer_resource_type(raw_uri_text, resource_type)
     units = _parse_units(
@@ -146,6 +155,7 @@ def parse_resource(
         max_file_bytes=max_file_bytes,
         max_directory_files=max_directory_files,
         max_directory_depth=max_directory_depth,
+        max_inline_text_chars=max_inline_text_chars,
     )
 
     chunks: list[ParsedResourceChunk] = []
@@ -196,6 +206,7 @@ def _parse_units(
     max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
     max_directory_files: int = DEFAULT_MAX_DIRECTORY_FILES,
     max_directory_depth: int = DEFAULT_MAX_DIRECTORY_DEPTH,
+    max_inline_text_chars: int = DEFAULT_MAX_INLINE_TEXT_CHARS,
 ) -> list[Json]:
     if text is None:
         path = Path(raw_uri)
@@ -203,12 +214,16 @@ def _parse_units(
             raise ResourceParserError(f"resource path does not exist: {raw_uri}")
         if path.is_dir():
             return _parse_directory_units(path, max_file_bytes=max_file_bytes, max_directory_files=max_directory_files, max_directory_depth=max_directory_depth)
+        if kind not in SUPPORTED_FILE_TYPES:
+            raise ResourceParserError(f"unsupported resource type for local file: {kind}")
         _ensure_file_size(path, max_file_bytes)
         if kind == "pdf":
             return _parse_pdf_units(path, raw_uri)
         if kind == "docx":
             return _parse_docx_units(path, raw_uri)
         text = _read_text_file(path, max_file_bytes)
+    if text is not None and len(text) > max_inline_text_chars:
+        raise ResourceParserError(f"inline resource text too large: {len(text)} chars, max is {max_inline_text_chars}")
     if kind in {"md", "skill"}:
         return _markdown_units(text)
     if kind == "html":
@@ -473,10 +488,13 @@ def _parse_directory_units(
     skipped_files = 0
     for child in sorted(item for item in path.rglob("*") if item.is_file()):
         relative = child.relative_to(path)
+        if child.is_symlink():
+            skipped_files += 1
+            continue
         if len(relative.parts) > max_directory_depth:
             skipped_files += 1
             continue
-        if any(part.startswith(".") or part in SKIP_DIRECTORY_NAMES for part in relative.parts[:-1]):
+        if any(part.startswith(".") or part in SKIP_DIRECTORY_NAMES for part in relative.parts):
             skipped_files += 1
             continue
         child_kind = infer_resource_type(str(child))
