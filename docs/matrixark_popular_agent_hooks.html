@@ -28,6 +28,7 @@
 
 Hook adapter:
   agents that expose lifecycle hooks or external command runners</code></pre>
+  <p>This follows the OpenViking-style integration lesson: the context system should be agent-facing, not app-specific. Agents get a stable interface for memory, resources, and skills; products can add automatic recall/capture through hooks when their runtime exposes lifecycle events.</p>
   <p><code>tools/matrixark_agent_hook.py</code> reads an agent JSON hook payload from stdin and normalizes it into MatrixArk MCP calls.</p>
 
   <h2>Universal Hook Command</h2>
@@ -63,6 +64,12 @@ Commit events / one-pass batch extraction:
       <tr><td>Windsurf</td><td>MCP first, external runner if available</td><td>Use the same MatrixArk MCP server; hook adapter works if the client can run external commands.</td></tr>
       <tr><td>Cline / Roo-style agents</td><td>MCP first</td><td>These loops are tool-heavy; MatrixArk should be a durable memory/tool provider.</td></tr>
       <tr><td>Continue</td><td>MCP or HTTP</td><td>Good fit for local IDE context plus MatrixArk durable memory.</td></tr>
+      <tr><td>OpenCode / OpenClaw-style agents</td><td>MCP plus hook adapter</td><td>Same model as OpenViking integrations: explicit context tools plus automatic lifecycle capture where available.</td></tr>
+      <tr><td>Aider</td><td>CLI wrapper or MCP bridge</td><td>Wrap the CLI invocation or use a supervising script to call MatrixArk before/after prompts.</td></tr>
+      <tr><td>Gemini CLI / Qwen Code</td><td>MCP or CLI wrapper</td><td>Use MatrixArk as a durable context tool; hook adapter works when wrapping command execution.</td></tr>
+      <tr><td>AutoGen / LangGraph / CrewAI</td><td>HTTP or Python-side hook calls</td><td>Integrate at graph node boundaries: before model call, after model call, after tool call, and workflow end.</td></tr>
+      <tr><td>LlamaIndex / Semantic Kernel</td><td>HTTP or tool plugin</td><td>Register MatrixArk as memory/context tool and call retrieve before synthesis.</td></tr>
+      <tr><td>Dify / n8n / workflow agents</td><td>HTTP nodes</td><td>Use retrieve/ingest/session_commit nodes in the workflow.</td></tr>
       <tr><td>GitHub Copilot-style agents</td><td>HTTP/MCP gateway</td><td>Native lifecycle hooks are not a stable public boundary; integrate through extension/server workflows.</td></tr>
       <tr><td>Enterprise vertical agents</td><td>MCP, HTTP, and hooks</td><td>Best target. They can send before-LLM, after-LLM, feedback, tool-result, idle, and commit events.</td></tr>
     </tbody>
@@ -114,6 +121,24 @@ python3 /root/src/github-services/TemporalStore/tools/matrixark_agent_hook.py \
     "auto_captured": true
   }
 }</code></pre>
+
+  <h2>Multi-Agent Framework Example</h2>
+  <pre><code>Before model node:
+  call matrixark_retrieve(query, scope, local_context, max_context_tokens)
+
+After model node:
+  call matrixark_ingest(messages=[assistant answer], metadata.source=&lt;framework&gt;)
+
+After tool node:
+  call matrixark_ingest(messages=[tool result], metadata.event=tool_result)
+
+At graph/workflow end:
+  call matrixark_feedback and matrixark_session_commit</code></pre>
+
+  <pre><code>cat payload.json | python3 /root/src/github-services/TemporalStore/tools/matrixark_agent_hook.py \
+  --agent langgraph \
+  --event UserPromptSubmit \
+  --backend temporalstore-direct</code></pre>
 
   <h2>Why MCP Still Matters</h2>
   <p>Not every popular agent exposes reliable lifecycle hooks. MCP gives a stable portable tool boundary. Hooks are best for automatic capture; MCP is best for agent-controlled retrieval and feedback.</p>

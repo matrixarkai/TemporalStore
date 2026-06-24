@@ -145,7 +145,22 @@ python3 {hook} --agent codex --event Stop
 python3 {hook} --agent cursor --event UserPromptSubmit
 python3 {hook} --agent windsurf --event UserPromptSubmit
 python3 {hook} --agent cline --event UserPromptSubmit
+python3 {hook} --agent roo --event UserPromptSubmit
 python3 {hook} --agent continue --event UserPromptSubmit
+
+# Other popular coding and orchestration agents
+python3 {hook} --agent opencode --event UserPromptSubmit
+python3 {hook} --agent openclaw --event UserPromptSubmit
+python3 {hook} --agent aider --event UserPromptSubmit
+python3 {hook} --agent gemini --event UserPromptSubmit
+python3 {hook} --agent qwen-code --event UserPromptSubmit
+python3 {hook} --agent autogen --event UserPromptSubmit
+python3 {hook} --agent langgraph --event UserPromptSubmit
+python3 {hook} --agent crewai --event UserPromptSubmit
+python3 {hook} --agent llamaindex --event UserPromptSubmit
+python3 {hook} --agent semantic-kernel --event UserPromptSubmit
+python3 {hook} --agent dify --event UserPromptSubmit
+python3 {hook} --agent n8n --event UserPromptSubmit
 
 # Generic stdin payload smoke
 echo '{{"prompt":"Alice approved the GPU request.","session_id":"demo-thread"}}' | \\
