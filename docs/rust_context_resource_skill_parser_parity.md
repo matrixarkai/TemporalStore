@@ -35,8 +35,17 @@ Output shape:
 
 - `resource_type`: normalized resource type such as `md`, `txt`, or `skill`.
 - `resource_hash`: stable hash of the resource URI.
+- `uri_scheme` and `resource_title`: normalized source classification for file,
+  `viking://`, HTTP, Git, and other OpenViking-style resource identifiers.
+- `source_refs`: all stable chunk refs in emission order.
 - `chunks[].source_ref`: stable refs such as `runbook.md#heading=incident`, `runbook.md#heading=fix`, or `notes.txt#paragraph=0`.
-- `chunks[].metadata`: `heading`, `heading_slug`, `heading_level`, `chunk_index`, `unit_index`, `split_index`, and `resource_type`.
+- `chunks[].parent_source_ref`: parent heading ref for nested markdown sections.
+- `chunks[].heading_path`: hierarchical heading slugs for query/debug traces.
+- `chunks[].content_hash`: stable hash of the chunk source ref and content.
+- `chunks[].metadata`: `heading`, `heading_slug`, `heading_level`, `heading_path`,
+  `line_start`, `line_end`, `chunk_index`, `unit_index`, `split_index`,
+  `resource_type`, `uri_scheme`, `resource_title`, `content_hash`,
+  optional `linked_refs`, and optional `code_language` / `chunk_kind=code`.
 - `chunks[].token_estimate`: whitespace-token estimate used by context prompt packing.
 - `chunks[].embedding_ref_hash`: stable ref hash for `ContextEmbeddingModel`.
 
@@ -74,12 +83,21 @@ Output shape:
 - `skill_name`: `name` from front matter, or inferred from the path.
 - `description`: front matter `description`, or first non-heading paragraph.
 - `front_matter`: normalized `SKILL.md` front-matter key/value metadata for routing and debug traces.
+- `version` and `owner_scope`: skill lifecycle/routing metadata for Codex and
+  OpenViking-style skill registries.
 - `tag_refs`: normalized values from `tags`, `tag`, `categories`, or `category` front-matter fields.
 - `capability_refs`: capability sections such as `when-to-use`, `tools`, `instructions`, `resources`, `references`, `examples`, and `capabilities`.
+- `allowed_tools`: values from `allowed_tools`, `allowed_tool`, `tools`, or
+  `tooling` front-matter. YAML-style multiline lists and inline arrays are both
+  supported.
+- `triggers`: normalized trigger/activation refs from front matter.
+- `model_refs`: model/provider refs for model-switching and OSS/commercial
+  provider policy traces.
 - `tool_refs`: normalized bullet/numbered-list entries from `Tools`, `Tooling`, or `Commands` sections.
 - `instruction_refs`: normalized bullet/numbered-list entries from `Instructions`, `Workflow`, `Steps`, or `When To Use` sections.
-- `resource_refs`: normalized resource/reference ids from `Resources` or `References` sections.
+- `resource_refs`: normalized resource/reference ids from `Resources` or `References` sections, including markdown link targets such as `[Runbook](viking://resources/runbook.md)`.
 - `example_refs`: normalized example text from `Examples` sections for prompt/debug trace parity.
+- `parser_warnings`: non-fatal parser diagnostics retained for debugging traces.
 - `resource`: the underlying `ContextResourceParseReport` with `resource_type=skill`.
 
 ## Data Flow

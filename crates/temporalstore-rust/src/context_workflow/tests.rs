@@ -1222,24 +1222,61 @@ fn context_resource_parser_matches_openviking_stable_refs() {
     let report = parse_context_resource(ContextResourceParseRequest {
         raw_uri: "runbook.md".to_string(),
         resource_type: Some("md".to_string()),
-        text: "# Rollback\n\nUse canary rollback.\n\n## Checks\n\nConfirm p95 latency.".to_string(),
+        text: "# Rollback\n\nUse canary rollback. See [runbook](viking://resources/runbook-extra.md).\n\n## Checks\n\nConfirm p95 latency.\n\n```bash\ncurl /health\n```".to_string(),
         max_chunk_chars: 1_400,
         overlap_chars: 120,
         chunk_hash_base: Some(900),
     });
     assert!(report.status.ok);
     assert_eq!(report.resource_type, "md");
+    assert_eq!(report.uri_scheme, "file");
+    assert_eq!(report.resource_title, "runbook.md");
     assert_eq!(report.chunks.len(), 2);
     assert_eq!(report.chunks[0].chunk_hash, 900);
+    assert!(report.chunks[0].content_hash != 0);
     assert_eq!(report.chunks[0].source_ref, "runbook.md#heading=rollback");
+    assert_eq!(report.chunks[0].heading_path, vec!["rollback"]);
+    assert_eq!(
+        report.chunks[0]
+            .metadata
+            .get("line_start")
+            .map(String::as_str),
+        Some("1")
+    );
     assert_eq!(report.chunks[1].chunk_hash, 901);
     assert_eq!(report.chunks[1].source_ref, "runbook.md#heading=checks");
+    assert_eq!(
+        report.chunks[1].parent_source_ref.as_deref(),
+        Some("runbook.md#heading=rollback")
+    );
+    assert_eq!(report.source_refs.len(), report.chunks.len());
     assert_eq!(
         report.chunks[1]
             .metadata
             .get("heading_level")
             .map(String::as_str),
         Some("2")
+    );
+    assert_eq!(
+        report.chunks[0]
+            .metadata
+            .get("linked_refs")
+            .map(String::as_str),
+        Some("viking://resources/runbook-extra.md")
+    );
+    assert_eq!(
+        report.chunks[1]
+            .metadata
+            .get("code_language")
+            .map(String::as_str),
+        Some("bash")
+    );
+    assert_eq!(
+        report.chunks[1]
+            .metadata
+            .get("chunk_kind")
+            .map(String::as_str),
+        Some("code")
     );
 }
 
@@ -1248,11 +1285,13 @@ fn context_resource_parser_matches_openviking_stable_refs() {
 fn context_skill_parser_extracts_frontmatter_and_capability_sections() {
     let skill = parse_context_skill_markdown(
             "skills/context-debug/SKILL.md",
-            "---\nname: context-debug\ndescription: Trace context ingestion and retrieval.\ntags: [context, debug, openviking]\n---\n\n# Context Debug\n\n## When To Use\n\n- Use for context trace debugging.\n\n## Tools\n\n- context_workflow_harness\n- `codex_context_hook` captures prompt context.\n\n## Resources\n\n- viking://resources/context-debug.md\n\n## Examples\n\n- Query the context debug flow for stale entity filters.\n",
+            "---\nname: context-debug\ndescription: Trace context ingestion and retrieval.\nversion: 1.2.0\nowner_scope: team:context\ntags: [context, debug, openviking]\nallowed_tools:\n  - context_workflow_harness\n  - codex_context_hook\ntriggers: [context-debug, retrieval-trace]\nmodels: [nomic-embed-text, qwen2.5vl]\n---\n\n# Context Debug\n\n## When To Use\n\n- Use for context trace debugging.\n\n## Tools\n\n- context_workflow_harness\n- `codex_context_hook` captures prompt context.\n\n## Resources\n\n- [Debug Resource](viking://resources/context-debug.md)\n\n## Examples\n\n- Query the context debug flow for stale entity filters.\n",
         );
     assert!(skill.status.ok);
     assert_eq!(skill.skill_name, "context-debug");
     assert_eq!(skill.description, "Trace context ingestion and retrieval.");
+    assert_eq!(skill.version, "1.2.0");
+    assert_eq!(skill.owner_scope, "team:context");
     assert_eq!(
         skill.front_matter.get("tags").map(String::as_str),
         Some("[context, debug, openviking]")
@@ -1269,6 +1308,16 @@ fn context_skill_parser_extracts_frontmatter_and_capability_sections() {
         .tool_refs
         .contains(&"context_workflow_harness".to_string()));
     assert!(skill.tool_refs.contains(&"codex_context_hook".to_string()));
+    assert!(skill
+        .allowed_tools
+        .contains(&"context_workflow_harness".to_string()));
+    assert!(skill
+        .allowed_tools
+        .contains(&"codex_context_hook".to_string()));
+    assert!(skill.triggers.contains(&"context-debug".to_string()));
+    assert!(skill.triggers.contains(&"retrieval-trace".to_string()));
+    assert!(skill.model_refs.contains(&"nomic-embed-text".to_string()));
+    assert!(skill.model_refs.contains(&"qwen2.5vl".to_string()));
     assert!(skill
         .resource_refs
         .contains(&"viking://resources/context-debug.md".to_string()));

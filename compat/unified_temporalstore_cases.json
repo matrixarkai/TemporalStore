@@ -6002,7 +6002,7 @@
             "kind": "existing_test",
             "suite": "cpp_context_pipeline_parity",
             "mode": "rust_executable_cxx_static",
-            "description": "Shared C++/Rust Context parser case for OpenViking-style resource chunking, stable source refs, SKILL.md front matter, tag refs, capability sections, tool refs, instruction refs, resource/reference refs, example refs, chunk embeddings, and Rust TemporalStore ingestion/retrieval of parsed chunks.",
+            "description": "Shared C++/Rust Context parser case for OpenViking-style resource chunking, stable source refs, heading paths, line ranges, linked refs, code-language metadata, SKILL.md front matter, version/owner scope, allowed tools, triggers, model refs, tag refs, capability sections, tool refs, instruction refs, resource/reference refs, example refs, chunk embeddings, and Rust TemporalStore ingestion/retrieval of parsed chunks.",
             "required_paths": [
               "tools/matrixark_resource_parser.py",
               "tools/test_matrixark_resource_parser.py",
