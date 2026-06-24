@@ -9697,6 +9697,9 @@ fn cached_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine_golden::{
+        cpp_api_golden_corpus_report, cpp_feature_sequence_golden_corpus_report,
+    };
     use crate::page_store::PageStoreZoneState;
     use crate::types::{parse_cpp_feature_filters, ContextAuditRef};
 
