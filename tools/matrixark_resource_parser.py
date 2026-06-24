@@ -57,6 +57,19 @@ class ParsedResourceChunk:
         }
 
 
+def embedding_text_for_chunk(chunk: ParsedResourceChunk) -> str:
+    """Return the text that should be embedded for chunk retrieval.
+
+    The stored chunk text stays citation-friendly, while embeddings get a little
+    more structure: source path, heading path, table columns, keywords, and the
+    content itself. This improves query matching without bloating prompt output.
+    """
+    value = chunk.metadata.get("embedding_text")
+    if isinstance(value, str) and value.strip():
+        return value
+    return build_embedding_text(chunk.text, chunk.metadata, chunk.source_ref)
+
+
 def stable_hash(value: str) -> int:
     digest = hashlib.sha256(value.encode("utf-8")).digest()
     return int.from_bytes(digest[:8], "big") & 0x7FFF_FFFF_FFFF_FFFF
@@ -114,6 +127,62 @@ def keywords_for_text(text: str, limit: int = 12) -> list[str]:
         if len(out) >= limit:
             break
     return out
+
+
+def build_embedding_text(text: str, metadata: Json, source_ref: str) -> str:
+    fields: list[str] = []
+    for key in [
+        "document_title",
+        "title",
+        "heading",
+        "section",
+        "relative_path",
+        "child_resource_type",
+        "unit_kind",
+    ]:
+        value = metadata.get(key)
+        if value:
+            fields.append(f"{key}: {value}")
+    heading_path = metadata.get("heading_path")
+    if isinstance(heading_path, list) and heading_path:
+        fields.append("path: " + " / ".join(str(item) for item in heading_path if str(item).strip()))
+    columns = metadata.get("columns")
+    if isinstance(columns, list) and columns:
+        fields.append("columns: " + ", ".join(str(item) for item in columns if str(item).strip()))
+    keywords = metadata.get("keywords")
+    if isinstance(keywords, list) and keywords:
+        fields.append("keywords: " + ", ".join(str(item) for item in keywords if str(item).strip()))
+    fields.append(f"source: {source_ref}")
+    fields.append(f"content: {text}")
+    return compact_ws("\n".join(fields))
+
+
+def summarize_resource_chunks(
+    chunks: list[ParsedResourceChunk],
+    *,
+    raw_uri: str = "",
+    resource_kind: str = "resource",
+    limit: int = 900,
+) -> str:
+    """Build a compact L0 summary source from chunk headings and snippets."""
+    parts: list[str] = []
+    if raw_uri:
+        parts.append(f"{resource_kind}: {raw_uri}")
+    seen_paths: set[str] = set()
+    for chunk in chunks[:12]:
+        metadata = chunk.metadata
+        heading_path = metadata.get("heading_path")
+        if isinstance(heading_path, list) and heading_path:
+            path_text = " / ".join(str(item) for item in heading_path if str(item).strip())
+        else:
+            path_text = str(metadata.get("heading") or metadata.get("section") or metadata.get("relative_path") or metadata.get("unit_kind") or "")
+        if path_text and path_text not in seen_paths:
+            seen_paths.add(path_text)
+            parts.append(f"section: {path_text}")
+        snippet = compact_ws(chunk.text)
+        if snippet:
+            parts.append(snippet[:360])
+    return compact_ws(" ".join(parts))[:limit]
 
 
 def parse_resource(
@@ -179,6 +248,7 @@ def parse_resource(
             )
             source_ref = _source_ref(raw_uri_text, metadata)
             metadata["citation"] = source_ref
+            metadata["embedding_text"] = build_embedding_text(piece, metadata, source_ref)
             chunk_hash = (
                 chunk_hash_base + len(chunks)
                 if chunk_hash_base is not None
