@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MatrixArk Hooks For Popular AI Agents</title>
+  <style>
+    body { font-family: Arial, sans-serif; line-height: 1.55; margin: 0; background: #f7f8fb; color: #172033; }
+    main { max-width: 1020px; margin: 0 auto; background: #fff; padding: 36px 24px 64px; }
+    h1 { font-size: 34px; margin: 0 0 8px; }
+    h2 { border-top: 1px solid #e5e7eb; padding-top: 24px; margin-top: 34px; }
+    table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+    th, td { border: 1px solid #e5e7eb; padding: 9px 10px; text-align: left; vertical-align: top; }
+    th { background: #f1f5f9; }
+    pre { overflow: auto; background: #0f172a; color: #e5e7eb; padding: 14px 16px; border-radius: 8px; }
+    code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+    .date { color: #64748b; margin-bottom: 24px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>MatrixArk Hooks For Popular AI Agents</h1>
+  <div class="date">Date: 2026-06-24</div>
+
+  <h2>Summary</h2>
+  <pre><code>MCP first:
+  Codex, Claude, Cursor, Windsurf, Cline, Continue, vertical agents
+
+Hook adapter:
+  agents that expose lifecycle hooks or external command runners</code></pre>
+  <p><code>tools/matrixark_agent_hook.py</code> reads an agent JSON hook payload from stdin and normalizes it into MatrixArk MCP calls.</p>
+
+  <h2>Universal Hook Command</h2>
+  <pre><code>cd /root/src/github-services/TemporalStore
+echo '{"prompt":"Alice approved the GPU request.","session_id":"demo-thread"}' |
+  python3 tools/matrixark_agent_hook.py \
+    --agent generic \
+    --event UserPromptSubmit \
+    --backend local</code></pre>
+
+  <h2>Event Mapping</h2>
+  <pre><code>Before LLM / retrieve:
+  UserPromptSubmit, before_llm, prompt, chat_prompt, session_start
+
+After LLM / ingest:
+  Stop, after_llm, assistant_message, response
+
+Tool events / ingest:
+  PreToolUse, PostToolUse, tool_call, tool_result, PermissionRequest
+
+Commit events / one-pass batch extraction:
+  Stop, SubagentStop, PostCompact, PreCompact, session_end,
+  task_complete, idle_timeout</code></pre>
+
+  <h2>Agent Matrix</h2>
+  <table>
+    <thead><tr><th>Agent</th><th>Best MatrixArk integration</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td>Codex Desktop / CLI</td><td>MCP plus hook adapter</td><td>MCP tools are explicit. Hooks can auto-capture prompt/tool/stop events when configured.</td></tr>
+      <tr><td>Claude Desktop</td><td>MCP</td><td>Add MatrixArk as an MCP stdio server. Claude keeps local context and calls MatrixArk for durable context.</td></tr>
+      <tr><td>Claude Code-style agents</td><td>MCP plus native hook command where available</td><td>Use hook adapter for prompt/tool/stop/compact lifecycle events.</td></tr>
+      <tr><td>Cursor</td><td>MCP first</td><td>Cursor keeps local code context and calls MatrixArk for team memory, runbooks, prior decisions, and skills.</td></tr>
+      <tr><td>Windsurf</td><td>MCP first, external runner if available</td><td>Use the same MatrixArk MCP server; hook adapter works if the client can run external commands.</td></tr>
+      <tr><td>Cline / Roo-style agents</td><td>MCP first</td><td>These loops are tool-heavy; MatrixArk should be a durable memory/tool provider.</td></tr>
+      <tr><td>Continue</td><td>MCP or HTTP</td><td>Good fit for local IDE context plus MatrixArk durable memory.</td></tr>
+      <tr><td>GitHub Copilot-style agents</td><td>HTTP/MCP gateway</td><td>Native lifecycle hooks are not a stable public boundary; integrate through extension/server workflows.</td></tr>
+      <tr><td>Enterprise vertical agents</td><td>MCP, HTTP, and hooks</td><td>Best target. They can send before-LLM, after-LLM, feedback, tool-result, idle, and commit events.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>Claude Hook Example</h2>
+  <pre><code>python3 /root/src/github-services/TemporalStore/tools/matrixark_agent_hook.py \
+  --agent claude \
+  --event UserPromptSubmit \
+  --backend temporalstore-direct
+
+python3 /root/src/github-services/TemporalStore/tools/matrixark_agent_hook.py \
+  --agent claude \
+  --event PostToolUse \
+  --backend temporalstore-direct
+
+python3 /root/src/github-services/TemporalStore/tools/matrixark_agent_hook.py \
+  --agent claude \
+  --event Stop \
+  --backend temporalstore-direct</code></pre>
+
+  <h2>Cursor Payload Example</h2>
+  <pre><code>{
+  "prompt": "What did we decide about the GPU approval?",
+  "session_id": "cursor-thread-123",
+  "workspace_root": "/repo/acme",
+  "open_files": [
+    {"path": "infra/budget.md", "summary": "Current capex budget notes"}
+  ]
+}</code></pre>
+
+  <h2>What The Hook Sends</h2>
+  <pre><code>{
+  "messages": [{"role": "user", "content": "Alice approved the GPU request."}],
+  "scope": {
+    "account_id": "acct_agent",
+    "tenant_id": "tenant_agent",
+    "user_id": "agent_user",
+    "session_id": "claude:demo-thread"
+  },
+  "metadata": {
+    "source": "claude_hook",
+    "agent": "claude",
+    "agent_event": "UserPromptSubmit"
+  },
+  "agent_hook": {
+    "source": "claude",
+    "hook_type": "before_llm",
+    "auto_captured": true
+  }
+}</code></pre>
+
+  <h2>Why MCP Still Matters</h2>
+  <p>Not every popular agent exposes reliable lifecycle hooks. MCP gives a stable portable tool boundary. Hooks are best for automatic capture; MCP is best for agent-controlled retrieval and feedback.</p>
+</main>
+</body>
+</html>

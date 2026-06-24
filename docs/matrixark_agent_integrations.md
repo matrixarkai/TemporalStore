@@ -323,6 +323,13 @@ docs/matrixark_agent_policy.md
 It describes exactly when to call `matrixark_retrieve`, `matrixark_ingest`,
 `matrixark_feedback`, and `matrixark_session_commit`.
 
+For automatic lifecycle capture across popular agents, use:
+
+```text
+docs/matrixark_popular_agent_hooks.md
+tools/matrixark_agent_hook.py
+```
+
 ## Runtime Flow
 
 ```mermaid

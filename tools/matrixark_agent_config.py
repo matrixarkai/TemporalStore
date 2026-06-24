@@ -126,11 +126,38 @@ one-pass batch extraction over the same-session buffer.
 """
 
 
+def hook_examples_text(repo_root: str) -> str:
+    hook = f"{repo_root}/tools/matrixark_agent_hook.py"
+    return f"""# MatrixArk Popular Agent Hook Examples
+
+# Claude Code-style hook command
+python3 {hook} --agent claude --event UserPromptSubmit
+python3 {hook} --agent claude --event PostToolUse
+python3 {hook} --agent claude --event Stop
+
+# Codex hook command
+python3 {hook} --agent codex --event UserPromptSubmit
+python3 {hook} --agent codex --event PostToolUse
+python3 {hook} --agent codex --event Stop
+
+# Cursor / Windsurf / Cline / Continue fallback hook command
+# Use this when the client has an external hook/task runner. Otherwise use MCP.
+python3 {hook} --agent cursor --event UserPromptSubmit
+python3 {hook} --agent windsurf --event UserPromptSubmit
+python3 {hook} --agent cline --event UserPromptSubmit
+python3 {hook} --agent continue --event UserPromptSubmit
+
+# Generic stdin payload smoke
+echo '{{"prompt":"Alice approved the GPU request.","session_id":"demo-thread"}}' | \\
+  python3 {hook} --agent generic --event UserPromptSubmit --backend local
+"""
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--client",
-        choices=["codex", "claude", "claude-code", "cursor", "generic", "policy", "all"],
+        choices=["codex", "claude", "claude-code", "cursor", "generic", "policy", "hooks", "all"],
         default="all",
         help="Config snippet to print.",
     )
@@ -147,6 +174,9 @@ def main() -> int:
     }
     if args.client == "policy":
         print(agent_policy_text())
+        return 0
+    if args.client == "hooks":
+        print(hook_examples_text(args.repo_root))
         return 0
     selected = generators if args.client == "all" else {args.client: generators[args.client]}
     blocks: list[str] = []
