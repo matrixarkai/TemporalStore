@@ -20,9 +20,24 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CORPUS = Path(
-    os.environ.get("TEMPORALSTORE_TEST_CORPUS", ROOT / "compat" / "unified_temporalstore_cases.json")
-)
+
+
+def default_corpus_path() -> Path:
+    override = os.environ.get("TEMPORALSTORE_TEST_CORPUS")
+    if override:
+        return Path(override)
+    candidates = [
+        ROOT / "third_party" / "TemporalStoreTestCorpus" / "cases" / "unified_temporalstore_cases.json",
+        ROOT.parent / "TemporalStoreTestCorpus" / "cases" / "unified_temporalstore_cases.json",
+        ROOT / "compat" / "unified_temporalstore_cases.json",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[-1]
+
+
+DEFAULT_CORPUS = default_corpus_path()
 DEFAULT_CPP_RUNNER_RELATIVE = Path("tools") / "run_temporalstore_unified_tests.sh"
 CPP_RAFT_PARITY_SUITE = "cpp_data_raft_parity"
 COMBINED_RAFT_GATE_CASES = {

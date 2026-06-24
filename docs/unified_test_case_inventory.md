@@ -15,8 +15,10 @@ repo keeps a local fallback copy:
 compat/unified_temporalstore_cases.json
 ```
 
-When the external repository is checked out, run the existing Rust validator
-against it with either:
+The Rust runner resolves `TEMPORALSTORE_TEST_CORPUS`, then
+`third_party/TemporalStoreTestCorpus`, then the sibling `../TemporalStoreTestCorpus`,
+then the local fallback. When the external repository is checked out, run the
+existing Rust validator against it with either:
 
 ```bash
 python3 tools/run_temporalstore_unified_tests.py \
@@ -29,6 +31,12 @@ or:
 ```bash
 TEMPORALSTORE_TEST_CORPUS=../TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json \
   python3 tools/run_temporalstore_unified_tests.py --validate-only
+```
+
+And enforce dependency wiring with:
+
+```bash
+python3 tools/validate_temporalstore_test_corpus_dependency.py --require-external
 ```
 
 Current inventory:
