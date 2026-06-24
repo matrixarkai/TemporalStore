@@ -32,6 +32,13 @@ RUST_OWNED_PREFIXES = (
     "third_party/",
     "tools/",
 )
+CPP_PATH_ALIASES = {
+    # Current C++ code layout uses these names for the same product surfaces.
+    "src/proxy/proxy_server.cc": ["src/proxy/proxy.cc"],
+    "src/metaserver_v2/meta_task_scheduler.cc": ["src/metaserver_v2/scheduler/task_scheduler.cc"],
+    "src/partition/partition_manager.cc": ["src/server/partition_manager.cc"],
+    "src/client/table_client.cc": ["src/client/client_impl.cc", "src/client/temporalstore_client.cc"],
+}
 
 
 def default_corpus_path() -> Path:
@@ -97,6 +104,17 @@ def cpp_repo_path_exists(repo: dict[str, Any] | None, path: str) -> tuple[bool, 
     return full_path.exists(), str(full_path), None
 
 
+def cpp_repo_path_or_alias_exists(repo: dict[str, Any] | None, path: str) -> tuple[bool, str, str | None, str | None]:
+    exists, full_path, reason = cpp_repo_path_exists(repo, path)
+    if exists:
+        return True, full_path, reason, None
+    for alias in CPP_PATH_ALIASES.get(path.replace("\\", "/"), []):
+        alias_exists, alias_full_path, _ = cpp_repo_path_exists(repo, alias)
+        if alias_exists:
+            return True, alias_full_path, None, alias
+    return False, full_path, reason, None
+
+
 def load_and_validate_corpus(corpus: Path) -> dict[str, Any]:
     validator = ROOT / "tools" / "run_temporalstore_unified_tests.py"
     subprocess.run(
@@ -129,9 +147,12 @@ def check_required_paths(paths: list[str], cpp_repo: dict[str, Any] | None) -> t
     for path in paths:
         owner, root = owned_root_for_path(path, cpp_repo)
         if owner == "cpp":
-            exists, full_path, reason = cpp_repo_path_exists(cpp_repo, path)
+            exists, full_path, reason, alias = cpp_repo_path_or_alias_exists(cpp_repo, path)
             row = {"owner": owner, "path": path, "full_path": full_path}
             if exists:
+                if alias:
+                    row["alias_path"] = alias
+                    row["note"] = "cpp_path_alias_resolved"
                 present.append(row)
             else:
                 row["reason"] = reason or "missing"
@@ -145,16 +166,18 @@ def check_required_paths(paths: list[str], cpp_repo: dict[str, Any] | None) -> t
             if full_path.exists():
                 present.append(row)
             else:
-                cpp_exists, cpp_full_path, _ = cpp_repo_path_exists(cpp_repo, path)
+                cpp_exists, cpp_full_path, _, alias = cpp_repo_path_or_alias_exists(cpp_repo, path)
                 if cpp_exists:
-                    present.append(
-                        {
-                            "owner": "cpp",
-                            "path": path,
-                            "full_path": cpp_full_path,
-                            "note": "rust_prefix_path_resolved_in_cpp_repo",
-                        }
-                    )
+                    resolved = {
+                        "owner": "cpp",
+                        "path": path,
+                        "full_path": cpp_full_path,
+                        "note": "rust_prefix_path_resolved_in_cpp_repo",
+                    }
+                    if alias:
+                        resolved["alias_path"] = alias
+                        resolved["note"] = "rust_prefix_path_resolved_in_cpp_repo_alias"
+                    present.append(resolved)
                 else:
                     row["reason"] = "missing"
                     missing.append(row)
@@ -202,6 +225,7 @@ def collect_cases(
         "existing_test_step_count": 0,
         "rust_runner_count": 0,
         "cpp_static_path_count": 0,
+        "cpp_static_alias_path_count": 0,
         "missing_required_path_count": 0,
         "rust_runner_failure_count": 0,
         "cpp_runner_failure_count": 0,
@@ -231,6 +255,7 @@ def collect_cases(
                 output["required_paths_present"] = present
                 output["required_paths_missing"] = missing
                 summary["cpp_static_path_count"] += sum(1 for row in present if row["owner"] == "cpp")
+                summary["cpp_static_alias_path_count"] += sum(1 for row in present if row.get("alias_path"))
                 summary["missing_required_path_count"] += len(missing)
                 if missing:
                     status = "failed"

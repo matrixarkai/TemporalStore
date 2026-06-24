@@ -65,7 +65,13 @@ contract/evidence-path validation so both repositories can share the API/test in
 running every expensive storage, Raft, context, ingestion, and benchmark harness on every edit.
 The report fails closed when a referenced Rust/C++ evidence path is missing, and its
 `missing_required_paths` array is the migration backlog for the next C++ adapter or shared-case
-cleanup pass.
+cleanup pass. The runner also records `alias_path` when an older shared-case path maps to a
+current C++ file that owns the same product surface, for example `src/proxy/proxy_server.cc` to
+`src/proxy/proxy.cc`; aliases are only layout compatibility, not readiness evidence by themselves.
+As of the current WSL C++ checkout, the joint runner resolves four moved C++ surfaces through
+aliases and leaves three concrete missing surfaces: `docker-compose.context-benchmarks.yml`,
+`src/client/example/kafka_consumer_group_runtime.cc`, and
+`src/client/example/flink_checkpoint_replay_example.cc`.
 
 Current inventory:
 
