@@ -1766,6 +1766,23 @@ def candidate_index_terms(record: Json, index_terms_by_batch: dict[Any, list[str
         terms.add(context_index_name("entity_type", record.get("entity_type")))
     elif record_type == "context_segment":
         terms.add(context_index_name("segment_topic", record.get("topic")))
+    elif record_type == "resource_chunk":
+        terms.update(index_terms_by_node.get(record.get("node_hash"), []))
+        terms.add(context_index_name("source_type", "resource"))
+        terms.add(context_index_name("resource_type", record.get("resource_type")))
+    elif record_type == "skill_manifest":
+        terms.update(index_terms_by_node.get(record.get("node_hash"), []))
+        terms.add(context_index_name("source_type", "skill"))
+        terms.add(context_index_name("resource_type", "skill"))
+        terms.add(context_index_name("skill_name", record.get("name")))
+        for trigger in record.get("triggers", [])[:8]:
+            terms.add(context_index_name("skill_trigger", trigger))
+        for tool in record.get("allowed_tools", [])[:8]:
+            terms.add(context_index_name("skill_tool", tool))
+    elif record_type == "skill_section":
+        terms.update(index_terms_by_node.get(record.get("node_hash"), []))
+        terms.add(context_index_name("source_type", "skill"))
+        terms.add(context_index_name("resource_type", "skill"))
     return {term for term in terms if term}
 
 
@@ -1775,6 +1792,30 @@ def passes_secondary_index_filters(candidate_terms: set[str], required_groups: l
     if mode == "any_group":
         return any(bool(candidate_terms.intersection(group)) for group in required_groups)
     return all(bool(candidate_terms.intersection(group)) for group in required_groups)
+
+
+def passes_applicable_secondary_index_filters(
+    candidate_terms: set[str],
+    required_groups: list[set[str]],
+    *,
+    mode: str = "all_groups",
+) -> bool:
+    """Apply only filter groups whose index prefix is present on this candidate."""
+    candidate_prefixes = {term.split(":", 1)[0] for term in candidate_terms if ":" in term}
+    candidate_is_context_asset = bool(
+        candidate_terms.intersection({"source_type:resource", "source_type:skill"})
+    )
+    applicable_groups = [
+        group
+        for group in required_groups
+        if candidate_prefixes.intersection({term.split(":", 1)[0] for term in group if ":" in term})
+        and not (
+            candidate_is_context_asset
+            and {term.split(":", 1)[0] for term in group if ":" in term} == {"source_type"}
+            and not candidate_terms.intersection(group)
+        )
+    ]
+    return passes_secondary_index_filters(candidate_terms, applicable_groups, mode=mode)
 
 
 
@@ -2951,6 +2992,70 @@ class MatrixArkLocalAdapter:
             if not parsed_chunks:
                 raise MatrixArkError(resource_parse_error or "resource ingestion produced no chunks")
             chunk_vectors = embeddings_for_texts([chunk.text for chunk in parsed_chunks])
+            resource_kind = "skill" if skill_hash is not None else "resource"
+            resource_l0_text = summarize_text(
+                " ".join(chunk.text for chunk in parsed_chunks[:8]),
+                limit=700,
+            )
+            resource_summary_hash = stable_hash(f"{resource_kind}_l0:{raw_uri}:{node_hash}")
+            resource_summary_vector = embedding_for_text(" ".join(node_path + [resource_l0_text]))
+            self.append(
+                {
+                    "record_type": "context_summary",
+                    "summary_type": f"{resource_kind}_l0",
+                    "summary_hash": resource_summary_hash,
+                    "node_hash": node_hash,
+                    "node_path": node_path,
+                    "raw_uri": raw_uri,
+                    "summary_text": resource_l0_text,
+                    "source_chunk_hashes": [chunk.chunk_hash for chunk in parsed_chunks],
+                    "scope": envelope["scope"],
+                    "updated_at_ms": envelope["ingestion_time_ms"],
+                }
+            )
+            self.append(
+                {
+                    "record_type": "context_embedding",
+                    "embedding_type": f"{resource_kind}_l0",
+                    "ref_type": "summary",
+                    "ref_hash": resource_summary_hash,
+                    "node_hash": node_hash,
+                    "node_path": node_path,
+                    "dim": len(resource_summary_vector),
+                    "model": embedding_model_name(),
+                    "vector": resource_summary_vector,
+                    "scope": envelope["scope"],
+                    "updated_at_ms": envelope["ingestion_time_ms"],
+                }
+            )
+            resource_indexes = ordered_unique(
+                [
+                    context_index_name("source_type", envelope["kind"]),
+                    context_index_name("resource_type", resource_type or parsed_chunks[0].metadata.get("resource_type", "txt")),
+                ]
+                + (
+                    [
+                        context_index_name("skill_name", parsed_skill.name),
+                    ]
+                    + [context_index_name("skill_trigger", trigger) for trigger in parsed_skill.metadata.get("triggers", [])]
+                    + [context_index_name("skill_tool", tool) for tool in parsed_skill.metadata.get("allowed_tools", [])]
+                    if skill_hash is not None
+                    else []
+                )
+            )
+            for index_name in resource_indexes:
+                self.append(
+                    {
+                        "record_type": "context_index",
+                        "index_name": index_name,
+                        "index_hash": stable_hash(f"{index_name}:{resource_summary_hash}"),
+                        "summary_hash": resource_summary_hash,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "scope": envelope["scope"],
+                        "updated_at_ms": envelope["ingestion_time_ms"],
+                    }
+                )
             if envelope["kind"] == "resource":
                 manifest_hash = stable_hash(f"resource_manifest:{raw_uri}:{node_hash}")
                 self.append(
@@ -4013,6 +4118,11 @@ class MatrixArkLocalAdapter:
                 continue
             if record.get("record_type") == "resource_chunk" and record.get("resource_type") == "skill":
                 continue
+            index_terms = candidate_index_terms(record, index_terms_by_batch, index_terms_by_node)
+            if not passes_applicable_secondary_index_filters(index_terms, secondary_index_filter_groups, mode=secondary_index_filter_mode):
+                secondary_index_dropped_count += 1
+                continue
+            secondary_index_matched_count += 1
             if record.get("record_type") == "skill_manifest":
                 ref_type = "skill"
                 ref_hash = int(record.get("skill_hash") or 0)

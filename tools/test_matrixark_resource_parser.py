@@ -43,6 +43,26 @@ class MatrixArkResourceParserTest(unittest.TestCase):
         self.assertEqual(chunks[0].chunk_hash, 800)
         self.assertEqual(chunks[0].metadata["resource_type"], "pdf")
 
+    def test_real_pdf_file_is_parsed_when_pdf_dependencies_exist(self):
+        try:
+            from reportlab.pdfgen import canvas  # type: ignore
+            import pypdf  # noqa: F401  # type: ignore
+        except Exception as exc:
+            raise unittest.SkipTest(f"PDF generation/parsing dependency unavailable: {exc}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "real.pdf"
+            pdf = canvas.Canvas(str(path))
+            pdf.drawString(72, 720, "Finance approved the GPU budget.")
+            pdf.showPage()
+            pdf.drawString(72, 720, "Rollback requires health checks.")
+            pdf.save()
+            chunks = parse_resource(path, resource_type="pdf", chunk_hash_base=1300)
+
+        self.assertEqual([chunk.source_ref for chunk in chunks], [f"{path}#page=1", f"{path}#page=2"])
+        self.assertEqual([chunk.chunk_hash for chunk in chunks], [1300, 1301])
+        self.assertIn("Finance approved", chunks[0].text)
+
     def test_skill_front_matter_and_chunks(self):
         skill = parse_skill(
             "skills/context/SKILL.md",
