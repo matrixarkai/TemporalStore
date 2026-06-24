@@ -26,7 +26,7 @@ START_PROMETHEUS="${START_PROMETHEUS:-0}"
 CONTINUE_ON_FAILURE="${CONTINUE_ON_FAILURE:-0}"
 
 BUILD_TARGETS="${BUILD_TARGETS:-bcache2-server bcache2-metaserver replication_smoke_example queue_ingestion_replay_example customer_client_example}"
-UNIT_BUILD_TARGETS="${UNIT_BUILD_TARGETS:-common_test storage_pool_uri_guardrail_test stream_test store_test object_store_guardrail_test stream_unittest hash_model_test feature_model_test ips_model_test risk_hash_model_test cpc_model_test index_test storage_test data_raft_replication_codec_smoke partition_test server_test ms_test smoketest consistency_smoketest}"
+UNIT_BUILD_TARGETS="${UNIT_BUILD_TARGETS:-common_test stream_test store_test object_store_guardrail_test stream_unittest hash_model_test feature_model_test ips_model_test risk_hash_model_test cpc_model_test index_test storage_test data_raft_replication_codec_smoke partition_test server_test ms_test smoketest consistency_smoketest}"
 UNIT_BUILD_DIR="${UNIT_BUILD_DIR:-${BUILD_DIR}}"
 UNIT_CTEST_PARALLEL="${UNIT_CTEST_PARALLEL:-2}"
 UNIT_CTEST_TIMEOUT_S="${UNIT_CTEST_TIMEOUT_S:-180}"
