@@ -5,8 +5,6 @@ pub mod control;
 pub mod data_node;
 pub mod e2e;
 pub mod engine;
-pub mod engine_golden;
-pub mod engine_reports;
 pub mod http;
 pub mod index_log;
 pub mod ingestion;
@@ -35,9 +33,8 @@ pub use context_workflow::{
     context_resource_chunk_embedding, context_workflow_state_report,
     default_context_model_providers, extract_context, ingest_extract_context, inject_context,
     openviking_open_source_model_profiles, parse_context_resource, parse_context_skill_markdown,
-    retrieve_context,
-    run_context_pipeline_benchmark, run_context_pipeline_benchmark_sweep, ContextBlock,
-    ContextExtractReport, ContextExtractRequest, ContextIngestExtractReport,
+    retrieve_context, run_context_pipeline_benchmark, run_context_pipeline_benchmark_sweep,
+    ContextBlock, ContextExtractReport, ContextExtractRequest, ContextIngestExtractReport,
     ContextIngestExtractRequest, ContextIngestExtractSummary, ContextIngestSourceFailure,
     ContextInjectReport, ContextInjectRequest, ContextModelProviderConfig,
     ContextOpenVikingModelProfile, ContextParsedResourceChunk, ContextPipelineBenchmarkQueryReport,
@@ -69,9 +66,8 @@ pub use e2e::{
     ReplicaReadPolicy, ReplicationMode, RoutingClient, TemporalStoreClientOptions, WorkflowError,
     WorkflowProxy,
 };
-pub use engine::TemporalEngine;
-pub use engine_golden::{cpp_api_golden_corpus_report, cpp_feature_sequence_golden_corpus_report};
-pub use engine_reports::{
+pub use engine::golden::{cpp_api_golden_corpus_report, cpp_feature_sequence_golden_corpus_report};
+pub use engine::reports::{
     CppGoldenCaseReport, CppGoldenCorpusReport, RustStorageObservation, ShardCompactionReport,
     ShardCompactionUtilityReport, ShardExpirySweepReport, SlotDumpFaultMatrixReport,
     SlotDumpFaultScenarioReport, SlotDumpFollowerReplayCursor, SlotDumpFollowerRetentionBlock,
@@ -89,6 +85,7 @@ pub use engine_reports::{
     StorageRecoverySegmentLiveReport, StorageSegmentIntegrityReport,
     StorageTimestampedPageFamilyReport,
 };
+pub use engine::TemporalEngine;
 pub use index_log::{IndexLogRecord, IndexLogStats, LocalIndexLogStore};
 pub use ingestion::{
     dead_letter_export_report, flink_production_checkpoint_handshake_report,

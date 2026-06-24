@@ -1,5 +1,5 @@
+use super::reports::{CppGoldenCaseReport, CppGoldenCorpusReport};
 use crate::engine::TemporalEngine;
-use crate::engine_reports::{CppGoldenCaseReport, CppGoldenCorpusReport};
 use crate::types::{
     parse_cpp_feature_filters, Command, CommandResponse, ExecuteRequest, FeatureFilterOp,
     FeaturePoint, RiskFamily, RiskFolType, SequenceFeatureRow,
@@ -506,4 +506,3 @@ fn record_golden_case(
         detail: detail.to_string(),
     });
 }
-

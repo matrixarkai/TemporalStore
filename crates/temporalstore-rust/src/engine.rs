@@ -2,13 +2,22 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+pub mod golden;
+pub mod reports;
+
+mod constants;
+mod set_index_serde;
+mod state;
+
+use self::constants::*;
+use self::reports::*;
+use self::state::*;
 use crate::cache::{CacheEntryInfo, CacheGcReport, CacheKey, MultiLayerCache};
 use crate::control::{
     CheckedBatchExecuteRequest, CheckedBatchExecuteResponse, CheckedExecuteRequest,
@@ -18,18 +27,17 @@ use crate::control::{
     ShardStats, StreamKind, StreamReadRequest, StreamReadResponse, StreamRecord,
     UnloadShardRequest, UnloadShardResponse,
 };
-use crate::engine_reports::*;
 use crate::index_log::LocalIndexLogStore;
 use crate::oplog::LocalOplogStore;
 use crate::page_store::{LocalPageStore, PageAddress, PageStoreError, PageStoreOptions};
 use crate::types::{
-    BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse,
-    ContextAuditRef, ContextChildRef, ContextCompressionEvent, ContextEmbedding, ContextEntity,
-    ContextEvent, ContextExtractedEventIndexes, ContextIndexRef, ContextNode, ContextPackAudit,
-    ContextSummary, ContextSummaryDirtyMarker, ContextTraversedNode, ContextWire, ExecuteRequest,
-    ExecuteResponse, FeatureFilter, FeatureFilterOp, FeaturePoint, FeatureWritePolicy,
-    InternalContextIndex, IpsSnapshotReport, IpsStats, RiskFamily, RiskFolType, SequenceFeatureRow,
-    SequenceQuerySpec, ShardId, Status, StringSetCondition,
+    BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ContextAuditRef,
+    ContextChildRef, ContextCompressionEvent, ContextEmbedding, ContextEntity, ContextEvent,
+    ContextExtractedEventIndexes, ContextIndexRef, ContextNode, ContextPackAudit, ContextSummary,
+    ContextSummaryDirtyMarker, ContextTraversedNode, ContextWire, ExecuteRequest, ExecuteResponse,
+    FeatureFilter, FeatureFilterOp, FeaturePoint, FeatureWritePolicy, InternalContextIndex,
+    IpsSnapshotReport, IpsStats, RiskFamily, RiskFolType, SequenceFeatureRow, SequenceQuerySpec,
+    ShardId, Status, StringSetCondition,
 };
 
 #[derive(Debug, Clone)]
@@ -49,170 +57,6 @@ impl Default for TemporalEngine {
     fn default() -> Self {
         Self::with_cache_and_page_store(MultiLayerCache::default(), LocalPageStore::default())
     }
-}
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct ShardState {
-    expires_at_ms: HashMap<String, u64>,
-    strings: HashMap<String, PageAddress>,
-    hashes: HashMap<String, HashMap<String, PageAddress>>,
-    #[serde(default, with = "set_index_serde")]
-    sets: HashMap<String, BTreeMap<Vec<u8>, PageAddress>>,
-    features: HashMap<String, BTreeMap<u64, PageAddress>>,
-    sequences: HashMap<String, BTreeMap<u64, PageAddress>>,
-    ips: HashMap<String, BTreeMap<u64, PageAddress>>,
-    #[serde(default)]
-    ips_meta: HashMap<String, BTreeMap<u64, IpsPointMeta>>,
-    #[serde(default)]
-    ips_request_ids: HashMap<String, BTreeSet<String>>,
-    risk: HashMap<String, BTreeMap<u64, i64>>,
-    #[serde(default)]
-    risk_changes: HashMap<String, BTreeMap<u64, BTreeSet<Vec<u8>>>>,
-    #[serde(default)]
-    risk_fol: HashMap<String, RiskFolValue>,
-    #[serde(default)]
-    context_nodes: HashMap<String, PageAddress>,
-    #[serde(default)]
-    context_events: HashMap<String, BTreeMap<u64, PageAddress>>,
-    #[serde(default)]
-    context_indexes: HashMap<String, BTreeMap<u64, PageAddress>>,
-    #[serde(default)]
-    context_audits: HashMap<String, BTreeMap<u64, PageAddress>>,
-    #[serde(default)]
-    context_dirty: HashMap<String, BTreeMap<u64, PageAddress>>,
-    #[serde(default)]
-    context_entities: HashMap<String, PageAddress>,
-    #[serde(default)]
-    context_children: HashMap<String, BTreeMap<u64, PageAddress>>,
-    #[serde(default)]
-    context_embeddings: HashMap<String, PageAddress>,
-    #[serde(default)]
-    context_summaries: HashMap<String, BTreeMap<u64, PageAddress>>,
-    #[serde(default)]
-    context_compressions: HashMap<String, BTreeMap<u64, PageAddress>>,
-    #[serde(skip)]
-    dirty_objects: BTreeSet<String>,
-}
-
-mod set_index_serde {
-    use super::*;
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S>(
-        value: &HashMap<String, BTreeMap<Vec<u8>, PageAddress>>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let encoded = value
-            .iter()
-            .map(|(key, members)| {
-                (
-                    key,
-                    members
-                        .iter()
-                        .map(|(member, address)| (member, address))
-                        .collect::<Vec<_>>(),
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
-        encoded.serialize(serializer)
-    }
-
-    pub fn deserialize<'de, D>(
-        deserializer: D,
-    ) -> Result<HashMap<String, BTreeMap<Vec<u8>, PageAddress>>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let encoded = HashMap::<String, Vec<(Vec<u8>, PageAddress)>>::deserialize(deserializer)?;
-        Ok(encoded
-            .into_iter()
-            .map(|(key, members)| (key, members.into_iter().collect()))
-            .collect())
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct RiskFolValue {
-    occur_time_ms: u64,
-    value: Vec<u8>,
-    fol_type: RiskFolType,
-}
-
-#[derive(Debug, Default, Clone)]
-struct AdmissionState {
-    window_epoch_sec: u64,
-    read_count: u64,
-    write_count: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum AdmissionScope {
-    Shard(ShardId),
-    Table(String),
-    Tenant(String),
-}
-
-struct AdmissionLimit {
-    scope: AdmissionScope,
-    limit: u64,
-    label: &'static str,
-}
-
-const FEATURE_ADD_HARD_MAX_SIZE: usize = 100_000;
-const FEATURE_PAGE_MAGIC: &[u8] = b"TSFPG1\n";
-const TIMESTAMPED_KV_PAGE_TARGET_BYTES: usize = 64 * 1024;
-const CONTEXT_TIMELINE_FANOUT: u64 = 1024 * 1024;
-const CONTEXT_DEFAULT_LIMIT: usize = 100;
-const CONTEXT_MAX_LIMIT: usize = 1000;
-const CONTEXT_MAX_FILTER_VALUES: usize = 32;
-const CONTEXT_MAX_RELATED_NODE_HASHES: usize = 64;
-const CONTEXT_MAX_AUDIT_REFS: usize = 512;
-const CONTEXT_MAX_PROPAGATE_DEPTH: u32 = 8;
-const CONTEXT_MAX_INDEX_NAME_BYTES: usize = 64;
-const CONTEXT_MAX_CANONICAL_NAME_BYTES: usize = 512;
-const CONTEXT_MAX_ENTITY_NAME_BYTES: usize = 512;
-const CONTEXT_MAX_ENTITY_VALUE_BYTES: usize = 4096;
-const CONTEXT_MAX_EMBEDDING_DIM: usize = 4096;
-const CONTEXT_MAX_SUMMARY_BYTES: usize = 16 * 1024;
-const CONTEXT_MAX_COMPRESSION_SNIPPET_BYTES: usize = 256;
-const CONTEXT_MAX_TRAVERSAL_DEPTH: u32 = 16;
-const CONTEXT_DEFAULT_TRAVERSAL_TOP_K: usize = 8;
-const CONTEXT_DEFAULT_TRAVERSAL_CANDIDATES: usize = 64;
-const CONTEXT_MAX_L0_BYTES: usize = 2048;
-const CONTEXT_MAX_REF_BYTES: usize = 4096;
-const CONTEXT_MAX_EVENT_TEXT_BYTES: usize = 64 * 1024;
-const CONTEXT_MAX_COMPACT_ATTRS_BYTES: usize = 8 * 1024;
-const CONTEXT_NODE_FIELD: &str = "meta";
-const HOT_PAGE_SEGMENT_ID: u64 = u64::MAX;
-static HOT_PAGE_OFFSET: AtomicU64 = AtomicU64::new(1);
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct IpsPointMeta {
-    address: PageAddress,
-    action_type: Option<u32>,
-    table_id: Option<u64>,
-    request_id: Option<String>,
-}
-
-struct ExecuteOutcome {
-    response: CommandResponse,
-    mutated: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PackedFeaturePage {
-    version: u8,
-    points: Vec<FeaturePoint>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-enum PackedFeaturePageDecode {
-    Legacy,
-    Packed(Vec<FeaturePoint>),
-    Corrupt(String),
 }
 
 impl TemporalEngine {
@@ -9697,7 +9541,7 @@ fn cached_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine_golden::{
+    use crate::engine::golden::{
         cpp_api_golden_corpus_report, cpp_feature_sequence_golden_corpus_report,
     };
     use crate::page_store::PageStoreZoneState;

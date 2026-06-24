@@ -13,11 +13,11 @@ use crate::control::{
     CheckedExecuteResponse, LoadShardRequest, LoadShardResponse, UnloadShardRequest,
     UnloadShardResponse,
 };
-use crate::engine::TemporalEngine;
-use crate::engine_reports::{
+use crate::engine::reports::{
     ShardCompactionUtilityReport, SlotDumpManifest, StorageLifecyclePlan, StorageLifecycleReport,
     StorageLifecycleRequest, StorageProductionReadinessPolicy, StorageProductionReadinessReport,
 };
+use crate::engine::TemporalEngine;
 use crate::meta::{
     ServerHeartbeatResponse, ServerRuntimeLoad, ServerShardServingState, TableTopologyResponse,
 };
