@@ -682,8 +682,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/client.rs::client_preflight_reports_cache_stats_and_backend_failures",
-      "file": "crates/temporalstore-rust/src/client.rs",
+      "test_id": "crates/temporalstore-rust/src/client/tests.rs::client_preflight_reports_cache_stats_and_backend_failures",
+      "file": "crates/temporalstore-rust/src/client/tests.rs",
       "test_name": "client_preflight_reports_cache_stats_and_backend_failures",
       "family": "storage/cache",
       "classification": "move_to_shared",
@@ -691,8 +691,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/client.rs::client_exposes_neptune_placement_hooks_and_migration_scope",
-      "file": "crates/temporalstore-rust/src/client.rs",
+      "test_id": "crates/temporalstore-rust/src/client/tests.rs::client_exposes_neptune_placement_hooks_and_migration_scope",
+      "file": "crates/temporalstore-rust/src/client/tests.rs",
       "test_name": "client_exposes_neptune_placement_hooks_and_migration_scope",
       "family": "storage/cache",
       "classification": "move_to_shared",
@@ -700,8 +700,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/client.rs::cpp_partition_set_report_marks_missing_routes",
-      "file": "crates/temporalstore-rust/src/client.rs",
+      "test_id": "crates/temporalstore-rust/src/client/tests.rs::cpp_partition_set_report_marks_missing_routes",
+      "file": "crates/temporalstore-rust/src/client/tests.rs",
       "test_name": "cpp_partition_set_report_marks_missing_routes",
       "family": "Redis/admin",
       "classification": "move_to_shared",
@@ -709,8 +709,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/client.rs::table_typed_methods_and_pipeline_match_cpp_client_shape",
-      "file": "crates/temporalstore-rust/src/client.rs",
+      "test_id": "crates/temporalstore-rust/src/client/tests.rs::table_typed_methods_and_pipeline_match_cpp_client_shape",
+      "file": "crates/temporalstore-rust/src/client/tests.rs",
       "test_name": "table_typed_methods_and_pipeline_match_cpp_client_shape",
       "family": "Redis/admin",
       "classification": "move_to_shared",
@@ -718,8 +718,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/client.rs::direct_client_refreshes_cached_route_after_failure",
-      "file": "crates/temporalstore-rust/src/client.rs",
+      "test_id": "crates/temporalstore-rust/src/client/tests.rs::direct_client_refreshes_cached_route_after_failure",
+      "file": "crates/temporalstore-rust/src/client/tests.rs",
       "test_name": "direct_client_refreshes_cached_route_after_failure",
       "family": "storage/cache",
       "classification": "move_to_shared",
@@ -727,8 +727,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/client.rs::table_write_refreshes_topology_after_meta_changed_without_write_retry_budget",
-      "file": "crates/temporalstore-rust/src/client.rs",
+      "test_id": "crates/temporalstore-rust/src/client/tests.rs::table_write_refreshes_topology_after_meta_changed_without_write_retry_budget",
+      "file": "crates/temporalstore-rust/src/client/tests.rs",
       "test_name": "table_write_refreshes_topology_after_meta_changed_without_write_retry_budget",
       "family": "control plane",
       "classification": "move_to_shared",
@@ -736,8 +736,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/client.rs::client_backend_pool_skips_cached_route_after_continuous_failure_threshold",
-      "file": "crates/temporalstore-rust/src/client.rs",
+      "test_id": "crates/temporalstore-rust/src/client/tests.rs::client_backend_pool_skips_cached_route_after_continuous_failure_threshold",
+      "file": "crates/temporalstore-rust/src/client/tests.rs",
       "test_name": "client_backend_pool_skips_cached_route_after_continuous_failure_threshold",
       "family": "storage/cache",
       "classification": "move_to_shared",
@@ -745,8 +745,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/client.rs::client_opens_table_from_metaserver_topology",
-      "file": "crates/temporalstore-rust/src/client.rs",
+      "test_id": "crates/temporalstore-rust/src/client/tests.rs::client_opens_table_from_metaserver_topology",
+      "file": "crates/temporalstore-rust/src/client/tests.rs",
       "test_name": "client_opens_table_from_metaserver_topology",
       "family": "control plane",
       "classification": "move_to_shared",
@@ -754,8 +754,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/client.rs::client_meta_sync_report_tracks_success_and_table_errors",
-      "file": "crates/temporalstore-rust/src/client.rs",
+      "test_id": "crates/temporalstore-rust/src/client/tests.rs::client_meta_sync_report_tracks_success_and_table_errors",
+      "file": "crates/temporalstore-rust/src/client/tests.rs",
       "test_name": "client_meta_sync_report_tracks_success_and_table_errors",
       "family": "control plane",
       "classification": "move_to_shared",
@@ -763,8 +763,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/client.rs::client_applies_metaserver_table_serving_options",
-      "file": "crates/temporalstore-rust/src/client.rs",
+      "test_id": "crates/temporalstore-rust/src/client/tests.rs::client_applies_metaserver_table_serving_options",
+      "file": "crates/temporalstore-rust/src/client/tests.rs",
       "test_name": "client_applies_metaserver_table_serving_options",
       "family": "control plane",
       "classification": "move_to_shared",
@@ -772,8 +772,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/client.rs::table_read_policy_can_select_secondary_from_metaserver_topology",
-      "file": "crates/temporalstore-rust/src/client.rs",
+      "test_id": "crates/temporalstore-rust/src/client/tests.rs::table_read_policy_can_select_secondary_from_metaserver_topology",
+      "file": "crates/temporalstore-rust/src/client/tests.rs",
       "test_name": "table_read_policy_can_select_secondary_from_metaserver_topology",
       "family": "control plane",
       "classification": "move_to_shared",
@@ -781,8 +781,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/client.rs::client_router_matches_cpp_crc64_slot_formula",
-      "file": "crates/temporalstore-rust/src/client.rs",
+      "test_id": "crates/temporalstore-rust/src/client/tests.rs::client_router_matches_cpp_crc64_slot_formula",
+      "file": "crates/temporalstore-rust/src/client/tests.rs",
       "test_name": "client_router_matches_cpp_crc64_slot_formula",
       "family": "storage/cache",
       "classification": "move_to_shared",
@@ -790,8 +790,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/client.rs::client_router_round_robins_secondary_reads_like_cpp_router",
-      "file": "crates/temporalstore-rust/src/client.rs",
+      "test_id": "crates/temporalstore-rust/src/client/tests.rs::client_router_round_robins_secondary_reads_like_cpp_router",
+      "file": "crates/temporalstore-rust/src/client/tests.rs",
       "test_name": "client_router_round_robins_secondary_reads_like_cpp_router",
       "family": "control plane",
       "classification": "move_to_shared",
@@ -799,8 +799,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/client.rs::client_router_prefers_same_location_replica_when_available",
-      "file": "crates/temporalstore-rust/src/client.rs",
+      "test_id": "crates/temporalstore-rust/src/client/tests.rs::client_router_prefers_same_location_replica_when_available",
+      "file": "crates/temporalstore-rust/src/client/tests.rs",
       "test_name": "client_router_prefers_same_location_replica_when_available",
       "family": "control plane",
       "classification": "move_to_shared",
@@ -808,8 +808,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/client.rs::client_table_drop_percent_rejects_sampled_requests_before_network",
-      "file": "crates/temporalstore-rust/src/client.rs",
+      "test_id": "crates/temporalstore-rust/src/client/tests.rs::client_table_drop_percent_rejects_sampled_requests_before_network",
+      "file": "crates/temporalstore-rust/src/client/tests.rs",
       "test_name": "client_table_drop_percent_rejects_sampled_requests_before_network",
       "family": "control plane",
       "classification": "move_to_shared",
@@ -817,8 +817,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/client.rs::table_write_refreshes_due_topology_before_network",
-      "file": "crates/temporalstore-rust/src/client.rs",
+      "test_id": "crates/temporalstore-rust/src/client/tests.rs::table_write_refreshes_due_topology_before_network",
+      "file": "crates/temporalstore-rust/src/client/tests.rs",
       "test_name": "table_write_refreshes_due_topology_before_network",
       "family": "control plane",
       "classification": "move_to_shared",
@@ -826,8 +826,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/client.rs::client_drop_percent_sampler_is_deterministic_and_bounded",
-      "file": "crates/temporalstore-rust/src/client.rs",
+      "test_id": "crates/temporalstore-rust/src/client/tests.rs::client_drop_percent_sampler_is_deterministic_and_bounded",
+      "file": "crates/temporalstore-rust/src/client/tests.rs",
       "test_name": "client_drop_percent_sampler_is_deterministic_and_bounded",
       "family": "control plane",
       "classification": "move_to_shared",
@@ -835,8 +835,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/client.rs::client_retries_cpp_retryable_read_status_before_returning",
-      "file": "crates/temporalstore-rust/src/client.rs",
+      "test_id": "crates/temporalstore-rust/src/client/tests.rs::client_retries_cpp_retryable_read_status_before_returning",
+      "file": "crates/temporalstore-rust/src/client/tests.rs",
       "test_name": "client_retries_cpp_retryable_read_status_before_returning",
       "family": "control plane",
       "classification": "move_to_shared",
@@ -844,8 +844,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/client.rs::client_does_not_retry_write_status_without_write_retry_budget",
-      "file": "crates/temporalstore-rust/src/client.rs",
+      "test_id": "crates/temporalstore-rust/src/client/tests.rs::client_does_not_retry_write_status_without_write_retry_budget",
+      "file": "crates/temporalstore-rust/src/client/tests.rs",
       "test_name": "client_does_not_retry_write_status_without_write_retry_budget",
       "family": "control plane",
       "classification": "move_to_shared",
@@ -853,8 +853,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/client.rs::client_retry_classifier_separates_safe_topology_retry_from_unsafe_write_retry",
-      "file": "crates/temporalstore-rust/src/client.rs",
+      "test_id": "crates/temporalstore-rust/src/client/tests.rs::client_retry_classifier_separates_safe_topology_retry_from_unsafe_write_retry",
+      "file": "crates/temporalstore-rust/src/client/tests.rs",
       "test_name": "client_retry_classifier_separates_safe_topology_retry_from_unsafe_write_retry",
       "family": "control plane",
       "classification": "move_to_shared",
@@ -862,8 +862,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/client.rs::client_background_meta_sync_updates_existing_table_handle",
-      "file": "crates/temporalstore-rust/src/client.rs",
+      "test_id": "crates/temporalstore-rust/src/client/tests.rs::client_background_meta_sync_updates_existing_table_handle",
+      "file": "crates/temporalstore-rust/src/client/tests.rs",
       "test_name": "client_background_meta_sync_updates_existing_table_handle",
       "family": "control plane",
       "classification": "move_to_shared",
@@ -871,8 +871,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/client.rs::table_routes_keys_to_shards_and_pipeline_splits_batches",
-      "file": "crates/temporalstore-rust/src/client.rs",
+      "test_id": "crates/temporalstore-rust/src/client/tests.rs::table_routes_keys_to_shards_and_pipeline_splits_batches",
+      "file": "crates/temporalstore-rust/src/client/tests.rs",
       "test_name": "table_routes_keys_to_shards_and_pipeline_splits_batches",
       "family": "control plane",
       "classification": "move_to_shared",
@@ -880,8 +880,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/context_workflow.rs::context_workflow_extracts_retrieves_and_injects_mock_context",
-      "file": "crates/temporalstore-rust/src/context_workflow.rs",
+      "test_id": "crates/temporalstore-rust/src/context_workflow/tests.rs::context_workflow_extracts_retrieves_and_injects_mock_context",
+      "file": "crates/temporalstore-rust/src/context_workflow/tests.rs",
       "test_name": "context_workflow_extracts_retrieves_and_injects_mock_context",
       "family": "context",
       "classification": "move_to_shared",
@@ -889,8 +889,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/context_workflow.rs::context_workflow_policy_controls_provider_model_and_pii",
-      "file": "crates/temporalstore-rust/src/context_workflow.rs",
+      "test_id": "crates/temporalstore-rust/src/context_workflow/tests.rs::context_workflow_policy_controls_provider_model_and_pii",
+      "file": "crates/temporalstore-rust/src/context_workflow/tests.rs",
       "test_name": "context_workflow_policy_controls_provider_model_and_pii",
       "family": "context",
       "classification": "move_to_shared",
@@ -898,8 +898,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/context_workflow.rs::context_workflow_policy_rejects_disallowed_runtime_controls",
-      "file": "crates/temporalstore-rust/src/context_workflow.rs",
+      "test_id": "crates/temporalstore-rust/src/context_workflow/tests.rs::context_workflow_policy_rejects_disallowed_runtime_controls",
+      "file": "crates/temporalstore-rust/src/context_workflow/tests.rs",
       "test_name": "context_workflow_policy_rejects_disallowed_runtime_controls",
       "family": "context",
       "classification": "move_to_shared",
@@ -907,8 +907,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/context_workflow.rs::context_workflow_extracts_with_openai_compatible_provider",
-      "file": "crates/temporalstore-rust/src/context_workflow.rs",
+      "test_id": "crates/temporalstore-rust/src/context_workflow/tests.rs::context_workflow_extracts_with_openai_compatible_provider",
+      "file": "crates/temporalstore-rust/src/context_workflow/tests.rs",
       "test_name": "context_workflow_extracts_with_openai_compatible_provider",
       "family": "context",
       "classification": "move_to_shared",
@@ -916,8 +916,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/context_workflow.rs::context_workflow_falls_back_when_live_provider_fails",
-      "file": "crates/temporalstore-rust/src/context_workflow.rs",
+      "test_id": "crates/temporalstore-rust/src/context_workflow/tests.rs::context_workflow_falls_back_when_live_provider_fails",
+      "file": "crates/temporalstore-rust/src/context_workflow/tests.rs",
       "test_name": "context_workflow_falls_back_when_live_provider_fails",
       "family": "context",
       "classification": "move_to_shared",
@@ -925,8 +925,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::runtime_reports_cpp_style_shard_worker_ownership",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_reports_cpp_style_shard_worker_ownership",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "runtime_reports_cpp_style_shard_worker_ownership",
       "family": "control plane",
       "classification": "move_to_shared",
@@ -934,8 +934,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::runtime_lifecycle_report_counts_loaded_readonly_and_preflight",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_lifecycle_report_counts_loaded_readonly_and_preflight",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "runtime_lifecycle_report_counts_loaded_readonly_and_preflight",
       "family": "storage/cache",
       "classification": "move_to_shared",
@@ -943,8 +943,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::runtime_load_reload_unload_records_lifecycle_transitions",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_load_reload_unload_records_lifecycle_transitions",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "runtime_load_reload_unload_records_lifecycle_transitions",
       "family": "storage/cache",
       "classification": "move_to_shared",
@@ -952,8 +952,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::data_node_grpc_streaming_contract_exposes_callbacks_and_job_status",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::data_node_grpc_streaming_contract_exposes_callbacks_and_job_status",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "data_node_grpc_streaming_contract_exposes_callbacks_and_job_status",
       "family": "control plane",
       "classification": "move_to_shared",
@@ -961,8 +961,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::distributed_admission_policy_aggregates_peer_counters",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::distributed_admission_policy_aggregates_peer_counters",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "distributed_admission_policy_aggregates_peer_counters",
       "family": "control plane",
       "classification": "move_to_shared",
@@ -970,8 +970,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::multi_process_lifecycle_validation_requires_load_reload_unload_and_restart",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::multi_process_lifecycle_validation_requires_load_reload_unload_and_restart",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "multi_process_lifecycle_validation_requires_load_reload_unload_and_restart",
       "family": "storage/cache",
       "classification": "move_to_shared",
@@ -979,8 +979,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::runtime_direct_unload_rejects_busy_shard_without_unloading",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_direct_unload_rejects_busy_shard_without_unloading",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "runtime_direct_unload_rejects_busy_shard_without_unloading",
       "family": "control plane",
       "classification": "move_to_shared",
@@ -988,8 +988,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::runtime_queued_unload_waits_for_prior_shard_work",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_queued_unload_waits_for_prior_shard_work",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "runtime_queued_unload_waits_for_prior_shard_work",
       "family": "control plane",
       "classification": "move_to_shared",
@@ -997,8 +997,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::runtime_enforces_authorized_lifecycle_token_when_installed",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_enforces_authorized_lifecycle_token_when_installed",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "runtime_enforces_authorized_lifecycle_token_when_installed",
       "family": "storage/cache",
       "classification": "move_to_shared",
@@ -1006,8 +1006,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::runtime_lifecycle_snapshot_restores_transitions_and_tokens",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_lifecycle_snapshot_restores_transitions_and_tokens",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "runtime_lifecycle_snapshot_restores_transitions_and_tokens",
       "family": "storage/cache",
       "classification": "move_to_shared",
@@ -1015,8 +1015,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::runtime_auto_persists_lifecycle_snapshot_across_transitions",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_auto_persists_lifecycle_snapshot_across_transitions",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "runtime_auto_persists_lifecycle_snapshot_across_transitions",
       "family": "storage/cache",
       "classification": "move_to_shared",
@@ -1024,8 +1024,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::runtime_reports_bad_lifecycle_snapshot_restore_in_preflight",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_reports_bad_lifecycle_snapshot_restore_in_preflight",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "runtime_reports_bad_lifecycle_snapshot_restore_in_preflight",
       "family": "storage/cache",
       "classification": "move_to_shared",
@@ -1033,8 +1033,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::runtime_lifecycle_snapshot_rejects_unknown_format",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_lifecycle_snapshot_rejects_unknown_format",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "runtime_lifecycle_snapshot_rejects_unknown_format",
       "family": "storage/cache",
       "classification": "move_to_shared",
@@ -1042,8 +1042,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::runtime_async_lifecycle_jobs_report_progress_and_outputs",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_async_lifecycle_jobs_report_progress_and_outputs",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "runtime_async_lifecycle_jobs_report_progress_and_outputs",
       "family": "storage/cache",
       "classification": "move_to_shared",
@@ -1051,8 +1051,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::runtime_rejects_foreground_writes_during_lifecycle_transition",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_rejects_foreground_writes_during_lifecycle_transition",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "runtime_rejects_foreground_writes_during_lifecycle_transition",
       "family": "storage/cache",
       "classification": "move_to_shared",
@@ -1060,8 +1060,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::runtime_rejects_queued_foreground_write_during_lifecycle_transition",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_rejects_queued_foreground_write_during_lifecycle_transition",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "runtime_rejects_queued_foreground_write_during_lifecycle_transition",
       "family": "storage/cache",
       "classification": "move_to_shared",
@@ -1069,8 +1069,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::runtime_executes_async_tracks_dirty_and_dump_clears_it",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_executes_async_tracks_dirty_and_dump_clears_it",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "runtime_executes_async_tracks_dirty_and_dump_clears_it",
       "family": "storage/cache",
       "classification": "move_to_shared",
@@ -1078,8 +1078,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::runtime_dump_can_flush_only_selected_dirty_slots",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_dump_can_flush_only_selected_dirty_slots",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "runtime_dump_can_flush_only_selected_dirty_slots",
       "family": "storage/cache",
       "classification": "move_to_shared",
@@ -1087,8 +1087,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::runtime_schedules_dumps_for_dirty_shards",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_schedules_dumps_for_dirty_shards",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "runtime_schedules_dumps_for_dirty_shards",
       "family": "storage/cache",
       "classification": "move_to_shared",
@@ -1096,8 +1096,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::runtime_preflight_reports_dirty_backlog_and_queue_degradation",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_preflight_reports_dirty_backlog_and_queue_degradation",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "runtime_preflight_reports_dirty_backlog_and_queue_degradation",
       "family": "storage/cache",
       "classification": "move_to_shared",
@@ -1105,8 +1105,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::runtime_builds_cpp_style_server_load_report",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_builds_cpp_style_server_load_report",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "runtime_builds_cpp_style_server_load_report",
       "family": "control plane",
       "classification": "move_to_shared",
@@ -1114,8 +1114,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::runtime_dirty_dump_scheduler_periodically_flushes_dirty_shards",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_dirty_dump_scheduler_periodically_flushes_dirty_shards",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "runtime_dirty_dump_scheduler_periodically_flushes_dirty_shards",
       "family": "storage/cache",
       "classification": "move_to_shared",
@@ -1123,8 +1123,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::runtime_dirty_dump_scheduler_skips_already_queued_dump_for_shard",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_dirty_dump_scheduler_skips_already_queued_dump_for_shard",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "runtime_dirty_dump_scheduler_skips_already_queued_dump_for_shard",
       "family": "storage/cache",
       "classification": "move_to_shared",
@@ -1132,8 +1132,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::runtime_storage_lifecycle_scheduler_runs_periodically",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_storage_lifecycle_scheduler_runs_periodically",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "runtime_storage_lifecycle_scheduler_runs_periodically",
       "family": "storage/cache",
       "classification": "move_to_shared",
@@ -1141,8 +1141,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::runtime_expiry_sweep_scheduler_removes_expired_records",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_expiry_sweep_scheduler_removes_expired_records",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "runtime_expiry_sweep_scheduler_removes_expired_records",
       "family": "storage/cache",
       "classification": "move_to_shared",
@@ -1150,8 +1150,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::runtime_rejects_when_queue_is_full",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_rejects_when_queue_is_full",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "runtime_rejects_when_queue_is_full",
       "family": "control plane",
       "classification": "move_to_shared",
@@ -1159,8 +1159,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::runtime_cancel_reports_not_found_and_already_finished_jobs",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_cancel_reports_not_found_and_already_finished_jobs",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "runtime_cancel_reports_not_found_and_already_finished_jobs",
       "family": "control plane",
       "classification": "move_to_shared",
@@ -1168,8 +1168,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::runtime_compaction_rewrites_live_pages_and_reports_stale_segments",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_compaction_rewrites_live_pages_and_reports_stale_segments",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "runtime_compaction_rewrites_live_pages_and_reports_stale_segments",
       "family": "storage/cache",
       "classification": "move_to_shared",
@@ -1177,8 +1177,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::runtime_gc_reclaims_log_tails_and_reports_counts",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_gc_reclaims_log_tails_and_reports_counts",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "runtime_gc_reclaims_log_tails_and_reports_counts",
       "family": "storage/cache",
       "classification": "move_to_shared",
@@ -1186,8 +1186,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::runtime_cancels_queued_job_before_worker_executes_it",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_cancels_queued_job_before_worker_executes_it",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "runtime_cancels_queued_job_before_worker_executes_it",
       "family": "control plane",
       "classification": "move_to_shared",
@@ -1195,8 +1195,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::runtime_cancels_queued_lifecycle_job_before_execution",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_cancels_queued_lifecycle_job_before_execution",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "runtime_cancels_queued_lifecycle_job_before_execution",
       "family": "storage/cache",
       "classification": "move_to_shared",
@@ -1204,8 +1204,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::runtime_marks_inflight_cancellation_requested_before_worker_finishes",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_marks_inflight_cancellation_requested_before_worker_finishes",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "runtime_marks_inflight_cancellation_requested_before_worker_finishes",
       "family": "control plane",
       "classification": "move_to_shared",
@@ -1213,8 +1213,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::runtime_honors_inflight_cancellation_before_dump_side_effects",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_honors_inflight_cancellation_before_dump_side_effects",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "runtime_honors_inflight_cancellation_before_dump_side_effects",
       "family": "storage/cache",
       "classification": "move_to_shared",
@@ -1222,8 +1222,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::runtime_honors_inflight_cancellation_before_gc_side_effects",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_honors_inflight_cancellation_before_gc_side_effects",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "runtime_honors_inflight_cancellation_before_gc_side_effects",
       "family": "storage/cache",
       "classification": "move_to_shared",
@@ -1231,8 +1231,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::runtime_queues_are_shard_affine_and_parallel_across_shards",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_queues_are_shard_affine_and_parallel_across_shards",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "runtime_queues_are_shard_affine_and_parallel_across_shards",
       "family": "control plane",
       "classification": "move_to_shared",
@@ -1240,8 +1240,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::runtime_scheduler_prioritizes_foreground_over_background",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_scheduler_prioritizes_foreground_over_background",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "runtime_scheduler_prioritizes_foreground_over_background",
       "family": "control plane",
       "classification": "move_to_shared",
@@ -1249,8 +1249,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/data_node.rs::runtime_rejects_background_work_when_background_queue_is_full",
-      "file": "crates/temporalstore-rust/src/data_node.rs",
+      "test_id": "crates/temporalstore-rust/src/data_node/tests.rs::runtime_rejects_background_work_when_background_queue_is_full",
+      "file": "crates/temporalstore-rust/src/data_node/tests.rs",
       "test_name": "runtime_rejects_background_work_when_background_queue_is_full",
       "family": "control plane",
       "classification": "move_to_shared",
@@ -3058,8 +3058,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::data_raft_log_codec_round_trips_cxx_style_header",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::data_raft_log_codec_round_trips_cxx_style_header",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "data_raft_log_codec_round_trips_cxx_style_header",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3067,8 +3067,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::data_raft_log_codec_rejects_bad_header_and_sequence",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::data_raft_log_codec_rejects_bad_header_and_sequence",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "data_raft_log_codec_rejects_bad_header_and_sequence",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3076,8 +3076,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::cpp_data_raft_replication_rejects_corrupt_log_payload",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::cpp_data_raft_replication_rejects_corrupt_log_payload",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "cpp_data_raft_replication_rejects_corrupt_log_payload",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3085,8 +3085,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::data_raft_command_codec_round_trips_batch_request",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::data_raft_command_codec_round_trips_batch_request",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "data_raft_command_codec_round_trips_batch_request",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3094,8 +3094,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::data_raft_command_codec_round_trips_chunked_timestamped_kv_payload",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::data_raft_command_codec_round_trips_chunked_timestamped_kv_payload",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "data_raft_command_codec_round_trips_chunked_timestamped_kv_payload",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3103,8 +3103,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::cpp_data_raft_replication_rejects_invalid_command_payload",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::cpp_data_raft_replication_rejects_invalid_command_payload",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "cpp_data_raft_replication_rejects_invalid_command_payload",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3112,8 +3112,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::cpp_data_raft_unavailable_consensus_fails_closed_for_safety_operations",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::cpp_data_raft_unavailable_consensus_fails_closed_for_safety_operations",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "cpp_data_raft_unavailable_consensus_fails_closed_for_safety_operations",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3121,8 +3121,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::openraft_data_node_backend_persists_log_snapshot_read_index_and_leader_transfer",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::openraft_data_node_backend_persists_log_snapshot_read_index_and_leader_transfer",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "openraft_data_node_backend_persists_log_snapshot_read_index_and_leader_transfer",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3130,8 +3130,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::openraft_data_node_backend_rejects_corrupt_storage_apply_fence_on_restart",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::openraft_data_node_backend_rejects_corrupt_storage_apply_fence_on_restart",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "openraft_data_node_backend_rejects_corrupt_storage_apply_fence_on_restart",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3139,8 +3139,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::openraft_data_node_backend_bootstraps_learner_and_auto_promotes_peer",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::openraft_data_node_backend_bootstraps_learner_and_auto_promotes_peer",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "openraft_data_node_backend_bootstraps_learner_and_auto_promotes_peer",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3148,8 +3148,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::openraft_metaserver_backend_supports_membership_and_bounded_reads",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::openraft_metaserver_backend_supports_membership_and_bounded_reads",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "openraft_metaserver_backend_supports_membership_and_bounded_reads",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3157,8 +3157,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::committed_data_raft_applier_replays_once_and_rejects_wrong_shard",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::committed_data_raft_applier_replays_once_and_rejects_wrong_shard",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "committed_data_raft_applier_replays_once_and_rejects_wrong_shard",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3166,8 +3166,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::committed_data_raft_applier_forces_durable_storage_when_async_storage_enabled",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::committed_data_raft_applier_forces_durable_storage_when_async_storage_enabled",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "committed_data_raft_applier_forces_durable_storage_when_async_storage_enabled",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3175,8 +3175,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_replicates_committed_write_to_majority_and_followers",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_replicates_committed_write_to_majority_and_followers",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_replicates_committed_write_to_majority_and_followers",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3184,8 +3184,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_replicates_chunked_timestamped_kv_page_format_to_followers",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_replicates_chunked_timestamped_kv_page_format_to_followers",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_replicates_chunked_timestamped_kv_page_format_to_followers",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3193,8 +3193,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_snapshot_install_preserves_chunked_timestamped_kv_page_format",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_snapshot_install_preserves_chunked_timestamped_kv_page_format",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_snapshot_install_preserves_chunked_timestamped_kv_page_format",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3202,8 +3202,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_rejects_write_without_majority",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_rejects_write_without_majority",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_rejects_write_without_majority",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3211,8 +3211,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_follower_catches_up_after_outage",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_follower_catches_up_after_outage",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_follower_catches_up_after_outage",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3220,8 +3220,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_rejects_electing_stale_replica_until_it_catches_up",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_rejects_electing_stale_replica_until_it_catches_up",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_rejects_electing_stale_replica_until_it_catches_up",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3229,8 +3229,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_transport_append_entries_catches_up_lagging_replica",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_transport_append_entries_catches_up_lagging_replica",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_transport_append_entries_catches_up_lagging_replica",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3238,8 +3238,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_transport_rejects_stale_append_entries_and_behind_vote",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_transport_rejects_stale_append_entries_and_behind_vote",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_transport_rejects_stale_append_entries_and_behind_vote",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3247,8 +3247,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::append_entries_updates_observed_leader_for_standalone_node_status",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::append_entries_updates_observed_leader_for_standalone_node_status",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "append_entries_updates_observed_leader_for_standalone_node_status",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3256,8 +3256,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::observer_apply_health_reports_local_replica_without_remote_false_lag",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::observer_apply_health_reports_local_replica_without_remote_false_lag",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "observer_apply_health_reports_local_replica_without_remote_false_lag",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3265,8 +3265,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::request_vote_higher_term_resets_prior_vote_before_decision",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::request_vote_higher_term_resets_prior_vote_before_decision",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "request_vote_higher_term_resets_prior_vote_before_decision",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3274,8 +3274,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::request_vote_higher_term_updates_term_even_when_candidate_log_is_behind",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::request_vote_higher_term_updates_term_even_when_candidate_log_is_behind",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "request_vote_higher_term_updates_term_even_when_candidate_log_is_behind",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3283,8 +3283,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_hard_state_membership_and_snapshot_transport_are_exposed",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_hard_state_membership_and_snapshot_transport_are_exposed",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_hard_state_membership_and_snapshot_transport_are_exposed",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3292,8 +3292,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_install_snapshot_request_carries_external_snapshot_reference",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_install_snapshot_request_carries_external_snapshot_reference",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_install_snapshot_request_carries_external_snapshot_reference",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3301,8 +3301,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::snapshot_transfer_policy_streams_small_snapshots_to_peer",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::snapshot_transfer_policy_streams_small_snapshots_to_peer",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "snapshot_transfer_policy_streams_small_snapshots_to_peer",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3310,8 +3310,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::snapshot_transfer_policy_requires_external_ref_for_large_snapshot",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::snapshot_transfer_policy_requires_external_ref_for_large_snapshot",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "snapshot_transfer_policy_requires_external_ref_for_large_snapshot",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3319,8 +3319,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::leader_snapshot_upload_records_meta_and_bootstraps_replica_from_uri",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::leader_snapshot_upload_records_meta_and_bootstraps_replica_from_uri",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "leader_snapshot_upload_records_meta_and_bootstraps_replica_from_uri",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3328,8 +3328,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::external_snapshot_bootstrap_rejects_stale_local_replica_before_download",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::external_snapshot_bootstrap_rejects_stale_local_replica_before_download",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "external_snapshot_bootstrap_rejects_stale_local_replica_before_download",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3337,8 +3337,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::http_raft_transport_sends_append_vote_and_snapshot_over_tcp",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::http_raft_transport_sends_append_vote_and_snapshot_over_tcp",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "http_raft_transport_sends_append_vote_and_snapshot_over_tcp",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3346,8 +3346,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::streaming_snapshot_chunks_install_only_after_all_chunks_arrive",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::streaming_snapshot_chunks_install_only_after_all_chunks_arrive",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "streaming_snapshot_chunks_install_only_after_all_chunks_arrive",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3355,8 +3355,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_snapshot_transport_rejects_stale_term_before_install",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_snapshot_transport_rejects_stale_term_before_install",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_snapshot_transport_rejects_stale_term_before_install",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3364,8 +3364,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_snapshot_chunk_transport_rejects_stale_term_before_buffering",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_snapshot_chunk_transport_rejects_stale_term_before_buffering",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_snapshot_chunk_transport_rejects_stale_term_before_buffering",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3373,8 +3373,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::joint_consensus_requires_old_and_new_majorities_before_commit_or_write",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::joint_consensus_requires_old_and_new_majorities_before_commit_or_write",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "joint_consensus_requires_old_and_new_majorities_before_commit_or_write",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3382,8 +3382,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::joint_consensus_state_survives_wal_restore_and_still_requires_both_majorities",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::joint_consensus_state_survives_wal_restore_and_still_requires_both_majorities",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "joint_consensus_state_survives_wal_restore_and_still_requires_both_majorities",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3391,8 +3391,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_rpc_runtime_retries_transport_errors_and_releases_inflight",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_rpc_runtime_retries_transport_errors_and_releases_inflight",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_rpc_runtime_retries_transport_errors_and_releases_inflight",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3400,8 +3400,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_rpc_runtime_attaches_auth_and_deadline_metadata",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_rpc_runtime_attaches_auth_and_deadline_metadata",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_rpc_runtime_attaches_auth_and_deadline_metadata",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3409,8 +3409,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_scheduler_randomizes_election_timeout_and_emits_heartbeats",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_scheduler_randomizes_election_timeout_and_emits_heartbeats",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_scheduler_randomizes_election_timeout_and_emits_heartbeats",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3418,8 +3418,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::partition_chaos_majority_side_continues_and_healed_replica_catches_up",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::partition_chaos_majority_side_continues_and_healed_replica_catches_up",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "partition_chaos_majority_side_continues_and_healed_replica_catches_up",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3427,8 +3427,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::distributed_propose_does_not_wait_for_failed_followers_after_quorum",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::distributed_propose_does_not_wait_for_failed_followers_after_quorum",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "distributed_propose_does_not_wait_for_failed_followers_after_quorum",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3436,8 +3436,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::distributed_raft_readiness_reports_remaining_production_blockers",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::distributed_raft_readiness_reports_remaining_production_blockers",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "distributed_raft_readiness_reports_remaining_production_blockers",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3445,8 +3445,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_openraft_rollout_readiness_reports_real_process_rollout_evidence",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_openraft_rollout_readiness_reports_real_process_rollout_evidence",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_openraft_rollout_readiness_reports_real_process_rollout_evidence",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3454,8 +3454,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_atomic_apply_readiness_covers_data_node_atomic_durability",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_atomic_apply_readiness_covers_data_node_atomic_durability",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_atomic_apply_readiness_covers_data_node_atomic_durability",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3463,8 +3463,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_metaserver_membership_readiness_reports_real_scheduler_execution",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_metaserver_membership_readiness_reports_real_scheduler_execution",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_metaserver_membership_readiness_reports_real_scheduler_execution",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3472,8 +3472,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_transport_security_readiness_covers_service_mtls",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_transport_security_readiness_covers_service_mtls",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_transport_security_readiness_covers_service_mtls",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3481,8 +3481,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_external_chaos_readiness_covers_external_faults",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_external_chaos_readiness_covers_external_faults",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_external_chaos_readiness_covers_external_faults",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3490,8 +3490,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::local_raft_deployment_mode_is_rejected",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::local_raft_deployment_mode_is_rejected",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "local_raft_deployment_mode_is_rejected",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3499,8 +3499,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::production_raft_mode_uses_openraft_ready_path_when_adapter_is_enabled",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::production_raft_mode_uses_openraft_ready_path_when_adapter_is_enabled",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "production_raft_mode_uses_openraft_ready_path_when_adapter_is_enabled",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3508,8 +3508,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::production_raft_runtime_validates_security_timer_and_chaos_contracts",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::production_raft_runtime_validates_security_timer_and_chaos_contracts",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "production_raft_runtime_validates_security_timer_and_chaos_contracts",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3517,8 +3517,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::production_raft_mtls_requires_readable_nonempty_files",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::production_raft_mtls_requires_readable_nonempty_files",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "production_raft_mtls_requires_readable_nonempty_files",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3526,8 +3526,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::production_raft_security_env_selects_mtls_runtime_mode",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::production_raft_security_env_selects_mtls_runtime_mode",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "production_raft_security_env_selects_mtls_runtime_mode",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3535,8 +3535,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_security_and_external_chaos_readiness_are_implemented",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_security_and_external_chaos_readiness_are_implemented",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_security_and_external_chaos_readiness_are_implemented",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3544,8 +3544,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::production_raft_runtime_replicates_over_separate_http_nodes",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::production_raft_runtime_replicates_over_separate_http_nodes",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "production_raft_runtime_replicates_over_separate_http_nodes",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3553,8 +3553,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_replica_read_rejects_lagging_follower_and_succeeds_after_catchup",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_replica_read_rejects_lagging_follower_and_succeeds_after_catchup",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_replica_read_rejects_lagging_follower_and_succeeds_after_catchup",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3562,8 +3562,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_can_elect_new_leader_and_continue",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_can_elect_new_leader_and_continue",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_can_elect_new_leader_and_continue",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3571,8 +3571,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_tick_election_waits_for_timeout_and_prevotes_before_promotion",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_tick_election_waits_for_timeout_and_prevotes_before_promotion",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_tick_election_waits_for_timeout_and_prevotes_before_promotion",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3580,8 +3580,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_prevote_rejects_candidate_without_quorum",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_prevote_rejects_candidate_without_quorum",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_prevote_rejects_candidate_without_quorum",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3589,8 +3589,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_status_read_index_and_transfer_leader_match_engine_control_shape",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_status_read_index_and_transfer_leader_match_engine_control_shape",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_status_read_index_and_transfer_leader_match_engine_control_shape",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3598,8 +3598,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_leader_lease_expiry_blocks_linearizable_reads_and_writes_until_heartbeat",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_leader_lease_expiry_blocks_linearizable_reads_and_writes_until_heartbeat",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_leader_lease_expiry_blocks_linearizable_reads_and_writes_until_heartbeat",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3607,8 +3607,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_config_matches_cpp_defaults_and_validates_required_limits",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_config_matches_cpp_defaults_and_validates_required_limits",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_config_matches_cpp_defaults_and_validates_required_limits",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3616,8 +3616,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_config_rejects_oversized_log_entries_and_prohibited_elections",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_config_rejects_oversized_log_entries_and_prohibited_elections",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_config_rejects_oversized_log_entries_and_prohibited_elections",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3625,8 +3625,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_chunks_large_sequence_add_under_default_entry_limit",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_chunks_large_sequence_add_under_default_entry_limit",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_chunks_large_sequence_add_under_default_entry_limit",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3634,8 +3634,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::distributed_raft_chunks_large_sequence_add_under_default_entry_limit",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::distributed_raft_chunks_large_sequence_add_under_default_entry_limit",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "distributed_raft_chunks_large_sequence_add_under_default_entry_limit",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3643,8 +3643,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_read_options_enforce_leader_and_follower_read_paths",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_read_options_enforce_leader_and_follower_read_paths",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_read_options_enforce_leader_and_follower_read_paths",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3652,8 +3652,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::data_raft_read_policy_matches_cpp_partition_manager_modes",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::data_raft_read_policy_matches_cpp_partition_manager_modes",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "data_raft_read_policy_matches_cpp_partition_manager_modes",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3661,8 +3661,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_read_index_and_transfer_reject_lagging_replica",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_read_index_and_transfer_reject_lagging_replica",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_read_index_and_transfer_reject_lagging_replica",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3670,8 +3670,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_wait_for_applied_index_matches_cpp_backend_contract",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_wait_for_applied_index_matches_cpp_backend_contract",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_wait_for_applied_index_matches_cpp_backend_contract",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3679,8 +3679,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_apply_health_reports_commit_to_apply_lag",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_apply_health_reports_commit_to_apply_lag",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_apply_health_reports_commit_to_apply_lag",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3688,8 +3688,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_apply_health_excludes_dead_replicas_behind_leader_commit",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_apply_health_excludes_dead_replicas_behind_leader_commit",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_apply_health_excludes_dead_replicas_behind_leader_commit",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3697,8 +3697,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::secondary_is_promoted_automatically_when_primary_is_down",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::secondary_is_promoted_automatically_when_primary_is_down",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "secondary_is_promoted_automatically_when_primary_is_down",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3706,8 +3706,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::scale_up_adds_caught_up_replica",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::scale_up_adds_caught_up_replica",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "scale_up_adds_caught_up_replica",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3715,8 +3715,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::learner_and_witness_roles_match_cpp_membership_shape",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::learner_and_witness_roles_match_cpp_membership_shape",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "learner_and_witness_roles_match_cpp_membership_shape",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3724,8 +3724,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::learner_does_not_count_for_majority_but_witness_does",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::learner_does_not_count_for_majority_but_witness_does",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "learner_does_not_count_for_majority_but_witness_does",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3733,8 +3733,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::replica_roles_survive_wal_restore",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::replica_roles_survive_wal_restore",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "replica_roles_survive_wal_restore",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3742,8 +3742,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::replication_health_reports_lag_and_heartbeat_catches_up_secondary",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::replication_health_reports_lag_and_heartbeat_catches_up_secondary",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "replication_health_reports_lag_and_heartbeat_catches_up_secondary",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3751,8 +3751,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::bounded_replica_catchup_replays_limited_log_entries_per_loop",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::bounded_replica_catchup_replays_limited_log_entries_per_loop",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "bounded_replica_catchup_replays_limited_log_entries_per_loop",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3760,8 +3760,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::safe_scale_up_adds_replica_only_after_catchup",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::safe_scale_up_adds_replica_only_after_catchup",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "safe_scale_up_adds_replica_only_after_catchup",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3769,8 +3769,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::safe_membership_change_adds_voter_through_joint_consensus",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::safe_membership_change_adds_voter_through_joint_consensus",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "safe_membership_change_adds_voter_through_joint_consensus",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3778,8 +3778,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::safe_membership_change_removes_leader_after_caught_up_successor_exists",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::safe_membership_change_removes_leader_after_caught_up_successor_exists",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "safe_membership_change_removes_leader_after_caught_up_successor_exists",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3787,8 +3787,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::safe_membership_change_replaces_voter_and_rejects_invalid_targets",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::safe_membership_change_replaces_voter_and_rejects_invalid_targets",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "safe_membership_change_replaces_voter_and_rejects_invalid_targets",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3796,8 +3796,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::topology_membership_planner_maps_metaserver_replicas_to_raft_voters",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::topology_membership_planner_maps_metaserver_replicas_to_raft_voters",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "topology_membership_planner_maps_metaserver_replicas_to_raft_voters",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3805,8 +3805,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::topology_membership_planner_reports_noop_and_rejects_bad_servers",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::topology_membership_planner_reports_noop_and_rejects_bad_servers",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "topology_membership_planner_reports_noop_and_rejects_bad_servers",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3814,8 +3814,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::topology_membership_apply_updates_data_raft_voters",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::topology_membership_apply_updates_data_raft_voters",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "topology_membership_apply_updates_data_raft_voters",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3823,8 +3823,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::topology_membership_apply_is_noop_when_voters_match",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::topology_membership_apply_is_noop_when_voters_match",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "topology_membership_apply_is_noop_when_voters_match",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3832,8 +3832,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::scale_down_removes_replica_and_continues_with_majority",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::scale_down_removes_replica_and_continues_with_majority",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "scale_down_removes_replica_and_continues_with_majority",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3841,8 +3841,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::safe_scale_down_rejects_quorum_loss_and_promotes_caught_up_leader_successor",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::safe_scale_down_rejects_quorum_loss_and_promotes_caught_up_leader_successor",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "safe_scale_down_rejects_quorum_loss_and_promotes_caught_up_leader_successor",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3850,8 +3850,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::primary_crash_promotes_caught_up_secondary_and_old_primary_recovers",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::primary_crash_promotes_caught_up_secondary_and_old_primary_recovers",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "primary_crash_promotes_caught_up_secondary_and_old_primary_recovers",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3859,8 +3859,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_snapshot_bootstraps_lagging_data_replica_then_catches_up_logs",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_snapshot_bootstraps_lagging_data_replica_then_catches_up_logs",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_snapshot_bootstraps_lagging_data_replica_then_catches_up_logs",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3868,8 +3868,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_snapshot_lifecycle_report_installs_and_replays_tail",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_snapshot_lifecycle_report_installs_and_replays_tail",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_snapshot_lifecycle_report_installs_and_replays_tail",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3877,8 +3877,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_snapshot_lifecycle_report_rolls_back_stale_snapshot",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_snapshot_lifecycle_report_rolls_back_stale_snapshot",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_snapshot_lifecycle_report_rolls_back_stale_snapshot",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3886,8 +3886,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_snapshot_only_replica_keeps_commit_index_after_empty_heartbeat",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_snapshot_only_replica_keeps_commit_index_after_empty_heartbeat",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_snapshot_only_replica_keeps_commit_index_after_empty_heartbeat",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3895,8 +3895,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::append_entries_matches_snapshot_floor_after_leader_compaction",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::append_entries_matches_snapshot_floor_after_leader_compaction",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "append_entries_matches_snapshot_floor_after_leader_compaction",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3904,8 +3904,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::add_node_after_leader_snapshot_installs_snapshot_and_tail",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::add_node_after_leader_snapshot_installs_snapshot_and_tail",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "add_node_after_leader_snapshot_installs_snapshot_and_tail",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3913,8 +3913,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::append_entries_ignores_entries_at_or_below_snapshot_floor",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::append_entries_ignores_entries_at_or_below_snapshot_floor",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "append_entries_ignores_entries_at_or_below_snapshot_floor",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3922,8 +3922,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::data_raft_snapshot_trigger_compacts_applied_log_bytes",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::data_raft_snapshot_trigger_compacts_applied_log_bytes",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "data_raft_snapshot_trigger_compacts_applied_log_bytes",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3931,8 +3931,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_snapshot_cannot_overwrite_newer_data_state",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_snapshot_cannot_overwrite_newer_data_state",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_snapshot_cannot_overwrite_newer_data_state",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3940,8 +3940,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_election_does_not_depend_on_snapshot_availability",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_election_does_not_depend_on_snapshot_availability",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_election_does_not_depend_on_snapshot_availability",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3949,8 +3949,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::metaserver_raft_replicates_shard_location_metadata",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::metaserver_raft_replicates_shard_location_metadata",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "metaserver_raft_replicates_shard_location_metadata",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3958,8 +3958,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::metaserver_raft_replays_scheduler_state_and_cpp_partition_set_topology",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::metaserver_raft_replays_scheduler_state_and_cpp_partition_set_topology",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "metaserver_raft_replays_scheduler_state_and_cpp_partition_set_topology",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3967,8 +3967,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::metaserver_raft_replicates_full_metadata_mutation_api",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::metaserver_raft_replicates_full_metadata_mutation_api",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "metaserver_raft_replicates_full_metadata_mutation_api",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3976,8 +3976,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::metaserver_raft_freeze_stale_server_is_replicated_mutation",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::metaserver_raft_freeze_stale_server_is_replicated_mutation",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "metaserver_raft_freeze_stale_server_is_replicated_mutation",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3985,8 +3985,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::production_meta_raft_runtime_ticks_failover_and_failure_detection",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::production_meta_raft_runtime_ticks_failover_and_failure_detection",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "production_meta_raft_runtime_ticks_failover_and_failure_detection",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -3994,8 +3994,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::production_meta_raft_runtime_matches_cpp_multinode_control_and_fault_contract",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::production_meta_raft_runtime_matches_cpp_multinode_control_and_fault_contract",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "production_meta_raft_runtime_matches_cpp_multinode_control_and_fault_contract",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -4003,8 +4003,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::metaserver_owns_data_raft_membership_workflow",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::metaserver_owns_data_raft_membership_workflow",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "metaserver_owns_data_raft_membership_workflow",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -4012,8 +4012,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::production_raft_readiness_requires_openraft_process_and_meta_owned_membership_evidence",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::production_raft_readiness_requires_openraft_process_and_meta_owned_membership_evidence",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "production_raft_readiness_requires_openraft_process_and_meta_owned_membership_evidence",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -4021,8 +4021,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::meta_owned_membership_report_covers_networked_scheduler_contract",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::meta_owned_membership_report_covers_networked_scheduler_contract",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "meta_owned_membership_report_covers_networked_scheduler_contract",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -4030,8 +4030,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::metaserver_membership_workflow_requires_meta_majority",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::metaserver_membership_workflow_requires_meta_majority",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "metaserver_membership_workflow_requires_meta_majority",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -4039,8 +4039,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::metaserver_raft_mutation_api_rejects_without_majority",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::metaserver_raft_mutation_api_rejects_without_majority",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "metaserver_raft_mutation_api_rejects_without_majority",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -4048,8 +4048,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::metaserver_raft_can_read_from_any_live_committed_replica",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::metaserver_raft_can_read_from_any_live_committed_replica",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "metaserver_raft_can_read_from_any_live_committed_replica",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -4057,8 +4057,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::metaserver_raft_supports_promotion_and_membership_changes",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::metaserver_raft_supports_promotion_and_membership_changes",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "metaserver_raft_supports_promotion_and_membership_changes",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -4066,8 +4066,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::metaserver_raft_health_catchup_safe_scale_and_failover_work",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::metaserver_raft_health_catchup_safe_scale_and_failover_work",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "metaserver_raft_health_catchup_safe_scale_and_failover_work",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -4075,8 +4075,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::metaserver_raft_apply_health_reports_commit_to_apply_lag",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::metaserver_raft_apply_health_reports_commit_to_apply_lag",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "metaserver_raft_apply_health_reports_commit_to_apply_lag",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -4084,8 +4084,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::metaserver_raft_membership_plan_and_apply_match_data_raft_shape",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::metaserver_raft_membership_plan_and_apply_match_data_raft_shape",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "metaserver_raft_membership_plan_and_apply_match_data_raft_shape",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -4093,8 +4093,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::metaserver_raft_membership_apply_rejects_noop_and_quorum_loss",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::metaserver_raft_membership_apply_rejects_noop_and_quorum_loss",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "metaserver_raft_membership_apply_rejects_noop_and_quorum_loss",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -4102,8 +4102,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::metaserver_raft_status_read_index_and_transfer_leader_work",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::metaserver_raft_status_read_index_and_transfer_leader_work",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "metaserver_raft_status_read_index_and_transfer_leader_work",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -4111,8 +4111,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::metaserver_raft_promotes_follower_after_leader_failure_and_keeps_metadata_available",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::metaserver_raft_promotes_follower_after_leader_failure_and_keeps_metadata_available",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "metaserver_raft_promotes_follower_after_leader_failure_and_keeps_metadata_available",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -4120,8 +4120,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::metaserver_raft_rejects_reads_and_writes_without_majority",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::metaserver_raft_rejects_reads_and_writes_without_majority",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "metaserver_raft_rejects_reads_and_writes_without_majority",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -4129,8 +4129,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::metaserver_snapshot_bootstraps_lagging_meta_replica",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::metaserver_snapshot_bootstraps_lagging_meta_replica",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "metaserver_snapshot_bootstraps_lagging_meta_replica",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -4138,8 +4138,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::metaserver_raft_snapshot_trigger_compacts_applied_log_bytes",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::metaserver_raft_snapshot_trigger_compacts_applied_log_bytes",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "metaserver_raft_snapshot_trigger_compacts_applied_log_bytes",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -4147,8 +4147,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::metaserver_snapshot_floor_survives_failover_and_add_node",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::metaserver_snapshot_floor_survives_failover_and_add_node",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "metaserver_snapshot_floor_survives_failover_and_add_node",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -4156,8 +4156,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::metaserver_snapshot_cannot_overwrite_newer_meta_state",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::metaserver_snapshot_cannot_overwrite_newer_meta_state",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "metaserver_snapshot_cannot_overwrite_newer_meta_state",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -4165,8 +4165,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::local_raft_wal_persists_hard_state_membership_and_entries",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::local_raft_wal_persists_hard_state_membership_and_entries",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "local_raft_wal_persists_hard_state_membership_and_entries",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -4174,8 +4174,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::local_raft_wal_recovers_latest_valid_record_and_truncates_corrupt_tail",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::local_raft_wal_recovers_latest_valid_record_and_truncates_corrupt_tail",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "local_raft_wal_recovers_latest_valid_record_and_truncates_corrupt_tail",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -4183,8 +4183,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::local_raft_wal_segments_roll_retain_and_recover_latest_state",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::local_raft_wal_segments_roll_retain_and_recover_latest_state",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "local_raft_wal_segments_roll_retain_and_recover_latest_state",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -4192,8 +4192,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::local_raft_wal_segment_recovery_truncates_corrupt_tail_only",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::local_raft_wal_segment_recovery_truncates_corrupt_tail_only",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "local_raft_wal_segment_recovery_truncates_corrupt_tail_only",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -4201,8 +4201,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::raft_cluster_recovers_committed_state_from_local_wal",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_cluster_recovers_committed_state_from_local_wal",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "raft_cluster_recovers_committed_state_from_local_wal",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -4210,8 +4210,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::local_recovery_proof_covers_raft_wal_oplog_indexlog_and_pages",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::local_recovery_proof_covers_raft_wal_oplog_indexlog_and_pages",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "local_recovery_proof_covers_raft_wal_oplog_indexlog_and_pages",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -4219,8 +4219,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::wal_backed_raft_cluster_auto_persists_commits_leadership_and_membership",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::wal_backed_raft_cluster_auto_persists_commits_leadership_and_membership",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "wal_backed_raft_cluster_auto_persists_commits_leadership_and_membership",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -4228,8 +4228,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::wal_backed_raft_cluster_compacts_wal_tail_but_recovers_latest_state",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::wal_backed_raft_cluster_compacts_wal_tail_but_recovers_latest_state",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "wal_backed_raft_cluster_compacts_wal_tail_but_recovers_latest_state",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -4237,8 +4237,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::wal_backed_installed_snapshot_survives_restart_without_old_log_entries",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::wal_backed_installed_snapshot_survives_restart_without_old_log_entries",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "wal_backed_installed_snapshot_survives_restart_without_old_log_entries",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -4246,8 +4246,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::wal_backed_apply_snapshot_fence_survives_snapshot_restart",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::wal_backed_apply_snapshot_fence_survives_snapshot_restart",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "wal_backed_apply_snapshot_fence_survives_snapshot_restart",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -4255,8 +4255,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::wal_recovery_rejects_inconsistent_apply_snapshot_fence",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::wal_recovery_rejects_inconsistent_apply_snapshot_fence",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "wal_recovery_rejects_inconsistent_apply_snapshot_fence",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -4264,8 +4264,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::wal_backed_storage_apply_fence_survives_snapshot_restart",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::wal_backed_storage_apply_fence_survives_snapshot_restart",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "wal_backed_storage_apply_fence_survives_snapshot_restart",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -4273,8 +4273,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::wal_recovery_rejects_missing_storage_apply_fence",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::wal_recovery_rejects_missing_storage_apply_fence",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "wal_recovery_rejects_missing_storage_apply_fence",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -4282,8 +4282,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::wal_recovery_rejects_corrupt_storage_apply_fence",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::wal_recovery_rejects_corrupt_storage_apply_fence",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "wal_recovery_rejects_corrupt_storage_apply_fence",
       "family": "Raft",
       "classification": "move_to_shared",
@@ -4291,8 +4291,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft.rs::wal_recovery_rejects_ahead_of_storage_apply_fence",
-      "file": "crates/temporalstore-rust/src/raft.rs",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::wal_recovery_rejects_ahead_of_storage_apply_fence",
+      "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "wal_recovery_rejects_ahead_of_storage_apply_fence",
       "family": "Raft",
       "classification": "move_to_shared",
