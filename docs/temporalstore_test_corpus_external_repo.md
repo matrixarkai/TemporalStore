@@ -45,6 +45,22 @@ The Rust repository should run its native adapter against the same external corp
 
 The lightweight C++ MatrixArk context contract runner now lives in `TemporalStoreTestCorpus/runners/cpp/`. This repo keeps only `tools/run_cpp_unified_context_contract.sh`, a consumer wrapper that resolves the external corpus and delegates to the shared runner.
 
+## Removed Local Duplicate Tests
+
+The C++ string/hash extension gtests were migrated into executable shared cases
+in `TemporalStoreTestCorpus` and removed from this repo:
+
+- `src/extension/string/test.cc` -> `string_set_get_nx_xx_flags`
+- `src/extension/hash/test.cc` -> `hash_get_multi_get_missing_and_existing_fields`,
+  `hash_incrby_invalid_and_overflow_edges`, and
+  `hash_getall_len_delete_lifecycle`
+
+The removal manifest is maintained in the shared repo:
+
+```text
+TemporalStoreTestCorpus/cases/cpp/cpp_extension_local_test_removal_manifest.json
+```
+
 ## Contract
 
 New cross-language product behavior should be added to `TemporalStoreTestCorpus` first. Local C++ or Rust tests should remain only for implementation internals, transport-specific code, or temporary migration gaps.
