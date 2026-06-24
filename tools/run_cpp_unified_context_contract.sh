@@ -3,14 +3,13 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CORPUS="${1:-$(python3 "${ROOT}/tools/resolve_temporalstore_test_corpus.py")}"
-BUILD_DIR="${TMPDIR:-/tmp}/temporalstore_cpp_unified_$$"
-BIN="${BUILD_DIR}/cpp_unified_context_contract"
+CORPUS="$(python3 "${ROOT}/tools/resolve_temporalstore_test_corpus.py" --corpus "${CORPUS}")"
+CORPUS_REPO="$(cd "$(dirname "${CORPUS}")/.." && pwd)"
+RUNNER="${CORPUS_REPO}/runners/cpp/run_cpp_unified_context_contract.sh"
 
-mkdir -p "${BUILD_DIR}"
-trap 'rm -rf "${BUILD_DIR}"' EXIT
+if [[ ! -x "${RUNNER}" ]]; then
+  echo "missing shared C++ context runner: ${RUNNER}" >&2
+  exit 2
+fi
 
-g++ -std=c++17 -Wall -Wextra -Werror \
-  "${ROOT}/tools/cpp_unified_context_contract.cc" \
-  -o "${BIN}"
-
-"${BIN}" "${CORPUS}"
+exec "${RUNNER}" "${CORPUS}"
