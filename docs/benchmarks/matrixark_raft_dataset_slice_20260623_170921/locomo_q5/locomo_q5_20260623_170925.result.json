@@ -1,0 +1,1862 @@
+[
+  {
+    "answer": "7 May 2023",
+    "answer_bearing_ref": 4990962575142115745,
+    "answer_bearing_tokens": 22,
+    "answer_hit": false,
+    "answer_support_hit": true,
+    "answer_support_score": 1.0,
+    "category": 2,
+    "context_pack_id": "6845472482023666084",
+    "evidence_hit": true,
+    "failure_reason": "",
+    "latency_ms": 232.05,
+    "prediction": "user: D1:3 [1:56 pm on 8 May, 2023] Caroline: I went to a LGBTQ support group yesterday and it was so powerful.",
+    "question": "When did Caroline go to the LGBTQ support group?",
+    "question_id": "locomo-0-0",
+    "question_type": "date",
+    "reader_model": "matrixark-context-substring-v1",
+    "reader_provider": "deterministic",
+    "selected_ref_count": 26,
+    "selected_refs": [
+      {
+        "business_score": 0.82,
+        "embedding_score": 0.609272,
+        "event_type": "preference_update",
+        "final_score": 0.747218,
+        "keyword_score": 4,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_9"
+          ]
+        },
+        "node_hash": 3899725839218586765,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_9"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.69255,
+        "packing_policy": "date",
+        "packing_score": 1.0,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 4415359920510686471,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 4034548538253283534,
+          "session_id": "locomo-0-session-9-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.747218,
+        "sparse_score": 0.5714285714285714,
+        "text": "assistant: D9:10 [2:31 pm on 17 July, 2023] Caroline: Seeing my mentee's face light up when they saw the support was the best! Such a special moment.",
+        "time_score": 0.999427,
+        "token_estimate": 30,
+        "updated_at_ms": 1782259770334
+      },
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.43073,
+        "event_type": "confirmation",
+        "final_score": 0.736074,
+        "keyword_score": 4,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_5"
+          ]
+        },
+        "node_hash": 7414468394327862334,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_5"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.643451,
+        "packing_policy": "date",
+        "packing_score": 1.0,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 4454048655681225306,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 1855235968221031844,
+          "session_id": "locomo-0-session-5-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.736074,
+        "sparse_score": 0.5714285714285714,
+        "text": "assistant: D5:2 [1:36 pm on 3 July, 2023] Melanie: Wow, Caroline, sounds like the parade was an awesome experience! It's great to see the love and support for the LGBTQ+ community. Congrats! Has this experience influenced your goals at all?",
+        "time_score": 0.999334,
+        "token_estimate": 43,
+        "updated_at_ms": 1782259768549
+      },
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.489116,
+        "event_type": "confirmation",
+        "final_score": 0.711006,
+        "keyword_score": 3,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_18"
+          ]
+        },
+        "node_hash": 8742640077328332563,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_18"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.609507,
+        "packing_policy": "date",
+        "packing_score": 0.991006,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 6822912959766042026,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 3505606258580636836,
+          "session_id": "locomo-0-session-18-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.711006,
+        "sparse_score": 0.42857142857142855,
+        "text": "assistant: D18:6 [6:55 pm on 20 October, 2023] Caroline: The kids look so cute, Mel! I bet they bring lots of joy. How did they handle the accident?",
+        "time_score": 0.999756,
+        "token_estimate": 30,
+        "updated_at_ms": 1782259774522
+      },
+      {
+        "business_score": 0.82,
+        "embedding_score": 0.4222,
+        "event_type": "preference_update",
+        "final_score": 0.709151,
+        "keyword_score": 4,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_10"
+          ]
+        },
+        "node_hash": 7758789929434611631,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_10"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.641105,
+        "packing_policy": "date",
+        "packing_score": 0.989151,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 7302848056152873070,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 7989777992485242108,
+          "session_id": "locomo-0-session-10-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.709151,
+        "sparse_score": 0.5714285714285714,
+        "text": "user: D10:5 [8:56 pm on 20 July, 2023] Caroline: Thanks, Melanie! It's awesome to have our own platform to be ourselves and support others' rights. Our group, 'Connected LGBTQ Activists', is made of all kinds of people investing in positive changes. We have regular meetings, plan events and campaigns, to get together and support each other.",
+        "time_score": 0.999443,
+        "token_estimate": 59,
+        "updated_at_ms": 1782259770621
+      },
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.442792,
+        "event_type": "confirmation",
+        "final_score": 0.701562,
+        "keyword_score": 3,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_15"
+          ]
+        },
+        "node_hash": 7018623604981261271,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_15"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.596768,
+        "packing_policy": "date",
+        "packing_score": 0.981562,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 47954165904597685,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 9116214120449383409,
+          "session_id": "locomo-0-session-15-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.701562,
+        "sparse_score": 0.42857142857142855,
+        "text": "user: D15:5 [3:19 pm on 28 August, 2023] Caroline: I loved it. It was awesome to see how strong the young people were, with all the challenges they face. I felt fulfilled guiding and supporting them. I even got to let them know they're not alone by sharing my story. Such a powerful, emotional experience. Image: a photo of a table with a black table cloth and a group of people",
+        "time_score": 0.999615,
+        "token_estimate": 74,
+        "updated_at_ms": 1782259773142
+      },
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.434523,
+        "event_type": "confirmation",
+        "final_score": 0.699896,
+        "keyword_score": 3,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_18"
+          ]
+        },
+        "node_hash": 8742640077328332563,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_18"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.594494,
+        "packing_policy": "date",
+        "packing_score": 0.979896,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 2102383223333547494,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 3505606258580636836,
+          "session_id": "locomo-0-session-18-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.699896,
+        "sparse_score": 0.42857142857142855,
+        "text": "user: D18:17 [6:55 pm on 20 October, 2023] Melanie: Thanks, Caroline! Yup, we just did it yesterday! The kids loved it and it was a nice way to relax after the road trip.",
+        "time_score": 0.999756,
+        "token_estimate": 35,
+        "updated_at_ms": 1782259774522
+      },
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.226133,
+        "event_type": "confirmation",
+        "final_score": 0.694425,
+        "keyword_score": 4,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_1"
+          ]
+        },
+        "node_hash": 4561420357495403229,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_1"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.587187,
+        "packing_policy": "date",
+        "packing_score": 0.974425,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 4990962575142115745,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 8787842515126764050,
+          "session_id": "locomo-0-session-1-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.694425,
+        "sparse_score": 0.5714285714285714,
+        "text": "user: D1:3 [1:56 pm on 8 May, 2023] Caroline: I went to a LGBTQ support group yesterday and it was so powerful.",
+        "time_score": 0.999221,
+        "token_estimate": 24,
+        "updated_at_ms": 1782259766007
+      },
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.206835,
+        "event_type": "confirmation",
+        "final_score": 0.690498,
+        "keyword_score": 4,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_1"
+          ]
+        },
+        "node_hash": 4561420357495403229,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_1"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.58188,
+        "packing_policy": "date",
+        "packing_score": 0.970498,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 7695927424191822523,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 8787842515126764050,
+          "session_id": "locomo-0-session-1-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.690498,
+        "sparse_score": 0.5714285714285714,
+        "text": "user: D1:7 [1:56 pm on 8 May, 2023] Caroline: The support group has made me feel accepted and given me courage to embrace myself.",
+        "time_score": 0.999221,
+        "token_estimate": 26,
+        "updated_at_ms": 1782259766007
+      }
+    ],
+    "used_context_tokens": 1200
+  },
+  {
+    "answer": 2022,
+    "answer_bearing_ref": 4086113666403282971,
+    "answer_bearing_tokens": 14,
+    "answer_hit": false,
+    "answer_support_hit": false,
+    "answer_support_score": 0.142064,
+    "category": 2,
+    "context_pack_id": "4111189274818847741",
+    "evidence_hit": false,
+    "failure_reason": "evidence_miss_with_context",
+    "latency_ms": 221.964,
+    "prediction": "assistant: D14:28 [1:33 pm on 25 August, 2023] Melanie: Wow, did you make that?",
+    "question": "When did Melanie paint a sunrise?",
+    "question_id": "locomo-0-1",
+    "question_type": "date",
+    "reader_model": "matrixark-context-substring-v1",
+    "reader_provider": "deterministic",
+    "selected_ref_count": 31,
+    "selected_refs": [
+      {
+        "business_score": 0.82,
+        "embedding_score": 0.545596,
+        "event_type": "preference_update",
+        "final_score": 0.689873,
+        "keyword_score": 2,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_13"
+          ]
+        },
+        "node_hash": 199525341573481323,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_13"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.615039,
+        "packing_policy": "date",
+        "packing_score": 0.969873,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 2027522019091489440,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 5498553064667825338,
+          "session_id": "locomo-0-session-13-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.689873,
+        "sparse_score": 0.4,
+        "text": "assistant: D13:8 [3:31 pm on 23 August, 2023] Melanie: Wow, that sounds great - I agree, they're awesome. Here's a photo of my horse painting I did recently. Image: a photo of a horse painted on a wooden wall",
+        "time_score": 0.999532,
+        "token_estimate": 42,
+        "updated_at_ms": 1782259772274
+      },
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.635086,
+        "event_type": "confirmation",
+        "final_score": 0.681507,
+        "keyword_score": 1,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_18"
+          ]
+        },
+        "node_hash": 8742640077328332563,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_18"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.569649,
+        "packing_policy": "date",
+        "packing_score": 0.961507,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 1178067850547309233,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 3505606258580636836,
+          "session_id": "locomo-0-session-18-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.681507,
+        "sparse_score": 0.2,
+        "text": "user: D18:7 [6:55 pm on 20 October, 2023] Melanie: Thanks! They were scared but we reassured them and explained their brother would be OK. They're tough kids.",
+        "time_score": 0.999727,
+        "token_estimate": 30,
+        "updated_at_ms": 1782259774522
+      },
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.614919,
+        "event_type": "confirmation",
+        "final_score": 0.677403,
+        "keyword_score": 1,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_18"
+          ]
+        },
+        "node_hash": 8742640077328332563,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_18"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.564103,
+        "packing_policy": "date",
+        "packing_score": 0.957403,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 4604772373124240659,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 3505606258580636836,
+          "session_id": "locomo-0-session-18-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.677403,
+        "sparse_score": 0.2,
+        "text": "user: D18:13 [6:55 pm on 20 October, 2023] Melanie: Thanks, Caroline. They're a real support. Appreciate them a lot.",
+        "time_score": 0.999727,
+        "token_estimate": 22,
+        "updated_at_ms": 1782259774522
+      },
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.322749,
+        "event_type": "confirmation",
+        "final_score": 0.669685,
+        "keyword_score": 2,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_1"
+          ]
+        },
+        "node_hash": 4561420357495403229,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_1"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.553756,
+        "packing_policy": "date",
+        "packing_score": 0.949685,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 8734679021749712874,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 8787842515126764050,
+          "session_id": "locomo-0-session-1-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.669685,
+        "sparse_score": 0.4,
+        "text": "assistant: D1:4 [1:56 pm on 8 May, 2023] Melanie: Wow, that's cool, Caroline! What happened that was so awesome? Did you hear any inspiring stories?",
+        "time_score": 0.999212,
+        "token_estimate": 28,
+        "updated_at_ms": 1782259766007
+      },
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.298807,
+        "event_type": "confirmation",
+        "final_score": 0.664854,
+        "keyword_score": 2,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_14"
+          ]
+        },
+        "node_hash": 216024232965201990,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_14"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.547172,
+        "packing_policy": "date",
+        "packing_score": 0.944854,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 7015723464801142064,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 4158356653129282643,
+          "session_id": "locomo-0-session-14-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.664854,
+        "sparse_score": 0.4,
+        "text": "assistant: D14:6 [1:33 pm on 25 August, 2023] Melanie: Wow Caroline, that looks amazing! Those colors are so vivid, it really looks like a real sunset. What gave you the idea to paint it?",
+        "time_score": 0.999552,
+        "token_estimate": 36,
+        "updated_at_ms": 1782259772557
+      },
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.288675,
+        "event_type": "confirmation",
+        "final_score": 0.662772,
+        "keyword_score": 2,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_8"
+          ]
+        },
+        "node_hash": 5463211510628538174,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_8"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.544386,
+        "packing_policy": "date",
+        "packing_score": 0.942772,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 1849350417455250455,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 905657696670374593,
+          "session_id": "locomo-0-session-8-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.662772,
+        "sparse_score": 0.4,
+        "text": "assistant: D8:18 [1:51 pm on 15 July, 2023] Melanie: Wow, looks awesome! Did you join in?",
+        "time_score": 0.999383,
+        "token_estimate": 18,
+        "updated_at_ms": 1782259769759
+      },
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.283981,
+        "event_type": "confirmation",
+        "final_score": 0.661858,
+        "keyword_score": 2,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_18"
+          ]
+        },
+        "node_hash": 8742640077328332563,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_18"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.543095,
+        "packing_policy": "date",
+        "packing_score": 0.941858,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 1502644489707403413,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 3505606258580636836,
+          "session_id": "locomo-0-session-18-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.661858,
+        "sparse_score": 0.4,
+        "text": "user: D18:3 [6:55 pm on 20 October, 2023] Melanie: Yeah, our trip got off to a bad start. I was really scared when we got into the accident. Thankfully, my son's ok and that was a reminder that life is precious and to cherish our family.",
+        "time_score": 0.999727,
+        "token_estimate": 49,
+        "updated_at_ms": 1782259774522
+      },
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.276027,
+        "event_type": "confirmation",
+        "final_score": 0.660238,
+        "keyword_score": 2,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_18"
+          ]
+        },
+        "node_hash": 8742640077328332563,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_18"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.540907,
+        "packing_policy": "date",
+        "packing_score": 0.940238,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 3439562379632406352,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 3505606258580636836,
+          "session_id": "locomo-0-session-18-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.660238,
+        "sparse_score": 0.4,
+        "text": "user: D18:1 [6:55 pm on 20 October, 2023] Melanie: Hey Caroline, that roadtrip this past weekend was insane! We were all freaked when my son got into an accident. We were so lucky he was okay. It was a real scary experience. Thankfully it's over now. What's been up since we last talked? Image: a photo of a car dashboard with a white cloth and a steering wheel",
+        "time_score": 0.999727,
+        "token_estimate": 72,
+        "updated_at_ms": 1782259774522
+      }
+    ],
+    "used_context_tokens": 1198
+  },
+  {
+    "answer": "Psychology, counseling certification",
+    "answer_bearing_ref": 8573229755908960334,
+    "answer_bearing_tokens": 6,
+    "answer_hit": false,
+    "answer_support_hit": false,
+    "answer_support_score": 0.333333,
+    "category": 3,
+    "context_pack_id": "5321664624705055767",
+    "evidence_hit": false,
+    "failure_reason": "evidence_miss_with_context",
+    "latency_ms": 139.676,
+    "prediction": "What motivated you to pursue counseling?",
+    "question": "What fields would Caroline be likely to pursue in her educaton?",
+    "question_id": "locomo-0-2",
+    "question_type": "fact",
+    "reader_model": "matrixark-context-substring-v1",
+    "reader_provider": "deterministic",
+    "selected_ref_count": 36,
+    "selected_refs": [
+      {
+        "business_score": 0.72,
+        "embedding_score": 0.342997,
+        "entity_name": "family_profile",
+        "entity_type": "family_profile",
+        "final_score": 0.705167,
+        "keyword_score": 2,
+        "metadata": {},
+        "node_hash": 7758789929434611631,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_10"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.626824,
+        "packing_policy": "fact",
+        "packing_score": 0.845167,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 6026925682164817190,
+        "ref_type": "entity",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 6544367432068600867,
+          "session_id": "locomo-0-session-10-b1",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.705167,
+        "sparse_score": 0.25,
+        "text": "family_profile: family_profile = standing on the beach at sunset user: D10:23 [8:56 pm on 20 July, 2023] Caroline: Wow, Melanie, what a beautiful moment",
+        "time_score": 1.0,
+        "token_estimate": 25,
+        "updated_at_ms": 1782259771088
+      },
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.587135,
+        "event_type": "confirmation",
+        "final_score": 0.699336,
+        "keyword_score": 1,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_18"
+          ]
+        },
+        "node_hash": 8742640077328332563,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_18"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.530212,
+        "packing_policy": "fact",
+        "packing_score": 0.839336,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 5886882166060403910,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 3505606258580636836,
+          "session_id": "locomo-0-session-18-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.699336,
+        "sparse_score": 0.125,
+        "text": "assistant: D18:18 [6:55 pm on 20 October, 2023] Caroline: Glad you got some R&R after the drive. Nature sure seems to refresh us, huh?",
+        "time_score": 1.0,
+        "token_estimate": 27,
+        "updated_at_ms": 1782259774522
+      },
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.363696,
+        "event_type": "confirmation",
+        "final_score": 0.68801,
+        "keyword_score": 2,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_5"
+          ]
+        },
+        "node_hash": 7414468394327862334,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_5"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.512516,
+        "packing_policy": "fact",
+        "packing_score": 0.82801,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 4558938577172733380,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 1855235968221031844,
+          "session_id": "locomo-0-session-5-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.68801,
+        "sparse_score": 0.25,
+        "text": "user: D5:5 [1:36 pm on 3 July, 2023] Caroline: Wow, Melanie! I'm getting creative too, just learning the piano. What made you try pottery?",
+        "time_score": 1.0,
+        "token_estimate": 27,
+        "updated_at_ms": 1782259768549
+      },
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.35921,
+        "event_type": "correction",
+        "final_score": 0.687221,
+        "keyword_score": 2,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_16"
+          ]
+        },
+        "node_hash": 5659523061160297572,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_16"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.511283,
+        "packing_policy": "fact",
+        "packing_score": 0.827221,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 7947770269541938730,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 7207781586759448951,
+          "session_id": "locomo-0-session-16-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.687221,
+        "sparse_score": 0.25,
+        "text": "assistant: D16:12 [12:09 am on 13 September, 2023] Melanie: Wow, Caroline! This painting is awesome. Love the red and blue. What gave you the idea?",
+        "time_score": 1.0,
+        "token_estimate": 27,
+        "updated_at_ms": 1782259773600
+      },
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.235702,
+        "entity_name": "correction",
+        "entity_type": "correction",
+        "final_score": 0.686284,
+        "keyword_score": 0,
+        "metadata": {},
+        "node_hash": 5659523061160297572,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_16"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.509818,
+        "packing_policy": "fact",
+        "packing_score": 0.826284,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 4520762274602519383,
+        "ref_type": "entity",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 7207781586759448951,
+          "session_id": "locomo-0-session-16-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.686284,
+        "sparse_score": 0.0,
+        "text": "correction: correction = them",
+        "time_score": 1.0,
+        "token_estimate": 3,
+        "updated_at_ms": 1782259773600
+      },
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.503952,
+        "event_type": "confirmation",
+        "final_score": 0.684696,
+        "keyword_score": 1,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_5"
+          ]
+        },
+        "node_hash": 7414468394327862334,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_5"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.507337,
+        "packing_policy": "fact",
+        "packing_score": 0.824696,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 7351312607206331292,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 1855235968221031844,
+          "session_id": "locomo-0-session-5-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.684696,
+        "sparse_score": 0.125,
+        "text": "assistant: D5:12 [1:36 pm on 3 July, 2023] Melanie: Thanks, Caroline! I'm excited to see where pottery takes me. Anything coming up you're looking forward to?",
+        "time_score": 1.0,
+        "token_estimate": 30,
+        "updated_at_ms": 1782259768549
+      },
+      {
+        "business_score": 0.82,
+        "embedding_score": 0.387298,
+        "event_type": "preference_update",
+        "final_score": 0.684164,
+        "keyword_score": 3,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_4"
+          ]
+        },
+        "node_hash": 8131761296981566472,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_4"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.562757,
+        "packing_policy": "fact",
+        "packing_score": 0.824164,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 8573229755908960334,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 3274232284006659769,
+          "session_id": "locomo-0-session-4-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.684164,
+        "sparse_score": 0.375,
+        "text": "assistant: D4:14 [10:37 am on 27 June, 2023] Melanie: Woah, Caroline, it sounds like you're doing some impressive work. It's inspiring to see your dedication to helping others. What motivated you to pursue counseling?",
+        "time_score": 1.0,
+        "token_estimate": 38,
+        "updated_at_ms": 1782259768172
+      },
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.338062,
+        "event_type": "confirmation",
+        "final_score": 0.683499,
+        "keyword_score": 2,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_15"
+          ]
+        },
+        "node_hash": 7018623604981261271,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_15"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.505467,
+        "packing_policy": "fact",
+        "packing_score": 0.823499,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 6068721032917540662,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 9116214120449383409,
+          "session_id": "locomo-0-session-15-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.683499,
+        "sparse_score": 0.25,
+        "text": "user: D15:1 [3:19 pm on 28 August, 2023] Caroline: Hey Melanie, great to hear from you. What's been up since we talked?",
+        "time_score": 1.0,
+        "token_estimate": 25,
+        "updated_at_ms": 1782259773142
+      }
+    ],
+    "used_context_tokens": 1200
+  },
+  {
+    "answer": "Adoption agencies",
+    "answer_bearing_ref": 1962002144127916095,
+    "answer_bearing_tokens": 15,
+    "answer_hit": true,
+    "answer_support_hit": true,
+    "answer_support_score": 1.0,
+    "category": 1,
+    "context_pack_id": "7507722116303402454",
+    "evidence_hit": false,
+    "failure_reason": "evidence_miss_with_context",
+    "latency_ms": 127.855,
+    "prediction": "adoption agencies",
+    "question": "What did Caroline research?",
+    "question_id": "locomo-0-3",
+    "question_type": "fact",
+    "reader_model": "matrixark-context-substring-v1",
+    "reader_provider": "deterministic",
+    "selected_ref_count": 37,
+    "selected_refs": [
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.204124,
+        "event_type": "confirmation",
+        "final_score": 0.771926,
+        "keyword_score": 3,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_1"
+          ]
+        },
+        "node_hash": 4561420357495403229,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_1"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.643634,
+        "packing_policy": "fact",
+        "packing_score": 0.911926,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 8734679021749712874,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 8787842515126764050,
+          "session_id": "locomo-0-session-1-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.771926,
+        "sparse_score": 0.75,
+        "text": "assistant: D1:4 [1:56 pm on 8 May, 2023] Melanie: Wow, that's cool, Caroline! What happened that was so awesome? Did you hear any inspiring stories?",
+        "time_score": 1.0,
+        "token_estimate": 28,
+        "updated_at_ms": 1782259766007
+      },
+      {
+        "business_score": 0.82,
+        "embedding_score": 0.4,
+        "event_type": "preference_update",
+        "final_score": 0.7704,
+        "keyword_score": 3,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_10"
+          ]
+        },
+        "node_hash": 7758789929434611631,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_10"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.6975,
+        "packing_policy": "fact",
+        "packing_score": 0.9104,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 595261525715747375,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 7989777992485242108,
+          "session_id": "locomo-0-session-10-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.7704,
+        "sparse_score": 0.75,
+        "text": "user: D10:15 [8:56 pm on 20 July, 2023] Caroline: Cool! What did it look like?",
+        "time_score": 1.0,
+        "token_estimate": 17,
+        "updated_at_ms": 1782259770621
+      },
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.507093,
+        "event_type": "confirmation",
+        "final_score": 0.769249,
+        "keyword_score": 2,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_15"
+          ]
+        },
+        "node_hash": 7018623604981261271,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_15"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.639451,
+        "packing_policy": "fact",
+        "packing_score": 0.909249,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 6068721032917540662,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 9116214120449383409,
+          "session_id": "locomo-0-session-15-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.769249,
+        "sparse_score": 0.5,
+        "text": "user: D15:1 [3:19 pm on 28 August, 2023] Caroline: Hey Melanie, great to hear from you. What's been up since we talked?",
+        "time_score": 1.0,
+        "token_estimate": 25,
+        "updated_at_ms": 1782259773142
+      },
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.472456,
+        "event_type": "correction",
+        "final_score": 0.763152,
+        "keyword_score": 2,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_16"
+          ]
+        },
+        "node_hash": 5659523061160297572,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_16"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.629925,
+        "packing_policy": "fact",
+        "packing_score": 0.903152,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 988439401897014169,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 7207781586759448951,
+          "session_id": "locomo-0-session-16-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.763152,
+        "sparse_score": 0.5,
+        "text": "user: D16:17 [12:09 am on 13 September, 2023] Caroline: Whoa, Mel, that sign looks serious. Did anything happen?",
+        "time_score": 1.0,
+        "token_estimate": 20,
+        "updated_at_ms": 1782259773600
+      },
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.472455,
+        "event_type": "confirmation",
+        "final_score": 0.763152,
+        "keyword_score": 2,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_14"
+          ]
+        },
+        "node_hash": 216024232965201990,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_14"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.629925,
+        "packing_policy": "fact",
+        "packing_score": 0.903152,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 7015723464801142064,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 4158356653129282643,
+          "session_id": "locomo-0-session-14-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.763152,
+        "sparse_score": 0.5,
+        "text": "assistant: D14:6 [1:33 pm on 25 August, 2023] Melanie: Wow Caroline, that looks amazing! Those colors are so vivid, it really looks like a real sunset. What gave you the idea to paint it?",
+        "time_score": 1.0,
+        "token_estimate": 36,
+        "updated_at_ms": 1782259772557
+      },
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.464238,
+        "event_type": "confirmation",
+        "final_score": 0.761706,
+        "keyword_score": 2,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_1"
+          ]
+        },
+        "node_hash": 4561420357495403229,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_1"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.627665,
+        "packing_policy": "fact",
+        "packing_score": 0.901706,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 984346885430422601,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 8787842515126764050,
+          "session_id": "locomo-0-session-1-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.761706,
+        "sparse_score": 0.5,
+        "text": "user: D1:17 [1:56 pm on 8 May, 2023] Caroline: Totally agree, Mel. Relaxing and expressing ourselves is key. Well, I'm off to go do some research.",
+        "time_score": 1.0,
+        "token_estimate": 29,
+        "updated_at_ms": 1782259766007
+      },
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.417028,
+        "event_type": "confirmation",
+        "final_score": 0.753397,
+        "keyword_score": 2,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_15"
+          ]
+        },
+        "node_hash": 7018623604981261271,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_15"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.614683,
+        "packing_policy": "fact",
+        "packing_score": 0.893397,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 4720298933413805655,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 9116214120449383409,
+          "session_id": "locomo-0-session-15-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.753397,
+        "sparse_score": 0.5,
+        "text": "user: D15:13 [3:19 pm on 28 August, 2023] Caroline: Wow! Did you see that band?",
+        "time_score": 1.0,
+        "token_estimate": 17,
+        "updated_at_ms": 1782259773142
+      },
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.408249,
+        "event_type": "confirmation",
+        "final_score": 0.751852,
+        "keyword_score": 2,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_6"
+          ]
+        },
+        "node_hash": 4254930351748055415,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_6"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.612268,
+        "packing_policy": "fact",
+        "packing_score": 0.891852,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 5495057892271759174,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 1568845043371733442,
+          "session_id": "locomo-0-session-6-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.751852,
+        "sparse_score": 0.5,
+        "text": "user: D6:5 [8:18 pm on 6 July, 2023] Caroline: Melanie, that's a great pic! That must have been awesome. What were they so stoked about?",
+        "time_score": 1.0,
+        "token_estimate": 28,
+        "updated_at_ms": 1782259768894
+      }
+    ],
+    "used_context_tokens": 1200
+  },
+  {
+    "answer": "Transgender woman",
+    "answer_bearing_ref": 4572679011602876498,
+    "answer_bearing_tokens": 23,
+    "answer_hit": false,
+    "answer_support_hit": false,
+    "answer_support_score": 0.156115,
+    "category": 1,
+    "context_pack_id": "7928115257012340433",
+    "evidence_hit": false,
+    "failure_reason": "evidence_miss_with_context",
+    "latency_ms": 123.202,
+    "prediction": "Conversations about gender identity and inclusion are so necessary and I'm thankful for being able to give a voice to the trans community.",
+    "question": "What is Caroline's identity?",
+    "question_id": "locomo-0-4",
+    "question_type": "fact",
+    "reader_model": "matrixark-context-substring-v1",
+    "reader_provider": "deterministic",
+    "selected_ref_count": 32,
+    "selected_refs": [
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.195699,
+        "event_type": "confirmation",
+        "final_score": 0.826443,
+        "keyword_score": 3,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_3"
+          ]
+        },
+        "node_hash": 6560355401260228075,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_3"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.728817,
+        "packing_policy": "fact",
+        "packing_score": 0.966443,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 4572679011602876498,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 3868556945873717832,
+          "session_id": "locomo-0-session-3-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.826443,
+        "sparse_score": 1.0,
+        "text": "user: D3:3 [7:55 pm on 9 June, 2023] Caroline: Thanks, Mel! Your backing really means a lot. I felt super powerful giving my talk. I shared my own journey, the struggles I had and how much I've developed since coming out. It was wonderful to see how the audience related to what I said and how it inspired them to be better allies. Conversations about gender identity and inclusion are so necessary and I'm thankful for being able to give a voice to the trans community.",
+        "time_score": 1.0,
+        "token_estimate": 90,
+        "updated_at_ms": 1782259766457
+      },
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.604744,
+        "event_type": "confirmation",
+        "final_score": 0.823768,
+        "keyword_score": 2,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_15"
+          ]
+        },
+        "node_hash": 7018623604981261271,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_15"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.724638,
+        "packing_policy": "fact",
+        "packing_score": 0.963768,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 6068721032917540662,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 9116214120449383409,
+          "session_id": "locomo-0-session-15-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.823768,
+        "sparse_score": 0.6666666666666666,
+        "text": "user: D15:1 [3:19 pm on 28 August, 2023] Caroline: Hey Melanie, great to hear from you. What's been up since we talked?",
+        "time_score": 1.0,
+        "token_estimate": 25,
+        "updated_at_ms": 1782259773142
+      },
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.536876,
+        "event_type": "confirmation",
+        "final_score": 0.811823,
+        "keyword_score": 2,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_15"
+          ]
+        },
+        "node_hash": 7018623604981261271,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_15"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.705974,
+        "packing_policy": "fact",
+        "packing_score": 0.951823,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 2658796926479280322,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 9116214120449383409,
+          "session_id": "locomo-0-session-15-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.811823,
+        "sparse_score": 0.6666666666666666,
+        "text": "user: D15:15 [3:19 pm on 28 August, 2023] Caroline: Wow, what a fun moment! What's the band?",
+        "time_score": 1.0,
+        "token_estimate": 20,
+        "updated_at_ms": 1782259773142
+      },
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.521863,
+        "event_type": "confirmation",
+        "final_score": 0.809181,
+        "keyword_score": 2,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_8"
+          ]
+        },
+        "node_hash": 5463211510628538174,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_8"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.701846,
+        "packing_policy": "fact",
+        "packing_score": 0.949181,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 5893495506738812496,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 905657696670374593,
+          "session_id": "locomo-0-session-8-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.809181,
+        "sparse_score": 0.6666666666666666,
+        "text": "user: D8:1 [1:51 pm on 15 July, 2023] Caroline: Hey Mel, what's up? Been a busy week since we talked.",
+        "time_score": 1.0,
+        "token_estimate": 23,
+        "updated_at_ms": 1782259769759
+      },
+      {
+        "business_score": 0.72,
+        "embedding_score": 0.383483,
+        "entity_name": "family_profile",
+        "entity_type": "family_profile",
+        "final_score": 0.805626,
+        "keyword_score": 2,
+        "metadata": {},
+        "node_hash": 7758789929434611631,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_10"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.783791,
+        "packing_policy": "fact",
+        "packing_score": 0.945626,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 6026925682164817190,
+        "ref_type": "entity",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 6544367432068600867,
+          "session_id": "locomo-0-session-10-b1",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.805626,
+        "sparse_score": 0.6666666666666666,
+        "text": "family_profile: family_profile = standing on the beach at sunset user: D10:23 [8:56 pm on 20 July, 2023] Caroline: Wow, Melanie, what a beautiful moment",
+        "time_score": 1.0,
+        "token_estimate": 25,
+        "updated_at_ms": 1782259771088
+      },
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.489898,
+        "event_type": "confirmation",
+        "final_score": 0.803555,
+        "keyword_score": 2,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_8"
+          ]
+        },
+        "node_hash": 5463211510628538174,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_8"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.693055,
+        "packing_policy": "fact",
+        "packing_score": 0.943555,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 6983150639772369710,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 905657696670374593,
+          "session_id": "locomo-0-session-8-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.803555,
+        "sparse_score": 0.6666666666666666,
+        "text": "user: D8:15 [1:51 pm on 15 July, 2023] Caroline: Wow, what a great day! Glad everyone could make it. What was your favorite part?",
+        "time_score": 1.0,
+        "token_estimate": 26,
+        "updated_at_ms": 1782259769759
+      },
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.486865,
+        "event_type": "confirmation",
+        "final_score": 0.803021,
+        "keyword_score": 2,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_6"
+          ]
+        },
+        "node_hash": 4254930351748055415,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_6"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.692221,
+        "packing_policy": "fact",
+        "packing_score": 0.943021,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 5495057892271759174,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 1568845043371733442,
+          "session_id": "locomo-0-session-6-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.803021,
+        "sparse_score": 0.6666666666666666,
+        "text": "user: D6:5 [8:18 pm on 6 July, 2023] Caroline: Melanie, that's a great pic! That must have been awesome. What were they so stoked about?",
+        "time_score": 1.0,
+        "token_estimate": 28,
+        "updated_at_ms": 1782259768894
+      },
+      {
+        "business_score": 1.0,
+        "embedding_score": 0.45808,
+        "event_type": "confirmation",
+        "final_score": 0.797955,
+        "keyword_score": 2,
+        "metadata": {
+          "node_path": [
+            "locomo",
+            "conv-26",
+            "session_8"
+          ]
+        },
+        "node_hash": 5463211510628538174,
+        "node_path": [
+          "locomo",
+          "conv-26",
+          "session_8"
+        ],
+        "node_score": 0.0,
+        "origin_score": 0.684305,
+        "packing_policy": "fact",
+        "packing_score": 0.937955,
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "recall_path": "primary_hybrid",
+        "ref_hash": 624657618362697268,
+        "ref_type": "event",
+        "scope": {
+          "account_id": "acct_dev",
+          "session_hash": 905657696670374593,
+          "session_id": "locomo-0-session-8-b0",
+          "team": "locomo",
+          "tenant_hash": 5019518775864453950,
+          "tenant_id": "tenant_dev",
+          "user_hash": 5993511427332154714,
+          "user_id": "locomo-0"
+        },
+        "score": 0.797955,
+        "sparse_score": 0.6666666666666666,
+        "text": "user: D8:11 [1:51 pm on 15 July, 2023] Caroline: Thanks Melanie - love the blue vase in the pic! Blue's my fave, it makes me feel relaxed. Sunflowers mean warmth and happiness, right? While roses stand for love and beauty? That's neat. What do flowers mean to you?",
+        "time_score": 1.0,
+        "token_estimate": 51,
+        "updated_at_ms": 1782259769759
+      }
+    ],
+    "used_context_tokens": 1196
+  }
+]

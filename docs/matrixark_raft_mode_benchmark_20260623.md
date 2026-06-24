@@ -1,0 +1,68 @@
+# MatrixArk Raft Mode Benchmark Smoke - 2026-06-23
+
+## Answer
+
+Raft mode does not break the MatrixArk ingestion, extraction, retrieval, ContextPack, and benchmark artifact path in the local C++ direct setup. I validated Raft consensus with both `storage_async=true` and `storage_async=false`.
+
+Raft and storage sync mode are separate switches:
+
+- `--data_replication_mode=raft_consensus` enables Raft replication/consensus across data nodes.
+- `--storage_async=true|false` controls local storage flush behavior under that Raft mode.
+- Current Raft smoke scripts mostly default to async storage for throughput, but `tools/run_matrixark_raft_dataset_slice_ubuntu22.sh` can test both modes with `MATRIXARK_RAFT_STORAGE_ASYNC=true|false`.
+
+## Native Raft Storage Gate
+
+`tools/run_data_raft_mixed_rw_ubuntu22.sh` passed with 3 data nodes, replica count 3, async storage, 50 probe ops, 2 probe threads, 1 background writer, and 2 background readers. It reported zero read/write errors and secondary visibility succeeded.
+
+## MatrixArk Dataset Slices Through C++ Raft
+
+| run | storage async | questions | sessions | turns ingested | context recall | judge score | hidden compressed answers | ingest TPS | avg retrieval ms | p95 retrieval ms |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| q5 LOCOMO | true | 5 | 19 | 419 | 1.0 | 0.40 | 0 | 44.184 | 193.87 | 221.17 |
+| q5 LongMemEval_s | true | 1 | 5 | 34 | 1.0 | 0.00 | 0 | 16.774 | 69.27 | 69.27 |
+| q5 LOCOMO | false | 5 | 19 | 419 | 1.0 | 0.40 | 0 | 43.357 | 168.95 | 232.05 |
+| q5 LongMemEval_s | false | 1 | 5 | 34 | 1.0 | 0.00 | 0 | 18.722 | 68.30 | 68.30 |
+| q20 LOCOMO | true | 20 | 38 | 788 | 1.0 | 0.65 | 0 | 46.331 | 218.96 | 478.22 |
+| q20 LongMemEval_s | true | 1 | 5 | 34 | 1.0 | 0.00 | 0 | 15.539 | 84.34 | 84.34 |
+
+## Artifact Directories
+
+- Async q5: `docs/benchmarks/matrixark_raft_dataset_slice_20260623_170842/`
+- Sync q5: `docs/benchmarks/matrixark_raft_dataset_slice_20260623_170921/`
+- Async q20: `docs/benchmarks/matrixark_raft_dataset_slice_20260623_171003/`
+
+Each benchmark run wrote canonical artifacts: `result.json`, `report.json`, `report.md`, `hypotheses.jsonl`, `context_packs.jsonl`, `judge.jsonl`, and `progress.json`.
+
+## Commands
+
+```bash
+# Raft async, q5 smoke
+MATRIXARK_RAFT_STORAGE_ASYNC=true \
+  LOCOMO_QUESTION_LIMIT=5 LOCOMO_CONVERSATION_LIMIT=1 \
+  LONGMEMEVAL_QUESTION_LIMIT=5 LONGMEMEVAL_SESSION_LIMIT=5 \
+  LONGMEMEVAL_SESSIONS_PER_ITEM_LIMIT=5 \
+  bash tools/run_matrixark_raft_dataset_slice_ubuntu22.sh
+
+# Raft sync, q5 smoke
+MATRIXARK_RAFT_STORAGE_ASYNC=false MS_PORT=28300 SERVER_PORT=14301 \
+  LOCOMO_QUESTION_LIMIT=5 LOCOMO_CONVERSATION_LIMIT=1 \
+  LONGMEMEVAL_QUESTION_LIMIT=5 LONGMEMEVAL_SESSION_LIMIT=5 \
+  LONGMEMEVAL_SESSIONS_PER_ITEM_LIMIT=5 \
+  bash tools/run_matrixark_raft_dataset_slice_ubuntu22.sh
+
+# Raft async, larger LOCOMO q20 slice
+MATRIXARK_RAFT_STORAGE_ASYNC=true MS_PORT=28400 SERVER_PORT=14401 \
+  LOCOMO_QUESTION_LIMIT=20 LOCOMO_CONVERSATION_LIMIT=2 \
+  LONGMEMEVAL_QUESTION_LIMIT=20 LONGMEMEVAL_SESSION_LIMIT=5 \
+  LONGMEMEVAL_SESSIONS_PER_ITEM_LIMIT=5 \
+  MATRIXARK_REQUEST_TIMEOUT_MS=45000 MATRIXARK_IO_TIMEOUT_MS=45000 \
+  bash tools/run_matrixark_raft_dataset_slice_ubuntu22.sh
+```
+
+## Interpretation
+
+- The C++ Raft path is usable for MatrixArk benchmark slices.
+- Async storage is the preferred throughput mode; sync storage is available and passed the same q5 smoke gate.
+- The q20 async LOCOMO slice exercised more sustained writes: 788 turns ingested at about 46.3 turns/sec, with p95 retrieval about 478 ms.
+- LongMemEval_s q20/session5 normalized to one answerable question in this constrained slice, so it proves the path works but does not prove full LongMemEval_s parity.
+- This is still slice validation, not a full official LOCOMO/LongMemEval parity claim. Full runs should use the same runner with higher limits after we choose the target duration and storage durability profile.
