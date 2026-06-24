@@ -25,7 +25,8 @@ String:
 - `GET` -> `StringGet`
 - Redis-compatible `MGET`, `MSET`, `MSETNX`, `GETDEL`, `GETSET`, `DEL`, `EXPIRE`,
   `PEXPIRE`, `TTL`, `PTTL`, `APPEND`, `STRLEN`, `INCR`, `DECR`, `INCRBY`, `DECRBY`,
-  `TYPE`, and state-backed `DBSIZE` for keys mutated through the RESP adapter
+  `GETRANGE`, `SETRANGE`, `TYPE`, state-backed `DBSIZE`, `KEYS`, and `SCAN` for keys
+  mutated through the RESP adapter
 
 Hash:
 
@@ -38,7 +39,7 @@ Hash:
 - `LEN` -> `HashLen`
 - `INCRBY` -> `HashIncrBy`, including C++-style rejection of non-integer values and i64 overflow
 - Redis-compatible `HSET`, `HSETNX`, `HGET`, `HEXISTS`, `HDEL`, `HMGET`, `HMSET`,
-  `HGETALL`, `HKEYS`, `HVALS`, `HLEN`, and `HINCRBY`
+  `HGETALL`, `HKEYS`, `HVALS`, `HLEN`, `HSTRLEN`, and `HINCRBY`
 
 Set:
 
@@ -51,10 +52,10 @@ Redis list/sorted-set compatibility:
 
 - List commands are stored through the TemporalStore string engine path with a self-describing
   Redis compatibility envelope: `LPUSH`, `RPUSH`, `LPOP`, `RPOP`, `LLEN`, `LINDEX`, `LRANGE`,
-  `LSET`, and `LTRIM`.
+  `LSET`, `LTRIM`, and `LREM`.
 - Sorted-set commands are stored through the TemporalStore string engine path with a self-describing
   Redis compatibility envelope: `ZADD`, `ZRANGE`, `ZREVRANGE`, `ZRANGEBYSCORE`, `ZCARD`,
-  `ZSCORE`, `ZCOUNT`, and `ZREM`.
+  `ZSCORE`, `ZCOUNT`, `ZINCRBY`, `ZRANK`, `ZREVRANK`, and `ZREM`.
 - `COMMAND` introspection is guarded by a Rust test that sends a valid sample command for every
   advertised command and fails if any entry falls through to `ERR syntax error`.
 
