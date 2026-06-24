@@ -1492,11 +1492,10 @@ def main() -> int:
         corpus_path.write_text(json.dumps(corpus, indent=2) + "\n", encoding="utf-8")
 
         timings = {}
-        timings["cpp_schema_contract_s"] = run(
+        timings["cpp_unified_contract_s"] = run(
             [
-                sys.executable,
-                "tools/run_temporalstore_unified_tests.py",
-                "--corpus",
+                "bash",
+                "tools/run_cpp_unified_context_contract.sh",
                 str(corpus_path),
             ],
             cwd=ROOT,
