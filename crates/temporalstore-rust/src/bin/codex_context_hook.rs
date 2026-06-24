@@ -447,6 +447,7 @@ fn stable_hash64(value: &str) -> u64 {
 mod tests {
     use super::*;
 
+    // shared-corpus: codex_mcp_multi_agent_context_hook_parity
     #[test]
     fn payload_text_accepts_claude_and_cursor_shapes() {
         let claude = json!({
@@ -481,6 +482,7 @@ mod tests {
         );
     }
 
+    // shared-corpus: codex_mcp_multi_agent_context_hook_parity
     #[test]
     fn agent_profiles_and_session_indexes_are_agent_specific() {
         let root = PathBuf::from("/tmp/agent-hook-test");
@@ -497,6 +499,7 @@ mod tests {
         );
     }
 
+    // shared-corpus: codex_mcp_multi_agent_context_hook_parity
     #[test]
     fn agent_events_map_to_context_source_and_role() {
         assert_eq!(

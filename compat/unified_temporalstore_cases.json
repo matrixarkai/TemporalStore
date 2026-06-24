@@ -4630,6 +4630,30 @@
       ]
     },
     {
+      "description": "Shared C++/Rust Codex/MCP multi-agent context hook case for Claude, Cursor, Codex, and generic agent payload extraction, profile routing, session indexing, source-kind mapping, and role mapping.",
+      "family": "codex/mcp",
+      "name": "codex_mcp_multi_agent_context_hook_parity",
+      "shard_id": 1,
+      "steps": [
+        {
+          "command": {
+            "description": "Validates the Rust context hook behavior used by Codex, Claude, Cursor, and generic agents: accepted payload shapes, transcript flattening, agent-specific session-index paths, source-kind mapping, and event role mapping. C++ parity remains a static gate until the shared MatrixArk MCP runner consumes this case.",
+            "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-codex-multi-agent-hook-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "crates/temporalstore-rust/src/bin/codex_context_hook.rs",
+              "docs/rust_codex_hook_integration.md"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust --bin codex_context_hook -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_codex_mcp_parity.py",
+            "suite": "cpp_rust_codex_mcp_parity"
+          },
+          "name": "multi_agent_context_hook_payload_profiles_roles"
+        }
+      ]
+    },
+    {
       "name": "raft_byteraft_read_safety_policy",
       "shard_id": 40,
       "steps": [
@@ -5742,6 +5766,78 @@
             "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only"
           },
           "name": "resource_and_skill_parser_shared"
+        }
+      ]
+    },
+    {
+      "description": "Shared C++/Rust Context resource lifecycle case for OpenViking-style add/watch/refresh/delete behavior across URL, Git, PDF/document, and Feishu-style imports.",
+      "family": "context",
+      "name": "context_resource_lifecycle_openviking_parity",
+      "shard_id": 60,
+      "steps": [
+        {
+          "command": {
+            "description": "Validates governed resource lifecycle metadata: URI import kind, parser provenance, owner scope, version refresh, stale resource invalidation, watch scheduling, delete markers, and import-kind reporting. Rust executes the production context lifecycle model; C++ parity remains a static gate until the native C++ context resource lifecycle runner consumes this shared case.",
+            "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-resource-lifecycle-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "crates/temporalstore-rust/src/context_workflow/tests.rs"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust context_resource_lifecycle_models_import_paths_refresh_and_delete --lib -- --test-threads=1",
+            "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only",
+            "suite": "cpp_context_pipeline_parity"
+          },
+          "name": "resource_lifecycle_add_watch_refresh_delete_shared",
+          "skip_client": true
+        }
+      ]
+    },
+    {
+      "description": "Shared C++/Rust Context skill registry case for OpenViking-style enable/disable, precedence, owner scope, allowed tools, triggers, version updates, and retrieval-time skill selection.",
+      "family": "context",
+      "name": "context_resource_skill_registry_openviking_parity",
+      "shard_id": 60,
+      "steps": [
+        {
+          "command": {
+            "description": "Validates skill registry semantics over parsed SKILL.md records: disabled skills stay registered but are skipped by retrieval, precedence is honored, owner/tool filters are enforced, version updates are reported, and trigger matches drive selected skill ordering. Rust executes the production skill registry model; C++ parity remains a static gate until the native C++ skill registry runner consumes this shared case.",
+            "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-skill-registry-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "crates/temporalstore-rust/src/context_workflow.rs"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust context_skill_registry_supports_updates_and_retrieval_selection --lib -- --test-threads=1",
+            "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only",
+            "suite": "cpp_context_pipeline_parity"
+          },
+          "name": "skill_registry_updates_and_selection_shared",
+          "skip_client": true
+        }
+      ]
+    },
+    {
+      "description": "Shared C++/Rust Context resource/skill ingest case for live model-backed embeddings and summary-embedding-driven coarse retrieval expansion.",
+      "family": "context",
+      "name": "context_resource_skill_live_embedding_summary_retrieval",
+      "shard_id": 60,
+      "steps": [
+        {
+          "command": {
+            "description": "Validates the production embedding provider path and summary traversal: OpenAI-compatible chat and embedding calls with no mock fallback, provider metadata, vector dimensions, generated embedding refs, summary embedding candidates, selected summary refs, and expansion into retrieved evidence. Rust executes the live local endpoint fixture; C++ parity remains a static gate until the native C++ context model-provider runner consumes this shared case.",
+            "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-live-embedding-summary-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "crates/temporalstore-rust/src/context_workflow/tests.rs#resource_ingest_uses_live_embeddings_and_summary_retrieval"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust resource_ingest_uses_live_embeddings_and_summary_retrieval --lib -- --test-threads=1",
+            "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only",
+            "suite": "cpp_context_pipeline_parity"
+          },
+          "name": "live_embedding_summary_retrieval_shared",
+          "skip_client": true
         }
       ]
     },
@@ -7276,6 +7372,7 @@
       "storage_follower_safe_gc",
       "storage_shared_store_oplog_cursor_retention",
       "storage_shared_store_checkpoint_cursor_retention",
+      "codex_mcp_multi_agent_context_hook_parity",
       "storage_cache_refill",
       "storage_shared_store_sync_replay",
       "storage_shared_store_async_replay",
@@ -7347,6 +7444,9 @@
       "ops_production_readiness_service_summary",
       "ops_grafana_metrics_cpp_parity",
       "context_resource_skill_parser_openviking_parity",
+      "context_resource_lifecycle_openviking_parity",
+      "context_resource_skill_registry_openviking_parity",
+      "context_resource_skill_live_embedding_summary_retrieval",
       "redis_operational_admin_commands",
       "redis_slot_hash_cpp_crc64",
       "redis_engine_product_command_flow",

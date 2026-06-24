@@ -162,6 +162,7 @@ C++ execution should progressively cover every executable case.
 | `storage_follower_safe_gc` | Rust runs storage lifecycle with a lagging follower cursor and verifies recovery stays clean. |
 | `storage_shared_store_oplog_cursor_retention` | Shared-store oplog GC refuses to reclaim oplog objects still needed by a saved follower replay cursor. |
 | `storage_shared_store_checkpoint_cursor_retention` | Shared-store checkpoint GC retains the checkpoint generation anchoring a saved follower replay cursor. |
+| `codex_mcp_multi_agent_context_hook_parity` | Rust-executable/C++-static gate for Codex/Claude/Cursor/generic agent context hook payload extraction, profile routing, session indexing, source-kind mapping, and role mapping. |
 | `storage_cache_refill` | Rust invalidates cache, warms from page-store refs, and verifies memory refill stats. |
 | `storage_shared_store_sync_replay` | Rust replays the C++ migration storage corpus through sync local shared-store replication. |
 | `storage_shared_store_async_replay` | Rust replays the C++ migration storage corpus through async local shared-store replication. |
@@ -256,6 +257,9 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `context_embeddings_summaries_l0_l1_pipeline` | Rust-executable/C++-static gate for embeddings, L0/L1 summaries, summary dirty tracking, provider/model selection, and prompt block construction. |
 | `context_compression_secondary_index_query_debug_flow` | Rust-executable/C++-static gate for temporal compression, secondary-index filter groups, C++-style query debug flow, retrieved evidence ordering, and audit refs. |
 | `context_resource_skill_parser_openviking_parity` | Rust-executable/C++-static gate for OpenViking-style resource chunking, stable source refs, heading paths, line ranges, linked refs, code-language metadata, `SKILL.md` front matter, version/owner scope, allowed tools, triggers, model refs, tag/capability/tool/instruction/resource/example refs, chunk embeddings, and Rust TemporalStore ingestion/retrieval of parsed chunks. |
+| `context_resource_lifecycle_openviking_parity` | Rust-executable/C++-static gate for OpenViking-style resource add/watch/refresh/delete lifecycle behavior across URL, Git, PDF/document, and Feishu-style imports, including parser provenance, owner scope, version invalidation, watch scheduling, and delete markers. |
+| `context_resource_skill_registry_openviking_parity` | Rust-executable/C++-static gate for OpenViking-style skill registry behavior: enable/disable, precedence, owner scope, triggers, allowed tools, version updates, and retrieval-time skill selection. |
+| `context_resource_skill_live_embedding_summary_retrieval` | Rust-executable/C++-static gate for live OpenAI-compatible embedding generation without mock fallback and summary-embedding-driven retrieval expansion into resource evidence. |
 | `context_benchmark_fixture_gates` | Shared C++/Rust benchmark contract for LOCOMO-style and LongMemEval_s fixture gates using MatrixArk/VikingMem report fields. |
 | `context_benchmark_full_dataset_gates` | Shared C++/Rust benchmark contract for LOCOMO, LongMemEval_s, and Docker/open-model full-dataset gates with explicit threshold profiles and archive reports. |
 | `control_multi_proxy_convergence_and_quarantine` | Rust-executable/C++-static gate for multi-proxy convergence, backend quarantine, recovery probing, and stale-cache comparison. |

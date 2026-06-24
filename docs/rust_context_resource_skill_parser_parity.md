@@ -1,6 +1,11 @@
 # Rust Context Resource And Skill Parser Parity
 
-Shared case: `context_resource_skill_parser_openviking_parity`.
+Shared cases:
+
+- `context_resource_skill_parser_openviking_parity`
+- `context_resource_lifecycle_openviking_parity`
+- `context_resource_skill_registry_openviking_parity`
+- `context_resource_skill_live_embedding_summary_retrieval`
 
 Rust now has a Rust-native parser path for OpenViking-style resources and Codex `SKILL.md` files. The parser is intentionally behavior-compatible with the C++ MatrixArk helper in `<cpp-temporalstore-checkout>/tools/matrixark_resource_parser.py`: it creates stable source refs, bounded chunks, token estimates, embedding refs, and metadata that can feed context ingestion/extraction/retrieval.
 
@@ -126,13 +131,53 @@ The focused Rust tests verify resource refs, `SKILL.md` front matter, tag refs, 
 - C++ helper parity source: `<cpp-temporalstore-checkout>/tools/matrixark_resource_parser.py`.
 - C++ tests: `<cpp-temporalstore-checkout>/tools/test_matrixark_resource_parser.py`.
 - Rust shared case: `context_resource_skill_parser_openviking_parity`.
+- Rust resource lifecycle shared case: `context_resource_lifecycle_openviking_parity`.
+- Rust skill registry shared case: `context_resource_skill_registry_openviking_parity`.
+- Rust live embedding/summary retrieval shared case: `context_resource_skill_live_embedding_summary_retrieval`.
 - Rust parser is not a viking filesystem clone; it produces Rust TemporalStore context inputs with OpenViking-compatible source refs and chunk metadata.
+
+## Resource Lifecycle Shared Case
+
+`context_resource_lifecycle_openviking_parity` covers the governed lifecycle layer around parsed resources:
+
+- import kind detection for URL, Git repo, PDF/document, and Feishu-style URIs
+- parser provenance retained in chunk metadata
+- owner scope and version tracking for resource ownership
+- watch interval and next-refresh scheduling
+- refresh updates that invalidate stale versions
+- delete markers that hide retired resources without losing audit history
+- import-kind reporting for admin/debug traces
+
+## Skill Registry Shared Case
+
+`context_resource_skill_registry_openviking_parity` covers retrieval-time registry behavior around parsed `SKILL.md` records:
+
+- enabled and disabled skills remain visible in the registry
+- precedence controls ordering when multiple skills match
+- owner scope and allowed tools filter selection
+- triggers drive query-time skill matches
+- version updates are tracked for audit/debug reports
+- disabled skills are skipped unless explicitly requested
+
+## Live Embedding And Summary Retrieval Shared Case
+
+`context_resource_skill_live_embedding_summary_retrieval` covers the production provider path used by resource ingestion and retrieval:
+
+- OpenAI-compatible chat and embedding requests are made with provider metadata
+- mock embedding fallback is disabled for production evidence
+- vector dimensions and generated embedding refs are recorded
+- L0/L1 summary output is embedded and considered during coarse retrieval
+- summary embedding candidates are expanded into resource chunk evidence
+- retrieved evidence keeps provider and summary traversal debug fields
 
 ## Validation
 
 ```bash
 cargo test -p temporalstore-rust context_resource --lib -- --test-threads=1
 cargo test -p temporalstore-rust context_skill --lib -- --test-threads=1
+cargo test -p temporalstore-rust context_resource_lifecycle_models_import_paths_refresh_and_delete --lib -- --test-threads=1
+cargo test -p temporalstore-rust context_skill_registry_supports_updates_and_retrieval_selection --lib -- --test-threads=1
+cargo test -p temporalstore-rust resource_ingest_uses_live_embeddings_and_summary_retrieval --lib -- --test-threads=1
 cargo test -p temporalstore-rust parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval --lib -- --test-threads=1
 
 python3 tools/run_temporalstore_unified_tests.py --validate-only
