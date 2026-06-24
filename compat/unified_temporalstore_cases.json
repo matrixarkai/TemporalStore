@@ -5459,7 +5459,7 @@
             "required_paths": [
               "docs/rust_code_deep_dive_vs_cpp.md"
             ],
-            "rust_runner": "cargo test -p temporalstore-rust context_models_match_cpp_registration_ids_and_validation_limits context_write_extracted_event_fans_out_default_indexes --lib -- --test-threads=1",
+            "rust_runner": "cargo test -p temporalstore-rust context_models_match_cpp_keys_timeline_pages_and_filters --lib -- --test-threads=1",
             "rust_validator": "tools/run_context_workflow_local.sh"
           }
         }
@@ -5499,7 +5499,7 @@
             "required_paths": [
               "docs/rust_matrixark_query_index_debug_flow.md"
             ],
-            "rust_runner": "cargo test -p temporalstore-rust context_temporal_compression_keeps_source_events_replayable context_benchmark_injection_uses_entity_segment_l0_l1_and_secondary_index --lib -- --test-threads=1",
+            "rust_runner": "cargo test -p temporalstore-rust context_temporal_compression_builds_replayable_summary_without_deleting_sources context_benchmark_injection_uses_entity_segment_l0_l1_and_secondary_index --lib -- --test-threads=1",
             "rust_validator": "tools/run_context_workflow_local.sh"
           }
         }

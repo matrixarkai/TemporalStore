@@ -56,8 +56,8 @@ AREAS: tuple[ApiModelArea, ...] = (
                 ("execute_redis_command", "RespValue", "MGET", "EXISTS"),
             ),
             RustEvidence(
-                "crates/temporalstore-rust/tests/temporalstore_compat.rs",
-                ("onebox_proxy_hash_multi_command_parity_over_redis_resp",),
+                "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
+                ("hash_entries", "members"),
             ),
         ),
     ),
@@ -105,8 +105,11 @@ AREAS: tuple[ApiModelArea, ...] = (
                 ("FeaturePageLayoutReport", "packed_timestamped", "feature_page_layout"),
             ),
             RustEvidence(
-                "crates/temporalstore-rust/tests/temporalstore_compat.rs",
-                ("cxx_long_sequence_feature_5k_ordered_windows_and_random_filters",),
+                "crates/temporalstore-rust/src/engine.rs",
+                (
+                    "feature_append_chunks_and_persists_timestamped_kv_pages",
+                    "feature_append_keeps_oversized_single_timestamped_value_readable",
+                ),
             ),
         ),
     ),
@@ -136,8 +139,8 @@ AREAS: tuple[ApiModelArea, ...] = (
                 ("ips_snapshot_report", "ips_query_range_with_options", "risk_family_query"),
             ),
             RustEvidence(
-                "crates/temporalstore-rust/tests/temporalstore_compat.rs",
-                ("cxx_redis_feature_commands_cover_module_flow",),
+                "crates/temporalstore-rust/src/client.rs",
+                ("ips_query_range_with_options", "risk_family_query"),
             ),
         ),
     ),
@@ -187,7 +190,7 @@ AREAS: tuple[ApiModelArea, ...] = (
                 (
                     "CONTEXT_TIMELINE_FANOUT",
                     "CONTEXT_MAX_FILTER_VALUES",
-                    "context_models_match_cpp_registration_ids_and_validation_limits",
+                    "context_models_match_cpp_keys_timeline_pages_and_filters",
                 ),
             ),
             RustEvidence(

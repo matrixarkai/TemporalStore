@@ -23,6 +23,10 @@ CORPUS = ROOT / "compat" / "unified_temporalstore_cases.json"
 CONTEXT_PREFIX = "context_"
 CONTEXT_SUITE = "cpp_context_pipeline_parity"
 RUST_EXECUTABLE_MODE = "rust_executable_cxx_static"
+ALLOWED_RUST_VALIDATORS = {
+    "tools/run_context_workflow_local.sh",
+    "python3 tools/run_temporalstore_unified_tests.py --validate-only",
+}
 
 
 def load_context_cases(corpus_path: Path) -> list[dict]:
@@ -57,8 +61,12 @@ def validate_case(case: dict, cpp_repo: Path | None) -> list[tuple[str, str]]:
         if "cargo test -p temporalstore-rust" not in rust_runner and "context_workflow_harness" not in rust_runner:
             raise SystemExit(f"{location}: rust_runner must invoke temporalstore-rust context tests")
         rust_validator = command.get("rust_validator")
-        if rust_validator != "tools/run_context_workflow_local.sh":
-            raise SystemExit(f"{location}: missing context workflow rust_validator")
+        if rust_validator not in ALLOWED_RUST_VALIDATORS:
+            allowed = ", ".join(sorted(ALLOWED_RUST_VALIDATORS))
+            raise SystemExit(
+                f"{location}: unexpected context rust_validator {rust_validator!r}; "
+                f"expected one of: {allowed}"
+            )
         required_paths = command.get("required_paths")
         if not isinstance(required_paths, list) or not required_paths:
             raise SystemExit(f"{location}: missing C++/doc required_paths")
@@ -66,8 +74,35 @@ def validate_case(case: dict, cpp_repo: Path | None) -> list[tuple[str, str]]:
             for required_path in required_paths:
                 if not (cpp_repo / required_path).exists():
                     raise SystemExit(f"{location}: C++ required path missing: {required_path}")
-        commands.append((location, rust_runner))
+        commands.extend((location, command) for command in expand_rust_runner(rust_runner))
     return commands
+
+
+def expand_rust_runner(command: str) -> list[str]:
+    """Split shared-case Cargo commands that name multiple test filters.
+
+    Cargo accepts only one positional test filter. The shared corpus can model a
+    single product-behavior case with multiple focused Rust tests, so the runner
+    expands those into separate Cargo invocations while keeping one shared case.
+    """
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return [command]
+    prefix = ["cargo", "test", "-p", "temporalstore-rust"]
+    if tokens[: len(prefix)] != prefix:
+        return [command]
+    filter_start = len(prefix)
+    filter_end = filter_start
+    while filter_end < len(tokens) and not tokens[filter_end].startswith("-"):
+        filter_end += 1
+    filters = tokens[filter_start:filter_end]
+    if len(filters) <= 1:
+        return [command]
+    return [
+        shlex.join(tokens[:filter_start] + [test_filter] + tokens[filter_end:])
+        for test_filter in filters
+    ]
 
 
 def run_command(command: str, cwd: Path) -> None:

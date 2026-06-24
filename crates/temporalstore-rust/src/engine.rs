@@ -9559,6 +9559,7 @@ mod tests {
         }
     }
 
+    // shared-corpus: context_events_segments_entities_child_refs context_event_index_audit_dirty_models
     #[test]
     fn context_models_match_cpp_keys_timeline_pages_and_filters() {
         let dir = tempfile::tempdir().unwrap();
@@ -12477,6 +12478,7 @@ mod tests {
         );
     }
 
+    // shared-corpus: feature_nested_proto_aggregate_semantics
     #[test]
     fn feature_query_filtered_matches_cpp_protobuf_feature_point() {
         let engine = TemporalEngine::default();
@@ -12967,6 +12969,7 @@ mod tests {
         );
     }
 
+    // shared-corpus: sequence_cpp_feature_rows sequence_batch_filter_groups
     #[test]
     fn sequence_query_filters_typed_rows() {
         let engine = TemporalEngine::default();
@@ -13817,6 +13820,7 @@ mod tests {
         );
     }
 
+    // shared-corpus: ips_options_range ips_snapshot_stat_filter_batch
     #[test]
     fn ips_range_and_batch_queries_match_cpp_style_read_shapes() {
         let engine = TemporalEngine::default();
@@ -14293,6 +14297,7 @@ mod tests {
         );
     }
 
+    // shared-corpus: risk_counter_window risk_family_query_and_delete risk_manager_debug_fol
     #[test]
     fn risk_query_supports_sum_min_max_and_event_count() {
         let engine = TemporalEngine::default();

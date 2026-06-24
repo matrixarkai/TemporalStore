@@ -19,8 +19,12 @@ use record::{
     decode_page_record, default_page_record_compression_enabled,
     default_page_record_compression_level, default_page_record_compression_min_bytes,
     encode_page_record, inspect_segment, logical_range_from_segment, sha256_hex, summarize_segment,
-    PageRecordCompression, PAGE_RECORD_COMPRESSION_NONE, PAGE_RECORD_COMPRESSION_ZSTD,
-    PAGE_RECORD_HEADER_LEN, PAGE_RECORD_MAGIC, PAGE_RECORD_VERSION,
+    PageRecordCompression,
+};
+#[cfg(test)]
+use record::{
+    PAGE_RECORD_COMPRESSION_NONE, PAGE_RECORD_COMPRESSION_ZSTD, PAGE_RECORD_HEADER_LEN,
+    PAGE_RECORD_MAGIC, PAGE_RECORD_VERSION,
 };
 
 #[derive(Debug, Error)]

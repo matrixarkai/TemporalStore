@@ -1282,6 +1282,7 @@ mod tests {
         );
     }
 
+    // shared-corpus: storage_shared_store_sync_replay storage_shared_store_async_replay
     #[tokio::test]
     async fn shared_store_replays_chunked_timestamped_kv_pages_in_sync_and_async_modes() {
         let dir = tempfile::tempdir().unwrap();

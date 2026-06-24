@@ -29,8 +29,8 @@ use crate::meta::{
     TopologyVersionReport, TopologyVersionRequest,
 };
 use crate::types::{
-    BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ExecuteRequest,
-    ExecuteResponse, ShardId, Status,
+    BatchExecuteRequest, BatchExecuteResponse, Command, ExecuteRequest, ExecuteResponse, ShardId,
+    Status,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1633,7 +1633,7 @@ mod tests {
         AddTableRequest, GetTableTopologyRequest, RegisterShardRequest, ShardLocation,
         UpdateTableRequest,
     };
-    use crate::types::Command;
+    use crate::types::{Command, CommandResponse};
     use crate::ProductionReadinessReport;
     use std::net::TcpListener;
     use std::time::Instant;
