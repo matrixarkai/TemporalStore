@@ -13,6 +13,7 @@ import csv
 import hashlib
 import html
 import json
+import os
 import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
@@ -23,6 +24,11 @@ from typing import Any
 Json = dict[str, Any]
 
 SUPPORTED_DIRECTORY_TYPES = {"md", "txt", "pdf", "html", "csv", "tsv", "json", "jsonl", "docx", "skill"}
+SKIP_DIRECTORY_NAMES = {".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv", "target", "build", "dist"}
+DEFAULT_MAX_FILE_BYTES = int(os.environ.get("MATRIXARK_RESOURCE_MAX_FILE_BYTES", str(20 * 1024 * 1024)))
+DEFAULT_MAX_DIRECTORY_FILES = int(os.environ.get("MATRIXARK_RESOURCE_MAX_DIRECTORY_FILES", "256"))
+DEFAULT_MAX_DIRECTORY_DEPTH = int(os.environ.get("MATRIXARK_RESOURCE_MAX_DIRECTORY_DEPTH", "8"))
+DEFAULT_MAX_TOTAL_CHUNKS = int(os.environ.get("MATRIXARK_RESOURCE_MAX_TOTAL_CHUNKS", "2048"))
 
 
 class ResourceParserError(RuntimeError):
@@ -114,6 +120,10 @@ def parse_resource(
     max_chunk_chars: int = 1400,
     overlap_chars: int = 120,
     chunk_hash_base: int | None = None,
+    max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
+    max_directory_files: int = DEFAULT_MAX_DIRECTORY_FILES,
+    max_directory_depth: int = DEFAULT_MAX_DIRECTORY_DEPTH,
+    max_total_chunks: int = DEFAULT_MAX_TOTAL_CHUNKS,
 ) -> list[ParsedResourceChunk]:
     """Parse supported resources into bounded serving chunks.
 
@@ -121,9 +131,22 @@ def parse_resource(
     jsonl, docx, and skill. Unsupported binary files fail loudly instead of
     silently storing useless bytes.
     """
+    if max_chunk_chars < 256:
+        raise ResourceParserError("max_chunk_chars must be >= 256")
+    if overlap_chars < 0 or overlap_chars >= max_chunk_chars:
+        raise ResourceParserError("overlap_chars must be non-negative and smaller than max_chunk_chars")
+    if max_total_chunks <= 0:
+        raise ResourceParserError("max_total_chunks must be positive")
     raw_uri_text = str(raw_uri)
     kind = infer_resource_type(raw_uri_text, resource_type)
-    units = _parse_units(raw_uri_text, kind, text)
+    units = _parse_units(
+        raw_uri_text,
+        kind,
+        text,
+        max_file_bytes=max_file_bytes,
+        max_directory_files=max_directory_files,
+        max_directory_depth=max_directory_depth,
+    )
 
     chunks: list[ParsedResourceChunk] = []
     for unit_index, unit in enumerate(units):
@@ -151,6 +174,8 @@ def parse_resource(
                 if chunk_hash_base is not None
                 else stable_hash(f"resource_chunk:{source_ref}:{metadata['content_hash']}")
             )
+            if len(chunks) >= max_total_chunks:
+                raise ResourceParserError(f"resource produced more than max_total_chunks={max_total_chunks}")
             chunks.append(
                 ParsedResourceChunk(
                     chunk_hash=chunk_hash,
@@ -163,21 +188,27 @@ def parse_resource(
     return chunks
 
 
-def _parse_units(raw_uri: str, kind: str, text: str | None) -> list[Json]:
+def _parse_units(
+    raw_uri: str,
+    kind: str,
+    text: str | None,
+    *,
+    max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
+    max_directory_files: int = DEFAULT_MAX_DIRECTORY_FILES,
+    max_directory_depth: int = DEFAULT_MAX_DIRECTORY_DEPTH,
+) -> list[Json]:
     if text is None:
         path = Path(raw_uri)
         if not path.exists():
             raise ResourceParserError(f"resource path does not exist: {raw_uri}")
         if path.is_dir():
-            return _parse_directory_units(path)
+            return _parse_directory_units(path, max_file_bytes=max_file_bytes, max_directory_files=max_directory_files, max_directory_depth=max_directory_depth)
+        _ensure_file_size(path, max_file_bytes)
         if kind == "pdf":
             return _parse_pdf_units(path, raw_uri)
         if kind == "docx":
             return _parse_docx_units(path, raw_uri)
-        try:
-            text = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            text = path.read_text(encoding="utf-8", errors="replace")
+        text = _read_text_file(path, max_file_bytes)
     if kind in {"md", "skill"}:
         return _markdown_units(text)
     if kind == "html":
@@ -193,6 +224,23 @@ def _parse_units(raw_uri: str, kind: str, text: str | None) -> list[Json]:
     if kind in {"png", "jpg", "jpeg", "webp", "gif"}:
         return _binary_stub_units(raw_uri, kind)
     return _paragraph_units(text, raw_uri)
+
+
+def _ensure_file_size(path: Path, max_file_bytes: int) -> None:
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        raise ResourceParserError(f"cannot stat resource file {path}: {exc}") from exc
+    if size > max_file_bytes:
+        raise ResourceParserError(f"resource file too large: {path} has {size} bytes, max is {max_file_bytes}")
+
+
+def _read_text_file(path: Path, max_file_bytes: int) -> str:
+    _ensure_file_size(path, max_file_bytes)
+    try:
+        return path.read_text(encoding="utf-8-sig")
+    except UnicodeDecodeError:
+        return path.read_text(encoding="utf-8-sig", errors="replace")
 
 
 def _markdown_units(text: str) -> list[Json]:
@@ -413,19 +461,37 @@ def _binary_stub_units(raw_uri: str, kind: str) -> list[Json]:
     ]
 
 
-def _parse_directory_units(path: Path) -> list[Json]:
+def _parse_directory_units(
+    path: Path,
+    *,
+    max_file_bytes: int,
+    max_directory_files: int,
+    max_directory_depth: int,
+) -> list[Json]:
     units: list[Json] = []
+    parsed_files = 0
+    skipped_files = 0
     for child in sorted(item for item in path.rglob("*") if item.is_file()):
-        if any(part.startswith(".") for part in child.relative_to(path).parts):
+        relative = child.relative_to(path)
+        if len(relative.parts) > max_directory_depth:
+            skipped_files += 1
+            continue
+        if any(part.startswith(".") or part in SKIP_DIRECTORY_NAMES for part in relative.parts[:-1]):
+            skipped_files += 1
             continue
         child_kind = infer_resource_type(str(child))
         if child_kind not in SUPPORTED_DIRECTORY_TYPES:
+            skipped_files += 1
             continue
+        if parsed_files >= max_directory_files:
+            raise ResourceParserError(f"directory resource has more than max_directory_files={max_directory_files}: {path}")
         try:
-            child_units = _parse_units(str(child), child_kind, None)
+            child_units = _parse_units(str(child), child_kind, None, max_file_bytes=max_file_bytes, max_directory_files=max_directory_files, max_directory_depth=max_directory_depth)
         except ResourceParserError:
+            skipped_files += 1
             continue
-        relative_path = str(child.relative_to(path)).replace("\\", "/")
+        parsed_files += 1
+        relative_path = str(relative).replace("\\", "/")
         for unit in child_units:
             unit = dict(unit)
             unit["child_uri"] = str(child)
@@ -435,6 +501,9 @@ def _parse_directory_units(path: Path) -> list[Json]:
             units.append(unit)
     if not units:
         raise ResourceParserError(f"directory resource has no supported files: {path}")
+    for unit in units:
+        unit["directory_file_count"] = parsed_files
+        unit["directory_skipped_files"] = skipped_files
     return units
 
 

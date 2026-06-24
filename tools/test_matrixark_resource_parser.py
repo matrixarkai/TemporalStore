@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools.matrixark_resource_parser import parse_resource
+from tools.matrixark_resource_parser import ResourceParserError, parse_resource
 from tools.matrixark_skill_parser import parse_skill
 
 
@@ -184,6 +184,56 @@ class MatrixArkResourceParserTest(unittest.TestCase):
         self.assertEqual(skill.metadata["version"], "3")
         self.assertIn("README.md", skill.metadata["bundle_files"])
         self.assertTrue(skill.metadata["bundle_manifest"].get("manifest_uri"))
+
+
+    def test_production_limits_reject_large_file_and_too_many_directory_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            large = root / "large.txt"
+            large.write_text("x" * 64, encoding="utf-8")
+            with self.assertRaises(ResourceParserError):
+                parse_resource(large, resource_type="txt", max_file_bytes=16)
+
+            directory = root / "many"
+            directory.mkdir()
+            (directory / "a.txt").write_text("one", encoding="utf-8")
+            (directory / "b.txt").write_text("two", encoding="utf-8")
+            with self.assertRaises(ResourceParserError):
+                parse_resource(directory, resource_type="directory", max_directory_files=1)
+
+    def test_directory_resource_skips_vendor_and_hidden_dirs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "resources"
+            root.mkdir()
+            (root / "good.txt").write_text("good context", encoding="utf-8")
+            hidden = root / ".git"
+            hidden.mkdir()
+            (hidden / "ignored.txt").write_text("ignored", encoding="utf-8")
+            vendor = root / "node_modules"
+            vendor.mkdir()
+            (vendor / "ignored.txt").write_text("ignored", encoding="utf-8")
+            chunks = parse_resource(root, resource_type="directory", chunk_hash_base=2100)
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0].metadata["relative_path"], "good.txt")
+        self.assertGreaterEqual(chunks[0].metadata["directory_skipped_files"], 2)
+
+    def test_skill_invalid_status_scope_precedence_default_safely(self):
+        skill = parse_skill(
+            "skills/bad/SKILL.md",
+            text=(
+                "---\n"
+                "name: bad-skill\n"
+                "status: unknown\n"
+                "precedence: urgent\n"
+                "owner_scope: private\n"
+                "---\n"
+                "# Bad Skill\n\nBody."
+            ),
+            chunk_hash_base=2200,
+        )
+        self.assertEqual(skill.metadata["status"], "active")
+        self.assertEqual(skill.metadata["precedence"], "normal")
+        self.assertEqual(skill.metadata["owner_scope"], "user")
 
 if __name__ == "__main__":
     unittest.main()
