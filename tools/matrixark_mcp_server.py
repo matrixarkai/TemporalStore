@@ -1476,6 +1476,15 @@ def context_index_name(kind: str, value: Any) -> str:
     return f"{kind}:{normalized}" if normalized else ""
 
 
+def metadata_index_terms(metadata: Json) -> list[str]:
+    terms: list[str] = []
+    for field in ["unit_kind", "heading_slug", "relative_path"]:
+        terms.append(context_index_name(field, metadata.get(field)))
+    for keyword in metadata.get("keywords", [])[:12]:
+        terms.append(context_index_name("keyword", keyword))
+    return ordered_unique(terms)
+
+
 def normalize_envelope(args: Json, *, default_kind: str) -> Json:
     messages = require_messages(args)
     scope = optional_object(args, "scope")
@@ -1757,8 +1766,14 @@ def oss_encoder_secondary_index_filter_groups(query: str, question_type: str) ->
     return groups[:4]
 
 
-def candidate_index_terms(record: Json, index_terms_by_batch: dict[Any, list[str]], index_terms_by_node: dict[Any, list[str]]) -> set[str]:
+def candidate_index_terms(
+    record: Json,
+    index_terms_by_batch: dict[Any, list[str]],
+    index_terms_by_node: dict[Any, list[str]],
+    index_terms_by_ref: dict[Any, list[str]] | None = None,
+) -> set[str]:
     terms: set[str] = set()
+    index_terms_by_ref = index_terms_by_ref or {}
     record_type = record.get("record_type")
     if record_type == "context_event":
         terms.update(index_terms_by_batch.get(record.get("batch_id_hash"), []))
@@ -1776,10 +1791,13 @@ def candidate_index_terms(record: Json, index_terms_by_batch: dict[Any, list[str
     elif record_type == "context_segment":
         terms.add(context_index_name("segment_topic", record.get("topic")))
     elif record_type == "resource_chunk":
+        terms.update(index_terms_by_ref.get(record.get("chunk_hash"), []))
         terms.update(index_terms_by_node.get(record.get("node_hash"), []))
         terms.add(context_index_name("source_type", "resource"))
         terms.add(context_index_name("resource_type", record.get("resource_type")))
+        terms.update(metadata_index_terms(record.get("metadata", {})))
     elif record_type == "skill_manifest":
+        terms.update(index_terms_by_ref.get(record.get("skill_hash"), []))
         terms.update(index_terms_by_node.get(record.get("node_hash"), []))
         terms.add(context_index_name("source_type", "skill"))
         terms.add(context_index_name("resource_type", "skill"))
@@ -1789,9 +1807,11 @@ def candidate_index_terms(record: Json, index_terms_by_batch: dict[Any, list[str
         for tool in record.get("allowed_tools", [])[:8]:
             terms.add(context_index_name("skill_tool", tool))
     elif record_type == "skill_section":
+        terms.update(index_terms_by_ref.get(record.get("section_hash"), []))
         terms.update(index_terms_by_node.get(record.get("node_hash"), []))
         terms.add(context_index_name("source_type", "skill"))
         terms.add(context_index_name("resource_type", "skill"))
+        terms.update(metadata_index_terms(record.get("metadata", {})))
     return {term for term in terms if term}
 
 
@@ -2159,6 +2179,14 @@ def select_token_budgeted_refs(
             "summary": 0,
             "raw_l2": 0,
         },
+        "reason_descriptions": {
+            "over_budget": "candidate was relevant but exceeded the remaining remote context token budget",
+            "duplicate": "candidate duplicated local context or an already selected ref",
+            "low_score": "candidate score was below the minimum packing threshold",
+            "stale": "candidate was stale or superseded for the query policy",
+            "summary": "summary text was dropped in favor of denser raw/evidence refs",
+            "raw_l2": "raw L2 content was dropped because a smaller cited chunk or summary was enough",
+        },
     }
     seen_text_hashes: set[int] = set()
     for candidate in candidates:
@@ -2229,13 +2257,40 @@ def compact_refs_for_audit(refs: list[Json], *, preview_chars: int = 160) -> lis
         "keyword_score",
         "token_estimate",
         "updated_at_ms",
+        "selection_reason",
+        "matched_index_terms",
+        "raw_uri",
+        "source_ref",
+        "resource_type",
         "operator",
         "source_start_ms",
         "source_end_ms",
         "source_event_ids",
     ]
+    metadata_keep_fields = [
+        "unit_kind",
+        "heading",
+        "heading_slug",
+        "heading_path",
+        "relative_path",
+        "keywords",
+        "citation",
+        "resource_version",
+        "content_hash",
+        "row_start",
+        "row_end",
+        "record_start",
+        "record_end",
+        "page",
+        "page_section",
+    ]
     for ref in refs:
         item = {field: ref[field] for field in keep_fields if field in ref}
+        metadata = ref.get("metadata", {})
+        if isinstance(metadata, dict):
+            compact_metadata = {field: metadata[field] for field in metadata_keep_fields if field in metadata}
+            if compact_metadata:
+                item["metadata"] = compact_metadata
         text = str(ref.get("text", ""))
         if text:
             item["text_preview"] = clip_context_text(text, max_chars=preview_chars)
@@ -3252,6 +3307,29 @@ class MatrixArkLocalAdapter:
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
                 )
+                chunk_index_terms = ordered_unique(
+                    [
+                        context_index_name("source_type", "skill" if skill_hash is not None else "resource"),
+                        context_index_name("resource_type", chunk.metadata.get("resource_type") or resource_type),
+                    ]
+                    + metadata_index_terms(chunk.metadata)
+                )
+                for index_name in chunk_index_terms:
+                    self.append(
+                        {
+                            "record_type": "context_index",
+                            "index_name": index_name,
+                            "index_hash": stable_hash(f"{index_name}:{chunk.chunk_hash}"),
+                            "ref_type": "skill_section" if skill_hash is not None else "resource_chunk",
+                            "ref_hash": chunk.chunk_hash,
+                            "chunk_hash": chunk.chunk_hash,
+                            "source_ref": chunk.source_ref,
+                            "node_hash": node_hash,
+                            "node_path": node_path,
+                            "scope": envelope["scope"],
+                            "updated_at_ms": envelope["ingestion_time_ms"],
+                        }
+                    )
         summary_text = summarize_text(text)
         event_embedding = embedding_for_text(text)
         summary_embedding = embedding_for_text(" ".join(node_path + [summary_text]))
@@ -3944,6 +4022,7 @@ class MatrixArkLocalAdapter:
         skill_embedding_vectors: dict[int, list[float]] = {}
         index_terms_by_batch: dict[Any, list[str]] = {}
         index_terms_by_node: dict[Any, list[str]] = {}
+        index_terms_by_ref: dict[Any, list[str]] = {}
         node_summary_text_by_hash: dict[int, str] = {}
         for record in records:
             record_type = record.get("record_type")
@@ -3951,7 +4030,11 @@ class MatrixArkLocalAdapter:
                 index_name = str(record.get("index_name", ""))
                 if index_name:
                     index_terms_by_batch.setdefault(record.get("batch_id_hash"), []).append(index_name)
-                    index_terms_by_node.setdefault(record.get("node_hash"), []).append(index_name)
+                    ref_hash = record.get("ref_hash") or record.get("chunk_hash") or record.get("section_hash") or record.get("skill_hash")
+                    if ref_hash is not None:
+                        index_terms_by_ref.setdefault(ref_hash, []).append(index_name)
+                    else:
+                        index_terms_by_node.setdefault(record.get("node_hash"), []).append(index_name)
             if record_type == "context_summary" and scope_matches(record.get("scope", {}), scope):
                 summary_type = str(record.get("summary_type", ""))
                 if summary_type in {"node_l0", "node_l1", "batch_l0", "session_l0"}:
@@ -4051,7 +4134,7 @@ class MatrixArkLocalAdapter:
                 continue
             if not selected_by_tree(record):
                 continue
-            index_terms = candidate_index_terms(record, index_terms_by_batch, index_terms_by_node)
+            index_terms = candidate_index_terms(record, index_terms_by_batch, index_terms_by_node, index_terms_by_ref)
             if not passes_secondary_index_filters(index_terms, secondary_index_filter_groups, mode=secondary_index_filter_mode):
                 secondary_index_dropped_count += 1
                 continue
@@ -4116,7 +4199,7 @@ class MatrixArkLocalAdapter:
                 continue
             if not selected_by_tree(record):
                 continue
-            index_terms = candidate_index_terms(record, index_terms_by_batch, index_terms_by_node)
+            index_terms = candidate_index_terms(record, index_terms_by_batch, index_terms_by_node, index_terms_by_ref)
             if not passes_secondary_index_filters(index_terms, secondary_index_filter_groups, mode=secondary_index_filter_mode):
                 secondary_index_dropped_count += 1
                 continue
@@ -4179,7 +4262,7 @@ class MatrixArkLocalAdapter:
                 continue
             if not selected_by_tree(record):
                 continue
-            index_terms = candidate_index_terms(record, index_terms_by_batch, index_terms_by_node)
+            index_terms = candidate_index_terms(record, index_terms_by_batch, index_terms_by_node, index_terms_by_ref)
             if not passes_secondary_index_filters(index_terms, secondary_index_filter_groups, mode=secondary_index_filter_mode):
                 secondary_index_dropped_count += 1
                 continue
@@ -4249,7 +4332,7 @@ class MatrixArkLocalAdapter:
                 continue
             if record.get("record_type") == "resource_chunk" and record.get("resource_type") == "skill":
                 continue
-            index_terms = candidate_index_terms(record, index_terms_by_batch, index_terms_by_node)
+            index_terms = candidate_index_terms(record, index_terms_by_batch, index_terms_by_node, index_terms_by_ref)
             if not passes_applicable_secondary_index_filters(index_terms, secondary_index_filter_groups, mode=secondary_index_filter_mode):
                 secondary_index_dropped_count += 1
                 continue
@@ -4306,7 +4389,16 @@ class MatrixArkLocalAdapter:
                         "sparse_score": sparse_score,
                         "embedding_score": embedding_score,
                         "node_score": node_score,
+                        "matched_index_terms": sorted(index_terms),
+                        "selection_reason": (
+                            "selected by tree path, secondary indexes, and resource/skill hybrid score"
+                            if index_terms
+                            else "selected by tree path and resource/skill hybrid score"
+                        ),
                         "event_type": business_type,
+                        "raw_uri": record.get("raw_uri", ""),
+                        "source_ref": record.get("source_ref", ""),
+                        "resource_type": record.get("resource_type", ""),
                         "metadata": metadata,
                         "scope": record.get("scope", {}),
                         "updated_at_ms": record.get("updated_at_ms", now_ms()),
@@ -4462,6 +4554,7 @@ class MatrixArkLocalAdapter:
                 "scope": scope,
                 "summary_text": pack_summary,
                 "selected_refs": compact_refs_for_audit(selected),
+                "dropped_refs": dropped_over_budget,
                 "layer_scores": layer_scores[:24],
                 "tree_traversal": pack["recall_policy"]["tree_traversal"],
                 "secondary_index_filter": pack["recall_policy"]["secondary_index_filter"],
