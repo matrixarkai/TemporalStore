@@ -39,6 +39,34 @@ And enforce dependency wiring with:
 python3 tools/validate_temporalstore_test_corpus_dependency.py --require-external
 ```
 
+The repo-level Rust/C++ parity runner is:
+
+```bash
+python3 tools/run_unified_cpp_rust_parity.py \
+  --cpp-repo wsl:/root/src/github-services/TemporalStore \
+  --output /tmp/temporalstore-unified-cpp-rust-parity.json
+```
+
+That command validates the shared corpus, checks Rust-owned evidence paths, checks C++ static
+source/test/harness paths, and emits a `temporalstore_unified_cpp_rust_parity_report_v1` report
+whose `cases` array also follows the comparator-friendly `temporalstore_unified_case_report_v1`
+shape. When the C++ repo has a native corpus executor, run it through the same entry point:
+
+```bash
+TS_CPP_UNIFIED_TEST_CMD='/path/to/cpp_runner --corpus {corpus}' \
+  python3 tools/run_unified_cpp_rust_parity.py \
+    --cpp-repo wsl:/root/src/github-services/TemporalStore \
+    --run-rust \
+    --output /tmp/temporalstore-unified-cpp-rust-parity.json
+```
+
+Use `--run-rust` only for focused or scheduled runs; the default mode is intentionally a fast
+contract/evidence-path validation so both repositories can share the API/test inventory without
+running every expensive storage, Raft, context, ingestion, and benchmark harness on every edit.
+The report fails closed when a referenced Rust/C++ evidence path is missing, and its
+`missing_required_paths` array is the migration backlog for the next C++ adapter or shared-case
+cleanup pass.
+
 Current inventory:
 
 ```text
